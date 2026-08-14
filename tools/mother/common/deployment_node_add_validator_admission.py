@@ -28,6 +28,7 @@ import hashlib
 import json
 from pathlib import Path, PureWindowsPath
 import re
+import socket
 import time
 from typing import Any
 import urllib.error
@@ -874,6 +875,7 @@ def build_node_add_validator_admission_release(
                 "replica-sync evidence remains clean",
                 "target identity env keys remain installed",
                 "target service is redeployed with validator identity active",
+                "selected bootnode P2P endpoint is reachable before validator vote",
                 "all current validators submit the exact committed QBFT admission vote",
                 "final QBFT validator set is exactly desired_validator_set",
                 "target validator node identity matches the target validator private key",
@@ -1397,6 +1399,120 @@ def _component_healthy(record: Mapping[str, Any], *, names: Iterable[str]) -> bo
     return False
 
 
+
+
+def _parse_bootnode_p2p_endpoint(bootnode: Mapping[str, Any]) -> tuple[str, int, str | None]:
+    enode = bootnode.get("enode")
+    advertised_host = bootnode.get("advertised_host")
+    p2p_port = bootnode.get("p2p_port")
+
+    if isinstance(enode, str) and enode.strip():
+        parsed = urllib.parse.urlsplit(enode.strip())
+        if parsed.scheme != "enode" or not parsed.hostname or parsed.port is None:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+                "bootnode enode does not contain a reachable host:port endpoint",
+            )
+        host = parsed.hostname
+        port = int(parsed.port)
+        if isinstance(advertised_host, str) and advertised_host.strip() and advertised_host.strip() != host:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+                "bootnode advertised_host disagrees with enode host",
+            )
+        if p2p_port is not None:
+            try:
+                expected_port = int(p2p_port)
+            except (TypeError, ValueError) as exc:
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+                    "bootnode p2p_port is not an integer",
+                ) from exc
+            if expected_port != port:
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+                    "bootnode p2p_port disagrees with enode port",
+                )
+        return host, port, enode.strip()
+
+    if not isinstance(advertised_host, str) or not advertised_host.strip():
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+            "bootnode advertised_host is missing",
+        )
+    if p2p_port is None:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+            "bootnode p2p_port is missing",
+        )
+    try:
+        port = int(p2p_port)
+    except (TypeError, ValueError) as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+            "bootnode p2p_port is not an integer",
+        ) from exc
+    if port <= 0 or port > 65535:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+            "bootnode p2p_port is outside the valid TCP/UDP port range",
+        )
+    return advertised_host.strip(), port, None
+
+def _bootnode_p2p_reachability_receipt(
+    admission_plan: Mapping[str, Any],
+    *,
+    timeout: float,
+    connector: Any = socket.create_connection,
+) -> dict[str, Any]:
+    bootnode = admission_plan.get("bootnode")
+    if not isinstance(bootnode, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID",
+            "validator-admission plan is missing bootnode endpoint evidence",
+        )
+    host, port, enode = _parse_bootnode_p2p_endpoint(bootnode)
+    connect_timeout = max(0.1, min(float(timeout), 10.0))
+    started = time.monotonic()
+    receipt: dict[str, Any] = {
+        "name": "bootnode-p2p-reachability-before-validator-vote",
+        "method": "TCP_CONNECT",
+        "endpoint": f"{host}:{port}",
+        "host": host,
+        "port": port,
+        "bootnode_node": bootnode.get("node"),
+        "bootnode_controller_id": bootnode.get("controller_id"),
+        "bootnode_service_uuid": bootnode.get("service_uuid"),
+        "bootnode_enode_sha256": hashlib.sha256(enode.encode("utf-8")).hexdigest() if enode else None,
+        "timeout_seconds": connect_timeout,
+        "verified_before_candidate_mutation": True,
+        "verified_before_validator_vote": True,
+        "verified": False,
+    }
+    try:
+        connection = connector((host, port), timeout=connect_timeout)
+        try:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+        finally:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+        receipt.update({
+            "elapsed_ms": elapsed_ms,
+            "verified": True,
+            "error_type": None,
+            "error": None,
+        })
+    except OSError as exc:
+        receipt.update({
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "verified": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:300],
+        })
+    return receipt
+
+
 def _cleanup_summary(document: Mapping[str, Any], *, paths: PrivateStatePaths) -> dict[str, Any]:
     evidence = document.get("evidence")
     evidence_ref: dict[str, str] | None = None
@@ -1651,6 +1767,14 @@ def execute_node_add_validator_admission_release(
         )
         preconditions.extend(voter_preconditions)
         all_service_uuids.update(voter_service_uuids)
+
+        bootnode_p2p_precondition = _bootnode_p2p_reachability_receipt(plan, timeout=timeout)
+        preconditions.append(bootnode_p2p_precondition)
+        if bootnode_p2p_precondition["verified"] is not True:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_UNREACHABLE",
+                f"bootnode P2P endpoint is not reachable before validator vote: {bootnode_p2p_precondition['endpoint']}",
+            )
 
         activation_compose = plan["activation_compose"]["canonical_text"]
         activation_body = {
@@ -1926,6 +2050,15 @@ def execute_node_add_validator_admission_release(
             "succeeded_mutation_count": succeeded,
             "failed_mutation_count": sum(item.get("status") != "succeeded" for item in receipts),
             "network_access_performed": bool(preconditions or receipts or observations),
+            "bootnode_p2p_reachability_performed": any(
+                item.get("name") == "bootnode-p2p-reachability-before-validator-vote"
+                for item in preconditions
+            ),
+            "bootnode_p2p_reachability_verified": any(
+                item.get("name") == "bootnode-p2p-reachability-before-validator-vote"
+                and item.get("verified") is True
+                for item in preconditions
+            ),
             "live_mutation_performed": live_mutation,
             "validator_vote_performed": admission_proven,
             "validator_activation_performed": admission_proven,

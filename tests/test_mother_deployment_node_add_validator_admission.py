@@ -11,7 +11,9 @@ from tools.mother.common.deployment_node_add_validator_admission import (
     MotherDeploymentNodeAddValidatorAdmissionError,
     _candidate_activation_compose,
     _digest_without,
+    _bootnode_p2p_reachability_receipt,
     _http,
+    _parse_bootnode_p2p_endpoint,
     _preflight_existing_validator_services,
     _service_uuid_hints_from_replica_sync_evidence,
 )
@@ -74,6 +76,105 @@ def test_replica_sync_release_reference_uses_logical_self_digest_not_file_bytes(
 
     assert release["node_add_replica_sync_release_sha256"] == logical_digest
     assert file_byte_digest != logical_digest
+
+
+
+class _FakeSocket:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def test_validator_admission_parses_bootnode_p2p_endpoint_from_enode() -> None:
+    host, port, enode = _parse_bootnode_p2p_endpoint({
+        "node": "mainnetc-super1",
+        "advertised_host": "10.116.0.2",
+        "p2p_port": 30304,
+        "enode": "enode://" + "a" * 128 + "@10.116.0.2:30304",
+    })
+
+    assert host == "10.116.0.2"
+    assert port == 30304
+    assert enode.endswith("@10.116.0.2:30304")
+
+
+def test_validator_admission_rejects_bootnode_p2p_metadata_mismatch() -> None:
+    try:
+        _parse_bootnode_p2p_endpoint({
+            "advertised_host": "10.116.0.2",
+            "p2p_port": 30303,
+            "enode": "enode://" + "a" * 128 + "@10.116.0.2:30304",
+        })
+    except MotherDeploymentNodeAddValidatorAdmissionError as exc:
+        assert exc.code == "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_BOOTNODE_P2P_INVALID"
+        assert "disagrees" in str(exc)
+    else:
+        raise AssertionError("expected bootnode p2p invalid failure")
+
+
+def test_validator_admission_p2p_reachability_receipt_succeeds_before_vote() -> None:
+    calls = []
+
+    def connector(address, timeout):
+        calls.append((address, timeout))
+        return _FakeSocket()
+
+    receipt = _bootnode_p2p_reachability_receipt(
+        {
+            "bootnode": {
+                "node": "mainnetc-super1",
+                "controller_id": "coolify-c",
+                "service_uuid": "voter-service",
+                "advertised_host": "10.116.0.2",
+                "p2p_port": 30303,
+                "enode": "enode://" + "a" * 128 + "@10.116.0.2:30303",
+            }
+        },
+        timeout=30.0,
+        connector=connector,
+    )
+
+    assert calls == [(("10.116.0.2", 30303), 10.0)]
+    assert receipt["name"] == "bootnode-p2p-reachability-before-validator-vote"
+    assert receipt["method"] == "TCP_CONNECT"
+    assert receipt["endpoint"] == "10.116.0.2:30303"
+    assert receipt["verified"] is True
+    assert receipt["verified_before_candidate_mutation"] is True
+    assert receipt["verified_before_validator_vote"] is True
+    assert receipt["error"] is None
+    assert receipt["bootnode_enode_sha256"] == hashlib.sha256(
+        ("enode://" + "a" * 128 + "@10.116.0.2:30303").encode()
+    ).hexdigest()
+
+
+def test_validator_admission_p2p_reachability_receipt_fails_closed_before_vote() -> None:
+    def connector(address, timeout):
+        raise ConnectionRefusedError("refused by bootnode")
+
+    receipt = _bootnode_p2p_reachability_receipt(
+        {
+            "bootnode": {
+                "node": "mainnetc-super1",
+                "controller_id": "coolify-c",
+                "service_uuid": "voter-service",
+                "advertised_host": "10.116.0.2",
+                "p2p_port": 30303,
+                "enode": "enode://" + "a" * 128 + "@10.116.0.2:30303",
+            }
+        },
+        timeout=2.0,
+        connector=connector,
+    )
+
+    assert receipt["endpoint"] == "10.116.0.2:30303"
+    assert receipt["verified"] is False
+    assert receipt["verified_before_candidate_mutation"] is True
+    assert receipt["verified_before_validator_vote"] is True
+    assert receipt["error_type"] == "ConnectionRefusedError"
+    assert "refused" in receipt["error"]
+
 
 
 

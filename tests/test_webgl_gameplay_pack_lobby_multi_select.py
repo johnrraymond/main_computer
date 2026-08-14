@@ -43,7 +43,7 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         return json.loads(result.stdout)
 
-    def test_lobby_markup_uses_checkboxes_and_start_game(self) -> None:
+    def test_lobby_markup_uses_checkboxes_and_start_new_game(self) -> None:
         html = APPLICATIONS_HTML.read_text(encoding="utf-8")
 
         self.assertIn("Gameplay Packs", html)
@@ -51,7 +51,10 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
         self.assertGreaterEqual(html.count("data-webgl-gameplay-pack-checkbox"), 2)
         self.assertIn("pack.opening-shuttle.elite-boarders", html)
         self.assertIn("pack.main-ship.bay-boarders", html)
-        self.assertIn("START GAME", html)
+        self.assertIn("START NEW GAME", html)
+        self.assertNotIn(">START GAME</button>", html)
+        self.assertIn('id="webgl-autosave-status"', html)
+        self.assertIn("Autosave: none yet.", html)
 
     def test_lobby_mounts_into_main_scene_view_before_start(self) -> None:
         app_html = WEBGL_APP_HTML.read_text(encoding="utf-8")
@@ -65,7 +68,13 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
         self.assertIn("webgl-gameplay-pack-lobby-stage", desktop)
         self.assertIn(".webgl-gameplay-pack-lobby-stage", css)
         self.assertIn('setAttribute?.("data-webgl-gameplay-pack-main-view", "true")', desktop)
-        self.assertIn("START GAME failed", desktop)
+        self.assertIn("START NEW GAME failed", desktop)
+        self.assertIn("WEBGL_AUTOSAVE_KEY", desktop)
+        self.assertIn("main-computer.webgl.autosave.v1", desktop)
+        self.assertIn("webglUpdateAutosaveStatus", desktop)
+        self.assertIn(".webgl-autosave-status", css)
+        self.assertIn(".webgl-autosave-toast", css)
+        self.assertIn("webglShowAutosaveToast", desktop)
 
     def test_default_enabled_packs_are_selected_without_saved_local_state(self) -> None:
         result = self.run_node(
@@ -110,6 +119,132 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
         self.assertEqual(result["selection"]["activeGameplayPackIds"], result["defaults"])
         self.assertEqual(result["stored"]["schema"], "game.reloadGameplayPackSelection.v2")
         self.assertEqual(result["stored"]["enabledPackIds"], result["defaults"])
+
+    def test_start_game_writes_local_autosave_shell_with_selected_packs(self) -> None:
+        result = self.run_node(
+            r'''
+            const fs = require("fs");
+            const desktopSource = fs.readFileSync(process.argv[1], "utf8");
+            const start = desktopSource.indexOf("    const webglProjectState");
+            const end = desktopSource.indexOf("    function ensureWebglSystemScenarioRuntime", start);
+            const helperSource = desktopSource.slice(start, end).replace(/^    /gm, "");
+
+            const store = {};
+            const selectedCheckboxes = [
+              {
+                checked: true,
+                value: "pack.opening-shuttle.elite-boarders",
+                dataset: {gameplayPackId: "pack.opening-shuttle.elite-boarders"}
+              },
+              {
+                checked: true,
+                value: "pack.experimental.large-random-shuttle-boarder",
+                dataset: {gameplayPackId: "pack.experimental.large-random-shuttle-boarder"}
+              }
+            ];
+            const startButton = {dataset: {}, disabled: false, addEventListener() {}};
+            const statusNode = {dataset: {}, textContent: ""};
+            const autosaveNode = {dataset: {}, textContent: ""};
+            const panel = {dataset: {}, querySelector() { return null; }};
+            const checklist = {
+              dataset: {},
+              querySelectorAll(selector) {
+                if (selector === "[data-webgl-gameplay-pack-checkbox]") return selectedCheckboxes;
+                return [];
+              }
+            };
+
+            const fakeWindow = {
+              location: {search: ""},
+              setTimeout(callback) { callback(); return 1; },
+              clearTimeout() {},
+              localStorage: {
+                getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+                setItem(key, value) { store[key] = String(value); }
+              }
+            };
+            const createdNodes = {};
+            const canvasHost = {
+              children: [],
+              appendChild(node) {
+                this.children.push(node);
+                if (node.id) createdNodes[node.id] = node;
+              }
+            };
+            const sceneSurface = {parentElement: canvasHost};
+            const fakeDocument = {
+              getElementById(id) {
+                if (id === "webgl-gameplay-pack-selector") return panel;
+                if (id === "webgl-gameplay-pack-checklist") return checklist;
+                if (id === "webgl-gameplay-pack-start" || id === "webgl-gameplay-pack-apply") return startButton;
+                if (id === "webgl-gameplay-pack-status") return statusNode;
+                if (id === "webgl-autosave-status") return autosaveNode;
+                if (id === "webgl-demo") return sceneSurface;
+                if (createdNodes[id]) return createdNodes[id];
+                return null;
+              },
+              querySelector() { return null; },
+              createElement() {
+                return {
+                  id: "",
+                  className: "",
+                  dataset: {},
+                  hidden: false,
+                  textContent: "",
+                  appendChild() {},
+                  addEventListener() {},
+                  setAttribute() {}
+                };
+              }
+            };
+
+            const helpers = Function("window", "document", "fetch", `${helperSource}
+              const initWebgl = async () => ({ok: true});
+              return {
+                startWebglGameFromGameplayPackLobby,
+                webglReadAutosave,
+                webglAutosaveStatusMessage,
+                WEBGL_AUTOSAVE_KEY
+              };
+            `)(fakeWindow, fakeDocument, async () => ({ok: true, status: 200, async json() { return {ok: true}; }}));
+
+            (async () => {
+              const savedSelection = await helpers.startWebglGameFromGameplayPackLobby();
+              const rawAutosave = store["main-computer.webgl.autosave.v1"];
+              const autosave = helpers.webglReadAutosave();
+              console.log(JSON.stringify({
+                savedSelection,
+                rawAutosave: JSON.parse(rawAutosave),
+                autosave,
+                autosaveStatusText: autosaveNode.textContent,
+                autosaveStatusDataset: autosaveNode.dataset,
+                autosaveToastText: createdNodes["webgl-autosave-toast"]?.textContent || "",
+                autosaveToastHidden: Boolean(createdNodes["webgl-autosave-toast"]?.hidden),
+                storageKeys: Object.keys(store).sort()
+              }));
+            })().catch((error) => {
+              console.error(error && error.stack ? error.stack : String(error));
+              process.exit(1);
+            });
+            '''
+        )
+
+        self.assertIn("main-computer.webgl.autosave.v1", result["storageKeys"])
+        self.assertEqual(result["rawAutosave"]["schema"], "game.webglAutosave.v1")
+        self.assertEqual(result["rawAutosave"]["checkpoint"]["id"], "new-game-start")
+        self.assertEqual(result["rawAutosave"]["checkpoint"]["label"], "New Game Start")
+        self.assertEqual(
+            result["rawAutosave"]["enabledPackIds"],
+            ["pack.opening-shuttle.elite-boarders", "pack.experimental.large-random-shuttle-boarder"],
+        )
+        self.assertEqual(result["autosave"]["checkpoint"]["label"], "New Game Start")
+        self.assertIn("Autosave saved: New Game Start", result["autosaveStatusText"])
+        self.assertIn("Autosave saved: New Game Start", result["autosaveToastText"])
+        self.assertTrue(result["autosaveToastHidden"])
+        self.assertEqual(result["autosaveStatusDataset"]["hasAutosave"], "true")
+        self.assertEqual(result["autosaveStatusDataset"]["mode"], "saved")
+        self.assertEqual(result["autosaveStatusDataset"]["checkpointId"], "new-game-start")
+        self.assertEqual(result["autosaveStatusDataset"]["packCount"], "2")
 
     def test_v2_local_selection_installs_opening_and_main_ship_packs_together(self) -> None:
         result = self.run_node(

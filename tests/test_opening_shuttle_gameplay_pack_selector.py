@@ -21,7 +21,7 @@ class OpeningShuttleGameplayPackSelectorTests(unittest.TestCase):
         self.assertIn('pack.main-ship.bay-boarders', html)
         self.assertIn('Main Ship: Bay Boarders', html)
         self.assertIn('id="webgl-gameplay-pack-apply"', html)
-        self.assertIn('START GAME', html)
+        self.assertIn('START NEW GAME', html)
         self.assertIn('id="webgl-gameplay-pack-status"', html)
 
     def test_selector_styles_are_present(self) -> None:

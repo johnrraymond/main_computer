@@ -293,6 +293,24 @@ class PrivateStateInstallResult:
             raise TypeError("installed must be a boolean")
 
 
+@dataclass(frozen=True, slots=True)
+class PrivateStateResealResult:
+    required: bool
+    written: bool
+    canonicalization_required: bool
+    previous_content_hash: ContentHash
+    content_hash: ContentHash
+    binding: PrivateStateBinding
+
+    def __post_init__(self) -> None:
+        if type(self.required) is not bool:
+            raise TypeError("required must be a boolean")
+        if type(self.written) is not bool:
+            raise TypeError("written must be a boolean")
+        if type(self.canonicalization_required) is not bool:
+            raise TypeError("canonicalization_required must be a boolean")
+
+
 def _validate_paths(paths: PrivateStatePaths, operation: OperationIdentity) -> None:
     if not isinstance(paths, PrivateStatePaths):
         raise TypeError("paths must be PrivateStatePaths")
@@ -1114,6 +1132,219 @@ def _recover_interrupted_private_state_transition(
     _remove_transition_tree(transition)
 
 
+
+def reseal_private_state_reference(
+    paths: PrivateStatePaths,
+    *,
+    updated_at: str,
+    updated_by_action_id: str,
+    write: bool,
+    operation: OperationIdentity,
+) -> PrivateStateResealResult:
+    """Explicitly accept an operator-edited private identity and rebuild its content reference.
+
+    The recovery manifest and every recovery object remain immutable inputs to this
+    operation.  Any mismatch outside the current identity document is rejected.
+    The generation is not advanced because this repairs a stale durable reference
+    after an out-of-band local edit rather than performing a Mother-owned identity
+    rotation.
+    """
+
+    operation = _operation(operation)
+    _validate_paths(paths, operation)
+    _text(updated_at, "updated_at")
+    _text(updated_by_action_id, "updated_by_action_id")
+    if type(write) is not bool:
+        raise TypeError("write must be a boolean")
+
+    _recover_interrupted_private_state_transition(paths, operation)
+    required = (paths.recovery_manifest, paths.identity_file, paths.metadata_file)
+    if any(not path.is_file() for path in required):
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_MISSING",
+            "committed private state is incomplete",
+            retry_class="after-reobserve",
+        )
+    _validate_security(paths, operation)
+
+    try:
+        document_bytes = paths.identity_file.read_bytes()
+        metadata_bytes = paths.metadata_file.read_bytes()
+        manifest_bytes = paths.recovery_manifest.read_bytes()
+    except OSError as exc:
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_MISSING",
+            "committed private state could not be read",
+            retry_class="after-reobserve",
+            cause=exc,
+        ) from exc
+
+    try:
+        value = yaml.safe_load(document_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise _error(
+            operation,
+            "MOTHER_STATE_MALFORMED_PRIVATE_STATE",
+            "private-state document is malformed",
+            cause=exc,
+        ) from exc
+    if type(value) is not dict:
+        raise _error(
+            operation,
+            "MOTHER_STATE_MALFORMED_PRIVATE_STATE",
+            "private-state document must be an object",
+        )
+    try:
+        canonical_document_bytes = canonical_yaml(value)
+    except (TypeError, ValueError) as exc:
+        raise _error(
+            operation,
+            "MOTHER_STATE_MALFORMED_PRIVATE_STATE",
+            "private-state document is not canonicalizable",
+            cause=exc,
+        ) from exc
+
+    # Validate the edited document through the production schema parser after
+    # canonicalization; reseal may normalize formatting but never bypass schema.
+    _parse_document(canonical_document_bytes, operation)
+    metadata = _parse_metadata(metadata_bytes, operation)
+    manifest = _parse_manifest(manifest_bytes, operation)
+
+    if metadata.recovery_manifest_hash != sha256(manifest_bytes):
+        raise _error(
+            operation,
+            "MOTHER_STATE_PRIVATE_STATE_REFERENCE_MISMATCH",
+            "private-state recovery manifest reference does not match; reseal refused",
+        )
+    if manifest.private_state_generation != metadata.generation:
+        raise _error(
+            operation,
+            "MOTHER_STATE_MALFORMED_PRIVATE_STATE",
+            "private-state generations do not match",
+        )
+
+    recovery_objects: dict[str, PrivateRecoveryObject] = {}
+    for entry in manifest.entries:
+        target = paths.recovery_objects_root / PurePosixPath(entry.relative_path)
+        try:
+            payload = target.read_bytes()
+        except FileNotFoundError as exc:
+            raise _error(
+                operation,
+                "MOTHER_STATE_PRIVATE_STATE_MISSING",
+                "committed private recovery object is missing",
+                retry_class="after-reobserve",
+                cause=exc,
+            ) from exc
+        except OSError as exc:
+            raise _error(
+                operation,
+                "MOTHER_STATE_PRIVATE_STATE_MISSING",
+                "private recovery object could not be read",
+                retry_class="after-reobserve",
+                cause=exc,
+            ) from exc
+        if len(payload) != entry.byte_length or sha256(payload) != entry.content_hash:
+            raise _error(
+                operation,
+                "MOTHER_STATE_PRIVATE_STATE_REFERENCE_MISMATCH",
+                "private recovery object reference does not match; reseal refused",
+            )
+        recovery_objects[entry.relative_path] = PrivateRecoveryObject(
+            entry.relative_path,
+            entry.generation,
+            entry.content_hash,
+            payload,
+        )
+
+    # Later generations embed the exact predecessor identity.  Require that it
+    # still proves metadata.previous_content_hash before accepting a local edit.
+    if metadata.generation > 1:
+        predecessor_path = (
+            f"predecessor/generation-{metadata.generation - 1:08d}/identity.private.yaml"
+        )
+        predecessor = recovery_objects.get(predecessor_path)
+        if predecessor is None or sha256(predecessor.payload) != metadata.previous_content_hash:
+            raise _error(
+                operation,
+                "MOTHER_STATE_PRIVATE_STATE_REFERENCE_MISMATCH",
+                "private-state predecessor reference does not match; reseal refused",
+            )
+
+    new_content_hash = sha256(canonical_document_bytes)
+    canonicalization_required = document_bytes != canonical_document_bytes
+    reseal_required = metadata.content_hash != new_content_hash or canonicalization_required
+    planned_binding = PrivateStateBinding(
+        private_state_kind=metadata.private_state_kind,
+        generation=metadata.generation,
+        content_hash=new_content_hash,
+        recovery_manifest_hash=metadata.recovery_manifest_hash,
+    )
+
+    if not reseal_required:
+        current = _read_private_state_stable(paths, operation)
+        return PrivateStateResealResult(
+            required=False,
+            written=False,
+            canonicalization_required=False,
+            previous_content_hash=metadata.content_hash,
+            content_hash=metadata.content_hash,
+            binding=current.binding,
+        )
+
+    if not write:
+        return PrivateStateResealResult(
+            required=True,
+            written=False,
+            canonicalization_required=canonicalization_required,
+            previous_content_hash=metadata.content_hash,
+            content_hash=new_content_hash,
+            binding=planned_binding,
+        )
+
+    replacement_metadata = PrivateStateMetadata(
+        kind=metadata.kind,
+        private_state_kind=metadata.private_state_kind,
+        generation=metadata.generation,
+        content_hash=new_content_hash,
+        previous_content_hash=metadata.previous_content_hash,
+        recovery_manifest_hash=metadata.recovery_manifest_hash,
+        updated_at=updated_at,
+        updated_by_action_id=updated_by_action_id,
+    )
+
+    # Publish the identity first and metadata last.  A crash between the two
+    # remains fail-closed as a reference mismatch and can be safely resealed again.
+    if canonicalization_required:
+        atomic_files.durable_replace(
+            paths.identity_file,
+            canonical_document_bytes,
+            operation=operation,
+        )
+        _secure_private_path(paths.identity_file, is_directory=False, operation=operation)
+    atomic_files.durable_replace(
+        paths.metadata_file,
+        _metadata_bytes(replacement_metadata),
+        operation=operation,
+    )
+    _secure_private_path(paths.metadata_file, is_directory=False, operation=operation)
+
+    verified = _read_private_state_stable(paths, operation)
+    if verified.binding != planned_binding:
+        raise RuntimeError("resealed private-state binding did not verify")
+
+    return PrivateStateResealResult(
+        required=True,
+        written=True,
+        canonicalization_required=canonicalization_required,
+        previous_content_hash=metadata.content_hash,
+        content_hash=new_content_hash,
+        binding=verified.binding,
+    )
+
+
 def read_private_state(
     paths: PrivateStatePaths,
     *,
@@ -1866,12 +2097,14 @@ __all__ = [
     "PrivateStateInstallResult",
     "PrivateStateMetadata",
     "PrivateStateReadResult",
+    "PrivateStateResealResult",
     "ResolvedValidatorIdentity",
     "build_recovery_closure",
     "install_verified_private_state",
     "prepare_private_state_bootstrap",
     "prepare_private_state_successor",
     "read_private_state",
+    "reseal_private_state_reference",
     "replace_verified_private_state",
     "replace_verified_starter_private_state",
     "resolve_validator_ref",

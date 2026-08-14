@@ -108,7 +108,7 @@ def test_visible_selector_has_none_path_pack_option_and_loader_call() -> None:
     assert 'id="webgl-gameplay-pack-checklist"' in html
     assert 'data-webgl-gameplay-pack-checkbox' in html
     assert 'id="webgl-gameplay-pack-apply"' in html
-    assert "START GAME" in html
+    assert "START NEW GAME" in html
     assert "Opening Shuttle: Elite Boarders" in html
     assert "Main Ship: Bay Boarders" in html
 

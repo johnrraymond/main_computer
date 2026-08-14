@@ -1438,7 +1438,7 @@ class SystemScenarioGeneratedCatalogTests(unittest.TestCase):
         self.assertIn('id="webgl-gameplay-pack-checklist"', applications)
         self.assertIn('data-webgl-gameplay-pack-checkbox', applications)
         self.assertIn('id="webgl-gameplay-pack-apply"', applications)
-        self.assertIn("START GAME", applications)
+        self.assertIn("START NEW GAME", applications)
 
         self.assertIn("WEBGL_GAMEPLAY_PACK_STORAGE_KEY", desktop)
         self.assertIn("WEBGL_ENABLED_GAMEPLAY_PACKS_KEY", desktop)

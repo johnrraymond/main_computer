@@ -11,9 +11,11 @@
       systemScenarioError: "",
       jsGameplayPackInstallResult: null,
       gameStarted: false,
-      pendingSceneId: ""
+      pendingSceneId: "",
+      lastAutosave: null
     };
 
+    const WEBGL_AUTOSAVE_KEY = "main-computer.webgl.autosave.v1";
     const WEBGL_LEGACY_ACTIVE_GAMEPLAY_PACKS_KEY = "main-computer.webgl.active-gameplay-packs.v1";
     const WEBGL_ENABLED_GAMEPLAY_PACKS_KEY = "main-computer.webgl.enabled-gameplay-packs.v2";
     const WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY = WEBGL_ENABLED_GAMEPLAY_PACKS_KEY;
@@ -221,7 +223,8 @@
         select: byId("webgl-gameplay-pack-select"),
         apply: byId("webgl-gameplay-pack-apply") || byId("webgl-gameplay-pack-start"),
         start: byId("webgl-gameplay-pack-start") || byId("webgl-gameplay-pack-apply"),
-        status: byId("webgl-gameplay-pack-status")
+        status: byId("webgl-gameplay-pack-status"),
+        autosaveStatus: byId("webgl-autosave-status") || panel?.querySelector?.("[data-webgl-autosave-status]") || null
       };
     }
 
@@ -385,6 +388,158 @@
       return value;
     }
 
+    function webglReadAutosave() {
+      try {
+        const raw = window.localStorage?.getItem?.(WEBGL_AUTOSAVE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(String(raw || ""));
+        if (!parsed || typeof parsed !== "object") return null;
+        if (parsed.schema !== "game.webglAutosave.v1") return null;
+        const enabledPackIds = webglNormalizeGameplayPackIds(parsed.enabledPackIds || parsed.activeGameplayPackIds || []);
+        const checkpoint = parsed.checkpoint && typeof parsed.checkpoint === "object"
+          ? parsed.checkpoint
+          : {};
+        return {
+          schema: "game.webglAutosave.v1",
+          kind: "webgl-autosave",
+          projectId: String(parsed.projectId || webglProjectState.projectId || "webgl-demo"),
+          savedAt: Math.max(0, Number(parsed.savedAt || 0)),
+          checkpoint: {
+            id: String(checkpoint.id || "unknown"),
+            label: String(checkpoint.label || checkpoint.id || "Unknown checkpoint")
+          },
+          enabledPackIds,
+          activeGameplayPackIds: enabledPackIds
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    function webglAutosaveCheckpointLabel(checkpoint = {}) {
+      const id = String(checkpoint?.id || "");
+      if (checkpoint?.label) return String(checkpoint.label);
+      if (id === "new-game-start") return "New Game Start";
+      if (id === "opening-shuttle-started") return "Opening Shuttle Started";
+      if (id === "opening-shuttle-completed") return "Opening Shuttle Completed";
+      if (id === "mother-ship-shuttle-bay") return "Mother Ship Shuttle Bay";
+      return id || "Unknown checkpoint";
+    }
+
+    function webglBuildAutosaveValue(options = {}) {
+      const enabledPackIds = webglNormalizeGameplayPackIds(options.enabledPackIds || options.activeGameplayPackIds || []);
+      const checkpointId = String(options.checkpointId || options.checkpoint?.id || "new-game-start");
+      const checkpointLabel = webglAutosaveCheckpointLabel({
+        id: checkpointId,
+        label: options.checkpointLabel || options.checkpoint?.label || ""
+      });
+      return {
+        schema: "game.webglAutosave.v1",
+        kind: "webgl-autosave",
+        projectId: String(options.projectId || webglProjectState.projectId || "webgl-demo"),
+        savedAt: Number.isFinite(Number(options.savedAt)) ? Number(options.savedAt) : Date.now(),
+        checkpoint: {
+          id: checkpointId,
+          label: checkpointLabel
+        },
+        enabledPackIds,
+        activeGameplayPackIds: enabledPackIds,
+        source: String(options.source || "webgl-game-start"),
+        runtimeLocal: true
+      };
+    }
+
+    function webglStoreAutosave(options = {}) {
+      const value = webglBuildAutosaveValue(options);
+      webglProjectState.lastAutosave = value;
+      try {
+        window.localStorage?.setItem?.(WEBGL_AUTOSAVE_KEY, JSON.stringify(value));
+      } catch {
+        // Autosave is best-effort in browser localStorage.
+      }
+      return value;
+    }
+
+    function webglFormatAutosaveTimestamp(savedAt = 0) {
+      const value = Number(savedAt || 0);
+      if (!Number.isFinite(value) || value <= 0) return "";
+      try {
+        return new Date(value).toLocaleString();
+      } catch {
+        return "";
+      }
+    }
+
+    function webglAutosaveStatusMessage(autosave = webglReadAutosave(), options = {}) {
+      if (!autosave) return "Autosave: none yet.";
+      const count = webglNormalizeGameplayPackIds(autosave.enabledPackIds).length;
+      const plural = count === 1 ? "pack" : "packs";
+      const savedAt = webglFormatAutosaveTimestamp(autosave.savedAt);
+      const checkpoint = webglAutosaveCheckpointLabel(autosave.checkpoint);
+      const suffix = savedAt ? ` • saved ${savedAt}` : "";
+      const prefix = options?.justSaved ? "Autosave saved" : "Autosave";
+      return `${prefix}: ${checkpoint} • ${count} ${plural}${suffix}`;
+    }
+
+    function webglUpdateAutosaveStatus(autosave = webglReadAutosave(), options = {}) {
+      const {autosaveStatus} = webglGameplayPackSelectorNodes();
+      if (!autosaveStatus) return autosave;
+      autosaveStatus.textContent = webglAutosaveStatusMessage(autosave, options);
+      autosaveStatus.dataset = autosaveStatus.dataset || {};
+      autosaveStatus.dataset.hasAutosave = String(Boolean(autosave));
+      autosaveStatus.dataset.checkpointId = String(autosave?.checkpoint?.id || "");
+      autosaveStatus.dataset.packCount = String(webglNormalizeGameplayPackIds(autosave?.enabledPackIds || []).length);
+      autosaveStatus.dataset.mode = autosave
+        ? (options?.justSaved ? "saved" : "available")
+        : "empty";
+      autosaveStatus.dataset.lastSavedAt = String(autosave?.savedAt || "");
+      return autosave;
+    }
+
+    function webglAutosaveToastNode(create = false) {
+      const existing = typeof document.getElementById === "function"
+        ? document.getElementById("webgl-autosave-toast")
+        : document.querySelector?.("[data-webgl-autosave-toast]");
+      if (existing || !create) return existing || null;
+      if (typeof document.createElement !== "function") return null;
+
+      const surface = (typeof document.getElementById === "function"
+        ? document.getElementById("webgl-demo")
+        : null) || document.querySelector?.("[data-scene-viewer]");
+      const host = surface?.parentElement || document.querySelector?.(".canvas-wrap") || null;
+      if (!host) return null;
+
+      const toast = document.createElement("div");
+      toast.id = "webgl-autosave-toast";
+      toast.className = "webgl-autosave-toast";
+      toast.setAttribute?.("data-webgl-autosave-toast", "true");
+      toast.dataset = toast.dataset || {};
+      toast.dataset.visible = "false";
+      toast.hidden = true;
+      if (typeof host.appendChild === "function") host.appendChild(toast);
+      return toast;
+    }
+
+    function webglShowAutosaveToast(message = "") {
+      const toast = webglAutosaveToastNode(true);
+      if (!toast) return null;
+      toast.textContent = String(message || "");
+      toast.hidden = false;
+      toast.dataset = toast.dataset || {};
+      toast.dataset.visible = "true";
+      const hide = () => {
+        toast.hidden = true;
+        toast.dataset.visible = "false";
+      };
+      if (typeof window?.clearTimeout === "function" && toast.__webglAutosaveToastTimeout) {
+        window.clearTimeout(toast.__webglAutosaveToastTimeout);
+      }
+      if (typeof window?.setTimeout === "function") {
+        toast.__webglAutosaveToastTimeout = window.setTimeout(hide, 4200);
+      }
+      return toast;
+    }
+
     function webglGameplayPackSelectionLabel(pluginIds = []) {
       const ids = webglNormalizeGameplayPackIds(pluginIds);
       if (!ids.length) return "None — base game";
@@ -393,9 +548,9 @@
 
     function webglGameplayPackLobbyStatusMessage(pluginIds = []) {
       const ids = webglNormalizeGameplayPackIds(pluginIds);
-      if (!ids.length) return "No gameplay packs selected. START GAME will run the base game.";
+      if (!ids.length) return "No gameplay packs selected. START NEW GAME will run the base game.";
       const plural = ids.length === 1 ? "pack" : "packs";
-      return `${ids.length} gameplay ${plural} selected: ${webglGameplayPackSelectionLabel(ids)}. START GAME will save and arm them.`;
+      return `${ids.length} gameplay ${plural} selected: ${webglGameplayPackSelectionLabel(ids)}. START NEW GAME will save and arm them.`;
     }
 
     function webglSetGameplayPackSelectorStatus(message = "", mode = "") {
@@ -558,10 +713,11 @@
       nodes.panel.dataset.selectedGameplayPackCount = String(selectedIds.length);
       webglSetGameplayPackSelectorStatus(
         selection.source === "default-enabled"
-          ? `Default packs selected: ${webglGameplayPackSelectionLabel(selectedIds)}. Press START GAME.`
+          ? `Default packs selected: ${webglGameplayPackSelectionLabel(selectedIds)}. Press START NEW GAME.`
           : webglGameplayPackLobbyStatusMessage(selectedIds),
         selection.mode
       );
+      webglUpdateAutosaveStatus();
       return selection;
     }
 
@@ -724,6 +880,14 @@
       const nodes = webglGameplayPackSelectorNodes();
       const packIds = webglSelectedGameplayPackIdsFromControls(webglProjectState.project);
       const saved = webglStoreGameplayPackSelection(packIds);
+      const autosave = webglStoreAutosave({
+        source: "start-new-game",
+        checkpointId: "new-game-start",
+        checkpointLabel: "New Game Start",
+        enabledPackIds: saved.enabledPackIds || packIds
+      });
+      webglUpdateAutosaveStatus(autosave, {justSaved: true});
+      webglShowAutosaveToast(webglAutosaveStatusMessage(autosave, {justSaved: true}));
       webglProjectState.gameStarted = true;
       webglSetGameplayPackLobbyVisible(false);
       if (nodes.start) nodes.start.disabled = true;
@@ -740,7 +904,7 @@
         const message = error instanceof Error ? error.message : String(error || "game start failed");
         webglProjectState.gameStarted = false;
         webglSetGameplayPackLobbyVisible(true);
-        webglSetGameplayPackSelectorStatus(`START GAME failed: ${message}`, "error");
+        webglSetGameplayPackSelectorStatus(`START NEW GAME failed: ${message}`, "error");
         if (nodes.start) nodes.start.disabled = false;
       }
       return saved;
@@ -2173,7 +2337,7 @@
       }
       if (!webglProjectState.gameStarted) {
         webglProjectState.pendingSceneId = String(sceneId || "");
-        if (glStatus) glStatus.textContent = "Gameplay pack lobby ready — choose packs and press START GAME";
+        if (glStatus) glStatus.textContent = "Gameplay pack lobby ready — choose packs and press START NEW GAME";
         try {
           await loadWebglProject(webglProjectState.projectId || "webgl-demo");
         } catch {
@@ -2234,7 +2398,7 @@
         if (!webglProjectState.gameStarted) {
           webglProjectState.pendingSceneId = String(scene?.id || webglProjectState.pendingSceneId || "");
           syncWebglGameplayPackSelector(webglProjectState.project);
-          if (glStatus) glStatus.textContent = "Gameplay pack lobby ready — press START GAME to launch";
+          if (glStatus) glStatus.textContent = "Gameplay pack lobby ready — press START NEW GAME to launch";
           return;
         }
         renderWebglSceneCandidate({
@@ -2288,7 +2452,7 @@
       if (currentApp !== "webgl") return;
       if (!webglProjectState.gameStarted) {
         syncWebglGameplayPackSelector(webglProjectState.project);
-        if (glStatus) glStatus.textContent = "Gameplay pack lobby ready — press START GAME to launch";
+        if (glStatus) glStatus.textContent = "Gameplay pack lobby ready — press START NEW GAME to launch";
         return;
       }
       renderWebglSceneCandidate(webglStoredSceneCandidate() || bestKnownWebglScene());

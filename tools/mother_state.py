@@ -26,6 +26,7 @@ from tools.mother.common.private_state import (
     install_verified_private_state,
     prepare_private_state_bootstrap,
     read_private_state,
+    reseal_private_state_reference,
 )
 
 
@@ -224,6 +225,35 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reseal(args: argparse.Namespace) -> int:
+    operation = _operation("reseal", operation_id=args.operation_id)
+    result = reseal_private_state_reference(
+        _paths(Path(args.runtime_state_root)),
+        updated_at=args.updated_at or _utc_now(),
+        updated_by_action_id=operation.operation_id,
+        write=args.write,
+        operation=operation,
+    )
+    print("recovery manifest/reference verification: passed")
+    print(f"private-state reseal required: {'yes' if result.required else 'no'}")
+    print(
+        "identity canonicalization required: "
+        + ("yes" if result.canonicalization_required else "no")
+    )
+    print(f"generation preserved: {result.binding.generation}")
+    print(f"previous content_sha256: {result.previous_content_hash.digest}")
+    print(f"current content_sha256: {result.content_hash.digest}")
+    if result.written:
+        print("write performed: yes")
+        print("stable read: passed")
+    elif result.required:
+        print("write performed: no (dry-run)")
+    else:
+        print("write performed: no (already sealed)")
+    print("secrets printed: 0")
+    return 0
+
+
 def _cmd_show(args: argparse.Namespace) -> int:
     if not args.redacted:
         raise ValueError("show requires --redacted; unredacted display is forbidden")
@@ -249,6 +279,16 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     validate.add_argument("--operation-id")
     validate.set_defaults(handler=_cmd_validate)
+
+    reseal = subparsers.add_parser(
+        "reseal",
+        help="verify recovery material and reseal an explicitly edited local private identity",
+    )
+    reseal.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    reseal.add_argument("--updated-at", help="explicit UTC timestamp for reproducible reseal metadata")
+    reseal.add_argument("--operation-id")
+    reseal.add_argument("--write", action="store_true", help="accept the edited identity and rebuild its content reference")
+    reseal.set_defaults(handler=_cmd_reseal)
 
     show = subparsers.add_parser("show", help="display committed Mother private state with secrets removed")
     show.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))

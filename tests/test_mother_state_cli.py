@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from tools.mother.common.canonical import canonical_yaml
+from tools.mother.common.canonical import canonical_json, canonical_yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -186,3 +186,97 @@ def test_gitignore_excludes_complete_mother_tree_and_bootstrap_sources() -> None
     text = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "runtime/state/mother/" in text
     assert "runtime/state/*.private.yaml" in text
+
+
+def test_reseal_repairs_explicitly_edited_identity_without_changing_generation(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    runtime = tmp_path / "runtime" / "state"
+    installed = _run(
+        "bootstrap", "--source", str(source),
+        "--runtime-state-root", str(runtime),
+        "--updated-at", "2026-07-30T22:10:00Z",
+        "--operation-id", "mother-state-bootstrap-test", "--write",
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    root = runtime / "mother"
+    identity = root / "identity.private.yaml"
+    document = _document()
+    replacement_token = "1|REPLACEMENTSECRETTOKENVALUE654321"
+    document["networks"]["testnet"]["coolify"]["controllers"]["coolify-b"]["api_token"] = replacement_token  # type: ignore[index]
+    # Deliberately write non-canonical YAML to prove reseal normalizes the local edit.
+    import yaml
+    identity.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    rejected = _run("validate", "--runtime-state-root", str(runtime))
+    assert rejected.returncode != 0
+    assert "MOTHER_STATE_" in rejected.stderr
+
+    dry_run = _run(
+        "reseal",
+        "--runtime-state-root", str(runtime),
+        "--updated-at", "2026-08-14T20:00:00Z",
+        "--operation-id", "manual-token-reseal-test",
+    )
+    assert dry_run.returncode == 0, dry_run.stderr
+    assert "recovery manifest/reference verification: passed" in dry_run.stdout
+    assert "private-state reseal required: yes" in dry_run.stdout
+    assert "write performed: no (dry-run)" in dry_run.stdout
+    assert replacement_token not in dry_run.stdout
+    assert replacement_token not in dry_run.stderr
+
+    written = _run(
+        "reseal",
+        "--runtime-state-root", str(runtime),
+        "--updated-at", "2026-08-14T20:00:00Z",
+        "--operation-id", "manual-token-reseal-test",
+        "--write",
+    )
+    assert written.returncode == 0, written.stderr
+    assert "private-state reseal required: yes" in written.stdout
+    assert "generation preserved: 1" in written.stdout
+    assert "write performed: yes" in written.stdout
+    assert "stable read: passed" in written.stdout
+    assert replacement_token not in written.stdout
+    assert identity.read_bytes() == canonical_yaml(document)
+
+    validated = _run("validate", "--runtime-state-root", str(runtime))
+    assert validated.returncode == 0, validated.stderr
+    assert "private-state generation: 1" in validated.stdout
+
+    second = _run("reseal", "--runtime-state-root", str(runtime), "--write")
+    assert second.returncode == 0, second.stderr
+    assert "private-state reseal required: no" in second.stdout
+    assert "write performed: no (already sealed)" in second.stdout
+
+
+def test_reseal_refuses_recovery_manifest_mismatch(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    runtime = tmp_path / "runtime" / "state"
+    installed = _run(
+        "bootstrap", "--source", str(source),
+        "--runtime-state-root", str(runtime),
+        "--updated-at", "2026-07-30T22:10:00Z",
+        "--operation-id", "mother-state-bootstrap-test", "--write",
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    root = runtime / "mother"
+    identity = root / "identity.private.yaml"
+    document = _document()
+    document["networks"]["testnet"]["coolify"]["controllers"]["coolify-b"]["api_token"] = "1|REPLACEMENTSECRETTOKENVALUE654321"  # type: ignore[index]
+    identity.write_bytes(canonical_yaml(document))
+
+    manifest_path = root / "private-recovery" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["private_state_generation"] = 2
+    manifest_path.write_bytes(canonical_json(manifest))
+
+    refused = _run(
+        "reseal",
+        "--runtime-state-root", str(runtime),
+        "--operation-id", "manual-token-reseal-test",
+        "--write",
+    )
+    assert refused.returncode != 0
+    assert "MOTHER_STATE_PRIVATE_STATE_REFERENCE_MISMATCH" in refused.stderr

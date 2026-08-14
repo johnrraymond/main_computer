@@ -27,13 +27,16 @@ Mutation steps require both:
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -265,6 +268,9 @@ def capped_remove_do_max_wait_seconds(value: float) -> float:
 
 
 REMOVE_FINALIZE_EVIDENCE_KIND = "main_computer.mother.deployment_node_remove_finalize_evidence.v1"
+EMPTY_RECTIFICATION_EVIDENCE_KIND = "main_computer.mother.live_topology_empty_rectification_evidence.v1"
+EMPTY_RECTIFICATION_EVIDENCE_DIRECTORY = "deployment-live-topology-empty-rectification"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -296,6 +302,232 @@ def newest_matching_file(patterns: list[Path]) -> Path | None:
     return max(matches, key=lambda path: (path.stat().st_mtime, path.name))
 
 
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _stamp_for_filename(timestamp: str) -> str:
+    return re.sub(r"[^0-9A-Za-z]+", "", timestamp) or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+
+def _network(args: argparse.Namespace) -> str:
+    return str(getattr(args, "network", "mainnet"))
+
+
+def _canonical_sha256_document(document: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(document)).hexdigest()
+
+
+def _digest_without(document: dict[str, Any], key: str) -> str:
+    copy = dict(document)
+    copy.pop(key, None)
+    return _canonical_sha256_document(copy)
+
+
+def _chain_identity_from_document(document: dict[str, Any]) -> tuple[int, str] | None:
+    candidates: list[dict[str, Any]] = [document]
+    for key in (
+        "rollback_baseline_topology",
+        "final_topology",
+        "current_topology",
+        "post_add_topology",
+        "post_removal_topology",
+        "pre_removal_topology",
+        "topology",
+    ):
+        value = document.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+
+    for candidate in candidates:
+        chain_id = candidate.get("chain_id")
+        genesis_sha256 = candidate.get("genesis_sha256")
+        if (
+            isinstance(chain_id, int)
+            and chain_id > 0
+            and isinstance(genesis_sha256, str)
+            and _SHA256_RE.fullmatch(genesis_sha256.lower())
+        ):
+            return chain_id, genesis_sha256.lower()
+    return None
+
+
+def _current_private_state_binding(args: argparse.Namespace) -> dict[str, Any]:
+    from tools.mother.common.models import OperationIdentity
+    from tools.mother.common.paths import MotherPaths
+    from tools.mother.common.private_state import read_private_state
+
+    operation = OperationIdentity(
+        operation_id=f"mother-mutate-harness-auto-empty-baseline-{int(time.time())}",
+        request_id="mother-mutate-harness-auto-empty-baseline",
+        network=_network(args),
+        operation_kind="MOTHER-OP-EVIDENCE-EXPORT",
+    )
+    paths = MotherPaths(runtime_state_root=args.runtime_state_root)
+    private_state = read_private_state(paths.resolve_private_state_paths(), operation=operation)
+    return {
+        "generation": int(private_state.binding.generation),
+        "content_sha256": private_state.binding.content_hash.digest,
+        "manifest_sha256": private_state.binding.recovery_manifest_hash.digest,
+    }
+
+
+def _reset_backup_evidence_patterns(args: argparse.Namespace) -> list[Path]:
+    state_root = Path(args.runtime_state_root)
+    return [
+        state_root / "mother-local-audit-reset-backups" / "*" / "evidence" / "**" / "*.json",
+        state_root / "mother-full-reset-backups" / "*" / "evidence" / "**" / "*.json",
+        state_root / "mother" / "quarantine-old-evidence" / "**" / "*.json",
+    ]
+
+
+def _iter_matching_files(patterns: list[Path]) -> list[Path]:
+    matches: list[Path] = []
+    for pattern in patterns:
+        matches.extend(Path(value) for value in glob.glob(str(pattern), recursive=True))
+    return sorted((path for path in matches if path.is_file()), key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+
+
+def _find_reset_chain_identity_source(args: argparse.Namespace) -> tuple[Path, dict[str, Any], int, str] | None:
+    for path in _iter_matching_files(_reset_backup_evidence_patterns(args)):
+        try:
+            document = _read_json_object(path)
+        except SystemExit:
+            continue
+        identity = _chain_identity_from_document(document)
+        if identity is None:
+            continue
+        chain_id, genesis_sha256 = identity
+        return path, document, chain_id, genesis_sha256
+    return None
+
+
+def rebuild_pristine_empty_add_baseline(args: argparse.Namespace) -> Path | None:
+    """Seed a fresh empty add-node baseline after an operator local-audit reset.
+
+    This is deliberately narrow: it only applies to add-node when no canonical
+    finalized baseline is available.  The document is operator-declared empty,
+    carries forward only chain identity from quarantined/reset evidence, binds
+    to the current Mother private state, and is still checked by the normal
+    detect-topology step before any mutation boundary can run.
+    """
+
+    if args.operation != "add-node":
+        return None
+
+    source = _find_reset_chain_identity_source(args)
+    if source is None:
+        return None
+
+    source_path, source_document, chain_id, genesis_sha256 = source
+    source_sha = canonical_sha256_file(source_path)
+    binding = _current_private_state_binding(args)
+    completed_at = _utc_timestamp()
+    topology = {
+        "source": "operator-declared-pristine-empty-topology",
+        "chain_id": chain_id,
+        "genesis_sha256": genesis_sha256,
+        "nodes": [],
+        "services": {},
+        "validator_count": 0,
+        "validator_set": [],
+        "baseline_topology_used_as_live": False,
+    }
+    evidence: dict[str, Any] = {
+        "kind": EMPTY_RECTIFICATION_EVIDENCE_KIND,
+        "schema_version": 1,
+        "completed_at": completed_at,
+        "status": "pass",
+        "failure": None,
+        "mother_binding": binding,
+        "network": _network(args),
+        "mode": "operator-declared-pristine-start-over",
+        "chain_id": chain_id,
+        "genesis_sha256": genesis_sha256,
+        "source_previous_topology_evidence": {
+            "path": str(source_path),
+            "sha256": source_sha,
+            "kind": source_document.get("kind"),
+            "next_phase": source_document.get("next_phase"),
+        },
+        "staleness_detection": {
+            "expected_nodes": [],
+            "expected_services": {},
+            "missing_expected_nodes": [],
+            "present_expected_nodes": [],
+            "observed_live_node_hints": [],
+            "observed_service_hints": [],
+            "network_access_performed": False,
+        },
+        "current_topology": topology,
+        "final_topology": topology,
+        "topology_diff": {
+            "operation": "operator-declared-pristine-empty-baseline",
+            "added_nodes": [],
+            "removed_nodes": [],
+            "unchanged_nodes": [],
+            "pre_validator_count": 0,
+            "post_validator_count": 0,
+        },
+        "authority": {
+            "operator_declared_pristine_start_over": True,
+            "empty_topology_marked_by_evidence": True,
+            "live_mutation_authorized": False,
+            "live_mutation_performed": False,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "network_access_performed": False,
+            "live_mutation_performed": False,
+            "finalize_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_http_endpoint_created": False,
+            "public_endpoint_created": False,
+            "chain_mutation_performed": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "topology_rectified": True,
+            "current_topology_marked_by_evidence": True,
+            "empty_topology_marked_by_evidence": True,
+            "final_nodes": [],
+            "final_validator_count": 0,
+            "final_validator_set": [],
+            "actual_nodes": [],
+            "network_access_performed": False,
+            "live_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "next_phase": f"add-node-prep-{_network(args)}",
+        },
+        "live_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "next_phase": f"add-node-prep-{_network(args)}",
+    }
+    evidence["live_topology_empty_rectification_sha256"] = _digest_without(
+        evidence,
+        "live_topology_empty_rectification_sha256",
+    )
+    payload = canonical_json(evidence)
+    sha = hashlib.sha256(payload).hexdigest()
+    out_dir = Path(args.runtime_state_root) / "mother" / "evidence" / EMPTY_RECTIFICATION_EVIDENCE_DIRECTORY
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{_stamp_for_filename(completed_at)}-{sha[:16]}-operator-pristine-empty.json"
+    if not out_path.exists():
+        out_path.write_bytes(payload)
+    print("MOTHER_MUTATE_HARNESS_AUTO_BASELINE_REBUILT: operator-declared pristine empty topology")
+    print(f"source_chain_identity_evidence={source_path}")
+    return out_path
+
+
 def _remove_finalize_targets_node(document: dict[str, Any], node: str) -> bool:
     if document.get("kind") != REMOVE_FINALIZE_EVIDENCE_KIND:
         return False
@@ -307,6 +539,31 @@ def _remove_finalize_targets_node(document: dict[str, Any], node: str) -> bool:
         )
         if value not in (None, "")
     }
+
+
+def _remove_finalize_path_targets_node(path: Path, node: str) -> bool:
+    if path.parent.name != "deployment-node-remove-finalize":
+        return False
+    try:
+        if _remove_finalize_targets_node(_read_json_object(path), node):
+            return True
+    except SystemExit:
+        pass
+    return node in path.name
+
+
+def select_auto_baseline_file(args: argparse.Namespace, patterns: list[Path]) -> Path | None:
+    matches: list[Path] = []
+    for pattern in patterns:
+        matches.extend(path for path in pattern.parent.glob(pattern.name) if path.is_file())
+    if not matches:
+        return None
+    if args.operation == "add-node":
+        target_node = str(getattr(args, "node", ""))
+        matching_remove = [path for path in matches if _remove_finalize_path_targets_node(path, target_node)]
+        if matching_remove:
+            return max(matching_remove, key=lambda path: (path.stat().st_mtime, path.name))
+    return max(matches, key=lambda path: (path.stat().st_mtime, path.name))
 
 
 def _baseline_topology_nodes(document: dict[str, Any]) -> list[Any] | None:
@@ -355,6 +612,7 @@ def auto_baseline_patterns(args: argparse.Namespace) -> tuple[str, list[Path]]:
                 evidence_root / "deployment-node-add-post-admission-observe" / "*.json",
                 evidence_root / "deployment-node-remove-finalize" / "*.json",
                 evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
+                evidence_root / EMPTY_RECTIFICATION_EVIDENCE_DIRECTORY / "*.json",
             ],
         )
 
@@ -396,13 +654,23 @@ def resolve_baseline_arguments(args: argparse.Namespace) -> None:
         return
 
     reason, patterns = auto_baseline_patterns(args)
-    selected = newest_matching_file(patterns)
+    selected = select_auto_baseline_file(args, patterns)
     if selected is None:
-        rendered = "\n".join(f"  {pattern}" for pattern in patterns)
-        raise SystemExit(
-            "MOTHER_MUTATE_HARNESS_AUTO_BASELINE_NOT_FOUND: no baseline evidence was supplied "
-            f"and no {reason} was found.\nSearched:\n{rendered}"
-        )
+        rebuild_error: str | None = None
+        try:
+            selected = rebuild_pristine_empty_add_baseline(args)
+        except Exception as exc:  # pragma: no cover - exact private-state failures are environment-specific.
+            rebuild_error = f"{type(exc).__name__}: {exc}"
+        if selected is None:
+            rendered = "\n".join(f"  {pattern}" for pattern in patterns)
+            backup_rendered = "\n".join(f"  {pattern}" for pattern in _reset_backup_evidence_patterns(args))
+            details = f"\nSearched:\n{rendered}\nReset/backup evidence searched for pristine-empty rebuild:\n{backup_rendered}"
+            if rebuild_error:
+                details += f"\nPristine-empty rebuild failed: {rebuild_error}"
+            raise SystemExit(
+                "MOTHER_MUTATE_HARNESS_AUTO_BASELINE_NOT_FOUND: no baseline evidence was supplied "
+                f"and no {reason} was found.{details}"
+            )
 
     args.baseline_evidence = str(selected)
     args.baseline_evidence_sha256 = canonical_sha256_file(selected)
