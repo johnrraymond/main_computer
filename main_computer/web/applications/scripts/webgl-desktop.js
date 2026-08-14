@@ -225,6 +225,67 @@
       };
     }
 
+    function webglGameplayPackLobbyStageNode(create = false) {
+      const existing = typeof document.getElementById === "function"
+        ? document.getElementById("webgl-gameplay-pack-lobby-stage")
+        : document.querySelector?.("[data-webgl-gameplay-pack-lobby-stage]");
+      if (existing || !create) return existing || null;
+
+      const surface = (typeof document.getElementById === "function"
+        ? document.getElementById("webgl-demo")
+        : null) || document.querySelector?.("[data-scene-viewer]");
+      const host = surface?.parentElement || document.querySelector?.(".canvas-wrap") || null;
+      if (!host || typeof document.createElement !== "function") return null;
+
+      const stage = document.createElement("div");
+      stage.id = "webgl-gameplay-pack-lobby-stage";
+      stage.className = "webgl-gameplay-pack-lobby-stage";
+      stage.setAttribute?.("data-webgl-gameplay-pack-lobby-stage", "true");
+      stage.dataset = stage.dataset || {};
+      stage.dataset.visible = "false";
+      stage.hidden = true;
+
+      if (surface?.nextSibling && typeof host.insertBefore === "function") {
+        host.insertBefore(stage, surface.nextSibling);
+      } else if (typeof host.appendChild === "function") {
+        host.appendChild(stage);
+      }
+      return stage;
+    }
+
+    function webglMountGameplayPackLobbyInMainView() {
+      const panel = (typeof document.getElementById === "function"
+        ? document.getElementById("webgl-gameplay-pack-selector")
+        : null) || document.querySelector?.("[data-webgl-gameplay-pack-controls]");
+      if (!panel) return null;
+
+      const stage = webglGameplayPackLobbyStageNode(true);
+      if (!stage) return panel;
+      if (panel.parentElement !== stage && typeof stage.appendChild === "function") {
+        stage.appendChild(panel);
+      }
+      panel.dataset = panel.dataset || {};
+      panel.dataset.mainViewMounted = "true";
+      panel.setAttribute?.("data-webgl-gameplay-pack-main-view", "true");
+      stage.dataset = stage.dataset || {};
+      stage.dataset.hasGameplayPackLobby = "true";
+      return panel;
+    }
+
+    function webglSetGameplayPackLobbyVisible(visible) {
+      const stage = webglGameplayPackLobbyStageNode(false);
+      if (!stage) return;
+      const shouldShow = Boolean(visible);
+      stage.hidden = !shouldShow;
+      stage.dataset = stage.dataset || {};
+      stage.dataset.visible = String(shouldShow);
+      const panel = stage.querySelector?.("[data-webgl-gameplay-pack-controls]");
+      if (panel) {
+        panel.dataset = panel.dataset || {};
+        panel.dataset.lobbyVisible = String(shouldShow);
+      }
+    }
+
     function webglKnownGameplayPackDescriptor(pluginId) {
       const cleanPluginId = webglCanonicalGameplayPackId(pluginId);
       return WEBGL_BUILT_IN_JS_GAMEPLAY_PACKS.find((pack) => pack.pluginId === cleanPluginId) || null;
@@ -664,6 +725,7 @@
       const packIds = webglSelectedGameplayPackIdsFromControls(webglProjectState.project);
       const saved = webglStoreGameplayPackSelection(packIds);
       webglProjectState.gameStarted = true;
+      webglSetGameplayPackLobbyVisible(false);
       if (nodes.start) nodes.start.disabled = true;
       webglSetGameplayPackSelectorStatus(
         packIds.length
@@ -677,6 +739,7 @@
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error || "game start failed");
         webglProjectState.gameStarted = false;
+        webglSetGameplayPackLobbyVisible(true);
         webglSetGameplayPackSelectorStatus(`START GAME failed: ${message}`, "error");
         if (nodes.start) nodes.start.disabled = false;
       }
@@ -698,8 +761,12 @@
     }
 
     function bindWebglGameplayPackSelector() {
+      webglMountGameplayPackLobbyInMainView();
       const nodes = webglGameplayPackSelectorNodes();
       if (!nodes.panel || !nodes.start) return;
+      if (!webglProjectState.gameStarted) {
+        webglSetGameplayPackLobbyVisible(true);
+      }
       if (!nodes.start.dataset.webglGameplayPackBound) {
         nodes.start.dataset.webglGameplayPackBound = "true";
         nodes.start.addEventListener("click", startWebglGameFromGameplayPackLobby);
@@ -2097,6 +2164,7 @@
     async function initWebgl(sceneId) {
       bindWebglVfxControls();
       bindWebglGameplayPackSelector();
+      webglSetGameplayPackLobbyVisible(!webglProjectState.gameStarted);
       pauseGameSurface();
       const surface = gameSurface || canvas;
       if (!surface) {
@@ -2113,6 +2181,7 @@
         }
         return;
       }
+      webglSetGameplayPackLobbyVisible(false);
       running = true;
       const liveCandidate = webglEditorSceneCandidate(sceneId);
       if (liveCandidate) {

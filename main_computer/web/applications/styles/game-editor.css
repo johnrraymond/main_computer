@@ -205,6 +205,49 @@
 
 
 
+
+.webgl-gameplay-pack-lobby-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 18;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: clamp(16px, 5vh, 44px) clamp(12px, 4vw, 36px);
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 10%, rgba(250, 204, 21, 0.12), transparent 32%),
+    linear-gradient(180deg, rgba(2, 6, 23, 0.86), rgba(2, 6, 23, 0.38) 58%, transparent);
+  box-sizing: border-box;
+}
+
+.webgl-gameplay-pack-lobby-stage[hidden] {
+  display: none !important;
+}
+
+.webgl-gameplay-pack-lobby-stage > .webgl-gameplay-pack-selector,
+.webgl-gameplay-pack-lobby-stage > .webgl-gameplay-pack-controls {
+  pointer-events: auto;
+  width: min(720px, calc(100% - 8px));
+  max-height: min(74vh, 620px);
+  overflow: auto;
+  align-content: start;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.56);
+  backdrop-filter: blur(10px);
+}
+
+.webgl-gameplay-pack-selector[data-webgl-gameplay-pack-main-view="true"],
+.webgl-gameplay-pack-controls[data-webgl-gameplay-pack-main-view="true"] {
+  border-color: color-mix(in srgb, var(--gold, #facc15) 54%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #12051f 92%, transparent), color-mix(in srgb, #070014 94%, transparent));
+}
+
+.webgl-gameplay-pack-selector[data-webgl-gameplay-pack-main-view="true"] .webgl-gameplay-pack-checklist,
+.webgl-gameplay-pack-controls[data-webgl-gameplay-pack-main-view="true"] .webgl-gameplay-pack-checklist {
+  flex-basis: 100%;
+}
+
 .webgl-gameplay-pack-selector,
 .webgl-gameplay-pack-controls {
   display: flex;

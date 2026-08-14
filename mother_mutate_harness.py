@@ -37,6 +37,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tools.mother.common.canonical import canonical_json
+
 
 COMMON_STEPS = [
     "detect-topology",
@@ -260,12 +262,29 @@ def capped_remove_do_max_wait_seconds(value: float) -> float:
     return min(float(value), 300.0)
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+
+
+REMOVE_FINALIZE_EVIDENCE_KIND = "main_computer.mother.deployment_node_remove_finalize_evidence.v1"
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise SystemExit(f"cannot read baseline evidence: {path}") from exc
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"baseline evidence is not valid JSON: {path}") from exc
+    if not isinstance(document, dict):
+        raise SystemExit(f"baseline evidence is not a JSON object: {path}")
+    return document
+
+
+def canonical_sha256_file(path: Path) -> str:
+    """Return the canonical Mother JSON digest expected by prep loaders."""
+
+    return hashlib.sha256(canonical_json(_read_json_object(path))).hexdigest()
 
 
 def newest_matching_file(patterns: list[Path]) -> Path | None:
@@ -277,23 +296,65 @@ def newest_matching_file(patterns: list[Path]) -> Path | None:
     return max(matches, key=lambda path: (path.stat().st_mtime, path.name))
 
 
+def _remove_finalize_targets_node(document: dict[str, Any], node: str) -> bool:
+    if document.get("kind") != REMOVE_FINALIZE_EVIDENCE_KIND:
+        return False
+    return node in {
+        str(value)
+        for value in (
+            pick(document, "summary.target_node"),
+            pick(document, "final_topology.removed_node"),
+        )
+        if value not in (None, "")
+    }
+
+
+def _baseline_topology_nodes(document: dict[str, Any]) -> list[Any] | None:
+    for path in (
+        "final_topology.nodes",
+        "topology.nodes",
+        "current_topology.nodes",
+        "summary.final_nodes",
+        "summary.current_nodes",
+    ):
+        value = pick(document, path)
+        if isinstance(value, list):
+            return value
+    validator_count = pick(
+        document,
+        "final_topology.validator_count",
+        "topology.validator_count",
+        "current_topology.validator_count",
+        "summary.final_validator_count",
+        "summary.current_validator_count",
+    )
+    if validator_count == 0:
+        return []
+    return None
+
+
+def infer_internal_add_prep_mode(args: argparse.Namespace, baseline_path: Path) -> str | None:
+    if args.operation != "add-node":
+        return None
+    document = _read_json_object(baseline_path)
+    if _remove_finalize_targets_node(document, str(args.node)):
+        return "reactivate"
+    nodes = _baseline_topology_nodes(document)
+    if nodes == []:
+        return "initial"
+    return "soft"
+
+
 def auto_baseline_patterns(args: argparse.Namespace) -> tuple[str, list[Path]]:
     evidence_root = Path(args.runtime_state_root) / "mother" / "evidence"
-    node = str(args.node)
-
-    if args.operation == "add-node" and str(args.mode) == "reactivate":
-        return (
-            f"latest remove-finalize evidence for {node}",
-            [evidence_root / "deployment-node-remove-finalize" / f"*-{node}.json"],
-        )
 
     if args.operation == "add-node":
         return (
             "latest finalized topology evidence for add-node prep",
             [
                 evidence_root / "deployment-node-add-post-admission-observe" / "*.json",
-                evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
                 evidence_root / "deployment-node-remove-finalize" / "*.json",
+                evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
             ],
         )
 
@@ -308,25 +369,31 @@ def auto_baseline_patterns(args: argparse.Namespace) -> tuple[str, list[Path]]:
 
 
 def resolve_baseline_arguments(args: argparse.Namespace) -> None:
-    """Fill in --baseline-evidence/sha256 when the harness can do so safely.
+    """Fill in baseline evidence/sha256 and infer internal add prep mode.
 
-    Operator-supplied values always win.  If only a path is supplied, compute the
-    path's SHA-256 so the CLI remains reproducible without PowerShell glue.
+    The harness CLI exposes add-node/remove-node only.  If add-node is adding
+    back a previously removed logical node, the harness may still pass the
+    lower Mother prep implementation its internal identity-reuse mode.
     """
+
     baseline = getattr(args, "baseline_evidence", None)
     baseline_sha = getattr(args, "baseline_evidence_sha256", None)
 
-    if baseline and baseline_sha:
-        return
-    if baseline and not baseline_sha:
+    if baseline_sha and not baseline:
+        raise SystemExit("--baseline-evidence-sha256 was supplied without --baseline-evidence")
+
+    if baseline:
         path = Path(baseline)
         if not path.is_file():
             raise SystemExit(f"baseline evidence does not exist: {path}")
-        args.baseline_evidence_sha256 = sha256_file(path)
-        print(f"MOTHER_MUTATE_HARNESS_AUTO_BASELINE_SHA256: {args.baseline_evidence_sha256}")
+        args.baseline_evidence = str(path)
+        if not baseline_sha:
+            args.baseline_evidence_sha256 = canonical_sha256_file(path)
+            print(f"MOTHER_MUTATE_HARNESS_AUTO_BASELINE_SHA256: {args.baseline_evidence_sha256}")
+        if args.operation == "add-node":
+            args.internal_add_prep_mode = infer_internal_add_prep_mode(args, path)
+            print(f"MOTHER_MUTATE_HARNESS_INTERNAL_ADD_PREP_MODE: {args.internal_add_prep_mode}")
         return
-    if baseline_sha and not baseline:
-        raise SystemExit("--baseline-evidence-sha256 was supplied without --baseline-evidence")
 
     reason, patterns = auto_baseline_patterns(args)
     selected = newest_matching_file(patterns)
@@ -338,12 +405,13 @@ def resolve_baseline_arguments(args: argparse.Namespace) -> None:
         )
 
     args.baseline_evidence = str(selected)
-    args.baseline_evidence_sha256 = sha256_file(selected)
+    args.baseline_evidence_sha256 = canonical_sha256_file(selected)
     print(f"MOTHER_MUTATE_HARNESS_AUTO_BASELINE: {reason}")
     print(f"baseline_evidence={args.baseline_evidence}")
     print(f"baseline_evidence_sha256={args.baseline_evidence_sha256}")
-
-
+    if args.operation == "add-node":
+        args.internal_add_prep_mode = infer_internal_add_prep_mode(args, selected)
+        print(f"MOTHER_MUTATE_HARNESS_INTERNAL_ADD_PREP_MODE: {args.internal_add_prep_mode}")
 
 class Harness:
     def __init__(self, args: argparse.Namespace) -> None:
@@ -354,6 +422,7 @@ class Harness:
         self.state: dict[str, Any] = {
             "baseline_evidence": args.baseline_evidence,
             "baseline_evidence_sha256": args.baseline_evidence_sha256,
+            "internal_add_prep_mode": getattr(args, "internal_add_prep_mode", None),
             "prep_transaction": args.prep_transaction,
             "prep_transaction_sha256": args.prep_transaction_sha256,
             "do_release": args.do_release,
@@ -514,7 +583,7 @@ class Harness:
             "add-node", "prep", self.args.network,
             "--node", self.args.node,
             "--host", self.args.host,
-            "--mode", self.args.mode,
+            "--mode", require("internal_add_prep_mode", self.state["internal_add_prep_mode"]),
             "--runtime-state-root", self.args.runtime_state_root,
             "--baseline-evidence", self.state["baseline_evidence"],
             "--baseline-evidence-sha256", self.state["baseline_evidence_sha256"],
@@ -1149,12 +1218,11 @@ class Harness:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", nargs="?", default="add-node", choices=["add-node", "remove-node"])
+    parser.add_argument("operation", choices=["add-node", "remove-node"])
     parser.add_argument("--runtime-state-root", required=True)
     parser.add_argument("--network", default="mainnet")
     parser.add_argument("--node", default="mainneta-super1")
     parser.add_argument("--host", default="coolify-a")
-    parser.add_argument("--mode", default="reactivate")
     parser.add_argument("--remove-mode", default="soft", choices=["soft"])
 
     parser.add_argument("--baseline-evidence")

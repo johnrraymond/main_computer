@@ -15,6 +15,8 @@ OPENING_PACK = ROOT / "game_projects" / "webgl-demo" / "gameplay_packs" / "openi
 MAIN_SHIP_PACK = ROOT / "game_projects" / "webgl-demo" / "gameplay_packs" / "main_ship_bay_boarders" / "pack.js"
 EXPERIMENTAL_PACK = ROOT / "game_projects" / "webgl-demo" / "gameplay_packs" / "experimental" / "large-random-shuttle-boarder" / "pack.js"
 APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
+WEBGL_APP_HTML = ROOT / "main_computer" / "web" / "applications" / "apps" / "webgl.html"
+GAME_EDITOR_CSS = ROOT / "main_computer" / "web" / "applications" / "styles" / "game-editor.css"
 
 
 class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
@@ -50,6 +52,20 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
         self.assertIn("pack.opening-shuttle.elite-boarders", html)
         self.assertIn("pack.main-ship.bay-boarders", html)
         self.assertIn("START GAME", html)
+
+    def test_lobby_mounts_into_main_scene_view_before_start(self) -> None:
+        app_html = WEBGL_APP_HTML.read_text(encoding="utf-8")
+        desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")
+        css = GAME_EDITOR_CSS.read_text(encoding="utf-8")
+
+        self.assertIn('id="webgl-demo"', app_html)
+        self.assertIn("webglMountGameplayPackLobbyInMainView", desktop)
+        self.assertIn("webglSetGameplayPackLobbyVisible(!webglProjectState.gameStarted)", desktop)
+        self.assertIn("webglSetGameplayPackLobbyVisible(false)", desktop)
+        self.assertIn("webgl-gameplay-pack-lobby-stage", desktop)
+        self.assertIn(".webgl-gameplay-pack-lobby-stage", css)
+        self.assertIn('setAttribute?.("data-webgl-gameplay-pack-main-view", "true")', desktop)
+        self.assertIn("START GAME failed", desktop)
 
     def test_default_enabled_packs_are_selected_without_saved_local_state(self) -> None:
         result = self.run_node(
