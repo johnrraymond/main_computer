@@ -461,6 +461,54 @@ class SmokeGenerateGameplayPackWithLocalAiTests(unittest.TestCase):
         self.assertNotIn("Runtime excerpt for the current pack API", plan_prompt)
         self.assertNotIn("function setObjective", plan_prompt)
 
+    def test_additive_only_prompt_rejects_global_hostile_multiplier_plan(self) -> None:
+        bad_plan = textwrap.dedent(
+            """
+            BEGIN pack_plan.json
+            {
+              "schema": "game.gameplayPackGenerationPlan.v1",
+              "kind": "gameplay-pack-generation-plan",
+              "project": "webgl-demo",
+              "scenario": {
+                "id": "opening-shuttle-ambush",
+                "kind": "encounter"
+              },
+              "packId": "pack.experimental.bad-additive-plan",
+              "title": "Bad Additive Plan",
+              "summary": "Spawn one large boarder.",
+              "steps": [
+                {
+                  "id": "step-1",
+                  "event": "onStart",
+                  "summary": "Spawn a boarder but also change all hostiles.",
+                  "commands": ["setHostileHealthMultiplier", "spawnWave", "showHudMessage"]
+                }
+              ]
+            }
+            END pack_plan.json
+            """
+        ).strip()
+
+        result, _ = self.run_script(
+            "--scenario",
+            "opening-shuttle-ambush",
+            "--slug",
+            "bad-additive-plan",
+            "--prompt",
+            "At the start, spawn one large hostile boarder. Additive only.",
+            "--auto-approve-plan",
+            "--overwrite",
+            plan_response_text=bad_plan,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertIn("setHostileHealthMultiplier", "\n".join(payload["validation"]["errors"]))
+        self.assertIn("additive only", "\n".join(payload["validation"]["errors"]))
+        self.assertFalse((Path(payload["outputDir"]) / "pack.js").exists())
+
     def test_from_plan_generates_pack_files(self) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix="gameplay-pack-smoke-from-plan-"))
         plan_path = self.write_plan_file(temp_dir)

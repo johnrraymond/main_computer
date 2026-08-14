@@ -27,6 +27,7 @@ Mutation steps require both:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -257,6 +258,91 @@ def short_summary(step: str, obj: dict[str, Any]) -> dict[str, Any]:
 def capped_remove_do_max_wait_seconds(value: float) -> float:
     """Mother remove-node do currently accepts at most 300 seconds."""
     return min(float(value), 300.0)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def newest_matching_file(patterns: list[Path]) -> Path | None:
+    matches: list[Path] = []
+    for pattern in patterns:
+        matches.extend(path for path in pattern.parent.glob(pattern.name) if path.is_file())
+    if not matches:
+        return None
+    return max(matches, key=lambda path: (path.stat().st_mtime, path.name))
+
+
+def auto_baseline_patterns(args: argparse.Namespace) -> tuple[str, list[Path]]:
+    evidence_root = Path(args.runtime_state_root) / "mother" / "evidence"
+    node = str(args.node)
+
+    if args.operation == "add-node" and str(args.mode) == "reactivate":
+        return (
+            f"latest remove-finalize evidence for {node}",
+            [evidence_root / "deployment-node-remove-finalize" / f"*-{node}.json"],
+        )
+
+    if args.operation == "add-node":
+        return (
+            "latest finalized topology evidence for add-node prep",
+            [
+                evidence_root / "deployment-node-add-post-admission-observe" / "*.json",
+                evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
+                evidence_root / "deployment-node-remove-finalize" / "*.json",
+            ],
+        )
+
+    return (
+        "latest finalized topology evidence for remove-node prep",
+        [
+            evidence_root / "deployment-node-add-post-admission-observe" / "*.json",
+            evidence_root / "deployment-node-remove-finalize" / "*.json",
+            evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
+        ],
+    )
+
+
+def resolve_baseline_arguments(args: argparse.Namespace) -> None:
+    """Fill in --baseline-evidence/sha256 when the harness can do so safely.
+
+    Operator-supplied values always win.  If only a path is supplied, compute the
+    path's SHA-256 so the CLI remains reproducible without PowerShell glue.
+    """
+    baseline = getattr(args, "baseline_evidence", None)
+    baseline_sha = getattr(args, "baseline_evidence_sha256", None)
+
+    if baseline and baseline_sha:
+        return
+    if baseline and not baseline_sha:
+        path = Path(baseline)
+        if not path.is_file():
+            raise SystemExit(f"baseline evidence does not exist: {path}")
+        args.baseline_evidence_sha256 = sha256_file(path)
+        print(f"MOTHER_MUTATE_HARNESS_AUTO_BASELINE_SHA256: {args.baseline_evidence_sha256}")
+        return
+    if baseline_sha and not baseline:
+        raise SystemExit("--baseline-evidence-sha256 was supplied without --baseline-evidence")
+
+    reason, patterns = auto_baseline_patterns(args)
+    selected = newest_matching_file(patterns)
+    if selected is None:
+        rendered = "\n".join(f"  {pattern}" for pattern in patterns)
+        raise SystemExit(
+            "MOTHER_MUTATE_HARNESS_AUTO_BASELINE_NOT_FOUND: no baseline evidence was supplied "
+            f"and no {reason} was found.\nSearched:\n{rendered}"
+        )
+
+    args.baseline_evidence = str(selected)
+    args.baseline_evidence_sha256 = sha256_file(selected)
+    print(f"MOTHER_MUTATE_HARNESS_AUTO_BASELINE: {reason}")
+    print(f"baseline_evidence={args.baseline_evidence}")
+    print(f"baseline_evidence_sha256={args.baseline_evidence_sha256}")
+
 
 
 class Harness:
@@ -1132,6 +1218,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    resolve_baseline_arguments(args)
 
     if args.execute_mutations and not (args.yes_i_know_this_mutates_target_host or args.yes_i_know_this_mutates_coolify_a):
         raise SystemExit("mutation execution requires --yes-i-know-this-mutates-target-host")

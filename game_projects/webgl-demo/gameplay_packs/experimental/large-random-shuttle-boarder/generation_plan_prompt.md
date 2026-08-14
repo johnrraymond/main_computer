@@ -42,6 +42,7 @@ HARD TARGET:
 - Use exactly the scenario id "opening-shuttle-ambush".
 - Do not create a new scenario id.
 - The generated behavior must be additive to the existing scenario.
+- If the user intent says "additive only", do not include setHostileHealthMultiplier unless the user explicitly asks to change all existing hostiles.
 
 CURRENTLY ALLOWED EVENTS:
 [

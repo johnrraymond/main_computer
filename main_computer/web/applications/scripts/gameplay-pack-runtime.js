@@ -287,12 +287,20 @@
 
   function normalizeGameplayPackActorCommand(value) {
     const raw = objectValue(value);
-    return {
+    const actor = {
       archetype: stringValue(raw.archetype || raw.actorArchetypeId),
       count: integerValue(raw.count, 1, 1, 64),
       displayName: stringValue(raw.displayName),
       healthMultiplier: numberValue(raw.healthMultiplier, 1, 0.1, 10)
     };
+    if (
+      Object.prototype.hasOwnProperty.call(raw, "scale")
+      || Object.prototype.hasOwnProperty.call(raw, "visualScale")
+      || Object.prototype.hasOwnProperty.call(raw, "sizeMultiplier")
+    ) {
+      actor.scale = numberValue(raw.scale || raw.visualScale || raw.sizeMultiplier, 1, 0.25, 4);
+    }
+    return actor;
   }
 
   function normalizeGameplayPackWaveCommand(value) {

@@ -34,7 +34,7 @@ MUST NOT omit an action merely because its command name remains to be selected.
 For the current `tools/mother_deploy.py` deployment lane, use
 `mother-deploy-command-runbook.md` as the operator command-call contract. That
 runbook records the stable-ish command families, argument shapes, artifact
-variables, release/claim handling rules, golden-path test-plan components,
+variables, release/claim handling rules, lifecycle-validation components,
 current phase checkpoint, and monitor commands that an operator/assistant
 session should use when deciding which script call comes next.
 
@@ -787,7 +787,7 @@ authority.
 | Add the first node to an unborn network | `add-node --mode initial` |
 | Add a node to a healthy live QBFT network | `add-node --mode soft` |
 | Add a node during explicit offline maintenance | `add-node --mode hard` |
-| Restart a born network whose finalized validator set is empty | `add-node --mode reactivate` |
+| Add back a previously removed logical node when identity reuse is intended | `add-node` with the current identity-reuse/add-back mode |
 | Remove a node while keeping at least one validator | `remove-node --mode soft / hard` |
 | Deliberately remove the final validator | `remove-node ... --allow-zero-validators` |
 | Repair only a missing/damaged Coolify service | `restore-service` |
@@ -805,7 +805,12 @@ authority.
 | Undo an unfinished operation before commit | `rollback` |
 | Complete a post-commit interrupted finalization | Retry the exact `finalize` |
 
-## 16. Canonical examples
+## 16. Lifecycle examples
+
+The names below are illustrative only. They are not required fixture names,
+required host names, or a required acceptance sequence. Lifecycle correctness is
+proved by evidence invariants after each operation, not by replaying this exact
+set of examples.
 
 ### 16.1 First node
 
@@ -856,7 +861,11 @@ mother remove-node do mainnet
 mother remove-node finalize mainnet
 ```
 
-### 16.5 Reactivate a born zero-validator network
+### 16.5 Add back a known logical node
+
+Some repository versions still spell the identity-reuse add mode as
+`--mode reactivate`. Operators should treat this as an `add-node` that reuses a
+known logical identity, not as a separate lifecycle operation.
 
 ```text
 mother add-node prep mainnet \
@@ -887,56 +896,31 @@ mother <kind> finalize mainnet --operation-id <id>
 This advances the exact already-committed finalization head. It does not create
 a new topology decision.
 
-### 16.8 Canonical three-super-node lifecycle acceptance test
+### 16.8 Multi-node lifecycle smoke example
 
-This is the canonical deployment test plan. Each node name represents one
-complete super-node containing Hub, local RPC, Besu, QBFT validator duties,
-guards, and durable state.
+A multi-node smoke run MAY exercise the lifecycle with any valid node and host
+names:
 
-| Stage | Command target | Expected active topology |
-| --- | --- | --- |
-| `T1` | add `mainneta-super1` on `coolify-a` | `A1` |
-| `T2` | add `mainnetc-super1` on `coolify-c` | `A1`, `C1` |
-| `T3` | add `mainnetc-super2` on `coolify-c` | `A1`, `C1`, `C2` |
-| `T4` | remove `mainnetc-super2` | `A1`, `C1` |
-| `T5` | remove `mainneta-super1` | `C1` |
-| `T6` | reactivate `mainnetc-super2` and verify `mainnetc-super1` | `C1`, `C2` |
+1. add one requested node;
+2. add another requested node;
+3. add another requested node on an existing or new host;
+4. remove one active node;
+5. remove another active node when quorum and zero-validator policy allow it;
+6. add back a previously removed logical node when identity reuse is intended.
 
-```text
-mother diagnose mainnet
+This sequence is illustrative. It is not a canonical acceptance test, and
+correctness MUST NOT depend on sample node names, host names, aliases, or
+operation order.
 
-mother add-node prep mainnet --node mainneta-super1 --host coolify-a --mode initial
-mother add-node do mainnet
-mother add-node finalize mainnet
+After every `finalize`, acceptance is based on evidence invariants:
 
-mother add-node prep mainnet --node mainnetc-super1 --host coolify-c --mode soft
-mother add-node do mainnet
-mother add-node finalize mainnet
-
-mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode soft
-mother add-node do mainnet
-mother add-node finalize mainnet
-
-mother remove-node prep mainnet --node mainnetc-super2 --mode soft
-mother remove-node do mainnet
-mother remove-node finalize mainnet
-
-mother remove-node prep mainnet --node mainneta-super1 --mode soft
-mother remove-node do mainnet
-mother remove-node finalize mainnet
-
-mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode reactivate
-mother add-node do mainnet
-mother add-node finalize mainnet
-```
-
-At `T6`, “re-add the two on C” means restore the intended pair `C1` and `C2`.
-`C1` is already active, so Mother verifies and reconciles it while reactivating
-`C2`. The operation MUST NOT create a third C node or replace either existing
-logical identity. After every `finalize`, the operator verifies the exact active
-node set, exact QBFT validator set, complete super-node component set, local Hub
-RPC routing, advancing blocks, fresh chain head, and absence of standalone
-network-node services.
+- accepted baseline evidence;
+- exact requested topology transition;
+- validator set matches finalized topology;
+- target service is present after add and absent after remove;
+- survivor services remain healthy/current;
+- Hub/RPC eligibility reflects only the finalized live topology;
+- no hardcoded fixture branch or stage-number behavior is used.
 
 
 ## 17. Operator safety rules

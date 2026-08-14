@@ -9,17 +9,15 @@ BEGIN pack_plan.json
     "apiCall": "pack.encounter(\"opening-shuttle-ambush\", ...)"
   },
   "packId": "pack.experimental.large-random-shuttle-boarder",
-  "title": "Large Elite Boarder Ambush",
-  "summary": "Spawns an enhanced, high-health hostile unit at the start of the encounter.",
+  "title": "Large Shuttle Boarder",
+  "summary": "Spawns a single large, high-health hostile at the start of the encounter.",
   "steps": [
     {
       "id": "step-1",
       "event": "onStart",
-      "summary": "Increase health multiplier and spawn the elite boarder wave.",
+      "summary": "Spawn a single powerful hostile at a shuttle location.",
       "commands": [
-        "setHostileHealthMultiplier",
-        "spawnWave",
-        "showHudMessage"
+        "spawnWave"
       ]
     }
   ]

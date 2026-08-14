@@ -329,9 +329,15 @@ def normalize_pack_plan(
     return normalized
 
 
-def validate_pack_plan(plan: dict[str, Any], *, scenario: ScenarioSurface) -> tuple[list[str], list[str]]:
+def validate_pack_plan(
+    plan: dict[str, Any],
+    *,
+    scenario: ScenarioSurface,
+    prompt: str = "",
+) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+    prompt_lower = str(prompt or "").lower()
 
     if plan.get("kind") != "gameplay-pack-generation-plan":
         errors.append("pack plan kind must be gameplay-pack-generation-plan")
@@ -365,6 +371,15 @@ def validate_pack_plan(plan: dict[str, Any], *, scenario: ScenarioSurface) -> tu
             if command not in allowed_commands:
                 errors.append(
                     f"pack plan step {index} command {command!r} must be one of {sorted(allowed_commands)}"
+                )
+            if (
+                command == "setHostileHealthMultiplier"
+                and "additive only" in prompt_lower
+                and not re.search(r"\b(all|every|existing|global|globally)\b.*\b(hostile|hostiles|boarder|boarders|enemy|enemies)\b", prompt_lower)
+            ):
+                errors.append(
+                    "pack plan includes setHostileHealthMultiplier even though the prompt says additive only; "
+                    "use actor-local healthMultiplier inside spawnWave instead"
                 )
     return errors, warnings
 
@@ -535,7 +550,8 @@ HARD TARGET:
 - Required API shape: {scenario.api_call}
 - Use exactly the scenario id "{scenario.scenario_id}".
 - Do not create a new scenario id.
-- The generated behavior must be additive to the existing scenario.{cutscene_rule}
+- The generated behavior must be additive to the existing scenario.
+- If the user intent says "additive only", do not include setHostileHealthMultiplier unless the user explicitly asks to change all existing hostiles.{cutscene_rule}
 
 CURRENTLY ALLOWED EVENTS:
 {json.dumps(list(scenario.known_events), indent=2)}
@@ -641,7 +657,9 @@ HARD TARGET:
 - Use exactly the scenario id "{scenario.scenario_id}".
 - Do not create a new scenario id.
 - Do not modify base scenario files.
-- The generated pack must be additive to the existing scenario.{cutscene_guidance}
+- The generated pack must be additive to the existing scenario.
+- If the approved plan does not list setHostileHealthMultiplier, do not call setHostileHealthMultiplier.
+- Use actor-local fields inside spawnWave actors, such as healthMultiplier and scale, for a single tougher/larger spawned actor.{cutscene_guidance}
 
 CURRENTLY ALLOWED EVENTS:
 {json.dumps(list(scenario.known_events), indent=2)}
@@ -1200,7 +1218,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             slug=slug_base,
             prompt=user_prompt,
         )
-        plan_errors, plan_warnings = validate_pack_plan(plan, scenario=scenario)
+        plan_errors, plan_warnings = validate_pack_plan(plan, scenario=scenario, prompt=user_prompt)
         write_json(output_dir / "plan.json", plan)
     except Exception as exc:
         plan = {}

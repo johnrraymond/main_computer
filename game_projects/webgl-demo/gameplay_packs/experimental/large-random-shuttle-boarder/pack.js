@@ -1,38 +1,29 @@
-const PACK_ID = "pack.experimental.large-random-shuttle-boarder";
-const SHUTTLE_LOCATIONS = ["location.shuttle.port", "location.shuttle.starboard", "location.shuttle.aft"];
-const HEALTH_MULTIPLIER = 2;
-
 export default defineGameplayPack({
-  id: PACK_ID,
-  title: "Large Elite Boarder Ambush",
+  id: "pack.experimental.large-random-shuttle-boarder",
+  title: "Large Shuttle Boarder",
   version: "0.1.0",
 
   setup(pack) {
+    const SHUTTLE_LOCATIONS = ["shuttle-vent-left", "shuttle-vent-right", "shuttle-corridor-mid"];
+
     pack.encounter("opening-shuttle-ambush", (encounter) => {
       encounter.onStart(() => {
-        // Increase health multiplier for the incoming elite unit
-        encounter.setHostileHealthMultiplier(HEALTH_MULTIPLIER);
-
-        // Select a random valid shuttle location
         const targetLocation = SHUTTLE_LOCATIONS[Math.floor(Math.random() * SHUTTLE_LOCATIONS.length)];
 
-        // Spawn one large, tough boarder in the selected location
         encounter.spawnWave({
-          id: "large-elite-boarder-wave",
+          id: "large-boarder-spawn",
           actors: [
             {
               archetype: "shuttle-raider",
               count: 1,
-              displayName: "Heavy Boarder",
-              healthMultiplier: HEALTH_MULTIPLIER,
-              scale: 2.0
+              healthMultiplier: 2.0,
+              scale: 2.0,
+              displayName: "Large Boarder"
             }
           ],
           location: targetLocation,
-          hudMessage: "Warning: Large hostile signature detected near shuttle!"
+          hudMessage: "A massive presence detected in the shuttle vents!"
         });
-
-        encounter.showHudMessage("Alert: An Elite Boarder has breached the perimeter!");
       });
     });
   }

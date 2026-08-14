@@ -336,6 +336,128 @@ def _write_t3_baseline_for_remove_prep(paths, private_state, *, node_order=None)
 
 
 
+def _write_add_post_admission_topology_baseline_for_remove_prep(paths, private_state) -> tuple[Path, str]:
+    nodes = ["mainneta-super1", "mainnetc-super1", "mainnetc-super2"]
+    validators = [
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+    ]
+    services = {
+        "mainneta-super1": {
+            "node": "mainneta-super1",
+            "controller_id": "coolify-a",
+            "service_uuid": "ypp612nb7zx4kiye8di8ciby",
+            "service_status": None,
+            "readiness_source": "service-observation",
+            "last_observed_at": "2026-08-13T22:33:11Z",
+        },
+        "mainnetc-super1": {
+            "node": "mainnetc-super1",
+            "controller_id": "coolify-c",
+            "service_uuid": "v6gtfm7q4kem6j6qedwxrrav",
+            "service_status": None,
+            "readiness_source": "service-observation",
+            "last_observed_at": "2026-08-13T22:33:11Z",
+        },
+        "mainnetc-super2": {
+            "node": "mainnetc-super2",
+            "controller_id": "coolify-c",
+            "service_uuid": "r3j1n5ovq56ih5i969wn8t3s",
+            "service_status": None,
+            "readiness_source": "service-observation",
+            "last_observed_at": "2026-08-13T22:33:11Z",
+        },
+    }
+    topology = {
+        "source": "add-node-post-admission-observe",
+        "chain_id": 42424240,
+        "genesis_sha256": "364df17daf2dfa428bd486e9c4e8b46c70317f65b23b55aaf78f749e15de6c92",
+        "nodes": nodes,
+        "validator_set": validators,
+        "validator_count": len(validators),
+        "services": services,
+        "validator_admission_previously_performed": True,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+    }
+    evidence = {
+        "kind": "main_computer.mother.add_node_post_admission_topology_evidence.v1",
+        "schema_version": 1,
+        "status": "pass",
+        "failure": None,
+        "network": "mainnet",
+        "mode": "soft",
+        "completed_at": "2026-08-13T22:33:11Z",
+        "observed_at": "2026-08-13T22:33:11Z",
+        "mother_binding": _binding_for_test(private_state),
+        "next_phase": "add-node-prep-mainnet",
+        "live_mutation_performed": False,
+        "chain_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "current_topology": topology,
+        "final_topology": topology,
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "finalize_mutation_performed": False,
+            "live_mutation_performed": False,
+            "chain_mutation_performed": False,
+            "manual_ssh_required": False,
+            "network_access_performed": True,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "public_endpoint_created": False,
+            "public_http_endpoint_created": False,
+            "routing_or_topology_published": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "secrets_in_output": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "current_topology_marked_by_evidence": True,
+            "final_nodes": nodes,
+            "final_validator_count": len(validators),
+            "final_validator_set": validators,
+            "live_mutation_performed": False,
+            "network_access_performed": True,
+            "next_phase": "add-node-prep-mainnet",
+            "public_endpoint_created": False,
+            "routing_or_topology_published": False,
+            "source_validator_admission_clean": True,
+            "topology_current": True,
+            "topology_stale": False,
+        },
+        "service_observations": [
+            {
+                "node": node,
+                "controller_id": service["controller_id"],
+                "service_uuid": service["service_uuid"],
+                "service_status": "running:healthy",
+                "status": 200,
+                "present": True,
+                "absent": False,
+                "validator_address": validators[index],
+                "observed_at": "2026-08-13T22:33:11Z",
+            }
+            for index, (node, service) in enumerate(services.items())
+        ],
+    }
+    payload = canonical_json(evidence)
+    path = (
+        paths.root
+        / "evidence"
+        / "deployment-node-add-post-admission-observe"
+        / "20260813T223311Z-mainnet-topology-finalize-from-mainnetc-super2-test.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path, __import__("hashlib").sha256(payload).hexdigest()
+
+
 def _write_validator_admission_baseline_for_remove_prep(paths, private_state) -> tuple[Path, str]:
     evidence = {
         "kind": "main_computer.mother.deployment_node_add_validator_admission_evidence.v1",
@@ -477,6 +599,57 @@ def test_remove_node_prep_accepts_clean_validator_admission_baseline(tmp_path: P
         "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
         "0x9b809f05f8d68da17e697cd6ab040d4320494611",
     ]
+
+
+def test_remove_node_prep_accepts_add_post_admission_topology_baseline(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_add_post_admission_topology_baseline_for_remove_prep(paths, private_state)
+
+    transaction = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node=A_NODE,
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-13T22:35:00Z",
+        now=__import__("datetime").datetime(2026, 8, 13, 22, 35, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert transaction["source_baseline_evidence"]["kind"] == "main_computer.mother.add_node_post_admission_topology_evidence.v1"
+    assert transaction["target"] == {
+        "node": A_NODE,
+        "validator_address": "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        "controller_id": "coolify-a",
+        "service_uuid": "ypp612nb7zx4kiye8di8ciby",
+    }
+    assert transaction["survivors"] == [
+        {
+            "node": "mainnetc-super1",
+            "validator_address": "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "controller_id": "coolify-c",
+            "service_uuid": "v6gtfm7q4kem6j6qedwxrrav",
+        },
+        {
+            "node": "mainnetc-super2",
+            "validator_address": "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+            "controller_id": "coolify-c",
+            "service_uuid": "r3j1n5ovq56ih5i969wn8t3s",
+        },
+    ]
+    assert transaction["current_topology"]["nodes"] == [A_NODE, "mainnetc-super1", "mainnetc-super2"]
+    assert transaction["post_removal_topology"]["nodes"] == ["mainnetc-super1", "mainnetc-super2"]
+
+    prep_path, prep_sha = write_node_remove_prep_transaction(paths, transaction, operation=_operation("write-post-admission-remove-prep"))
+    verified = verify_node_remove_prep_transaction(
+        paths,
+        private_state,
+        prep_path,
+        now=__import__("datetime").datetime(2026, 8, 13, 22, 36, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert verified["source_baseline_evidence_sha256"] == baseline_sha
+    assert prep_sha
 
 
 def _write_failed_post_admission_health_baseline_for_remove_prep(paths, private_state) -> tuple[Path, str]:

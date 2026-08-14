@@ -236,42 +236,32 @@ endpoint unavailability. It MUST NOT be treated as cleanup failure evidence.
 Cleanup failure evidence requires runtime log text or proof data from the
 cleanup/proof path itself.
 
-## Canonical three-super-node lifecycle acceptance plan
+## Topology-derived lifecycle acceptance rule
 
-This is the required end-to-end Mother acceptance scenario for super-node
-deployment, removal, and reactivation. It tests only complete super-nodes.
-Internal Hub, RPC, Besu, QBFT, guard, health, recovery, and durable-state
-components move together as one governed node lifecycle.
+Mother lifecycle validation is topology-derived, not fixture-derived. A valid
+lifecycle test MAY use sample node names, host names, or aliases as illustrative
+data, but correctness is proven by evidence invariants instead of by replaying a
+named historical sequence.
 
-The canonical logical nodes are:
+A lifecycle acceptance run MUST prove the generic operation being exercised:
 
-| Alias | Mother node name | Coolify host | Complete role |
-| --- | --- | --- | --- |
-| `A1` | `mainneta-super1` | `coolify-a` | Hub + local RPC + Besu + QBFT validator + guards and durable state |
-| `C1` | `mainnetc-super1` | `coolify-c` | Hub + local RPC + Besu + QBFT validator + guards and durable state |
-| `C2` | `mainnetc-super2` | `coolify-c` | Hub + local RPC + Besu + QBFT validator + guards and durable state |
+- `add-node` creates or restores exactly the requested logical node and admits
+  its complete super-node components into the finalized topology.
+- `remove-node` removes exactly the requested logical node from live validator,
+  service, Hub, and RPC eligibility topology while preserving required survivor
+  health.
+- Finalized topology evidence matches the live validator/service topology after
+  each operation and becomes the baseline for the next operation.
+- No behavior depends on hardcoded node aliases, host aliases, stage numbers, or
+  historical fixture order.
 
-The acceptance sequence and exact committed validator topology are:
-
-| Stage | Operation | Expected active super-nodes |
-| --- | --- | --- |
-| `T0` | Start from an unborn network | none |
-| `T1` | Add `A1` first | `A1` |
-| `T2` | Add `C1` second | `A1`, `C1` |
-| `T3` | Add `C2` third | `A1`, `C1`, `C2` |
-| `T4` | Remove one node from C by removing `C2` | `A1`, `C1` |
-| `T5` | Remove the node from A by removing `A1` | `C1` |
-| `T6` | Restore the intended two-node C topology by reactivating `C2` and reconciling `C1` | `C1`, `C2` |
-
-The phrase “re-add the two on C” means that the final committed topology contains
-the original two logical C nodes, `C1` and `C2`. `C1` remains active after `T5`,
-so `T6` verifies and reconciles `C1` and reactivates the removed `C2`. Mother
-MUST NOT create `mainnetc-super3`, duplicate `C1`, or replace either C identity
-with a new logical node to satisfy this stage.
+Fixture names are examples only. They MUST NOT define the required proof
+sequence, required final topology, implementation branch, release artifact, or
+acceptance criteria for new lifecycle work.
 
 ### Operator-directed testing path and deprecated fixture rule
 
-The golden test path is operator-directed add/delete evidence. The operator,
+The lifecycle validation path is operator-directed add/delete evidence. The operator,
 not a fixture story, names the network, node, host, lifecycle mode, baseline or
 identity evidence, release artifact, and verification checkpoint for the current
 operation. Historical fixtures may still name sample nodes, but they do not
@@ -321,11 +311,14 @@ remain the correct next phases only for a join-existing-validator-set operation
 with at least one explicitly selected live current validator.
 
 Tests MAY contain fixture names such as `mainneta-super1` and `mainnetc-super2`
-only as data. The operator-directed path for the current run is whatever the
-operator explicitly supplies and verifies through evidence. Tests MUST also
-include at least one alternate topology fixture for generic lifecycle behavior
-before an add/remove implementation is accepted. A test that passes only because
-code recognizes old fixture node names is not evidence of Mother correctness.
+only as data. Fixture node names MUST NOT appear in normative lifecycle
+acceptance criteria, MUST NOT define the required proof sequence, and MUST NOT be
+used as phase names, branch names, artifact names, or topology expectations.
+The operator-directed path for the current run is whatever the operator
+explicitly supplies and verifies through evidence. Tests MUST also include at
+least one alternate topology fixture for generic lifecycle behavior before an
+add/remove implementation is accepted. A test that passes only because code
+recognizes old fixture node names is not evidence of Mother correctness.
 
 ### Mother twiddle, diagnostic, rollback, and retry rule
 
@@ -395,10 +388,10 @@ A live failure response follows this order:
 ```
 
 For operator-directed add/delete testing, this twiddle/rollback rule is part of
-the golden path. The golden path is not a fixed historical topology and is not a
-series of ad-hoc mutations over a broken deployment. It is the operator-selected
-add/delete sequence, supported by evidence, read-only diagnostics, rollback, and
-fresh releases.
+operator-selected lifecycle validation. That validation is not a fixed
+historical topology and is not a series of ad-hoc mutations over a broken
+deployment. It is the operator-selected add/delete sequence, supported by
+evidence, read-only diagnostics, rollback, and fresh releases.
 
 
 ### Deprecated legacy steady-state soak/testing path
@@ -406,7 +399,7 @@ fresh releases.
 The current mainnet steady-state soak runner is a deprecated legacy testing
 path and MUST NOT be used as definitive evidence. It was written around an older
 A/C-specific steady-state continuation shape instead of a topology-derived
-operator-directed evidence contract. The active golden test path is the
+operator-directed evidence contract. The active validation path is the
 operator-directed add/delete evidence sequence selected for the live operation.
 
 For now, operators MUST treat the legacy soak runner as out of scope after
@@ -432,38 +425,28 @@ and lock state MUST NOT live only inside the container filesystem.
 A representative operator flow is:
 
 ```text
-# T0: Observe the unborn network. Read-only only.
-mother diagnose mainnet
+# Observe the current topology. Read-only only.
+mother diagnose <network>
 
-# T1: Add A1 first.
-mother add-node prep mainnet --node mainneta-super1 --host coolify-a --mode initial
-mother add-node do mainnet
-mother add-node finalize mainnet
+# Add the first requested node to an unborn network.
+mother add-node prep <network> --node <logical-node> --host <target-host> --mode initial
+mother add-node do <network>
+mother add-node finalize <network>
 
-# T2: Add the first C super-node.
-mother add-node prep mainnet --node mainnetc-super1 --host coolify-c --mode soft
-mother add-node do mainnet
-mother add-node finalize mainnet
+# Add another requested node to an existing validator set.
+mother add-node prep <network> --node <new-logical-node> --host <target-host> --mode soft
+mother add-node do <network>
+mother add-node finalize <network>
 
-# T3: Add the second C super-node on the same host.
-mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode soft
-mother add-node do mainnet
-mother add-node finalize mainnet
+# Remove a requested active node while preserving the survivor topology.
+mother remove-node prep <network> --node <logical-node> --mode soft
+mother remove-node do <network>
+mother remove-node finalize <network>
 
-# T4: Remove one C super-node. C1 remains.
-mother remove-node prep mainnet --node mainnetc-super2 --mode soft
-mother remove-node do mainnet
-mother remove-node finalize mainnet
-
-# T5: Remove A1. C1 becomes the sole active super-node.
-mother remove-node prep mainnet --node mainneta-super1 --mode soft
-mother remove-node do mainnet
-mother remove-node finalize mainnet
-
-# T6: Re-establish the two-node C target by reactivating C2.
-mother add-node prep mainnet --node mainnetc-super2 --host coolify-c --mode reactivate
-mother add-node do mainnet
-mother add-node finalize mainnet
+# Add back a previously removed logical node when identity reuse is intended.
+mother add-node prep <network> --node <removed-logical-node> --host <target-host> --mode <identity-reuse/add-back mode>
+mother add-node do <network>
+mother add-node finalize <network>
 ```
 
 Current local CLI note: until the `mother` shell facade is installed, the
@@ -569,7 +552,9 @@ inventing a new lifecycle path.
 
 Every finalized stage MUST prove all of the following:
 
-1. The active-node set and QBFT validator set exactly match the table.
+1. The active logical-node set and QBFT validator set match the requested
+   post-operation topology derived from accepted baseline evidence and the
+   current operation.
 2. Every active logical node is a complete super-node; no Hub-only, RPC-only,
    Besu-only, validator-only, or non-validator network node exists.
 3. Each active Hub uses the RPC surface co-located with its own super-node.
@@ -577,12 +562,13 @@ Every finalized stage MUST prove all of the following:
    validator is active.
 5. A removed node is absent from Hub topology, RPC routing eligibility, QBFT
    membership, and active Coolify service topology as prepared.
-6. Removing `A1` does not by itself de-enroll `coolify-a` from Mother replica
-   authority; host retirement remains a separate operation.
-7. Reactivated `C2` reuses its reserved logical name, validator identity,
-   genesis lineage, persistent chain state contract, and rollback lineage.
-8. The final committed state contains exactly `C1` and `C2` on `coolify-c`, with
-   `A1` absent and no third C node.
+6. Removing a node does not by itself de-enroll that node's host from Mother
+   replica authority; host retirement remains a separate operation.
+7. Adding back a previously removed logical node reuses the intended durable
+   logical identity only when that identity reuse is explicitly selected and
+   proven by evidence.
+8. Finalized evidence names the exact current live topology and becomes the
+   baseline for the next operation.
 
 Before either `add-node prep` or `remove-node prep` can succeed, every current
 replica MUST pass the authoritative journal/state barrier and every prospective

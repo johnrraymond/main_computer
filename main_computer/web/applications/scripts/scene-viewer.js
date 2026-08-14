@@ -8939,6 +8939,8 @@
           const alienEyes = builder.color("#fef2f2", true);
           const healthBack = builder.color("#111827");
           const healthFill = builder.color("#f87171", true);
+          const packScaleRing = builder.color("#fef2f2", true);
+          const packScaleAccent = builder.color("#fb7185", true);
           this.syncVelaSubsurfaceScene?.();
           if (this.isVelaSubsurfaceSceneActive?.()) {
             this.appendVelaSubsurfaceCaveGeometry(builder, nowMs);
@@ -8981,30 +8983,46 @@
           this.aliens.forEach((alien) => {
             const [x, y, z] = alien.position;
             const transporting = alien.state === "transporting";
+            const visualScale = this.openingShuttleNormalizePackActorVisualScale?.(alien.visualScale || alien.scale || 1) || 1;
             if (transporting) {
-              builder.beam([x, -1.35, z], [x, 2.55, z], 0.12, transportGlow);
-              builder.beam([x - 0.23, -1.25, z], [x - 0.23, 2.25, z], 0.035, transportGlow);
-              builder.beam([x + 0.23, -1.25, z], [x + 0.23, 2.25, z], 0.035, transportGlow);
-              builder.beam([x, -1.25, z - 0.23], [x, 2.25, z - 0.23], 0.035, transportGlow);
-              builder.beam([x, -1.25, z + 0.23], [x, 2.25, z + 0.23], 0.035, transportGlow);
+              const beamRadius = 0.12 * visualScale;
+              const beamOffset = 0.23 * visualScale;
+              builder.beam([x, -1.35, z], [x, 2.55 * visualScale, z], beamRadius, transportGlow);
+              builder.beam([x - beamOffset, -1.25, z], [x - beamOffset, 2.25 * visualScale, z], 0.035 * visualScale, transportGlow);
+              builder.beam([x + beamOffset, -1.25, z], [x + beamOffset, 2.25 * visualScale, z], 0.035 * visualScale, transportGlow);
+              builder.beam([x, -1.25, z - beamOffset], [x, 2.25 * visualScale, z - beamOffset], 0.035 * visualScale, transportGlow);
+              builder.beam([x, -1.25, z + beamOffset], [x, 2.25 * visualScale, z + beamOffset], 0.035 * visualScale, transportGlow);
             }
 
             const bodyColor = nowMs < alien.hitFlashUntilMs ? alienHit : alienBody;
-            builder.ellipsoid([x, y + 0.22, z], [0.34, 0.72, 0.3], 10, 6, bodyColor);
-            builder.ellipsoid([x, y + 1.0, z], [0.32, 0.34, 0.3], 10, 6, bodyColor);
-            builder.box([x - 0.46, y + 0.2, z - 0.16], [x + 0.46, y + 0.42, z + 0.16], alienArmor);
-            builder.box([x - 0.2, y - 0.72, z - 0.15], [x - 0.05, y + 0.05, z + 0.15], alienArmor);
-            builder.box([x + 0.05, y - 0.72, z - 0.15], [x + 0.2, y + 0.05, z + 0.15], alienArmor);
-            builder.box([x - 0.18, y + 1.03, z - 0.32], [x - 0.05, y + 1.12, z - 0.27], alienEyes);
-            builder.box([x + 0.05, y + 1.03, z - 0.32], [x + 0.18, y + 1.12, z - 0.27], alienEyes);
+            builder.ellipsoid([x, y + 0.22 * visualScale, z], [0.34 * visualScale, 0.72 * visualScale, 0.3 * visualScale], 10, 6, bodyColor);
+            builder.ellipsoid([x, y + 1.0 * visualScale, z], [0.32 * visualScale, 0.34 * visualScale, 0.3 * visualScale], 10, 6, bodyColor);
+            builder.box([x - 0.46 * visualScale, y + 0.2 * visualScale, z - 0.16 * visualScale], [x + 0.46 * visualScale, y + 0.42 * visualScale, z + 0.16 * visualScale], alienArmor);
+            builder.box([x - 0.2 * visualScale, y - 0.72 * visualScale, z - 0.15 * visualScale], [x - 0.05 * visualScale, y + 0.05 * visualScale, z + 0.15 * visualScale], alienArmor);
+            builder.box([x + 0.05 * visualScale, y - 0.72 * visualScale, z - 0.15 * visualScale], [x + 0.2 * visualScale, y + 0.05 * visualScale, z + 0.15 * visualScale], alienArmor);
+            builder.box([x - 0.18 * visualScale, y + 1.03 * visualScale, z - 0.32 * visualScale], [x - 0.05 * visualScale, y + 1.12 * visualScale, z - 0.27 * visualScale], alienEyes);
+            builder.box([x + 0.05 * visualScale, y + 1.03 * visualScale, z - 0.32 * visualScale], [x + 0.18 * visualScale, y + 1.12 * visualScale, z - 0.27 * visualScale], alienEyes);
+
+            const packScaleCue = visualScale > 1.05 && (alien.eliteWave === true || alien.sourcePluginId || alien.sourceEncounterId || alien.sourceScenarioId);
+            if (packScaleCue) {
+              const cueRadius = Math.max(0.72, 0.54 * visualScale);
+              const cueThickness = Math.max(0.035, 0.026 * visualScale);
+              const cueY = y - 0.78 * visualScale;
+              builder.box([x - cueRadius, cueY, z - cueRadius], [x + cueRadius, cueY + cueThickness, z - cueRadius + cueThickness], packScaleRing);
+              builder.box([x - cueRadius, cueY, z + cueRadius - cueThickness], [x + cueRadius, cueY + cueThickness, z + cueRadius], packScaleRing);
+              builder.box([x - cueRadius, cueY, z - cueRadius], [x - cueRadius + cueThickness, cueY + cueThickness, z + cueRadius], packScaleRing);
+              builder.box([x + cueRadius - cueThickness, cueY, z - cueRadius], [x + cueRadius, cueY + cueThickness, z + cueRadius], packScaleRing);
+              builder.box([x - 0.58 * visualScale, y + 0.55 * visualScale, z - 0.34 * visualScale], [x + 0.58 * visualScale, y + 0.72 * visualScale, z - 0.27 * visualScale], packScaleAccent);
+              builder.beam([x, y + 1.22 * visualScale, z], [x, y + 1.92 * visualScale, z], 0.018 * visualScale, packScaleRing);
+            }
 
             if (!transporting) {
               const ratio = Math.max(0, Math.min(1, alien.health / alien.maxHealth));
-              builder.box([x - 0.46, y + 1.48, z - 0.06], [x + 0.46, y + 1.56, z + 0.06], healthBack);
+              builder.box([x - 0.46 * visualScale, y + 1.48 * visualScale, z - 0.06 * visualScale], [x + 0.46 * visualScale, y + 1.56 * visualScale, z + 0.06 * visualScale], healthBack);
               if (ratio > 0) {
                 builder.box(
-                  [x - 0.44, y + 1.49, z - 0.065],
-                  [x - 0.44 + 0.88 * ratio, y + 1.55, z + 0.065],
+                  [x - 0.44 * visualScale, y + 1.49 * visualScale, z - 0.065 * visualScale],
+                  [x - 0.44 * visualScale + 0.88 * visualScale * ratio, y + 1.55 * visualScale, z + 0.065 * visualScale],
                   healthFill
                 );
               }
@@ -9037,7 +9055,9 @@
             objectiveLabel: "",
             packLabel: "None — base game",
             alert: "",
-            healthMultiplier: 1
+            healthMultiplier: 1,
+            visualScale: 1,
+            location: ""
           };
         }
 
@@ -9559,7 +9579,11 @@
               objectiveLabel: eliteWaveConfig.objectiveLabel,
               packLabel: eliteWaveConfig.packLabel,
               alert: eliteWaveConfig.alert,
-              healthMultiplier: eliteWaveConfig.healthMultiplier
+              healthMultiplier: eliteWaveConfig.healthMultiplier,
+              visualScale: Number.isFinite(Number(eliteWaveConfig.visualScale))
+                ? Math.max(0.25, Math.min(4, Number(eliteWaveConfig.visualScale)))
+                : 1,
+              location: String(eliteWaveConfig.location || "")
             },
             jsGameplayPack: {
               installed: false,
@@ -9710,6 +9734,13 @@
           return id;
         }
 
+        openingShuttleNormalizePackActorVisualScale(value) {
+          const scale = Number(value);
+          return Number.isFinite(scale)
+            ? Math.max(0.25, Math.min(4, scale))
+            : 1;
+        }
+
         openingShuttleRememberGameplayPackCommand(command, applied, nowMs = this.combatClockMs) {
           const runtime = this.openingShuttleEncounter || this.createOpeningShuttleEncounterRuntimeState(nowMs);
           this.openingShuttleEncounter = runtime;
@@ -9786,6 +9817,9 @@
             const count = Math.max(1, Math.min(8, Number(actor.count || 1)));
             const displayName = String(actor.displayName || "Elite Boarding Leader");
             const multiplier = Math.max(1, Math.min(6, Number(actor.healthMultiplier || runtime.eliteWave.healthMultiplier || 1)));
+            const visualScale = this.openingShuttleNormalizePackActorVisualScale(
+              actor.scale || actor.visualScale || actor.sizeMultiplier || 1
+            );
             runtime.eliteWave.enabled = true;
             runtime.eliteWave.requested = true;
             runtime.eliteWave.requiredExtraHostiles = count;
@@ -9795,6 +9829,8 @@
             runtime.eliteWave.objectiveLabel = runtime.eliteWave.objectiveLabel || `Defeat the ${displayName}`;
             runtime.eliteWave.alert = String(payload.hudMessage || `${displayName} inbound.`);
             runtime.eliteWave.healthMultiplier = Number.isFinite(multiplier) ? multiplier : runtime.eliteWave.healthMultiplier;
+            runtime.eliteWave.visualScale = visualScale;
+            runtime.eliteWave.location = String(payload.location || payload.locationId || "");
             runtime.eliteWave.source = String(rawCommand.sourcePackId || runtime.jsGameplayPack.packId || "gameplay-pack-js");
             runtime.eliteWave.pluginId = String(rawCommand.sourcePackId || runtime.jsGameplayPack.packId || "");
             runtime.eliteWave.scenarioId = String(runtime.eliteWave.scenarioId || "pack-js.opening-shuttle");
@@ -10021,6 +10057,8 @@
           const displayName = String(eliteWave.displayName || "Elite Boarding Leader");
           const count = Math.max(0, Number(eliteWave.requiredExtraHostiles || 0));
           const healthMultiplier = this.openingShuttleHostileHealthMultiplier(runtime);
+          const visualScale = this.openingShuttleNormalizePackActorVisualScale?.(eliteWave.visualScale || 1) || 1;
+          const scaleText = visualScale > 1.05 ? ` • PACK SCALE ${visualScale.toFixed(1).replace(/\.0$/, "")}X` : "";
           const state = eliteWave.cleared === true
             ? "cleared"
             : eliteWave.spawned === true
@@ -10028,7 +10066,7 @@
               : eliteWave.requested === true
                 ? "inbound"
                 : "armed";
-          return `Gameplay Pack: ${packLabel} • ${displayName} ${state} • +${count} hostile • ${healthMultiplier}x hostile health`;
+          return `Gameplay Pack: ${packLabel} • ${displayName} ${state} • +${count} hostile • ${healthMultiplier}x hostile health${scaleText}`;
         }
 
         openingShuttleEncounterSnapshot() {
@@ -10265,12 +10303,26 @@
           return event;
         }
 
-        openingShuttleEliteSpawnPoint() {
+        openingShuttleEliteSpawnPoint(locationId = "") {
           const points = Array.isArray(this.combat?.transport?.spawnPoints)
             ? this.combat.transport.spawnPoints
             : [];
+          const location = String(locationId || "").toLowerCase();
+          let preferredId = "";
+          if (/starboard|right/.test(location)) {
+            preferredId = "starboard-aft-pad";
+          } else if (/port|left/.test(location)) {
+            preferredId = "port-aft-pad";
+          } else if (/forward|fore|front/.test(location)) {
+            preferredId = "forward-pad";
+          } else if (/aft|rear|back/.test(location)) {
+            preferredId = "port-aft-pad";
+          } else if (/mid|middle|center|central/.test(location)) {
+            preferredId = "center-pad";
+          }
           return (
-            points.find((point) => point.id === "center-pad")
+            (preferredId ? points.find((point) => point.id === preferredId) : null)
+            || points.find((point) => point.id === "center-pad")
             || points.find((point) => point.id === "forward-pad")
             || points[0]
             || {id: "center-pad", position: [0, -0.55, 0.3]}
@@ -10285,10 +10337,11 @@
           this.openingShuttleEncounter = runtime;
           if (runtime.eliteWave.enabled !== true) return false;
           if (!runtime.eliteWave.requested || runtime.eliteWave.spawned) return false;
-          const point = this.openingShuttleEliteSpawnPoint();
+          const point = this.openingShuttleEliteSpawnPoint(runtime.eliteWave.location);
           this.transportSequence += 1;
           const eliteDisplayName = String(runtime.eliteWave.displayName || "Elite Boarding Leader");
           const eliteHealthMultiplier = this.openingShuttleHostileHealthMultiplier(runtime);
+          const eliteVisualScale = this.openingShuttleNormalizePackActorVisualScale(runtime.eliteWave.visualScale || 1);
           const eliteHealth = Math.max(
             this.combat.alien.maxHealth,
             this.openingShuttleHostileMaxHealth(runtime)
@@ -10310,6 +10363,7 @@
             displayName: eliteDisplayName,
             label: eliteDisplayName,
             actorArchetypeId: runtime.eliteWave.actorArchetypeId,
+            visualScale: eliteVisualScale,
             sourcePluginId: runtime.eliteWave.pluginId || "",
             sourceScenarioId: runtime.eliteWave.scenarioId || "",
             sourceEncounterId: runtime.eliteWave.encounterId || ""
@@ -10325,6 +10379,8 @@
               displayName: alien.displayName,
               maxHealth: alien.maxHealth,
               healthMultiplier: eliteHealthMultiplier,
+              visualScale: eliteVisualScale,
+              location: runtime.eliteWave.location || "",
               transportSequence: this.transportSequence,
               sourcePluginId: alien.sourcePluginId,
               sourceScenarioId: alien.sourceScenarioId,
@@ -10737,10 +10793,11 @@
 
           this.aliens.forEach((alien) => {
             if (alien.state !== "active") return;
+            const visualScale = this.openingShuttleNormalizePackActorVisualScale?.(alien.visualScale || alien.scale || 1) || 1;
             considerTarget(
               alien,
-              [alien.position[0], alien.position[1] + 0.78, alien.position[2]],
-              Math.max(0.68, this.combat.alien.radius * 1.7),
+              [alien.position[0], alien.position[1] + 0.78 * visualScale, alien.position[2]],
+              Math.max(0.68, this.combat.alien.radius * 1.7 * visualScale),
               "alien"
             );
           });
@@ -11958,6 +12015,7 @@
             packLine.dataset.packConfigured = String(encounter.eliteWave?.packConfigured === true);
             packLine.dataset.packPluginId = String(encounter.eliteWave?.pluginId || "");
             packLine.dataset.eliteDisplayName = String(encounter.eliteWave?.displayName || "");
+            packLine.dataset.packVisualScale = String(encounter.eliteWave?.visualScale || "");
             const authoringAlignment = combat.openingShuttleAuthoringAlignment || {};
             authoringLine.hidden = !authoringAlignment.alignmentStatus;
             if (authoringAlignment.alignmentStatus) {

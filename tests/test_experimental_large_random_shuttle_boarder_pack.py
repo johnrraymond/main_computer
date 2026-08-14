@@ -31,6 +31,7 @@ class ExperimentalLargeRandomShuttleBoarderPackTests(unittest.TestCase):
         self.assertIn("location,", source)
         self.assertIn('displayName: "Large Shuttle Boarder"', source)
         self.assertIn("healthMultiplier: 2.5", source)
+        self.assertIn("scale: 2.0", source)
         self.assertNotIn("setHostileHealthMultiplier", source)
         self.assertNotIn("getMetadata", source)
 
