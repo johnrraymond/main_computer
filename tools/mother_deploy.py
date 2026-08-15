@@ -160,6 +160,10 @@ from tools.mother.common.deployment_node_add_identity import (
     verify_node_add_identity_release,
     write_node_add_identity_release,
 )
+from tools.mother.common.deployment_node_identity_reservation import (
+    MotherDeploymentNodeIdentityReservationError,
+    reserve_add_node_identity,
+)
 from tools.mother.common.deployment_node_add_single_node_bootstrap import (
     MotherDeploymentNodeAddSingleNodeBootstrapError,
     adopt_node_add_single_node_bootstrap_live_proof,
@@ -541,6 +545,25 @@ def _parser() -> argparse.ArgumentParser:
     add_node_prep.add_argument("--operation-id")
     add_node_prep.add_argument("--created-at")
     add_node_prep.add_argument("--write-transaction", action="store_true")
+
+    add_node_reserve_identity = add_node_subparsers.add_parser(
+        "reserve-identity",
+        help="locally reserve a missing add-node validator identity in Mother private state",
+        allow_abbrev=False,
+    )
+    add_node_reserve_identity.add_argument("network", choices=["mainnet"])
+    add_node_reserve_identity.add_argument("--node", required=True, help="explicit node identity to reserve; never inferred")
+    add_node_reserve_identity.add_argument("--host", required=True, help="target Coolify controller/host for the reserved node")
+    add_node_reserve_identity.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    add_node_reserve_identity.add_argument("--operation-id")
+    add_node_reserve_identity.add_argument("--generated-at")
+    add_node_reserve_identity.add_argument("--topology-evidence", help="override the topology evidence to refresh; defaults to latest predecessor-bound finalized topology evidence")
+    add_node_reserve_identity.add_argument("--acknowledge-topology-evidence-sha256")
+    add_node_reserve_identity.add_argument("--topology-max-age-seconds", type=int, default=86400)
+    add_node_reserve_identity.add_argument("--timeout", type=float, default=30.0)
+    add_node_reserve_identity.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    add_node_reserve_identity.add_argument("--no-refresh-topology-evidence", action="store_true", help="only reserve identity; do not write a refreshed topology baseline")
+    add_node_reserve_identity.add_argument("--execute", action="store_true", help="install the verified private-state successor")
 
     add_node_do = add_node_subparsers.add_parser(
         "do",
@@ -6186,6 +6209,27 @@ def _cmd_verify_t3_post_admission_steady_state_evidence(args: argparse.Namespace
 
 
 
+def _cmd_add_node_reserve_identity(args: argparse.Namespace, private_state) -> int:
+    result = reserve_add_node_identity(
+        _paths(args),
+        private_state,
+        network=args.network,
+        node=args.node,
+        host=args.host,
+        execute=args.execute,
+        generated_at=args.generated_at,
+        operation=_operation("add-node-reserve-identity", args.network, args.operation_id),
+        refresh_topology_evidence=not args.no_refresh_topology_evidence,
+        topology_evidence_path=Path(args.topology_evidence) if args.topology_evidence else None,
+        acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
+        topology_max_age_seconds=args.topology_max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_add_node_prep(args: argparse.Namespace, private_state) -> int:
     transaction = build_node_add_prep_transaction(
         _paths(args),
@@ -6979,6 +7023,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         private_state = _load(args)
         if args.command == "add-node":
+            if args.add_node_phase == "reserve-identity":
+                return _cmd_add_node_reserve_identity(args, private_state)
             if args.add_node_phase == "prep":
                 return _cmd_add_node_prep(args, private_state)
             if args.add_node_phase == "do":
@@ -7345,6 +7391,7 @@ def main(argv: list[str] | None = None) -> int:
         MotherDeploymentNodeAddPrepError,
         MotherDeploymentNodeAddDoError,
         MotherDeploymentNodeAddIdentityError,
+        MotherDeploymentNodeIdentityReservationError,
         MotherDeploymentNodeAddSingleNodeBootstrapError,
         MotherDeploymentNodeAddReplicaSyncError,
         MotherDeploymentNodeAddValidatorAdmissionError,

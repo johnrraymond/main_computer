@@ -229,7 +229,7 @@ def _topology_service_record(node: str, record: Mapping[str, Any], *, source: st
     service_uuid = str(record.get("service_uuid") or record.get("created_service_uuid") or "")
     if not service_uuid:
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"{node} service UUID is missing")
-    return {
+    result = {
         "node": node,
         "controller_id": controller,
         "service_uuid": service_uuid,
@@ -237,6 +237,15 @@ def _topology_service_record(node: str, record: Mapping[str, Any], *, source: st
         "readiness_source": record.get("readiness_source") or source,
         "last_observed_at": record.get("last_observed_at") or record.get("observed_at") or completed_at,
     }
+    route = record.get("validator_route") if isinstance(record.get("validator_route"), Mapping) else None
+    if route is None and isinstance(record.get("p2p_route"), Mapping):
+        route = record.get("p2p_route")
+    if isinstance(route, Mapping):
+        result["validator_route"] = dict(route)
+    for key in ("vpn_ip", "p2p_port", "p2p_endpoint"):
+        if record.get(key) is not None:
+            result[key] = record.get(key)
+    return result
 
 
 def _observation_service_record(item: Mapping[str, Any], *, completed_at: Any) -> dict[str, Any] | None:
@@ -349,16 +358,26 @@ def _receipt_service_records_for_validator_admission(
     candidate_controller_id: str,
     candidate_service_uuid: str,
 ) -> dict[str, dict[str, Any]]:
-    services: dict[str, dict[str, Any]] = {
-        candidate_node: {
-            "node": candidate_node,
-            "controller_id": candidate_controller_id,
-            "service_uuid": candidate_service_uuid,
-            "service_status": None,
-            "readiness_source": "add-node-validator-admission-target",
-            "last_observed_at": document.get("completed_at"),
-        }
+    service_routes = document.get("service_routes")
+    if not isinstance(service_routes, Mapping):
+        service_routes = {}
+    candidate_route = service_routes.get(candidate_node) if isinstance(service_routes.get(candidate_node), Mapping) else None
+    if candidate_route is None and isinstance(document.get("candidate_validator_route"), Mapping):
+        candidate_route = document.get("candidate_validator_route")
+    candidate_service: dict[str, Any] = {
+        "node": candidate_node,
+        "controller_id": candidate_controller_id,
+        "service_uuid": candidate_service_uuid,
+        "service_status": None,
+        "readiness_source": "add-node-validator-admission-target",
+        "last_observed_at": document.get("completed_at"),
     }
+    if isinstance(candidate_route, Mapping):
+        candidate_service["validator_route"] = dict(candidate_route)
+        for key in ("vpn_ip", "p2p_port", "p2p_endpoint"):
+            if candidate_route.get(key) is not None:
+                candidate_service[key] = candidate_route.get(key)
+    services: dict[str, dict[str, Any]] = {candidate_node: candidate_service}
     for item in document.get("precondition_receipts") or []:
         if not isinstance(item, Mapping):
             continue
@@ -366,7 +385,7 @@ def _receipt_service_records_for_validator_admission(
         controller_id = item.get("controller_id")
         service_uuid = item.get("service_uuid")
         if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
-            services[node] = {
+            service_record = {
                 "node": node,
                 "controller_id": controller_id,
                 "service_uuid": service_uuid,
@@ -374,6 +393,13 @@ def _receipt_service_records_for_validator_admission(
                 "readiness_source": item.get("name") or "add-node-validator-admission-precondition",
                 "last_observed_at": document.get("completed_at"),
             }
+            route = service_routes.get(node) if isinstance(service_routes.get(node), Mapping) else None
+            if isinstance(route, Mapping):
+                service_record["validator_route"] = dict(route)
+                for key in ("vpn_ip", "p2p_port", "p2p_endpoint"):
+                    if route.get(key) is not None:
+                        service_record[key] = route.get(key)
+            services[node] = service_record
     for item in document.get("mutation_receipts") or []:
         if not isinstance(item, Mapping):
             continue
@@ -381,14 +407,24 @@ def _receipt_service_records_for_validator_admission(
         controller_id = item.get("controller_id")
         service_uuid = item.get("service_uuid")
         if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
-            services[node] = {
+            previous = services.get(node, {})
+            service_record = {
                 "node": node,
                 "controller_id": controller_id,
                 "service_uuid": service_uuid,
-                "service_status": services.get(node, {}).get("service_status"),
+                "service_status": previous.get("service_status"),
                 "readiness_source": item.get("mutation_id") or "add-node-validator-admission-mutation",
                 "last_observed_at": document.get("completed_at"),
             }
+            route = previous.get("validator_route") if isinstance(previous, Mapping) and isinstance(previous.get("validator_route"), Mapping) else None
+            if route is None:
+                route = service_routes.get(node) if isinstance(service_routes.get(node), Mapping) else None
+            if isinstance(route, Mapping):
+                service_record["validator_route"] = dict(route)
+                for key in ("vpn_ip", "p2p_port", "p2p_endpoint"):
+                    if route.get(key) is not None:
+                        service_record[key] = route.get(key)
+            services[node] = service_record
     for item in document.get("health_observations") or []:
         if not isinstance(item, Mapping):
             continue
@@ -503,6 +539,9 @@ def _topology_detection_document(document: Mapping[str, Any]) -> Mapping[str, An
             "service_uuid": candidate_service_uuid,
             "created_service_uuid": candidate_service_uuid,
             "validator_address": candidate_validator,
+            "validator_route": dict(document.get("candidate_validator_route")) if isinstance(document.get("candidate_validator_route"), Mapping) else {},
+            "p2p_port": document.get("candidate_p2p_port"),
+            "p2p_endpoint": document.get("candidate_p2p_endpoint"),
         },
         "current_topology": {
             "source": "deployment-node-add-validator-admission-evidence",
@@ -571,6 +610,143 @@ def _latest_known_target(document: Mapping[str, Any], nodes: list[str], validato
             "validator_address": validators[0],
         }
     return None
+
+
+def _guardian_service_name(voter: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9]+", "-", voter).strip("-").lower()
+    return f"mother-add-node-validator-admission-voter-{safe}"
+
+
+def _record_children(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    found: list[Mapping[str, Any]] = []
+    for key in ("children", "containers", "services", "applications", "resources"):
+        value = record.get(key)
+        if isinstance(value, list):
+            found.extend(item for item in value if isinstance(item, Mapping))
+        elif isinstance(value, Mapping):
+            found.extend(item for item in value.values() if isinstance(item, Mapping))
+    return found
+
+
+def _record_component_names(record: Mapping[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for key in ("name", "service", "service_name", "serviceName", "subName"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+    return names
+
+
+def _record_status(record: Mapping[str, Any]) -> str:
+    for key in ("status", "human_status", "state", "health"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "unknown"
+
+
+def _exact_component_status(record: Mapping[str, Any], *, names: Iterable[str]) -> str:
+    expected = {str(item) for item in names if str(item)}
+    stack = [record]
+    while stack:
+        item = stack.pop(0)
+        if _record_component_names(item) & expected:
+            return _record_status(item)
+        stack.extend(_record_children(item))
+    return "missing"
+
+
+def _validator_admission_guardian_bindings(source: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    candidate_node = _identifier(source.get("candidate_node"), "candidate node")
+    voter_nodes_raw = source.get("voter_nodes")
+    if not isinstance(voter_nodes_raw, list):
+        raise _fail("MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID", "validator-admission voter nodes are missing")
+    voter_nodes = [_identifier(item, "voter node") for item in voter_nodes_raw]
+    bindings: dict[str, dict[str, str]] = {
+        candidate_node: {
+            "controller_id": _identifier(source.get("target_host"), "target controller"),
+            "service_uuid": _identifier(source.get("created_service_uuid"), "target service UUID"),
+            "guardian_name": "mother-add-node-validator-activation-guardian",
+        }
+    }
+    for node in voter_nodes:
+        bindings[node] = {"guardian_name": _guardian_service_name(node)}
+
+    records: list[Mapping[str, Any]] = []
+    for key in ("mutation_receipts", "health_observations", "precondition_receipts"):
+        value = source.get(key)
+        if isinstance(value, list):
+            records.extend(item for item in value if isinstance(item, Mapping))
+
+    for record in records:
+        node = record.get("node")
+        if not isinstance(node, str) or node not in bindings:
+            continue
+        controller_id = record.get("controller_id")
+        service_uuid = record.get("service_uuid")
+        if isinstance(controller_id, str) and controller_id:
+            bindings[node].setdefault("controller_id", controller_id)
+        if isinstance(service_uuid, str) and service_uuid:
+            bindings[node].setdefault("service_uuid", service_uuid)
+
+    missing = [
+        node
+        for node, binding in bindings.items()
+        if not binding.get("controller_id") or not binding.get("service_uuid") or not binding.get("guardian_name")
+    ]
+    if missing:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID",
+            "validator-admission evidence lacks exact guardian service bindings for: " + ", ".join(sorted(missing)),
+        )
+    return bindings
+
+
+def _fresh_validator_admission_guardian_observations(
+    source: Mapping[str, Any],
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> tuple[list[dict[str, Any]], bool]:
+    observations: list[dict[str, Any]] = []
+    all_healthy = True
+    for node, binding in sorted(_validator_admission_guardian_bindings(source).items()):
+        controller_id = _identifier(binding["controller_id"], f"{node} guardian controller")
+        service_uuid = _identifier(binding["service_uuid"], f"{node} guardian service UUID")
+        guardian_name = _identifier(binding["guardian_name"], f"{node} guardian name")
+        controller = resolve_coolify_controller(private_state, network, controller_id)
+        endpoint = "/api/v1/services/" + urllib.parse.quote(service_uuid, safe="")
+        observation = get_coolify_json(
+            controller,
+            endpoint,
+            authenticated=True,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        payload = observation.payload if isinstance(observation.payload, Mapping) else {}
+        service_status = _record_status(payload)
+        guardian_status = _exact_component_status(payload, names=[guardian_name])
+        guardian_healthy = 200 <= observation.status < 300 and guardian_status == "running:healthy"
+        all_healthy = all_healthy and guardian_healthy
+        observations.append({
+            "node": node,
+            "controller_id": controller_id,
+            "service_uuid": service_uuid,
+            "endpoint": endpoint,
+            "status": observation.status,
+            "service_status": service_status,
+            "proof_guardian_name": guardian_name,
+            "proof_guardian_status": guardian_status,
+            "proof_guardian_healthy": guardian_healthy,
+            "response_sha256": observation.response_sha256,
+            "byte_length": observation.byte_length,
+            "observed_at": _timestamp(),
+        })
+    return observations, all_healthy
 
 
 def detect_topology_staleness(
@@ -1016,6 +1192,39 @@ def build_add_node_post_admission_topology_evidence(
             f"validator-admission evidence is not ready for {expected_next_phase}",
         )
 
+    from .deployment_node_add_validator_admission import (
+        MotherDeploymentNodeAddValidatorAdmissionError,
+        verify_node_add_validator_admission_evidence,
+    )
+
+    try:
+        admission_verification = verify_node_add_validator_admission_evidence(
+            paths,
+            private_state,
+            resolved,
+            max_age_seconds=max_age_seconds,
+            now=now,
+        )
+    except MotherDeploymentNodeAddValidatorAdmissionError as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID",
+            "source validator-admission evidence does not prove guardian-verified final validator set",
+        ) from exc
+
+    fresh_guardian_observations, fresh_guardians_healthy = _fresh_validator_admission_guardian_observations(
+        source,
+        private_state,
+        network=network,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if not fresh_guardians_healthy:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_UNCLEAN",
+            "fresh validator-admission guardian proof is not healthy/current on every expected validator",
+        )
+
     detection = detect_topology_staleness(
         paths,
         private_state,
@@ -1045,6 +1254,12 @@ def build_add_node_post_admission_topology_evidence(
 
     nodes = [_identifier(item, "observed node") for item in detection.get("expected_nodes", [])]
     validators = [_address(item, "observed validator") for item in detection.get("expected_validator_set", [])]
+    verified_final_validators = [_address(item, "verified final validator") for item in admission_verification.get("final_validator_set", [])]
+    if sorted(validators) != sorted(verified_final_validators):
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_UNCLEAN",
+            "observed topology validator set does not match guardian-verified validator-admission final set",
+        )
     if len(nodes) != len(validators) or not nodes:
         raise _fail(
             "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INCOMPLETE",
@@ -1103,6 +1318,7 @@ def build_add_node_post_admission_topology_evidence(
             "summary": dict(summary),
             "topology_evidence": dict(detection.get("topology_evidence") or {}),
         },
+        "fresh_validator_admission_guardian_observations": fresh_guardian_observations,
         "service_observations": list(detection.get("expected_service_observations") or []),
         "observed_live_node_hints": list(detection.get("observed_live_node_hints") or []),
         "target": target,
@@ -1121,6 +1337,7 @@ def build_add_node_post_admission_topology_evidence(
             "validator_admission_previously_proven": True,
             "target_service_top_level_healthy_previously_proven": True,
             "post_admission_cleanup_previously_proven": True,
+            "fresh_validator_admission_guardians_verified": True,
             "topology_current": True,
             "live_mutation_authorized": False,
         },
@@ -1146,6 +1363,7 @@ def build_add_node_post_admission_topology_evidence(
             "complete": True,
             "current_topology_marked_by_evidence": True,
             "source_validator_admission_clean": True,
+            "fresh_validator_admission_guardians_verified": True,
             "topology_current": True,
             "topology_stale": False,
             "final_nodes": nodes,

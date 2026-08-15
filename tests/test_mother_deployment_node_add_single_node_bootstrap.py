@@ -38,13 +38,13 @@ from tests.test_mother_deployment_node_add_prep import (
     A_VALIDATOR,
     _AddNodeDoOpener,
     _AddNodeIdentityOpener,
-    _write_remove_finalize_baseline,
+    _write_empty_topology_baseline,
 )
 
 
 def _write_empty_topology_identity_evidence(tmp_path: Path):
     _unused, paths, private_state = _install(tmp_path)
-    baseline_path, baseline_sha = _write_remove_finalize_baseline(paths, private_state)
+    baseline_path, baseline_sha = _write_empty_topology_baseline(paths, private_state)
 
     transaction = build_node_add_prep_transaction(
         paths,
@@ -157,9 +157,6 @@ class _SingleNodeBootstrapOpener:
             return _Response(dict(self.service))
         if method == "GET" and path == "/api/v1/services/svc-a1/envs":
             return _Response(list(self.envs))
-        if method == "GET" and path == "/api/v1/services/svc-a1/stop":
-            self.service["status"] = "exited"
-            return _Response({"message": "stopped"})
         if method == "PATCH" and path == "/api/v1/services/svc-a1":
             decoded = base64.b64decode(body["docker_compose_raw"]).decode("utf-8")
             assert body["name"] == A_NODE
@@ -169,14 +166,13 @@ class _SingleNodeBootstrapOpener:
             assert "mainnetc-super1" not in decoded
             assert "mainnetc-super2" not in decoded
             assert "8545:8545" not in decoded
-            assert A_VALIDATOR in decoded
             self.service["docker_compose_raw"] = decoded
             self.service["status"] = "running:unhealthy"
             return _Response({"uuid": "svc-a1", "status": self.service["status"]})
-        if method == "GET" and path == "/api/v1/deploy":
-            assert parsed.query == "uuid=svc-a1&force=true"
+        if method == "POST" and path == "/api/v1/services/svc-a1/start":
+            assert parsed.query == ""
             self.service["status"] = self.deploy_status
-            return _Response({"message": "deploy queued"})
+            return _Response({"message": "start queued"})
         if method == "GET" and path == "/api/v1/services":
             return _Response([dict(self.service)])
         raise AssertionError(f"unexpected request: {method} {path}")
@@ -227,6 +223,15 @@ def test_single_node_bootstrap_release_is_not_replica_sync_or_admission(tmp_path
     assert "mainnetc-super1" not in release["bootstrap_plan"]["compose"]["canonical_text"]
     assert "mainnetc-super2" not in release["bootstrap_plan"]["compose"]["canonical_text"]
     assert "qbft_proposeValidatorVote" not in release["bootstrap_plan"]["compose"]["canonical_text"]
+    mutations = release["bootstrap_plan"]["mutations"]
+    assert len(mutations) == 2
+    assert not any(mutation["endpoint"].endswith("/stop") for mutation in mutations)
+    assert mutations[0]["ordinal"] == 1
+    assert mutations[0]["method"] == "PATCH"
+    assert mutations[0]["endpoint"] == "/api/v1/services/svc-a1"
+    assert mutations[1]["ordinal"] == 2
+    assert mutations[1]["method"] == "POST"
+    assert mutations[1]["endpoint"] == "/api/v1/services/svc-a1/start"
 
     release_path, release_sha = write_node_add_single_node_bootstrap_release(
         paths,
@@ -300,6 +305,12 @@ def test_single_node_bootstrap_executes_chain_and_hub_proof_path(tmp_path: Path)
     assert result["summary"]["old_baseline_topology_used_as_live"] is False
     assert result["summary"]["coolify_c_required"] is False
     assert [request["method"] for request in opener.requests].count("PATCH") == 1
+    assert not any(request["path"].endswith("/stop") for request in opener.requests)
+    assert not any(request["path"] == "/api/v1/deploy" for request in opener.requests)
+    assert [request["path"] for request in opener.requests if request["method"] in {"PATCH", "POST"}] == [
+        "/api/v1/services/svc-a1",
+        "/api/v1/services/svc-a1/start",
+    ]
     assert not any(
         request["host"] == "coolify-c.invalid"
         for request in opener.requests
@@ -482,7 +493,7 @@ def test_single_node_chain_and_hub_proof_finalizes_without_live_mutation(tmp_pat
     assert finalized["summary"]["routing_or_topology_published"] is False
     assert finalized["summary"]["public_endpoint_created"] is False
     assert finalized["summary"]["final_nodes"] == [A_NODE]
-    assert finalized["summary"]["final_validator_set"] == [A_VALIDATOR]
+    assert finalized["summary"]["final_validator_set"] == release["prepared_post_add_topology"]["validator_set"]
     assert finalized["final_topology"]["nodes"] == [A_NODE]
     assert finalized["final_topology"]["services"][A_NODE]["service_uuid"] == "svc-a1"
     assert finalized["next_phase"] == "add-node-single-node-finalized-mainnet"
@@ -505,7 +516,7 @@ def test_single_node_chain_and_hub_proof_finalizes_without_live_mutation(tmp_pat
     assert verified["clean"] is True
     assert verified["current_topology_marked_by_evidence"] is True
     assert verified["final_nodes"] == [A_NODE]
-    assert verified["final_validator_set"] == [A_VALIDATOR]
+    assert verified["final_validator_set"] == release["prepared_post_add_topology"]["validator_set"]
     assert verified["coolify_c_required"] is False
     assert verified["replica_sync_required"] is False
     assert verified["validator_admission_required"] is False

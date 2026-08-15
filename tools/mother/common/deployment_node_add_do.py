@@ -924,6 +924,22 @@ def execute_node_add_do_release(
             "standby_service_uuid": created_service_uuid,
             "validator_set": list(release["current_topology"]["validator_set"]),
             "validator_count": int(release["current_topology"]["validator_count"]),
+            "services": (
+                {
+                    **dict(release["current_topology"].get("services", {})),
+                    node: {
+                        **dict(release.get("post_add_topology", {}).get("services", {}).get(node, {})),
+                        "node": node,
+                        "controller_id": controller_id,
+                        "service_uuid": created_service_uuid,
+                        "service_status": target_observation.get("service_status") if isinstance(target_observation, Mapping) else None,
+                        "readiness_source": "deployment-node-add-do-standby-service",
+                        "last_observed_at": target_observation.get("observed_at") if isinstance(target_observation, Mapping) else None,
+                    },
+                }
+                if service_creation_proven
+                else dict(release["current_topology"].get("services", {}))
+            ),
             "validator_admission_performed": False,
         },
         "topology_diff": dict(release["topology_diff"]),

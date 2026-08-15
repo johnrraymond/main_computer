@@ -281,7 +281,11 @@ def _first_genesis_compose(
     genesis: Mapping[str, Any],
     hub_git_repository: str,
     hub_git_ref: str,
+    p2p_port: int = 30303,
 ) -> str:
+    p2p_port = int(p2p_port)
+    if not 1 <= p2p_port <= 65535:
+        raise MotherDeploymentGenesisReleaseError("MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", "p2p_port must be a valid TCP/UDP port")
     genesis_bytes = canonical_json(dict(genesis))
     encoded = base64.b64encode(genesis_bytes).decode("ascii")
     git_context = f"{hub_git_repository}#{hub_git_ref}"
@@ -352,7 +356,7 @@ def _first_genesis_compose(
             "      - --sync-mode=FULL",
             "      - --data-storage-format=BONSAI",
             "      - --p2p-enabled=true",
-            "      - --p2p-port=30303",
+            f"      - --p2p-port={p2p_port}",
             "      - --rpc-http-enabled=true",
             "      - --rpc-http-host=0.0.0.0",
             "      - --rpc-http-port=8545",
@@ -361,8 +365,8 @@ def _first_genesis_compose(
             "      - --min-gas-price=0",
             "    ports:",
             '      - "127.0.0.1:8545:8545/tcp"',
-            '      - "30303:30303/tcp"',
-            '      - "30303:30303/udp"',
+            f'      - "{p2p_port}:{p2p_port}/tcp"',
+            f'      - "{p2p_port}:{p2p_port}/udp"',
             "    volumes:",
             "      - mother-config:/config:ro",
             "      - mother-data:/var/lib/besu",

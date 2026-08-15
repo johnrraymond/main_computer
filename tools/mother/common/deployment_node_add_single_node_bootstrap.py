@@ -476,6 +476,10 @@ def build_node_add_single_node_bootstrap_release(
     node = _identifier(target["node"], "target node")
     controller_id = _identifier(target["controller_id"], "target controller")
     service_uuid = _identifier(target["created_service_uuid"], "created service UUID")
+    target_validator_route = target.get("validator_route") if isinstance(target.get("validator_route"), Mapping) else {}
+    target_p2p_port = int(target_validator_route.get("p2p_port") or 30303)
+    if not 1 <= target_p2p_port <= 65535:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ROUTE_INVALID", "target validator P2P port is invalid")
     chain_id = identity_evidence.get("current_topology", {}).get("chain_id")
     if not isinstance(chain_id, int) or chain_id <= 0:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CHAIN_INVALID", "current topology chain ID is invalid")
@@ -493,6 +497,7 @@ def build_node_add_single_node_bootstrap_release(
         genesis=genesis,
         hub_git_repository=repository,
         hub_git_ref=hub_git_ref,
+        p2p_port=target_p2p_port,
     )
     proof_compose = _internal_proof_compose(
         original,
@@ -543,6 +548,7 @@ def build_node_add_single_node_bootstrap_release(
             "genesis_sha256": genesis_sha,
             "genesis_source": genesis_source,
             "validator_set": [target_validator],
+            "target_validator_route": dict(target_validator_route),
             "hub": {
                 "serves_hub": True,
                 "git_repository": repository,
@@ -553,7 +559,8 @@ def build_node_add_single_node_bootstrap_release(
             "compose": {
                 **_compose_commitment(proof_compose, label="single-node bootstrap proof Compose"),
                 "host_rpc_mapping_present": "8545:8545" in proof_compose,
-                "host_p2p_mapping_present": "30303:30303" in proof_compose,
+                "host_p2p_mapping_present": f"{target_p2p_port}:{target_p2p_port}" in proof_compose,
+                "validator_route": dict(target_validator_route),
                 "hub_service_present": "mother-super-node-hub:" in proof_compose,
                 "hub_public_endpoint_present": False,
                 "guardian_service_present": "mother-genesis-proof-guardian:" in proof_compose,
@@ -563,9 +570,8 @@ def build_node_add_single_node_bootstrap_release(
                 {"method": "GET", "endpoint": f"/api/v1/services/{service_uuid_quoted}/envs", "assertion": "target validator and Hub identity env vars are installed"},
             ],
             "mutations": [
-                {"ordinal": 1, "method": "GET", "endpoint": f"/api/v1/services/{service_uuid_quoted}/stop", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202, 400]},
-                {"ordinal": 2, "method": "PATCH", "endpoint": f"/api/v1/services/{service_uuid_quoted}", "canonical_request_body": body, "body_sha256": body_sha, "success_statuses": [200, 201, 202]},
-                {"ordinal": 3, "method": "GET", "endpoint": f"/api/v1/deploy?uuid={service_uuid_quoted}&force=true", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
+                {"ordinal": 1, "method": "PATCH", "endpoint": f"/api/v1/services/{service_uuid_quoted}", "canonical_request_body": body, "body_sha256": body_sha, "success_statuses": [200, 201, 202]},
+                {"ordinal": 2, "method": "POST", "endpoint": f"/api/v1/services/{service_uuid_quoted}/start", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
             ],
             "proof_required": [
                 "target service reaches running:healthy",
@@ -592,7 +598,7 @@ def build_node_add_single_node_bootstrap_release(
         },
         "policy": {
             "compiler": "mother-native-add-node-single-node-bootstrap-v1",
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": ["GET", "PATCH", "POST"],
             "coolify_control_plane_only": True,
             "single_node_bootstrap_authorized": True,
             "identity_install_previously_performed": True,
@@ -921,7 +927,14 @@ def execute_node_add_single_node_bootstrap_release(
     except MotherDeploymentNodeAddSingleNodeBootstrapError as exc:
         failure = {"code": exc.code, "message": str(exc)}
     completed_at = _timestamp(now=now)
-    complete = status == "pass" and healthy and compose_proven and len(receipts) == 3 and all(item["status"] == "succeeded" for item in receipts)
+    planned_mutation_count = len(plan.get("mutations", []))
+    complete = (
+        status == "pass"
+        and healthy
+        and compose_proven
+        and len(receipts) == planned_mutation_count
+        and all(item["status"] == "succeeded" for item in receipts)
+    )
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
@@ -970,7 +983,7 @@ def execute_node_add_single_node_bootstrap_release(
         "public_endpoint_created": False,
         "live_mutation_performed": len(receipts) > 0,
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": ["GET", "PATCH", "POST"],
             "coolify_control_plane_only": True,
             "single_node_bootstrap_performed": len(receipts) > 0,
             "single_node_bootstrap_proven": complete,
@@ -1428,6 +1441,7 @@ def build_node_add_single_node_chain_and_hub_proof_evidence(
     node = _identifier(target.get("node"), "target node")
     controller_id = _identifier(target.get("controller_id"), "target controller")
     service_uuid = _identifier(target.get("created_service_uuid"), "created service UUID")
+    target_validator_route = target.get("validator_route") if isinstance(target.get("validator_route"), Mapping) else {}
     validator = _address(target.get("validator_address"), "target validator address")
     validator_set = [_address(item, "final validator") for item in prepared.get("validator_set", [])]
     if validator_set != [validator]:
@@ -1453,6 +1467,10 @@ def build_node_add_single_node_chain_and_hub_proof_evidence(
                 "serves_chain": True,
                 "serves_hub": True,
                 "public_endpoint_created": False,
+                "validator_route": dict(target_validator_route),
+                "vpn_ip": target_validator_route.get("vpn_ip"),
+                "p2p_port": target_validator_route.get("p2p_port"),
+                "p2p_endpoint": target_validator_route.get("p2p_endpoint"),
             }
         },
         "validator_count": 1,

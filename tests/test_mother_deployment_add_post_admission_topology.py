@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_node_add_prep import _load_baseline
 from tools.mother.common.deployment_topology_rectification import (
+    MotherDeploymentTopologyRectificationError,
     finalize_add_node_post_admission_topology,
 )
 from tests.test_mother_deployment_executor import _Response, _install, _operation
@@ -21,7 +22,7 @@ from tests.test_mother_deployment_node_add_prep import (
 )
 
 
-def _write_validator_admission_evidence(paths, private_state) -> tuple[Path, str]:
+def _write_validator_admission_evidence(paths, private_state, *, guardian_proof: bool = True) -> tuple[Path, str]:
     _genesis, genesis_sha = _test_genesis(paths, private_state)
     evidence = {
         "authority": {
@@ -53,10 +54,28 @@ def _write_validator_admission_evidence(paths, private_state) -> tuple[Path, str
                 "endpoint": "/api/v1/services/svcc1new",
                 "node": C1_NODE,
                 "observed_at": "2026-08-13T20:47:23Z",
+                "proof_guardian_healthy": True,
+                "proof_guardian_name": "mother-add-node-validator-activation-guardian",
+                "proof_guardian_status": "running:healthy",
                 "response_sha256": "1" * 64,
+                "service_status": "running:healthy",
                 "service_uuid": "svcc1new",
                 "status": "running:healthy",
-            }
+            },
+            {
+                "component_or_service_healthy": True,
+                "controller_id": "coolify-a",
+                "endpoint": "/api/v1/services/svca1",
+                "node": A_NODE,
+                "observed_at": "2026-08-13T20:47:23Z",
+                "proof_guardian_healthy": True,
+                "proof_guardian_name": "mother-add-node-validator-admission-voter-mainneta-super1",
+                "proof_guardian_status": "running:healthy",
+                "response_sha256": "3" * 64,
+                "service_status": "running:healthy",
+                "service_uuid": "svca1",
+                "status": "running:healthy",
+            },
         ],
         "kind": "main_computer.mother.deployment_node_add_validator_admission_evidence.v1",
         "live_mutation_performed": True,
@@ -132,6 +151,7 @@ def _write_validator_admission_evidence(paths, private_state) -> tuple[Path, str
         "started_at": "2026-08-13T20:47:01Z",
         "status": "pass",
         "summary": {
+            "admission_proof_guardian_components_verified": True,
             "all_existing_validator_votes_required": True,
             "attempted_mutation_count": 4,
             "blocks_advancing": True,
@@ -170,6 +190,21 @@ def _write_validator_admission_evidence(paths, private_state) -> tuple[Path, str
         "validator_vote_performed": True,
         "voter_nodes": [A_NODE],
     }
+    if not guardian_proof:
+        evidence["health_observations"] = [
+            {
+                "component_or_service_healthy": True,
+                "controller_id": "coolify-c",
+                "endpoint": "/api/v1/services/svcc1new",
+                "node": C1_NODE,
+                "observed_at": "2026-08-13T20:47:23Z",
+                "response_sha256": "1" * 64,
+                "service_uuid": "svcc1new",
+                "status": "running:healthy",
+            }
+        ]
+        evidence["summary"].pop("admission_proof_guardian_components_verified", None)
+
     payload = canonical_json(evidence)
     path = paths.root / "evidence" / "deployment-node-add-validator-admission" / "source.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,9 +243,29 @@ class _TopologyOpener:
                     }
                 ])
         if path == "/api/v1/services/svca1":
-            return _Response({"uuid": "svca1", "name": A_NODE, "status": "running:healthy"})
+            return _Response({
+                "uuid": "svca1",
+                "name": A_NODE,
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-admission-voter-mainneta-super1",
+                        "status": "running:healthy",
+                    }
+                ],
+            })
         if path == "/api/v1/services/svcc1new":
-            return _Response({"uuid": "svcc1new", "name": C1_NODE, "status": "running:healthy"})
+            return _Response({
+                "uuid": "svcc1new",
+                "name": C1_NODE,
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-activation-guardian",
+                        "status": "running:healthy",
+                    }
+                ],
+            })
         raise AssertionError(f"unexpected request: {method} {host} {path}")
 
 
@@ -258,3 +313,80 @@ def test_post_admission_observe_writes_prep_accepted_topology_proof(tmp_path: Pa
     assert loaded[4] == [A_VALIDATOR, C1_VALIDATOR]
     assert loaded[7][C1_NODE]["service_uuid"] == "svcc1new"
     assert any(req["path"] == "/api/v1/services/svcc1new" for req in opener.requests)
+
+
+
+def test_post_admission_observe_rejects_top_level_health_only_admission_evidence(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    source_path, source_sha = _write_validator_admission_evidence(paths, private_state, guardian_proof=False)
+    opener = _TopologyOpener()
+    now = datetime(2026, 8, 13, 22, 7, 5, tzinfo=timezone.utc)
+
+    try:
+        finalize_add_node_post_admission_topology(
+            paths,
+            private_state,
+            source_path,
+            network="mainnet",
+            acknowledged_validator_admission_evidence_sha256=source_sha,
+            max_age_seconds=86400,
+            timeout=30.0,
+            max_response_bytes=4 * 1024 * 1024,
+            write_evidence=True,
+            operation=_operation("post-admission-observe-reject"),
+            opener=opener,
+            now=now,
+        )
+    except MotherDeploymentTopologyRectificationError as exc:
+        assert exc.code == "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID"
+        assert "guardian-verified final validator set" in str(exc)
+    else:
+        raise AssertionError("expected top-level-only admission evidence to be rejected")
+
+
+class _StaleAdmissionGuardianTopologyOpener(_TopologyOpener):
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        path = parsed.path
+        if path == "/api/v1/services/svcc1new":
+            return _Response({
+                "uuid": "svcc1new",
+                "name": C1_NODE,
+                "status": "running:unhealthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-activation-guardian",
+                        "status": "running:unhealthy",
+                    }
+                ],
+            })
+        return super().open(request, timeout)
+
+
+def test_post_admission_observe_requires_fresh_admission_guardians_not_stale_source(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    source_path, source_sha = _write_validator_admission_evidence(paths, private_state)
+    opener = _StaleAdmissionGuardianTopologyOpener()
+    now = datetime(2026, 8, 13, 22, 7, 5, tzinfo=timezone.utc)
+
+    try:
+        finalize_add_node_post_admission_topology(
+            paths,
+            private_state,
+            source_path,
+            network="mainnet",
+            acknowledged_validator_admission_evidence_sha256=source_sha,
+            max_age_seconds=86400,
+            timeout=30.0,
+            max_response_bytes=4 * 1024 * 1024,
+            write_evidence=True,
+            operation=_operation("post-admission-observe-stale-guardian"),
+            opener=opener,
+            now=now,
+        )
+    except MotherDeploymentTopologyRectificationError as exc:
+        assert exc.code == "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_UNCLEAN"
+        assert "fresh validator-admission guardian proof" in str(exc)
+    else:
+        raise AssertionError("expected stale fresh guardian proof to reject topology finalization")
+

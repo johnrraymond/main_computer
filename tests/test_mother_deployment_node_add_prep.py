@@ -730,7 +730,7 @@ def _write_verified_add_node_prep(tmp_path: Path):
         mode="reactivate",
         baseline_evidence_sha256=baseline_sha,
         created_at="2026-08-11T21:03:46Z",
-        now=None,
+        now=datetime(2026, 8, 11, 21, 3, 46, tzinfo=timezone.utc),
     )
     transaction_path, transaction_sha = write_node_add_prep_transaction(
         paths,
@@ -1153,10 +1153,9 @@ class _AddNodeReplicaSyncOpener:
             self.service["docker_compose_raw"] = decoded
             self.service["status"] = "running:unhealthy"
             return _Response({"uuid": "svc-a1", "status": self.service["status"]})
-        if method == "GET" and path == "/api/v1/deploy":
-            assert "uuid=svc-a1" in parsed.query
+        if method == "POST" and path == "/api/v1/services/svc-a1/start":
             self.service["status"] = "running:healthy"
-            return _Response({"message": "deploy queued"})
+            return _Response({"message": "start queued"})
         if method == "GET" and path == "/api/v1/services":
             return _Response([dict(self.service)])
 
@@ -1180,6 +1179,10 @@ def test_add_node_replica_sync_release_authorizes_sync_only(tmp_path: Path) -> N
     assert release["authority"]["replica_sync_authorized"] is True
     assert release["authority"]["validator_admission_authorized"] is False
     assert release["authority"]["validator_vote_authorized"] is False
+    assert release["policy"]["allowed_http_methods"] == ["GET", "PATCH", "POST"]
+    assert release["proof_plan"]["mutations"][1]["method"] == "POST"
+    assert release["proof_plan"]["mutations"][1]["endpoint"] == "/api/v1/services/svc-a1/start"
+    assert "/api/v1/deploy" not in release["proof_plan"]["mutations"][1]["endpoint"]
     assert release["summary"]["generic_topology_diff"] is True
     assert release["summary"]["hardcoded_stage_target"] is False
     assert release["proof_plan"]["bootnode"]["node"] == C1_NODE
@@ -1262,7 +1265,11 @@ def test_add_node_replica_sync_executes_only_sync_proof(tmp_path: Path) -> None:
     assert result["summary"]["hardcoded_stage_target"] is False
     assert result["next_phase"] == "add-node-validator-admission-mainnet"
     assert [request["method"] for request in opener.requests].count("PATCH") == 1
-    assert not any(request["method"] == "POST" for request in opener.requests)
+    assert any(
+        request["method"] == "POST" and request["path"] == "/api/v1/services/svc-a1/start"
+        for request in opener.requests
+    )
+    assert not any(request["path"] == "/api/v1/deploy" for request in opener.requests)
 
     verified = verify_node_add_replica_sync_evidence(
         paths,

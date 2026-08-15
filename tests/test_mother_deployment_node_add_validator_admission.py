@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 from types import SimpleNamespace
 
 import yaml
@@ -9,13 +10,18 @@ import yaml
 from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_node_add_validator_admission import (
     MotherDeploymentNodeAddValidatorAdmissionError,
+    execute_node_add_validator_admission_release,
+    build_node_add_validator_admission_release,
     _candidate_activation_compose,
     _digest_without,
     _bootnode_p2p_reachability_receipt,
+    _component_healthy,
     _http,
     _parse_bootnode_p2p_endpoint,
     _preflight_existing_validator_services,
     _service_uuid_hints_from_replica_sync_evidence,
+    _validator_vote_address,
+    _voter_guardian_script,
 )
 
 
@@ -36,6 +42,7 @@ def test_add_node_validator_activation_compose_is_internal_and_uses_env_referenc
             "0x9b809f05f8d68da17e697cd6ab040d4320494611",
             "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
         ],
+        candidate_p2p_port=30304,
     )
 
     parsed = yaml.safe_load(compose)
@@ -45,7 +52,7 @@ def test_add_node_validator_activation_compose_is_internal_and_uses_env_referenc
         "mother-add-node-validator-activation-guardian",
         "mother-replica-sync-guardian",
     }
-    assert "ports" not in parsed["services"]["mainneta-super1"]
+    assert parsed["services"]["mainneta-super1"]["ports"] == ["30304:30304/tcp", "30304:30304/udp"]
     assert "ports" not in parsed["services"]["mother-add-node-validator-activation-guardian"]
     sentinel = parsed["services"]["mother-replica-sync-guardian"]
     assert sentinel["image"] == "python:3.12-alpine"
@@ -59,6 +66,8 @@ def test_add_node_validator_activation_compose_is_internal_and_uses_env_referenc
     assert 'MC_MOTHER_VALIDATOR_PRIVATE_KEY: "${MC_MOTHER_VALIDATOR_PRIVATE_KEY}"' in compose
     assert "0x" + "1" * 64 not in compose
     assert "main_computer.mother.validator-activation: active" in compose
+    assert "--p2p-port=30304" in compose
+    assert "30303:30303" not in compose
 
 
 def test_replica_sync_release_reference_uses_logical_self_digest_not_file_bytes() -> None:
@@ -78,13 +87,25 @@ def test_replica_sync_release_reference_uses_logical_self_digest_not_file_bytes(
     assert file_byte_digest != logical_digest
 
 
+def test_validator_admission_uses_checksummed_candidate_for_qbft_vote_rpc() -> None:
+    lowercase = "0x9b809f05f8d68da17e697cd6ab040d4320494611"
+    checksummed = _validator_vote_address(lowercase, "candidate validator")
+    request = {"jsonrpc": "2.0", "id": 1, "method": "qbft_proposeValidatorVote", "params": [checksummed, True]}
+    script = _voter_guardian_script(
+        voter="mainneta-super1",
+        candidate=lowercase,
+        current_validators=["0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
+        desired_validators=[lowercase, "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
+        chain_id=42424240,
+        genesis_sha256="a" * 64,
+        request_sha256=hashlib.sha256(canonical_json(request)).hexdigest(),
+    )
 
-class _FakeSocket:
-    def __init__(self):
-        self.closed = False
+    assert checksummed == "0x9B809F05F8D68Da17e697cD6Ab040d4320494611"
+    assert checksummed in script
+    assert '"params":["0x9b809f05f8d68da17e697cd6ab040d4320494611",true]' not in script
+    assert '"params":["0x9B809F05F8D68Da17e697cD6Ab040d4320494611",true]' in script
 
-    def close(self):
-        self.closed = True
 
 
 def test_validator_admission_parses_bootnode_p2p_endpoint_from_enode() -> None:
@@ -114,13 +135,7 @@ def test_validator_admission_rejects_bootnode_p2p_metadata_mismatch() -> None:
         raise AssertionError("expected bootnode p2p invalid failure")
 
 
-def test_validator_admission_p2p_reachability_receipt_succeeds_before_vote() -> None:
-    calls = []
-
-    def connector(address, timeout):
-        calls.append((address, timeout))
-        return _FakeSocket()
-
+def test_validator_admission_p2p_reachability_receipt_uses_replica_sync_evidence_not_operator_tcp() -> None:
     receipt = _bootnode_p2p_reachability_receipt(
         {
             "bootnode": {
@@ -133,47 +148,58 @@ def test_validator_admission_p2p_reachability_receipt_succeeds_before_vote() -> 
             }
         },
         timeout=30.0,
-        connector=connector,
     )
 
-    assert calls == [(("10.116.0.2", 30303), 10.0)]
     assert receipt["name"] == "bootnode-p2p-reachability-before-validator-vote"
-    assert receipt["method"] == "TCP_CONNECT"
+    assert receipt["method"] == "CANDIDATE_REPLICA_SYNC_EVIDENCE"
     assert receipt["endpoint"] == "10.116.0.2:30303"
+    assert receipt["operator_local_tcp_connect_performed"] is False
+    assert "timeout_ms" not in receipt
+    assert "timeout_seconds" not in receipt
     assert receipt["verified"] is True
     assert receipt["verified_before_candidate_mutation"] is True
     assert receipt["verified_before_validator_vote"] is True
-    assert receipt["error"] is None
+    assert "candidate-side replica-sync evidence" in receipt["reason"]
     assert receipt["bootnode_enode_sha256"] == hashlib.sha256(
         ("enode://" + "a" * 128 + "@10.116.0.2:30303").encode()
     ).hexdigest()
+    canonical_json(receipt)
 
 
-def test_validator_admission_p2p_reachability_receipt_fails_closed_before_vote() -> None:
-    def connector(address, timeout):
-        raise ConnectionRefusedError("refused by bootnode")
-
-    receipt = _bootnode_p2p_reachability_receipt(
-        {
-            "bootnode": {
-                "node": "mainnetc-super1",
-                "controller_id": "coolify-c",
-                "service_uuid": "voter-service",
-                "advertised_host": "10.116.0.2",
-                "p2p_port": 30303,
-                "enode": "enode://" + "a" * 128 + "@10.116.0.2:30303",
+def test_validator_admission_health_requires_exact_guardian_component() -> None:
+    record = {
+        "name": "mainneta-super1",
+        "status": "running:healthy",
+        "applications": [
+            {
+                "name": "mainneta-super1",
+                "status": "running:healthy",
             }
-        },
-        timeout=2.0,
-        connector=connector,
-    )
+        ],
+    }
 
-    assert receipt["endpoint"] == "10.116.0.2:30303"
-    assert receipt["verified"] is False
-    assert receipt["verified_before_candidate_mutation"] is True
-    assert receipt["verified_before_validator_vote"] is True
-    assert receipt["error_type"] == "ConnectionRefusedError"
-    assert "refused" in receipt["error"]
+    assert _component_healthy(
+        record,
+        names=["mother-add-node-validator-admission-voter-mainneta-super1"],
+    ) is False
+
+
+def test_validator_admission_health_accepts_exact_guardian_component() -> None:
+    record = {
+        "name": "mainneta-super1",
+        "status": "running:unhealthy",
+        "applications": [
+            {
+                "name": "mother-add-node-validator-admission-voter-mainneta-super1",
+                "status": "running:healthy",
+            }
+        ],
+    }
+
+    assert _component_healthy(
+        record,
+        names=["mother-add-node-validator-admission-voter-mainneta-super1"],
+    ) is True
 
 
 
@@ -225,6 +251,46 @@ def test_validator_admission_http_accepts_coolify_controller_objects() -> None:
     assert opener.request.full_url == "https://coolify.example/api/v1/services"
     assert opener.request.get_header("Authorization") == "Bearer secret-token"
     assert opener.timeout == 3.0
+
+
+def test_validator_admission_starts_services_with_lifecycle_endpoint() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+    release_source = inspect.getsource(build_node_add_validator_admission_release)
+
+    assert "/api/v1/deploy" not in executor_source
+    assert '"/api/v1/services/{urllib.parse.quote(target_uuid, safe=\'\')}/start"' in executor_source
+    assert '"/api/v1/services/{urllib.parse.quote(uuid, safe=\'\')}/start"' in executor_source
+    assert '_http(target_controller, "POST", start_endpoint' in executor_source
+    assert '_http(controller, "POST", start_endpoint' in executor_source
+    assert '"allowed_http_methods": ["GET", "PATCH", "POST"]' in release_source
+
+
+def test_validator_admission_tolerates_existing_voter_start_400_until_guardian_proof() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "start_rejected_nonfatal = start[\"status\"] == 400" in executor_source
+    assert "start_accepted = start_ok or start_rejected_nonfatal" in executor_source
+    assert "\"coolify_start_rejected_nonfatal\"" in executor_source
+    assert "exact voter guardian health proof remains required" in executor_source
+
+    start_index = executor_source.index("coolify_start_rejected_nonfatal")
+    proof_index = executor_source.index("_wait_for_admission_proof_guardians")
+    assert start_index < proof_index
+
+
+def test_validator_admission_does_not_post_start_after_successful_admission_proof() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "post-admission-validator-refresh-proof" not in executor_source
+    assert "post-admission-qbft-transition-reverify" not in executor_source
+    assert "restart-validator-after-admission-proof" not in executor_source
+    assert "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_REFRESH" not in executor_source
+
+    proof_index = executor_source.index("admission-proof-before-validator-refresh")
+    cleanup_index = executor_source.index("execute_completed_mother_helper_cleanup")
+    assert proof_index < cleanup_index
+    assert "post_admission_cleanup_warning" in executor_source
+    assert "POST_ADMISSION_HEALTH_UNCLEAN_NONFATAL" in executor_source
 
 
 def test_validator_admission_prefers_service_uuid_hints_from_replica_sync_evidence() -> None:

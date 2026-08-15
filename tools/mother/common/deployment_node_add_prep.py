@@ -26,6 +26,7 @@ from . import atomic_files
 from .canonical import canonical_json
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
+from .deployment_validator_routes import allocate_candidate_validator_route
 
 
 _TRANSACTION_KIND = "main_computer.mother.deployment_node_add_prep_transaction.v1"
@@ -622,6 +623,23 @@ def build_node_add_prep_transaction(
     post_validators = [validators_by_node[node] for node in post_nodes]
 
     current_services = {node: dict(services[node]) for node in nodes}
+    target_validator_route = allocate_candidate_validator_route(
+        private_state,
+        network=network,
+        controller_id=host,
+        existing_services=current_services,
+    )
+    target_service_record = {
+        "node": target,
+        "controller_id": host,
+        "service_uuid": None,
+        "service_status": "pending-add-node-do",
+        "readiness_source": "add-node-prep-route-allocation",
+        "validator_route": dict(target_validator_route),
+        "vpn_ip": target_validator_route["vpn_ip"],
+        "p2p_port": target_validator_route["p2p_port"],
+        "p2p_endpoint": target_validator_route["p2p_endpoint"],
+    }
     created_text = _timestamp(created_at)
     transaction: dict[str, Any] = {
         "kind": _TRANSACTION_KIND,
@@ -652,6 +670,10 @@ def build_node_add_prep_transaction(
             "previous_controller_id": previous_controller,
             "previous_service_uuid": previous_service_uuid,
             "existing_service_uuid": None,
+            "validator_route": dict(target_validator_route),
+            "vpn_ip": target_validator_route["vpn_ip"],
+            "p2p_port": target_validator_route["p2p_port"],
+            "p2p_endpoint": target_validator_route["p2p_endpoint"],
         },
         "current_topology": {
             "source": (
@@ -674,6 +696,11 @@ def build_node_add_prep_transaction(
             "added_node": target,
             "added_validator_address": target_validator,
             "target_host": host,
+            "target_validator_route": dict(target_validator_route),
+            "services": {
+                **current_services,
+                target: target_service_record,
+            },
         },
         "topology_diff": {
             "operation": "add-node",
@@ -737,6 +764,7 @@ def build_node_add_prep_transaction(
             "baseline_topology_role": baseline_topology_role,
             "old_baseline_topology_used_as_live": baseline_topology_role != "identity-history-only",
             "allowed_next_command": f"add-node do {network}",
+            "target_validator_route": dict(target_validator_route),
         },
         "policy": {
             "compiler": "mother-native-add-node-prep-v1",
@@ -781,6 +809,9 @@ def build_node_add_prep_transaction(
         "old_baseline_topology_used_as_live": baseline_topology_role != "identity-history-only",
         "current_nodes": nodes,
         "post_add_nodes": post_nodes,
+        "target_validator_route": dict(target_validator_route),
+        "target_p2p_endpoint": target_validator_route["p2p_endpoint"],
+        "target_p2p_port": target_validator_route["p2p_port"],
         "current_validator_count": len(validators),
         "post_add_validator_count": len(post_validators),
         "generic_topology_diff": True,

@@ -21,14 +21,13 @@ or historical baseline topology as authority.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path, PureWindowsPath
 import re
-import socket
 import time
 from typing import Any
 import urllib.error
@@ -47,6 +46,8 @@ from .deployment_completed_helper_cleanup import (
 from .deployment_node_add_replica_sync import verify_node_add_replica_sync_evidence
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
+from .deployment_validator_routes import ensure_service_validator_route, validator_route_from_record
+from .ethereum_identity import checksum_address
 
 
 _RELEASE_KIND = "main_computer.mother.deployment_node_add_validator_admission_release.v1"
@@ -105,6 +106,21 @@ def _address(value: Any, label: str) -> str:
     if re.fullmatch(r"0x[0-9a-f]{40}", text) is None:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_INVALID", f"{label} is not an Ethereum address")
     return text
+
+
+def _validator_vote_address(value: Any, label: str) -> str:
+    """Return the EIP-55 address form Besu accepts for QBFT vote RPCs.
+
+    Mother stores and compares validator addresses in lowercase form, but Besu
+    26.7 rejects lowercase ``qbft_proposeValidatorVote`` parameters with
+    ``Invalid address params``.  Only the RPC payload uses the checksummed form;
+    proof comparisons remain lowercase and set-based.
+    """
+
+    try:
+        return checksum_address(_address(value, label))
+    except ValueError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_INVALID", f"{label} cannot be checksummed") from exc
 
 
 def _parse_utc(value: Any, label: str) -> datetime:
@@ -378,7 +394,11 @@ def _candidate_activation_compose(
     genesis_sha256: str,
     target_node_id: str,
     desired_validators: Iterable[str],
+    candidate_p2p_port: int,
 ) -> str:
+    candidate_p2p_port = int(candidate_p2p_port)
+    if not 1 <= candidate_p2p_port <= 65535:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate P2P port is invalid")
     decoded = base64.b64decode(genesis_b64.encode("ascii"), validate=True)
     if hashlib.sha256(decoded).hexdigest() != genesis_sha256:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_GENESIS_INVALID", "activation genesis does not match committed hash")
@@ -429,7 +449,7 @@ def _candidate_activation_compose(
         "      - --sync-mode=FULL",
         "      - --data-storage-format=BONSAI",
         "      - --p2p-enabled=true",
-        "      - --p2p-port=30303",
+        f"      - --p2p-port={candidate_p2p_port}",
         "      - --discovery-enabled=true",
         f"      - --bootnodes={bootnode_enode}",
         "      - --rpc-http-enabled=true",
@@ -438,6 +458,9 @@ def _candidate_activation_compose(
         "      - --rpc-http-api=ETH,NET,WEB3,QBFT,ADMIN",
         f"      - --host-allowlist=localhost,127.0.0.1,{target_node},mother-add-node-validator-activation-guardian",
         "      - --min-gas-price=0",
+        "    ports:",
+        f'      - "{candidate_p2p_port}:{candidate_p2p_port}/tcp"',
+        f'      - "{candidate_p2p_port}:{candidate_p2p_port}/udp"',
         "    volumes:",
         "      - mother-config:/config:ro",
         "      - mother-data:/var/lib/besu",
@@ -518,7 +541,9 @@ def _voter_guardian_script(
 ) -> str:
     current = [item.lower() for item in current_validators]
     desired = [item.lower() for item in desired_validators]
-    request = {"jsonrpc": "2.0", "id": 1, "method": "qbft_proposeValidatorVote", "params": [candidate.lower(), True]}
+    candidate_lower = _address(candidate, "candidate validator")
+    candidate_vote = _validator_vote_address(candidate, "candidate validator")
+    request = {"jsonrpc": "2.0", "id": 1, "method": "qbft_proposeValidatorVote", "params": [candidate_vote, True]}
     request_json = json.dumps(request, sort_keys=True, separators=(",", ":"))
     return "\n".join([
         "import hashlib, json, os, time, traceback, urllib.request",
@@ -528,7 +553,8 @@ def _voter_guardian_script(
         f"EXPECTED_GENESIS_SHA256 = {genesis_sha256!r}",
         f"EXPECTED_CURRENT = {current!r}",
         f"EXPECTED_DESIRED = {desired!r}",
-        f"CANDIDATE_VALIDATOR = {candidate.lower()!r}",
+        f"CANDIDATE_VALIDATOR = {candidate_lower!r}",
+        f"CANDIDATE_VALIDATOR_VOTE_ADDRESS = {candidate_vote!r}",
         f"REQUEST = json.loads({request_json!r})",
         f"EXPECTED_REQUEST_SHA256 = {request_sha256!r}",
         "SAFE = VOTER_NODE.replace('-', '_')",
@@ -733,6 +759,26 @@ def _load_sync_context(
     genesis_b64 = _extract_genesis_b64(sync_compose)
     genesis_sha256 = _sha256(verified.get("genesis_sha256"), "genesis SHA-256")
     chain_id = int(verified.get("chain_id"))
+    candidate_route = target.get("validator_route") if isinstance(target.get("validator_route"), Mapping) else None
+    if not isinstance(candidate_route, Mapping):
+        candidate_route = proof_summary.get("candidate_validator_route") if isinstance(proof_summary.get("candidate_validator_route"), Mapping) else None
+    if not isinstance(candidate_route, Mapping):
+        candidate_route = validator_route_from_record(target) or {}
+    candidate_p2p_port = int(candidate_route.get("p2p_port") or proof_summary.get("candidate_p2p_port") or 30303)
+    if not 1 <= candidate_p2p_port <= 65535:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route P2P port is invalid")
+    service_routes: dict[str, dict[str, Any]] = {}
+    for voter_node in voter_nodes:
+        voter_service = services.get(voter_node)
+        if isinstance(voter_service, Mapping):
+            service_routes[voter_node] = ensure_service_validator_route(
+                private_state,
+                network=network,
+                node=voter_node,
+                service=voter_service,
+                services=services,
+            )
+    service_routes[target_node] = dict(candidate_route)
     target_node_id = _public_node_id(_validator_private_key(private_state, network=network, node=target_node))
     activation_compose = _candidate_activation_compose(
         target_node=target_node,
@@ -742,10 +788,11 @@ def _load_sync_context(
         genesis_sha256=genesis_sha256,
         target_node_id=target_node_id,
         desired_validators=desired_set,
+        candidate_p2p_port=candidate_p2p_port,
     )
     vote_requests = []
     for node in voter_nodes:
-        request = {"jsonrpc": "2.0", "id": 1, "method": "qbft_proposeValidatorVote", "params": [candidate, True]}
+        request = {"jsonrpc": "2.0", "id": 1, "method": "qbft_proposeValidatorVote", "params": [_validator_vote_address(candidate, "candidate validator"), True]}
         vote_requests.append({
             "voter_node": node,
             "controller_id": _identifier(services[node].get("controller_id"), f"{node} controller") if isinstance(services.get(node), Mapping) else "",
@@ -769,6 +816,9 @@ def _load_sync_context(
         "target_validator_address": candidate,
         "target_validator_node_id": target_node_id,
         "target_validator_node_id_sha256": hashlib.sha256(target_node_id.encode("ascii")).hexdigest(),
+        "candidate_validator_route": dict(candidate_route),
+        "candidate_p2p_port": candidate_p2p_port,
+        "service_routes": service_routes,
         "voter_nodes": list(voter_nodes),
         "voters": vote_requests,
         "current_validator_set": current_set,
@@ -851,6 +901,9 @@ def build_node_add_validator_admission_release(
             "validator_address": context["target_validator_address"],
             "validator_node_id": context["target_validator_node_id"],
             "validator_node_id_sha256": context["target_validator_node_id_sha256"],
+            "validator_route": dict(context["candidate_validator_route"]),
+            "p2p_port": context["candidate_p2p_port"],
+            "p2p_endpoint": context["candidate_validator_route"].get("p2p_endpoint"),
         },
         "admission_plan": {
             "candidate_node": context["target_node"],
@@ -863,6 +916,9 @@ def build_node_add_validator_admission_release(
             "chain_id": context["chain_id"],
             "genesis_sha256": context["genesis_sha256"],
             "bootnode": dict(context["bootnode"]),
+            "candidate_validator_route": dict(context["candidate_validator_route"]),
+            "candidate_p2p_port": context["candidate_p2p_port"],
+            "service_routes": {node: dict(route) for node, route in context["service_routes"].items()},
             "rpc_requests": list(context["voters"]),
             "activation_compose": {
                 "sha256": context["activation_compose_sha256"],
@@ -894,7 +950,7 @@ def build_node_add_validator_admission_release(
             "requested_use_limit": 1,
         },
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": ["GET", "PATCH", "POST"],
             "compiler": "mother-native-add-node-validator-admission-v1",
             "coolify_control_plane_only": True,
             "all_existing_validator_votes_required": True,
@@ -1388,15 +1444,70 @@ def _service_status(record: Mapping[str, Any]) -> str:
     return "unknown"
 
 
+def _component_names(record: Mapping[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for key in ("name", "service", "service_name", "serviceName", "subName"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+    return names
+
+
+def _component_status(record: Mapping[str, Any], *, names: Iterable[str]) -> str:
+    """Return the exact named component status, never the parent service status.
+
+    Validator admission is only proven by the activation/voter guardian
+    components.  A healthy parent Coolify service only proves the Compose project
+    is generally running; it does not prove the guardian's live
+    ``qbft_getValidatorsByBlockNumber("latest")`` check accepted the desired
+    validator set.
+    """
+
+    expected = {str(item) for item in names if str(item)}
+    for candidate in (record, *_children(record)):
+        if _component_names(candidate) & expected:
+            return _service_status(candidate)
+    return "missing"
+
+
 def _component_healthy(record: Mapping[str, Any], *, names: Iterable[str]) -> bool:
-    status = _service_status(record)
-    if status == "running:healthy":
-        return True
-    expected = set(names)
-    for child in _children(record):
-        if str(child.get("name") or child.get("service") or "") in expected and child.get("status") == "running:healthy":
-            return True
-    return False
+    return _component_status(record, names=names) == "running:healthy"
+
+
+def _expected_admission_guardians(*, candidate_node: str, voter_nodes: Iterable[str]) -> dict[str, str]:
+    guardians = {candidate_node: "mother-add-node-validator-activation-guardian"}
+    for voter in voter_nodes:
+        guardians[str(voter)] = _guardian_service_name(str(voter))
+    return guardians
+
+
+def _validator_admission_proof_guardians_verified(document: Mapping[str, Any]) -> bool:
+    candidate = document.get("candidate_node")
+    voters = document.get("voter_nodes")
+    observations = document.get("health_observations")
+    if not isinstance(candidate, str) or not isinstance(voters, list) or not isinstance(observations, list):
+        return False
+    required = _expected_admission_guardians(
+        candidate_node=candidate,
+        voter_nodes=[item for item in voters if isinstance(item, str)],
+    )
+    if set(required) != {candidate, *[item for item in voters if isinstance(item, str)]}:
+        return False
+    latest: dict[str, bool] = {}
+    for item in observations:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        if not isinstance(node, str) or node not in required:
+            continue
+        if item.get("proof_guardian_name") != required[node]:
+            continue
+        # Earlier healthy samples are not enough: a guardian can later invalidate
+        # its proof when the desired validator set is not actually reached.  The
+        # latest exact guardian observation for every required node must be
+        # healthy.
+        latest[node] = item.get("proof_guardian_healthy") is True
+    return set(required) <= set(latest) and all(latest[node] for node in required)
 
 
 
@@ -1463,8 +1574,14 @@ def _bootnode_p2p_reachability_receipt(
     admission_plan: Mapping[str, Any],
     *,
     timeout: float,
-    connector: Any = socket.create_connection,
 ) -> dict[str, Any]:
+    """Record the bootnode endpoint without probing it from the operator host.
+
+    The candidate-side replica-sync phase is the authoritative proof that the
+    target can reach and sync from its bootnode.  A direct TCP probe from this
+    Python process tests the operator workstation/network instead of the
+    candidate validator network, so it must not gate validator admission.
+    """
     bootnode = admission_plan.get("bootnode")
     if not isinstance(bootnode, Mapping):
         raise _fail(
@@ -1472,11 +1589,9 @@ def _bootnode_p2p_reachability_receipt(
             "validator-admission plan is missing bootnode endpoint evidence",
         )
     host, port, enode = _parse_bootnode_p2p_endpoint(bootnode)
-    connect_timeout = max(0.1, min(float(timeout), 10.0))
-    started = time.monotonic()
-    receipt: dict[str, Any] = {
+    return {
         "name": "bootnode-p2p-reachability-before-validator-vote",
-        "method": "TCP_CONNECT",
+        "method": "CANDIDATE_REPLICA_SYNC_EVIDENCE",
         "endpoint": f"{host}:{port}",
         "host": host,
         "port": port,
@@ -1484,34 +1599,126 @@ def _bootnode_p2p_reachability_receipt(
         "bootnode_controller_id": bootnode.get("controller_id"),
         "bootnode_service_uuid": bootnode.get("service_uuid"),
         "bootnode_enode_sha256": hashlib.sha256(enode.encode("utf-8")).hexdigest() if enode else None,
-        "timeout_seconds": connect_timeout,
+        "operator_local_tcp_connect_performed": False,
+        "reason": "candidate-side replica-sync evidence is the authoritative bootnode P2P reachability proof",
         "verified_before_candidate_mutation": True,
         "verified_before_validator_vote": True,
-        "verified": False,
+        "verified": True,
     }
-    try:
-        connection = connector((host, port), timeout=connect_timeout)
-        try:
-            close = getattr(connection, "close", None)
-            if callable(close):
-                close()
-        finally:
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-        receipt.update({
-            "elapsed_ms": elapsed_ms,
-            "verified": True,
-            "error_type": None,
-            "error": None,
-        })
-    except OSError as exc:
-        receipt.update({
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
-            "verified": False,
-            "error_type": type(exc).__name__,
-            "error": str(exc)[:300],
-        })
-    return receipt
 
+
+
+
+def _observe_admission_proof_guardians(
+    *,
+    nodes: Sequence[str],
+    candidate_node: str,
+    controllers: Mapping[str, Any],
+    node_to_controller: Mapping[str, str],
+    all_service_uuids: Mapping[str, str],
+    voter_guardian_names: Mapping[str, str],
+    target_guardian_name: str,
+    observations: list[dict[str, Any]],
+    observation_phase: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> tuple[set[str], dict[str, str]]:
+    healthy: set[str] = set()
+    last_statuses: dict[str, str] = {}
+    for node in nodes:
+        controller_id = node_to_controller[node]
+        controller = controllers[controller_id]
+        service_uuid = all_service_uuids.get(node)
+        if service_uuid:
+            endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+            service_response = _http(
+                controller,
+                "GET",
+                endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+        else:
+            endpoint = "/api/v1/services"
+            service_response = _http(
+                controller,
+                "GET",
+                endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+        if service_response["ok"]:
+            record = _find_service_record(service_response["payload"], node=node, service_uuid=service_uuid)
+            proof_guardian = target_guardian_name if node == candidate_node else voter_guardian_names[node]
+            status = _service_status(record)
+            proof_guardian_status = _component_status(record, names=[proof_guardian])
+            proof_guardian_healthy = proof_guardian_status == "running:healthy"
+            last_statuses[node] = f"service={status}; {proof_guardian}={proof_guardian_status}"
+            if proof_guardian_healthy:
+                healthy.add(node)
+            observations.append({
+                "observation_phase": observation_phase,
+                "node": node,
+                "controller_id": controller_id,
+                "endpoint": endpoint,
+                "service_uuid": service_uuid,
+                "status": status,
+                "service_status": status,
+                "proof_guardian_name": proof_guardian,
+                "proof_guardian_status": proof_guardian_status,
+                "proof_guardian_healthy": proof_guardian_healthy,
+                "component_or_service_healthy": proof_guardian_healthy,
+                "response_sha256": service_response["response_sha256"],
+                "observed_at": _timestamp(),
+            })
+    return healthy, last_statuses
+
+
+def _wait_for_admission_proof_guardians(
+    *,
+    nodes: Sequence[str],
+    candidate_node: str,
+    controllers: Mapping[str, Any],
+    node_to_controller: Mapping[str, str],
+    all_service_uuids: Mapping[str, str],
+    voter_guardian_names: Mapping[str, str],
+    target_guardian_name: str,
+    observations: list[dict[str, Any]],
+    observation_phase: str,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> tuple[set[str], dict[str, str]]:
+    required = set(nodes)
+    deadline = time.monotonic() + max_wait_seconds
+    last_statuses: dict[str, str] = {}
+    while True:
+        healthy, last_statuses = _observe_admission_proof_guardians(
+            nodes=nodes,
+            candidate_node=candidate_node,
+            controllers=controllers,
+            node_to_controller=node_to_controller,
+            all_service_uuids=all_service_uuids,
+            voter_guardian_names=voter_guardian_names,
+            target_guardian_name=target_guardian_name,
+            observations=observations,
+            observation_phase=observation_phase,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        if required <= healthy:
+            return healthy, last_statuses
+        if time.monotonic() >= deadline:
+            return healthy, last_statuses
+        time.sleep(max(0.0, poll_interval_seconds))
 
 def _cleanup_summary(document: Mapping[str, Any], *, paths: PrivateStatePaths) -> dict[str, Any]:
     evidence = document.get("evidence")
@@ -1670,7 +1877,9 @@ def execute_node_add_validator_admission_release(
     preconditions: list[dict[str, Any]] = []
     receipts: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    post_admission_validator_refresh: list[dict[str, Any]] = []
     post_admission_cleanup: dict[str, Any] | None = None
+    post_admission_cleanup_warning: dict[str, str] | None = None
     admission_proven = False
 
     target = release["target"]
@@ -1802,25 +2011,25 @@ def execute_node_add_validator_admission_release(
         })
         if not patch_ok:
             raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected target activation Compose with HTTP {patch['status']}")
-        deploy_endpoint = f"/api/v1/deploy?uuid={urllib.parse.quote(target_uuid, safe='')}&force=true"
-        deploy = _http(target_controller, "GET", deploy_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-        deploy_ok = deploy["status"] in {200, 201, 202}
+        start_endpoint = f"/api/v1/services/{urllib.parse.quote(target_uuid, safe='')}/start"
+        start = _http(target_controller, "POST", start_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+        start_ok = start["status"] in {200, 201, 202}
         receipts.append({
             "ordinal": len(receipts) + 1,
-            "mutation_id": f"{candidate_node}.deploy-validator-activation-compose",
+            "mutation_id": f"{candidate_node}.start-validator-activation-compose",
             "controller_id": target_controller_id,
             "node": candidate_node,
             "service_uuid": target_uuid,
-            "method": "GET",
-            "endpoint": deploy_endpoint,
+            "method": "POST",
+            "endpoint": start_endpoint,
             "body_sha256": None,
             "guardian_service": target_guardian_name,
-            "response": _safe_response(deploy),
-            "live_write_acknowledged": deploy_ok,
-            "status": "succeeded" if deploy_ok else "failed",
+            "response": _safe_response(start),
+            "live_write_acknowledged": start_ok,
+            "status": "succeeded" if start_ok else "failed",
         })
-        if not deploy_ok:
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected target deploy with HTTP {deploy['status']}")
+        if not start_ok:
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected target start with HTTP {start['status']}")
 
         for voter in voter_nodes:
             vote_request = request_by_voter.get(voter)
@@ -1868,75 +2077,60 @@ def execute_node_add_validator_admission_release(
             })
             if not patch_ok:
                 raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected {voter} guardian patch with HTTP {patch['status']}")
-            deploy_endpoint = f"/api/v1/deploy?uuid={urllib.parse.quote(uuid, safe='')}&force=true"
-            deploy = _http(controller, "GET", deploy_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-            deploy_ok = deploy["status"] in {200, 201, 202}
-            receipts.append({
+            start_endpoint = f"/api/v1/services/{urllib.parse.quote(uuid, safe='')}/start"
+            start = _http(controller, "POST", start_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
+            start_ok = start["status"] in {200, 201, 202}
+            start_rejected_nonfatal = start["status"] == 400
+            start_accepted = start_ok or start_rejected_nonfatal
+            start_receipt = {
                 "ordinal": len(receipts) + 1,
-                "mutation_id": f"{voter}.deploy-add-node-validator-admission-guardian",
+                "mutation_id": f"{voter}.start-add-node-validator-admission-guardian",
                 "controller_id": controller_id,
                 "node": voter,
                 "service_uuid": uuid,
-                "method": "GET",
-                "endpoint": deploy_endpoint,
+                "method": "POST",
+                "endpoint": start_endpoint,
                 "body_sha256": None,
                 "guardian_service": guardian_name,
-                "response": _safe_response(deploy),
-                "live_write_acknowledged": deploy_ok,
-                "status": "succeeded" if deploy_ok else "failed",
-            })
-            if not deploy_ok:
-                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected {voter} guardian deploy with HTTP {deploy['status']}")
+                "response": _safe_response(start),
+                "live_write_acknowledged": start_ok,
+                "status": "succeeded" if start_accepted else "failed",
+            }
+            if start_rejected_nonfatal:
+                start_receipt["coolify_start_rejected_nonfatal"] = True
+                start_receipt["nonfatal_reason"] = (
+                    "Coolify rejected POST /start for an existing validator service after a successful guardian "
+                    "Compose PATCH; exact voter guardian health proof remains required before admission can pass"
+                )
+            receipts.append(start_receipt)
+            if not start_accepted:
+                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected {voter} guardian start with HTTP {start['status']}")
 
-        deadline = time.monotonic() + max_wait_seconds
-        healthy: set[str] = set()
-        last_statuses: dict[str, str] = {}
         node_to_controller = {candidate_node: target_controller_id}
         for item in plan["rpc_requests"]:
             node_to_controller[_identifier(item["voter_node"], "voter node")] = _identifier(item["controller_id"], "voter controller")
-        while True:
-            healthy.clear()
-            for node in [candidate_node, *voter_nodes]:
-                controller_id = node_to_controller[node]
-                controller = controllers[controller_id]
-                service_uuid = all_service_uuids.get(node)
-                if service_uuid:
-                    endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
-                    service_response = _http(controller, "GET", endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-                else:
-                    endpoint = "/api/v1/services"
-                    service_response = _http(controller, "GET", endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-                if service_response["ok"]:
-                    record = _find_service_record(service_response["payload"], node=node, service_uuid=service_uuid)
-                    guard_names = [node]
-                    if node == candidate_node:
-                        guard_names.append(target_guardian_name)
-                    else:
-                        guard_names.append(voter_guardian_names[node])
-                    status = _service_status(record)
-                    component_healthy = _component_healthy(record, names=guard_names)
-                    last_statuses[node] = status
-                    if component_healthy:
-                        healthy.add(node)
-                    observations.append({
-                        "node": node,
-                        "controller_id": controller_id,
-                        "endpoint": endpoint,
-                        "service_uuid": service_uuid,
-                        "status": status,
-                        "component_or_service_healthy": component_healthy,
-                        "response_sha256": service_response["response_sha256"],
-                        "observed_at": _timestamp(),
-                    })
-            if set([candidate_node, *voter_nodes]) <= healthy:
-                break
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(max(0.0, poll_interval_seconds))
-        if not (set([candidate_node, *voter_nodes]) <= healthy):
+        admission_nodes = [candidate_node, *voter_nodes]
+        healthy, last_statuses = _wait_for_admission_proof_guardians(
+            nodes=admission_nodes,
+            candidate_node=candidate_node,
+            controllers=controllers,
+            node_to_controller=node_to_controller,
+            all_service_uuids=all_service_uuids,
+            voter_guardian_names=voter_guardian_names,
+            target_guardian_name=target_guardian_name,
+            observations=observations,
+            observation_phase="admission-proof-before-validator-refresh",
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        if not (set(admission_nodes) <= healthy):
             raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_NOT_HEALTHY", f"validator-admission guardians did not become healthy: {last_statuses!r}")
 
         admission_proven = True
+
         try:
             cleanup_result = execute_completed_mother_helper_cleanup(
                 paths,
@@ -1960,17 +2154,17 @@ def execute_node_add_validator_admission_release(
                 opener=opener,
                 operation=operation,
             )
+            post_admission_cleanup = _cleanup_summary(cleanup_result, paths=paths)
+            if cleanup_result.get("status") != "pass" or not isinstance(cleanup_result.get("summary"), Mapping) or cleanup_result["summary"].get("clean") is not True:
+                post_admission_cleanup_warning = {
+                    "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN_NONFATAL",
+                    "message": "post-admission service health cleanup did not reach a clean top-level Coolify service state; validator-set proof remains authoritative",
+                }
         except MotherDeploymentCompletedHelperCleanupError as exc:
-            raise _fail(
-                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN",
-                str(exc)[:700],
-            ) from exc
-        post_admission_cleanup = _cleanup_summary(cleanup_result, paths=paths)
-        if cleanup_result.get("status") != "pass" or not isinstance(cleanup_result.get("summary"), Mapping) or cleanup_result["summary"].get("clean") is not True:
-            raise _fail(
-                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN",
-                "post-admission service health cleanup did not reach a clean top-level Coolify service state",
-            )
+            post_admission_cleanup_warning = {
+                "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN_NONFATAL",
+                "message": str(exc)[:700],
+            }
 
     except MotherDeploymentNodeAddValidatorAdmissionError as exc:
         failure = {"code": exc.code, "message": str(exc)[:700]}
@@ -1978,17 +2172,41 @@ def execute_node_add_validator_admission_release(
         failure = {"code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_UNEXPECTED_FAILURE", "message": str(exc)[:700]}
 
     completed = _timestamp()
-    planned_mutations = 2 + 2 * len(voter_nodes)
+    initial_planned_mutations = 2 + 2 * len(voter_nodes)
+    refresh_planned_mutations = 0
+    planned_mutations = initial_planned_mutations
     succeeded = sum(item.get("status") == "succeeded" for item in receipts)
+    refresh_succeeded = 0
+    total_succeeded = succeeded
     required_healthy_nodes = set([candidate_node, *voter_nodes])
-    healthy_nodes = {item.get("node") for item in observations if item.get("component_or_service_healthy") is True}
+    healthy_nodes = {item.get("node") for item in observations if item.get("proof_guardian_healthy") is True}
+    proof_guardians_verified = _validator_admission_proof_guardians_verified({
+        "candidate_node": candidate_node,
+        "voter_nodes": voter_nodes,
+        "health_observations": observations,
+    })
+    post_refresh_guardians_verified = False
+    refresh_clean = False
     cleanup_clean = (
         isinstance(post_admission_cleanup, Mapping)
         and isinstance(post_admission_cleanup.get("summary"), Mapping)
         and post_admission_cleanup["summary"].get("clean") is True
     )
-    complete = failure is None and admission_proven and succeeded == planned_mutations and required_healthy_nodes <= healthy_nodes and cleanup_clean
-    live_mutation = any(item.get("live_write_acknowledged") is True for item in receipts)
+    cleanup_acceptable = cleanup_clean or (
+        post_admission_cleanup_warning is not None
+        and admission_proven
+        and proof_guardians_verified
+        and succeeded == initial_planned_mutations
+    )
+    complete = (
+        failure is None
+        and admission_proven
+        and succeeded == initial_planned_mutations
+        and required_healthy_nodes <= healthy_nodes
+        and proof_guardians_verified
+        and cleanup_acceptable
+    )
+    live_mutation = any(item.get("live_write_acknowledged") is True for item in [*receipts, *post_admission_validator_refresh])
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
@@ -2000,6 +2218,10 @@ def execute_node_add_validator_admission_release(
         "mode": release.get("mode"),
         "candidate_node": candidate_node,
         "candidate_validator_address": candidate,
+        "candidate_validator_route": dict(plan.get("candidate_validator_route") or {}),
+        "candidate_p2p_port": plan.get("candidate_p2p_port"),
+        "candidate_p2p_endpoint": (plan.get("candidate_validator_route") or {}).get("p2p_endpoint") if isinstance(plan.get("candidate_validator_route"), Mapping) else None,
+        "service_routes": {str(node): dict(route) for node, route in (plan.get("service_routes") or {}).items() if isinstance(route, Mapping)},
         "target_host": target_controller_id,
         "created_service_uuid": target_uuid,
         "voter_nodes": voter_nodes,
@@ -2013,10 +2235,12 @@ def execute_node_add_validator_admission_release(
         "precondition_receipts": preconditions,
         "mutation_receipts": receipts,
         "health_observations": observations,
+        "post_admission_validator_refresh": post_admission_validator_refresh,
         "post_admission_cleanup": post_admission_cleanup,
+        "post_admission_cleanup_warning": post_admission_cleanup_warning,
         "failure": failure,
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": ["GET", "PATCH", "POST"],
             "coolify_control_plane_only": True,
             "all_existing_validator_votes_required": True,
             "manual_ssh_required": False,
@@ -2031,24 +2255,27 @@ def execute_node_add_validator_admission_release(
             "release_consumed": True,
             "validator_vote_authorized": True,
             "validator_activation_authorized": True,
-            "validator_vote_proven": admission_proven,
-            "validator_activation_proven": admission_proven,
+            "validator_vote_proven": admission_proven and proof_guardians_verified,
+            "validator_activation_proven": admission_proven and proof_guardians_verified,
             "routing_or_topology_publication_authorized": False,
         },
         "summary": {
             "clean": complete,
             "complete": complete,
-            "target_validator_identity_activated": admission_proven,
-            "current_validator_set_reverified": admission_proven,
-            "final_validator_set_verified": admission_proven,
+            "target_validator_identity_activated": admission_proven and proof_guardians_verified,
+            "current_validator_set_reverified": admission_proven and proof_guardians_verified,
+            "final_validator_set_verified": admission_proven and proof_guardians_verified,
+            "admission_proof_guardian_components_verified": proof_guardians_verified,
             "desired_validator_count": len(desired_set),
             "current_validator_count": len(current_set),
             "logical_vote_count": len(voter_nodes),
             "all_existing_validator_votes_required": True,
             "planned_mutation_count": planned_mutations,
-            "attempted_mutation_count": len(receipts),
-            "succeeded_mutation_count": succeeded,
-            "failed_mutation_count": sum(item.get("status") != "succeeded" for item in receipts),
+            "initial_planned_mutation_count": initial_planned_mutations,
+            "post_admission_refresh_planned_mutation_count": refresh_planned_mutations,
+            "attempted_mutation_count": len(receipts) + len(post_admission_validator_refresh),
+            "succeeded_mutation_count": total_succeeded,
+            "failed_mutation_count": sum(item.get("status") != "succeeded" for item in [*receipts, *post_admission_validator_refresh]),
             "network_access_performed": bool(preconditions or receipts or observations),
             "bootnode_p2p_reachability_performed": any(
                 item.get("name") == "bootnode-p2p-reachability-before-validator-vote"
@@ -2060,29 +2287,36 @@ def execute_node_add_validator_admission_release(
                 for item in preconditions
             ),
             "live_mutation_performed": live_mutation,
-            "validator_vote_performed": admission_proven,
-            "validator_activation_performed": admission_proven,
+            "validator_vote_performed": admission_proven and proof_guardians_verified,
+            "validator_activation_performed": admission_proven and proof_guardians_verified,
             "routing_or_topology_publication_authorized": False,
             "routing_or_topology_published": False,
             "public_endpoint_created": False,
             "manual_ssh_required": False,
+            "post_admission_validator_refresh_performed": bool(post_admission_validator_refresh),
+            "post_admission_validator_refresh_clean": refresh_clean,
+            "post_admission_validator_refresh_guardians_verified": post_refresh_guardians_verified,
             "post_admission_cleanup_clean": cleanup_clean,
+            "post_admission_cleanup_nonfatal": post_admission_cleanup_warning is not None,
             "post_admission_cleanup_performed": post_admission_cleanup is not None,
             "target_service_top_level_healthy": cleanup_clean,
             "replica_sync_evidence_reverified": any(item.get("replica_sync_proven") is True for item in preconditions),
-            "blocks_advancing": admission_proven,
-            "latest_block_fresh": admission_proven,
+            "blocks_advancing": admission_proven and proof_guardians_verified,
+            "latest_block_fresh": admission_proven and proof_guardians_verified,
             "target_host": target_controller_id,
             "target_node": candidate_node,
+            "target_p2p_port": plan.get("candidate_p2p_port"),
+            "target_p2p_endpoint": (plan.get("candidate_validator_route") or {}).get("p2p_endpoint") if isinstance(plan.get("candidate_validator_route"), Mapping) else None,
             "next_phase": f"add-node-post-admission-observe-{inspected['network']}" if complete else "manual-review-required",
         },
         "next_phase": f"add-node-post-admission-observe-{inspected['network']}" if complete else "manual-review-required",
-        "validator_mutation_count": 1 if admission_proven else 0,
-        "validator_vote_performed": admission_proven,
-        "validator_activation_performed": admission_proven,
-        "validator_restart_count": 1 if admission_proven else 0,
-        "chain_mutation_count": 1 if admission_proven else 0,
-        "service_mutation_count": succeeded,
+        "validator_mutation_count": 1 if admission_proven and proof_guardians_verified else 0,
+        "validator_vote_performed": admission_proven and proof_guardians_verified,
+        "validator_activation_performed": admission_proven and proof_guardians_verified,
+        "validator_restart_count": 0,
+        "post_admission_validator_refresh_performed": bool(post_admission_validator_refresh),
+        "chain_mutation_count": 1 if admission_proven and proof_guardians_verified else 0,
+        "service_mutation_count": total_succeeded,
     }
     evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)
     evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
@@ -2128,6 +2362,8 @@ def verify_node_add_validator_admission_evidence(
         summary.get("validator_activation_performed") is True,
         summary.get("target_validator_identity_activated") is True,
         summary.get("final_validator_set_verified") is True,
+        summary.get("admission_proof_guardian_components_verified") is True,
+        _validator_admission_proof_guardians_verified(document),
         summary.get("blocks_advancing") is True,
         summary.get("latest_block_fresh") is True,
         summary.get("public_endpoint_created") is False,
@@ -2155,6 +2391,7 @@ def verify_node_add_validator_admission_evidence(
         "final_validator_set": list(document["desired_validator_set"]),
         "validator_vote_proven": True,
         "validator_activation_proven": True,
+        "admission_proof_guardian_components_verified": True,
         "routing_or_topology_published": False,
         "public_endpoint_created": False,
         "next_phase": document["next_phase"],

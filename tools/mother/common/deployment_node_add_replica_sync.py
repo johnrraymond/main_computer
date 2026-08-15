@@ -36,6 +36,7 @@ from .coolify_state import (
 from .deployment_genesis import _genesis_policy
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
+from .deployment_validator_routes import ensure_service_validator_route, validator_route_from_record
 
 
 _RELEASE_KIND = "main_computer.mother.deployment_node_add_replica_sync_release.v1"
@@ -541,16 +542,25 @@ def _bootnode(private_state: PrivateStateReadResult, identity_evidence: Mapping[
         controller_id = _identifier(service.get("controller_id"), f"{node} controller")
         private_key = _state_private_key(private_state, network=network, node=node)
         node_id = _public_node_id(private_key)
-        controller = resolve_coolify_controller(private_state, network, controller_id, require_enabled=True, require_token=False)
-        host = _advertised_host(controller.base_url)
+        route = ensure_service_validator_route(
+            private_state,
+            network=network,
+            node=node,
+            service=service,
+            services=services,
+        )
+        host = str(route["advertised_host"])
+        p2p_port = int(route["p2p_port"])
         return {
             "node": node,
             "controller_id": controller_id,
             "service_uuid": service.get("service_uuid"),
-            "enode": f"enode://{node_id}@{host}:30303",
+            "enode": f"enode://{node_id}@{host}:{p2p_port}",
             "node_id_sha256": hashlib.sha256(node_id.encode("ascii")).hexdigest(),
             "advertised_host": host,
-            "p2p_port": 30303,
+            "p2p_port": p2p_port,
+            "p2p_endpoint": route["p2p_endpoint"],
+            "validator_route": dict(route),
         }
     raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_BOOTNODE_MISSING", "no current topology node has a usable bootnode identity")
 
@@ -664,7 +674,11 @@ def _replica_sync_compose(
     bootnode_enode: str,
     target_validator_node_id: str,
     target_validator_address: str,
+    candidate_p2p_port: int,
 ) -> str:
+    candidate_p2p_port = int(candidate_p2p_port)
+    if not 1 <= candidate_p2p_port <= 65535:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ROUTE_INVALID", "candidate P2P port is invalid")
     encoded_genesis = base64.b64encode(canonical_json(dict(genesis))).decode("ascii")
     bootnode_node_id = _node_id_from_enode(bootnode_enode)
     script = _sync_script(
@@ -714,7 +728,7 @@ def _replica_sync_compose(
         "      - --sync-mode=FULL",
         "      - --data-storage-format=BONSAI",
         "      - --p2p-enabled=true",
-        "      - --p2p-port=30303",
+        f"      - --p2p-port={candidate_p2p_port}",
         "      - --discovery-enabled=true",
         f"      - --bootnodes={bootnode_enode}",
         "      - --rpc-http-enabled=true",
@@ -780,6 +794,8 @@ def _compose_report(*, observed: str, expected: str, node: str) -> dict[str, Any
         expected_doc = None
     yaml_equivalent = observed_doc == expected_doc and observed_doc is not None
     observed_text = observed
+    expected_p2p_match = re.search(r"--p2p-port=(\d+)", expected)
+    expected_p2p_port = expected_p2p_match.group(1) if expected_p2p_match else "30303"
     services = observed_doc.get("services") if isinstance(observed_doc, Mapping) else {}
     replica = services.get(node) if isinstance(services, Mapping) and isinstance(services.get(node), Mapping) else {}
     guardian = services.get("mother-replica-sync-guardian") if isinstance(services, Mapping) and isinstance(services.get("mother-replica-sync-guardian"), Mapping) else {}
@@ -793,9 +809,9 @@ def _compose_report(*, observed: str, expected: str, node: str) -> dict[str, Any
         "uses_node_private_key_file": "--node-private-key-file=/config/nodekey" in observed_text,
         "sync_mode_full": "--sync-mode=FULL" in observed_text,
         "bootnode_present": "--bootnodes=enode://" in observed_text,
-        "p2p_container_port_enabled": "--p2p-port=30303" in observed_text,
-        "host_p2p_tcp_port_absent": "30303:30303/tcp" not in observed_text,
-        "host_p2p_udp_port_absent": "30303:30303/udp" not in observed_text,
+        "p2p_container_port_enabled": f"--p2p-port={expected_p2p_port}" in observed_text,
+        "host_p2p_tcp_port_absent": f"{expected_p2p_port}:{expected_p2p_port}/tcp" not in observed_text,
+        "host_p2p_udp_port_absent": f"{expected_p2p_port}:{expected_p2p_port}/udp" not in observed_text,
         "rpc_not_host_published": "8545:8545" not in observed_text,
         "validator_activation_blocked": "main_computer.mother.validator-activation: blocked" in observed_text,
         "replica_sync_proof_active": "main_computer.mother.replica-sync: proof-active" in observed_text,
@@ -921,6 +937,14 @@ def build_node_add_replica_sync_release(
     if target_validator in expected_validators:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_VALIDATORS_INVALID", "target validator is already active before replica sync")
     bootnode = _bootnode(private_state, identity_evidence)
+    candidate_route = target.get("validator_route") if isinstance(target.get("validator_route"), Mapping) else None
+    if not isinstance(candidate_route, Mapping):
+        candidate_route = identity_evidence.get("prepared_post_add_topology", {}).get("target_validator_route")
+    if not isinstance(candidate_route, Mapping):
+        candidate_route = validator_route_from_record(target) or {}
+    candidate_p2p_port = int(candidate_route.get("p2p_port") or 30303)
+    if not 1 <= candidate_p2p_port <= 65535:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ROUTE_INVALID", "candidate validator route P2P port is invalid")
     target_private_key = _state_private_key(private_state, network=network, node=node)
     target_validator_node_id = _public_node_id(target_private_key)
     compose = _replica_sync_compose(
@@ -932,6 +956,7 @@ def build_node_add_replica_sync_release(
         bootnode_enode=bootnode["enode"],
         target_validator_node_id=target_validator_node_id,
         target_validator_address=target_validator,
+        candidate_p2p_port=candidate_p2p_port,
     )
     compose_bytes = compose.encode("utf-8")
     service_uuid_quoted = urllib.parse.quote(service_uuid, safe="")
@@ -973,6 +998,8 @@ def build_node_add_replica_sync_release(
             "genesis_source": genesis_source,
             "expected_validator_set": expected_validators,
             "target_validator_address": target_validator,
+            "candidate_validator_route": dict(candidate_route),
+            "candidate_p2p_port": candidate_p2p_port,
             "bootnode": bootnode,
             "replica_node_identity_source": "runtime-generated-non-validator",
             "target_validator_node_id_sha256": hashlib.sha256(target_validator_node_id.encode("ascii")).hexdigest(),
@@ -987,6 +1014,7 @@ def build_node_add_replica_sync_release(
                 "host_rpc_mapping_present": False,
                 "host_p2p_mapping_present": False,
                 "host_p2p_publication_authorized": False,
+                "candidate_p2p_port": candidate_p2p_port,
             },
             "preconditions": [
                 {"controller_id": controller_id, "method": "GET", "endpoint": f"/api/v1/services/{service_uuid_quoted}", "assertion": "target standby service still exists"},
@@ -994,7 +1022,7 @@ def build_node_add_replica_sync_release(
             ],
             "mutations": [
                 {"ordinal": 1, "mutation_id": f"{node}.install-replica-sync-compose", "controller_id": controller_id, "method": "PATCH", "endpoint": f"/api/v1/services/{service_uuid_quoted}", "canonical_request_body": body, "body_sha256": body_sha, "success_statuses": [200, 201, 202]},
-                {"ordinal": 2, "mutation_id": f"{node}.deploy-replica-sync-compose", "controller_id": controller_id, "method": "GET", "endpoint": f"/api/v1/deploy?uuid={service_uuid_quoted}&force=true", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
+                {"ordinal": 2, "mutation_id": f"{node}.start-replica-sync-compose", "controller_id": controller_id, "method": "POST", "endpoint": f"/api/v1/services/{service_uuid_quoted}/start", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
             ],
             "proof": {
                 "transport": "coolify-control-plane-only",
@@ -1032,7 +1060,7 @@ def build_node_add_replica_sync_release(
         },
         "policy": {
             "compiler": "mother-native-add-node-replica-sync-v1",
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": ["GET", "PATCH", "POST"],
             "coolify_control_plane_only": True,
             "requested_use_limit": 1,
             "identity_install_previously_performed": True,
@@ -1059,6 +1087,8 @@ def build_node_add_replica_sync_release(
             "target_node": node,
             "target_host": controller_id,
             "created_service_uuid": service_uuid,
+            "target_p2p_port": candidate_p2p_port,
+            "target_p2p_endpoint": candidate_route.get("p2p_endpoint"),
             "identity_install_previously_performed": True,
             "replica_sync_authorized": True,
             "validator_admission_authorized": False,
@@ -1361,6 +1391,8 @@ def execute_node_add_replica_sync_release(
             "genesis_sha256": plan["genesis_sha256"],
             "expected_validator_set": list(plan["expected_validator_set"]),
             "target_validator_address": plan["target_validator_address"],
+            "candidate_validator_route": dict(plan.get("candidate_validator_route", {})),
+            "candidate_p2p_port": plan.get("candidate_p2p_port"),
             "bootnode": dict(plan["bootnode"]),
             "sync_compose_sha256": plan["sync_compose"]["sha256"],
             "replica_node_identity_source": plan["replica_node_identity_source"],
@@ -1384,6 +1416,8 @@ def execute_node_add_replica_sync_release(
             "expected_validator_set": list(plan["expected_validator_set"]),
             "target_validator_address": plan["target_validator_address"],
             "target_validator_active": False,
+            "candidate_validator_route": dict(plan.get("candidate_validator_route", {})),
+            "candidate_p2p_port": plan.get("candidate_p2p_port"),
             "bootnode_node": plan["bootnode"]["node"],
             "bootnode_node_id_sha256": plan["bootnode"]["node_id_sha256"],
             "replica_node_identity_source": plan["replica_node_identity_source"],
@@ -1402,7 +1436,7 @@ def execute_node_add_replica_sync_release(
             "routing_or_topology_publication_authorized": False,
         },
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH"],
+            "allowed_http_methods": ["GET", "PATCH", "POST"],
             "coolify_control_plane_only": True,
             "identity_install_previously_performed": True,
             "replica_node_only": True,
