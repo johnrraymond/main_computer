@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,6 +11,7 @@ from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_node_add_prep import build_node_add_prep_transaction
 from tools.mother.common.deployment_topology_rectification import (
     adopt_empty_current_topology,
+    adopt_fresh_empty_topology,
     detect_topology_staleness,
     verify_empty_topology_rectification_evidence,
 )
@@ -617,6 +619,91 @@ def test_empty_topology_rectification_writes_prep_usable_empty_baseline(tmp_path
     assert prep["source_baseline_evidence"]["topology_role"] == "live-topology-source"
 
 
+def test_fresh_empty_topology_rectification_breaks_old_genesis_lineage_for_first_bootstrap(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
+
+    result = adopt_fresh_empty_topology(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        write_evidence=True,
+        now=datetime(2026, 8, 12, 20, 26, 0, tzinfo=timezone.utc),
+        opener=_MissingServiceOpener(),
+        operation=_operation("adopt-fresh-empty-topology"),
+    )
+
+    written = result["evidence"]
+    verified = verify_empty_topology_rectification_evidence(
+        paths,
+        private_state,
+        Path(written["path"]),
+        now=datetime(2026, 8, 12, 20, 26, 30, tzinfo=timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert result["final_topology"]["genesis_sha256"] is None
+    assert result["final_topology"]["fresh_genesis_required"] is True
+    assert result["summary"]["old_genesis_reused"] is False
+
+    prep = build_node_add_prep_transaction(
+        paths,
+        private_state,
+        Path(written["path"]),
+        network="mainnet",
+        target_node=C1_NODE,
+        target_host="coolify-c",
+        mode="reactivate",
+        baseline_evidence_sha256=written["sha256"],
+        created_at="2026-08-12T20:27:00Z",
+        now=datetime(2026, 8, 12, 20, 27, 0, tzinfo=timezone.utc),
+    )
+    assert prep["current_topology"]["nodes"] == []
+    assert prep["current_topology"]["validator_set"] == []
+    assert prep["current_topology"]["genesis_sha256"] is None
+    assert prep["current_topology"]["fresh_genesis_required"] is True
+    state_doc = yaml.safe_load(private_state.document_bytes.decode("utf-8"))
+    expected_c1_validator = state_doc["networks"]["mainnet"]["validators"][C1_NODE]["address"].lower()
+    assert prep["target"]["validator_address"] == expected_c1_validator
+    assert prep["source_baseline_evidence"]["fresh_genesis_required"] is True
+
+
+def test_detect_topology_accepts_fresh_empty_topology_without_genesis_sha(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    previous_path, previous_sha = _write_single_node_topology_evidence(paths, private_state)
+
+    reset = adopt_fresh_empty_topology(
+        paths,
+        private_state,
+        previous_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=previous_sha,
+        write_evidence=True,
+        now=datetime(2026, 8, 12, 20, 26, 0, tzinfo=timezone.utc),
+        opener=_MissingServiceOpener(),
+        operation=_operation("adopt-fresh-empty-topology"),
+    )
+
+    detected = detect_topology_staleness(
+        paths,
+        private_state,
+        Path(reset["evidence"]["path"]),
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=reset["evidence"]["sha256"],
+        now=datetime(2026, 8, 12, 20, 26, 10, tzinfo=timezone.utc),
+        opener=_MissingServiceOpener(),
+    )
+
+    assert detected["status"] == "pass"
+    assert detected["chain_id"] == 42424240
+    assert detected["genesis_sha256"] is None
+    assert detected["expected_nodes"] == []
+    assert detected["expected_validator_set"] == []
+    assert detected["summary"]["topology_current"] is True
+    assert detected["summary"]["next_phase"] == "add-node-prep-mainnet"
+
+
 def test_empty_topology_rectification_rejects_non_empty_actual_nodes(tmp_path: Path) -> None:
     _runtime, paths, private_state = _install(tmp_path)
     evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
@@ -644,6 +731,7 @@ def test_mother_deploy_cli_exposes_topology_rectification_commands() -> None:
     help_text = parser.format_help()
     assert "detect-mother-topology-staleness" in help_text
     assert "adopt-empty-current-topology" in help_text
+    assert "adopt-fresh-empty-topology" in help_text
     assert "verify-empty-current-topology-evidence" in help_text
 
 
@@ -652,6 +740,7 @@ def test_mutate_harness_stops_on_stale_topology_before_prep(tmp_path: Path, monk
 
     args = mother_mutate_harness.build_parser().parse_args(
         [
+            "add-node",
             "--runtime-state-root",
             str(tmp_path),
             "--baseline-evidence",
@@ -690,6 +779,7 @@ def test_mutate_harness_allows_current_topology_even_with_manual_review_status(t
 
     args = mother_mutate_harness.build_parser().parse_args(
         [
+            "add-node",
             "--runtime-state-root",
             str(tmp_path),
             "--baseline-evidence",
@@ -791,6 +881,7 @@ def test_mutate_harness_rejects_current_topology_with_unexpected_live_nodes(tmp_
 
     args = mother_mutate_harness.build_parser().parse_args(
         [
+            "add-node",
             "--runtime-state-root",
             str(tmp_path),
             "--baseline-evidence",

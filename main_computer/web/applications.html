@@ -270,7 +270,10 @@
                 </span>
               </label>
             </fieldset>
-            <button id="webgl-gameplay-pack-apply" data-webgl-gameplay-pack-start type="button">START NEW GAME</button>
+            <div class="webgl-gameplay-pack-actions" data-webgl-gameplay-pack-actions>
+              <button id="webgl-load-game" data-webgl-load-game type="button" disabled aria-disabled="true">LOAD GAME</button>
+              <button id="webgl-gameplay-pack-apply" data-webgl-gameplay-pack-start type="button">START NEW GAME</button>
+            </div>
             <div class="webgl-autosave-status" id="webgl-autosave-status" role="status" aria-live="polite" data-webgl-autosave-status>Autosave: none yet.</div>
             <div class="webgl-gameplay-pack-status" id="webgl-gameplay-pack-status" role="status" aria-live="polite">Default packs selected. Press START NEW GAME.</div>
           </div>

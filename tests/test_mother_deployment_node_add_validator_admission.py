@@ -11,16 +11,22 @@ from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_node_add_validator_admission import (
     MotherDeploymentNodeAddValidatorAdmissionError,
     execute_node_add_validator_admission_release,
+    adopt_node_add_validator_admission_live_proof,
     build_node_add_validator_admission_release,
     _candidate_activation_compose,
     _digest_without,
+    _durable_validator_admission_proof_verified,
     _bootnode_p2p_reachability_receipt,
+    _candidate_validator_enode,
     _component_healthy,
     _http,
     _parse_bootnode_p2p_endpoint,
     _preflight_existing_validator_services,
+    _recover_target_start_rejection,
+    _restart_validator_services_for_qbft_transition,
     _service_uuid_hints_from_replica_sync_evidence,
     _validator_vote_address,
+    _QBFT_STALE_VOTE_QUIET_SECONDS,
     _voter_guardian_script,
 )
 
@@ -94,6 +100,7 @@ def test_validator_admission_uses_checksummed_candidate_for_qbft_vote_rpc() -> N
     script = _voter_guardian_script(
         voter="mainneta-super1",
         candidate=lowercase,
+        candidate_enode="enode://" + "b" * 128 + "@10.116.0.2:30303",
         current_validators=["0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
         desired_validators=[lowercase, "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
         chain_id=42424240,
@@ -105,7 +112,116 @@ def test_validator_admission_uses_checksummed_candidate_for_qbft_vote_rpc() -> N
     assert checksummed in script
     assert '"params":["0x9b809f05f8d68da17e697cd6ab040d4320494611",true]' not in script
     assert '"params":["0x9B809F05F8D68Da17e697cD6Ab040d4320494611",true]' in script
+    assert "CANDIDATE_ENODE = 'enode://" in script
+    assert "admin_addPeer" in script
+    assert "admin_peers" in script
+    assert "already_connected_after_reject" in script
+    assert "expected peer is not connected" in script
+    assert "candidate_peer_connect_result" in script
+    assert "candidate_enode_sha256" in script
 
+
+def test_validator_admission_voter_guardian_auto_cleans_satisfied_stale_votes_after_quiet_window() -> None:
+    c1 = "0x9b809f05f8d68da17e697cd6ab040d4320494611"
+    a1 = "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"
+    c2 = "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876"
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "qbft_proposeValidatorVote",
+        "params": [_validator_vote_address(c2, "candidate validator"), True],
+    }
+
+    script = _voter_guardian_script(
+        voter="mainnetc-super1",
+        candidate=c2,
+        candidate_enode="enode://" + "b" * 128 + "@10.116.0.2:30304",
+        current_validators=[c1, a1],
+        desired_validators=[c2, c1, a1],
+        chain_id=42424240,
+        genesis_sha256="a" * 64,
+        request_sha256=hashlib.sha256(canonical_json(request)).hexdigest(),
+    )
+
+    assert _QBFT_STALE_VOTE_QUIET_SECONDS == 35
+    assert "STALE_VOTE_QUIET_SECONDS = 35" in script
+    assert "qbft_getPendingVotes" in script
+    assert "qbft_discardValidatorVote" in script
+    assert "add_vote_already_in_validator_set" in script
+    assert "remove_vote_already_absent_from_validator_set" in script
+    assert "cleanup_satisfied_pending_votes(current, 'before-candidate-vote')" in script
+    assert "cleanup_satisfied_pending_votes(final, 'after-desired-validator-set')" in script
+    assert "stale_vote_cleanup" in script
+    assert "final_pending_votes" in script
+    assert script.index("cleanup_satisfied_pending_votes(current, 'before-candidate-vote')") < script.index("rpc(REQUEST['method'], REQUEST['params'])")
+    assert _validator_vote_address(a1, "existing validator") in script
+
+
+def test_validator_admission_builds_candidate_enode_from_route() -> None:
+    enode = _candidate_validator_enode(
+        "b" * 128,
+        {"advertised_host": "10.116.0.3", "p2p_port": 30304, "p2p_endpoint": "10.116.0.3:30304"},
+    )
+
+    assert enode == "enode://" + "b" * 128 + "@10.116.0.3:30304"
+
+
+def test_validator_activation_guardian_explicitly_peers_bootnode() -> None:
+    genesis = b'{"config":{"chainId":42424240}}'
+    genesis_b64 = base64.b64encode(genesis).decode("ascii")
+    genesis_sha = hashlib.sha256(genesis).hexdigest()
+    bootnode = "enode://" + "a" * 128 + "@10.116.0.3:30303"
+
+    compose = _candidate_activation_compose(
+        target_node="mainneta-super2",
+        genesis_b64=genesis_b64,
+        bootnode_enode=bootnode,
+        chain_id=42424240,
+        genesis_sha256=genesis_sha,
+        target_node_id="b" * 128,
+        desired_validators=[
+            "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        candidate_p2p_port=30304,
+    )
+
+    assert bootnode in compose
+    assert "admin_addPeer" in compose
+    assert "admin_peers" in compose
+    assert "already_connected_after_reject" in compose
+    assert "bootnode_peer_connect_result" in compose
+    assert "expected peer is not connected" in compose
+    assert "target is still syncing before admission proof" in compose
+    assert "target has no bootnode peers before admission proof" in compose
+
+
+def test_validator_admission_peer_guard_tolerates_already_connected_add_peer_false() -> None:
+    lowercase = "0x72151668fe7a691eab99c4779d406380c1d0cfd0"
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "qbft_proposeValidatorVote",
+        "params": [_validator_vote_address(lowercase, "candidate validator"), True],
+    }
+    script = _voter_guardian_script(
+        voter="mainneta-super1",
+        candidate=lowercase,
+        candidate_enode="enode://" + "b" * 128 + "@10.116.0.3:30304",
+        current_validators=["0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
+        desired_validators=[lowercase, "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"],
+        chain_id=42424240,
+        genesis_sha256="a" * 64,
+        request_sha256=hashlib.sha256(canonical_json(request)).hexdigest(),
+    )
+
+    assert "peer_connected(enode)" in script
+    assert "rpc('admin_peers', [])" in script
+    assert "if result is True: return 'add_peer_accepted'" in script
+    assert "if peer_connected(enode): return 'already_connected_after_reject'" in script
+    assert "already_connected_after_reject_wait" in script
+    assert "candidate_peer_connect_result = ensure_peer(CANDIDATE_ENODE, 'candidate')" in script
+    assert script.index("candidate_peer_connect_result = ensure_peer") < script.index("rpc(REQUEST['method'], REQUEST['params'])")
 
 
 def test_validator_admission_parses_bootnode_p2p_endpoint_from_enode() -> None:
@@ -232,6 +348,101 @@ class _FakeOpener:
         return _FakeResponse()
 
 
+
+def _guardian_observation(node: str, guardian: str, sample: int, *, healthy: bool = True) -> dict[str, object]:
+    return {
+        "node": node,
+        "proof_guardian_name": guardian,
+        "proof_guardian_healthy": healthy,
+        "observation_phase": "admission-proof-terminal-durable",
+        "durable_sample_index": sample,
+    }
+
+
+def test_validator_admission_durable_proof_requires_materialized_final_validator_set() -> None:
+    desired = [
+        "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+    ]
+    observations = []
+    for sample in (1, 2, 3):
+        observations.append(_guardian_observation("mainneta-super2", "mother-add-node-validator-activation-guardian", sample))
+        observations.append(_guardian_observation("mainneta-super1", "mother-add-node-validator-admission-voter-mainneta-super1", sample))
+
+    assert _durable_validator_admission_proof_verified({
+        "candidate_node": "mainneta-super2",
+        "voter_nodes": ["mainneta-super1"],
+        "desired_validator_set": desired,
+        "final_validator_set": list(reversed(desired)),
+        "health_observations": observations,
+    }) is True
+
+    assert _durable_validator_admission_proof_verified({
+        "candidate_node": "mainneta-super2",
+        "voter_nodes": ["mainneta-super1"],
+        "desired_validator_set": desired,
+        "final_validator_set": None,
+        "health_observations": observations,
+    }) is False
+
+
+def test_validator_admission_durable_proof_rejects_transient_or_later_unhealthy_guardian() -> None:
+    desired = [
+        "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+    ]
+
+    one_sample = [
+        _guardian_observation("mainneta-super2", "mother-add-node-validator-activation-guardian", 1),
+        _guardian_observation("mainneta-super1", "mother-add-node-validator-admission-voter-mainneta-super1", 1),
+    ]
+    assert _durable_validator_admission_proof_verified({
+        "candidate_node": "mainneta-super2",
+        "voter_nodes": ["mainneta-super1"],
+        "desired_validator_set": desired,
+        "final_validator_set": desired,
+        "health_observations": one_sample,
+    }) is False
+
+    observations = []
+    for sample in (1, 2, 3):
+        observations.append(_guardian_observation("mainneta-super2", "mother-add-node-validator-activation-guardian", sample))
+        observations.append(_guardian_observation("mainneta-super1", "mother-add-node-validator-admission-voter-mainneta-super1", sample))
+    observations.append(_guardian_observation("mainneta-super2", "mother-add-node-validator-activation-guardian", 4, healthy=False))
+    observations.append(_guardian_observation("mainneta-super1", "mother-add-node-validator-admission-voter-mainneta-super1", 4))
+
+    assert _durable_validator_admission_proof_verified({
+        "candidate_node": "mainneta-super2",
+        "voter_nodes": ["mainneta-super1"],
+        "desired_validator_set": desired,
+        "final_validator_set": desired,
+        "health_observations": observations,
+    }) is False
+
+
+def test_validator_admission_execute_requires_terminal_durable_proof_before_clean() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "admission-proof-terminal-durable" in executor_source
+    assert "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_DURABLE_PROOF_LOST" in executor_source
+    assert '"final_validator_set": final_validator_set' in executor_source
+    assert "_durable_validator_admission_proof_verified" in executor_source
+    assert "admission_proven = True" in executor_source
+    assert executor_source.index("admission-proof-terminal-durable") < executor_source.index("admission_proven = True")
+
+
+def test_validator_admission_verify_rejects_legacy_summary_flags_without_durable_final_set() -> None:
+    verifier_source = inspect.getsource(_durable_validator_admission_proof_verified)
+    verify_source = inspect.getsource(__import__(
+        "tools.mother.common.deployment_node_add_validator_admission",
+        fromlist=["verify_node_add_validator_admission_evidence"],
+    ).verify_node_add_validator_admission_evidence)
+
+    assert "not isinstance(desired, list) or not isinstance(final, list)" in verifier_source
+    assert "_durable_validator_admission_proof_verified(document)" in verify_source
+    assert 'list(document["final_validator_set"])' in verify_source
+
+
 def test_validator_admission_http_accepts_coolify_controller_objects() -> None:
     opener = _FakeOpener()
     controller = SimpleNamespace(base_url="https://coolify.example", api_token="secret-token")
@@ -278,6 +489,23 @@ def test_validator_admission_tolerates_existing_voter_start_400_until_guardian_p
     assert start_index < proof_index
 
 
+def test_validator_admission_recovers_target_start_400_when_activation_service_is_already_running() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+    recovery_source = inspect.getsource(_recover_target_start_rejection)
+
+    assert "target_start_rejected_nonfatal = target_start_recovery.get(\"verified\") is True" in executor_source
+    assert "\"coolify_target_start_rejected_nonfatal\"" in executor_source
+    assert "_recover_target_start_rejection" in executor_source
+    assert "exact target activation guardian proof remains required" in executor_source
+    assert "mother-validator-activation-init" in recovery_source
+    assert "main_computer.mother.validator-activation: active" in recovery_source
+    assert "service_started" in recovery_source
+
+    start_index = executor_source.index("coolify_target_start_rejected_nonfatal")
+    proof_index = executor_source.index("_wait_for_admission_proof_guardians")
+    assert start_index < proof_index
+
+
 def test_validator_admission_does_not_post_start_after_successful_admission_proof() -> None:
     executor_source = inspect.getsource(execute_node_add_validator_admission_release)
 
@@ -291,6 +519,32 @@ def test_validator_admission_does_not_post_start_after_successful_admission_proo
     assert proof_index < cleanup_index
     assert "post_admission_cleanup_warning" in executor_source
     assert "POST_ADMISSION_HEALTH_UNCLEAN_NONFATAL" in executor_source
+
+
+def test_validator_admission_restarts_and_reobserves_qbft_transition_before_failure() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/restart" in inspect.getsource(
+        _restart_validator_services_for_qbft_transition
+    )
+    assert "admission-proof-after-qbft-transition-restart" in executor_source
+    assert "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_QBFT_TRANSITION_RESTART_FAILED" in executor_source
+    assert "max(max_wait_seconds, 720.0)" in executor_source
+
+
+def test_validator_admission_live_proof_adoption_is_read_only_and_writes_new_evidence() -> None:
+    adoption_source = inspect.getsource(adopt_node_add_validator_admission_live_proof)
+
+    assert '"adopt-add-node-validator-admission-live-proof"' not in adoption_source
+    assert '"read_only_live_proof_adoption": True' in adoption_source
+    assert '"allowed_http_methods": ["GET"]' in adoption_source
+    assert '"mutation_receipts": []' in adoption_source
+    assert '"source_failed_validator_admission_evidence"' in adoption_source
+    assert "_wait_for_admission_proof_guardians" in adoption_source
+    assert "_write_evidence(paths, evidence, operation=operation)" in adoption_source
+    assert "PATCH" not in adoption_source
+    assert "POST" not in adoption_source
+    assert "_restart_validator_services_for_qbft_transition" not in adoption_source
 
 
 def test_validator_admission_prefers_service_uuid_hints_from_replica_sync_evidence() -> None:

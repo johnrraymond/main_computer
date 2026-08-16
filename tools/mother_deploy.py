@@ -195,6 +195,7 @@ from tools.mother.common.deployment_node_add_validator_admission import (
     MotherDeploymentNodeAddValidatorAdmissionError,
     build_node_add_validator_admission_release,
     execute_node_add_validator_admission_release,
+    adopt_node_add_validator_admission_live_proof,
     verify_node_add_validator_admission_evidence,
     verify_node_add_validator_admission_release,
     write_node_add_validator_admission_release,
@@ -202,6 +203,7 @@ from tools.mother.common.deployment_node_add_validator_admission import (
 from tools.mother.common.deployment_topology_rectification import (
     MotherDeploymentTopologyRectificationError,
     adopt_empty_current_topology,
+    adopt_fresh_empty_topology,
     detect_topology_staleness,
     finalize_add_node_post_admission_topology,
     verify_empty_topology_rectification_evidence,
@@ -957,6 +959,23 @@ def _parser() -> argparse.ArgumentParser:
     adopt_empty_current_topology_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
     adopt_empty_current_topology_parser.add_argument("--write-evidence", action="store_true")
 
+    adopt_fresh_empty_topology_parser = subparsers.add_parser(
+        "adopt-fresh-empty-topology",
+        help="write read-only fresh empty-topology evidence after all old super nodes were deleted; next bootstrap must generate new genesis",
+        allow_abbrev=False,
+    )
+    adopt_fresh_empty_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_fresh_empty_topology_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    adopt_fresh_empty_topology_parser.add_argument("--operation-id")
+    adopt_fresh_empty_topology_parser.add_argument("--topology-evidence", required=True)
+    adopt_fresh_empty_topology_parser.add_argument("--acknowledge-topology-evidence-sha256", required=True)
+    adopt_fresh_empty_topology_parser.add_argument("--actual-node", action="append", default=[], help="operator-declared live node; unsupported for fresh reset")
+    adopt_fresh_empty_topology_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    adopt_fresh_empty_topology_parser.add_argument("--timeout", type=float, default=30.0)
+    adopt_fresh_empty_topology_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    adopt_fresh_empty_topology_parser.add_argument("--fresh-chain-reset", action="store_true", required=True)
+    adopt_fresh_empty_topology_parser.add_argument("--write-evidence", action="store_true")
+
     verify_empty_current_topology_parser = subparsers.add_parser(
         "verify-empty-current-topology-evidence",
         help="verify read-only empty-current-topology rectification evidence",
@@ -1084,6 +1103,22 @@ def _parser() -> argparse.ArgumentParser:
     verify_node_add_validator_admission_evidence_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
     verify_node_add_validator_admission_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     verify_node_add_validator_admission_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    adopt_node_add_validator_admission_live_proof_parser = subparsers.add_parser(
+        "adopt-add-node-validator-admission-live-proof",
+        help="read-only adopt durable live add-node validator-admission proof after a timeout/unclean execution",
+        allow_abbrev=False,
+    )
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--operation-id")
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--failed-evidence", required=True)
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--acknowledge-failed-evidence-sha256", required=True)
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--timeout", type=float, default=30.0)
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--max-wait-seconds", type=float, default=300.0)
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
 
     release_node_add_rollback = subparsers.add_parser(
         "release-add-node-rollback",
@@ -6595,6 +6630,24 @@ def _cmd_adopt_empty_current_topology(args: argparse.Namespace, private_state) -
     return 0
 
 
+def _cmd_adopt_fresh_empty_topology(args: argparse.Namespace, private_state) -> int:
+    result = adopt_fresh_empty_topology(
+        _paths(args),
+        private_state,
+        Path(args.topology_evidence),
+        network=args.network,
+        acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
+        actual_nodes=args.actual_node,
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        write_evidence=args.write_evidence,
+        operation=_operation("adopt-fresh-empty-topology", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_verify_empty_current_topology_evidence(args: argparse.Namespace, private_state) -> int:
     result = verify_empty_topology_rectification_evidence(
         _paths(args),
@@ -6786,6 +6839,24 @@ def _cmd_verify_node_add_validator_admission_evidence(args: argparse.Namespace, 
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
+
+
+def _cmd_adopt_node_add_validator_admission_live_proof(args: argparse.Namespace, private_state) -> int:
+    result = adopt_node_add_validator_admission_live_proof(
+        _paths(args),
+        private_state,
+        Path(args.failed_evidence),
+        acknowledged_failed_evidence_sha256=args.acknowledge_failed_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("adopt-node-add-validator-admission-live-proof", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
 
 
 def _cmd_add_node_post_admission_observe(args: argparse.Namespace, private_state) -> int:
@@ -7072,6 +7143,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_detect_mother_topology_staleness(args, private_state)
         if args.command == "adopt-empty-current-topology":
             return _cmd_adopt_empty_current_topology(args, private_state)
+        if args.command == "adopt-fresh-empty-topology":
+            return _cmd_adopt_fresh_empty_topology(args, private_state)
         if args.command == "verify-empty-current-topology-evidence":
             return _cmd_verify_empty_current_topology_evidence(args, private_state)
         if args.command == "release-add-node-replica-sync":
@@ -7086,6 +7159,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_node_add_validator_admission_release(args, private_state)
         if args.command == "verify-add-node-validator-admission-evidence":
             return _cmd_verify_node_add_validator_admission_evidence(args, private_state)
+        if args.command == "adopt-add-node-validator-admission-live-proof":
+            return _cmd_adopt_node_add_validator_admission_live_proof(args, private_state)
         if args.command == "release-add-node-rollback":
             return _cmd_release_node_add_rollback(args, private_state)
         if args.command == "verify-add-node-rollback-release":

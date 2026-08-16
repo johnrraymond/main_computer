@@ -213,16 +213,49 @@ def _sorted_topology_nodes(nodes: list[str]) -> list[str]:
     return sorted(nodes, key=_topology_sort_key)
 
 
+def _fresh_genesis_required(document: Mapping[str, Any]) -> bool:
+    if document.get("fresh_genesis_required") is True or document.get("genesis_lineage") == "fresh-required":
+        return True
+    for key in (
+        "rollback_baseline_topology",
+        "final_topology",
+        "current_topology",
+        "post_add_topology",
+        "post_removal_topology",
+        "pre_removal_topology",
+    ):
+        candidate = document.get(key)
+        if isinstance(candidate, Mapping) and (
+            candidate.get("fresh_genesis_required") is True
+            or candidate.get("genesis_lineage") == "fresh-required"
+        ):
+            return True
+    return False
+
+
 def _chain_identity(document: Mapping[str, Any]) -> tuple[Any, Any]:
     chain_id = document.get("chain_id")
     genesis_sha256 = document.get("genesis_sha256")
-    if chain_id is None or genesis_sha256 is None:
-        for key in ("rollback_baseline_topology", "final_topology", "current_topology", "post_add_topology", "post_removal_topology", "pre_removal_topology"):
+    fresh_required = _fresh_genesis_required(document)
+    if chain_id is None or (genesis_sha256 is None and not fresh_required):
+        for key in (
+            "rollback_baseline_topology",
+            "final_topology",
+            "current_topology",
+            "post_add_topology",
+            "post_removal_topology",
+            "pre_removal_topology",
+        ):
             candidate = document.get(key)
             if isinstance(candidate, Mapping):
                 chain_id = chain_id if chain_id is not None else candidate.get("chain_id")
-                genesis_sha256 = genesis_sha256 if genesis_sha256 is not None else candidate.get("genesis_sha256")
-    if chain_id is None or genesis_sha256 is None:
+                if genesis_sha256 is None:
+                    genesis_sha256 = candidate.get("genesis_sha256")
+    if chain_id is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_BASELINE_INCOMPLETE", "baseline chain identity is missing")
+    if genesis_sha256 is None and fresh_required:
+        return chain_id, None
+    if genesis_sha256 is None:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_BASELINE_INCOMPLETE", "baseline chain identity is missing")
     return chain_id, genesis_sha256
 
@@ -660,6 +693,7 @@ def build_node_add_prep_transaction(
             "historical_nodes": historical_nodes,
             "historical_validator_set": historical_validators,
             "historical_services": historical_services,
+            "fresh_genesis_required": genesis_sha256 is None,
         },
         "target": {
             "node": target,
@@ -688,6 +722,8 @@ def build_node_add_prep_transaction(
             "services": current_services,
             "chain_id": chain_id,
             "genesis_sha256": genesis_sha256,
+            "fresh_genesis_required": genesis_sha256 is None,
+            "genesis_lineage": "fresh-required" if genesis_sha256 is None else "inherited",
         },
         "post_add_topology": {
             "nodes": post_nodes,

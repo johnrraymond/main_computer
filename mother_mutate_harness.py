@@ -426,7 +426,9 @@ def rebuild_pristine_empty_add_baseline(args: argparse.Namespace) -> Path | None
     topology = {
         "source": "operator-declared-pristine-empty-topology",
         "chain_id": chain_id,
-        "genesis_sha256": genesis_sha256,
+        "genesis_sha256": None,
+        "genesis_lineage": "fresh-required",
+        "fresh_genesis_required": True,
         "nodes": [],
         "services": {},
         "validator_count": 0,
@@ -443,7 +445,9 @@ def rebuild_pristine_empty_add_baseline(args: argparse.Namespace) -> Path | None
         "network": _network(args),
         "mode": "operator-declared-pristine-start-over",
         "chain_id": chain_id,
-        "genesis_sha256": genesis_sha256,
+        "genesis_sha256": None,
+        "genesis_lineage": "fresh-required",
+        "fresh_genesis_required": True,
         "source_previous_topology_evidence": {
             "path": str(source_path),
             "sha256": source_sha,
@@ -495,6 +499,9 @@ def rebuild_pristine_empty_add_baseline(args: argparse.Namespace) -> Path | None
             "clean": True,
             "complete": True,
             "topology_rectified": True,
+            "fresh_chain_reset": True,
+            "fresh_genesis_required": True,
+            "old_genesis_reused": False,
             "current_topology_marked_by_evidence": True,
             "empty_topology_marked_by_evidence": True,
             "final_nodes": [],
@@ -811,9 +818,9 @@ class Harness:
         ))
         if pick(obj, "summary.rectification_required") is True:
             print("\nMOTHER_MUTATE_HARNESS_STALE_TOPOLOGY: Mother topology evidence is out of date against live Coolify.")
-            print("Run this read-only rectification command, then rerun the harness using the new evidence path/SHA:")
+            print("Run this read-only fresh-reset command if you deleted every previous super node and want a new first-validator genesis, then rerun the harness using the new evidence path/SHA:")
             rect_cmd = self.cmd(
-                "adopt-empty-current-topology",
+                "adopt-fresh-empty-topology",
                 "--network", self.args.network,
                 "--runtime-state-root", self.args.runtime_state_root,
                 "--topology-evidence", self.state["baseline_evidence"],
@@ -821,6 +828,7 @@ class Harness:
                 "--max-age-seconds", str(self.args.baseline_max_age_seconds),
                 "--timeout", str(self.args.timeout),
                 "--max-response-bytes", str(self.args.max_response_bytes),
+                "--fresh-chain-reset",
                 "--write-evidence",
             )
             print(quote_command(rect_cmd))

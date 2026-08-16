@@ -33,6 +33,7 @@ from .deployment_genesis_birth import (
     _match_service_compose,
     _service_item,
 )
+from .deployment_genesis import MotherDeploymentGenesisError, _document as _private_state_document, _genesis_policy
 from .deployment_genesis_release import DEFAULT_HUB_GIT_REF, DEFAULT_HUB_GIT_REPOSITORY, _first_genesis_compose
 from .deployment_node_add_identity import _identity_after_install_routing
 from .deployment_node_add_replica_sync import _discover_genesis
@@ -85,6 +86,97 @@ def _address(value: Any, label: str) -> str:
     if not _ADDRESS_RE.fullmatch(lowered):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_INVALID", f"{label} is invalid")
     return lowered
+
+
+def _rlp_decode(data: bytes, offset: int = 0) -> tuple[Any, int]:
+    if offset >= len(data):
+        raise ValueError("truncated RLP")
+    prefix = data[offset]
+    if prefix <= 0x7F:
+        return bytes([prefix]), offset + 1
+    if prefix <= 0xB7:
+        length = prefix - 0x80
+        start = offset + 1
+        end = start + length
+        if end > len(data):
+            raise ValueError("truncated RLP string")
+        return data[start:end], end
+    if prefix <= 0xBF:
+        length_length = prefix - 0xB7
+        start = offset + 1
+        end = start + length_length
+        if end > len(data):
+            raise ValueError("truncated RLP long-string length")
+        length = int.from_bytes(data[start:end], "big")
+        value_start = end
+        value_end = value_start + length
+        if value_end > len(data):
+            raise ValueError("truncated RLP long string")
+        return data[value_start:value_end], value_end
+    if prefix <= 0xF7:
+        length = prefix - 0xC0
+        start = offset + 1
+        end = start + length
+    else:
+        length_length = prefix - 0xF7
+        start = offset + 1
+        length_end = start + length_length
+        if length_end > len(data):
+            raise ValueError("truncated RLP long-list length")
+        length = int.from_bytes(data[start:length_end], "big")
+        start = length_end
+        end = start + length
+    if end > len(data):
+        raise ValueError("truncated RLP list")
+    values = []
+    cursor = start
+    while cursor < end:
+        item, cursor = _rlp_decode(data, cursor)
+        values.append(item)
+    if cursor != end:
+        raise ValueError("RLP list length mismatch")
+    return values, end
+
+
+def _qbft_genesis_validator_set(genesis: Mapping[str, Any]) -> list[str]:
+    extra = genesis.get("extraData")
+    if not isinstance(extra, str) or not extra.startswith("0x"):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_GENESIS_INVALID", "genesis extraData is missing")
+    try:
+        decoded, end = _rlp_decode(bytes.fromhex(extra[2:]))
+    except ValueError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_GENESIS_INVALID", "genesis extraData is not valid QBFT RLP") from exc
+    if end != len(bytes.fromhex(extra[2:])) or not isinstance(decoded, list) or len(decoded) < 2 or not isinstance(decoded[1], list):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_GENESIS_INVALID", "genesis extraData QBFT validator list is malformed")
+    validators = []
+    for item in decoded[1]:
+        if not isinstance(item, (bytes, bytearray)) or len(item) != 20:
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_GENESIS_INVALID", "genesis extraData QBFT validator address is malformed")
+        validators.append("0x" + bytes(item).hex())
+    return validators
+
+
+def _fresh_target_genesis(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    target_validator: str,
+) -> tuple[dict[str, Any], str]:
+    try:
+        genesis, _alloc = _genesis_policy(
+            _private_state_document(private_state),
+            network=network,
+            initial_validator_address=target_validator,
+        )
+    except MotherDeploymentGenesisError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_GENESIS_INVALID", str(exc)) from exc
+    genesis_set = _qbft_genesis_validator_set(genesis)
+    if genesis_set != [target_validator]:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_GENESIS_VALIDATOR_MISMATCH",
+            "fresh generated genesis does not contain only the target validator",
+        )
+    return dict(genesis), "fresh-target-validator-genesis"
 
 
 
@@ -480,16 +572,35 @@ def build_node_add_single_node_bootstrap_release(
     target_p2p_port = int(target_validator_route.get("p2p_port") or 30303)
     if not 1 <= target_p2p_port <= 65535:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_ROUTE_INVALID", "target validator P2P port is invalid")
-    chain_id = identity_evidence.get("current_topology", {}).get("chain_id")
+    current_topology = identity_evidence.get("current_topology", {})
+    chain_id = current_topology.get("chain_id") if isinstance(current_topology, Mapping) else None
     if not isinstance(chain_id, int) or chain_id <= 0:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CHAIN_INVALID", "current topology chain ID is invalid")
-    genesis_sha = _sha256(identity_evidence.get("current_topology", {}).get("genesis_sha256"), "current topology genesis SHA-256")
     target_validator = _address(target.get("validator_address"), "target validator address")
     prepared = identity_evidence.get("prepared_post_add_topology", {})
     prepared_set = prepared.get("validator_set")
     if not isinstance(prepared_set, list) or [_address(item, "prepared validator") for item in prepared_set] != [target_validator]:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_VALIDATOR_SET_INVALID", "prepared post-add validator set must contain only the target validator")
-    genesis, genesis_source = _discover_genesis(paths, private_state, network=network, genesis_sha256=genesis_sha)
+    fresh_genesis_required = (
+        isinstance(current_topology, Mapping)
+        and (
+            current_topology.get("fresh_genesis_required") is True
+            or current_topology.get("genesis_lineage") == "fresh-required"
+        )
+    )
+    current_genesis_sha = current_topology.get("genesis_sha256") if isinstance(current_topology, Mapping) else None
+    if fresh_genesis_required:
+        genesis, genesis_source = _fresh_target_genesis(private_state, network=network, target_validator=target_validator)
+        genesis_sha = hashlib.sha256(canonical_json(genesis)).hexdigest()
+    else:
+        genesis_sha = _sha256(current_genesis_sha, "current topology genesis SHA-256")
+        genesis, genesis_source = _discover_genesis(paths, private_state, network=network, genesis_sha256=genesis_sha)
+        genesis_set = _qbft_genesis_validator_set(genesis)
+        if genesis_set != [target_validator]:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_GENESIS_VALIDATOR_MISMATCH",
+                "current topology genesis does not contain only the target validator; use adopt-fresh-empty-topology for a fresh reset",
+            )
     repository = _hub_git_repository(hub_git_repository, "hub_git_repository")
     original = _first_genesis_compose(
         node=node,
@@ -547,6 +658,8 @@ def build_node_add_single_node_bootstrap_release(
             "chain_id": chain_id,
             "genesis_sha256": genesis_sha,
             "genesis_source": genesis_source,
+            "fresh_genesis_required": fresh_genesis_required,
+            "old_genesis_reused": not fresh_genesis_required,
             "validator_set": [target_validator],
             "target_validator_route": dict(target_validator_route),
             "hub": {
@@ -622,6 +735,8 @@ def build_node_add_single_node_bootstrap_release(
             "created_service_uuid": service_uuid,
             "current_validator_count": 0,
             "post_add_validator_count": 1,
+            "fresh_genesis_required": fresh_genesis_required,
+            "old_genesis_reused": not fresh_genesis_required,
             "single_node_bootstrap_authorized": True,
             "replica_sync_required": False,
             "validator_admission_required": False,
@@ -732,6 +847,8 @@ def verify_node_add_single_node_bootstrap_release(
         "created_service_uuid": target["created_service_uuid"],
         "current_validator_count": summary["current_validator_count"],
         "post_add_validator_count": summary["post_add_validator_count"],
+        "fresh_genesis_required": summary.get("fresh_genesis_required") is True,
+        "old_genesis_reused": summary.get("old_genesis_reused") is True,
         "single_node_bootstrap_authorized": True,
         "replica_sync_required": False,
         "validator_admission_required": False,
@@ -818,6 +935,7 @@ def execute_node_add_single_node_bootstrap_release(
     service_uuid = _identifier(target["created_service_uuid"], "created service UUID")
     controller = resolve_coolify_controller(private_state, network, controller_id)
     plan = release["bootstrap_plan"]
+    fresh_genesis_required = plan.get("fresh_genesis_required") is True
 
     started_at = _timestamp(now=now)
     preconditions: list[dict[str, Any]] = []
@@ -1016,6 +1134,8 @@ def execute_node_add_single_node_bootstrap_release(
             "created_service_uuid": service_uuid,
             "current_validator_count": 0,
             "post_add_validator_count": 1,
+            "fresh_genesis_required": fresh_genesis_required,
+            "old_genesis_reused": not fresh_genesis_required,
             "single_node_bootstrap_performed": len(receipts) > 0,
             "single_node_bootstrap_proven": complete,
             "serves_chain": complete,
@@ -1117,6 +1237,7 @@ def adopt_node_add_single_node_bootstrap_live_proof(
     target = release.get("target")
     if not isinstance(plan, Mapping) or not isinstance(target, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "release body is incomplete")
+    fresh_genesis_required = plan.get("fresh_genesis_required") is True
     network = _identifier(release["network"], "network")
     node = _identifier(target["node"], "target node")
     controller_id = _identifier(target["controller_id"], "target controller")
@@ -1263,6 +1384,8 @@ def adopt_node_add_single_node_bootstrap_live_proof(
             "created_service_uuid": service_uuid,
             "current_validator_count": 0,
             "post_add_validator_count": 1,
+            "fresh_genesis_required": fresh_genesis_required,
+            "old_genesis_reused": not fresh_genesis_required,
             "single_node_bootstrap_performed": True,
             "single_node_bootstrap_proven": True,
             "read_only_adoption_performed": True,
@@ -1449,7 +1572,13 @@ def build_node_add_single_node_chain_and_hub_proof_evidence(
     chain_id = current.get("chain_id")
     if not isinstance(chain_id, int) or chain_id <= 0:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "chain ID is invalid")
-    genesis_sha = _sha256(current.get("genesis_sha256"), "genesis SHA-256")
+    genesis_sha_value = current.get("genesis_sha256")
+    if genesis_sha_value is None and (
+        current.get("fresh_genesis_required") is True
+        or current.get("genesis_lineage") == "fresh-required"
+    ):
+        genesis_sha_value = bootstrap_plan.get("genesis_sha256")
+    genesis_sha = _sha256(genesis_sha_value, "genesis SHA-256")
     completed = _timestamp(now=now)
     final_topology = {
         "source": "operator-directed-single-node-chain-and-hub-proof",

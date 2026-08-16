@@ -51,8 +51,11 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
         self.assertGreaterEqual(html.count("data-webgl-gameplay-pack-checkbox"), 2)
         self.assertIn("pack.opening-shuttle.elite-boarders", html)
         self.assertIn("pack.main-ship.bay-boarders", html)
+        self.assertIn("LOAD GAME", html)
         self.assertIn("START NEW GAME", html)
         self.assertNotIn(">START GAME</button>", html)
+        self.assertIn('id="webgl-load-game"', html)
+        self.assertIn("data-webgl-load-game", html)
         self.assertIn('id="webgl-autosave-status"', html)
         self.assertIn("Autosave: none yet.", html)
 
@@ -75,6 +78,12 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
         self.assertIn(".webgl-autosave-status", css)
         self.assertIn(".webgl-autosave-toast", css)
         self.assertIn("webglShowAutosaveToast", desktop)
+        self.assertIn("loadWebglGameFromAutosaveLobby", desktop)
+        self.assertIn("webglSetGameplayPackLobbyActionsBusy", desktop)
+        self.assertIn("webglStoreAutosaveCheckpoint", desktop)
+        self.assertIn("webglRestoreAutosaveCheckpointIfRequested", desktop)
+        self.assertIn("onAutosaveCheckpoint: webglHandleSceneAutosaveCheckpoint", desktop)
+        self.assertIn(".webgl-gameplay-pack-actions", css)
 
     def test_default_enabled_packs_are_selected_without_saved_local_state(self) -> None:
         result = self.run_node(
@@ -143,6 +152,7 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
               }
             ];
             const startButton = {dataset: {}, disabled: false, addEventListener() {}};
+            const loadButton = {dataset: {}, disabled: true, title: "", addEventListener() {}, setAttribute(name, value) { this[name] = value; }};
             const statusNode = {dataset: {}, textContent: ""};
             const autosaveNode = {dataset: {}, textContent: ""};
             const panel = {dataset: {}, querySelector() { return null; }};
@@ -177,6 +187,7 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
                 if (id === "webgl-gameplay-pack-selector") return panel;
                 if (id === "webgl-gameplay-pack-checklist") return checklist;
                 if (id === "webgl-gameplay-pack-start" || id === "webgl-gameplay-pack-apply") return startButton;
+                if (id === "webgl-load-game" || id === "webgl-gameplay-pack-load") return loadButton;
                 if (id === "webgl-gameplay-pack-status") return statusNode;
                 if (id === "webgl-autosave-status") return autosaveNode;
                 if (id === "webgl-demo") return sceneSurface;
@@ -220,6 +231,8 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
                 autosaveStatusDataset: autosaveNode.dataset,
                 autosaveToastText: createdNodes["webgl-autosave-toast"]?.textContent || "",
                 autosaveToastHidden: Boolean(createdNodes["webgl-autosave-toast"]?.hidden),
+                loadButtonDisabled: loadButton.disabled,
+                startButtonDisabled: startButton.disabled,
                 storageKeys: Object.keys(store).sort()
               }));
             })().catch((error) => {
@@ -231,20 +244,147 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
 
         self.assertIn("main-computer.webgl.autosave.v1", result["storageKeys"])
         self.assertEqual(result["rawAutosave"]["schema"], "game.webglAutosave.v1")
-        self.assertEqual(result["rawAutosave"]["checkpoint"]["id"], "new-game-start")
-        self.assertEqual(result["rawAutosave"]["checkpoint"]["label"], "New Game Start")
+        self.assertEqual(result["rawAutosave"]["checkpoint"]["id"], "opening-shuttle-started")
+        self.assertEqual(result["rawAutosave"]["checkpoint"]["label"], "Opening Shuttle Started")
         self.assertEqual(
             result["rawAutosave"]["enabledPackIds"],
             ["pack.opening-shuttle.elite-boarders", "pack.experimental.large-random-shuttle-boarder"],
         )
-        self.assertEqual(result["autosave"]["checkpoint"]["label"], "New Game Start")
-        self.assertIn("Autosave saved: New Game Start", result["autosaveStatusText"])
+        self.assertEqual(result["autosave"]["checkpoint"]["label"], "Opening Shuttle Started")
+        self.assertIn("Autosave saved: Opening Shuttle Started", result["autosaveStatusText"])
         self.assertIn("Autosave saved: New Game Start", result["autosaveToastText"])
         self.assertTrue(result["autosaveToastHidden"])
         self.assertEqual(result["autosaveStatusDataset"]["hasAutosave"], "true")
         self.assertEqual(result["autosaveStatusDataset"]["mode"], "saved")
-        self.assertEqual(result["autosaveStatusDataset"]["checkpointId"], "new-game-start")
+        self.assertEqual(result["autosaveStatusDataset"]["checkpointId"], "opening-shuttle-started")
         self.assertEqual(result["autosaveStatusDataset"]["packCount"], "2")
+        self.assertTrue(result["loadButtonDisabled"])
+        self.assertTrue(result["startButtonDisabled"])
+
+    def test_load_game_uses_autosave_pack_ids_and_ignores_current_checkboxes(self) -> None:
+        result = self.run_node(
+            r'''
+            const fs = require("fs");
+            const desktopSource = fs.readFileSync(process.argv[1], "utf8");
+            const start = desktopSource.indexOf("    const webglProjectState");
+            const end = desktopSource.indexOf("    function ensureWebglSystemScenarioRuntime", start);
+            const helperSource = desktopSource.slice(start, end).replace(/^    /gm, "");
+
+            const autosaveValue = {
+              schema: "game.webglAutosave.v1",
+              kind: "webgl-autosave",
+              projectId: "webgl-demo",
+              savedAt: 1234567890,
+              checkpoint: {id: "new-game-start", label: "New Game Start"},
+              enabledPackIds: ["pack.main-ship.bay-boarders"],
+              activeGameplayPackIds: ["pack.main-ship.bay-boarders"]
+            };
+            const store = {
+              "main-computer.webgl.autosave.v1": JSON.stringify(autosaveValue),
+              "main-computer.webgl.enabled-gameplay-packs.v2": JSON.stringify({
+                schema: "game.reloadGameplayPackSelection.v2",
+                enabledPackIds: ["pack.opening-shuttle.elite-boarders"],
+                activeGameplayPackIds: ["pack.opening-shuttle.elite-boarders"]
+              })
+            };
+            const selectedCheckboxes = [
+              {
+                checked: true,
+                value: "pack.opening-shuttle.elite-boarders",
+                dataset: {gameplayPackId: "pack.opening-shuttle.elite-boarders"}
+              }
+            ];
+            const startButton = {dataset: {}, disabled: false, addEventListener() {}};
+            const loadButton = {dataset: {}, disabled: false, title: "", addEventListener() {}, setAttribute(name, value) { this[name] = value; }};
+            const statusNode = {dataset: {}, textContent: ""};
+            const autosaveNode = {dataset: {}, textContent: ""};
+            const panel = {dataset: {}, querySelector() { return null; }};
+            const checklist = {
+              dataset: {},
+              querySelectorAll(selector) {
+                if (selector === "[data-webgl-gameplay-pack-checkbox]") return selectedCheckboxes;
+                return [];
+              }
+            };
+
+            const fakeWindow = {
+              location: {search: ""},
+              setTimeout(callback) { callback(); return 1; },
+              clearTimeout() {},
+              localStorage: {
+                getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+                setItem(key, value) { store[key] = String(value); }
+              }
+            };
+            const fakeDocument = {
+              getElementById(id) {
+                if (id === "webgl-gameplay-pack-selector") return panel;
+                if (id === "webgl-gameplay-pack-checklist") return checklist;
+                if (id === "webgl-gameplay-pack-start" || id === "webgl-gameplay-pack-apply") return startButton;
+                if (id === "webgl-load-game" || id === "webgl-gameplay-pack-load") return loadButton;
+                if (id === "webgl-gameplay-pack-status") return statusNode;
+                if (id === "webgl-autosave-status") return autosaveNode;
+                return null;
+              },
+              querySelector() { return null; },
+              createElement() {
+                return {
+                  id: "",
+                  className: "",
+                  dataset: {},
+                  hidden: false,
+                  textContent: "",
+                  appendChild() {},
+                  addEventListener() {},
+                  setAttribute() {}
+                };
+              }
+            };
+
+            const helpers = Function("window", "document", "fetch", `${helperSource}
+              let initSelection = null;
+              const initWebgl = async () => {
+                initSelection = webglReloadGameplayPackSelection(webglProjectState.project);
+                return {ok: true};
+              };
+              return {
+                loadWebglGameFromAutosaveLobby,
+                webglReadAutosave,
+                getInitSelection() { return initSelection; },
+                WEBGL_AUTOSAVE_KEY,
+                WEBGL_ENABLED_GAMEPLAY_PACKS_KEY
+              };
+            `)(fakeWindow, fakeDocument, async () => ({ok: true, status: 200, async json() { return {ok: true}; }}));
+
+            (async () => {
+              const loadResult = await helpers.loadWebglGameFromAutosaveLobby();
+              const initSelection = helpers.getInitSelection();
+              console.log(JSON.stringify({
+                loadResult,
+                initSelection,
+                statusText: statusNode.textContent,
+                autosaveStatusText: autosaveNode.textContent,
+                loadButtonDisabled: loadButton.disabled,
+                startButtonDisabled: startButton.disabled,
+                storedSelection: JSON.parse(store["main-computer.webgl.enabled-gameplay-packs.v2"])
+              }));
+            })().catch((error) => {
+              console.error(error && error.stack ? error.stack : String(error));
+              process.exit(1);
+            });
+            '''
+        )
+
+        self.assertEqual(result["loadResult"]["source"], "load-game")
+        self.assertEqual(result["loadResult"]["checkpoint"]["id"], "new-game-start")
+        self.assertEqual(result["loadResult"]["enabledPackIds"], ["pack.main-ship.bay-boarders"])
+        self.assertEqual(result["initSelection"]["source"], "autosave")
+        self.assertEqual(result["initSelection"]["activeGameplayPackIds"], ["pack.main-ship.bay-boarders"])
+        self.assertIn("Loading autosave New Game Start", result["statusText"])
+        self.assertIn("Autosave: New Game Start", result["autosaveStatusText"])
+        self.assertTrue(result["loadButtonDisabled"])
+        self.assertTrue(result["startButtonDisabled"])
+        self.assertEqual(result["storedSelection"]["enabledPackIds"], ["pack.opening-shuttle.elite-boarders"])
 
     def test_v2_local_selection_installs_opening_and_main_ship_packs_together(self) -> None:
         result = self.run_node(
@@ -527,6 +667,105 @@ class WebglGameplayPackLobbyMultiSelectTests(unittest.TestCase):
         self.assertTrue(result["installed"][0]["sourceIncludesEncounter"])
         self.assertTrue(result["installResult"]["installed"])
         self.assertEqual(result["installResult"]["packIds"], ["pack.experimental.large-random-shuttle-boarder"])
+
+
+    def test_autosave_checkpoint_helpers_store_real_transition_and_restore_bay(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const desktopSource = fs.readFileSync(process.argv[1], "utf8");
+            const start = desktopSource.indexOf("    const webglProjectState");
+            const end = desktopSource.indexOf("    function ensureWebglSystemScenarioRuntime", start);
+            const helperSource = desktopSource.slice(start, end).replace(/^    /gm, "");
+
+            const store = {};
+            const statusNode = {dataset: {}, textContent: ""};
+            const packStatusNode = {dataset: {}, textContent: ""};
+            const loadButton = {dataset: {}, disabled: false, title: "", setAttribute(name, value) { this[name] = value; }};
+            const fakeWindow = {
+              location: {search: ""},
+              localStorage: {
+                getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+                setItem(key, value) { store[key] = String(value); }
+              }
+            };
+            const fakeDocument = {
+              getElementById(id) {
+                if (id === "webgl-autosave-status") return statusNode;
+                if (id === "webgl-gameplay-pack-status") return packStatusNode;
+                if (id === "webgl-load-game" || id === "webgl-gameplay-pack-load") return loadButton;
+                return null;
+              },
+              querySelector() { return null; },
+              createElement() { return {dataset: {}, appendChild() {}, addEventListener() {}, setAttribute() {}}; }
+            };
+
+            const helpers = Function("window", "document", "fetch", `${helperSource}
+              return {
+                webglStoreAutosaveCheckpoint,
+                webglReadAutosave,
+                webglRestoreAutosaveCheckpointIfRequested,
+                setAutosaveLoad(autosave) {
+                  webglProjectState.autosaveLoadActive = true;
+                  webglProjectState.autosaveLoad = autosave;
+                  webglProjectState.autosaveLoadGameplayPackIds = webglNormalizeGameplayPackIds(autosave.enabledPackIds || []);
+                }
+              };
+            `)(fakeWindow, fakeDocument, async () => ({ok: true, status: 200, async json() { return {ok: true}; }}));
+
+            const stored = helpers.webglStoreAutosaveCheckpoint("mother-ship-shuttle-bay", {
+              checkpointLabel: "Mother Ship Shuttle Bay",
+              enabledPackIds: ["pack.main-ship.bay-boarders"],
+              source: "test-transition"
+            });
+            const autosave = helpers.webglReadAutosave();
+            helpers.setAutosaveLoad(autosave);
+            const restoreCalls = [];
+            const restoreResult = helpers.webglRestoreAutosaveCheckpointIfRequested({
+              restoreAutosaveCheckpoint(value) {
+                restoreCalls.push(value.checkpoint.id);
+                return {
+                  restored: true,
+                  supported: true,
+                  checkpointId: value.checkpoint.id,
+                  mode: "mother-ship-shuttle-bay"
+                };
+              }
+            });
+
+            console.log(JSON.stringify({
+              stored,
+              autosave,
+              restoreCalls,
+              restoreResult,
+              statusText: statusNode.textContent,
+              packStatusText: packStatusNode.textContent,
+              loadButtonDisabled: loadButton.disabled,
+              storedRaw: JSON.parse(store["main-computer.webgl.autosave.v1"])
+            }));
+            """
+        )
+
+        self.assertEqual(result["stored"]["checkpoint"]["id"], "mother-ship-shuttle-bay")
+        self.assertEqual(result["autosave"]["checkpoint"]["label"], "Mother Ship Shuttle Bay")
+        self.assertEqual(result["autosave"]["enabledPackIds"], ["pack.main-ship.bay-boarders"])
+        self.assertEqual(result["restoreCalls"], ["mother-ship-shuttle-bay"])
+        self.assertTrue(result["restoreResult"]["restored"])
+        self.assertEqual(result["restoreResult"]["checkpointId"], "mother-ship-shuttle-bay")
+        self.assertIn("Loaded autosave: Mother Ship Shuttle Bay", result["packStatusText"])
+        self.assertEqual(result["storedRaw"]["source"], "test-transition")
+
+    def test_scene_viewer_exposes_autosave_restore_and_transition_callbacks(self) -> None:
+        scene_viewer = (SCRIPT_ROOT / "scene-viewer.js").read_text(encoding="utf-8")
+
+        self.assertIn("restoreAutosaveCheckpoint(autosave = {}", scene_viewer)
+        self.assertIn("forceShuttleBayControl()", scene_viewer)
+        self.assertIn("checkpointId: \"opening-shuttle-completed\"", scene_viewer)
+        self.assertIn("checkpointId: \"mother-ship-shuttle-bay\"", scene_viewer)
+        self.assertIn("checkpointId: \"bay-entry-cutscene-resolved\"", scene_viewer)
+        self.assertIn("options.onAutosaveCheckpoint", scene_viewer)
+        self.assertIn("restoreAutosaveCheckpoint(autosave = {}, nowMs)", scene_viewer)
+
 
 
 

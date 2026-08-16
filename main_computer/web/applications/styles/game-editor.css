@@ -354,6 +354,23 @@
   font-weight: 900;
 }
 
+.webgl-gameplay-pack-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.webgl-gameplay-pack-actions button {
+  min-width: 132px;
+}
+
+.webgl-gameplay-pack-actions button[disabled],
+.webgl-gameplay-pack-actions button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 
 .webgl-autosave-status {
   flex-basis: 100%;

@@ -189,7 +189,16 @@ def _topology(document: Mapping[str, Any]) -> Mapping[str, Any]:
     return document
 
 
-def _chain_identity(document: Mapping[str, Any], topology: Mapping[str, Any]) -> tuple[int, str]:
+def _fresh_empty_topology_requires_new_genesis(candidate: Mapping[str, Any]) -> bool:
+    nodes = candidate.get("nodes")
+    validators = candidate.get("validator_set")
+    return (
+        candidate.get("fresh_genesis_required") is True
+        or candidate.get("genesis_lineage") == "fresh-required"
+    ) and nodes == [] and validators == []
+
+
+def _chain_identity(document: Mapping[str, Any], topology: Mapping[str, Any]) -> tuple[int, str | None]:
     candidates: list[Mapping[str, Any]] = [topology, document]
     for key in ("final_topology", "current_topology", "post_add_topology", "post_removal_topology", "pre_removal_topology"):
         candidate = document.get(key)
@@ -203,6 +212,10 @@ def _chain_identity(document: Mapping[str, Any], topology: Mapping[str, Any]) ->
             continue
         if not isinstance(chain_id, int) or chain_id <= 0:
             raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "topology chain_id is invalid")
+        if genesis is None:
+            if _fresh_empty_topology_requires_new_genesis(candidate):
+                return chain_id, None
+            raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "topology genesis SHA-256 is missing")
         return chain_id, _sha256(genesis, "topology genesis SHA-256")
 
     raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "topology chain identity is missing")
@@ -332,7 +345,7 @@ def _document_service_records(document: Mapping[str, Any], nodes: list[str], top
     return services
 
 
-def _nodes_and_services(document: Mapping[str, Any]) -> tuple[list[str], list[str], int, str, dict[str, dict[str, Any]]]:
+def _nodes_and_services(document: Mapping[str, Any]) -> tuple[list[str], list[str], int, str | None, dict[str, dict[str, Any]]]:
     topology = _topology(document)
     nodes_raw = topology.get("nodes")
     validators_raw = topology.get("validator_set")
@@ -1090,6 +1103,174 @@ def build_empty_topology_rectification_evidence(
     return evidence
 
 
+def build_fresh_empty_topology_rectification_evidence(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    topology_evidence_path: Path,
+    *,
+    network: str = "mainnet",
+    acknowledged_topology_evidence_sha256: str,
+    actual_nodes: Iterable[str] = (),
+    max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = 4 * 1024 * 1024,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Adopt an empty live topology for an operator-declared fresh chain reset.
+
+    Unlike ``adopt-empty-current-topology``, this intentionally breaks genesis
+    lineage.  It is the safe command for "I deleted all super nodes and want the
+    next add-node to create a new first-validator genesis" because the produced
+    topology does not carry forward the previous validator-bearing genesis hash.
+    """
+
+    operator_actual_nodes = [_identifier(node, "actual node") for node in actual_nodes if str(node or "").strip()]
+    detection = detect_topology_staleness(
+        paths,
+        private_state,
+        topology_evidence_path,
+        network=network,
+        acknowledged_topology_evidence_sha256=acknowledged_topology_evidence_sha256,
+        max_age_seconds=max_age_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        now=now,
+    )
+    if operator_actual_nodes:
+        raise _fail(
+            "MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_NOT_YET_IMPLEMENTED",
+            "fresh empty topology reset does not accept --actual-node values; the live network must be empty",
+        )
+    if detection["summary"]["rectification_required"] is not True:
+        if detection["observed_live_node_hints"] or detection["present_expected_nodes"] or detection["unknown_expected_nodes"]:
+            raise _fail(
+                "MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_NOT_YET_IMPLEMENTED",
+                "fresh empty topology reset requires every previous topology service to be absent",
+            )
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_REFUSED", "topology evidence is not stale-empty")
+    if detection["observed_live_node_hints"]:
+        raise _fail(
+            "MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_NOT_YET_IMPLEMENTED",
+            "fresh empty topology reset detected live node hints; aborting instead of breaking genesis lineage",
+        )
+
+    completed = _timestamp(now=now)
+    target = detection.get("target")
+    final_topology = {
+        "source": "read-only-live-empty-topology-fresh-chain-reset",
+        "chain_id": detection["chain_id"],
+        "genesis_sha256": None,
+        "genesis_lineage": "fresh-required",
+        "fresh_genesis_required": True,
+        "nodes": [],
+        "services": {},
+        "validator_count": 0,
+        "validator_set": [],
+        "baseline_topology_used_as_live": False,
+        "rectified_from_stale_nodes": list(detection["expected_nodes"]),
+    }
+    evidence: dict[str, Any] = {
+        "kind": _EMPTY_EVIDENCE_KIND,
+        "schema_version": 1,
+        "completed_at": completed,
+        "status": "pass",
+        "failure": None,
+        "mother_binding": _binding(private_state),
+        "network": network,
+        "mode": "manual-fresh-empty-topology-reset",
+        "chain_id": detection["chain_id"],
+        "genesis_sha256": None,
+        "genesis_lineage": "fresh-required",
+        "fresh_genesis_required": True,
+        "source_previous_topology_evidence": dict(detection["topology_evidence"]),
+        "staleness_detection": {
+            "expected_nodes": list(detection["expected_nodes"]),
+            "expected_services": dict(detection["expected_services"]),
+            "missing_expected_nodes": list(detection["missing_expected_nodes"]),
+            "present_expected_nodes": [],
+            "observed_live_node_hints": [],
+            "observed_service_hints": list(detection["observed_service_hints"]),
+            "network_access_performed": True,
+        },
+        "target": target,
+        "current_topology": final_topology,
+        "final_topology": final_topology,
+        "topology_diff": {
+            "operation": "manual-fresh-empty-topology-reset",
+            "added_nodes": [],
+            "removed_nodes": list(detection["expected_nodes"]),
+            "unchanged_nodes": [],
+            "pre_validator_count": len(detection["expected_validator_set"]),
+            "post_validator_count": 0,
+        },
+        "authority": {
+            "read_only_rectification": True,
+            "fresh_chain_reset_declared": True,
+            "topology_staleness_detected": True,
+            "all_expected_services_absent": True,
+            "operator_declared_actual_nodes": [],
+            "empty_topology_marked_by_evidence": True,
+            "live_mutation_authorized": False,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "manual_ssh_required": False,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "finalize_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_http_endpoint_created": False,
+            "public_endpoint_created": False,
+            "chain_mutation_performed": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "topology_rectified": True,
+            "fresh_chain_reset": True,
+            "fresh_genesis_required": True,
+            "old_genesis_reused": False,
+            "empty_topology_marked_by_evidence": True,
+            "current_topology_marked_by_evidence": True,
+            "final_nodes": [],
+            "final_validator_count": 0,
+            "final_validator_set": [],
+            "actual_nodes": [],
+            "expected_stale_nodes": list(detection["expected_nodes"]),
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "old_baseline_topology_used_as_live": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "next_phase": f"add-node-prep-{network}",
+        },
+        "live_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "next_phase": f"add-node-prep-{network}",
+    }
+    if target is not None and target.get("node"):
+        evidence["target"] = {
+            "node": target["node"],
+            "controller_id": target["controller_id"],
+            "service_uuid": target.get("service_uuid") or "",
+            "previous_service_uuid": target.get("previous_service_uuid") or target.get("service_uuid") or "",
+            "validator_address": target["validator_address"],
+        }
+    if _contains_sensitive(evidence):
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_SENSITIVE", "fresh rectification evidence contains sensitive material")
+    evidence["live_topology_empty_rectification_sha256"] = _digest_without(evidence, "live_topology_empty_rectification_sha256")
+    return evidence
+
+
 def write_empty_topology_rectification_evidence(
     paths: PrivateStatePaths,
     evidence: Mapping[str, Any],
@@ -1128,6 +1309,45 @@ def adopt_empty_current_topology(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     evidence = build_empty_topology_rectification_evidence(
+        paths,
+        private_state,
+        topology_evidence_path,
+        network=network,
+        acknowledged_topology_evidence_sha256=acknowledged_topology_evidence_sha256,
+        actual_nodes=actual_nodes,
+        max_age_seconds=max_age_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        now=now,
+    )
+    if write_evidence:
+        evidence_path, evidence_sha = write_empty_topology_rectification_evidence(
+            paths,
+            evidence,
+            operation=operation,
+        )
+        evidence = {**evidence, "evidence": {"path": str(evidence_path), "sha256": evidence_sha}}
+    return evidence
+
+
+def adopt_fresh_empty_topology(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    topology_evidence_path: Path,
+    *,
+    network: str = "mainnet",
+    acknowledged_topology_evidence_sha256: str,
+    actual_nodes: Iterable[str] = (),
+    max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = 4 * 1024 * 1024,
+    write_evidence: bool = False,
+    operation: OperationIdentity,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    evidence = build_fresh_empty_topology_rectification_evidence(
         paths,
         private_state,
         topology_evidence_path,
@@ -1542,8 +1762,10 @@ def verify_empty_topology_rectification_evidence(
 __all__ = [
     "MotherDeploymentTopologyRectificationError",
     "adopt_empty_current_topology",
+    "adopt_fresh_empty_topology",
     "build_add_node_post_admission_topology_evidence",
     "build_empty_topology_rectification_evidence",
+    "build_fresh_empty_topology_rectification_evidence",
     "detect_topology_staleness",
     "finalize_add_node_post_admission_topology",
     "verify_empty_topology_rectification_evidence",

@@ -69,6 +69,10 @@ _BESU_IMAGE = "hyperledger/besu:latest"
 _INIT_IMAGE = "alpine:3.20"
 _GUARDIAN_IMAGE = "python:3.12-alpine"
 _RETIRED_REPLICA_SYNC_GUARDIAN_NAME = "mother-replica-sync-guardian"
+_DURABLE_ADMISSION_PROOF_SAMPLE_COUNT = 3
+_QBFT_STALE_VOTE_QUIET_SECONDS = 35
+_QBFT_STALE_VOTE_POLL_SECONDS = 5
+
 
 _PRIVATE_KEY_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 
@@ -311,6 +315,7 @@ def _activation_guardian_script(
     *,
     target_node: str,
     target_node_id: str,
+    bootnode_enode: str,
     desired_validators: Iterable[str],
     chain_id: int,
     genesis_sha256: str,
@@ -323,6 +328,7 @@ def _activation_guardian_script(
         f"EXPECTED_NODE_ID = {target_node_id.lower()!r}",
         f"EXPECTED_CHAIN_ID = {int(chain_id)}",
         f"EXPECTED_GENESIS_SHA256 = {genesis_sha256!r}",
+        f"BOOTNODE_ENODE = {bootnode_enode!r}",
         f"EXPECTED_DESIRED = {desired!r}",
         "PROOF = '/proof/target-add-node-validator-admission.json'",
         "HEALTHY = '/proof/target-add-node-validator-admission-healthy'",
@@ -340,6 +346,31 @@ def _activation_guardian_script(
         "    text = str(value or '').lower()",
         "    return text[2:] if text.startswith('0x') else text",
         "def validators(): return [str(item).lower() for item in rpc('qbft_getValidatorsByBlockNumber', ['latest'])]",
+        "def peer_count(): return int(rpc('net_peerCount', []), 16)",
+        "def enode_node_id(enode):",
+        "    text = str(enode or '')",
+        "    if not text.startswith('enode://') or '@' not in text: return ''",
+        "    return normalize_node_id(text.split('enode://', 1)[1].split('@', 1)[0])",
+        "def peer_connected(enode):",
+        "    expected = enode_node_id(enode)",
+        "    if not expected: return False",
+        "    try: peers = rpc('admin_peers', [])",
+        "    except Exception: return False",
+        "    if not isinstance(peers, list): return False",
+        "    for peer in peers:",
+        "        if isinstance(peer, dict) and normalize_node_id(peer.get('id')) == expected: return True",
+        "    return False",
+        "def ensure_peer(enode, label):",
+        "    if not enode: return 'not_requested'",
+        "    if peer_connected(enode): return 'already_connected_before_add'",
+        "    result = rpc('admin_addPeer', [enode])",
+        "    if result is True: return 'add_peer_accepted'",
+        "    if peer_connected(enode): return 'already_connected_after_reject'",
+        "    deadline = time.time() + 20",
+        "    while time.time() < deadline:",
+        "        time.sleep(1)",
+        "        if peer_connected(enode): return 'already_connected_after_reject_wait'",
+        "    raise RuntimeError('admin_addPeer rejected ' + label + ' and expected peer is not connected')",
         "def same_set(left, right): return sorted(left) == sorted(right)",
         "def write_json(path, payload):",
         "    tmp = path + '.tmp'",
@@ -352,12 +383,24 @@ def _activation_guardian_script(
         "    node_info = rpc('admin_nodeInfo', [])",
         "    actual_node_id = normalize_node_id(node_info.get('id')) if isinstance(node_info, dict) else ''",
         "    if actual_node_id != EXPECTED_NODE_ID: raise RuntimeError('target validator node identity mismatch')",
-        "    deadline = time.time() + 180",
+        "    bootnode_peer_connect_result = ensure_peer(BOOTNODE_ENODE, 'bootnode')",
+        "    sync_deadline = time.time() + 240",
+        "    syncing = rpc('eth_syncing', [])",
+        "    peers = peer_count()",
+        "    while time.time() < sync_deadline and (syncing is not False or peers < 1):",
+        "        time.sleep(2)",
+        "        bootnode_peer_connect_result = ensure_peer(BOOTNODE_ENODE, 'bootnode')",
+        "        syncing = rpc('eth_syncing', [])",
+        "        peers = peer_count()",
+        "    if syncing is not False: raise RuntimeError('target is still syncing before admission proof')",
+        "    if peers < 1: raise RuntimeError('target has no bootnode peers before admission proof')",
+        "    deadline = time.time() + 240",
         "    final = validators()",
         "    while time.time() < deadline and not same_set(final, EXPECTED_DESIRED):",
         "        time.sleep(2)",
         "        final = validators()",
         "    if not same_set(final, EXPECTED_DESIRED): raise RuntimeError('desired validator set not reached')",
+        "    bootnode_peer_connect_result = ensure_peer(BOOTNODE_ENODE, 'bootnode')",
         "    if rpc('eth_syncing', []) is not False: raise RuntimeError('target is still syncing')",
         "    first = int(rpc('eth_blockNumber', []), 16)",
         "    time.sleep(4)",
@@ -368,7 +411,7 @@ def _activation_guardian_script(
         "    block_time = int(latest.get('timestamp', '0x0'), 16)",
         "    now = int(time.time())",
         "    if block_time > now + 15 or now - block_time > MAX_BLOCK_AGE_SECONDS: raise RuntimeError('latest block is stale')",
-        "    proof = {'target_node':TARGET_NODE,'target_node_id':actual_node_id,'target_validator_node_identity_verified':True,'chain_id':EXPECTED_CHAIN_ID,'genesis_sha256':EXPECTED_GENESIS_SHA256,'desired_validator_set':EXPECTED_DESIRED,'final_validator_set':final,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'latest_block_hash':latest['hash'],'latest_block_timestamp':block_time,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+        "    proof = {'target_node':TARGET_NODE,'target_node_id':actual_node_id,'target_validator_node_identity_verified':True,'chain_id':EXPECTED_CHAIN_ID,'genesis_sha256':EXPECTED_GENESIS_SHA256,'bootnode_enode_sha256':hashlib.sha256(BOOTNODE_ENODE.encode()).hexdigest(),'bootnode_peer_connect_result':bootnode_peer_connect_result,'peer_count':peer_count(),'desired_validator_set':EXPECTED_DESIRED,'final_validator_set':final,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'latest_block_hash':latest['hash'],'latest_block_timestamp':block_time,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         "    write_json(PROOF, proof)",
         "    try: os.unlink(LAST_ERROR)",
         "    except FileNotFoundError: pass",
@@ -405,6 +448,7 @@ def _candidate_activation_compose(
     guardian_script = _activation_guardian_script(
         target_node=target_node,
         target_node_id=target_node_id,
+        bootnode_enode=bootnode_enode,
         desired_validators=desired_validators,
         chain_id=chain_id,
         genesis_sha256=genesis_sha256,
@@ -533,6 +577,7 @@ def _voter_guardian_script(
     *,
     voter: str,
     candidate: str,
+    candidate_enode: str,
     current_validators: Iterable[str],
     desired_validators: Iterable[str],
     chain_id: int,
@@ -545,6 +590,10 @@ def _voter_guardian_script(
     candidate_vote = _validator_vote_address(candidate, "candidate validator")
     request = {"jsonrpc": "2.0", "id": 1, "method": "qbft_proposeValidatorVote", "params": [candidate_vote, True]}
     request_json = json.dumps(request, sort_keys=True, separators=(",", ":"))
+    vote_address_by_lower = {
+        item: _validator_vote_address(item, "stale QBFT pending-vote cleanup validator")
+        for item in sorted(set([*current, *desired]))
+    }
     return "\n".join([
         "import hashlib, json, os, time, traceback, urllib.request",
         f"RPC = 'http://{voter}:8545'",
@@ -555,8 +604,12 @@ def _voter_guardian_script(
         f"EXPECTED_DESIRED = {desired!r}",
         f"CANDIDATE_VALIDATOR = {candidate_lower!r}",
         f"CANDIDATE_VALIDATOR_VOTE_ADDRESS = {candidate_vote!r}",
+        f"CANDIDATE_ENODE = {candidate_enode!r}",
         f"REQUEST = json.loads({request_json!r})",
         f"EXPECTED_REQUEST_SHA256 = {request_sha256!r}",
+        f"VOTE_ADDRESS_BY_LOWER = {vote_address_by_lower!r}",
+        f"STALE_VOTE_QUIET_SECONDS = {int(_QBFT_STALE_VOTE_QUIET_SECONDS)}",
+        f"STALE_VOTE_POLL_SECONDS = {int(_QBFT_STALE_VOTE_POLL_SECONDS)}",
         "SAFE = VOTER_NODE.replace('-', '_')",
         "PROOF = '/proof/' + SAFE + '-add-node-validator-admission.json'",
         "HEALTHY = '/proof/' + SAFE + '-add-node-validator-admission-healthy'",
@@ -570,7 +623,100 @@ def _voter_guardian_script(
         "        value = json.loads(response.read(1048576).decode())",
         "    if value.get('error') is not None or 'result' not in value: raise RuntimeError(method + ' failed: ' + repr(value.get('error')))",
         "    return value['result']",
+        "def normalize_node_id(value):",
+        "    text = str(value or '').lower()",
+        "    return text[2:] if text.startswith('0x') else text",
         "def validators(): return [str(item).lower() for item in rpc('qbft_getValidatorsByBlockNumber', ['latest'])]",
+        "def pending_votes():",
+        "    result = rpc('qbft_getPendingVotes', [])",
+        "    if not isinstance(result, dict): raise RuntimeError('pending votes response is not an object')",
+        "    normalized = {}",
+        "    for address, vote in result.items():",
+        "        text = str(address or '').lower()",
+        "        if not text.startswith('0x'): text = '0x' + text",
+        "        if len(text) == 42 and isinstance(vote, bool): normalized[text] = vote",
+        "    return normalized",
+        "def syncing(): return rpc('eth_syncing', []) is not False",
+        "def block_number(): return int(rpc('eth_blockNumber', []), 16)",
+        "def satisfied_pending_vote_targets(pending, live_validators):",
+        "    live = set(live_validators)",
+        "    targets = []",
+        "    for address, vote in sorted(pending.items()):",
+        "        if vote is True and address in live: targets.append({'address':address,'vote':vote,'reason':'add_vote_already_in_validator_set'})",
+        "        elif vote is False and address not in live: targets.append({'address':address,'vote':vote,'reason':'remove_vote_already_absent_from_validator_set'})",
+        "    return targets",
+        "def wait_for_quiet_validator_set(reference):",
+        "    deadline = time.time() + STALE_VOTE_QUIET_SECONDS",
+        "    first = block_number()",
+        "    observations = [{'elapsed_seconds':0,'validator_set':reference,'block_number':first,'syncing':syncing()}]",
+        "    while time.time() < deadline:",
+        "        time.sleep(min(STALE_VOTE_POLL_SECONDS, max(0.0, deadline - time.time())))",
+        "        current = validators()",
+        "        block = block_number()",
+        "        node_syncing = syncing()",
+        "        observations.append({'elapsed_seconds':round(max(0.0, STALE_VOTE_QUIET_SECONDS - max(0.0, deadline - time.time())),3),'validator_set':current,'block_number':block,'syncing':node_syncing})",
+        "        if not same_set(current, reference):",
+        "            return {'quiet':False,'reason':'validator_set_changed','reference_validator_set':reference,'observations':observations}",
+        "    last = observations[-1]",
+        "    quiet = (last['block_number'] > first and last['syncing'] is False)",
+        "    return {'quiet':quiet,'reason':'quiet_window_satisfied' if quiet else 'quiet_window_without_block_progress','reference_validator_set':reference,'observations':observations}",
+        "def cleanup_satisfied_pending_votes(live_validators, phase):",
+        "    before = pending_votes()",
+        "    targets = satisfied_pending_vote_targets(before, live_validators)",
+        "    result = {'phase':phase,'quiet_seconds':STALE_VOTE_QUIET_SECONDS,'pending_votes_before':before,'cleanup_targets':targets,'cleared':[],'skipped':[]}",
+        "    if not targets:",
+        "        result['pending_votes_after'] = before",
+        "        result['status'] = 'not_needed'",
+        "        return result",
+        "    quiet = wait_for_quiet_validator_set(live_validators)",
+        "    result['quiet_observation'] = quiet",
+        "    if quiet.get('quiet') is not True:",
+        "        result['pending_votes_after'] = pending_votes()",
+        "        result['status'] = 'deferred_not_quiet'",
+        "        return result",
+        "    refreshed_live = validators()",
+        "    refreshed = pending_votes()",
+        "    for target in satisfied_pending_vote_targets(refreshed, refreshed_live):",
+        "        address = target['address']",
+        "        vote_address = VOTE_ADDRESS_BY_LOWER.get(address)",
+        "        if not vote_address:",
+        "            target = dict(target)",
+        "            target['reason'] = target.get('reason', 'satisfied_vote') + '_without_committed_checksum'",
+        "            result['skipped'].append(target)",
+        "            continue",
+        "        discard_result = rpc('qbft_discardValidatorVote', [vote_address])",
+        "        cleared = dict(target)",
+        "        cleared['discard_result'] = discard_result",
+        "        cleared['discard_vote_address'] = vote_address",
+        "        result['cleared'].append(cleared)",
+        "    result['pending_votes_after'] = pending_votes()",
+        "    result['status'] = 'cleared' if result['cleared'] else 'no_clearable_targets'",
+        "    return result",
+        "def peer_count(): return int(rpc('net_peerCount', []), 16)",
+        "def enode_node_id(enode):",
+        "    text = str(enode or '')",
+        "    if not text.startswith('enode://') or '@' not in text: return ''",
+        "    return normalize_node_id(text.split('enode://', 1)[1].split('@', 1)[0])",
+        "def peer_connected(enode):",
+        "    expected = enode_node_id(enode)",
+        "    if not expected: return False",
+        "    try: peers = rpc('admin_peers', [])",
+        "    except Exception: return False",
+        "    if not isinstance(peers, list): return False",
+        "    for peer in peers:",
+        "        if isinstance(peer, dict) and normalize_node_id(peer.get('id')) == expected: return True",
+        "    return False",
+        "def ensure_peer(enode, label):",
+        "    if not enode: return 'not_requested'",
+        "    if peer_connected(enode): return 'already_connected_before_add'",
+        "    result = rpc('admin_addPeer', [enode])",
+        "    if result is True: return 'add_peer_accepted'",
+        "    if peer_connected(enode): return 'already_connected_after_reject'",
+        "    deadline = time.time() + 20",
+        "    while time.time() < deadline:",
+        "        time.sleep(1)",
+        "        if peer_connected(enode): return 'already_connected_after_reject_wait'",
+        "    raise RuntimeError('admin_addPeer rejected ' + label + ' and expected peer is not connected')",
         "def same_set(left, right): return sorted(left) == sorted(right)",
         "def write_json(path, payload):",
         "    tmp = path + '.tmp'",
@@ -578,10 +724,15 @@ def _voter_guardian_script(
         "    os.replace(tmp, path)",
         "def prove():",
         "    if hashlib.sha256(encoded(REQUEST)).hexdigest() != EXPECTED_REQUEST_SHA256: raise RuntimeError('vote request commitment mismatch')",
+        "    candidate_peer_connect_result = ensure_peer(CANDIDATE_ENODE, 'candidate')",
         "    if int(rpc('eth_chainId', []), 16) != EXPECTED_CHAIN_ID: raise RuntimeError('chain id mismatch')",
         "    with open('/config/genesis.json', 'rb') as handle:",
         "        if hashlib.sha256(handle.read()).hexdigest() != EXPECTED_GENESIS_SHA256: raise RuntimeError('genesis commitment mismatch')",
         "    current = validators()",
+        "    stale_vote_cleanup = []",
+        "    if not same_set(current, EXPECTED_DESIRED):",
+        "        stale_vote_cleanup.append(cleanup_satisfied_pending_votes(current, 'before-candidate-vote'))",
+        "        current = validators()",
         "    vote_submitted = False",
         "    if not same_set(current, EXPECTED_DESIRED):",
         "        if not same_set(current, EXPECTED_CURRENT): raise RuntimeError('unexpected pre-vote validator set')",
@@ -593,6 +744,10 @@ def _voter_guardian_script(
         "        time.sleep(2)",
         "        final = validators()",
         "    if not same_set(final, EXPECTED_DESIRED): raise RuntimeError('desired validator set not reached')",
+        "    stale_vote_cleanup.append(cleanup_satisfied_pending_votes(final, 'after-desired-validator-set'))",
+        "    final = validators()",
+        "    if not same_set(final, EXPECTED_DESIRED): raise RuntimeError('desired validator set changed during stale vote cleanup')",
+        "    candidate_peer_connect_result = ensure_peer(CANDIDATE_ENODE, 'candidate')",
         "    first = int(rpc('eth_blockNumber', []), 16)",
         "    time.sleep(4)",
         "    second = int(rpc('eth_blockNumber', []), 16)",
@@ -602,7 +757,7 @@ def _voter_guardian_script(
         "    block_time = int(latest.get('timestamp', '0x0'), 16)",
         "    now = int(time.time())",
         "    if block_time > now + 15 or now - block_time > MAX_BLOCK_AGE_SECONDS: raise RuntimeError('latest block is stale')",
-        "    proof = {'voter_node':VOTER_NODE,'chain_id':EXPECTED_CHAIN_ID,'genesis_sha256':EXPECTED_GENESIS_SHA256,'rpc_request_sha256':EXPECTED_REQUEST_SHA256,'vote_submitted':vote_submitted,'expected_current_validator_set':EXPECTED_CURRENT,'desired_validator_set':EXPECTED_DESIRED,'final_validator_set':final,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'latest_block_hash':latest['hash'],'latest_block_timestamp':block_time,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+        "    proof = {'voter_node':VOTER_NODE,'chain_id':EXPECTED_CHAIN_ID,'genesis_sha256':EXPECTED_GENESIS_SHA256,'candidate_validator':CANDIDATE_VALIDATOR,'candidate_enode_sha256':hashlib.sha256(CANDIDATE_ENODE.encode()).hexdigest(),'candidate_peer_connect_result':candidate_peer_connect_result,'rpc_request_sha256':EXPECTED_REQUEST_SHA256,'vote_submitted':vote_submitted,'expected_current_validator_set':EXPECTED_CURRENT,'desired_validator_set':EXPECTED_DESIRED,'final_validator_set':final,'stale_vote_cleanup':stale_vote_cleanup,'final_pending_votes':pending_votes(),'first_block_number':first,'second_block_number':second,'block_advance':second-first,'peer_count':peer_count(),'latest_block_hash':latest['hash'],'latest_block_timestamp':block_time,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         "    write_json(PROOF, proof)",
         "    try: os.unlink(LAST_ERROR)",
         "    except FileNotFoundError: pass",
@@ -780,6 +935,7 @@ def _load_sync_context(
             )
     service_routes[target_node] = dict(candidate_route)
     target_node_id = _public_node_id(_validator_private_key(private_state, network=network, node=target_node))
+    candidate_validator_enode = _candidate_validator_enode(target_node_id, candidate_route)
     activation_compose = _candidate_activation_compose(
         target_node=target_node,
         genesis_b64=genesis_b64,
@@ -816,6 +972,8 @@ def _load_sync_context(
         "target_validator_address": candidate,
         "target_validator_node_id": target_node_id,
         "target_validator_node_id_sha256": hashlib.sha256(target_node_id.encode("ascii")).hexdigest(),
+        "candidate_validator_enode": candidate_validator_enode,
+        "candidate_validator_enode_sha256": hashlib.sha256(candidate_validator_enode.encode("utf-8")).hexdigest(),
         "candidate_validator_route": dict(candidate_route),
         "candidate_p2p_port": candidate_p2p_port,
         "service_routes": service_routes,
@@ -901,6 +1059,7 @@ def build_node_add_validator_admission_release(
             "validator_address": context["target_validator_address"],
             "validator_node_id": context["target_validator_node_id"],
             "validator_node_id_sha256": context["target_validator_node_id_sha256"],
+            "validator_enode_sha256": context["candidate_validator_enode_sha256"],
             "validator_route": dict(context["candidate_validator_route"]),
             "p2p_port": context["candidate_p2p_port"],
             "p2p_endpoint": context["candidate_validator_route"].get("p2p_endpoint"),
@@ -908,6 +1067,8 @@ def build_node_add_validator_admission_release(
         "admission_plan": {
             "candidate_node": context["target_node"],
             "candidate_validator_address": context["target_validator_address"],
+            "candidate_validator_enode": context["candidate_validator_enode"],
+            "candidate_validator_enode_sha256": context["candidate_validator_enode_sha256"],
             "voter_nodes": list(context["voter_nodes"]),
             "vote_threshold": "all-existing-validators",
             "logical_vote_count": len(context["voter_nodes"]),
@@ -932,6 +1093,8 @@ def build_node_add_validator_admission_release(
                 "target identity env keys remain installed",
                 "target service is redeployed with validator identity active",
                 "selected bootnode P2P endpoint is reachable before validator vote",
+                "target activation guardian explicitly peers candidate to bootnode and proves sync",
+                "voter guardians explicitly peer current validators to the candidate validator enode",
                 "all current validators submit the exact committed QBFT admission vote",
                 "final QBFT validator set is exactly desired_validator_set",
                 "target validator node identity matches the target validator private key",
@@ -943,6 +1106,7 @@ def build_node_add_validator_admission_release(
             "live_execution_authorized": True,
             "validator_vote_authorized": True,
             "validator_activation_authorized": True,
+            "qbft_transition_recovery_authorized": True,
             "replica_sync_authorized": False,
             "service_creation_authorized": False,
             "identity_install_authorized": False,
@@ -954,6 +1118,7 @@ def build_node_add_validator_admission_release(
             "compiler": "mother-native-add-node-validator-admission-v1",
             "coolify_control_plane_only": True,
             "all_existing_validator_votes_required": True,
+            "qbft_transition_recovery_restart_authorized": True,
             "manual_ssh_required": False,
             "public_http_endpoint_created": False,
             "routing_or_topology_published": False,
@@ -973,6 +1138,7 @@ def build_node_add_validator_admission_release(
             "logical_vote_count": len(context["voter_nodes"]),
             "validator_vote_authorized": True,
             "validator_activation_authorized": True,
+            "qbft_transition_recovery_authorized": True,
             "routing_or_topology_publication_authorized": False,
             "manual_ssh_required": False,
             "public_endpoint_created": False,
@@ -1474,6 +1640,96 @@ def _component_healthy(record: Mapping[str, Any], *, names: Iterable[str]) -> bo
     return _component_status(record, names=names) == "running:healthy"
 
 
+def _recover_target_start_rejection(
+    *,
+    controller: Mapping[str, Any],
+    target_endpoint: str,
+    candidate_node: str,
+    target_uuid: str,
+    target_guardian_name: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    """Reobserve a candidate service after Coolify rejects POST /start.
+
+    Coolify can return HTTP 400 when a service is already running.  Admission
+    should not blindly mark that as success, but it may continue when a fresh
+    service detail proves that the candidate's activation Compose is installed
+    and the service is already in a started/running state.  The admission and
+    voter guardian proofs remain mandatory before the validator set can be
+    considered changed.
+    """
+
+    receipt: dict[str, Any] = {
+        "name": f"{candidate_node}-target-start-rejection-recovery",
+        "method": "GET",
+        "endpoint": target_endpoint,
+        "service_uuid": target_uuid,
+        "guardian_service": target_guardian_name,
+        "verified": False,
+    }
+    detail = _http(
+        controller,
+        "GET",
+        target_endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    receipt.update({
+        "status": detail["status"],
+        "response_sha256": detail["response_sha256"],
+    })
+    if not detail["ok"]:
+        receipt["reason"] = f"target service detail failed with HTTP {detail['status']} after start rejection"
+        return receipt
+    try:
+        record = _find_service_record(detail["payload"], node=candidate_node, service_uuid=target_uuid)
+        compose_text = _compose_text(record)
+    except MotherDeploymentNodeAddValidatorAdmissionError as exc:
+        receipt["reason"] = str(exc)
+        return receipt
+
+    compose_sha = hashlib.sha256(compose_text.encode("utf-8")).hexdigest()
+    service_status = _service_status(record)
+    candidate_component_status = _component_status(record, names=[candidate_node])
+    guardian_component_status = _component_status(record, names=[target_guardian_name])
+    activation_compose_installed = (
+        "mother-validator-activation-init" in compose_text
+        and target_guardian_name in compose_text
+        and f"{candidate_node}:" in compose_text
+        and "main_computer.mother.validator-activation: active" in compose_text
+    )
+    service_started = (
+        service_status.startswith(("running", "degraded"))
+        or candidate_component_status.startswith("running")
+        or guardian_component_status.startswith("running")
+    )
+    receipt.update({
+        "service_status": service_status,
+        "candidate_component_status": candidate_component_status,
+        "guardian_component_status": guardian_component_status,
+        "compose_text_available": True,
+        "compose_text_sha256": compose_sha,
+        "activation_compose_installed": activation_compose_installed,
+        "service_started": service_started,
+    })
+    if not activation_compose_installed:
+        receipt["reason"] = "target activation Compose was not visible after Coolify start rejection"
+        return receipt
+    if not service_started:
+        receipt["reason"] = "target service was not started after Coolify start rejection"
+        return receipt
+    receipt["verified"] = True
+    receipt["reason"] = (
+        "Coolify rejected POST /start for an already-started candidate service; "
+        "activation Compose is installed and exact admission guardian proof remains required"
+    )
+    return receipt
+
+
 def _expected_admission_guardians(*, candidate_node: str, voter_nodes: Iterable[str]) -> dict[str, str]:
     guardians = {candidate_node: "mother-add-node-validator-activation-guardian"}
     for voter in voter_nodes:
@@ -1510,6 +1766,95 @@ def _validator_admission_proof_guardians_verified(document: Mapping[str, Any]) -
     return set(required) <= set(latest) and all(latest[node] for node in required)
 
 
+def _durable_validator_admission_proof_verified(document: Mapping[str, Any]) -> bool:
+    """Validate that admission proof is durable, not a transient health blip.
+
+    Coolify component health is only a proxy for the guardian's internal
+    ``qbft_getValidatorsByBlockNumber("latest")`` proof.  A single healthy
+    observation can race with a later RPC failure or stale healthcheck mtime, so
+    execution and verification require a materialized final validator set and a
+    run of consecutive durable all-guardian samples from the latest observation
+    data.
+    """
+
+    desired = document.get("desired_validator_set")
+    final = document.get("final_validator_set")
+    if not isinstance(desired, list) or not isinstance(final, list):
+        return False
+    try:
+        if not _same_set([str(item) for item in final], [str(item) for item in desired]):
+            return False
+    except MotherDeploymentNodeAddValidatorAdmissionError:
+        return False
+    if not _validator_admission_proof_guardians_verified(document):
+        return False
+
+    candidate = document.get("candidate_node")
+    voters = document.get("voter_nodes")
+    observations = document.get("health_observations")
+    if not isinstance(candidate, str) or not isinstance(voters, list) or not isinstance(observations, list):
+        return False
+    voter_nodes = [item for item in voters if isinstance(item, str)]
+    required = _expected_admission_guardians(candidate_node=candidate, voter_nodes=voter_nodes)
+    if set(required) != {candidate, *voter_nodes}:
+        return False
+
+    by_phase: dict[str, dict[int, set[str]]] = {}
+    for item in observations:
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        if not isinstance(node, str) or node not in required:
+            continue
+        if item.get("proof_guardian_name") != required[node]:
+            continue
+        if item.get("proof_guardian_healthy") is not True:
+            continue
+        phase = item.get("observation_phase")
+        sample = item.get("durable_sample_index")
+        if not isinstance(phase, str) or not isinstance(sample, int):
+            continue
+        by_phase.setdefault(phase, {}).setdefault(sample, set()).add(node)
+
+    required_nodes = set(required)
+    for samples in by_phase.values():
+        run = 0
+        for index in sorted(samples):
+            if required_nodes <= samples[index]:
+                run += 1
+                if run >= _DURABLE_ADMISSION_PROOF_SAMPLE_COUNT:
+                    return True
+            else:
+                run = 0
+    return False
+
+
+
+
+
+def _candidate_validator_enode(node_id: str, route: Mapping[str, Any]) -> str:
+    text = str(node_id or "").lower()
+    text = text[2:] if text.startswith("0x") else text
+    if re.fullmatch(r"[0-9a-f]{128}", text) is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator node id is invalid")
+    host = route.get("advertised_host")
+    port = route.get("p2p_port")
+    endpoint = route.get("p2p_endpoint")
+    if (not isinstance(host, str) or not host.strip()) and isinstance(endpoint, str) and endpoint.strip():
+        if ":" not in endpoint:
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate P2P endpoint is invalid")
+        host, port_text = endpoint.rsplit(":", 1)
+        if port is None:
+            port = port_text
+    if not isinstance(host, str) or not host.strip():
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate advertised P2P host is missing")
+    try:
+        port_int = int(port)
+    except (TypeError, ValueError) as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate advertised P2P port is invalid") from exc
+    if port_int <= 0 or port_int > 65535:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate advertised P2P port is outside the valid TCP/UDP range")
+    return f"enode://{text}@{host.strip()}:{port_int}"
 
 
 def _parse_bootnode_p2p_endpoint(bootnode: Mapping[str, Any]) -> tuple[str, int, str | None]:
@@ -1623,6 +1968,7 @@ def _observe_admission_proof_guardians(
     timeout: float,
     max_response_bytes: int,
     opener: Any,
+    durable_sample_index: int | None = None,
 ) -> tuple[set[str], dict[str, str]]:
     healthy: set[str] = set()
     last_statuses: dict[str, str] = {}
@@ -1675,6 +2021,8 @@ def _observe_admission_proof_guardians(
                 "component_or_service_healthy": proof_guardian_healthy,
                 "response_sha256": service_response["response_sha256"],
                 "observed_at": _timestamp(),
+                "durable_sample_index": durable_sample_index,
+                "durable_proof_sample": durable_sample_index is not None,
             })
     return healthy, last_statuses
 
@@ -1695,11 +2043,16 @@ def _wait_for_admission_proof_guardians(
     timeout: float,
     max_response_bytes: int,
     opener: Any,
+    durable_sample_count: int = _DURABLE_ADMISSION_PROOF_SAMPLE_COUNT,
 ) -> tuple[set[str], dict[str, str]]:
     required = set(nodes)
     deadline = time.monotonic() + max_wait_seconds
     last_statuses: dict[str, str] = {}
+    consecutive_healthy = 0
+    sample_index = 0
+    durable_required = max(1, int(durable_sample_count))
     while True:
+        sample_index += 1
         healthy, last_statuses = _observe_admission_proof_guardians(
             nodes=nodes,
             candidate_node=candidate_node,
@@ -1710,15 +2063,73 @@ def _wait_for_admission_proof_guardians(
             target_guardian_name=target_guardian_name,
             observations=observations,
             observation_phase=observation_phase,
+            durable_sample_index=sample_index,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             opener=opener,
         )
         if required <= healthy:
-            return healthy, last_statuses
+            consecutive_healthy += 1
+            if consecutive_healthy >= durable_required:
+                return healthy, last_statuses
+        else:
+            consecutive_healthy = 0
         if time.monotonic() >= deadline:
             return healthy, last_statuses
         time.sleep(max(0.0, poll_interval_seconds))
+
+
+def _restart_validator_services_for_qbft_transition(
+    *,
+    nodes: Sequence[str],
+    controllers: Mapping[str, Any],
+    node_to_controller: Mapping[str, str],
+    all_service_uuids: Mapping[str, str],
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> list[dict[str, Any]]:
+    """Restart validator services once after a proven admission-transition stall.
+
+    The live A1->A2 twiddle showed that a validator-set change can commit and
+    then leave QBFT stuck in round changes until Besu is restarted/reobserved.
+    Mother cannot shell into hosts here, so the bounded control-plane equivalent
+    is Coolify's service restart endpoint followed by the same exact guardian
+    proof gate; this never publishes topology by itself.
+    """
+
+    receipts: list[dict[str, Any]] = []
+    for node in nodes:
+        controller_id = node_to_controller[node]
+        controller = controllers[controller_id]
+        service_uuid = _identifier(all_service_uuids[node], f"{node} service UUID")
+        endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/restart"
+        response = _http(
+            controller,
+            "POST",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        ok = response["status"] in {200, 201, 202}
+        receipts.append({
+            "ordinal": len(receipts) + 1,
+            "mutation_id": f"{node}.restart-validator-for-qbft-transition-recovery",
+            "controller_id": controller_id,
+            "node": node,
+            "service_uuid": service_uuid,
+            "method": "POST",
+            "endpoint": endpoint,
+            "body_sha256": None,
+            "response": _safe_response(response),
+            "live_write_acknowledged": ok,
+            "status": "succeeded" if ok else "failed",
+            "reason": "validator admission guardians did not prove a fresh advancing desired validator set before the transition-recovery restart",
+        })
+    return receipts
+
 
 def _cleanup_summary(document: Mapping[str, Any], *, paths: PrivateStatePaths) -> dict[str, Any]:
     evidence = document.get("evidence")
@@ -1877,6 +2288,7 @@ def execute_node_add_validator_admission_release(
     preconditions: list[dict[str, Any]] = []
     receipts: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    qbft_transition_recovery: list[dict[str, Any]] = []
     post_admission_validator_refresh: list[dict[str, Any]] = []
     post_admission_cleanup: dict[str, Any] | None = None
     post_admission_cleanup_warning: dict[str, str] | None = None
@@ -2014,7 +2426,23 @@ def execute_node_add_validator_admission_release(
         start_endpoint = f"/api/v1/services/{urllib.parse.quote(target_uuid, safe='')}/start"
         start = _http(target_controller, "POST", start_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
         start_ok = start["status"] in {200, 201, 202}
-        receipts.append({
+        target_start_rejected_nonfatal = False
+        target_start_recovery: dict[str, Any] | None = None
+        if not start_ok and start["status"] == 400:
+            target_start_recovery = _recover_target_start_rejection(
+                controller=target_controller,
+                target_endpoint=target_endpoint,
+                candidate_node=candidate_node,
+                target_uuid=target_uuid,
+                target_guardian_name=target_guardian_name,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            preconditions.append(target_start_recovery)
+            target_start_rejected_nonfatal = target_start_recovery.get("verified") is True
+        target_start_accepted = start_ok or target_start_rejected_nonfatal
+        start_receipt = {
             "ordinal": len(receipts) + 1,
             "mutation_id": f"{candidate_node}.start-validator-activation-compose",
             "controller_id": target_controller_id,
@@ -2026,9 +2454,17 @@ def execute_node_add_validator_admission_release(
             "guardian_service": target_guardian_name,
             "response": _safe_response(start),
             "live_write_acknowledged": start_ok,
-            "status": "succeeded" if start_ok else "failed",
-        })
-        if not start_ok:
+            "status": "succeeded" if target_start_accepted else "failed",
+        }
+        if target_start_rejected_nonfatal:
+            start_receipt["coolify_target_start_rejected_nonfatal"] = True
+            start_receipt["recovery_precondition"] = target_start_recovery
+            start_receipt["nonfatal_reason"] = (
+                "Coolify rejected POST /start for an already-started candidate service after a successful "
+                "activation Compose PATCH; exact target activation guardian proof remains required before admission can pass"
+            )
+        receipts.append(start_receipt)
+        if not target_start_accepted:
             raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected target start with HTTP {start['status']}")
 
         for voter in voter_nodes:
@@ -2047,6 +2483,7 @@ def execute_node_add_validator_admission_release(
             script = _voter_guardian_script(
                 voter=voter,
                 candidate=candidate,
+                candidate_enode=_identifier(plan["candidate_validator_enode"], "candidate validator enode"),
                 current_validators=current_set,
                 desired_validators=desired_set,
                 chain_id=int(plan["chain_id"]),
@@ -2127,9 +2564,38 @@ def execute_node_add_validator_admission_release(
             opener=opener,
         )
         if not (set(admission_nodes) <= healthy):
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_NOT_HEALTHY", f"validator-admission guardians did not become healthy: {last_statuses!r}")
-
-        admission_proven = True
+            qbft_transition_recovery = _restart_validator_services_for_qbft_transition(
+                nodes=admission_nodes,
+                controllers=controllers,
+                node_to_controller=node_to_controller,
+                all_service_uuids=all_service_uuids,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            if any(item.get("status") != "succeeded" for item in qbft_transition_recovery):
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_QBFT_TRANSITION_RESTART_FAILED",
+                    f"validator-admission guardians did not become healthy and transition-recovery restart failed: {last_statuses!r}",
+                )
+            healthy, last_statuses = _wait_for_admission_proof_guardians(
+                nodes=admission_nodes,
+                candidate_node=candidate_node,
+                controllers=controllers,
+                node_to_controller=node_to_controller,
+                all_service_uuids=all_service_uuids,
+                voter_guardian_names=voter_guardian_names,
+                target_guardian_name=target_guardian_name,
+                observations=observations,
+                observation_phase="admission-proof-after-qbft-transition-restart",
+                max_wait_seconds=max(max_wait_seconds, 720.0),
+                poll_interval_seconds=poll_interval_seconds,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+        if not (set(admission_nodes) <= healthy):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_NOT_HEALTHY", f"validator-admission guardians did not become healthy after transition recovery: {last_statuses!r}")
 
         try:
             cleanup_result = execute_completed_mother_helper_cleanup(
@@ -2166,6 +2632,29 @@ def execute_node_add_validator_admission_release(
                 "message": str(exc)[:700],
             }
 
+        terminal_healthy, terminal_statuses = _wait_for_admission_proof_guardians(
+            nodes=admission_nodes,
+            candidate_node=candidate_node,
+            controllers=controllers,
+            node_to_controller=node_to_controller,
+            all_service_uuids=all_service_uuids,
+            voter_guardian_names=voter_guardian_names,
+            target_guardian_name=target_guardian_name,
+            observations=observations,
+            observation_phase="admission-proof-terminal-durable",
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        if not (set(admission_nodes) <= terminal_healthy):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_DURABLE_PROOF_LOST",
+                f"validator-admission durable terminal proof was not healthy/current after cleanup: {terminal_statuses!r}",
+            )
+        admission_proven = True
+
     except MotherDeploymentNodeAddValidatorAdmissionError as exc:
         failure = {"code": exc.code, "message": str(exc)[:700]}
     except Exception as exc:  # pragma: no cover
@@ -2174,15 +2663,23 @@ def execute_node_add_validator_admission_release(
     completed = _timestamp()
     initial_planned_mutations = 2 + 2 * len(voter_nodes)
     refresh_planned_mutations = 0
-    planned_mutations = initial_planned_mutations
+    planned_mutations = initial_planned_mutations + len(qbft_transition_recovery)
     succeeded = sum(item.get("status") == "succeeded" for item in receipts)
+    transition_recovery_succeeded = sum(item.get("status") == "succeeded" for item in qbft_transition_recovery)
     refresh_succeeded = 0
-    total_succeeded = succeeded
+    total_succeeded = succeeded + transition_recovery_succeeded
     required_healthy_nodes = set([candidate_node, *voter_nodes])
-    healthy_nodes = {item.get("node") for item in observations if item.get("proof_guardian_healthy") is True}
-    proof_guardians_verified = _validator_admission_proof_guardians_verified({
+    latest_guardian_health: dict[str, bool] = {}
+    for item in observations:
+        if isinstance(item, Mapping) and isinstance(item.get("node"), str):
+            latest_guardian_health[str(item["node"])] = item.get("proof_guardian_healthy") is True
+    healthy_nodes = {node for node, ok in latest_guardian_health.items() if ok}
+    final_validator_set = list(desired_set) if admission_proven else None
+    proof_guardians_verified = _durable_validator_admission_proof_verified({
         "candidate_node": candidate_node,
         "voter_nodes": voter_nodes,
+        "desired_validator_set": desired_set,
+        "final_validator_set": final_validator_set,
         "health_observations": observations,
     })
     post_refresh_guardians_verified = False
@@ -2197,16 +2694,18 @@ def execute_node_add_validator_admission_release(
         and admission_proven
         and proof_guardians_verified
         and succeeded == initial_planned_mutations
+        and transition_recovery_succeeded == len(qbft_transition_recovery)
     )
     complete = (
         failure is None
         and admission_proven
         and succeeded == initial_planned_mutations
+        and transition_recovery_succeeded == len(qbft_transition_recovery)
         and required_healthy_nodes <= healthy_nodes
         and proof_guardians_verified
         and cleanup_acceptable
     )
-    live_mutation = any(item.get("live_write_acknowledged") is True for item in [*receipts, *post_admission_validator_refresh])
+    live_mutation = any(item.get("live_write_acknowledged") is True for item in [*receipts, *qbft_transition_recovery, *post_admission_validator_refresh])
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
@@ -2232,8 +2731,10 @@ def execute_node_add_validator_admission_release(
         "genesis_sha256": _sha256(plan["genesis_sha256"], "genesis SHA-256"),
         "current_validator_set": current_set,
         "desired_validator_set": desired_set,
+        "final_validator_set": final_validator_set,
         "precondition_receipts": preconditions,
         "mutation_receipts": receipts,
+        "qbft_transition_recovery": qbft_transition_recovery,
         "health_observations": observations,
         "post_admission_validator_refresh": post_admission_validator_refresh,
         "post_admission_cleanup": post_admission_cleanup,
@@ -2243,6 +2744,7 @@ def execute_node_add_validator_admission_release(
             "allowed_http_methods": ["GET", "PATCH", "POST"],
             "coolify_control_plane_only": True,
             "all_existing_validator_votes_required": True,
+            "qbft_transition_recovery_restart_authorized": True,
             "manual_ssh_required": False,
             "public_http_endpoint_created": False,
             "routing_or_topology_published": False,
@@ -2255,6 +2757,7 @@ def execute_node_add_validator_admission_release(
             "release_consumed": True,
             "validator_vote_authorized": True,
             "validator_activation_authorized": True,
+            "qbft_transition_recovery_authorized": True,
             "validator_vote_proven": admission_proven and proof_guardians_verified,
             "validator_activation_proven": admission_proven and proof_guardians_verified,
             "routing_or_topology_publication_authorized": False,
@@ -2273,9 +2776,9 @@ def execute_node_add_validator_admission_release(
             "planned_mutation_count": planned_mutations,
             "initial_planned_mutation_count": initial_planned_mutations,
             "post_admission_refresh_planned_mutation_count": refresh_planned_mutations,
-            "attempted_mutation_count": len(receipts) + len(post_admission_validator_refresh),
+            "attempted_mutation_count": len(receipts) + len(qbft_transition_recovery) + len(post_admission_validator_refresh),
             "succeeded_mutation_count": total_succeeded,
-            "failed_mutation_count": sum(item.get("status") != "succeeded" for item in [*receipts, *post_admission_validator_refresh]),
+            "failed_mutation_count": sum(item.get("status") != "succeeded" for item in [*receipts, *qbft_transition_recovery, *post_admission_validator_refresh]),
             "network_access_performed": bool(preconditions or receipts or observations),
             "bootnode_p2p_reachability_performed": any(
                 item.get("name") == "bootnode-p2p-reachability-before-validator-vote"
@@ -2293,6 +2796,8 @@ def execute_node_add_validator_admission_release(
             "routing_or_topology_published": False,
             "public_endpoint_created": False,
             "manual_ssh_required": False,
+            "qbft_transition_recovery_performed": bool(qbft_transition_recovery),
+            "qbft_transition_recovery_clean": bool(qbft_transition_recovery) and transition_recovery_succeeded == len(qbft_transition_recovery) and proof_guardians_verified,
             "post_admission_validator_refresh_performed": bool(post_admission_validator_refresh),
             "post_admission_validator_refresh_clean": refresh_clean,
             "post_admission_validator_refresh_guardians_verified": post_refresh_guardians_verified,
@@ -2313,7 +2818,7 @@ def execute_node_add_validator_admission_release(
         "validator_mutation_count": 1 if admission_proven and proof_guardians_verified else 0,
         "validator_vote_performed": admission_proven and proof_guardians_verified,
         "validator_activation_performed": admission_proven and proof_guardians_verified,
-        "validator_restart_count": 0,
+        "validator_restart_count": transition_recovery_succeeded,
         "post_admission_validator_refresh_performed": bool(post_admission_validator_refresh),
         "chain_mutation_count": 1 if admission_proven and proof_guardians_verified else 0,
         "service_mutation_count": total_succeeded,
@@ -2321,6 +2826,428 @@ def execute_node_add_validator_admission_release(
     evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)
     evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
     return evidence
+
+
+def _admission_evidence_service_uuids(document: Mapping[str, Any]) -> dict[str, str]:
+    candidate = _identifier(document.get("candidate_node"), "candidate node")
+    service_uuids: dict[str, str] = {candidate: _identifier(document.get("created_service_uuid"), "target service UUID")}
+    for section in ("mutation_receipts", "precondition_receipts"):
+        items = document.get(section)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            node = item.get("node")
+            service_uuid = item.get("service_uuid")
+            if isinstance(node, str) and isinstance(service_uuid, str):
+                try:
+                    service_uuids[_identifier(node, "service UUID node")] = _identifier(service_uuid, f"{node} service UUID")
+                except MotherDeploymentNodeAddValidatorAdmissionError:
+                    continue
+    return service_uuids
+
+
+def adopt_node_add_validator_admission_live_proof(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    failed_evidence_path: Path,
+    *,
+    acknowledged_failed_evidence_sha256: str,
+    max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    max_wait_seconds: float = 300.0,
+    poll_interval_seconds: float = 5.0,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    """Adopt durable live validator-admission proof after a timeout failure.
+
+    This command is deliberately read-only against Coolify.  It consumes a failed
+    validator-admission evidence document whose live mutations may have continued
+    converging after the operator-side process timed out.  It never reruns the
+    admission mutation or resubmits votes; it only reobserves the exact guardians
+    and writes a new clean evidence document when the current live proof is
+    durable.
+    """
+
+    resolved = _resolve_locator(
+        paths,
+        str(Path(failed_evidence_path)),
+        _EVIDENCE_DIRECTORY,
+        label="failed add-node validator-admission evidence",
+    )
+    failed, _, failed_sha = _canonical_file(resolved, label="failed add-node validator-admission evidence")
+    expected_sha = _sha256(acknowledged_failed_evidence_sha256, "failed validator-admission evidence SHA-256")
+    if failed_sha != expected_sha:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_ACK_MISMATCH",
+            "failed validator-admission evidence SHA-256 mismatch",
+        )
+    if failed.get("kind") != _EVIDENCE_KIND or failed.get("mother_binding") != _binding(private_state) or _contains_sensitive(failed):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "failed validator-admission evidence is invalid or sensitive",
+        )
+    age = _age(failed.get("completed_at"), now=now)
+    if age > max_age_seconds:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_STALE",
+            "failed validator-admission evidence is outside the adoption freshness window",
+        )
+    summary = failed.get("summary")
+    if not isinstance(summary, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID", "failed evidence summary is missing")
+    if failed.get("status") == "pass" and summary.get("clean") is True:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source evidence is already clean; adoption is only for failed/unclean post-mutation evidence",
+        )
+    if summary.get("live_mutation_performed") is not True and failed.get("service_mutation_count") in (None, 0):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source evidence does not show a live validator-admission mutation to adopt",
+        )
+
+    network = _identifier(failed.get("network"), "network")
+    candidate_node = _identifier(failed.get("candidate_node"), "candidate node")
+    target_controller_id = _identifier(failed.get("target_host"), "target host")
+    target_uuid = _identifier(failed.get("created_service_uuid"), "target service UUID")
+    voter_nodes = [_identifier(item, "voter node") for item in failed.get("voter_nodes", [])]
+    if not voter_nodes:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID", "source evidence has no voter nodes")
+    current_set = [_address(item, "current validator") for item in failed.get("current_validator_set", [])]
+    desired_set = [_address(item, "desired validator") for item in failed.get("desired_validator_set", [])]
+    candidate = _address(failed.get("candidate_validator_address"), "candidate validator address")
+    if candidate not in desired_set:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID", "candidate is not in desired validator set")
+
+    release_ref = failed.get("release")
+    release: Mapping[str, Any] | None = None
+    release_digest: str | None = None
+    if isinstance(release_ref, Mapping) and isinstance(release_ref.get("locator"), str) and isinstance(release_ref.get("sha256"), str):
+        release_path = _resolve_locator(
+            paths,
+            release_ref["locator"],
+            _RELEASE_DIRECTORY,
+            label="add-node validator-admission release",
+        )
+        release_document, _, release_sha = _canonical_file(release_path, label="add-node validator-admission release")
+        if release_sha != _sha256(release_ref["sha256"], "add-node validator-admission release SHA-256"):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID", "source release digest mismatch")
+        if release_document.get("mother_binding") != _binding(private_state):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID", "source release binding mismatch")
+        release = release_document
+        release_digest = release_sha
+
+    service_uuids = _admission_evidence_service_uuids(failed)
+    missing = [node for node in [candidate_node, *voter_nodes] if node not in service_uuids]
+    if missing:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            f"source evidence lacks service UUIDs for admission guardians: {missing}",
+        )
+
+    voter_guardian_names = {node: _guardian_service_name(node) for node in voter_nodes}
+    target_guardian_name = "mother-add-node-validator-activation-guardian"
+    node_to_controller: dict[str, str] = {candidate_node: target_controller_id}
+    for item in failed.get("mutation_receipts", []):
+        if not isinstance(item, Mapping):
+            continue
+        node = item.get("node")
+        controller_id = item.get("controller_id")
+        if isinstance(node, str) and isinstance(controller_id, str) and node in voter_nodes:
+            node_to_controller[node] = _identifier(controller_id, f"{node} controller")
+    for node in voter_nodes:
+        if node not in node_to_controller:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+                f"source evidence lacks controller binding for voter {node}",
+            )
+    controllers = {
+        controller_id: resolve_coolify_controller(private_state, network, controller_id)
+        for controller_id in set(node_to_controller.values())
+    }
+
+    started = _timestamp(now=now)
+    observations: list[dict[str, Any]] = []
+    adoption_preconditions: list[dict[str, Any]] = [
+        {
+            "name": "failed-validator-admission-evidence-before-live-proof-adoption",
+            "method": "READ",
+            "endpoint": _relative(paths, resolved, label="failed validator-admission evidence"),
+            "status": "verified",
+            "response_sha256": failed_sha,
+            "verified": True,
+        }
+    ]
+    if release is not None and release_digest is not None:
+        adoption_preconditions.append({
+            "name": "source-validator-admission-release-before-live-proof-adoption",
+            "method": "READ",
+            "endpoint": str(release_ref["locator"]) if isinstance(release_ref, Mapping) else "",
+            "status": "verified",
+            "response_sha256": release_digest,
+            "verified": True,
+        })
+
+    admission_nodes = [candidate_node, *voter_nodes]
+    healthy, last_statuses = _wait_for_admission_proof_guardians(
+        nodes=admission_nodes,
+        candidate_node=candidate_node,
+        controllers=controllers,
+        node_to_controller=node_to_controller,
+        all_service_uuids=service_uuids,
+        voter_guardian_names=voter_guardian_names,
+        target_guardian_name=target_guardian_name,
+        observations=observations,
+        observation_phase="adopt-admission-live-proof-terminal-durable",
+        max_wait_seconds=max_wait_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if not (set(admission_nodes) <= healthy):
+        failure = {
+            "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_NOT_HEALTHY",
+            "message": f"admission guardians did not prove durable live admission during adoption: {last_statuses!r}",
+        }
+        completed = _timestamp()
+        evidence = {
+            "kind": _EVIDENCE_KIND,
+            "schema_version": 1,
+            "started_at": started,
+            "completed_at": completed,
+            "status": "failed",
+            "mother_binding": _binding(private_state),
+            "network": network,
+            "mode": failed.get("mode"),
+            "candidate_node": candidate_node,
+            "candidate_validator_address": candidate,
+            "candidate_validator_route": dict(failed.get("candidate_validator_route") or {}),
+            "candidate_p2p_port": failed.get("candidate_p2p_port"),
+            "candidate_p2p_endpoint": failed.get("candidate_p2p_endpoint"),
+            "service_routes": {str(node): dict(route) for node, route in (failed.get("service_routes") or {}).items() if isinstance(route, Mapping)},
+            "target_host": target_controller_id,
+            "created_service_uuid": target_uuid,
+            "voter_nodes": voter_nodes,
+            "release": dict(release_ref) if isinstance(release_ref, Mapping) else None,
+            "source_failed_validator_admission_evidence": {
+                "locator": _relative(paths, resolved, label="failed validator-admission evidence"),
+                "sha256": failed_sha,
+                "status": failed.get("status"),
+                "completed_at": failed.get("completed_at"),
+            },
+            "source_replica_sync_evidence": dict(failed.get("source_replica_sync_evidence") or {}),
+            "chain_id": failed.get("chain_id"),
+            "genesis_sha256": failed.get("genesis_sha256"),
+            "current_validator_set": current_set,
+            "desired_validator_set": desired_set,
+            "final_validator_set": None,
+            "precondition_receipts": adoption_preconditions,
+            "mutation_receipts": [],
+            "qbft_transition_recovery": [],
+            "health_observations": observations,
+            "post_admission_validator_refresh": [],
+            "post_admission_cleanup": None,
+            "post_admission_cleanup_warning": None,
+            "failure": failure,
+            "policy": {
+                "allowed_http_methods": ["GET"],
+                "coolify_control_plane_only": True,
+                "read_only_live_proof_adoption": True,
+                "all_existing_validator_votes_required": True,
+                "manual_ssh_required": False,
+                "public_http_endpoint_created": False,
+                "public_endpoint_created": False,
+                "routing_or_topology_published": False,
+                "private_keys_materialized_in_memory_only": False,
+                "private_keys_persisted": False,
+                "secrets_in_output": False,
+                "automatic_rollback_performed": False,
+            },
+            "authority": {
+                "source_failed_evidence_reobserved": True,
+                "validator_vote_authorized": False,
+                "validator_activation_authorized": False,
+                "validator_vote_proven": False,
+                "validator_activation_proven": False,
+                "routing_or_topology_publication_authorized": False,
+            },
+            "summary": {
+                "clean": False,
+                "complete": False,
+                "target_validator_identity_activated": False,
+                "current_validator_set_reverified": False,
+                "final_validator_set_verified": False,
+                "admission_proof_guardian_components_verified": False,
+                "desired_validator_count": len(desired_set),
+                "current_validator_count": len(current_set),
+                "logical_vote_count": len(voter_nodes),
+                "all_existing_validator_votes_required": True,
+                "planned_mutation_count": 0,
+                "attempted_mutation_count": 0,
+                "succeeded_mutation_count": 0,
+                "failed_mutation_count": 0,
+                "network_access_performed": True,
+                "live_mutation_performed": False,
+                "read_only_live_proof_adoption": True,
+                "validator_vote_performed": False,
+                "validator_activation_performed": False,
+                "routing_or_topology_publication_authorized": False,
+                "routing_or_topology_published": False,
+                "public_endpoint_created": False,
+                "manual_ssh_required": False,
+                "blocks_advancing": False,
+                "latest_block_fresh": False,
+                "target_host": target_controller_id,
+                "target_node": candidate_node,
+                "next_phase": "manual-review-required",
+            },
+            "next_phase": "manual-review-required",
+            "validator_mutation_count": 0,
+            "validator_vote_performed": False,
+            "validator_activation_performed": False,
+            "validator_restart_count": 0,
+            "post_admission_validator_refresh_performed": False,
+            "chain_mutation_count": 0,
+            "service_mutation_count": 0,
+        }
+        evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)
+        evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
+        return evidence
+
+    completed = _timestamp()
+    adopted_document_probe = {
+        "candidate_node": candidate_node,
+        "voter_nodes": voter_nodes,
+        "desired_validator_set": desired_set,
+        "final_validator_set": desired_set,
+        "health_observations": observations,
+    }
+    proof_guardians_verified = _durable_validator_admission_proof_verified(adopted_document_probe)
+    complete = proof_guardians_verified and set(admission_nodes) <= healthy
+    evidence = {
+        "kind": _EVIDENCE_KIND,
+        "schema_version": 1,
+        "started_at": started,
+        "completed_at": completed,
+        "status": "pass" if complete else "failed",
+        "mother_binding": _binding(private_state),
+        "network": network,
+        "mode": failed.get("mode"),
+        "candidate_node": candidate_node,
+        "candidate_validator_address": candidate,
+        "candidate_validator_route": dict(failed.get("candidate_validator_route") or {}),
+        "candidate_p2p_port": failed.get("candidate_p2p_port"),
+        "candidate_p2p_endpoint": failed.get("candidate_p2p_endpoint"),
+        "service_routes": {str(node): dict(route) for node, route in (failed.get("service_routes") or {}).items() if isinstance(route, Mapping)},
+        "target_host": target_controller_id,
+        "created_service_uuid": target_uuid,
+        "voter_nodes": voter_nodes,
+        "release": dict(release_ref) if isinstance(release_ref, Mapping) else None,
+        "source_failed_validator_admission_evidence": {
+            "locator": _relative(paths, resolved, label="failed validator-admission evidence"),
+            "sha256": failed_sha,
+            "status": failed.get("status"),
+            "completed_at": failed.get("completed_at"),
+        },
+        "source_replica_sync_evidence": dict(failed.get("source_replica_sync_evidence") or {}),
+        "chain_id": failed.get("chain_id"),
+        "genesis_sha256": failed.get("genesis_sha256"),
+        "current_validator_set": current_set,
+        "desired_validator_set": desired_set,
+        "final_validator_set": desired_set if complete else None,
+        "precondition_receipts": adoption_preconditions,
+        "mutation_receipts": [],
+        "qbft_transition_recovery": [],
+        "health_observations": observations,
+        "post_admission_validator_refresh": [],
+        "post_admission_cleanup": failed.get("post_admission_cleanup"),
+        "post_admission_cleanup_warning": failed.get("post_admission_cleanup_warning"),
+        "failure": None if complete else {
+            "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_DURABLE_PROOF_INVALID",
+            "message": "adoption observations did not satisfy durable admission proof",
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "read_only_live_proof_adoption": True,
+            "all_existing_validator_votes_required": True,
+            "manual_ssh_required": False,
+            "public_http_endpoint_created": False,
+            "public_endpoint_created": False,
+            "routing_or_topology_published": False,
+            "private_keys_materialized_in_memory_only": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+            "automatic_rollback_performed": False,
+        },
+        "authority": {
+            "source_failed_evidence_reobserved": True,
+            "validator_vote_authorized": False,
+            "validator_activation_authorized": False,
+            "validator_vote_proven": complete,
+            "validator_activation_proven": complete,
+            "routing_or_topology_publication_authorized": False,
+        },
+        "summary": {
+            "clean": complete,
+            "complete": complete,
+            "target_validator_identity_activated": complete,
+            "current_validator_set_reverified": complete,
+            "final_validator_set_verified": complete,
+            "admission_proof_guardian_components_verified": proof_guardians_verified,
+            "desired_validator_count": len(desired_set),
+            "current_validator_count": len(current_set),
+            "logical_vote_count": len(voter_nodes),
+            "all_existing_validator_votes_required": True,
+            "planned_mutation_count": 0,
+            "attempted_mutation_count": 0,
+            "succeeded_mutation_count": 0,
+            "failed_mutation_count": 0,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "read_only_live_proof_adoption": True,
+            "validator_vote_performed": complete,
+            "validator_activation_performed": complete,
+            "routing_or_topology_publication_authorized": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "manual_ssh_required": False,
+            "qbft_transition_recovery_performed": False,
+            "qbft_transition_recovery_clean": False,
+            "post_admission_validator_refresh_performed": False,
+            "post_admission_validator_refresh_clean": False,
+            "post_admission_validator_refresh_guardians_verified": False,
+            "post_admission_cleanup_clean": False,
+            "post_admission_cleanup_nonfatal": failed.get("post_admission_cleanup_warning") is not None,
+            "post_admission_cleanup_performed": failed.get("post_admission_cleanup") is not None,
+            "target_service_top_level_healthy": False,
+            "blocks_advancing": complete,
+            "latest_block_fresh": complete,
+            "target_host": target_controller_id,
+            "target_node": candidate_node,
+            "target_p2p_port": failed.get("candidate_p2p_port"),
+            "target_p2p_endpoint": failed.get("candidate_p2p_endpoint"),
+            "next_phase": f"add-node-post-admission-observe-{network}" if complete else "manual-review-required",
+        },
+        "next_phase": f"add-node-post-admission-observe-{network}" if complete else "manual-review-required",
+        "validator_mutation_count": 0,
+        "validator_vote_performed": complete,
+        "validator_activation_performed": complete,
+        "validator_restart_count": 0,
+        "post_admission_validator_refresh_performed": False,
+        "chain_mutation_count": 0,
+        "service_mutation_count": 0,
+    }
+    evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)
+    evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
+    return evidence
+
 
 
 def verify_node_add_validator_admission_evidence(
@@ -2363,7 +3290,7 @@ def verify_node_add_validator_admission_evidence(
         summary.get("target_validator_identity_activated") is True,
         summary.get("final_validator_set_verified") is True,
         summary.get("admission_proof_guardian_components_verified") is True,
-        _validator_admission_proof_guardians_verified(document),
+        _durable_validator_admission_proof_verified(document),
         summary.get("blocks_advancing") is True,
         summary.get("latest_block_fresh") is True,
         summary.get("public_endpoint_created") is False,
@@ -2388,7 +3315,7 @@ def verify_node_add_validator_admission_evidence(
         "voter_nodes": list(document["voter_nodes"]),
         "current_validator_set": list(document["current_validator_set"]),
         "desired_validator_set": list(document["desired_validator_set"]),
-        "final_validator_set": list(document["desired_validator_set"]),
+        "final_validator_set": list(document["final_validator_set"]),
         "validator_vote_proven": True,
         "validator_activation_proven": True,
         "admission_proof_guardian_components_verified": True,
@@ -2405,5 +3332,6 @@ __all__ = [
     "verify_node_add_validator_admission_release",
     "inspect_node_add_validator_admission_release",
     "execute_node_add_validator_admission_release",
+    "adopt_node_add_validator_admission_live_proof",
     "verify_node_add_validator_admission_evidence",
 ]

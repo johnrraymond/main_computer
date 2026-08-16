@@ -7446,6 +7446,49 @@
           return this.enterShuttleBayPlayerControl(true);
         }
 
+        restoreAutosaveCheckpoint(autosave = {}, nowMs = null) {
+          const checkpoint = autosave?.checkpoint && typeof autosave.checkpoint === "object"
+            ? autosave.checkpoint
+            : autosave;
+          const checkpointId = String(checkpoint?.id || autosave?.checkpointId || autosave?.id || "").trim();
+          const supportedBayCheckpoint = checkpointId === "mother-ship-shuttle-bay"
+            || checkpointId === "bay-entry-cutscene-resolved";
+          if (checkpointId === "new-game-start" || checkpointId === "opening-shuttle-started") {
+            return {
+              schema: "game.webglAutosaveRestore.v1",
+              kind: "webgl-autosave-restore",
+              checkpointId,
+              supported: true,
+              restored: true,
+              mode: "start-from-beginning",
+              pilot: this.pilotSnapshot?.() || null
+            };
+          }
+          if (!supportedBayCheckpoint) {
+            return {
+              schema: "game.webglAutosaveRestore.v1",
+              kind: "webgl-autosave-restore",
+              checkpointId,
+              supported: false,
+              restored: false,
+              error: `unsupported autosave checkpoint: ${checkpointId || "unknown"}`
+            };
+          }
+          const restored = this.forceShuttleBayControl();
+          return {
+            schema: "game.webglAutosaveRestore.v1",
+            kind: "webgl-autosave-restore",
+            checkpointId,
+            supported: true,
+            restored: Boolean(restored),
+            mode: "mother-ship-shuttle-bay",
+            atMs: Number.isFinite(Number(nowMs)) ? Number(nowMs) : null,
+            pilot: this.pilotSnapshot?.() || null,
+            shipState: this.shipStateSnapshot?.() || null,
+            combat: this.combatSnapshot?.() || null
+          };
+        }
+
         isDockingSceneActive() {
           return this.isDockingCutsceneActive() || this.isShuttleBaySceneActive();
         }
@@ -12214,6 +12257,34 @@
             const bayLookConfig = shuttle3dCameraConfig(scene);
             setShuttle3dLook(container, bay.yaw, bay.pitch, bayLookConfig);
             updateMovementStatus(bay.position || renderer.camera);
+            if (typeof options.onAutosaveCheckpoint === "function") {
+              [
+                {
+                  checkpointId: "opening-shuttle-completed",
+                  checkpointLabel: "Opening Shuttle Completed",
+                  source: "opening-shuttle-completed"
+                },
+                {
+                  checkpointId: "mother-ship-shuttle-bay",
+                  checkpointLabel: "Mother Ship Shuttle Bay",
+                  source: "mother-ship-shuttle-bay"
+                },
+                {
+                  checkpointId: "bay-entry-cutscene-resolved",
+                  checkpointLabel: "Bay Entry Cutscene Resolved",
+                  source: "bay-entry-cutscene-resolved"
+                }
+              ].forEach((checkpoint) => {
+                try {
+                  options.onAutosaveCheckpoint({
+                    ...checkpoint,
+                    position: Array.isArray(bay.position) ? bay.position.slice() : null
+                  });
+                } catch (error) {
+                  console.error("Shuttle autosave checkpoint callback failed", error);
+                }
+              });
+            }
           };
           renderer.onCameraMoved = updateMovementStatus;
           renderer.onCombatChanged = updateCombatHud;
@@ -12634,6 +12705,18 @@
             },
             combatSnapshot() {
               return container.__mainComputerShuttle3dRenderer?.combatSnapshot?.() || null;
+            },
+            restoreAutosaveCheckpoint(autosave = {}, nowMs) {
+              return container.__mainComputerShuttle3dRenderer?.restoreAutosaveCheckpoint?.(
+                autosave,
+                Number.isFinite(Number(nowMs)) ? Number(nowMs) : undefined
+              ) || {
+                schema: "game.webglAutosaveRestore.v1",
+                kind: "webgl-autosave-restore",
+                restored: false,
+                supported: false,
+                error: "shuttle scene renderer unavailable"
+              };
             },
             dispose() {
               disposeShuttle3dLookaround(container);
