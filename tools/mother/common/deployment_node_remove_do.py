@@ -917,21 +917,119 @@ def execute_node_remove_do_release(
                 opener=opener,
             )
             deploy_ok = deploy["status"] in {200, 201, 202}
-            mutation_receipts.append({
-                "ordinal": len(mutation_receipts) + 1,
-                "phase": "remove-qbft-validator",
-                "mutation_id": f"{voter}.deploy-node-removal-vote-guardian",
-                "controller_id": controller_id,
-                "node": voter,
-                "service_uuid": service_uuid,
-                "method": "GET",
-                "endpoint": deploy_endpoint,
-                "body_sha256": None,
-                "guardian_service": guardian,
-                "response": _safe_response(deploy),
-                "live_write_acknowledged": deploy_ok,
-                "status": "succeeded" if deploy_ok else "failed",
-            })
+            deploy_receipts: list[dict[str, Any]] = [
+                {
+                    "ordinal": 0,
+                    "phase": "remove-qbft-validator",
+                    "mutation_id": f"{voter}.deploy-node-removal-vote-guardian",
+                    "controller_id": controller_id,
+                    "node": voter,
+                    "service_uuid": service_uuid,
+                    "method": "GET",
+                    "endpoint": deploy_endpoint,
+                    "body_sha256": None,
+                    "guardian_service": guardian,
+                    "response": _safe_response(deploy),
+                    "live_write_acknowledged": deploy_ok,
+                    "status": "succeeded" if deploy_ok else "failed",
+                }
+            ]
+            if not deploy_ok and deploy["status"] == 405:
+                deploy_receipts[0]["coolify_deploy_get_rejected_nonfatal"] = True
+                deploy_receipts[0]["nonfatal_reason"] = (
+                    "Coolify rejected GET /api/v1/deploy for the removal guardian; "
+                    "retrying the same deploy request with POST before treating it as failed"
+                )
+                deploy_receipts[0]["status"] = "nonfatal"
+                deploy_post = _http(
+                    controller,
+                    "POST",
+                    deploy_endpoint,
+                    body=None,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                deploy_ok = deploy_post["status"] in {200, 201, 202}
+                deploy_receipts.append(
+                    {
+                        "ordinal": 0,
+                        "phase": "remove-qbft-validator",
+                        "mutation_id": f"{voter}.deploy-node-removal-vote-guardian-post-fallback",
+                        "controller_id": controller_id,
+                        "node": voter,
+                        "service_uuid": service_uuid,
+                        "method": "POST",
+                        "endpoint": deploy_endpoint,
+                        "body_sha256": None,
+                        "guardian_service": guardian,
+                        "response": _safe_response(deploy_post),
+                        "live_write_acknowledged": deploy_ok,
+                        "coolify_deploy_405_fallback": True,
+                        "fallback_from_method": "GET",
+                        "fallback_from_http_status": 405,
+                        "status": "succeeded" if deploy_ok else "failed",
+                    }
+                )
+            if not deploy_ok:
+                recovery_detail = _http(
+                    controller,
+                    "GET",
+                    endpoint,
+                    body=None,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                recovery_precondition: dict[str, Any] = {
+                    "name": f"{voter}-node-removal-deploy-rejection-recovery",
+                    "method": "GET",
+                    "endpoint": endpoint,
+                    "service_uuid": service_uuid,
+                    "guardian_service": guardian,
+                    "status": recovery_detail["status"],
+                    "response_sha256": recovery_detail["response_sha256"],
+                    "verified": False,
+                }
+                if recovery_detail["ok"]:
+                    try:
+                        recovery_record = _find_service_record(recovery_detail["payload"], node=voter, service_uuid=service_uuid)
+                        recovery_compose = _compose_text(recovery_record)
+                        guardian_component_status = None
+                        for child in _children(recovery_record):
+                            if child.get("name") == guardian:
+                                guardian_component_status = child.get("status")
+                                break
+                        service_status = _service_status(recovery_record)
+                        recovery_precondition.update(
+                            {
+                                "service_status": service_status,
+                                "compose_text_available": True,
+                                "compose_text_sha256": hashlib.sha256(recovery_compose.encode("utf-8")).hexdigest(),
+                                "removal_guardian_compose_installed": guardian in recovery_compose,
+                                "guardian_component_status": guardian_component_status,
+                                "service_started": service_status.startswith(("running", "starting"))
+                                or guardian_component_status in {"running", "running:healthy", "starting:healthy", "starting:unhealthy"},
+                            }
+                        )
+                        recovery_precondition["verified"] = bool(
+                            recovery_precondition["removal_guardian_compose_installed"]
+                            and recovery_precondition["service_started"]
+                        )
+                    except MotherDeploymentNodeRemoveDoError as exc:
+                        recovery_precondition["error"] = str(exc)[:256]
+                if recovery_precondition["verified"]:
+                    deploy_receipts[-1]["coolify_deploy_rejected_nonfatal"] = True
+                    deploy_receipts[-1]["nonfatal_reason"] = (
+                        "Coolify rejected the removal guardian deploy, but the survivor service is already started "
+                        "with the removal guardian Compose installed; exact guardian health proof remains required"
+                    )
+                    deploy_receipts[-1]["recovery_precondition"] = recovery_precondition
+                    deploy_receipts[-1]["status"] = "succeeded"
+                    deploy_ok = True
+            for receipt in deploy_receipts:
+                receipt["ordinal"] = len(mutation_receipts) + 1
+                mutation_receipts.append(receipt)
             if not deploy_ok:
                 raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} deploy with HTTP {deploy['status']}")
 
@@ -1051,7 +1149,7 @@ def execute_node_remove_do_release(
             "service_deletion_proven": complete,
         },
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH", "DELETE"],
+            "allowed_http_methods": ["GET", "PATCH", "POST", "DELETE"],
             "coolify_control_plane_only": True,
             "manual_ssh_required": False,
             "private_keys_materialized": False,

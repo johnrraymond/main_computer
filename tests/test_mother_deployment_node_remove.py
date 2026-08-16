@@ -1077,7 +1077,7 @@ def _compose_for_remove_do(node: str) -> str:
 
 
 class _NodeRemoveDoOpener:
-    def __init__(self) -> None:
+    def __init__(self, *, deploy_get_status: int = 202, deploy_post_status: int = 202) -> None:
         self.services = {
             "svca1xxxx": {"host": "coolify-a.invalid", "name": "mainneta-super1", "present": True, "compose": _compose_for_remove_do("mainneta-super1")},
             "svcc1xxxx": {"host": "coolify-c.invalid", "name": "mainnetc-super1", "present": True, "compose": _compose_for_remove_do("mainnetc-super1")},
@@ -1085,6 +1085,8 @@ class _NodeRemoveDoOpener:
         }
         self.guardians: dict[str, str] = {}
         self.requests: list[tuple[str, str, str]] = []
+        self.deploy_get_status = int(deploy_get_status)
+        self.deploy_post_status = int(deploy_post_status)
 
     def _record(self, uuid: str) -> dict:
         item = self.services[uuid]
@@ -1116,8 +1118,11 @@ class _NodeRemoveDoOpener:
             ]
             return _Response(visible)
 
-        if method == "GET" and path == "/api/v1/deploy":
-            return _Response({"message": "deploy accepted"}, status=202)
+        if path == "/api/v1/deploy":
+            if method == "GET":
+                return _Response({"message": "deploy accepted" if self.deploy_get_status < 400 else "method not allowed"}, status=self.deploy_get_status)
+            if method == "POST":
+                return _Response({"message": "deploy accepted" if self.deploy_post_status < 400 else "method not allowed"}, status=self.deploy_post_status)
 
         if path.startswith("/api/v1/services/"):
             uuid = path.rsplit("/", 1)[-1]
@@ -1141,6 +1146,34 @@ class _NodeRemoveDoOpener:
                 return _Response({"message": "deleted"}, status=200)
 
         raise AssertionError(f"unexpected request: {method} {parsed.geturl()}")
+
+
+def _write_remove_do_release_for_test(tmp_path: Path):
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_t3_baseline_for_remove_prep(paths, private_state)
+    prep = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node="mainneta-super1",
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-11T19:20:00Z",
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 20, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    prep_path, prep_sha = write_node_remove_prep_transaction(paths, prep, operation=_operation("write-remove-prep-do-helper"))
+    release = build_node_remove_do_release(
+        paths,
+        private_state,
+        prep_path,
+        acknowledged_prep_transaction_sha256=prep_sha,
+        created_at="2026-08-11T19:22:00Z",
+        expires_in_seconds=900,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 22, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    release_path, release_sha = write_node_remove_do_release(paths, release, operation=_operation("write-remove-do-release-helper"))
+    return paths, private_state, release_path, release_sha
 
 
 def test_remove_node_do_release_and_execution_deletes_after_survivor_vote_guardians(tmp_path: Path) -> None:
@@ -1216,6 +1249,44 @@ def test_remove_node_do_release_and_execution_deletes_after_survivor_vote_guardi
         "0x9b809f05f8d68da17e697cd6ab040d4320494611",
         "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
     ]
+
+
+def test_remove_node_do_deploy_405_retries_with_post_before_waiting_for_guardians(tmp_path: Path) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+
+    opener = _NodeRemoveDoOpener(deploy_get_status=405, deploy_post_status=202)
+    result = execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-deploy-405-fallback"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "pass", result
+    assert result["summary"]["validator_removal_vote_performed"] is True
+    assert result["summary"]["service_deletion_performed"] is True
+    deploy_requests = [item for item in opener.requests if item[2].startswith("/api/v1/deploy?")]
+    assert any(item[0] == "GET" for item in deploy_requests)
+    assert any(item[0] == "POST" for item in deploy_requests)
+    deploy_receipts = [
+        item for item in result["mutation_receipts"]
+        if str(item.get("mutation_id", "")).endswith("deploy-node-removal-vote-guardian")
+        or str(item.get("mutation_id", "")).endswith("deploy-node-removal-vote-guardian-post-fallback")
+    ]
+    assert any(item["method"] == "GET" and item["status"] == "nonfatal" for item in deploy_receipts)
+    assert any(
+        item["method"] == "POST"
+        and item["status"] == "succeeded"
+        and item.get("coolify_deploy_405_fallback") is True
+        for item in deploy_receipts
+    )
+    assert all(item["status"] != "failed" for item in deploy_receipts)
+
 
 
 def test_remove_node_finalize_reobserves_target_absent_and_survivors(tmp_path: Path) -> None:
