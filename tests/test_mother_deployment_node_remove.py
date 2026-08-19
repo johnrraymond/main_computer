@@ -1057,11 +1057,139 @@ from tools.mother.common.deployment_node_remove_do import (
     verify_node_remove_do_evidence,
     verify_node_remove_do_release,
     write_node_remove_do_release,
+    _find_conflicting_add_node_voters,
+    _guardian_healthy,
+    _install_removal_guardian,
+    _removal_voter_script,
 )
 from tools.mother.common.deployment_node_remove_finalize import (
     finalize_node_remove,
     verify_node_remove_finalize_evidence,
 )
+
+
+
+
+def test_node_remove_voter_guardian_is_one_shot_and_no_restart() -> None:
+    script = _removal_voter_script(
+        voter="mainnetc-super1",
+        target_validator="0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        current_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+            "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        ],
+        desired_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        chain_id=42424240,
+        genesis_sha256="d" * 64,
+        request_sha256="e" * 64,
+    )
+    assert script.index("clear_health()") < script.index("if hashlib.sha256(encoded(REQUEST))")
+    assert script.index("prove()") < script.index("time.sleep(3600)") < script.rindex("break")
+    assert script.index("except Exception:") < script.index("time.sleep(6)")
+
+    compose, name = _install_removal_guardian(
+        "services:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\n",
+        voter="mainnetc-super1",
+        script=script,
+    )
+    import yaml
+
+    parsed = yaml.safe_load(compose)
+    assert name == "mother-node-remove-voter-mainnetc_super1"
+    assert parsed["services"][name]["restart"] == "no"
+
+
+def test_node_remove_conflict_detector_finds_same_target_add_voter() -> None:
+    candidate = "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876"
+    compose = f"""
+services:
+  mainneta-super1:
+    image: hyperledger/besu:latest
+  mother-add-node-validator-admission-voter-mainneta-super1:
+    image: python:3.12-alpine
+    labels:
+      main_computer.mother.stage: add-node-validator-admission
+    command:
+      - python
+      - -u
+      - -c
+      - |
+        CANDIDATE_VALIDATOR = '{candidate}'
+        REQUEST = json.loads('{{"id":1,"jsonrpc":"2.0","method":"qbft_proposeValidatorVote","params":["{candidate}",true]}}')
+"""
+    conflicts = _find_conflicting_add_node_voters(compose, target_validator=candidate)
+    assert conflicts == [
+        {
+            "helper_service": "mother-add-node-validator-admission-voter-mainneta-super1",
+            "candidate_validator": candidate,
+            "reason": "opposite-add-node-voter-for-target",
+        }
+    ]
+
+
+def test_node_remove_conflict_detector_ignores_parent_service_with_stale_helper_metadata() -> None:
+    candidate = "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876"
+    compose = f"""
+services:
+  mainneta-super1:
+    image: hyperledger/besu:latest
+    labels:
+      main_computer.mother.stage: add-node-validator-admission
+      coolify.serviceName: mother-add-node-validator-admission-voter-mainneta-super1
+    environment:
+      SERVICE_NAME_MOTHER_ADD_NODE_VALIDATOR_ADMISSION_VOTER_MAINNETA_SUPER1: mother-add-node-validator-admission-voter-mainneta-super1
+      CANDIDATE_VALIDATOR: "{candidate}"
+      REQUEST: '{{"id":1,"jsonrpc":"2.0","method":"qbft_proposeValidatorVote","params":["{candidate}",true]}}'
+"""
+    assert _find_conflicting_add_node_voters(compose, target_validator=candidate) == []
+
+
+def test_node_remove_conflict_detector_blocks_unparseable_named_add_voter() -> None:
+    compose = """
+services:
+  mother-add-node-validator-admission-voter-mainneta-super1:
+    image: python:3.12-alpine
+    labels:
+      main_computer.mother.stage: add-node-validator-admission
+    command:
+      - python
+      - -u
+      - -c
+      - |
+        REQUEST = {}
+"""
+    assert _find_conflicting_add_node_voters(
+        compose,
+        target_validator="0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+    ) == [
+        {
+            "helper_service": "mother-add-node-validator-admission-voter-mainneta-super1",
+            "candidate_validator": "",
+            "reason": "add-node-voter-candidate-unparseable",
+        }
+    ]
+
+
+def test_node_remove_guardian_health_accepts_explicit_zero_terminal_component_only() -> None:
+    record = {
+        "status": "degraded:unhealthy",
+        "applications": [
+            {"name": "mother-node-remove-voter-mainnetc_super1", "status": "exited:0"},
+        ],
+    }
+    assert _guardian_healthy(record, guardian_name="mother-node-remove-voter-mainnetc_super1")
+
+    ambiguous = {
+        "status": "degraded:unhealthy",
+        "applications": [
+            {"name": "mother-node-remove-voter-mainnetc_super1", "status": "exited"},
+        ],
+    }
+    assert not _guardian_healthy(ambiguous, guardian_name="mother-node-remove-voter-mainnetc_super1")
 
 
 def _compose_for_remove_do(node: str) -> str:

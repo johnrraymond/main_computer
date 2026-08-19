@@ -7,7 +7,8 @@ The harness reduces node mutation babysitting without bypassing Mother authority
 * halts on stale Mother topology and prints the explicit rectification command;
 * never performs rectification automatically;
 * runs prep/release/verify/execute steps in order;
-* routes by Mother evidence ``next_phase`` instead of assuming a fixed topology.
+* routes by Mother evidence ``next_phase`` instead of assuming a fixed topology;
+* leaves post-work helper cleanup out of the add/remove harness; run cleanup explicitly.
 
 Supported add-node routes:
 
@@ -57,6 +58,8 @@ COMMON_STEPS = [
     "verify-identity-evidence",
 ]
 
+POST_WORK_CLEANUP_STEP = "post-work-cleanup"
+
 SINGLE_NODE_STEPS = [
     "release-bootstrap",
     "verify-bootstrap-release",
@@ -90,9 +93,18 @@ REMOVE_STEPS = [
     "verify-remove-finalize",
 ]
 
-STEP_ORDER = COMMON_STEPS + SINGLE_NODE_STEPS + REPLICA_ADMISSION_STEPS + [
-    step for step in REMOVE_STEPS if step not in COMMON_STEPS
-]
+
+def _unique_steps(steps: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for step in steps:
+        if step not in seen:
+            ordered.append(step)
+            seen.add(step)
+    return ordered
+
+
+STEP_ORDER = _unique_steps(COMMON_STEPS + SINGLE_NODE_STEPS + REPLICA_ADMISSION_STEPS + REMOVE_STEPS)
 
 MUTATION_STEPS = {
     "execute-do",
@@ -133,6 +145,45 @@ def require(name: str, value: Any) -> Any:
     if value in (None, ""):
         raise SystemExit(f"missing required value: {name}")
     return value
+
+
+def _read_harness_json(path: str | Path, *, label: str) -> dict[str, Any]:
+    document = _read_json_object(Path(path))
+    if not isinstance(document, dict):
+        raise SystemExit(f"{label} is not a JSON object: {path}")
+    return document
+
+
+def _file_sha256(path: str | Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _service_cleanup_targets(document: dict[str, Any]) -> list[dict[str, str]]:
+    topology = document.get("final_topology") or document.get("current_topology") or {}
+    services = topology.get("services") if isinstance(topology, dict) else None
+    if not isinstance(services, dict):
+        return []
+
+    targets: list[dict[str, str]] = []
+    for node, record in sorted(services.items(), key=lambda item: str(item[0])):
+        if not isinstance(record, dict):
+            continue
+        controller_id = str(record.get("controller_id") or "").strip()
+        service_uuid = str(record.get("service_uuid") or record.get("created_service_uuid") or "").strip()
+        node_name = str(record.get("node") or node).strip()
+        if controller_id and service_uuid and node_name:
+            targets.append(
+                {
+                    "node": node_name,
+                    "controller_id": controller_id,
+                    "service_uuid": service_uuid,
+                }
+            )
+    return targets
 
 
 def quote_command(argv: list[str]) -> str:
@@ -559,18 +610,104 @@ def _remove_finalize_path_targets_node(path: Path, node: str) -> bool:
     return node in path.name
 
 
-def select_auto_baseline_file(args: argparse.Namespace, patterns: list[Path]) -> Path | None:
+def _parse_baseline_timestamp(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.strip()
+    try:
+        if normalized.endswith("Z"):
+            return datetime.fromisoformat(normalized[:-1] + "+00:00").timestamp()
+        if "T" in normalized:
+            return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        pass
+    compact = re.fullmatch(r"(\d{8})T(\d{6})Z", normalized)
+    if compact:
+        try:
+            return datetime.strptime(normalized, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _baseline_path_recency(path: Path) -> float:
+    try:
+        document = _read_json_object(path)
+    except SystemExit:
+        document = {}
+    for value in (
+        document.get("completed_at"),
+        document.get("created_at"),
+        pick(document, "summary.completed_at"),
+        pick(document, "source_baseline_evidence.completed_at"),
+    ):
+        parsed = _parse_baseline_timestamp(value)
+        if parsed is not None:
+            return parsed
+    filename_match = re.search(r"\d{8}T\d{6}Z", path.name)
+    if filename_match:
+        parsed = _parse_baseline_timestamp(filename_match.group(0))
+        if parsed is not None:
+            return parsed
+    return path.stat().st_mtime
+
+
+def _auto_baseline_matches(patterns: list[Path]) -> list[Path]:
     matches: list[Path] = []
     for pattern in patterns:
         matches.extend(path for path in pattern.parent.glob(pattern.name) if path.is_file())
+    return matches
+
+
+def select_auto_baseline_file(args: argparse.Namespace, patterns: list[Path]) -> Path | None:
+    matches = _auto_baseline_matches(patterns)
     if not matches:
         return None
-    if args.operation == "add-node":
-        target_node = str(getattr(args, "node", ""))
-        matching_remove = [path for path in matches if _remove_finalize_path_targets_node(path, target_node)]
-        if matching_remove:
-            return max(matching_remove, key=lambda path: (path.stat().st_mtime, path.name))
-    return max(matches, key=lambda path: (path.stat().st_mtime, path.name))
+    return max(matches, key=lambda path: (_baseline_path_recency(path), path.stat().st_mtime, path.name))
+
+
+def _matching_remove_finalize_files(args: argparse.Namespace) -> list[Path]:
+    evidence_root = Path(args.runtime_state_root) / "mother" / "evidence"
+    target_node = str(getattr(args, "node", ""))
+    directory = evidence_root / "deployment-node-remove-finalize"
+    if not target_node or not directory.is_dir():
+        return []
+    return [
+        path
+        for path in directory.glob("*.json")
+        if path.is_file() and _remove_finalize_path_targets_node(path, target_node)
+    ]
+
+
+def _node_names(values: list[Any] | None) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    return {str(value) for value in values if value not in (None, "")}
+
+
+def _latest_matching_remove_finalize_file(args: argparse.Namespace) -> Path | None:
+    matches = _matching_remove_finalize_files(args)
+    if not matches:
+        return None
+    return max(matches, key=lambda path: (_baseline_path_recency(path), path.stat().st_mtime, path.name))
+
+
+def _target_has_remove_history(args: argparse.Namespace) -> bool:
+    return _latest_matching_remove_finalize_file(args) is not None
+
+
+def _print_reactivation_history(args: argparse.Namespace, selected: Path) -> None:
+    if args.operation != "add-node":
+        return
+    history = _latest_matching_remove_finalize_file(args)
+    if history is None:
+        return
+    if history.resolve(strict=False) == selected.resolve(strict=False):
+        print(f"MOTHER_MUTATE_HARNESS_REACTIVATE_HISTORY_BASELINE: {history}")
+    else:
+        print("MOTHER_MUTATE_HARNESS_REACTIVATE_HISTORY: matching prior remove-finalize evidence found")
+        print(f"reactivate_history_evidence={history}")
+        print("reactivate_history_note=using newer current topology baseline instead of stale target remove-finalize evidence")
 
 
 def _baseline_topology_nodes(document: dict[str, Any]) -> list[Any] | None:
@@ -600,12 +737,15 @@ def _baseline_topology_nodes(document: dict[str, Any]) -> list[Any] | None:
 def infer_internal_add_prep_mode(args: argparse.Namespace, baseline_path: Path) -> str | None:
     if args.operation != "add-node":
         return None
+    target_node = str(args.node)
     document = _read_json_object(baseline_path)
-    if _remove_finalize_targets_node(document, str(args.node)):
-        return "reactivate"
     nodes = _baseline_topology_nodes(document)
     if nodes == []:
         return "initial"
+    if _remove_finalize_targets_node(document, target_node):
+        return "reactivate"
+    if target_node not in _node_names(nodes) and _target_has_remove_history(args):
+        return "reactivate"
     return "soft"
 
 
@@ -656,6 +796,7 @@ def resolve_baseline_arguments(args: argparse.Namespace) -> None:
             args.baseline_evidence_sha256 = canonical_sha256_file(path)
             print(f"MOTHER_MUTATE_HARNESS_AUTO_BASELINE_SHA256: {args.baseline_evidence_sha256}")
         if args.operation == "add-node":
+            _print_reactivation_history(args, path)
             args.internal_add_prep_mode = infer_internal_add_prep_mode(args, path)
             print(f"MOTHER_MUTATE_HARNESS_INTERNAL_ADD_PREP_MODE: {args.internal_add_prep_mode}")
         return
@@ -685,6 +826,7 @@ def resolve_baseline_arguments(args: argparse.Namespace) -> None:
     print(f"baseline_evidence={args.baseline_evidence}")
     print(f"baseline_evidence_sha256={args.baseline_evidence_sha256}")
     if args.operation == "add-node":
+        _print_reactivation_history(args, selected)
         args.internal_add_prep_mode = infer_internal_add_prep_mode(args, selected)
         print(f"MOTHER_MUTATE_HARNESS_INTERNAL_ADD_PREP_MODE: {args.internal_add_prep_mode}")
 
@@ -732,16 +874,21 @@ class Harness:
             "remove_do_evidence_sha256": args.remove_do_evidence_sha256,
             "remove_finalize_evidence": args.remove_finalize_evidence,
             "remove_finalize_evidence_sha256": args.remove_finalize_evidence_sha256,
+            "post_work_cleanup_results": [],
         }
 
     def cmd(self, *parts: Any) -> list[str]:
         return [sys.executable, str(self.repo_root / "tools" / "mother_deploy.py"), *[str(part) for part in parts]]
 
+    def cleanup_cmd(self, *parts: Any) -> list[str]:
+        return [sys.executable, str(self.repo_root / "tools" / "mother_post_work_cleanup.py"), *[str(part) for part in parts]]
+
     def mutations_allowed(self) -> bool:
         return bool(self.args.execute_mutations and (self.args.yes_i_know_this_mutates_target_host or self.args.yes_i_know_this_mutates_coolify_a))
 
     def run(self, step: str, argv: list[str], *, allow_failure: bool = False) -> dict[str, Any]:
-        if step in MUTATION_STEPS and not self.mutations_allowed():
+        mutation_step = step in MUTATION_STEPS or step.startswith(f"{POST_WORK_CLEANUP_STEP}-")
+        if mutation_step and not self.mutations_allowed():
             print(f"\n=== stopping before mutation boundary: {step} ===")
             print(quote_command(argv))
             print("\nRerun with --execute-mutations --yes-i-know-this-mutates-target-host to execute mutation steps.")
@@ -1416,6 +1563,86 @@ class Harness:
             "--do-max-age-seconds", str(self.args.evidence_max_age_seconds),
         ))
 
+    def _post_work_cleanup_evidence(self) -> tuple[str, str, str]:
+        if self.args.operation == "remove-node":
+            evidence = require("remove_finalize_evidence", self.state["remove_finalize_evidence"])
+            evidence_sha = self.state["remove_finalize_evidence_sha256"] or _file_sha256(evidence)
+            return str(evidence), str(evidence_sha), "remove-node"
+
+        evidence = self.state.get("post_admission_topology_evidence")
+        evidence_sha = self.state.get("post_admission_topology_evidence_sha256")
+        if not evidence:
+            evidence = require("single_node_proof_evidence or post_admission_topology_evidence", self.state["single_node_proof_evidence"])
+            evidence_sha = self.state.get("single_node_proof_evidence_sha256")
+        if not evidence_sha:
+            evidence_sha = _file_sha256(evidence)
+        return str(evidence), str(evidence_sha), "add-node"
+
+    def step_post_work_cleanup(self) -> None:
+        if self.args.skip_post_work_cleanup:
+            print(f"\n=== {POST_WORK_CLEANUP_STEP} skipped ===")
+            return
+
+        completion_evidence, completion_evidence_sha256, workflow = self._post_work_cleanup_evidence()
+        document = _read_harness_json(completion_evidence, label="post-work cleanup completion evidence")
+        targets = _service_cleanup_targets(document)
+        if not targets:
+            print(f"\n=== {POST_WORK_CLEANUP_STEP} ===")
+            print(json.dumps({
+                "status": "pass",
+                "summary": {
+                    "clean": True,
+                    "target_count": 0,
+                    "live_mutation_performed": False,
+                    "reason": "completion evidence has no final topology services to clean",
+                },
+                "completion_evidence": completion_evidence,
+                "completion_evidence_sha256": completion_evidence_sha256,
+            }, indent=2, sort_keys=True))
+            self.state["post_work_cleanup_results"] = []
+            return
+
+        results: list[dict[str, Any]] = []
+        for target in targets:
+            service_uuid = require("post-work cleanup service_uuid", target["service_uuid"])
+            node = require("post-work cleanup node", target["node"])
+            argv = self.cleanup_cmd(
+                "--runtime-state-root", self.args.runtime_state_root,
+                "--network", self.args.network,
+                "--controller-id", require("post-work cleanup controller_id", target["controller_id"]),
+                "--service-uuid", service_uuid,
+                "--node-name", node,
+                "--workflow", workflow,
+                "--completion-evidence", completion_evidence,
+                "--completion-evidence-sha256", completion_evidence_sha256,
+                "--execute",
+                "--acknowledge-service-uuid", service_uuid,
+                "--allow-compose-rewrite",
+                "--instant-deploy-compose-rewrite",
+                "--allow-service-redeploy-refresh",
+                "--max-wait-seconds", str(self.args.post_work_cleanup_max_wait_seconds),
+                "--poll-interval-seconds", str(self.args.poll_interval_seconds),
+                "--timeout", str(self.args.timeout),
+                "--max-response-bytes", str(self.args.post_work_cleanup_max_response_bytes),
+                "--write-evidence",
+            )
+            if not self.args.no_post_work_cleanup_shim:
+                argv.append("--allow-retired-genesis-proof-guardian-shim")
+            obj = self.run(f"{POST_WORK_CLEANUP_STEP}-{node}", argv)
+            results.append(
+                {
+                    "node": node,
+                    "controller_id": target["controller_id"],
+                    "service_uuid": service_uuid,
+                    "status": obj.get("status"),
+                    "clean": bool(pick(obj, "summary.clean")),
+                    "evidence": pick(obj, "evidence.path"),
+                    "evidence_sha256": pick(obj, "evidence.sha256"),
+                }
+            )
+
+        self.state["post_work_cleanup_results"] = results
+
     def methods(self) -> dict[str, Any]:
         return {
             "detect-topology": self.step_detect_topology,
@@ -1452,6 +1679,7 @@ class Harness:
             "verify-remove-do-evidence": self.step_verify_remove_do_evidence,
             "finalize-remove": self.step_finalize_remove,
             "verify-remove-finalize": self.step_verify_remove_finalize,
+            POST_WORK_CLEANUP_STEP: self.step_post_work_cleanup,
         }
 
     def run_steps(self, steps: list[str], start_at: str) -> None:
@@ -1557,6 +1785,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remove-finalize-evidence")
     parser.add_argument("--remove-finalize-evidence-sha256")
     parser.add_argument("--allow-missing-service", action="store_true")
+    parser.add_argument(
+        "--skip-post-work-cleanup",
+        action="store_true",
+        help="do not run the final evidence-gated Mother helper cleanup step",
+    )
+    parser.add_argument(
+        "--no-post-work-cleanup-shim",
+        action="store_true",
+        help="do not install the retired genesis proof guardian health shim during final cleanup",
+    )
+    parser.add_argument("--post-work-cleanup-max-wait-seconds", type=float, default=180.0)
+    parser.add_argument("--post-work-cleanup-max-response-bytes", type=int, default=12 * 1024 * 1024)
     return parser
 
 

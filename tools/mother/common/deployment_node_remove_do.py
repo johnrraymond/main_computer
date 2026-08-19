@@ -35,6 +35,10 @@ from .coolify_state import (
     _DEFAULT_OPENER,
     resolve_coolify_controller,
 )
+from .deployment_completed_helper_cleanup import (
+    MotherDeploymentCompletedHelperCleanupError,
+    execute_completed_mother_helper_cleanup,
+)
 from .deployment_node_remove import MotherDeploymentNodeRemoveError, acknowledgement_for, execute_node_removal
 from .deployment_node_remove_prep import verify_node_remove_prep_transaction
 from .models import OperationIdentity, PrivateStatePaths
@@ -51,6 +55,8 @@ _EVIDENCE_DIRECTORY = ("evidence", "deployment-node-remove-do")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_ONE_SHOT_GUARDIAN_SUCCESS_LINGER_SECONDS = 3600
+
 _SENSITIVE_MARKERS = (
     "BEGIN PRIVATE KEY",
     "BEGIN RSA PRIVATE KEY",
@@ -257,12 +263,28 @@ def _service_status(record: Mapping[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _terminal_completed_component_status(status: str) -> bool:
+    """Return True only for explicit successful terminal component states."""
+
+    normalized = status.strip().lower()
+    return normalized in {
+        "exited:0",
+        "stopped:0",
+        "exited (0)",
+        "stopped (0)",
+        "exited successfully",
+        "stopped successfully",
+    }
+
+
 def _guardian_healthy(record: Mapping[str, Any], *, guardian_name: str) -> bool:
     if _service_status(record) == "running:healthy":
         return True
     for child in _children(record):
-        if child.get("name") == guardian_name and child.get("status") in {"running:healthy", "running"}:
-            return True
+        if child.get("name") == guardian_name:
+            status = _service_status(child)
+            if status in {"running:healthy", "running"} or _terminal_completed_component_status(status):
+                return True
     return False
 
 
@@ -406,7 +428,11 @@ def _removal_voter_script(
         "    return value['result']",
         "def validators(): return [str(item).lower() for item in rpc('qbft_getValidatorsByBlockNumber', ['latest'])]",
         "def same_set(left, right): return sorted(left) == sorted(right)",
+        "def clear_health():",
+        "    try: os.unlink(HEALTHY)",
+        "    except FileNotFoundError: pass",
         "def prove():",
+        "    clear_health()",
         "    if hashlib.sha256(encoded(REQUEST)).hexdigest() != EXPECTED_REQUEST_SHA256: raise RuntimeError('vote request commitment mismatch')",
         "    chain_id = int(rpc('eth_chainId', []), 16)",
         "    if chain_id != EXPECTED_CHAIN_ID: raise RuntimeError('chain id mismatch')",
@@ -445,10 +471,11 @@ def _removal_voter_script(
         "while True:",
         "    try:",
         "        prove()",
+        f"        time.sleep({_ONE_SHOT_GUARDIAN_SUCCESS_LINGER_SECONDS})",
+        "        break",
         "    except Exception:",
-        "        try: os.unlink(HEALTHY)",
-        "        except FileNotFoundError: pass",
-        "    time.sleep(6)",
+        "        clear_health()",
+        "        time.sleep(6)",
         "",
     ])
 
@@ -470,7 +497,7 @@ def _install_removal_guardian(compose_text: str, *, voter: str, script: str) -> 
     name = _guardian_service_name(voter)
     services[name] = {
         "image": "python:3.12-alpine",
-        "restart": "unless-stopped",
+        "restart": "no",
         "read_only": True,
         "depends_on": {voter: {"condition": "service_started"}},
         "command": ["python", "-u", "-c", script],
@@ -504,6 +531,97 @@ def _install_removal_guardian(compose_text: str, *, voter: str, script: str) -> 
     if "8545:8545" in updated:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_EXPOSED", "node removal must not publish JSON-RPC")
     return updated, name
+
+
+
+
+def _compose_service_map(compose_text: str) -> dict[str, Mapping[str, Any]]:
+    try:
+        document = yaml.safe_load(compose_text)
+    except yaml.YAMLError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_COMPOSE_INVALID", "survivor service Compose cannot be parsed for conflicting helpers") from exc
+    if not isinstance(document, dict) or not isinstance(document.get("services"), dict):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_COMPOSE_INVALID", "survivor service Compose does not contain services for conflicting-helper inspection")
+    return {
+        str(name): definition
+        for name, definition in document["services"].items()
+        if isinstance(name, str) and isinstance(definition, Mapping)
+    }
+
+
+def _definition_text(definition: object) -> str:
+    if isinstance(definition, Mapping):
+        try:
+            return json.dumps(definition, sort_keys=True, default=str)
+        except TypeError:
+            return repr(definition)
+    return str(definition)
+
+
+def _labels_text(definition: Mapping[str, Any]) -> str:
+    labels = definition.get("labels")
+    if isinstance(labels, Mapping):
+        return "\n".join(f"{key}={value}" for key, value in labels.items())
+    if isinstance(labels, list):
+        return "\n".join(str(item) for item in labels)
+    return str(labels or "")
+
+
+def _extract_conflicting_helper_address(text: str, *, assignment_name: str) -> str | None:
+    assignment = re.search(rf"\b{re.escape(assignment_name)}\s*=\s*['\"](0x[0-9a-fA-F]{{40}})['\"]", text)
+    if assignment:
+        return assignment.group(1).lower()
+    addresses = [item.lower() for item in re.findall(r"0x[0-9a-fA-F]{40}", text)]
+    unique = tuple(dict.fromkeys(addresses))
+    return unique[0] if len(unique) == 1 else None
+
+
+def _find_conflicting_add_node_voters(compose_text: str, *, target_validator: str) -> list[dict[str, str]]:
+    """Return add-node voter helpers that would fight this node removal."""
+
+    target = _address(target_validator, "target validator")
+    conflicts: list[dict[str, str]] = []
+    for service_name, definition in _compose_service_map(compose_text).items():
+        labels_text = _labels_text(definition)
+        if not service_name.startswith("mother-add-node-validator-admission-voter-"):
+            continue
+        text = "\n".join([service_name, labels_text, _definition_text(definition)])
+        candidate = _extract_conflicting_helper_address(text, assignment_name="CANDIDATE_VALIDATOR")
+        if candidate is None:
+            conflicts.append({
+                "helper_service": service_name,
+                "candidate_validator": "",
+                "reason": "add-node-voter-candidate-unparseable",
+            })
+            continue
+        if candidate == target and "qbft_proposeValidatorVote" in text and re.search(r"\btrue\b", text, flags=re.IGNORECASE):
+            conflicts.append({
+                "helper_service": service_name,
+                "candidate_validator": candidate,
+                "reason": "opposite-add-node-voter-for-target",
+            })
+    return conflicts
+
+
+def _assert_no_conflicting_add_node_voters(*, survivor_compose_texts: Mapping[str, str], target_validator: str) -> list[dict[str, Any]]:
+    preconditions: list[dict[str, Any]] = []
+    conflicts: list[dict[str, str]] = []
+    for voter, compose_text in survivor_compose_texts.items():
+        voter_conflicts = _find_conflicting_add_node_voters(compose_text, target_validator=target_validator)
+        if voter_conflicts:
+            conflicts.extend({"survivor_node": voter, **item} for item in voter_conflicts)
+        preconditions.append({
+            "name": f"{voter}-no-conflicting-add-node-voter",
+            "verified": not voter_conflicts,
+            "conflict_count": len(voter_conflicts),
+            "conflicts": voter_conflicts,
+        })
+    if conflicts:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_CONFLICTING_ADD_NODE_VOTER",
+            f"refusing node-remove while add-node voters for the same validator remain in Compose: {conflicts!r}",
+        )
+    return preconditions
 
 
 def build_node_remove_do_release(
@@ -834,6 +952,7 @@ def execute_node_remove_do_release(
     ]
     mutation_receipts: list[dict[str, Any]] = []
     health_observations: list[dict[str, Any]] = []
+    survivor_guardian_cleanup: list[dict[str, Any]] = []
     service_removal: dict[str, Any] | None = None
     failure: dict[str, str] | None = None
 
@@ -844,6 +963,7 @@ def execute_node_remove_do_release(
             for controller_id in sorted(controller_ids)
         }
         guardians: dict[str, str] = {}
+        survivor_compose_texts: dict[str, str] = {}
         vote = release["validator_removal_vote"]
         current_set = [_address(item, "current validator") for item in vote["current_validator_set"]]
         desired_set = [_address(item, "desired validator") for item in vote["desired_validator_set"]]
@@ -866,6 +986,24 @@ def execute_node_remove_do_release(
             if not detail["ok"]:
                 raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_PRECONDITION_FAILED", f"{voter} service detail failed with HTTP {detail['status']}")
             record = _find_service_record(detail["payload"], node=voter, service_uuid=service_uuid)
+            compose_text = _compose_text(record)
+            survivor_compose_texts[voter] = compose_text
+            conflict_preconditions = _assert_no_conflicting_add_node_voters(
+                survivor_compose_texts={voter: compose_text},
+                target_validator=target_validator,
+            )
+            for item in conflict_preconditions:
+                item["controller_id"] = controller_id
+                item["service_uuid"] = service_uuid
+                health_observations.append({
+                    "node": voter,
+                    "controller_id": controller_id,
+                    "service_uuid": service_uuid,
+                    "guardian_service": "",
+                    "guardian_healthy": item["verified"],
+                    "conflict_precondition": item,
+                    "observed_at": _timestamp(now=now),
+                })
             script = _removal_voter_script(
                 voter=voter,
                 target_validator=target_validator,
@@ -875,7 +1013,7 @@ def execute_node_remove_do_release(
                 genesis_sha256=str(release["current_topology"]["genesis_sha256"]),
                 request_sha256=_sha256(vote["request_sha256"], "validator-removal vote request SHA-256"),
             )
-            updated_compose, guardian = _install_removal_guardian(_compose_text(record), voter=voter, script=script)
+            updated_compose, guardian = _install_removal_guardian(compose_text, voter=voter, script=script)
             guardians[voter] = guardian
             body = {"docker_compose_raw": base64.b64encode(updated_compose.encode("utf-8")).decode("ascii"), "instant_deploy": False, "name": voter}
             body_sha = hashlib.sha256(canonical_json(body)).hexdigest()
@@ -1077,6 +1215,37 @@ def execute_node_remove_do_release(
         if not (set(guardians) <= healthy_voters):
             raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_VALIDATOR_REMOVAL_NOT_PROVEN", f"validator-removal guardians did not become healthy: {last_statuses!r}")
 
+        for survivor in release["survivors"]:
+            voter = _identifier(survivor["node"], "survivor node")
+            controller_id = _identifier(survivor["controller_id"], "survivor controller")
+            service_uuid = str(survivor["service_uuid"])
+            try:
+                cleanup_result = execute_completed_mother_helper_cleanup(
+                    paths,
+                    private_state,
+                    network=release["network"],
+                    controller_id=controller_id,
+                    service_uuid=service_uuid,
+                    node=voter,
+                    acknowledged_service_uuid=service_uuid,
+                    required_component_names=(),
+                    max_wait_seconds=max_wait_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    allow_nested_application_delete=True,
+                    allow_compose_reconcile_refresh=True,
+                    instant_deploy_compose_reconcile_refresh=True,
+                    allow_service_redeploy_refresh=True,
+                    force_service_redeploy_refresh=True,
+                    allow_coolify_model_status_exclusion=True,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                    operation=operation,
+                )
+                survivor_guardian_cleanup.append({"node": voter, "controller_id": controller_id, "service_uuid": service_uuid, "status": cleanup_result.get("status"), "summary": cleanup_result.get("summary")})
+            except MotherDeploymentCompletedHelperCleanupError as exc:
+                survivor_guardian_cleanup.append({"node": voter, "controller_id": controller_id, "service_uuid": service_uuid, "warning": {"code": exc.code, "message": str(exc)[:512]}})
+
         service_removal = execute_node_removal(
             private_state,
             network=release["network"],
@@ -1136,6 +1305,7 @@ def execute_node_remove_do_release(
         "validator_removal_vote": dict(release["validator_removal_vote"]),
         "mutation_receipts": mutation_receipts,
         "health_observations": health_observations,
+        "survivor_guardian_cleanup": survivor_guardian_cleanup,
         "service_removal": service_removal,
         "authority": {
             "release_consumed": True,

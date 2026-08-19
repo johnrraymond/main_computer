@@ -32,6 +32,51 @@ def _warn_legacy_c2_testing_path_deprecated(command: str) -> None:
     print(f"{command}: {_LEGACY_C2_TEST_PATH_DEPRECATED_WARNING}", file=sys.stderr)
 
 
+def _format_progress_seconds(value: Any) -> str:
+    try:
+        return f"{float(value):.0f}s"
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def _validator_admission_progress_callback():
+    def emit(event: dict[str, Any]) -> None:
+        event_name = str(event.get("event") or "admission_proof_progress")
+        phase = str(event.get("phase") or "unknown")
+        observed_at = str(event.get("observed_at") or datetime.now(timezone.utc).replace(microsecond=0).isoformat())
+        required = event.get("required_nodes")
+        healthy = event.get("healthy_nodes")
+        pending = event.get("pending_nodes")
+        statuses = event.get("last_statuses")
+        if not isinstance(required, list):
+            required = []
+        if not isinstance(healthy, list):
+            healthy = []
+        if not isinstance(pending, list):
+            pending = []
+        if not isinstance(statuses, dict):
+            statuses = {}
+        pending_text = ",".join(str(item) for item in pending) if pending else "-"
+        status_text = "; ".join(f"{node}={status}" for node, status in sorted(statuses.items())) or "-"
+        print(
+            "[mother validator-admission] "
+            f"{observed_at} {event_name} "
+            f"phase={phase} "
+            f"sample={event.get('sample_index')} "
+            f"elapsed={_format_progress_seconds(event.get('elapsed_seconds'))}/"
+            f"{_format_progress_seconds(event.get('max_wait_seconds'))} "
+            f"remaining={_format_progress_seconds(event.get('remaining_seconds'))} "
+            f"healthy={len(healthy)}/{len(required)} "
+            f"durable={event.get('consecutive_healthy_samples')}/{event.get('durable_sample_count')} "
+            f"pending={pending_text} "
+            f"statuses={status_text}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    return emit
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -6816,6 +6861,7 @@ def _cmd_add_node_validator_admission(args: argparse.Namespace, private_state) -
         max_wait_seconds=args.max_wait_seconds,
         poll_interval_seconds=args.poll_interval_seconds,
         operation=_operation("execute-node-add-validator-admission", args.network, args.operation_id),
+        progress_callback=_validator_admission_progress_callback(),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result.get("status") == "pass" else 1

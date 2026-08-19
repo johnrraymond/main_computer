@@ -41,6 +41,22 @@ COMPLETED_HELPER_NAMES = frozenset(
     }
 )
 
+COMPLETED_HELPER_PREFIXES = (
+    "mother-add-node-validator-admission-voter-",
+    "mother-node-remove-voter-",
+)
+
+
+def _is_dynamic_completed_helper_name(name: object) -> bool:
+    return type(name) is str and any(name.startswith(prefix) for prefix in COMPLETED_HELPER_PREFIXES)
+
+
+def _is_completed_helper_name(name: object) -> bool:
+    if type(name) is not str:
+        return False
+    return name in COMPLETED_HELPER_NAMES or _is_dynamic_completed_helper_name(name)
+
+
 DEFAULT_REQUIRED_COMPONENT_NAMES = (
     "mother-super-node-fdb",
     "mother-super-node-hub",
@@ -201,6 +217,26 @@ def _terminal_completed(status: str) -> bool:
     return normalized in {"exited", "stopped"} or normalized.startswith("exited:") or normalized.startswith("stopped:")
 
 
+def _terminal_completed_success(status: str) -> bool:
+    normalized = status.strip().lower()
+    return normalized in {
+        "exited:0",
+        "stopped:0",
+        "exited (0)",
+        "stopped (0)",
+        "exited successfully",
+        "stopped successfully",
+    }
+
+
+def _completed_helper_cleanup_eligible(name: object, status: str) -> bool:
+    if not _is_completed_helper_name(name):
+        return False
+    if _is_dynamic_completed_helper_name(name):
+        return _terminal_completed_success(status)
+    return _terminal_completed(status)
+
+
 def _parent_degraded(status: str) -> bool:
     normalized = status.strip().lower()
     return "degraded" in normalized or "unhealthy" in normalized
@@ -290,14 +326,14 @@ def _component_summary(
     completed_helpers = [
         item
         for item in applications
-        if item.get("name") in COMPLETED_HELPER_NAMES
-        and _terminal_completed(_status(item.get("status")))
+        if _completed_helper_cleanup_eligible(item.get("name"), _status(item.get("status")))
         and item.get("exclude_from_status") is not True
     ]
     running_or_nonterminal_completed_helpers = [
         item
         for item in applications
-        if item.get("name") in COMPLETED_HELPER_NAMES and not _terminal_completed(_status(item.get("status")))
+        if _is_completed_helper_name(item.get("name"))
+        and not _completed_helper_cleanup_eligible(item.get("name"), _status(item.get("status")))
     ]
     preserved_helpers = [item for item in applications if item.get("name") in PRESERVED_HELPER_NAMES]
     excluded_terminal = [
@@ -314,7 +350,7 @@ def _component_summary(
         item
         for item in applications
         if _terminal_completed(_status(item.get("status")))
-        and item.get("name") not in COMPLETED_HELPER_NAMES
+        and not _is_completed_helper_name(item.get("name"))
         and item.get("name") not in {name for name in required_names}
         and item.get("exclude_from_status") is not True
     ]
@@ -323,7 +359,7 @@ def _component_summary(
         for item in applications
         if "unhealthy" in _status(item.get("status"))
         and item.get("name") not in {name for name in required_names}
-        and item.get("name") not in COMPLETED_HELPER_NAMES
+        and not _is_completed_helper_name(item.get("name"))
         and item.get("exclude_from_status") is not True
     ]
 
@@ -1910,7 +1946,7 @@ def execute_completed_mother_helper_cleanup(
                 continue
             if app_uuid in excluded_by_uuid or app_uuid in status_exclusion_attempted_uuids:
                 continue
-            if item.get("name") not in COMPLETED_HELPER_NAMES:
+            if not _is_completed_helper_name(item.get("name")):
                 continue
             if not _terminal_completed(_status(item.get("status"))):
                 continue

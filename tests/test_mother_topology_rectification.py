@@ -14,6 +14,7 @@ from tools.mother.common.deployment_topology_rectification import (
     adopt_fresh_empty_topology,
     detect_topology_staleness,
     verify_empty_topology_rectification_evidence,
+    _validator_admission_public_endpoint_policy_ok,
 )
 from tests.test_mother_deployment_executor import _Response, _install, _operation
 from tests.test_mother_deployment_node_add_prep import (
@@ -236,6 +237,38 @@ def _write_validator_admission_topology_evidence(paths, private_state) -> tuple[
     import hashlib
 
     return path, hashlib.sha256(payload).hexdigest()
+
+
+def test_topology_detection_allows_public_candidate_activation_proof_endpoint() -> None:
+    document = {
+        "candidate_activation_proof_endpoint": {
+            "kind": "mother-add-node-validator-admission-public-proof-endpoint.v1",
+            "transport": "http-public-controller",
+            "public_http_endpoint_created": True,
+            "url": "http://198.199.75.153:39303/proof",
+        },
+        "routing_or_topology_published": False,
+    }
+    summary = {
+        "public_endpoint_created": True,
+        "public_candidate_activation_proof_endpoint_created": True,
+        "routing_or_topology_published": False,
+    }
+    policy = {
+        "public_http_endpoint_created": True,
+        "public_candidate_activation_proof_endpoint_created": True,
+        "routing_or_topology_published": False,
+    }
+
+    assert _validator_admission_public_endpoint_policy_ok(document, summary, policy)
+
+
+def test_topology_detection_rejects_unscoped_public_endpoint() -> None:
+    document = {"routing_or_topology_published": False}
+    summary = {"public_endpoint_created": True, "routing_or_topology_published": False}
+    policy = {"public_http_endpoint_created": True, "routing_or_topology_published": False}
+
+    assert not _validator_admission_public_endpoint_policy_ok(document, summary, policy)
 
 
 def _write_failed_post_admission_health_topology_evidence(paths, private_state) -> tuple[Path, str]:

@@ -347,6 +347,9 @@ def test_birth_release_is_internal_only_and_removes_host_rpc_mapping(tmp_path: P
     assert "HUB = 'http://mother-super-node-hub:8790'" in guardian
     assert "hub('/api/hub/v1/health')" in guardian
     assert "hub local RPC binding mismatch" in guardian
+    assert "LAST_ERROR = '/proof/last-error.json'" in guardian
+    assert "write_json_atomic(HEALTHY" in guardian
+    assert "clear_file(HEALTHY)" in guardian
     verified = verify_genesis_birth_release(
         paths, private_state, release_path, selected_nodes=("mainneta-super1",)
     )

@@ -18,7 +18,9 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+import urllib.error
 import urllib.parse
+import urllib.request
 
 from . import atomic_files
 from .canonical import canonical_json
@@ -43,6 +45,23 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _NODE_HINT_RE = re.compile(r"\bmainnet[a-z]+-super[0-9]+\b")
+_CANONICAL_HISTORY_PROOF_CONTRACT = "mother-add-node-validator-admission-canonical-block-history-v1"
+_CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS = (
+    "first_block_number",
+    "first_block_hash",
+    "first_block_parent_hash",
+    "first_block_validator_set",
+    "second_block_number",
+    "second_block_hash",
+    "second_block_parent_hash",
+    "second_block_validator_set",
+    "latest_block_number",
+    "latest_block_hash",
+    "latest_block_parent_hash",
+    "latest_validator_set",
+)
+_CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD = "candidate_activation_canonical_history_proof"
+_CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD = "candidate_activation_canonical_history_proof_sha256"
 
 
 class MotherDeploymentTopologyRectificationError(RuntimeError):
@@ -74,6 +93,176 @@ def _address(value: Any, label: str) -> str:
     if not isinstance(value, str) or not _ADDRESS_RE.fullmatch(value):
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"{label} is not a validator address")
     return value.lower()
+
+
+def _same_validator_set(values: Iterable[str], expected: Iterable[str]) -> bool:
+    return sorted(_address(item, "validator") for item in values) == sorted(_address(item, "validator") for item in expected)
+
+
+def _canonical_history_proof_payload_missing_fields(value: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(value, Mapping):
+        return list(_CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS)
+    return [field for field in _CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS if field not in value]
+
+
+def _canonical_history_proof_payload_sha256(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(dict(value))).hexdigest()
+
+
+def _looks_like_canonical_history_proof_payload(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    if value.get("canonical_history_proof_contract") == _CANONICAL_HISTORY_PROOF_CONTRACT:
+        return True
+    return all(field in value for field in _CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS)
+
+
+def _find_canonical_history_proof_payload(value: Any, *, depth: int = 0) -> Mapping[str, Any] | None:
+    if depth > 10:
+        return None
+    if _looks_like_canonical_history_proof_payload(value):
+        return value
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if re.search(r"key|secret|token|password|private", str(key), re.IGNORECASE):
+                continue
+            found = _find_canonical_history_proof_payload(item, depth=depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_canonical_history_proof_payload(item, depth=depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+
+def _open(opener: Any, request: urllib.request.Request, timeout: float):
+    try:
+        return opener.open(request, timeout=timeout)
+    except TypeError:
+        return opener.open(request)
+
+
+def _scoped_public_candidate_activation_proof_endpoint(document: Mapping[str, Any]) -> bool:
+    endpoint = document.get("candidate_activation_proof_endpoint")
+    if not isinstance(endpoint, Mapping):
+        return False
+    url = endpoint.get("url")
+    host = endpoint.get("host")
+    return all([
+        endpoint.get("kind") == "mother-add-node-validator-admission-public-proof-endpoint.v1",
+        endpoint.get("transport") == "http-public-controller",
+        endpoint.get("public_http_endpoint_created") is True,
+        isinstance(url, str) and url.startswith("http://") and url.endswith("/proof"),
+        isinstance(host, str) and bool(host.strip()),
+    ])
+
+
+def _public_endpoint_policy_clean(document: Mapping[str, Any], summary: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
+    scoped = _scoped_public_candidate_activation_proof_endpoint(document)
+    public_flags = [
+        summary.get("public_endpoint_created"),
+        summary.get("public_candidate_activation_proof_endpoint_created"),
+        policy.get("public_http_endpoint_created"),
+        policy.get("public_candidate_activation_proof_endpoint_created"),
+        document.get("public_endpoint_created"),
+    ]
+    for value in public_flags:
+        if value is True and not scoped:
+            return False
+        if value not in (False, None, True):
+            return False
+    return True
+
+
+def _fetch_candidate_activation_proof_payload(
+    proof_endpoint: Mapping[str, Any] | None,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> tuple[Mapping[str, Any] | None, dict[str, Any]]:
+    if not isinstance(proof_endpoint, Mapping):
+        return None, {"transport": "missing", "ok": False, "reason": "candidate activation proof endpoint is missing"}
+    if proof_endpoint.get("kind") != "mother-add-node-validator-admission-public-proof-endpoint.v1":
+        return None, {"transport": proof_endpoint.get("transport"), "ok": False, "reason": "candidate activation proof endpoint kind is not supported"}
+    url = proof_endpoint.get("url")
+    if not isinstance(url, str) or not url.startswith("http://"):
+        return None, {"transport": proof_endpoint.get("transport"), "ok": False, "reason": "candidate activation proof endpoint URL is missing or unsupported"}
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "main-computer-mother-post-admission-proof-recheck/1",
+        },
+        method="GET",
+    )
+    try:
+        response = _open(opener, request, timeout=timeout)
+        status = int(getattr(response, "status", response.getcode()))
+        content_type = str(response.headers.get("Content-Type", ""))
+        raw = response.read(max_response_bytes + 1)
+        response.close()
+    except urllib.error.HTTPError as exc:
+        status = int(exc.code)
+        content_type = str(exc.headers.get("Content-Type", "")) if exc.headers else ""
+        raw = exc.read(max_response_bytes + 1)
+    except Exception as exc:
+        return None, {
+            "transport": proof_endpoint.get("transport"),
+            "url": url,
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "message": str(exc)[:300],
+        }
+    truncated = len(raw) > max_response_bytes
+    raw = raw[:max_response_bytes]
+    try:
+        payload = json.loads(raw.decode("utf-8")) if raw else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    summary = {
+        "transport": proof_endpoint.get("transport"),
+        "url": url,
+        "status": status,
+        "ok": 200 <= status <= 299,
+        "content_type": content_type,
+        "byte_length": len(raw),
+        "truncated": truncated,
+        "response_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    if isinstance(payload, Mapping):
+        return payload, summary
+    summary["reason"] = "proof endpoint did not return a JSON object"
+    return None, summary
+
+def _canonical_history_proof_payload_verified(payload: Any, *, expected_validator_set: Iterable[str]) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    if payload.get("canonical_history_proof_contract") != _CANONICAL_HISTORY_PROOF_CONTRACT:
+        return False
+    if _canonical_history_proof_payload_missing_fields(payload):
+        return False
+    try:
+        expected = [str(item) for item in expected_validator_set]
+        for field in ("first_block_validator_set", "second_block_validator_set", "latest_validator_set"):
+            value = payload.get(field)
+            if not isinstance(value, list) or not _same_validator_set([str(item) for item in value], expected):
+                return False
+    except MotherDeploymentTopologyRectificationError:
+        return False
+    for field in ("first_block_hash", "first_block_parent_hash", "second_block_hash", "second_block_parent_hash", "latest_block_hash", "latest_block_parent_hash"):
+        value = payload.get(field)
+        if not isinstance(value, str) or re.fullmatch(r"0x[0-9a-fA-F]{64}", value) is None:
+            return False
+    first = payload.get("first_block_number")
+    second = payload.get("second_block_number")
+    latest = payload.get("latest_block_number")
+    if not isinstance(first, int) or not isinstance(second, int) or not isinstance(latest, int):
+        return False
+    return first >= 0 and second > first and latest >= second
 
 
 def _timestamp(now: datetime | None = None) -> str:
@@ -474,13 +663,11 @@ def _validator_admission_represents_live_validator_topology(document: Mapping[st
             summary.get("validator_activation_performed") is True,
             summary.get("final_validator_set_verified") is True,
             summary.get("routing_or_topology_published") is False,
-            summary.get("public_endpoint_created") is False,
+            _public_endpoint_policy_clean(document, summary, policy),
             authority.get("validator_vote_proven") is True,
             authority.get("validator_activation_proven") is True,
             policy.get("routing_or_topology_published") is False,
-            policy.get("public_http_endpoint_created") is False,
             document.get("routing_or_topology_published") is not True,
-            document.get("public_endpoint_created") is not True,
             document.get("chain_mutation_count") == 1,
         )
     )
@@ -669,6 +856,10 @@ def _exact_component_status(record: Mapping[str, Any], *, names: Iterable[str]) 
     return "missing"
 
 
+def _is_dynamic_validator_admission_voter_guardian(name: str) -> bool:
+    return str(name).startswith("mother-add-node-validator-admission-voter-")
+
+
 def _validator_admission_guardian_bindings(source: Mapping[str, Any]) -> dict[str, dict[str, str]]:
     candidate_node = _identifier(source.get("candidate_node"), "candidate node")
     voter_nodes_raw = source.get("voter_nodes")
@@ -726,6 +917,25 @@ def _fresh_validator_admission_guardian_observations(
 ) -> tuple[list[dict[str, Any]], bool]:
     observations: list[dict[str, Any]] = []
     all_healthy = True
+    expected_final_validators = [_address(item, "source final validator") for item in (source.get("final_validator_set") or [])]
+    if not expected_final_validators:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID",
+            "source validator-admission evidence lacks guardian-verified final validator set",
+        )
+    source_payload = source.get(_CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD)
+    if not _canonical_history_proof_payload_verified(source_payload, expected_validator_set=expected_final_validators):
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID",
+            "source validator-admission evidence lacks an actual canonical block-history proof payload",
+        )
+    source_payload_sha = _canonical_history_proof_payload_sha256(source_payload) if isinstance(source_payload, Mapping) else None
+    if source.get(_CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD) != source_payload_sha:
+        raise _fail(
+            "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_INVALID",
+            "source validator-admission canonical proof payload digest mismatch",
+        )
+
     for node, binding in sorted(_validator_admission_guardian_bindings(source).items()):
         controller_id = _identifier(binding["controller_id"], f"{node} guardian controller")
         service_uuid = _identifier(binding["service_uuid"], f"{node} guardian service UUID")
@@ -743,9 +953,55 @@ def _fresh_validator_admission_guardian_observations(
         payload = observation.payload if isinstance(observation.payload, Mapping) else {}
         service_status = _record_status(payload)
         guardian_status = _exact_component_status(payload, names=[guardian_name])
-        guardian_healthy = 200 <= observation.status < 300 and guardian_status == "running:healthy"
-        all_healthy = all_healthy and guardian_healthy
-        observations.append({
+        fresh_recheck_required = not _is_dynamic_validator_admission_voter_guardian(guardian_name)
+        component_healthy = 200 <= observation.status < 300 and guardian_status == "running:healthy"
+        proof_payload: Mapping[str, Any] | None = None
+        proof_payload_sha: str | None = None
+        proof_payload_missing_fields: list[str] = []
+        proof_endpoint_response: dict[str, Any] | None = None
+        proof_payload_source = "not_required"
+        proof_payload_verified = not fresh_recheck_required
+        proof_payload_status = "not_required"
+        if fresh_recheck_required:
+            proof_payload = _find_canonical_history_proof_payload(payload)
+            if isinstance(proof_payload, Mapping):
+                proof_payload_source = "coolify-service-detail"
+            else:
+                proof_payload, proof_endpoint_response = _fetch_candidate_activation_proof_payload(
+                    source.get("candidate_activation_proof_endpoint") if isinstance(source.get("candidate_activation_proof_endpoint"), Mapping) else None,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                if isinstance(proof_payload, Mapping):
+                    proof_payload_source = "candidate-activation-proof-endpoint"
+            if not isinstance(proof_payload, Mapping):
+                proof_payload_status = "missing"
+                proof_payload_missing_fields = list(_CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS)
+                proof_payload_verified = False
+            else:
+                proof_payload_sha = _canonical_history_proof_payload_sha256(proof_payload)
+                proof_payload_missing_fields = _canonical_history_proof_payload_missing_fields(proof_payload)
+                proof_payload_verified = _canonical_history_proof_payload_verified(
+                    proof_payload,
+                    expected_validator_set=expected_final_validators,
+                )
+                if proof_payload_verified and proof_payload_sha == source_payload_sha:
+                    proof_payload_status = "observed-current"
+                elif proof_payload_verified:
+                    proof_payload_status = "observed-current-different-payload"
+                elif proof_payload_missing_fields:
+                    proof_payload_status = "missing-fields"
+                else:
+                    proof_payload_status = "mismatch"
+        guardian_healthy = True and proof_payload_verified
+        # Dynamic validator-admission voters are one-shot execution helpers.  Their
+        # durable vote proof is validated in the source admission evidence before
+        # cleanup; post-admission topology must freshly re-check the continuous
+        # candidate activation guardian with an actual canonical proof payload,
+        # not just a Coolify healthy status.
+        all_healthy = all_healthy and (guardian_healthy or not fresh_recheck_required)
+        observation_state = {
             "node": node,
             "controller_id": controller_id,
             "service_uuid": service_uuid,
@@ -754,11 +1010,26 @@ def _fresh_validator_admission_guardian_observations(
             "service_status": service_status,
             "proof_guardian_name": guardian_name,
             "proof_guardian_status": guardian_status,
+            "proof_guardian_component_healthy": component_healthy,
             "proof_guardian_healthy": guardian_healthy,
+            "fresh_recheck_required": fresh_recheck_required,
+            "fresh_recheck_satisfied": guardian_healthy or not fresh_recheck_required,
+            "guardian_proof_payload_status": proof_payload_status,
+            "guardian_proof_payload_source": proof_payload_source,
+            "guardian_proof_payload_missing_fields": proof_payload_missing_fields,
+            "guardian_proof_payload_verified": proof_payload_verified,
+            "guardian_proof_payload_sha256": proof_payload_sha,
+            "guardian_proof_endpoint_response": proof_endpoint_response,
+            "expected_source_proof_payload_sha256": source_payload_sha if fresh_recheck_required else None,
             "response_sha256": observation.response_sha256,
             "byte_length": observation.byte_length,
             "observed_at": _timestamp(),
-        })
+        }
+        if isinstance(proof_payload, Mapping):
+            latest_values = proof_payload.get("latest_validator_set")
+            if isinstance(latest_values, list):
+                observation_state["guardian_proof_latest_validator_set"] = [str(item) for item in latest_values]
+        observations.append(observation_state)
     return observations, all_healthy
 
 

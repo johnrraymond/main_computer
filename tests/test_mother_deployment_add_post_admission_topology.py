@@ -22,7 +22,7 @@ from tests.test_mother_deployment_node_add_prep import (
 )
 
 
-def _write_validator_admission_evidence(paths, private_state, *, guardian_proof: bool = True) -> tuple[Path, str]:
+def _write_validator_admission_evidence(paths, private_state, *, guardian_proof: bool = True, public_proof_endpoint: bool = False) -> tuple[Path, str]:
     _genesis, genesis_sha = _test_genesis(paths, private_state)
     evidence = {
         "authority": {
@@ -48,6 +48,48 @@ def _write_validator_admission_evidence(paths, private_state, *, guardian_proof:
         },
         "failure": None,
         "genesis_sha256": genesis_sha,
+        "candidate_activation_canonical_history_proof": {
+            "canonical_history_proof_contract": "mother-add-node-validator-admission-canonical-block-history-v1",
+            "desired_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+            "final_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+            "first_block_number": 100,
+            "first_block_hash": "0x" + "1" * 64,
+            "first_block_parent_hash": "0x" + "0" * 64,
+            "first_block_validator_set": [A_VALIDATOR, C1_VALIDATOR],
+            "second_block_number": 102,
+            "second_block_hash": "0x" + "2" * 64,
+            "second_block_parent_hash": "0x" + "1" * 64,
+            "second_block_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+            "latest_block_number": 103,
+            "latest_block_hash": "0x" + "3" * 64,
+            "latest_block_parent_hash": "0x" + "2" * 64,
+            "latest_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+        },
+        "candidate_activation_canonical_history_proof_sha256": "PLACEHOLDER",
+        "canonical_validator_history_proof": {
+            "contract": "mother-add-node-validator-admission-canonical-block-history-v1",
+            "target_guardian_name": "mother-add-node-validator-activation-guardian",
+            "activation_compose_body_sha256": "4" * 64,
+            "exact_block_history_required_before_health": True,
+            "proof_payload_required": True,
+            "proof_payload_observed": True,
+            "candidate_activation_canonical_history_proof_sha256": "PLACEHOLDER",
+            "missing_guardian_proof_fields": [],
+            "required_guardian_proof_fields": [
+                "first_block_number",
+                "first_block_hash",
+                "first_block_parent_hash",
+                "first_block_validator_set",
+                "second_block_number",
+                "second_block_hash",
+                "second_block_parent_hash",
+                "second_block_validator_set",
+                "latest_block_number",
+                "latest_block_hash",
+                "latest_block_parent_hash",
+                "latest_validator_set",
+            ],
+        },
         "health_observations": [
             item
             for sample in (1, 2, 3)
@@ -101,6 +143,8 @@ def _write_validator_admission_evidence(paths, private_state, *, guardian_proof:
                 "mutation_id": f"{C1_NODE}.install-validator-activation-compose",
                 "node": C1_NODE,
                 "service_uuid": "svcc1new",
+                "body_sha256": "4" * 64,
+                "live_write_acknowledged": True,
                 "status": "succeeded",
             },
             {
@@ -123,7 +167,8 @@ def _write_validator_admission_evidence(paths, private_state, *, guardian_proof:
             "manual_ssh_required": False,
             "private_keys_materialized_in_memory_only": True,
             "private_keys_persisted": False,
-            "public_http_endpoint_created": False,
+            "public_http_endpoint_created": public_proof_endpoint,
+            "public_candidate_activation_proof_endpoint_created": public_proof_endpoint,
             "routing_or_topology_published": False,
             "secrets_in_output": False,
         },
@@ -155,7 +200,17 @@ def _write_validator_admission_evidence(paths, private_state, *, guardian_proof:
                 "verified": True,
             }
         ],
-        "public_endpoint_created": False,
+        "public_endpoint_created": public_proof_endpoint,
+        "candidate_activation_proof_endpoint": {
+            "kind": "mother-add-node-validator-admission-public-proof-endpoint.v1",
+            "transport": "http-public-controller",
+            "host": "proof.invalid",
+            "bind_host": "0.0.0.0",
+            "host_port": 39303,
+            "container_port": 8797,
+            "url": "http://proof.invalid:39303/proof",
+            "public_http_endpoint_created": True,
+        } if public_proof_endpoint else None,
         "routing_or_topology_published": False,
         "schema_version": 1,
         "service_mutation_count": 4,
@@ -182,7 +237,8 @@ def _write_validator_admission_evidence(paths, private_state, *, guardian_proof:
             "planned_mutation_count": 4,
             "post_admission_cleanup_clean": True,
             "post_admission_cleanup_performed": True,
-            "public_endpoint_created": False,
+            "public_endpoint_created": public_proof_endpoint,
+            "public_candidate_activation_proof_endpoint_created": public_proof_endpoint,
             "replica_sync_evidence_reverified": True,
             "routing_or_topology_publication_authorized": False,
             "routing_or_topology_published": False,
@@ -216,11 +272,43 @@ def _write_validator_admission_evidence(paths, private_state, *, guardian_proof:
         ]
         evidence["summary"].pop("admission_proof_guardian_components_verified", None)
 
+    if guardian_proof:
+        proof_sha = hashlib.sha256(canonical_json(evidence["candidate_activation_canonical_history_proof"])).hexdigest()
+        evidence["candidate_activation_canonical_history_proof_sha256"] = proof_sha
+        evidence["canonical_validator_history_proof"]["candidate_activation_canonical_history_proof_sha256"] = proof_sha
+    else:
+        evidence.pop("candidate_activation_canonical_history_proof", None)
+        evidence.pop("candidate_activation_canonical_history_proof_sha256", None)
+        evidence["canonical_validator_history_proof"]["proof_payload_observed"] = False
+        evidence["canonical_validator_history_proof"].pop("candidate_activation_canonical_history_proof_sha256", None)
+        evidence["canonical_validator_history_proof"]["missing_guardian_proof_fields"] = list(evidence["canonical_validator_history_proof"]["required_guardian_proof_fields"])
+
     payload = canonical_json(evidence)
     path = paths.root / "evidence" / "deployment-node-add-validator-admission" / "source.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     return path, hashlib.sha256(payload).hexdigest()
+
+
+
+def _fresh_candidate_guardian_payload() -> dict[str, object]:
+    return {
+        "canonical_history_proof_contract": "mother-add-node-validator-admission-canonical-block-history-v1",
+        "desired_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+        "final_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+        "first_block_number": 100,
+        "first_block_hash": "0x" + "1" * 64,
+        "first_block_parent_hash": "0x" + "0" * 64,
+        "first_block_validator_set": [A_VALIDATOR, C1_VALIDATOR],
+        "second_block_number": 102,
+        "second_block_hash": "0x" + "2" * 64,
+        "second_block_parent_hash": "0x" + "1" * 64,
+        "second_block_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+        "latest_block_number": 103,
+        "latest_block_hash": "0x" + "3" * 64,
+        "latest_block_parent_hash": "0x" + "2" * 64,
+        "latest_validator_set": [C1_VALIDATOR, A_VALIDATOR],
+    }
 
 
 class _TopologyOpener:
@@ -274,6 +362,7 @@ class _TopologyOpener:
                     {
                         "name": "mother-add-node-validator-activation-guardian",
                         "status": "running:healthy",
+                        "candidate_activation_canonical_history_proof": _fresh_candidate_guardian_payload(),
                     }
                 ],
             })
@@ -326,6 +415,55 @@ def test_post_admission_observe_writes_prep_accepted_topology_proof(tmp_path: Pa
     assert any(req["path"] == "/api/v1/services/svcc1new" for req in opener.requests)
 
 
+class _VoterGuardianCleanedUpTopologyOpener(_TopologyOpener):
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        if parsed.path == "/api/v1/services/svca1":
+            return _Response({
+                "uuid": "svca1",
+                "name": A_NODE,
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": A_NODE,
+                        "status": "running:healthy",
+                    }
+                ],
+            })
+        return super().open(request, timeout)
+
+
+def test_post_admission_observe_allows_cleaned_up_one_shot_voter_guardian(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    source_path, source_sha = _write_validator_admission_evidence(paths, private_state)
+    opener = _VoterGuardianCleanedUpTopologyOpener()
+    now = datetime(2026, 8, 13, 22, 7, 5, tzinfo=timezone.utc)
+
+    result = finalize_add_node_post_admission_topology(
+        paths,
+        private_state,
+        source_path,
+        network="mainnet",
+        acknowledged_validator_admission_evidence_sha256=source_sha,
+        max_age_seconds=86400,
+        timeout=30.0,
+        max_response_bytes=4 * 1024 * 1024,
+        write_evidence=True,
+        operation=_operation("post-admission-observe-cleaned-voter"),
+        opener=opener,
+        now=now,
+    )
+
+    assert result["status"] == "pass"
+    voter_observations = [
+        item for item in result["fresh_validator_admission_guardian_observations"]
+        if item["node"] == A_NODE
+    ]
+    assert voter_observations
+    assert voter_observations[0]["fresh_recheck_required"] is False
+    assert voter_observations[0]["fresh_recheck_satisfied"] is True
+
+
 
 def test_post_admission_observe_rejects_top_level_health_only_admission_evidence(tmp_path: Path) -> None:
     _runtime, paths, private_state = _install(tmp_path)
@@ -353,6 +491,112 @@ def test_post_admission_observe_rejects_top_level_health_only_admission_evidence
         assert "guardian-verified final validator set" in str(exc)
     else:
         raise AssertionError("expected top-level-only admission evidence to be rejected")
+
+
+class _FreshAdmissionGuardianMissingProofPayloadOpener(_TopologyOpener):
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        if parsed.path == "/api/v1/services/svcc1new":
+            return _Response({
+                "uuid": "svcc1new",
+                "name": C1_NODE,
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-activation-guardian",
+                        "status": "running:healthy",
+                    }
+                ],
+            })
+        return super().open(request, timeout)
+
+
+def test_post_admission_observe_rejects_fresh_guardian_health_without_proof_payload(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    source_path, source_sha = _write_validator_admission_evidence(paths, private_state)
+    opener = _FreshAdmissionGuardianMissingProofPayloadOpener()
+    now = datetime(2026, 8, 13, 22, 7, 5, tzinfo=timezone.utc)
+
+    try:
+        finalize_add_node_post_admission_topology(
+            paths,
+            private_state,
+            source_path,
+            network="mainnet",
+            acknowledged_validator_admission_evidence_sha256=source_sha,
+            max_age_seconds=86400,
+            timeout=30.0,
+            max_response_bytes=4 * 1024 * 1024,
+            write_evidence=True,
+            operation=_operation("post-admission-observe-fresh-health-without-payload"),
+            opener=opener,
+            now=now,
+        )
+    except MotherDeploymentTopologyRectificationError as exc:
+        assert exc.code == "MOTHER_DEPLOY_ADD_POST_ADMISSION_TOPOLOGY_UNCLEAN"
+        assert "fresh validator-admission guardian proof" in str(exc)
+    else:
+        raise AssertionError("expected fresh guardian health without canonical proof payload to be rejected")
+
+
+
+
+class _FreshAdmissionGuardianEndpointOnlyTopologyOpener(_TopologyOpener):
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        host = parsed.hostname or ""
+        path = parsed.path
+        method = request.get_method()
+        self.requests.append({"method": method, "host": host, "path": path})
+        assert method == "GET"
+        if host == "proof.invalid" and path == "/proof":
+            return _Response(_fresh_candidate_guardian_payload())
+        if path == "/api/v1/services/svcc1new":
+            return _Response({
+                "uuid": "svcc1new",
+                "name": C1_NODE,
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-activation-guardian",
+                        "status": "running:healthy",
+                    }
+                ],
+            })
+        return super().open(request, timeout)
+
+
+def test_post_admission_observe_fetches_public_candidate_proof_endpoint_when_service_detail_lacks_payload(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    source_path, source_sha = _write_validator_admission_evidence(paths, private_state, public_proof_endpoint=True)
+    opener = _FreshAdmissionGuardianEndpointOnlyTopologyOpener()
+    now = datetime(2026, 8, 13, 22, 7, 5, tzinfo=timezone.utc)
+
+    result = finalize_add_node_post_admission_topology(
+        paths,
+        private_state,
+        source_path,
+        network="mainnet",
+        acknowledged_validator_admission_evidence_sha256=source_sha,
+        max_age_seconds=86400,
+        timeout=30.0,
+        max_response_bytes=4 * 1024 * 1024,
+        write_evidence=True,
+        operation=_operation("post-admission-observe-public-endpoint-proof"),
+        opener=opener,
+        now=now,
+    )
+
+    assert result["status"] == "pass"
+    candidate_observations = [
+        item for item in result["fresh_validator_admission_guardian_observations"]
+        if item["node"] == C1_NODE
+    ]
+    assert candidate_observations
+    assert candidate_observations[0]["guardian_proof_payload_source"] == "candidate-activation-proof-endpoint"
+    assert candidate_observations[0]["guardian_proof_payload_status"] == "observed-current"
+    assert candidate_observations[0]["guardian_proof_endpoint_response"]["status"] == 200
+    assert any(item["host"] == "proof.invalid" and item["path"] == "/proof" for item in opener.requests)
 
 
 class _StaleAdmissionGuardianTopologyOpener(_TopologyOpener):

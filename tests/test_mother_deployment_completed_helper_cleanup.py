@@ -9,6 +9,9 @@ from tools.mother.common.deployment_completed_helper_cleanup import (
     execute_completed_mother_helper_cleanup,
     inspect_completed_mother_helper_cleanup,
     verify_completed_mother_helper_cleanup_evidence,
+    _component_summary,
+    _is_completed_helper_name,
+    _remove_completed_helpers_from_compose,
 )
 from tools.mother.common.paths import MotherPaths
 from tools.mother.common.private_state import (
@@ -82,6 +85,65 @@ def _compose_with_helpers() -> str:
   mother-superseded-service-cleanup:
     image: docker:27-cli
 """
+
+
+
+
+def test_completed_helper_cleanup_recognizes_dynamic_voter_helper_names() -> None:
+    assert _is_completed_helper_name("mother-add-node-validator-admission-voter-mainneta-super1")
+    assert _is_completed_helper_name("mother-node-remove-voter-mainnetc_super1")
+    assert not _is_completed_helper_name("mother-super-node-hub")
+
+
+def test_completed_helper_cleanup_classifies_only_successful_terminal_dynamic_voters() -> None:
+    summary = _component_summary(
+        payload={
+            "name": "mainneta-super1",
+            "uuid": SERVICE_UUID,
+            "status": "degraded:unhealthy",
+            "applications": [
+                _application("mainneta-super1", "core", "running:healthy", "hyperledger/besu:latest"),
+                _application("mother-add-node-validator-admission-voter-mainneta-super1", "add", "exited:0"),
+                _application("mother-node-remove-voter-mainneta_super1", "remove", "running:healthy"),
+                _application("mother-add-node-validator-admission-voter-mainnetc-super1", "ambiguous", "exited"),
+            ],
+        },
+        node="mainneta-super1",
+        required_component_names=(),
+    )
+    assert [item["name"] for item in summary["completed_helper_candidates"]] == [
+        "mother-add-node-validator-admission-voter-mainneta-super1"
+    ]
+    assert [item["name"] for item in summary["running_or_nonterminal_completed_helpers"]] == [
+        "mother-node-remove-voter-mainneta_super1",
+        "mother-add-node-validator-admission-voter-mainnetc-super1",
+    ]
+
+
+def test_completed_helper_cleanup_removes_dynamic_voters_from_compose() -> None:
+    compose = """services:
+  mainneta-super1:
+    image: hyperledger/besu:latest
+  mother-add-node-validator-admission-voter-mainneta-super1:
+    image: python:3.12-alpine
+  mother-node-remove-voter-mainneta_super1:
+    image: python:3.12-alpine
+"""
+    cleaned, removed_services, removed_helpers = _remove_completed_helpers_from_compose(
+        compose,
+        (
+            "mother-add-node-validator-admission-voter-mainneta-super1",
+            "mother-node-remove-voter-mainneta_super1",
+        ),
+    )
+    assert removed_services == (
+        "mother-add-node-validator-admission-voter-mainneta-super1",
+        "mother-node-remove-voter-mainneta_super1",
+    )
+    assert removed_helpers == removed_services
+    assert "mother-add-node-validator-admission-voter" not in cleaned
+    assert "mother-node-remove-voter" not in cleaned
+    assert "mainneta-super1" in cleaned
 
 
 class _CleanupOpener:

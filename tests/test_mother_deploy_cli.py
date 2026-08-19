@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import subprocess
@@ -286,4 +287,42 @@ def test_standalone_private_rpc_commands_are_not_exposed(
     stderr = capsys.readouterr().err
     assert "invalid choice" in stderr
     assert command in stderr
+
+def test_validator_admission_progress_callback_writes_stderr(capsys) -> None:
+    callback = mother_deploy._validator_admission_progress_callback()
+
+    callback({
+        "event": "admission_proof_poll",
+        "phase": "admission-proof-after-qbft-transition-restart",
+        "observed_at": "2026-08-17T01:45:00Z",
+        "sample_index": 7,
+        "elapsed_seconds": 30.1,
+        "max_wait_seconds": 900.0,
+        "remaining_seconds": 869.9,
+        "required_nodes": ["mainneta-super1", "mainnetc-super1"],
+        "healthy_nodes": ["mainneta-super1"],
+        "pending_nodes": ["mainnetc-super1"],
+        "consecutive_healthy_samples": 0,
+        "durable_sample_count": 3,
+        "last_statuses": {
+            "mainneta-super1": "service=running:healthy; mother-add-node-validator-admission-voter-mainneta-super1=running:healthy",
+            "mainnetc-super1": "service=running:unhealthy; mother-add-node-validator-activation-guardian=running:unhealthy",
+        },
+    })
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[mother validator-admission]" in captured.err
+    assert "admission_proof_poll" in captured.err
+    assert "phase=admission-proof-after-qbft-transition-restart" in captured.err
+    assert "elapsed=30s/900s" in captured.err
+    assert "healthy=1/2" in captured.err
+    assert "pending=mainnetc-super1" in captured.err
+    assert "mother-add-node-validator-activation-guardian=running:unhealthy" in captured.err
+
+
+def test_validator_admission_cli_passes_progress_callback_to_executor() -> None:
+    source = inspect.getsource(mother_deploy._cmd_add_node_validator_admission)
+
+    assert "progress_callback=_validator_admission_progress_callback()" in source
 

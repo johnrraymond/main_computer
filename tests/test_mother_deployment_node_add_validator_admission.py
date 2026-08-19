@@ -14,18 +14,31 @@ from tools.mother.common.deployment_node_add_validator_admission import (
     adopt_node_add_validator_admission_live_proof,
     build_node_add_validator_admission_release,
     _candidate_activation_compose,
+    _candidate_activation_proof_endpoint,
+    _fetch_candidate_activation_proof_payload,
     _digest_without,
     _durable_validator_admission_proof_verified,
+    _canonical_validator_history_proof_verified,
+    _CANONICAL_HISTORY_PROOF_CONTRACT,
+    _CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS,
+    _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD,
+    _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD,
+    _canonical_history_proof_payload_sha256,
     _bootnode_p2p_reachability_receipt,
     _candidate_validator_enode,
     _component_healthy,
+    _component_proven,
+    _find_conflicting_node_remove_voters,
+    _install_voter_guardian,
     _http,
     _parse_bootnode_p2p_endpoint,
     _preflight_existing_validator_services,
     _recover_target_start_rejection,
     _restart_validator_services_for_qbft_transition,
     _service_uuid_hints_from_replica_sync_evidence,
+    _wait_for_admission_proof_guardians,
     _validator_vote_address,
+    _validator_admission_public_endpoint_policy_ok,
     _QBFT_STALE_VOTE_QUIET_SECONDS,
     _voter_guardian_script,
 )
@@ -49,6 +62,8 @@ def test_add_node_validator_activation_compose_is_internal_and_uses_env_referenc
             "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
         ],
         candidate_p2p_port=30304,
+        candidate_validator_route={"advertised_host": "10.116.0.3", "p2p_endpoint": "10.116.0.3:30304"},
+        proof_public_host="198.199.75.153",
     )
 
     parsed = yaml.safe_load(compose)
@@ -59,7 +74,10 @@ def test_add_node_validator_activation_compose_is_internal_and_uses_env_referenc
         "mother-replica-sync-guardian",
     }
     assert parsed["services"]["mainneta-super1"]["ports"] == ["30304:30304/tcp", "30304:30304/udp"]
-    assert "ports" not in parsed["services"]["mother-add-node-validator-activation-guardian"]
+    guardian_ports = parsed["services"]["mother-add-node-validator-activation-guardian"]["ports"]
+    assert guardian_ports == ["39304:8797/tcp"]
+    assert "10.116.0.3" not in guardian_ports[0]
+    assert "198.199.75.153" not in guardian_ports[0]
     sentinel = parsed["services"]["mother-replica-sync-guardian"]
     assert sentinel["image"] == "python:3.12-alpine"
     assert sentinel["restart"] == "unless-stopped"
@@ -157,6 +175,100 @@ def test_validator_admission_voter_guardian_auto_cleans_satisfied_stale_votes_af
     assert _validator_vote_address(a1, "existing validator") in script
 
 
+
+def test_validator_admission_voter_guardian_is_one_shot_and_no_restart() -> None:
+    candidate = "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876"
+    script = _voter_guardian_script(
+        voter="mainnetc-super1",
+        candidate=candidate,
+        candidate_enode="enode://" + "a" * 128 + "@10.116.0.3:30304",
+        current_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        desired_validators=[
+            candidate,
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        chain_id=42424240,
+        genesis_sha256="d" * 64,
+        request_sha256="e" * 64,
+    )
+    assert script.index("clear_health()") < script.index("if hashlib.sha256(encoded(REQUEST))")
+    assert script.index("prove()") < script.index("time.sleep(3600)") < script.index("break")
+    assert "time.sleep(6)" in script
+    assert script.index("except Exception as exc:") < script.index("time.sleep(6)")
+
+    compose, name = _install_voter_guardian(
+        "services:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\n",
+        voter="mainnetc-super1",
+        script=script,
+    )
+    parsed = yaml.safe_load(compose)
+    assert name == "mother-add-node-validator-admission-voter-mainnetc-super1"
+    assert parsed["services"][name]["restart"] == "no"
+
+
+def test_validator_admission_conflict_detector_finds_same_candidate_remove_voter() -> None:
+    candidate = "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876"
+    compose = f"""
+services:
+  mainnetc-super1:
+    image: hyperledger/besu:latest
+  mother-node-remove-voter-mainnetc_super1:
+    image: python:3.12-alpine
+    labels:
+      main_computer.mother.stage: node-remove-do
+    command:
+      - python
+      - -u
+      - -c
+      - |
+        TARGET_VALIDATOR = '{candidate}'
+        REQUEST = json.loads('{{"id":1,"jsonrpc":"2.0","method":"qbft_proposeValidatorVote","params":["{candidate}",false]}}')
+"""
+    conflicts = _find_conflicting_node_remove_voters(compose, candidate_validator=candidate)
+    assert conflicts == [
+        {
+            "helper_service": "mother-node-remove-voter-mainnetc_super1",
+            "target_validator": candidate,
+            "reason": "opposite-node-remove-voter-for-candidate",
+        }
+    ]
+
+
+def test_validator_admission_proven_accepts_explicit_zero_terminal_voter_only() -> None:
+    record = {
+        "status": "running:healthy",
+        "applications": [
+            {"name": "mother-add-node-validator-admission-voter-mainnetc-super1", "status": "exited:0"},
+        ],
+    }
+    assert _component_proven(
+        record,
+        names=["mother-add-node-validator-admission-voter-mainnetc-super1"],
+        allow_terminal_completed=True,
+    )
+    assert not _component_proven(
+        record,
+        names=["mother-add-node-validator-admission-voter-mainnetc-super1"],
+        allow_terminal_completed=False,
+    )
+
+    ambiguous = {
+        "status": "running:healthy",
+        "applications": [
+            {"name": "mother-add-node-validator-admission-voter-mainnetc-super1", "status": "exited"},
+        ],
+    }
+    assert not _component_proven(
+        ambiguous,
+        names=["mother-add-node-validator-admission-voter-mainnetc-super1"],
+        allow_terminal_completed=True,
+    )
+
+
 def test_validator_admission_builds_candidate_enode_from_route() -> None:
     enode = _candidate_validator_enode(
         "b" * 128,
@@ -194,6 +306,34 @@ def test_validator_activation_guardian_explicitly_peers_bootnode() -> None:
     assert "expected peer is not connected" in compose
     assert "target is still syncing before admission proof" in compose
     assert "target has no bootnode peers before admission proof" in compose
+
+
+def test_validator_activation_guardian_clears_stale_health_and_uses_operation_specific_probe() -> None:
+    genesis = b'{"config":{"chainId":42424240}}'
+    genesis_b64 = base64.b64encode(genesis).decode("ascii")
+    genesis_sha = hashlib.sha256(genesis).hexdigest()
+    bootnode = "enode://" + "a" * 128 + "@10.116.0.3:30303"
+
+    compose = _candidate_activation_compose(
+        target_node="mainneta-super2",
+        genesis_b64=genesis_b64,
+        bootnode_enode=bootnode,
+        chain_id=42424240,
+        genesis_sha256=genesis_sha,
+        target_node_id="b" * 128,
+        desired_validators=[
+            "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        candidate_p2p_port=30304,
+    )
+
+    assert "def clear_health()" in compose
+    assert compose.index("clear_health()") < compose.index("with open('/config/genesis.json'")
+    assert "target-add-node-validator-admission-healthy';" not in compose
+    assert "target-add-node-validator-admission-" in compose
+    assert "        prove()\n        break" not in compose
+    assert "    time.sleep(6)" in compose
 
 
 def test_validator_admission_peer_guard_tolerates_already_connected_add_peer_false() -> None:
@@ -359,6 +499,70 @@ def _guardian_observation(node: str, guardian: str, sample: int, *, healthy: boo
     }
 
 
+def _canonical_history_payload(
+    desired: list[str] | None = None,
+    *,
+    first: int = 100,
+    second: int = 102,
+    latest: int = 103,
+) -> dict[str, object]:
+    validator_set = desired or [
+        "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+    ]
+    return {
+        "canonical_history_proof_contract": _CANONICAL_HISTORY_PROOF_CONTRACT,
+        "desired_validator_set": validator_set,
+        "final_validator_set": validator_set,
+        "first_block_number": first,
+        "first_block_hash": "0x" + "1" * 64,
+        "first_block_parent_hash": "0x" + "0" * 64,
+        "first_block_validator_set": list(reversed(validator_set)),
+        "second_block_number": second,
+        "second_block_hash": "0x" + "2" * 64,
+        "second_block_parent_hash": "0x" + "1" * 64,
+        "second_block_validator_set": validator_set,
+        "latest_block_number": latest,
+        "latest_block_hash": "0x" + "3" * 64,
+        "latest_block_parent_hash": "0x" + "2" * 64,
+        "latest_validator_set": validator_set,
+        "proved_at": "2026-08-17T19:16:57Z",
+    }
+
+
+def _canonical_history_document_fields(
+    candidate: str = "mainneta-super2",
+    desired: list[str] | None = None,
+) -> dict[str, object]:
+    body_sha = "a" * 64
+    proof_payload = _canonical_history_payload(desired)
+    proof_sha = _canonical_history_proof_payload_sha256(proof_payload)
+    return {
+        "canonical_validator_history_proof": {
+            "contract": _CANONICAL_HISTORY_PROOF_CONTRACT,
+            "target_guardian_name": "mother-add-node-validator-activation-guardian",
+            "activation_compose_body_sha256": body_sha,
+            "exact_block_history_required_before_health": True,
+            "proof_payload_required": True,
+            "proof_payload_observed": True,
+            _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD: proof_sha,
+            "required_guardian_proof_fields": list(_CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS),
+            "missing_guardian_proof_fields": [],
+        },
+        _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD: proof_payload,
+        _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD: proof_sha,
+        "mutation_receipts": [
+            {
+                "node": candidate,
+                "guardian_service": "mother-add-node-validator-activation-guardian",
+                "body_sha256": body_sha,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+            }
+        ],
+    }
+
+
 def test_validator_admission_durable_proof_requires_materialized_final_validator_set() -> None:
     desired = [
         "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
@@ -375,6 +579,7 @@ def test_validator_admission_durable_proof_requires_materialized_final_validator
         "desired_validator_set": desired,
         "final_validator_set": list(reversed(desired)),
         "health_observations": observations,
+        **_canonical_history_document_fields("mainneta-super2"),
     }) is True
 
     assert _durable_validator_admission_proof_verified({
@@ -425,6 +630,7 @@ def test_validator_admission_execute_requires_terminal_durable_proof_before_clea
 
     assert "admission-proof-terminal-durable" in executor_source
     assert "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_DURABLE_PROOF_LOST" in executor_source
+    assert "nodes=[candidate_node]" in executor_source
     assert '"final_validator_set": final_validator_set' in executor_source
     assert "_durable_validator_admission_proof_verified" in executor_source
     assert "admission_proven = True" in executor_source
@@ -441,6 +647,111 @@ def test_validator_admission_verify_rejects_legacy_summary_flags_without_durable
     assert "not isinstance(desired, list) or not isinstance(final, list)" in verifier_source
     assert "_durable_validator_admission_proof_verified(document)" in verify_source
     assert 'list(document["final_validator_set"])' in verify_source
+
+
+def test_validator_admission_verify_allows_public_candidate_activation_proof_endpoint() -> None:
+    document = {
+        "candidate_activation_proof_endpoint": {
+            "kind": "mother-add-node-validator-admission-public-proof-endpoint.v1",
+            "transport": "http-public-controller",
+            "public_http_endpoint_created": True,
+            "url": "http://198.199.75.153:39303/proof",
+        },
+        "routing_or_topology_published": False,
+    }
+    summary = {
+        "public_endpoint_created": True,
+        "public_candidate_activation_proof_endpoint_created": True,
+        "routing_or_topology_published": False,
+    }
+    policy = {
+        "public_http_endpoint_created": True,
+        "public_candidate_activation_proof_endpoint_created": True,
+        "routing_or_topology_published": False,
+    }
+
+    assert _validator_admission_public_endpoint_policy_ok(document, summary, policy)
+
+
+def test_validator_admission_verify_rejects_unscoped_public_endpoint() -> None:
+    document = {"routing_or_topology_published": False}
+    summary = {"public_endpoint_created": True, "routing_or_topology_published": False}
+    policy = {"public_http_endpoint_created": True, "routing_or_topology_published": False}
+
+    assert not _validator_admission_public_endpoint_policy_ok(document, summary, policy)
+
+
+def test_validator_admission_requires_canonical_history_contract_for_durable_proof() -> None:
+    desired = [
+        "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+    ]
+    observations = [
+        _guardian_observation("mainneta-super2", "mother-add-node-validator-activation-guardian", sample)
+        for sample in (1, 2, 3)
+    ]
+
+    legacy_document = {
+        "candidate_node": "mainneta-super2",
+        "voter_nodes": [],
+        "desired_validator_set": desired,
+        "final_validator_set": desired,
+        "health_observations": observations,
+    }
+    assert _durable_validator_admission_proof_verified(legacy_document) is False
+
+    marker_only_document = {
+        **legacy_document,
+        "canonical_validator_history_proof": {
+            "contract": _CANONICAL_HISTORY_PROOF_CONTRACT,
+            "target_guardian_name": "mother-add-node-validator-activation-guardian",
+            "activation_compose_body_sha256": "a" * 64,
+            "exact_block_history_required_before_health": True,
+            "proof_payload_required": True,
+            "required_guardian_proof_fields": list(_CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS),
+        },
+        "mutation_receipts": [
+            {
+                "node": "mainneta-super2",
+                "guardian_service": "mother-add-node-validator-activation-guardian",
+                "body_sha256": "a" * 64,
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+            }
+        ],
+    }
+    assert _canonical_validator_history_proof_verified(marker_only_document) is False
+    assert _durable_validator_admission_proof_verified(marker_only_document) is False
+
+    bound_document = {
+        **legacy_document,
+        **_canonical_history_document_fields("mainneta-super2", desired),
+    }
+    assert _canonical_validator_history_proof_verified(bound_document) is True
+    assert _durable_validator_admission_proof_verified(bound_document) is True
+
+
+def test_validator_admission_guardian_scripts_bind_health_to_canonical_block_history() -> None:
+    activation_source = _candidate_activation_compose(
+        target_node="mainneta-super2",
+        genesis_b64=base64.b64encode(b"{}").decode("ascii"),
+        bootnode_enode="enode://" + "a" * 128 + "@10.0.0.1:30303",
+        chain_id=42424240,
+        genesis_sha256=hashlib.sha256(b"{}").hexdigest(),
+        target_node_id="b" * 128,
+        desired_validators=[
+            "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        candidate_p2p_port=30303,
+    )
+
+    assert _CANONICAL_HISTORY_PROOF_CONTRACT in activation_source
+    assert "canonical_history_entry(first)" in activation_source
+    assert "canonical_history_entry(second)" in activation_source
+    assert "canonical block validator set mismatch" in activation_source
+    for field in _CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS:
+        assert field in activation_source
 
 
 def test_validator_admission_http_accepts_coolify_controller_objects() -> None:
@@ -529,7 +840,261 @@ def test_validator_admission_restarts_and_reobserves_qbft_transition_before_fail
     )
     assert "admission-proof-after-qbft-transition-restart" in executor_source
     assert "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_QBFT_TRANSITION_RESTART_FAILED" in executor_source
-    assert "max(max_wait_seconds, 720.0)" in executor_source
+    assert "max(max_wait_seconds, _ADMISSION_PROOF_TRANSITION_RECOVERY_MAX_WAIT_SECONDS)" in executor_source
+
+
+def test_validator_admission_reports_proof_timeout_after_patient_recovery_wait() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_PROOF_TIMEOUT" in executor_source
+    assert "activation guardian did not reach durable proof before the proof wait deadline" in executor_source
+    assert '"transient_voter_nodes": voter_nodes' in executor_source
+
+
+def test_validator_admission_wait_emits_operator_progress_events() -> None:
+    wait_source = inspect.getsource(_wait_for_admission_proof_guardians)
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "progress_callback" in wait_source
+    assert "_ADMISSION_PROGRESS_EMIT_INTERVAL_SECONDS" in wait_source
+    assert '"admission_proof_poll"' in wait_source
+    assert '"admission_proof_satisfied"' in wait_source
+    assert '"admission_proof_timeout"' in wait_source
+    assert '"last_statuses"' in wait_source
+    assert "progress_callback=progress_callback" in executor_source
+
+
+class _AdmissionProofWaitOpener:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def open(self, request, timeout=None):
+        url = request.full_url
+        self.calls.append(url)
+        if url.endswith("/api/v1/services/candidate-service"):
+            payload = {
+                "uuid": "candidate-service",
+                "name": "mainneta-super1",
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-activation-guardian",
+                        "status": "running:healthy",
+                        "proof": _canonical_history_payload([
+                            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+                        ]),
+                    }
+                ],
+            }
+        elif url.endswith("/api/v1/services/voter-service"):
+            payload = {
+                "uuid": "voter-service",
+                "name": "mainnetc-super1",
+                "status": "running:unhealthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-admission-voter-mainnetc-super1",
+                        "status": "running:unhealthy:excluded",
+                    }
+                ],
+            }
+        else:
+            payload = {"message": "not found"}
+            return _StatusResponse(canonical_json(payload), status=404)
+        return _StatusResponse(canonical_json(payload), status=200)
+
+
+
+
+def test_candidate_activation_proof_endpoint_is_public_controller_bound() -> None:
+    endpoint = _candidate_activation_proof_endpoint(
+        {"advertised_host": "10.116.0.3", "p2p_endpoint": "10.116.0.3:30304"},
+        candidate_p2p_port=30304,
+        public_host="198.199.75.153",
+    )
+
+    assert endpoint["transport"] == "http-public-controller"
+    assert endpoint["host"] == "198.199.75.153"
+    assert endpoint["bind_host"] == "0.0.0.0"
+    assert endpoint["host_port"] == 39304
+    assert endpoint["container_port"] == 8797
+    assert endpoint["url"] == "http://198.199.75.153:39304/proof"
+    assert endpoint["public_http_endpoint_created"] is True
+
+
+class _AdmissionProofEndpointOpener:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def open(self, request, timeout=None):
+        url = request.full_url
+        self.calls.append(url)
+        if url.endswith("/api/v1/services/candidate-service"):
+            payload = {
+                "uuid": "candidate-service",
+                "name": "mainneta-super1",
+                "status": "running:healthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-activation-guardian",
+                        "status": "running:healthy",
+                    }
+                ],
+            }
+        elif url == "http://198.199.75.153:39304/proof":
+            payload = _canonical_history_payload([
+                "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+            ])
+        elif url.endswith("/api/v1/services/voter-service"):
+            payload = {
+                "uuid": "voter-service",
+                "name": "mainnetc-super1",
+                "status": "running:unhealthy",
+                "applications": [
+                    {
+                        "name": "mother-add-node-validator-admission-voter-mainnetc-super1",
+                        "status": "running:unhealthy:excluded",
+                    }
+                ],
+            }
+        else:
+            payload = {"message": "not found"}
+            return _StatusResponse(canonical_json(payload), status=404)
+        return _StatusResponse(canonical_json(payload), status=200)
+
+
+def test_validator_admission_wait_captures_mother_side_public_proof_endpoint() -> None:
+    opener = _AdmissionProofEndpointOpener()
+    observations: list[dict] = []
+    controllers = {
+        "coolify-a": SimpleNamespace(base_url="https://coolify-a.example", api_token="secret-token"),
+        "coolify-c": SimpleNamespace(base_url="https://coolify-c.example", api_token="secret-token"),
+    }
+
+    healthy, last_statuses = _wait_for_admission_proof_guardians(
+        nodes=["mainneta-super1", "mainnetc-super1"],
+        candidate_node="mainneta-super1",
+        desired_validator_set=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        controllers=controllers,
+        node_to_controller={"mainneta-super1": "coolify-a", "mainnetc-super1": "coolify-c"},
+        all_service_uuids={"mainneta-super1": "candidate-service", "mainnetc-super1": "voter-service"},
+        voter_guardian_names={
+            "mainnetc-super1": "mother-add-node-validator-admission-voter-mainnetc-super1",
+        },
+        target_guardian_name="mother-add-node-validator-activation-guardian",
+        candidate_activation_proof_endpoint={
+            "transport": "http-public-controller",
+            "url": "http://198.199.75.153:39304/proof",
+        },
+        observations=observations,
+        observation_phase="admission-proof-after-qbft-transition-restart",
+        max_wait_seconds=5.0,
+        poll_interval_seconds=0.0,
+        timeout=3.0,
+        max_response_bytes=10000,
+        opener=opener,
+        durable_sample_count=2,
+    )
+
+    assert healthy == {"mainneta-super1"}
+    assert "canonical-proof-payload=observed" in last_statuses["mainneta-super1"]
+    assert "proof-transport=mother-public-proof-endpoint" in last_statuses["mainneta-super1"]
+    assert opener.calls.count("http://198.199.75.153:39304/proof") >= 2
+    candidate_observations = [item for item in observations if item["node"] == "mainneta-super1"]
+    assert candidate_observations[-1]["guardian_proof_payload_verified"] is True
+    assert candidate_observations[-1]["guardian_proof_payload_transport"] == "mother-public-proof-endpoint"
+    assert candidate_observations[-1]["candidate_activation_canonical_history_proof"]["latest_validator_set"] == [
+        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+    ]
+
+
+def test_validator_admission_wait_is_candidate_activation_driven_after_voter_exclusion() -> None:
+    opener = _AdmissionProofWaitOpener()
+    observations: list[dict] = []
+    controllers = {
+        "coolify-a": SimpleNamespace(base_url="https://coolify-a.example", api_token="secret-token"),
+        "coolify-c": SimpleNamespace(base_url="https://coolify-c.example", api_token="secret-token"),
+    }
+
+    healthy, last_statuses = _wait_for_admission_proof_guardians(
+        nodes=["mainneta-super1", "mainnetc-super1"],
+        candidate_node="mainneta-super1",
+        desired_validator_set=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        controllers=controllers,
+        node_to_controller={"mainneta-super1": "coolify-a", "mainnetc-super1": "coolify-c"},
+        all_service_uuids={"mainneta-super1": "candidate-service", "mainnetc-super1": "voter-service"},
+        voter_guardian_names={
+            "mainnetc-super1": "mother-add-node-validator-admission-voter-mainnetc-super1",
+        },
+        target_guardian_name="mother-add-node-validator-activation-guardian",
+        candidate_activation_proof_endpoint=None,
+        observations=observations,
+        observation_phase="admission-proof-after-qbft-transition-restart",
+        max_wait_seconds=5.0,
+        poll_interval_seconds=0.0,
+        timeout=3.0,
+        max_response_bytes=10000,
+        opener=opener,
+        durable_sample_count=2,
+    )
+
+    assert healthy == {"mainneta-super1"}
+    assert "running:unhealthy:excluded" in last_statuses["mainnetc-super1"]
+    assert len([item for item in observations if item["node"] == "mainneta-super1"]) >= 2
+    voter_observations = [item for item in observations if item["node"] == "mainnetc-super1"]
+    assert voter_observations
+    assert all(item["guardian_role"] == "transient_vote_helper" for item in voter_observations)
+    assert all(item["durable_proof_required"] is False for item in voter_observations)
+    assert all(item["nonblocking_after_activation"] is True for item in voter_observations)
+
+
+def test_durable_validator_admission_proof_accepts_transient_voter_exclusion_after_activation() -> None:
+    desired = [
+        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+    ]
+    observations = []
+    for sample in range(1, 4):
+        observations.extend([
+            {
+                "node": "mainneta-super1",
+                "proof_guardian_name": "mother-add-node-validator-activation-guardian",
+                "proof_guardian_status": "running:healthy",
+                "proof_guardian_healthy": True,
+                "guardian_role": "candidate_activation",
+                "durable_proof_required": True,
+                "observation_phase": "admission-proof-after-qbft-transition-restart",
+                "durable_sample_index": sample,
+            },
+            {
+                "node": "mainnetc-super1",
+                "proof_guardian_name": "mother-add-node-validator-admission-voter-mainnetc-super1",
+                "proof_guardian_status": "running:unhealthy:excluded",
+                "proof_guardian_healthy": False,
+                "guardian_role": "transient_vote_helper",
+                "durable_proof_required": False,
+                "observation_phase": "admission-proof-after-qbft-transition-restart",
+                "durable_sample_index": sample,
+            },
+        ])
+
+    assert _durable_validator_admission_proof_verified({
+        "candidate_node": "mainneta-super1",
+        "voter_nodes": ["mainnetc-super1"],
+        "desired_validator_set": desired,
+        "final_validator_set": list(reversed(desired)),
+        "health_observations": observations,
+        **_canonical_history_document_fields("mainneta-super1", desired),
+    })
 
 
 def test_validator_admission_live_proof_adoption_is_read_only_and_writes_new_evidence() -> None:
