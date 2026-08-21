@@ -1181,6 +1181,17 @@ def _extract_conflicting_helper_address(text: str, *, assignment_name: str) -> s
     return unique[0] if len(unique) == 1 else None
 
 
+def _is_cleanup2_retired_node_remove_voter(service_name: str, definition: Mapping[str, Any], text: str) -> bool:
+    labels_text = _labels_text(definition)
+    return (
+        service_name.startswith("mother-node-remove-voter-")
+        and "main_computer.mother.retired_helper_mimic=true" in labels_text
+        and "main_computer.mother.not_a_validator_voter=true" in labels_text
+        and "main_computer.mother.cleanup_scope=helper-cleanup2-yagni" in labels_text
+        and "qbft_proposeValidatorVote" not in text
+    )
+
+
 def _find_conflicting_node_remove_voters(compose_text: str, *, candidate_validator: str) -> list[dict[str, str]]:
     """Return remove-voter helpers that would fight this add-node validator admission.
 
@@ -1197,6 +1208,8 @@ def _find_conflicting_node_remove_voters(compose_text: str, *, candidate_validat
         if not helper_like:
             continue
         text = "\n".join([service_name, labels_text, _definition_text(definition)])
+        if _is_cleanup2_retired_node_remove_voter(service_name, definition, text):
+            continue
         target = _extract_conflicting_helper_address(text, assignment_name="TARGET_VALIDATOR")
         if target is None:
             conflicts.append({

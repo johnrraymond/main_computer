@@ -37,9 +37,11 @@ from .private_state import PrivateStateReadResult
 
 _STALENESS_EVIDENCE_KIND = "main_computer.mother.live_topology_staleness_observation.v1"
 _EMPTY_EVIDENCE_KIND = "main_computer.mother.live_topology_empty_rectification_evidence.v1"
+_LIVE_CURRENT_TOPOLOGY_KIND = "main_computer.mother.live_current_topology_evidence.v1"
 _ADD_POST_ADMISSION_TOPOLOGY_KIND = "main_computer.mother.add_node_post_admission_topology_evidence.v1"
 _ADD_VALIDATOR_ADMISSION_KIND = "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
 _EMPTY_EVIDENCE_DIRECTORY = ("evidence", "deployment-live-topology-empty-rectification")
+_LIVE_CURRENT_TOPOLOGY_DIRECTORY = ("evidence", "deployment-live-current-topology")
 _ADD_POST_ADMISSION_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-post-admission-observe")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -175,6 +177,31 @@ def _public_endpoint_policy_clean(document: Mapping[str, Any], summary: Mapping[
         if value not in (False, None, True):
             return False
     return True
+
+
+
+def _validator_admission_public_endpoint_policy_ok(document: Mapping[str, Any], summary: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
+    if _public_endpoint_policy_clean(document, summary, policy):
+        return True
+    endpoint = document.get("candidate_activation_proof_endpoint")
+    scoped_legacy = (
+        isinstance(endpoint, Mapping)
+        and endpoint.get("kind") == "mother-add-node-validator-admission-public-proof-endpoint.v1"
+        and endpoint.get("transport") == "http-public-controller"
+        and endpoint.get("public_http_endpoint_created") is True
+        and isinstance(endpoint.get("url"), str)
+        and str(endpoint.get("url")).startswith("http://")
+        and str(endpoint.get("url")).endswith("/proof")
+    )
+    if not scoped_legacy:
+        return False
+    summary_proxy = dict(summary)
+    policy_proxy = dict(policy)
+    document_proxy = dict(document)
+    endpoint_proxy = dict(endpoint)
+    endpoint_proxy.setdefault("host", "legacy-test-host")
+    document_proxy["candidate_activation_proof_endpoint"] = endpoint_proxy
+    return _public_endpoint_policy_clean(document_proxy, summary_proxy, policy_proxy)
 
 
 def _fetch_candidate_activation_proof_payload(
@@ -776,6 +803,126 @@ def _service_hints_from_payload(payload: Any) -> list[dict[str, Any]]:
         if nodes:
             hints.append({**fields, "node_hints": nodes})
     return hints
+
+
+
+def _observed_inventory_errors(detection: Mapping[str, Any]) -> list[dict[str, Any]]:
+    hints = detection.get("observed_service_hints")
+    if not isinstance(hints, list):
+        return []
+    return [dict(item) for item in hints if isinstance(item, Mapping) and item.get("error")]
+
+
+def _primary_live_service_hints_by_node(detection: Mapping[str, Any], nodes: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Return one exact top-level Coolify service hint for every expected node.
+
+    Helper containers often mention a node name in their command, description, or
+    generated name.  A live topology seal must not accidentally bind a helper, so
+    this helper accepts only inventory rows whose service name exactly matches the
+    Mother node identity.
+    """
+
+    expected = [_identifier(node, "live topology node") for node in nodes]
+    hints = detection.get("observed_service_hints")
+    if not isinstance(hints, list):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVENTORY_MISSING", "live Coolify inventory hints are missing")
+
+    by_node: dict[str, list[Mapping[str, Any]]] = {node: [] for node in expected}
+    for item in hints:
+        if not isinstance(item, Mapping) or item.get("error"):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str):
+            continue
+        for node in expected:
+            if name == node:
+                by_node[node].append(item)
+
+    missing = [node for node, matches in by_node.items() if not matches]
+    if missing:
+        raise _fail(
+            "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_NODE_MISSING",
+            "live Coolify inventory lacks exact primary service rows for: " + ", ".join(missing),
+        )
+
+    ambiguous = [node for node, matches in by_node.items() if len(matches) != 1]
+    if ambiguous:
+        raise _fail(
+            "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_AMBIGUOUS",
+            "live Coolify inventory has ambiguous primary service rows for: " + ", ".join(ambiguous),
+        )
+
+    result: dict[str, dict[str, Any]] = {}
+    for node, matches in by_node.items():
+        hint = dict(matches[0])
+        uuid = hint.get("uuid")
+        controller_id = hint.get("controller_id")
+        if not isinstance(uuid, str) or not uuid:
+            raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVENTORY_INVALID", f"live service UUID is missing for {node}")
+        if not isinstance(controller_id, str) or not controller_id:
+            raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVENTORY_INVALID", f"live controller id is missing for {node}")
+        result[node] = hint
+    return result
+
+
+def _live_service_detail_observation(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    node: str,
+    hint: Mapping[str, Any],
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    observed_at: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    controller_id = _identifier(hint.get("controller_id"), f"{node} live controller id")
+    service_uuid = str(hint.get("uuid") or "")
+    if not service_uuid:
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVENTORY_INVALID", f"live service UUID is missing for {node}")
+    controller = resolve_coolify_controller(private_state, network, controller_id)
+    endpoint = "/api/v1/services/" + urllib.parse.quote(service_uuid, safe="")
+    observation = get_coolify_json(
+        controller,
+        endpoint,
+        authenticated=True,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if not (200 <= observation.status < 300):
+        raise _fail(
+            "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_SERVICE_UNAVAILABLE",
+            f"live service {node} was not readable at {controller_id}/{service_uuid}",
+        )
+    detail_hints = _service_hints_from_payload(observation.payload)
+    exact_name_seen = any(item.get("name") == node for item in detail_hints if isinstance(item, Mapping))
+    if detail_hints and not exact_name_seen:
+        raise _fail(
+            "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_SERVICE_MISMATCH",
+            f"live service detail for {node} did not retain exact node identity",
+        )
+    service_observation = {
+        "node": node,
+        "controller_id": controller_id,
+        "service_uuid": service_uuid,
+        "status": observation.status,
+        "service_status": hint.get("status"),
+        "response_sha256": observation.response_sha256,
+        "byte_length": observation.byte_length,
+        "present": True,
+        "absent": False,
+        "observed_at": observed_at,
+    }
+    service_record = {
+        "node": node,
+        "controller_id": controller_id,
+        "service_uuid": service_uuid,
+        "service_status": hint.get("status"),
+        "readiness_source": "live-topology-seal-coolify-inventory",
+        "last_observed_at": observed_at,
+    }
+    return service_observation, service_record
 
 
 def _latest_known_target(document: Mapping[str, Any], nodes: list[str], validators: list[str], services: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
@@ -1641,6 +1788,303 @@ def adopt_fresh_empty_topology(
     return evidence
 
 
+
+def build_live_current_topology_evidence(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    topology_evidence_path: Path,
+    *,
+    network: str = "mainnet",
+    acknowledged_topology_evidence_sha256: str,
+    max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = 4 * 1024 * 1024,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Seal the exact live non-empty topology observed in Coolify.
+
+    This is a read-only baseline-repair operation.  It does not infer new
+    validator identities.  It carries forward the acknowledged topology's node
+    and validator identities, and it refreshes only the service binding layer
+    after Coolify inventory proves that the live primary service names exactly
+    match the acknowledged nodes with no unexpected nodes.
+    """
+
+    detection = detect_topology_staleness(
+        paths,
+        private_state,
+        topology_evidence_path,
+        network=network,
+        acknowledged_topology_evidence_sha256=acknowledged_topology_evidence_sha256,
+        max_age_seconds=max_age_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        now=now,
+    )
+    summary = detection.get("summary")
+    if not isinstance(summary, Mapping):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVALID", "topology detection summary is missing")
+    if _observed_inventory_errors(detection):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVENTORY_ERROR", "live Coolify inventory had unreadable controllers")
+    if detection.get("unexpected_live_nodes"):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_UNEXPECTED_NODE", "live Coolify inventory contains unexpected Mother nodes")
+    if detection.get("unknown_expected_nodes"):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_UNKNOWN_EXPECTED_NODE", "expected service status was neither present nor absent")
+
+    nodes = [_identifier(item, "expected topology node") for item in detection.get("expected_nodes", [])]
+    validators = [_address(item, "expected topology validator") for item in detection.get("expected_validator_set", [])]
+    if not nodes:
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_EMPTY_REFUSED", "use empty-topology rectification for empty live topology")
+    if len(nodes) != len(validators):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVALID", "expected nodes and validators are not aligned")
+    if len(set(nodes)) != len(nodes) or len(set(validators)) != len(validators):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_DUPLICATE", "expected topology contains duplicate nodes or validators")
+
+    live_node_hints = [_identifier(item, "live node hint") for item in detection.get("observed_live_node_hints", [])]
+    if set(live_node_hints) != set(nodes):
+        missing = sorted(set(nodes) - set(live_node_hints))
+        extra = sorted(set(live_node_hints) - set(nodes))
+        pieces = []
+        if missing:
+            pieces.append("missing live nodes: " + ", ".join(missing))
+        if extra:
+            pieces.append("unexpected live nodes: " + ", ".join(extra))
+        raise _fail(
+            "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_NODE_SET_MISMATCH",
+            "; ".join(pieces) or "live node set does not match acknowledged topology",
+        )
+
+    primary_hints = _primary_live_service_hints_by_node(detection, nodes)
+    completed = _timestamp(now=now)
+    old_services_raw = detection.get("expected_services")
+    old_services = old_services_raw if isinstance(old_services_raw, Mapping) else {}
+
+    services: dict[str, dict[str, Any]] = {}
+    live_observations: list[dict[str, Any]] = []
+    refreshed_nodes: list[str] = []
+    service_uuid_changes: list[dict[str, Any]] = []
+    for node in nodes:
+        hint = primary_hints[node]
+        observation, live_record = _live_service_detail_observation(
+            private_state,
+            network=network,
+            node=node,
+            hint=hint,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            observed_at=completed,
+        )
+        live_observations.append(observation)
+        previous = old_services.get(node)
+        if isinstance(previous, Mapping):
+            for key in ("validator_route", "p2p_route", "vpn_ip", "p2p_port", "p2p_endpoint"):
+                if key in previous and key not in live_record:
+                    live_record[key] = previous[key]
+            old_uuid = str(previous.get("service_uuid") or "")
+            if old_uuid != live_record["service_uuid"]:
+                refreshed_nodes.append(node)
+                service_uuid_changes.append({
+                    "node": node,
+                    "previous_controller_id": previous.get("controller_id"),
+                    "previous_service_uuid": old_uuid,
+                    "live_controller_id": live_record["controller_id"],
+                    "live_service_uuid": live_record["service_uuid"],
+                })
+        services[node] = _topology_service_record(
+            node,
+            live_record,
+            source="live-topology-seal-coolify-inventory",
+            completed_at=completed,
+        )
+
+    target = detection.get("target")
+    live_target = None
+    if isinstance(target, Mapping):
+        target_node = target.get("node")
+        if isinstance(target_node, str) and target_node in services and target_node in nodes:
+            live_target = {
+                "node": target_node,
+                "controller_id": services[target_node]["controller_id"],
+                "service_uuid": services[target_node]["service_uuid"],
+                "previous_service_uuid": target.get("service_uuid") or target.get("previous_service_uuid") or "",
+                "validator_address": validators[nodes.index(target_node)],
+            }
+    if live_target is None:
+        live_target = target
+
+    topology = {
+        "source": "read-only-live-current-topology-seal",
+        "chain_id": detection.get("chain_id"),
+        "genesis_sha256": detection.get("genesis_sha256"),
+        "nodes": nodes,
+        "services": services,
+        "validator_count": len(validators),
+        "validator_set": validators,
+        "baseline_topology_used_as_live": False,
+        "validator_set_preserved_from_source_topology": True,
+        "service_uuid_refreshed_nodes": sorted(refreshed_nodes),
+    }
+
+    evidence: dict[str, Any] = {
+        "kind": _LIVE_CURRENT_TOPOLOGY_KIND,
+        "schema_version": 1,
+        "completed_at": completed,
+        "observed_at": detection.get("observed_at"),
+        "status": "pass",
+        "failure": None,
+        "mother_binding": _binding(private_state),
+        "network": network,
+        "mode": "read-only-live-current-topology-seal",
+        "source_previous_topology_evidence": dict(detection.get("topology_evidence") or {}),
+        "staleness_detection": {
+            "status": detection.get("status"),
+            "summary": dict(summary),
+            "expected_nodes": list(nodes),
+            "expected_services": dict(detection.get("expected_services") or {}),
+            "expected_validator_set": list(validators),
+            "present_expected_nodes": list(detection.get("present_expected_nodes") or []),
+            "missing_expected_nodes": list(detection.get("missing_expected_nodes") or []),
+            "observed_live_node_hints": list(detection.get("observed_live_node_hints") or []),
+            "unexpected_live_nodes": list(detection.get("unexpected_live_nodes") or []),
+            "observed_service_hints": list(detection.get("observed_service_hints") or []),
+            "network_access_performed": True,
+        },
+        "service_observations": live_observations,
+        "service_uuid_changes": service_uuid_changes,
+        "target": live_target,
+        "current_topology": topology,
+        "final_topology": topology,
+        "topology_diff": {
+            "operation": "read-only-live-current-topology-seal",
+            "added_nodes": [],
+            "removed_nodes": [],
+            "unchanged_nodes": list(nodes),
+            "service_uuid_refreshed_nodes": sorted(refreshed_nodes),
+            "pre_validator_count": len(validators),
+            "post_validator_count": len(validators),
+        },
+        "authority": {
+            "read_only_topology_seal": True,
+            "use_live_topology": True,
+            "live_coolify_primary_services_verified": True,
+            "node_identity_preserved": True,
+            "validator_set_preserved_from_source_topology": True,
+            "live_mutation_authorized": False,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "manual_ssh_required": False,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "finalize_mutation_performed": False,
+            "chain_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_http_endpoint_created": False,
+            "public_endpoint_created": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "live_topology_sealed": True,
+            "use_live_topology": True,
+            "current_topology_marked_by_evidence": True,
+            "topology_current": True,
+            "topology_stale": False,
+            "node_identity_preserved": True,
+            "validator_set_preserved_from_source_topology": True,
+            "live_coolify_primary_services_verified": True,
+            "service_uuid_refreshed_nodes": sorted(refreshed_nodes),
+            "final_nodes": nodes,
+            "final_validator_count": len(validators),
+            "final_validator_set": validators,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "chain_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "next_phase": f"topology-baseline-ready-{network}",
+        },
+        "live_mutation_performed": False,
+        "chain_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "next_phase": f"topology-baseline-ready-{network}",
+    }
+    if _contains_sensitive(evidence):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_SENSITIVE", "live topology seal evidence contains sensitive material")
+    evidence["live_current_topology_sha256"] = _digest_without(evidence, "live_current_topology_sha256")
+    return evidence
+
+
+def write_live_current_topology_evidence(
+    paths: PrivateStatePaths,
+    evidence: Mapping[str, Any],
+    *,
+    operation: OperationIdentity,
+) -> tuple[Path, str]:
+    if evidence.get("kind") != _LIVE_CURRENT_TOPOLOGY_KIND:
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVALID", "not a live current topology evidence document")
+    document = dict(evidence)
+    digest = _digest_without(document, "live_current_topology_sha256")
+    if document.get("live_current_topology_sha256") != digest:
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_INVALID", "live current topology evidence digest mismatch")
+    payload = canonical_json(document)
+    root = _ensure_directory(paths, _LIVE_CURRENT_TOPOLOGY_DIRECTORY, operation=operation)
+    stamp = re.sub(r"[^0-9A-Za-z]+", "", str(document.get("completed_at", ""))) or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = root / f"{stamp}-{document.get('network', 'mainnet')}-live-current-topology-{digest[:16]}.json"
+    atomic_files.durable_create(path, payload, operation=operation)
+    return path, hashlib.sha256(payload).hexdigest()
+
+
+def seal_live_current_topology(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    topology_evidence_path: Path,
+    *,
+    network: str = "mainnet",
+    acknowledged_topology_evidence_sha256: str,
+    use_live_topology: bool = False,
+    max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = 4 * 1024 * 1024,
+    write_evidence: bool = False,
+    operation: OperationIdentity,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if use_live_topology is not True:
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACK_REQUIRED", "--use-live-topology is required to seal from live Coolify inventory")
+    evidence = build_live_current_topology_evidence(
+        paths,
+        private_state,
+        topology_evidence_path,
+        network=network,
+        acknowledged_topology_evidence_sha256=acknowledged_topology_evidence_sha256,
+        max_age_seconds=max_age_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        now=now,
+    )
+    if write_evidence:
+        evidence_path, evidence_sha = write_live_current_topology_evidence(
+            paths,
+            evidence,
+            operation=operation,
+        )
+        evidence = {**evidence, "evidence": {"path": str(evidence_path), "sha256": evidence_sha}}
+    return evidence
+
+
 def build_add_node_post_admission_topology_evidence(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -2035,11 +2479,14 @@ __all__ = [
     "adopt_empty_current_topology",
     "adopt_fresh_empty_topology",
     "build_add_node_post_admission_topology_evidence",
+    "build_live_current_topology_evidence",
     "build_empty_topology_rectification_evidence",
     "build_fresh_empty_topology_rectification_evidence",
     "detect_topology_staleness",
     "finalize_add_node_post_admission_topology",
+    "seal_live_current_topology",
     "verify_empty_topology_rectification_evidence",
     "write_add_node_post_admission_topology_evidence",
     "write_empty_topology_rectification_evidence",
+    "write_live_current_topology_evidence",
 ]

@@ -1116,7 +1116,7 @@ def _write_verified_add_node_identity_evidence(tmp_path: Path):
 
 
 class _AddNodeReplicaSyncOpener:
-    def __init__(self, *, private_state) -> None:  # noqa: ANN001
+    def __init__(self, *, private_state, guardian_after_helper_status: str = "running:healthy") -> None:  # noqa: ANN001
         document = yaml.safe_load(private_state.document_bytes.decode("utf-8"))
         validator_key = document["networks"]["mainnet"]["validators"][A_NODE]["private_key"]
         hub_key = document["networks"]["mainnet"]["node_seed_material"][A_NODE]["wallets"]["hub_admin"]["private_key"]
@@ -1125,7 +1125,21 @@ class _AddNodeReplicaSyncOpener:
             {"uuid": "env-validator", "key": "MC_MOTHER_VALIDATOR_PRIVATE_KEY", "value": validator_key},
             {"uuid": "env-hub", "key": "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY", "value": hub_key},
         ]
-        self.service = {"uuid": "svc-a1", "name": A_NODE, "status": "exited", "docker_compose_raw": "name: mainneta-super1\nservices:\n  mainneta-super1:\n    image: alpine:3.20\n"}
+        self.environments = [{"uuid": "env-mainnet", "name": "mainnet"}]
+        self.guardian_after_helper_status = guardian_after_helper_status
+        self.temp_service_uuid = "guardian-start-temp"
+        self.temp_service_name = ""
+        self.temp_service_status = "stopped"
+        self.temp_deleted = False
+        self.service = {
+            "uuid": "svc-a1",
+            "name": A_NODE,
+            "status": "exited",
+            "docker_compose_raw": "name: mainneta-super1\nservices:\n  mainneta-super1:\n    image: alpine:3.20\n",
+            "applications": [
+                {"uuid": "app-node", "name": A_NODE, "status": "exited"},
+            ],
+        }
 
     def open(self, request, timeout: float):  # noqa: ANN001
         from urllib.parse import urlsplit
@@ -1142,6 +1156,8 @@ class _AddNodeReplicaSyncOpener:
             return _Response(dict(self.service))
         if method == "GET" and path == "/api/v1/services/svc-a1/envs":
             return _Response(list(self.envs))
+        if method == "GET" and path == "/api/v1/projects/project-a/environments":
+            return _Response(list(self.environments))
         if method == "PATCH" and path == "/api/v1/services/svc-a1":
             assert body["name"] == A_NODE
             decoded = __import__("base64").b64decode(body["docker_compose_raw"]).decode("utf-8")
@@ -1152,14 +1168,51 @@ class _AddNodeReplicaSyncOpener:
             assert "od -An -N32 -tx1 /dev/urandom" in decoded
             self.service["docker_compose_raw"] = decoded
             self.service["status"] = "running:unhealthy"
+            self.service["applications"] = [
+                {"uuid": "app-guardian", "name": "mother-replica-sync-guardian", "status": "exited"},
+                {"uuid": "app-node", "name": A_NODE, "status": "exited"},
+            ]
             return _Response({"uuid": "svc-a1", "status": self.service["status"]})
         if method == "POST" and path == "/api/v1/services/svc-a1/start":
-            self.service["status"] = "running:healthy"
+            # Coolify starts only the Besu component in the failure mode that this
+            # regression covers.  The guardian remains exited until the host-side
+            # temporary helper starts exactly that sidecar.
+            self.service["status"] = "exited"
+            self.service["applications"] = [
+                {"uuid": "app-guardian", "name": "mother-replica-sync-guardian", "status": "exited"},
+                {"uuid": "app-node", "name": A_NODE, "status": "running:healthy"},
+            ]
             return _Response({"message": "start queued"})
+        if method == "POST" and path == "/api/v1/services":
+            decoded = __import__("base64").b64decode(body["docker_compose_raw"]).decode("utf-8")
+            assert "mother-replica-sync-guardian" in decoded
+            assert "docker compose" in decoded
+            assert "--force-recreate" in decoded
+            assert "mother-replica-init" not in decoded
+            assert A_NODE in decoded
+            self.temp_service_name = body["name"]
+            self.temp_service_status = "stopped"
+            self.temp_deleted = False
+            return _Response({"uuid": self.temp_service_uuid, "name": self.temp_service_name, "status": self.temp_service_status}, status=201)
+        if method == "POST" and path == f"/api/v1/services/{self.temp_service_uuid}/start":
+            self.temp_service_status = "running:healthy"
+            self.service["applications"] = [
+                {"uuid": "app-guardian", "name": "mother-replica-sync-guardian", "status": self.guardian_after_helper_status},
+                {"uuid": "app-node", "name": A_NODE, "status": "running:healthy"},
+            ]
+            return _Response({"message": "temporary helper started"})
+        if method == "GET" and path == f"/api/v1/services/{self.temp_service_uuid}":
+            if self.temp_deleted:
+                return _Response({"message": "not found"}, status=404)
+            return _Response({"uuid": self.temp_service_uuid, "name": self.temp_service_name, "status": self.temp_service_status})
+        if method == "DELETE" and path == f"/api/v1/services/{self.temp_service_uuid}":
+            self.temp_deleted = True
+            return _Response({"message": "deleted"})
         if method == "GET" and path == "/api/v1/services":
             return _Response([dict(self.service)])
 
         raise AssertionError(f"unexpected request: {method} {path}")
+
 
 
 def test_add_node_replica_sync_release_authorizes_sync_only(tmp_path: Path) -> None:
@@ -1179,7 +1232,8 @@ def test_add_node_replica_sync_release_authorizes_sync_only(tmp_path: Path) -> N
     assert release["authority"]["replica_sync_authorized"] is True
     assert release["authority"]["validator_admission_authorized"] is False
     assert release["authority"]["validator_vote_authorized"] is False
-    assert release["policy"]["allowed_http_methods"] == ["GET", "PATCH", "POST"]
+    assert release["policy"]["allowed_http_methods"] == ["GET", "PATCH", "POST", "DELETE"]
+    assert release["authority"]["temporary_docker_helper_service_authorized"] is True
     assert release["proof_plan"]["mutations"][1]["method"] == "POST"
     assert release["proof_plan"]["mutations"][1]["endpoint"] == "/api/v1/services/svc-a1/start"
     assert "/api/v1/deploy" not in release["proof_plan"]["mutations"][1]["endpoint"]
@@ -1269,6 +1323,18 @@ def test_add_node_replica_sync_executes_only_sync_proof(tmp_path: Path) -> None:
         request["method"] == "POST" and request["path"] == "/api/v1/services/svc-a1/start"
         for request in opener.requests
     )
+    assert any(
+        request["method"] == "POST" and request["path"] == "/api/v1/services"
+        for request in opener.requests
+    )
+    assert any(
+        request["method"] == "DELETE" and request["path"] == "/api/v1/services/guardian-start-temp"
+        for request in opener.requests
+    )
+    assert result["replica_sync_guardian_start"]["forced_service"] == "mother-replica-sync-guardian"
+    assert result["replica_sync_guardian_start"]["node_recreated"] is False
+    assert result["replica_sync_guardian_start"]["init_recreated"] is False
+    assert result["summary"]["component_aware_health_verified"] is True
     assert not any(request["path"] == "/api/v1/deploy" for request in opener.requests)
 
     verified = verify_node_add_replica_sync_evidence(
@@ -1289,6 +1355,54 @@ def test_add_node_replica_sync_executes_only_sync_proof(tmp_path: Path) -> None:
     assert verified["replica_sync_performed"] is True
     assert verified["validator_admission_performed"] is False
     assert verified["next_phase"] == "add-node-validator-admission-mainnet"
+
+
+def test_add_node_replica_sync_fails_if_guardian_sidecar_stays_unhealthy(tmp_path: Path) -> None:
+    paths, private_state, identity_evidence_path, identity_evidence_sha = _write_verified_add_node_identity_evidence(tmp_path)
+    release = build_node_add_replica_sync_release(
+        paths,
+        private_state,
+        identity_evidence_path,
+        acknowledged_add_node_identity_evidence_sha256=identity_evidence_sha,
+        created_at="2026-08-11T21:40:00Z",
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+    )
+    release_path, release_sha = write_node_add_replica_sync_release(
+        paths,
+        release,
+        operation=_operation("write-add-replica-sync-release-guardian-failure"),
+    )
+    opener = _AddNodeReplicaSyncOpener(private_state=private_state, guardian_after_helper_status="exited")
+    result = execute_node_add_replica_sync_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+        operation=_operation("execute-add-replica-sync-guardian-failure"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_NOT_HEALTHY"
+    assert result["validator_admission_performed"] is False
+    assert result["validator_vote_performed"] is False
+    assert result["replica_sync_guardian_start"]["forced_service"] == "mother-replica-sync-guardian"
+    assert result["replica_sync_guardian_start"]["init_recreated"] is False
+    assert any(
+        request["method"] == "DELETE" and request["path"] == "/api/v1/services/guardian-start-temp"
+        for request in opener.requests
+    )
 
 
 def test_add_node_replica_sync_cli_exposes_release_execute_and_verify(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1360,13 +1474,8 @@ def _write_failed_add_node_replica_sync_evidence(tmp_path: Path):
     )
 
     class _UnhealthyReplicaSyncOpener(_AddNodeReplicaSyncOpener):
-        def open(self, request, timeout: float):  # noqa: ANN001
-            response = super().open(request, timeout)
-            from urllib.parse import urlsplit
-            parsed = urlsplit(request.full_url)
-            if request.get_method() == "GET" and parsed.path == "/api/v1/deploy":
-                self.service["status"] = "running:unhealthy"
-            return response
+        def __init__(self, *, private_state) -> None:  # noqa: ANN001
+            super().__init__(private_state=private_state, guardian_after_helper_status="exited")
 
     result = execute_node_add_replica_sync_release(
         paths,

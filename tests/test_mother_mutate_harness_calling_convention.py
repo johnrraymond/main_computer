@@ -283,7 +283,7 @@ def _cleanup_completion_evidence(tmp_path: Path, *, operation: str) -> tuple[str
     return _write_json(tmp_path / "post-admission.json", document)
 
 
-def test_add_node_harness_runs_post_work_cleanup_for_each_final_service(tmp_path: Path) -> None:
+def test_add_node_harness_runs_cleanup1_then_cleanup2_once(tmp_path: Path) -> None:
     args = _parser_args(tmp_path)
     evidence_path, evidence_sha = _cleanup_completion_evidence(tmp_path, operation="add-node")
     args.post_admission_topology_evidence = evidence_path
@@ -296,7 +296,8 @@ def test_add_node_harness_runs_post_work_cleanup_for_each_final_service(tmp_path
         return {
             "status": "pass",
             "summary": {"clean": True},
-            "evidence": {"path": str(tmp_path / f"{step}.json"), "sha256": "c" * 64},
+            "evidence_path": str(tmp_path / f"{step}.json"),
+            "evidence_sha256": "c" * 64,
         }
 
     instance = harness.Harness(args)
@@ -304,24 +305,43 @@ def test_add_node_harness_runs_post_work_cleanup_for_each_final_service(tmp_path
     instance.step_post_work_cleanup()
 
     assert [step for step, _ in captured] == [
-        "post-work-cleanup-mainneta-super1",
-        "post-work-cleanup-mainnetc-super1",
+        "post-work-cleanup-cleanup1",
+        "post-work-cleanup-cleanup2",
     ]
-    first_argv = captured[0][1]
-    assert first_argv[1].endswith("tools/mother_post_work_cleanup.py")
-    assert "--workflow" in first_argv
-    assert first_argv[first_argv.index("--workflow") + 1] == "add-node"
-    assert first_argv[first_argv.index("--completion-evidence") + 1] == evidence_path
-    assert first_argv[first_argv.index("--completion-evidence-sha256") + 1] == evidence_sha
-    assert "--execute" in first_argv
-    assert "--allow-compose-rewrite" in first_argv
-    assert "--instant-deploy-compose-rewrite" in first_argv
-    assert "--allow-service-redeploy-refresh" in first_argv
-    assert "--allow-retired-genesis-proof-guardian-shim" in first_argv
-    assert instance.state["post_work_cleanup_results"][0]["node"] == "mainneta-super1"
+
+    cleanup1_argv = captured[0][1]
+    assert cleanup1_argv[1].endswith("tools/mother_post_work_cleanup_v2.py")
+    assert cleanup1_argv[2] == "execute"
+    assert "--cleanup-all" in cleanup1_argv
+    assert cleanup1_argv[cleanup1_argv.index("--topology-evidence") + 1] == evidence_path
+    assert cleanup1_argv[cleanup1_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
+
+    cleanup2_argv = captured[1][1]
+    assert cleanup2_argv[1].endswith("tools/mother_helper_cleanup2_yagni.py")
+    assert cleanup2_argv[2] == "execute"
+    assert "--cleanup-all" not in cleanup2_argv
+    assert cleanup2_argv[cleanup2_argv.index("--topology-evidence") + 1] == evidence_path
+    assert cleanup2_argv[cleanup2_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
+
+    forbidden = {
+        "--workflow",
+        "--controller-id",
+        "--service-uuid",
+        "--node-name",
+        "--completion-evidence",
+        "--completion-evidence-sha256",
+        "--allow-compose-rewrite",
+        "--instant-deploy-compose-rewrite",
+        "--allow-service-redeploy-refresh",
+        "--allow-retired-genesis-proof-guardian-shim",
+    }
+    assert forbidden.isdisjoint(cleanup1_argv)
+    assert forbidden.isdisjoint(cleanup2_argv)
+    assert instance.state["post_work_cleanup_results"][0]["step"] == "cleanup1"
+    assert instance.state["post_work_cleanup_results"][1]["step"] == "cleanup2"
 
 
-def test_remove_node_harness_post_work_cleanup_targets_survivor_services_only(tmp_path: Path) -> None:
+def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_scripts(tmp_path: Path) -> None:
     args = _parser_args(
         tmp_path,
         [
@@ -347,19 +367,24 @@ def test_remove_node_harness_post_work_cleanup_targets_survivor_services_only(tm
         return {
             "status": "pass",
             "summary": {"clean": True},
-            "evidence": {"path": str(tmp_path / f"{step}.json"), "sha256": "d" * 64},
+            "evidence_path": str(tmp_path / f"{step}.json"),
+            "evidence_sha256": "d" * 64,
         }
 
     instance = harness.Harness(args)
     instance.run = fake_run
     instance.step_post_work_cleanup()
 
-    assert [step for step, _ in captured] == ["post-work-cleanup-mainnetc-super1"]
-    argv = captured[0][1]
-    assert argv[argv.index("--workflow") + 1] == "remove-node"
-    assert argv[argv.index("--node-name") + 1] == "mainnetc-super1"
-    assert argv[argv.index("--service-uuid") + 1] == "j1445405xyjkbeld0se5j8i8"
-    assert "deletedservice123" not in argv
+    assert [step for step, _ in captured] == [
+        "post-work-cleanup-cleanup1",
+        "post-work-cleanup-cleanup2",
+    ]
+    assert captured[0][1][1].endswith("tools/mother_post_work_cleanup_v2.py")
+    assert captured[1][1][1].endswith("tools/mother_helper_cleanup2_yagni.py")
+    assert captured[0][1][captured[0][1].index("--topology-evidence") + 1] == evidence_path
+    assert captured[1][1][captured[1][1].index("--topology-evidence") + 1] == evidence_path
+    assert "deletedservice123" not in captured[0][1]
+    assert "deletedservice123" not in captured[1][1]
 
 
 def test_post_work_cleanup_is_not_in_add_or_remove_harness_step_order() -> None:
@@ -375,6 +400,6 @@ def test_dynamic_post_work_cleanup_substeps_are_mutation_gated(tmp_path: Path) -
     instance = harness.Harness(args)
 
     with pytest.raises(SystemExit) as exc:
-        instance.run("post-work-cleanup-mainnetc-super1", ["python", "-c", "raise SystemExit(99)"])
+        instance.run("post-work-cleanup-cleanup1", ["python", "-c", "raise SystemExit(99)"])
 
     assert exc.value.code == 3

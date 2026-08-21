@@ -1,60 +1,60 @@
 #!/usr/bin/env python3
-"""Deterministic Mother post-work cleanup v2 orchestrator.
+"""Deterministic Mother post-work cleanup v2 cleanup1 orchestrator.
 
-This script is intentionally only an orchestrator.  It loads already-finalized
-topology evidence and then delegates to the narrow v2 cleanup units in a fixed
-order:
+This script is cleanup1-only now.  It loads already-finalized topology evidence
+and then runs one of these narrow paths:
 
-1. chain RPC preflight,
-2. chain-only satisfied pending-vote cleanup,
-3. retired admission-voter shims for the transient voter nodes proven by the
-   source validator-admission evidence,
-4. retired activation-guardian shims for every current topology service,
-5. retired genesis-proof-guardian shims for every current topology service.
+1. cleanup1 local-authority QBFT vote cleanup, when ``--cleanup-all`` is used,
+   by installing a temporary Coolify cleanup service on each target controller;
+2. otherwise, chain RPC preflight and chain-only satisfied pending-vote cleanup
+   through explicit/reachable RPC URLs.
 
-It does not contain broad helper discovery, helper deletion, Besu/FDB/Hub
-cleanup logic, bespoke Coolify health interpretation, or parent-stack
-redeploys.
+Helper-service cleanup was removed from this orchestrator.  Helper mimic rewrite
+and exact host-side helper reload belong to ``tools/mother_helper_cleanup2_yagni.py``.
+This script must not run admission-voter, activation-guardian, or
+genesis-proof-guardian helper cleanup, must not create helper-apply services, and
+must not restart or redeploy parent stacks.
 """
 
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import base64
 import hashlib
 import json
 from pathlib import Path
 import re
-import subprocess
 import sys
 from typing import Any, Callable, Mapping
+import urllib.parse
 import urllib.request
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.mother.common.coolify_state import resolve_coolify_controller
 from tools.mother.common.models import OperationIdentity
 from tools.mother.common.paths import MotherPaths
 from tools.mother.common.private_state import PrivateStateReadResult, read_private_state
+from tools.mother.common.deployment_completed_helper_cleanup import (
+    MotherDeploymentCompletedHelperCleanupError,
+    _application_uuid,
+    _controller_config,
+    _http,
+    _resolve_environment_uuid,
+    _temporary_service_body,
+    _wait_for_temporary_service_health,
+)
 from tools.mother.common.deployment_validator_routes import (
     MotherDeploymentValidatorRouteError,
     controller_validator_host,
     validator_route_from_record,
 )
-from tools.mother_activation_guardian_cleanup import (
-    execute_activation_guardian_cleanup,
-    inspect_activation_guardian_cleanup,
-)
-from tools.mother_admission_voter_cleanup import (
-    execute_admission_voter_cleanup,
-    inspect_admission_voter_cleanup,
-)
 from tools.mother_chain_cleanup import run_chain_cleanup
-from tools.mother_genesis_proof_guardian_cleanup import (
-    execute_genesis_proof_guardian_cleanup,
-    inspect_genesis_proof_guardian_cleanup,
-)
 
 
 KIND = "main_computer.mother.post_work_cleanup_v2.v1"
@@ -62,6 +62,7 @@ EVIDENCE_SUBDIR = "post-work-cleanup-v2"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CLEANUP1_PREFIX = "mother-qbft-cleanup1"
 
 
 class MotherPostWorkCleanupV2Error(RuntimeError):
@@ -493,140 +494,476 @@ def _step_error(name: str, node: str | None, exc: BaseException) -> dict[str, An
     }
 
 
-def _call_service_cleanup(
+def _single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _cleanup1_python_program() -> str:
+    return r"""
+import json
+import os
+import sys
+import urllib.request
+
+RPC = "http://127.0.0.1:8545"
+expected_validators = {str(item).lower() for item in json.loads(os.environ["EXPECTED_VALIDATORS"])}
+expected_chain_id = os.environ.get("EXPECTED_CHAIN_ID", "").strip()
+mode = os.environ.get("CLEANUP1_MODE", "inspect")
+node = os.environ.get("NODE", "")
+
+def rpc(method, params=None):
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": [] if params is None else params,
+    }, separators=(",", ":")).encode()
+    req = urllib.request.Request(
+        RPC,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as response:
+        payload = json.loads(response.read().decode())
+    if "error" in payload:
+        raise RuntimeError(f"{method} failed: {payload['error']}")
+    return payload.get("result")
+
+def fail(message, **extra):
+    print(json.dumps({
+        "status": "failed",
+        "node": node,
+        "error": message,
+        **extra,
+    }, sort_keys=True))
+    raise SystemExit(2)
+
+chain_id = rpc("eth_chainId")
+if expected_chain_id:
+    try:
+        observed_chain_id = int(str(chain_id), 16)
+    except ValueError:
+        fail("invalid eth_chainId response", chain_id=chain_id)
+    if observed_chain_id != int(expected_chain_id):
+        fail("chain id mismatch", expected_chain_id=int(expected_chain_id), observed_chain_id=observed_chain_id)
+
+block_number = rpc("eth_blockNumber")
+syncing = rpc("eth_syncing")
+peer_count = rpc("net_peerCount")
+validators = [str(item).lower() for item in rpc("qbft_getValidatorsByBlockNumber", ["latest"])]
+live_set = set(validators)
+if live_set != expected_validators:
+    fail(
+        "live validator set does not match finalized topology",
+        expected_validator_set=sorted(expected_validators),
+        live_validator_set=validators,
+    )
+
+pending = rpc("qbft_getPendingVotes") or {}
+if not isinstance(pending, dict):
+    fail("pending votes response is not an object", pending_votes=pending)
+
+unsafe = []
+satisfied = []
+for address, add_vote in pending.items():
+    normalized = str(address).lower()
+    vote_value = bool(add_vote)
+    is_satisfied = (vote_value and normalized in live_set) or ((not vote_value) and normalized not in live_set)
+    if is_satisfied:
+        satisfied.append({"address": str(address), "add_vote": vote_value})
+    else:
+        unsafe.append({"address": str(address), "add_vote": vote_value})
+
+if unsafe:
+    fail("pending vote is not satisfied/stale", unsafe_pending_votes=unsafe, pending_votes=pending)
+
+cleared = []
+if mode == "execute":
+    for item in satisfied:
+        rpc("qbft_discardValidatorVote", [item["address"]])
+        cleared.append(item)
+
+final_pending = rpc("qbft_getPendingVotes") or {}
+print(json.dumps({
+    "status": "pass",
+    "node": node,
+    "mode": mode,
+    "chain_id": chain_id,
+    "block_number": block_number,
+    "eth_syncing": syncing,
+    "peer_count": peer_count,
+    "validator_set": validators,
+    "initial_pending_votes": pending,
+    "satisfied_pending_votes": satisfied,
+    "cleared_pending_votes": cleared,
+    "cleared_count": len(cleared),
+    "final_pending_votes": final_pending,
+}, sort_keys=True))
+"""
+
+
+def _cleanup1_shell_script(
     *,
     mode: str,
-    cleanup_name: str,
+    node: str,
+    service_uuid: str,
+    final_validator_set: list[str],
+    chain_id: int | None,
+) -> str:
+    node_name = _identifier(node, "cleanup1 node")
+    service = _identifier(service_uuid, "cleanup1 service UUID")
+    expected_validators = json.dumps([str(item).lower() for item in final_validator_set], separators=(",", ":"))
+    expected_chain_id = "" if chain_id is None else str(int(chain_id))
+    python_program = _cleanup1_python_program()
+    return "\n".join(
+        [
+            "set -eu",
+            "proof_dir=/proof",
+            "mkdir -p \"$proof_dir\"",
+            "healthy=\"$proof_dir/healthy\"",
+            "proof=\"$proof_dir/cleanup1-qbft-vote-cleanup.json\"",
+            "failure=\"$proof_dir/cleanup1-qbft-vote-cleanup-failed.json\"",
+            "rm -f \"$healthy\" \"$proof\" \"$failure\"",
+            f"NODE={_single_quote(node_name)}",
+            f"SERVICE_UUID={_single_quote(service)}",
+            f"EXPECTED_VALIDATORS={_single_quote(expected_validators)}",
+            f"EXPECTED_CHAIN_ID={_single_quote(expected_chain_id)}",
+            f"CLEANUP1_MODE={_single_quote(_identifier(mode, 'cleanup1 mode'))}",
+            "C=\"$(docker ps -q --filter \"name=^/${NODE}-${SERVICE_UUID}$\" | head -n1)\"",
+            "if [ -z \"$C\" ]; then",
+            "  printf '{\"status\":\"failed\",\"error\":\"Besu container not found\",\"node\":\"%s\",\"service_uuid\":\"%s\"}\\n' \"$NODE\" \"$SERVICE_UUID\" > \"$failure\"",
+            "  sleep 300",
+            "  exit 20",
+            "fi",
+            "cat > /tmp/cleanup1.py <<'PY'",
+            python_program,
+            "PY",
+            "if docker run --rm --pull=never --network \"container:$C\" \\",
+            "  -e NODE=\"$NODE\" \\",
+            "  -e EXPECTED_VALIDATORS=\"$EXPECTED_VALIDATORS\" \\",
+            "  -e EXPECTED_CHAIN_ID=\"$EXPECTED_CHAIN_ID\" \\",
+            "  -e CLEANUP1_MODE=\"$CLEANUP1_MODE\" \\",
+            "  python:3.12-alpine python /tmp/cleanup1.py > \"$proof.tmp\"; then",
+            "  mv \"$proof.tmp\" \"$proof\"",
+            "  touch \"$healthy\"",
+            "else",
+            "  rc=$?",
+            "  if [ -s \"$proof.tmp\" ]; then mv \"$proof.tmp\" \"$failure\"; else printf '{\"status\":\"failed\",\"error\":\"cleanup1 docker runner failed\",\"exit_code\":%s}\\n' \"$rc\" > \"$failure\"; fi",
+            "  sleep 300",
+            "  exit \"$rc\"",
+            "fi",
+            "sleep 300",
+        ]
+    )
+
+
+def _cleanup1_compose(
+    *,
+    service_name: str,
+    mode: str,
+    node: str,
+    parent_service_uuid: str,
+    final_validator_set: list[str],
+    chain_id: int | None,
+) -> str:
+    name = _identifier(service_name, "cleanup1 service name")
+    script = _cleanup1_shell_script(
+        mode=mode,
+        node=node,
+        service_uuid=parent_service_uuid,
+        final_validator_set=final_validator_set,
+        chain_id=chain_id,
+    )
+    escaped_script = script.replace("$", "$$")
+    indented = "\n".join("        " + line for line in escaped_script.splitlines())
+    compose = "\n".join(
+        [
+            "services:",
+            f"  {name}:",
+            "    image: docker:27-cli",
+            "    restart: \"no\"",
+            "    read_only: true",
+            "    network_mode: none",
+            "    environment:",
+            "      DOCKER_CONFIG: /proof/.docker",
+            "      HOME: /proof",
+            "      TMPDIR: /tmp",
+            "    tmpfs:",
+            "      - /tmp",
+            "    command:",
+            "      - sh",
+            "      - -ec",
+            "      - |",
+            indented,
+            "    healthcheck:",
+            "      test:",
+            "        - CMD",
+            "        - sh",
+            "        - -ec",
+            "        - test -f /proof/healthy && test -f /proof/cleanup1-qbft-vote-cleanup.json",
+            "      interval: 5s",
+            "      timeout: 5s",
+            "      retries: 24",
+            "      start_period: 10s",
+            "    volumes:",
+            "      - /var/run/docker.sock:/var/run/docker.sock",
+            "      - cleanup1-proof:/proof",
+            "    labels:",
+            f"      main_computer.mother.node: {node}",
+            "      main_computer.mother.component: cleanup1-qbft-vote-cleanup",
+            f"      main_computer.mother.target-service-uuid: {parent_service_uuid}",
+            "volumes:",
+            "  cleanup1-proof:",
+            "",
+        ]
+    )
+    parsed = yaml.safe_load(compose)
+    if not isinstance(parsed, Mapping) or "services" not in parsed or name not in parsed["services"]:
+        raise MotherPostWorkCleanupV2Error(
+            "MOTHER_POST_WORK_CLEANUP_V2_CLEANUP1_COMPOSE_INVALID",
+            "cleanup1 Compose is invalid",
+        )
+    if "$" in compose.replace("$$", ""):
+        raise MotherPostWorkCleanupV2Error(
+            "MOTHER_POST_WORK_CLEANUP_V2_CLEANUP1_COMPOSE_INVALID",
+            "cleanup1 Compose contains an unescaped dollar interpolation",
+        )
+    if "/var/run/docker.sock:/var/run/docker.sock" not in compose:
+        raise MotherPostWorkCleanupV2Error(
+            "MOTHER_POST_WORK_CLEANUP_V2_CLEANUP1_COMPOSE_INVALID",
+            "cleanup1 Compose does not mount the Docker socket",
+        )
+    return compose
+
+
+def _run_cleanup1_coolify(
     private_state: PrivateStateReadResult,
+    *,
     network: str,
     service: Mapping[str, str],
-    instant_deploy: bool,
-    max_wait_seconds: float,
-    poll_interval_seconds: float,
+    final_validator_set: list[str],
+    chain_id: int | None,
+    mode: str,
     timeout: float,
     max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
     opener: Any,
     progress: ProgressCallback | None,
-    admission_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    node = service["node"]
-    controller_id = service["controller_id"]
-    service_uuid = service["service_uuid"]
+    node = _identifier(service["node"], "cleanup1 node")
+    controller_id = _identifier(service["controller_id"], "cleanup1 controller_id")
+    parent_service_uuid = _identifier(service["service_uuid"], "cleanup1 parent service UUID")
     _emit_progress(
         progress,
-        cleanup_name,
-        "starting service cleanup",
+        "cleanup1",
+        "installing temporary Coolify cleanup service",
         mode=mode,
         node=node,
         controller_id=controller_id,
-        service_uuid=service_uuid,
+        service_uuid=parent_service_uuid,
     )
-
-    if cleanup_name == "admission-voter":
-        if mode == "inspect":
-            result = inspect_admission_voter_cleanup(
-                private_state,
-                network=network,
-                controller_id=controller_id,
-                service_uuid=service_uuid,
-                node=node,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                progress=progress,
-            )
-        else:
-            assert admission_evidence is not None
-            result = execute_admission_voter_cleanup(
-                private_state,
-                network=network,
-                controller_id=controller_id,
-                service_uuid=service_uuid,
-                node=node,
-                admission_evidence=Path(admission_evidence["path"]),
-                acknowledged_admission_evidence_sha256=str(admission_evidence["sha256"]),
-                acknowledged_service_uuid=service_uuid,
-                allow_retired_admission_voter_shim=True,
-                instant_deploy=instant_deploy,
-                max_wait_seconds=max_wait_seconds,
-                poll_interval_seconds=poll_interval_seconds,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                progress=progress,
-            )
-    elif cleanup_name == "activation-guardian":
-        if mode == "inspect":
-            result = inspect_activation_guardian_cleanup(
-                private_state,
-                network=network,
-                controller_id=controller_id,
-                service_uuid=service_uuid,
-                node=node,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                progress=progress,
-            )
-        else:
-            result = execute_activation_guardian_cleanup(
-                private_state,
-                network=network,
-                controller_id=controller_id,
-                service_uuid=service_uuid,
-                node=node,
-                acknowledged_service_uuid=service_uuid,
-                allow_retired_activation_guardian_shim=True,
-                instant_deploy=instant_deploy,
-                max_wait_seconds=max_wait_seconds,
-                poll_interval_seconds=poll_interval_seconds,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                progress=progress,
-            )
-    elif cleanup_name == "genesis-proof-guardian":
-        if mode == "inspect":
-            result = inspect_genesis_proof_guardian_cleanup(
-                private_state,
-                network=network,
-                controller_id=controller_id,
-                service_uuid=service_uuid,
-                node=node,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                progress=progress,
-            )
-        else:
-            result = execute_genesis_proof_guardian_cleanup(
-                private_state,
-                network=network,
-                controller_id=controller_id,
-                service_uuid=service_uuid,
-                node=node,
-                acknowledged_service_uuid=service_uuid,
-                allow_retired_genesis_proof_guardian_shim=True,
-                instant_deploy=instant_deploy,
-                max_wait_seconds=max_wait_seconds,
-                poll_interval_seconds=poll_interval_seconds,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                progress=progress,
-            )
-    else:
-        raise AssertionError(f"unknown cleanup step: {cleanup_name}")
-
-    return {
-        "step": cleanup_name,
-        "node": node,
-        "controller_id": controller_id,
-        "service_uuid": service_uuid,
-        "status": result.get("status"),
-        "result": result,
-    }
-
+    observations: list[dict[str, Any]] = []
+    controller = resolve_coolify_controller(
+        private_state,
+        network,
+        controller_id,
+        require_enabled=True,
+        require_token=True,
+    )
+    controller_config = _controller_config(private_state, network=network, controller_id=controller_id)
+    service_name = f"{_CLEANUP1_PREFIX}-{parent_service_uuid[:8]}"
+    cleanup_service_uuid: str | None = None
+    create_receipt: dict[str, Any] | None = None
+    start_receipt: dict[str, Any] | None = None
+    health_result: dict[str, Any] | None = None
+    delete_receipt: dict[str, Any] | None = None
+    try:
+        environment_uuid = _resolve_environment_uuid(
+            controller=controller,
+            controller_id=controller_id,
+            endpoint=f"/api/v1/projects/{urllib.parse.quote(str(controller_config['project_uuid']), safe='')}/environments",
+            expected_name="mainnet",
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            observations=observations,
+        )
+        compose = _cleanup1_compose(
+            service_name=service_name,
+            mode=mode,
+            node=node,
+            parent_service_uuid=parent_service_uuid,
+            final_validator_set=final_validator_set,
+            chain_id=chain_id,
+        )
+        body = _temporary_service_body(controller_config, service_name, compose)
+        body["environment_uuid"] = environment_uuid
+        body["description"] = "Ephemeral Mother cleanup1 QBFT satisfied pending-vote cleanup"
+        body["instant_deploy"] = False
+        create_response = _http(
+            controller,
+            "POST",
+            "/api/v1/services",
+            body=body,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        create_receipt = {
+            "method": "POST",
+            "endpoint": "/api/v1/services",
+            "status": create_response["status"],
+            "ok": create_response["ok"],
+            "response_sha256": create_response["response_sha256"],
+            "byte_length": create_response["byte_length"],
+            "elapsed_ms": create_response["elapsed_ms"],
+            "service_name": service_name,
+            "request_body_sha256": hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "cleanup_scope": "cleanup1-qbft-vote-cleanup",
+        }
+        observations.append({key: create_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+        if not create_response["ok"]:
+            return {
+                "step": "cleanup1",
+                "node": node,
+                "controller_id": controller_id,
+                "service_uuid": parent_service_uuid,
+                "status": "failed",
+                "reason": "create-failed",
+                "create": create_receipt,
+                "start": None,
+                "health": None,
+                "delete": None,
+                "observations": observations,
+                "compose_touched": False,
+                "coolify_touched": True,
+                "docker_touched": start_receipt is not None and start_receipt.get("ok") is True,
+                "parent_redeploy_performed": False,
+                "besu_restarted": False,
+            }
+        cleanup_service_uuid = _application_uuid(create_response.get("payload"))
+        create_receipt["service_uuid"] = cleanup_service_uuid
+        start_endpoint = f"/api/v1/services/{urllib.parse.quote(cleanup_service_uuid, safe='')}/start"
+        start_response = _http(
+            controller,
+            "POST",
+            start_endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        start_receipt = {
+            "method": "POST",
+            "endpoint": start_endpoint,
+            "status": start_response["status"],
+            "ok": start_response["ok"],
+            "response_sha256": start_response["response_sha256"],
+            "byte_length": start_response["byte_length"],
+            "elapsed_ms": start_response["elapsed_ms"],
+            "service_uuid": cleanup_service_uuid,
+            "service_name": service_name,
+            "cleanup_scope": "cleanup1-qbft-vote-cleanup",
+        }
+        observations.append({key: start_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+        if not start_response["ok"]:
+            return {
+                "step": "cleanup1",
+                "node": node,
+                "controller_id": controller_id,
+                "service_uuid": parent_service_uuid,
+                "cleanup_service_uuid": cleanup_service_uuid,
+                "status": "failed",
+                "reason": "start-failed",
+                "create": create_receipt,
+                "start": start_receipt,
+                "health": None,
+                "delete": None,
+                "observations": observations,
+                "compose_touched": False,
+                "coolify_touched": True,
+                "docker_touched": start_receipt is not None and start_receipt.get("ok") is True,
+                "parent_redeploy_performed": False,
+                "besu_restarted": False,
+            }
+        health_result = _wait_for_temporary_service_health(
+            controller=controller,
+            controller_id=controller_id,
+            service_uuid=cleanup_service_uuid,
+            service_name=service_name,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            observations=observations,
+        )
+        temporary_service_status = str(
+            health_result.get("service_status") or health_result.get("final_status") or ""
+        ).strip().lower()
+        ok = health_result.get("healthy") is True or temporary_service_status == "exited"
+        if ok and health_result.get("healthy") is not True and temporary_service_status == "exited":
+            health_result = dict(health_result)
+            health_result["reason"] = "temporary-service-exited"
+        return {
+            "step": "cleanup1",
+            "node": node,
+            "controller_id": controller_id,
+            "service_uuid": parent_service_uuid,
+            "cleanup_service_uuid": cleanup_service_uuid,
+            "status": "pass" if ok else "failed",
+            "reason": None if ok else health_result.get("reason", "health-failed"),
+            "mode": mode,
+            "cleanup1_execution": "temporary-coolify-service",
+            "chain_cleanup_local_authority": True,
+            "create": create_receipt,
+            "start": start_receipt,
+            "health": health_result,
+            "delete": None,
+            "observations": observations,
+            "compose_touched": False,
+            "coolify_touched": True,
+            "docker_touched": start_receipt is not None and start_receipt.get("ok") is True,
+            "parent_redeploy_performed": False,
+            "besu_restarted": False,
+        }
+    finally:
+        if cleanup_service_uuid is not None:
+            endpoint = f"/api/v1/services/{urllib.parse.quote(cleanup_service_uuid, safe='')}"
+            try:
+                response = _http(
+                    controller,
+                    "DELETE",
+                    endpoint,
+                    body=None,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                delete_receipt = {
+                    "method": "DELETE",
+                    "endpoint": endpoint,
+                    "status": response["status"],
+                    "ok": response["ok"] or response["status"] in {404},
+                    "response_sha256": response["response_sha256"],
+                    "byte_length": response["byte_length"],
+                    "elapsed_ms": response["elapsed_ms"],
+                    "service_uuid": cleanup_service_uuid,
+                    "service_name": service_name,
+                    "cleanup_scope": "cleanup1-temporary-service-delete",
+                }
+                observations.append({key: delete_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+                if health_result is not None:
+                    health_result["temporary_service_delete"] = delete_receipt
+            except Exception as exc:  # noqa: BLE001
+                if health_result is not None:
+                    health_result["temporary_service_delete"] = {
+                        "ok": False,
+                        "error_code": getattr(exc, "code", type(exc).__name__),
+                        "error": str(exc),
+                    }
 
 def _rpc_host_from_service(
     private_state: PrivateStateReadResult,
@@ -762,436 +1099,6 @@ rpc("qbft_getPendingVotes")'"""
     return commands
 
 
-
-
-def _cleanup1_python_source() -> str:
-    return r"""
-import json
-import re
-import sys
-import time
-import urllib.request
-
-_MASK64 = 0xFFFFFFFFFFFFFFFF
-_ROUND_CONSTANTS = (
-    0x0000000000000001, 0x0000000000008082, 0x800000000000808A,
-    0x8000000080008000, 0x000000000000808B, 0x0000000080000001,
-    0x8000000080008081, 0x8000000000008009, 0x000000000000008A,
-    0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
-    0x000000008000808B, 0x800000000000008B, 0x8000000000008089,
-    0x8000000000008003, 0x8000000000008002, 0x8000000000000080,
-    0x000000000000800A, 0x800000008000000A, 0x8000000080008081,
-    0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
-)
-_ROTATION_OFFSETS = (
-    (0, 36, 3, 41, 18),
-    (1, 44, 10, 45, 2),
-    (62, 6, 43, 15, 61),
-    (28, 55, 25, 21, 56),
-    (27, 20, 39, 8, 14),
-)
-
-def _rotate_left_64(value, shift):
-    shift %= 64
-    if shift == 0:
-        return value & _MASK64
-    return ((value << shift) | (value >> (64 - shift))) & _MASK64
-
-def _keccakf1600(state):
-    for round_constant in _ROUND_CONSTANTS:
-        column = [state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20] for x in range(5)]
-        for x in range(5):
-            delta = column[(x - 1) % 5] ^ _rotate_left_64(column[(x + 1) % 5], 1)
-            for y in range(5):
-                state[x + 5 * y] ^= delta
-        moved = [0] * 25
-        for x in range(5):
-            for y in range(5):
-                moved[y + 5 * ((2 * x + 3 * y) % 5)] = _rotate_left_64(state[x + 5 * y], _ROTATION_OFFSETS[x][y])
-        for x in range(5):
-            for y in range(5):
-                state[x + 5 * y] = moved[x + 5 * y] ^ ((~moved[((x + 1) % 5) + 5 * y]) & moved[((x + 2) % 5) + 5 * y])
-        state[0] ^= round_constant
-
-def keccak256(payload):
-    rate = 136
-    state = [0] * 25
-    offset = 0
-    while offset + rate <= len(payload):
-        block = payload[offset:offset + rate]
-        for index in range(rate // 8):
-            state[index] ^= int.from_bytes(block[index * 8:index * 8 + 8], "little")
-        _keccakf1600(state)
-        offset += rate
-    block = bytearray(payload[offset:])
-    block.append(0x01)
-    while len(block) < rate:
-        block.append(0)
-    block[-1] |= 0x80
-    for index in range(rate // 8):
-        state[index] ^= int.from_bytes(block[index * 8:index * 8 + 8], "little")
-    _keccakf1600(state)
-    output = bytearray()
-    while len(output) < 32:
-        for index in range(rate // 8):
-            output.extend(state[index].to_bytes(8, "little"))
-            if len(output) >= 32:
-                break
-        if len(output) < 32:
-            _keccakf1600(state)
-    return bytes(output[:32])
-
-def checksum_address(value):
-    raw = str(value).lower().removeprefix("0x")
-    if re.fullmatch(r"[0-9a-f]{40}", raw) is None:
-        raise ValueError("address must contain exactly 20 hexadecimal bytes")
-    digest = keccak256(raw.encode("ascii")).hex()
-    return "0x" + "".join(ch.upper() if int(digest[i], 16) >= 8 else ch for i, ch in enumerate(raw))
-
-def emit(payload, code=0):
-    print(json.dumps(payload, sort_keys=True), flush=True)
-    raise SystemExit(code)
-
-def address(value, label):
-    text = str(value or "").lower()
-    if not text.startswith("0x"):
-        text = "0x" + text
-    if re.fullmatch(r"0x[0-9a-f]{40}", text) is None:
-        raise ValueError(label + " is not an Ethereum address: " + repr(value))
-    return text
-
-mode = sys.argv[1]
-node = sys.argv[2]
-expected_chain_id = None if sys.argv[3] == "none" else int(sys.argv[3])
-expected_validators = [address(item, "expected validator") for item in json.loads(sys.argv[4])]
-quiet_seconds = float(sys.argv[5])
-poll_seconds = float(sys.argv[6])
-rpc_timeout = float(sys.argv[7])
-RPC = "http://127.0.0.1:8545"
-
-def rpc(method, params=None):
-    body = json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":[] if params is None else params}, separators=(",", ":")).encode()
-    req = urllib.request.Request(RPC, data=body, headers={"Content-Type":"application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=rpc_timeout) as response:
-        payload = json.loads(response.read(1048576).decode("utf-8"))
-    if not isinstance(payload, dict) or payload.get("error") is not None or "result" not in payload:
-        raise RuntimeError(method + " failed: " + repr(payload.get("error") if isinstance(payload, dict) else payload))
-    return payload["result"]
-
-def validators():
-    result = rpc("qbft_getValidatorsByBlockNumber", ["latest"])
-    if not isinstance(result, list):
-        raise RuntimeError("validator response is not a list")
-    return [address(item, "live validator") for item in result]
-
-def pending_votes():
-    result = rpc("qbft_getPendingVotes", [])
-    if not isinstance(result, dict):
-        raise RuntimeError("pending votes response is not an object")
-    out = {}
-    for key, value in result.items():
-        if isinstance(value, bool):
-            out[address(key, "pending vote target")] = value
-    return out
-
-def block_number():
-    return int(str(rpc("eth_blockNumber", [])), 16)
-
-def syncing():
-    return rpc("eth_syncing", []) is not False
-
-def satisfied_targets(pending, live):
-    live_set = set(live)
-    targets = []
-    unsafe = []
-    for addr, vote in sorted(pending.items()):
-        if vote is True and addr in live_set:
-            targets.append({"address": addr, "vote": vote, "reason": "add_vote_already_in_validator_set"})
-        elif vote is False and addr not in live_set:
-            targets.append({"address": addr, "vote": vote, "reason": "remove_vote_already_absent_from_validator_set"})
-        else:
-            unsafe.append({"address": addr, "vote": vote, "reason": "pending_vote_not_satisfied"})
-    return targets, unsafe
-
-def quiet_window(reference):
-    deadline = time.monotonic() + quiet_seconds
-    first_block = block_number()
-    observations = [{"elapsed_seconds": 0, "validator_set": reference, "block_number": first_block, "syncing": syncing()}]
-    while time.monotonic() < deadline:
-        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
-        current = validators()
-        current_block = block_number()
-        node_syncing = syncing()
-        observations.append({
-            "elapsed_seconds": round(max(0.0, quiet_seconds - max(0.0, deadline - time.monotonic())), 3),
-            "validator_set": current,
-            "block_number": current_block,
-            "syncing": node_syncing,
-        })
-        if sorted(current) != sorted(reference):
-            return {"quiet": False, "reason": "validator_set_changed", "observations": observations}
-    last = observations[-1]
-    return {
-        "quiet": last["block_number"] > first_block and last["syncing"] is False,
-        "reason": "quiet_window_satisfied" if last["block_number"] > first_block and last["syncing"] is False else "quiet_window_without_block_progress",
-        "observations": observations,
-    }
-
-try:
-    chain_id = int(str(rpc("eth_chainId", [])), 16)
-    live = validators()
-    pending = pending_votes()
-    peers = rpc("net_peerCount", [])
-    current_block = rpc("eth_blockNumber", [])
-    is_syncing = rpc("eth_syncing", [])
-    if expected_chain_id is not None and chain_id != expected_chain_id:
-        emit({"kind":"cleanup1.qbft_pending_vote_cleanup.v1","node":node,"status":"failed","error":"chain id mismatch","expected_chain_id":expected_chain_id,"chain_id":chain_id}, 2)
-    if sorted(live) != sorted(expected_validators):
-        emit({"kind":"cleanup1.qbft_pending_vote_cleanup.v1","node":node,"status":"failed","error":"live validator set does not match expected final validator set","expected_validator_set":expected_validators,"live_validator_set":live}, 2)
-    targets, unsafe = satisfied_targets(pending, live)
-    if unsafe:
-        emit({"kind":"cleanup1.qbft_pending_vote_cleanup.v1","node":node,"status":"failed","error":"pending vote is not satisfied/stale","unsafe_pending_votes":unsafe,"pending_votes_before":pending}, 2)
-    cleanup = {"pending_votes_before": pending, "cleanup_targets": targets, "cleared": [], "skipped": []}
-    if mode == "execute" and targets:
-        quiet = quiet_window(live)
-        cleanup["quiet_observation"] = quiet
-        if quiet.get("quiet") is not True:
-            cleanup["status"] = "deferred_not_quiet"
-            cleanup["pending_votes_after"] = pending_votes()
-            emit({"kind":"cleanup1.qbft_pending_vote_cleanup.v1","node":node,"status":"failed","error":"quiet validator-set window was not satisfied","cleanup":cleanup}, 2)
-        refreshed_live = validators()
-        refreshed_pending = pending_votes()
-        refreshed_targets, refreshed_unsafe = satisfied_targets(refreshed_pending, refreshed_live)
-        if sorted(refreshed_live) != sorted(expected_validators) or refreshed_unsafe:
-            emit({"kind":"cleanup1.qbft_pending_vote_cleanup.v1","node":node,"status":"failed","error":"pending vote state changed before discard","live_validator_set":refreshed_live,"pending_votes":refreshed_pending,"unsafe_pending_votes":refreshed_unsafe}, 2)
-        for target in refreshed_targets:
-            vote_address = checksum_address(target["address"])
-            discard_result = rpc("qbft_discardValidatorVote", [vote_address])
-            item = dict(target)
-            item["discard_vote_address"] = vote_address
-            item["discard_result"] = discard_result
-            cleanup["cleared"].append(item)
-        cleanup["pending_votes_after"] = pending_votes()
-        cleanup["status"] = "cleared" if cleanup["cleared"] else "not_needed"
-    else:
-        cleanup["pending_votes_after"] = pending
-        cleanup["status"] = "would_clear" if targets and mode != "execute" else "not_needed"
-    emit({
-        "kind":"cleanup1.qbft_pending_vote_cleanup.v1",
-        "node":node,
-        "mode":mode,
-        "status":"pass",
-        "chain_id":chain_id,
-        "block_number":current_block,
-        "syncing":is_syncing,
-        "peer_count":peers,
-        "live_validator_set":live,
-        "cleanup":cleanup,
-        "summary":{
-            "cleanup_target_count":len(cleanup.get("cleanup_targets") or []),
-            "cleared_count":len(cleanup.get("cleared") or []),
-            "pending_vote_count_before":len(pending),
-            "pending_vote_count_after":len(cleanup.get("pending_votes_after") or {}),
-        },
-    }, 0)
-except Exception as exc:
-    emit({"kind":"cleanup1.qbft_pending_vote_cleanup.v1","node":node,"status":"failed","error_code":type(exc).__name__,"error":str(exc)}, 2)
-"""
-
-
-def _cleanup1_json_from_stdout(stdout: str) -> dict[str, Any]:
-    for line in reversed(str(stdout or "").splitlines()):
-        text = line.strip()
-        if not text:
-            continue
-        try:
-            value = json.loads(text)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            return value
-    return {
-        "kind": "cleanup1.qbft_pending_vote_cleanup.v1",
-        "status": "failed",
-        "error_code": "MOTHER_POST_WORK_CLEANUP_V2_CLEANUP1_NO_JSON",
-        "error": "cleanup1 did not emit a JSON result",
-        "stdout": str(stdout or "")[-4000:],
-    }
-
-
-def _docker_besu_container_id(node: str, service_uuid: str, *, timeout: float) -> tuple[str | None, dict[str, Any]]:
-    filter_value = f"name=^/{node}-{service_uuid}$"
-    command = ["docker", "ps", "-q", "--filter", filter_value]
-    started = _utc_now()
-    try:
-        completed = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            timeout=max(1.0, float(timeout)),
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise MotherPostWorkCleanupV2Error(
-            "MOTHER_POST_WORK_CLEANUP_V2_CLEANUP1_DOCKER_UNAVAILABLE",
-            "docker CLI is not available for local cleanup1 execution",
-        ) from exc
-    detail = {
-        "command": command,
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
-        "started_at": started,
-        "completed_at": _utc_now(),
-    }
-    if completed.returncode != 0:
-        raise MotherPostWorkCleanupV2Error(
-            "MOTHER_POST_WORK_CLEANUP_V2_CLEANUP1_DOCKER_PS_FAILED",
-            "docker ps failed while locating local Besu container",
-        )
-    values = [line.strip() for line in str(completed.stdout or "").splitlines() if line.strip()]
-    return (values[0] if values else None), detail
-
-
-def _run_cleanup1_container(
-    *,
-    mode: str,
-    node: str,
-    container_id: str,
-    final_validator_set: list[str],
-    chain_id: int | None,
-    quiet_seconds: float,
-    poll_seconds: float,
-    timeout: float,
-) -> dict[str, Any]:
-    command = [
-        "docker",
-        "run",
-        "--rm",
-        "--pull=never",
-        "--network",
-        f"container:{container_id}",
-        "python:3.12-alpine",
-        "python",
-        "-",
-        mode,
-        node,
-        "none" if chain_id is None else str(chain_id),
-        json.dumps(final_validator_set, sort_keys=True),
-        str(float(quiet_seconds)),
-        str(float(poll_seconds)),
-        str(float(timeout)),
-    ]
-    started = _utc_now()
-    completed = subprocess.run(
-        command,
-        input=_cleanup1_python_source(),
-        text=True,
-        capture_output=True,
-        timeout=max(10.0, float(timeout) + float(quiet_seconds) + float(poll_seconds) + 30.0),
-        check=False,
-    )
-    payload = _cleanup1_json_from_stdout(completed.stdout)
-    return {
-        "container_id": container_id,
-        "command": command[:8] + ["<cleanup1-python>"],
-        "returncode": completed.returncode,
-        "stdout": completed.stdout[-4000:],
-        "stderr": completed.stderr[-4000:],
-        "started_at": started,
-        "completed_at": _utc_now(),
-        "cleanup1": payload,
-        "status": "pass" if completed.returncode == 0 and payload.get("status") == "pass" else "failed",
-    }
-
-
-def _run_local_cleanup1_step(
-    *,
-    mode: str,
-    services: list[Mapping[str, Any]],
-    final_validator_set: list[str],
-    chain_id: int | None,
-    quiet_seconds: float,
-    poll_seconds: float,
-    timeout: float,
-) -> dict[str, Any]:
-    nodes: list[dict[str, Any]] = []
-    found_count = 0
-    for service in services:
-        node = _identifier(service.get("node"), "topology node")
-        service_uuid = _identifier(service.get("service_uuid"), f"{node} service UUID")
-        controller_id = str(service.get("controller_id") or "")
-        container_id, lookup = _docker_besu_container_id(node, service_uuid, timeout=timeout)
-        item: dict[str, Any] = {
-            "node": node,
-            "controller_id": controller_id,
-            "service_uuid": service_uuid,
-            "container_lookup": lookup,
-        }
-        if not container_id:
-            item["status"] = "skipped"
-            item["reason"] = "Besu container for this topology service is not present on the local Docker host"
-            nodes.append(item)
-            continue
-        found_count += 1
-        item["container_id"] = container_id
-        try:
-            item["result"] = _run_cleanup1_container(
-                mode=mode,
-                node=node,
-                container_id=container_id,
-                final_validator_set=final_validator_set,
-                chain_id=chain_id,
-                quiet_seconds=quiet_seconds,
-                poll_seconds=poll_seconds,
-                timeout=timeout,
-            )
-            item["status"] = item["result"]["status"]
-        except Exception as exc:  # noqa: BLE001 - local cleanup1 must fail fast before service cleanup
-            item["status"] = "failed"
-            item["error_code"] = getattr(exc, "code", type(exc).__name__)
-            item["error"] = str(exc)
-        nodes.append(item)
-    status = "pass" if found_count > 0 and all(item.get("status") in {"pass", "skipped"} for item in nodes) else "failed"
-    failed = [item for item in nodes if item.get("status") == "failed"]
-    return {
-        "step": "cleanup1",
-        "status": status,
-        "mode": mode,
-        "chain_cleanup_local_authority": True,
-        "cleanup1_execution": "ephemeral-docker-helper",
-        "docker_touched": found_count > 0,
-        "besu_restarted": False,
-        "coolify_touched": False,
-        "compose_touched": False,
-        "parent_redeploy_performed": False,
-        "found_count": found_count,
-        "skipped_count": sum(1 for item in nodes if item.get("status") == "skipped"),
-        "failed_count": len(failed),
-        "nodes": nodes,
-        "failed_before_service_cleanup": bool(failed or found_count == 0),
-    }
-
-
-def _cleanup1_cleared_count(step: Mapping[str, Any]) -> int:
-    total = 0
-    for item in step.get("nodes") or []:
-        if not isinstance(item, Mapping):
-            continue
-        result = item.get("result")
-        if not isinstance(result, Mapping):
-            continue
-        payload = result.get("cleanup1")
-        if not isinstance(payload, Mapping):
-            continue
-        summary = payload.get("summary")
-        if isinstance(summary, Mapping):
-            try:
-                total += int(summary.get("cleared_count") or 0)
-            except (TypeError, ValueError):
-                pass
-    return total
-
 def _chain_step_error(
     name: str,
     exc: BaseException,
@@ -1273,7 +1180,7 @@ def _run_chain_step(
 
 
 
-def _targeted_helper_recreate_plan(steps: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _helper_restart_manual_review_plan(steps: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     plan: list[dict[str, Any]] = []
     for step in steps:
         if step.get("step") not in {"admission-voter", "activation-guardian", "genesis-proof-guardian"}:
@@ -1281,12 +1188,17 @@ def _targeted_helper_recreate_plan(steps: list[Mapping[str, Any]]) -> list[dict[
         result = step.get("result")
         if not isinstance(result, Mapping):
             continue
-        if result.get("compose_touched") is not True and result.get("mutation_performed") is not True:
+        summary = result.get("summary")
+        if isinstance(summary, Mapping) and summary.get("clean") is True:
+            continue
+        helper_restart = result.get("helper_restart")
+        if not isinstance(helper_restart, Mapping):
             continue
         node = str(step.get("node") or result.get("node") or "").strip()
         service_uuid = str(step.get("service_uuid") or result.get("service_uuid") or "").strip()
         target_name = str(step.get("target_name") or result.get("target_name") or "").strip()
         controller_id = str(step.get("controller_id") or result.get("controller_id") or "").strip()
+        target_application_uuid = str(result.get("target_application_uuid") or helper_restart.get("target_application_uuid") or "").strip()
         if not node or not service_uuid or not target_name:
             continue
         plan.append(
@@ -1295,7 +1207,8 @@ def _targeted_helper_recreate_plan(steps: list[Mapping[str, Any]]) -> list[dict[
                 "controller_id": controller_id,
                 "service_uuid": service_uuid,
                 "helper_service": target_name,
-                "reason": "compose was patched without parent-stack redeploy; recreate this helper/shim service only on the target host",
+                "target_application_uuid": target_application_uuid,
+                "reason": "existing helper mimic Compose rewrite was attempted but the helper child restart/start was not accepted",
             }
         )
     return plan
@@ -1312,8 +1225,8 @@ def run_post_work_cleanup_v2(
     acknowledged_topology_evidence_sha256: str | None = None,
     mode: str = "inspect",
     rpc_urls: list[str] | None = None,
-    cleanup_all: bool = False,
     instant_deploy: bool = False,
+    cleanup_all: bool = False,
     max_wait_seconds: float = 60.0,
     poll_interval_seconds: float = 5.0,
     timeout: float = 30.0,
@@ -1356,20 +1269,17 @@ def run_post_work_cleanup_v2(
     services = accepted_topology["services"]
     admission_evidence = _source_admission_evidence(paths, accepted_topology["document"])
     voter_nodes = set(_voter_nodes_from_admission_evidence(admission_evidence))
-    service_by_node = {item["node"]: item for item in services}
 
     resolved_rpc_urls: list[str] = []
     rpc_sources: list[dict[str, Any]] = []
     steps: list[dict[str, Any]] = []
 
     def finish(status: str) -> dict[str, Any]:
-        targeted_plan = _targeted_helper_recreate_plan(steps)
-        chain_cleanup_steps = [step for step in steps if step.get("step") in {"chain-cleanup", "cleanup1"}]
+        helper_restart_plan = _helper_restart_manual_review_plan(steps)
+        chain_cleanup_steps = [step for step in steps if step.get("step") == "chain-cleanup"]
+        cleanup1_steps = [step for step in steps if step.get("step") == "cleanup1"]
         chain_touched = any(
-            (
-                isinstance(step.get("result"), Mapping) and _chain_cleared_count(step["result"]) > 0
-            )
-            or (step.get("step") == "cleanup1" and _cleanup1_cleared_count(step) > 0)
+            isinstance(step.get("result"), Mapping) and _chain_cleared_count(step["result"]) > 0
             for step in chain_cleanup_steps
         )
         service_steps = [
@@ -1407,56 +1317,84 @@ def run_post_work_cleanup_v2(
             ],
             "step_order": [step.get("step") for step in steps],
             "steps": steps,
-            "targeted_helper_recreate_plan": targeted_plan,
+            "helper_restart_manual_review_plan": helper_restart_plan,
             "summary": {
                 "clean": status == "pass",
                 "complete": True,
-                "chain_rpc_preflight_order": "first" if not cleanup_all else "not_used_with_cleanup1",
-                "chain_cleanup_order": "before-service-cleanup",
+                "chain_rpc_preflight_order": "not_used_with_cleanup1" if cleanup_all else "first",
+                "chain_cleanup_order": "cleanup1-only" if cleanup_all else "chain-cleanup-only",
+                "service_cleanup_order": [],
+                "helper_cleanup_removed_from_v2": True,
+                "helper_cleanup_replacement": "tools/mother_helper_cleanup2_yagni.py",
                 "cleanup_all": bool(cleanup_all),
-                "cleanup1_execution": "ephemeral-docker-helper" if cleanup_all else "not_used",
-                "service_cleanup_order": [
-                    "admission-voter",
-                    "activation-guardian",
-                    "genesis-proof-guardian",
-                ],
+                "cleanup1_execution": "temporary-coolify-service" if cleanup_all else None,
+                "cleanup1_performed": bool(cleanup1_steps),
+                "cleanup1_passed": bool(cleanup1_steps) and all(_step_success(step) for step in cleanup1_steps),
                 "chain_rpc_preflight_passed": any(step.get("step") == "chain-rpc-preflight" and _step_success(step) for step in steps),
-                "cleanup1_performed": any(step.get("step") == "cleanup1" for step in steps),
-                "cleanup1_found_count": sum(int(step.get("found_count") or 0) for step in steps if step.get("step") == "cleanup1"),
-                "cleanup1_skipped_count": sum(int(step.get("skipped_count") or 0) for step in steps if step.get("step") == "cleanup1"),
-                "chain_cleanup_performed": any(step.get("step") in {"chain-cleanup", "cleanup1"} for step in steps),
+                "chain_cleanup_performed": any(step.get("step") == "chain-cleanup" for step in steps) or bool(cleanup1_steps),
                 "chain_touched": chain_touched,
                 "service_cleanup_started": bool(service_steps),
                 "service_cleanup_performed": bool(service_steps),
                 "coolify_parent_redeploy_allowed": False,
                 "coolify_parent_redeploy_performed": False,
                 "coolify_touched": any(
-                    isinstance(step.get("result"), Mapping) and step["result"].get("coolify_touched") is True
+                    step.get("coolify_touched") is True
+                    or (isinstance(step.get("result"), Mapping) and step["result"].get("coolify_touched") is True)
                     for step in steps
                 ),
-                "docker_touched": any(step.get("docker_touched") is True for step in steps),
-                "besu_restarted": False,
+                "docker_touched": any(
+                    step.get("docker_touched") is True
+                    or (isinstance(step.get("result"), Mapping) and step["result"].get("docker_touched") is True)
+                    for step in steps
+                ),
                 "targeted_services": len(services),
                 "admission_voter_target_nodes": sorted(voter_nodes),
-                "targeted_helper_recreate_required": bool(targeted_plan),
-                "targeted_helper_recreate_count": len(targeted_plan),
+                "helper_restart_manual_review_required": bool(helper_restart_plan),
+                "helper_restart_manual_review_count": len(helper_restart_plan),
             },
         }
 
     if cleanup_all:
-        steps.append(
-            _run_local_cleanup1_step(
-                mode=mode_name,
-                services=services,
-                final_validator_set=accepted_topology["final_validator_set"],
-                chain_id=accepted_topology["chain_id"],
-                quiet_seconds=chain_quiet_seconds,
-                poll_seconds=chain_poll_seconds,
-                timeout=chain_timeout,
+        if rpc_urls:
+            steps.append(
+                {
+                    "step": "cleanup1",
+                    "node": None,
+                    "status": "failed",
+                    "reason": "--rpc-url is not used with --cleanup-all; cleanup1 runs through temporary Coolify services on the target controllers",
+                    "failed_before_service_cleanup": True,
+                }
             )
-        )
-        if not _step_success(steps[-1]):
             return finish("failed")
+        for service in services:
+            try:
+                steps.append(
+                    _run_cleanup1_coolify(
+                        private_state,
+                        network=network_id,
+                        service=service,
+                        final_validator_set=accepted_topology["final_validator_set"],
+                        chain_id=accepted_topology["chain_id"],
+                        mode=mode_name,
+                        timeout=request_timeout,
+                        max_response_bytes=response_limit,
+                        max_wait_seconds=wait_limit,
+                        poll_interval_seconds=poll_interval,
+                        opener=opener,
+                        progress=progress,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - fail before touching service cleanup
+                failed = _step_error("cleanup1", service.get("node"), exc)
+                failed["controller_id"] = service.get("controller_id")
+                failed["service_uuid"] = service.get("service_uuid")
+                failed["failed_before_service_cleanup"] = True
+                steps.append(failed)
+                return finish("failed")
+            if not _step_success(steps[-1]):
+                steps[-1]["failed_before_service_cleanup"] = True
+                return finish("failed")
+        return finish("pass")
     else:
         try:
             if rpc_urls:
@@ -1531,88 +1469,7 @@ def run_post_work_cleanup_v2(
                 )
             )
             return finish("failed")
-
-    # Newest service cleanup first: retired admission-voter shim(s).
-    if admission_evidence is None or not voter_nodes:
-        steps.append(
-            {
-                "step": "admission-voter",
-                "node": None,
-                "status": "skipped",
-                "reason": "topology evidence does not reference source validator-admission voter nodes",
-            }
-        )
-    else:
-        for node in [item["node"] for item in services if item["node"] in voter_nodes]:
-            try:
-                steps.append(
-                    _call_service_cleanup(
-                        mode=mode_name,
-                        cleanup_name="admission-voter",
-                        private_state=private_state,
-                        network=network_id,
-                        service=service_by_node[node],
-                        admission_evidence=admission_evidence,
-                        instant_deploy=False,
-                        max_wait_seconds=wait_limit,
-                        poll_interval_seconds=poll_interval,
-                        timeout=request_timeout,
-                        max_response_bytes=response_limit,
-                        opener=opener,
-                        progress=progress,
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001
-                steps.append(_step_error("admission-voter", node, exc))
-
-    # Then the newer general service shim.
-    for service in services:
-        try:
-            steps.append(
-                _call_service_cleanup(
-                    mode=mode_name,
-                    cleanup_name="activation-guardian",
-                    private_state=private_state,
-                    network=network_id,
-                    service=service,
-                    instant_deploy=False,
-                    max_wait_seconds=wait_limit,
-                    poll_interval_seconds=poll_interval,
-                    timeout=request_timeout,
-                    max_response_bytes=response_limit,
-                    opener=opener,
-                    progress=progress,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            steps.append(_step_error("activation-guardian", service.get("node"), exc))
-
-    # Then the already-tested genesis proof guardian shim.
-    for service in services:
-        try:
-            steps.append(
-                _call_service_cleanup(
-                    mode=mode_name,
-                    cleanup_name="genesis-proof-guardian",
-                    private_state=private_state,
-                    network=network_id,
-                    service=service,
-                    instant_deploy=False,
-                    max_wait_seconds=wait_limit,
-                    poll_interval_seconds=poll_interval,
-                    timeout=request_timeout,
-                    max_response_bytes=response_limit,
-                    opener=opener,
-                    progress=progress,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            steps.append(_step_error("genesis-proof-guardian", service.get("node"), exc))
-
-    clean = all(_step_success(step) for step in steps)
-    return finish("pass" if clean else "manual-review-required")
-
-
+        return finish("pass")
 
 
 
@@ -1628,7 +1485,7 @@ def _write_evidence(runtime_state_root: str | Path, result: Mapping[str, Any]) -
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Post-work cleanup v2 orchestrator: chain preflight/cleanup first, then admission voter, activation guardian, genesis guardian."
+        description="Post-work cleanup v2 cleanup1-only orchestrator; helper cleanup is handled by mother_helper_cleanup2_yagni.py."
     )
     parser.add_argument("mode", choices=("inspect", "execute"))
     parser.add_argument("--runtime-state-root", required=True)
@@ -1636,8 +1493,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--topology-evidence", help="optional; defaults to latest passed clean current post-admission topology evidence on disk")
     parser.add_argument("--acknowledge-topology-evidence-sha256")
     parser.add_argument("--rpc-url", action="append", default=[], help="optional override; defaults to RPC URLs derived from topology/private state")
-    parser.add_argument("--cleanup-all", action="store_true", help="run chain cleanup through local ephemeral cleanup1 Docker helper instead of cross-host RPC")
     parser.add_argument("--instant-deploy", action="store_true", help="forbidden in v2; retained only to fail safely before touching anything")
+    parser.add_argument("--cleanup-all", action="store_true", help="run cleanup1 through temporary Coolify cleanup services and stop before helper cleanup")
     parser.add_argument("--max-wait-seconds", type=float, default=60.0)
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
     parser.add_argument("--timeout", type=float, default=30.0)
@@ -1664,8 +1521,8 @@ def main(argv: list[str] | None = None) -> int:
             acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
             mode=args.mode,
             rpc_urls=list(args.rpc_url or []),
-            cleanup_all=args.cleanup_all,
             instant_deploy=args.instant_deploy,
+            cleanup_all=args.cleanup_all,
             max_wait_seconds=args.max_wait_seconds,
             poll_interval_seconds=args.poll_interval_seconds,
             timeout=args.timeout,

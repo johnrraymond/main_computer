@@ -1201,6 +1201,123 @@ def _temporary_service_body(controller_config: Mapping[str, Any], name: str, com
     }
 
 
+_TARGETED_HELPER_SERVICE_NAMES = frozenset(
+    {
+        "mother-add-node-validator-activation-guardian",
+        "mother-genesis-proof-guardian",
+    }
+)
+_TARGETED_HELPER_SERVICE_PREFIXES = ("mother-add-node-validator-admission-voter-",)
+
+
+def _targeted_helper_name(value: object) -> str:
+    name = _identifier(value, "targeted_helper_service")
+    if name in _TARGETED_HELPER_SERVICE_NAMES or any(name.startswith(prefix) for prefix in _TARGETED_HELPER_SERVICE_PREFIXES):
+        return name
+    raise MotherDeploymentCompletedHelperCleanupError(
+        "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_UNSAFE_TARGETED_HELPER",
+        f"existing helper mimic restart is not allowed for {name}",
+    )
+
+
+def _targeted_helper_application_uuid_from_payload(payload: Any, helper_name: str) -> str:
+    """Return the existing Coolify child/application UUID for an allowed helper.
+
+    Cleanup only rewrites helper rows that Coolify already knows about.  A
+    missing or ambiguous helper record is not repaired by creating a new service
+    here; that belongs to the lifecycle phase that owns the helper.
+    """
+    helper = _targeted_helper_name(helper_name)
+    matches = [item for item in _application_records(payload) if item.get("name") == helper]
+    if len(matches) != 1:
+        raise MotherDeploymentCompletedHelperCleanupError(
+            "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_TARGETED_HELPER_RECORD_INVALID",
+            f"expected exactly one existing Coolify application record for {helper}; found {len(matches)}",
+        )
+    return _uuid(matches[0].get("uuid"), "targeted_helper_application_uuid")
+
+
+def _restart_existing_helper_application(
+    *,
+    controller: CoolifyController,
+    parent_service_uuid: str,
+    helper_name: str,
+    helper_application_uuid: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Restart/start one existing helper child service after its mimic Compose rewrite.
+
+    This deliberately avoids parent service deploy/start/restart and avoids the
+    old temporary Docker-socket helper-apply service.  The cleanup contract is
+    control-plane scoped: the helper row existed, the parent Compose was patched
+    to the retired autohealthy mimic, and Coolify accepted a child-only restart
+    or start operation for that helper UUID.
+    """
+    parent = _uuid(parent_service_uuid, "service_uuid")
+    helper = _targeted_helper_name(helper_name)
+    application = _uuid(helper_application_uuid, "targeted_helper_application_uuid")
+    endpoints = (
+        ("POST", f"/api/v1/applications/{urllib.parse.quote(application, safe='')}/restart", "application-restart"),
+        ("POST", f"/api/v1/applications/{urllib.parse.quote(application, safe='')}/start", "application-start"),
+        (
+            "POST",
+            f"/api/v1/services/{urllib.parse.quote(parent, safe='')}/applications/{urllib.parse.quote(application, safe='')}/restart",
+            "service-application-restart",
+        ),
+        (
+            "POST",
+            f"/api/v1/services/{urllib.parse.quote(parent, safe='')}/applications/{urllib.parse.quote(application, safe='')}/start",
+            "service-application-start",
+        ),
+    )
+    attempts: list[dict[str, Any]] = []
+    for method, endpoint, endpoint_scope in endpoints:
+        response = _http(
+            controller,
+            method,
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        receipt = {
+            "method": method,
+            "endpoint": endpoint,
+            "status": response["status"],
+            "ok": response["ok"],
+            "response_sha256": response["response_sha256"],
+            "byte_length": response["byte_length"],
+            "elapsed_ms": response["elapsed_ms"],
+            "endpoint_scope": endpoint_scope,
+            "cleanup_scope": "existing-helper-mimic-restart",
+            "parent_service_uuid": parent,
+            "target_helper_service": helper,
+            "target_application_uuid": application,
+            "post_restart_health_poll_performed": False,
+        }
+        attempts.append(receipt)
+        observations.append(
+            {key: receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")}
+        )
+        if response["ok"]:
+            return {
+                **receipt,
+                "attempts": attempts,
+                "reason": None,
+            }
+
+    return {
+        **attempts[-1],
+        "ok": False,
+        "attempts": attempts,
+        "reason": "helper-child-restart-failed",
+    }
+
+
 def _run_docker_orphan_container_cleanup(
     *,
     private_state: PrivateStateReadResult,

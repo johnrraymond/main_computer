@@ -32,7 +32,9 @@ from tools.mother.common.deployment_completed_helper_cleanup import (
     MotherDeploymentCompletedHelperCleanupError,
     _compose_text_candidates_from_service_payload,
     _patch_service_compose,
+    _restart_existing_helper_application,
     _service_detail,
+    _targeted_helper_application_uuid_from_payload,
 )
 from tools.mother.common.models import OperationIdentity
 from tools.mother.common.paths import MotherPaths
@@ -614,6 +616,7 @@ def inspect_admission_voter_cleanup(
     }
 
 
+
 def execute_admission_voter_cleanup(
     private_state: PrivateStateReadResult,
     *,
@@ -648,6 +651,11 @@ def execute_admission_voter_cleanup(
             "MOTHER_ADMISSION_VOTER_CLEANUP_SHIM_FLAG_REQUIRED",
             "execute requires --allow-retired-admission-voter-shim",
         )
+    if instant_deploy:
+        raise MotherAdmissionVoterCleanupError(
+            "MOTHER_ADMISSION_VOTER_CLEANUP_PARENT_DEPLOY_FORBIDDEN",
+            "instant deploy is disabled here; cleanup rewrites the helper mimic and restarts only the existing helper child service",
+        )
 
     paths = MotherPaths(runtime_state_root=private_state.paths.root.parent)
     accepted_evidence = _validate_admission_evidence(
@@ -665,8 +673,6 @@ def execute_admission_voter_cleanup(
             "MOTHER_ADMISSION_VOTER_CLEANUP_INVALID_ARGUMENT",
             "max_response_bytes must be positive",
         )
-    wait_limit = _nonnegative(max_wait_seconds, "max_wait_seconds")
-    poll_interval = _nonnegative(poll_interval_seconds, "poll_interval_seconds")
 
     _emit_progress(progress, "execute", "resolving Coolify controller", controller_id=controller_name, network=network_id)
     controller = resolve_coolify_controller(
@@ -689,6 +695,7 @@ def execute_admission_voter_cleanup(
     initial_payload = _service_payload(initial_detail)
     initial_classification = _classify_payload(initial_payload, node=node_name, target_name=target_name)
     observations.append({"phase": "initial", "classification": initial_classification})
+    target_application_uuid = _targeted_helper_application_uuid_from_payload(initial_payload, target_name)
 
     already_clean = (
         initial_classification["summary"]["compose_target_is_retired_shim"]
@@ -696,122 +703,122 @@ def execute_admission_voter_cleanup(
     )
 
     patch_receipt: dict[str, Any] | None = None
+    helper_restart: dict[str, Any] | None = None
     compose_attempts: list[dict[str, Any]] = []
-    if not already_clean:
-        last_error: Exception | None = None
-        for compose_text, source_field, source_encoding in _compose_text_candidates_from_service_payload(initial_payload):
-            source_sha = hashlib.sha256(compose_text.encode("utf-8")).hexdigest()
-            try:
-                rewritten, replaced_existing, preserved_names = _install_shim_in_compose(
-                    compose_text,
-                    service_uuid=service,
-                    node=node_name,
-                    target_name=target_name,
-                )
-            except Exception as exc:  # noqa: BLE001 - collect source attempt diagnostics
-                last_error = exc
-                compose_attempts.append(
-                    {
-                        "ok": False,
-                        "source_field": source_field,
-                        "source_encoding": source_encoding,
-                        "source_sha256": source_sha,
-                        "error_code": getattr(exc, "code", type(exc).__name__),
-                        "error_message": str(exc),
-                    }
-                )
-                continue
+    last_error: Exception | None = None
 
-            receipt = _patch_service_compose(
-                controller,
-                service,
-                rewritten,
-                instant_deploy=instant_deploy,
-                timeout=request_timeout,
-                max_response_bytes=response_limit,
-                opener=opener,
+    _emit_progress(
+        progress,
+        "execute.compose",
+        "rewriting retired admission voter mimic compose",
+        service_uuid=service,
+        helper_service=target_name,
+        target_application_uuid=target_application_uuid,
+    )
+    for compose_text, source_field, source_encoding in _compose_text_candidates_from_service_payload(initial_payload):
+        source_sha = hashlib.sha256(compose_text.encode("utf-8")).hexdigest()
+        try:
+            rewritten, replaced_existing, preserved_names = _install_shim_in_compose(
+                compose_text,
+                service_uuid=service,
+                node=node_name,
+                target_name=target_name,
             )
-            receipt.update(
+        except Exception as exc:  # noqa: BLE001 - collect source attempt diagnostics
+            last_error = exc
+            compose_attempts.append(
                 {
+                    "ok": False,
                     "source_field": source_field,
                     "source_encoding": source_encoding,
                     "source_sha256": source_sha,
-                    "installed_retired_admission_voter_shim": True,
-                    "retired_admission_voter_shim_replaced_existing": replaced_existing,
-                    "retired_admission_voter_shim_votes": False,
-                    "retired_admission_voter_shim_private_key_required": False,
-                    "preserved_service_names": list(preserved_names),
-                    "target_name": target_name,
+                    "error_code": getattr(exc, "code", type(exc).__name__),
+                    "error_message": str(exc),
                 }
             )
-            patch_receipt = receipt
-            if not receipt.get("ok"):
-                raise MotherAdmissionVoterCleanupError(
-                    "MOTHER_ADMISSION_VOTER_CLEANUP_PATCH_FAILED",
-                    f"Coolify compose PATCH failed with HTTP {receipt.get('status')}",
-                )
-            break
+            continue
 
-        if patch_receipt is None:
-            raise MotherAdmissionVoterCleanupError(
-                "MOTHER_ADMISSION_VOTER_CLEANUP_COMPOSE_PATCH_UNAVAILABLE",
-                "could not build a safe one-target admission voter shim compose rewrite: "
-                + (str(last_error) if last_error else json.dumps(compose_attempts, sort_keys=True)),
-            )
-
-    deadline = time.monotonic() + wait_limit
-    final_detail: Mapping[str, Any] | None = None
-    final_classification: dict[str, Any] | None = None
-    poll = 0
-    while True:
-        poll += 1
-        detail = _service_detail(
+        receipt = _patch_service_compose(
             controller,
             service,
+            rewritten,
+            instant_deploy=False,
             timeout=request_timeout,
             max_response_bytes=response_limit,
             opener=opener,
         )
-        observations.append(
+        receipt.update(
             {
-                "phase": "verification-poll",
-                "poll": poll,
-                "service_detail": {
-                    "method": "GET",
-                    "endpoint": f"/api/v1/services/{service}",
-                    "status": detail.get("status"),
-                    "ok": detail.get("ok"),
-                    "response_sha256": detail.get("response_sha256"),
-                    "byte_length": detail.get("byte_length"),
-                    "elapsed_ms": detail.get("elapsed_ms"),
-                },
+                "source_field": source_field,
+                "source_encoding": source_encoding,
+                "source_sha256": source_sha,
+                "installed_retired_admission_voter_shim": True,
+                "retired_admission_voter_shim_replaced_existing": replaced_existing,
+                "retired_admission_voter_shim_votes": False,
+                "retired_admission_voter_shim_private_key_required": False,
+                "preserved_service_names": list(preserved_names),
+                "target_name": target_name,
+                "compose_source_attempts": [
+                    *compose_attempts,
+                    {
+                        "ok": True,
+                        "source_field": source_field,
+                        "source_encoding": source_encoding,
+                        "source_sha256": source_sha,
+                        "replaced_existing": replaced_existing,
+                    },
+                ],
             }
         )
-        final_detail = detail
-        final_classification = _classify_payload(_service_payload(detail), node=node_name, target_name=target_name)
-        clean = (
-            final_classification["summary"]["compose_target_is_retired_shim"]
-            and final_classification["summary"]["target_record_is_retired_shim"]
+        patch_receipt = receipt
+        observations.append(
+            {
+                "method": receipt.get("method"),
+                "endpoint": receipt.get("endpoint"),
+                "status": receipt.get("status"),
+                "ok": receipt.get("ok"),
+                "response_sha256": receipt.get("response_sha256"),
+                "byte_length": receipt.get("byte_length"),
+                "elapsed_ms": receipt.get("elapsed_ms"),
+            }
         )
-        _emit_progress(
-            progress,
-            "execute.poll",
-            "verification poll classified admission voter",
-            poll=poll,
-            clean=clean,
-            parent_status=final_classification.get("parent_status"),
-            target_records=final_classification.get("target_record_count"),
-        )
-        if clean or time.monotonic() >= deadline or poll_interval <= 0:
-            break
-        time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+        break
 
-    assert final_detail is not None and final_classification is not None
-    clean = (
-        final_classification["summary"]["compose_target_is_retired_shim"]
-        and final_classification["summary"]["target_record_is_retired_shim"]
+    if patch_receipt is None:
+        raise MotherAdmissionVoterCleanupError(
+            "MOTHER_ADMISSION_VOTER_CLEANUP_COMPOSE_PATCH_UNAVAILABLE",
+            "could not build a safe one-target admission voter shim compose rewrite: "
+            + (str(last_error) if last_error else json.dumps(compose_attempts, sort_keys=True)),
+        )
+
+    if not patch_receipt.get("ok"):
+        raise MotherAdmissionVoterCleanupError(
+            "MOTHER_ADMISSION_VOTER_CLEANUP_PATCH_FAILED",
+            f"Coolify compose PATCH failed with HTTP {patch_receipt.get('status')}",
+        )
+
+    _emit_progress(
+        progress,
+        "execute.helper-restart",
+        "restarting existing admission voter helper child only",
+        service_uuid=service,
+        helper_service=target_name,
+        target_application_uuid=target_application_uuid,
     )
-    status = "pass" if clean and (patch_receipt is None or patch_receipt.get("ok")) else "manual-review-required"
+    helper_restart = _restart_existing_helper_application(
+        controller=controller,
+        parent_service_uuid=service,
+        helper_name=target_name,
+        helper_application_uuid=target_application_uuid,
+        timeout=request_timeout,
+        max_response_bytes=response_limit,
+        opener=opener,
+        observations=observations,
+    )
+    patch_receipt["helper_restart"] = helper_restart
+
+    clean = bool(patch_receipt.get("ok") and helper_restart.get("ok"))
+    status = "pass" if clean else "manual-review-required"
 
     result = {
         "kind": KIND,
@@ -823,34 +830,48 @@ def execute_admission_voter_cleanup(
         "service_uuid": service,
         "node": node_name,
         "target_name": target_name,
+        "target_application_uuid": target_application_uuid,
         "accepted_admission_evidence": accepted_evidence,
-        "mutation_performed": patch_receipt is not None,
-        "coolify_touched": patch_receipt is not None,
+        "mutation_performed": True,
+        "coolify_touched": True,
         "compose_touched": patch_receipt is not None,
-        "docker_touched": False,
+        "docker_touched": bool(helper_restart and helper_restart.get("ok")),
         "chain_touched": False,
         "initial_classification": initial_classification,
-        "final_classification": final_classification,
+        "final_classification": None,
         "patch_receipt": patch_receipt,
+        "helper_restart": helper_restart,
         "compose_attempts": compose_attempts,
         "observations": observations,
         "summary": {
-            **final_classification["summary"],
             "clean": clean,
+            "cleanup_contract": "existing-helper-mimic-rewrite-and-child-restart",
+            "post_restart_health_poll_performed": False,
             "already_clean": already_clean,
-            "mutation_performed": patch_receipt is not None,
-            "only_target_supported": target_name,
-            "installed_retired_admission_voter_shim": bool(patch_receipt),
-            "admission_evidence_verified": True,
+            "installed_retired_admission_voter_shim": bool(
+                patch_receipt and patch_receipt.get("installed_retired_admission_voter_shim")
+            ),
+            "retired_admission_voter_shim_installed": bool(
+                patch_receipt and patch_receipt.get("installed_retired_admission_voter_shim")
+            ),
+            "retired_admission_voter_shim_replaced_existing": bool(
+                patch_receipt and patch_receipt.get("retired_admission_voter_shim_replaced_existing")
+            ),
+            "retired_admission_voter_shim_votes": False,
+            "retired_admission_voter_shim_private_key_required": False,
+            "helper_restart_performed": helper_restart is not None,
+            "helper_restart_succeeded": bool(helper_restart and helper_restart.get("ok")),
+            "target_application_uuid": target_application_uuid,
+            "target_record_initially_present": True,
+            "target_record_initially_retired_shim": initial_classification["summary"]["target_record_is_retired_shim"],
+            "compose_target_initially_retired_shim": initial_classification["summary"]["compose_target_is_retired_shim"],
+            "target_name": target_name,
+            "parent_redeploy_performed": False,
+            "parent_restart_performed": False,
+            "chain_touched": False,
         },
     }
     return result
-
-
-def _load_private_state(runtime_state_root: str | Path, *, network: str, mode: str) -> PrivateStateReadResult:
-    paths = MotherPaths(runtime_state_root=Path(runtime_state_root)).resolve_private_state_paths()
-    return read_private_state(paths, operation=_operation(network, mode))
-
 
 def _write_evidence(runtime_state_root: str | Path, result: Mapping[str, Any]) -> Path:
     root = Path(runtime_state_root) / "mother" / "evidence" / EVIDENCE_SUBDIR

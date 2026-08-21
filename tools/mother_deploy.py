@@ -251,6 +251,7 @@ from tools.mother.common.deployment_topology_rectification import (
     adopt_fresh_empty_topology,
     detect_topology_staleness,
     finalize_add_node_post_admission_topology,
+    seal_live_current_topology,
     verify_empty_topology_rectification_evidence,
 )
 from tools.mother.common.deployment_identity_install import (
@@ -1020,6 +1021,22 @@ def _parser() -> argparse.ArgumentParser:
     adopt_fresh_empty_topology_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
     adopt_fresh_empty_topology_parser.add_argument("--fresh-chain-reset", action="store_true", required=True)
     adopt_fresh_empty_topology_parser.add_argument("--write-evidence", action="store_true")
+
+    seal_live_current_topology_parser = subparsers.add_parser(
+        "seal-live-current-topology",
+        help="write read-only current-topology evidence from exact live Coolify primary services",
+        allow_abbrev=False,
+    )
+    seal_live_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    seal_live_current_topology_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    seal_live_current_topology_parser.add_argument("--operation-id")
+    seal_live_current_topology_parser.add_argument("--topology-evidence", required=True)
+    seal_live_current_topology_parser.add_argument("--acknowledge-topology-evidence-sha256", required=True)
+    seal_live_current_topology_parser.add_argument("--use-live-topology", action="store_true", help="required acknowledgement that live Coolify primary service bindings should be sealed")
+    seal_live_current_topology_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    seal_live_current_topology_parser.add_argument("--timeout", type=float, default=30.0)
+    seal_live_current_topology_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    seal_live_current_topology_parser.add_argument("--write-evidence", action="store_true")
 
     verify_empty_current_topology_parser = subparsers.add_parser(
         "verify-empty-current-topology-evidence",
@@ -6693,6 +6710,24 @@ def _cmd_adopt_fresh_empty_topology(args: argparse.Namespace, private_state) -> 
     return 0
 
 
+def _cmd_seal_live_current_topology(args: argparse.Namespace, private_state) -> int:
+    result = seal_live_current_topology(
+        _paths(args),
+        private_state,
+        Path(args.topology_evidence),
+        network=args.network,
+        acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
+        use_live_topology=args.use_live_topology,
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        write_evidence=args.write_evidence,
+        operation=_operation("seal-live-current-topology", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_verify_empty_current_topology_evidence(args: argparse.Namespace, private_state) -> int:
     result = verify_empty_topology_rectification_evidence(
         _paths(args),
@@ -7191,6 +7226,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_adopt_empty_current_topology(args, private_state)
         if args.command == "adopt-fresh-empty-topology":
             return _cmd_adopt_fresh_empty_topology(args, private_state)
+        if args.command == "seal-live-current-topology":
+            return _cmd_seal_live_current_topology(args, private_state)
         if args.command == "verify-empty-current-topology-evidence":
             return _cmd_verify_empty_current_topology_evidence(args, private_state)
         if args.command == "release-add-node-replica-sync":

@@ -190,6 +190,8 @@ class _GenesisShimOpener:
 
             self.shim_installed = True
             return _Response({"uuid": SERVICE_UUID, "updated": True})
+        if method == "POST" and path == "/api/v1/applications/genesisguardian123/restart":
+            return _Response({"ok": True, "uuid": "genesisguardian123", "action": "restart"})
         raise AssertionError(f"unexpected request: {method} {path}")
 
 
@@ -227,7 +229,7 @@ def test_execute_installs_only_minimal_retired_genesis_proof_guardian_shim(tmp_p
         node="mainnetc-super1",
         acknowledged_service_uuid=SERVICE_UUID,
         allow_retired_genesis_proof_guardian_shim=True,
-        instant_deploy=True,
+        instant_deploy=False,
         max_wait_seconds=0,
         poll_interval_seconds=0,
         opener=opener,
@@ -238,9 +240,13 @@ def test_execute_installs_only_minimal_retired_genesis_proof_guardian_shim(tmp_p
     assert result["summary"]["retired_genesis_proof_guardian_shim_installed"] is True
     assert result["summary"]["retired_genesis_proof_guardian_shim_serves_proof"] is False
     assert result["summary"]["retired_genesis_proof_guardian_shim_mounts_proof_volume"] is False
-    assert result["docker_touched"] is False
+    assert result["docker_touched"] is True
     assert result["chain_touched"] is False
     assert ("PATCH", f"/api/v1/services/{SERVICE_UUID}") in opener.requests
+    assert ("POST", "/api/v1/applications/genesisguardian123/restart") in opener.requests
+    assert result["helper_restart"]["cleanup_scope"] == "existing-helper-mimic-restart"
+    assert result["summary"]["helper_restart_succeeded"] is True
+    assert result["summary"]["post_restart_health_poll_performed"] is False
     assert opener.patched_compose is not None
 
 

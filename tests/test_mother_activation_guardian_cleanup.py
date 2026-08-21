@@ -200,6 +200,8 @@ class _ActivationShimOpener:
 
             self.shim_installed = True
             return _Response({"uuid": SERVICE_UUID, "updated": True})
+        if method == "POST" and path == "/api/v1/applications/activationguardian123/restart":
+            return _Response({"ok": True, "uuid": "activationguardian123", "action": "restart"})
         raise AssertionError(f"unexpected request: {method} {path}")
 
 
@@ -237,7 +239,7 @@ def test_execute_installs_only_minimal_retired_activation_guardian_shim(tmp_path
         node="mainnetc-super1",
         acknowledged_service_uuid=SERVICE_UUID,
         allow_retired_activation_guardian_shim=True,
-        instant_deploy=True,
+        instant_deploy=False,
         max_wait_seconds=0,
         poll_interval_seconds=0,
         opener=opener,
@@ -248,7 +250,7 @@ def test_execute_installs_only_minimal_retired_activation_guardian_shim(tmp_path
     assert result["summary"]["retired_activation_guardian_shim_installed"] is True
     assert result["summary"]["retired_activation_guardian_shim_serves_proof"] is False
     assert result["summary"]["retired_activation_guardian_shim_mounts_proof_volume"] is False
-    assert result["docker_touched"] is False
+    assert result["docker_touched"] is True
     assert result["chain_touched"] is False
     assert ("PATCH", f"/api/v1/services/{SERVICE_UUID}") in opener.requests
     assert opener.patched_compose is not None
@@ -291,4 +293,54 @@ def test_execute_refuses_wrong_service_ack(tmp_path: Path) -> None:
         )
 
     assert exc.value.code == "MOTHER_ACTIVATION_GUARDIAN_CLEANUP_ACK_REQUIRED"
+    assert opener.requests == []
+
+
+def test_execute_rewrites_and_restarts_existing_helper_even_when_initially_unhealthy(tmp_path: Path) -> None:
+    _, private_state = _install(tmp_path)
+    opener = _ActivationShimOpener()
+
+    result = execute_activation_guardian_cleanup(
+        private_state,
+        network="mainnet",
+        controller_id="coolify-c",
+        service_uuid=SERVICE_UUID,
+        node="mainnetc-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        allow_retired_activation_guardian_shim=True,
+        instant_deploy=False,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+    )
+
+    assert result["status"] == "pass"
+    assert result["docker_touched"] is True
+    assert result["helper_restart"]["ok"] is True
+    assert result["helper_restart"]["cleanup_scope"] == "existing-helper-mimic-restart"
+    assert result["summary"]["helper_restart_performed"] is True
+    assert result["summary"]["helper_restart_succeeded"] is True
+    assert result["summary"]["post_restart_health_poll_performed"] is False
+    assert ("POST", "/api/v1/applications/activationguardian123/restart") in opener.requests
+    assert not any(request for request in opener.requests if request[1].startswith(f"/api/v1/services/{SERVICE_UUID}/start"))
+
+
+def test_execute_refuses_parent_instant_deploy(tmp_path: Path) -> None:
+    _, private_state = _install(tmp_path)
+    opener = _ActivationShimOpener()
+
+    with pytest.raises(MotherActivationGuardianCleanupError) as exc:
+        execute_activation_guardian_cleanup(
+            private_state,
+            network="mainnet",
+            controller_id="coolify-c",
+            service_uuid=SERVICE_UUID,
+            node="mainnetc-super1",
+            acknowledged_service_uuid=SERVICE_UUID,
+            allow_retired_activation_guardian_shim=True,
+            instant_deploy=True,
+            opener=opener,
+        )
+
+    assert exc.value.code == "MOTHER_ACTIVATION_GUARDIAN_CLEANUP_PARENT_DEPLOY_FORBIDDEN"
     assert opener.requests == []

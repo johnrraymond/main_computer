@@ -363,6 +363,30 @@ def _validate_do_evidence(
         if validator_vote_required
         else summary.get("validator_removal_vote_performed") is False
     )
+    proof_payload_ok = not validator_vote_required
+    if validator_vote_required:
+        proof_payloads = document.get("validator_removal_proofs")
+        proof_sha_by_voter = document.get("validator_removal_proof_sha256_by_voter")
+        voters = document.get("validator_removal_vote", {}).get("voter_nodes") if isinstance(document.get("validator_removal_vote"), Mapping) else None
+        proof_payload_ok = (
+            summary.get("validator_removal_vote_proven_by_proof_payload") is True
+            and summary.get("final_validator_set_verified_by_proof_payload") is True
+            and authority.get("validator_removal_vote_proven_by_proof_payload") is True
+            and authority.get("final_validator_set_verified_by_proof_payload") is True
+            and isinstance(proof_payloads, Mapping)
+            and isinstance(proof_sha_by_voter, Mapping)
+            and isinstance(voters, list)
+            and bool(voters)
+            and set(str(item) for item in voters) == set(proof_payloads)
+            and set(str(item) for item in voters) == set(proof_sha_by_voter)
+        )
+    proof_endpoint_ok = policy.get("public_http_endpoint_created") is False
+    if validator_vote_required:
+        proof_endpoint_ok = (
+            policy.get("public_http_endpoint_created") is True
+            and policy.get("public_http_endpoint_purpose") == "node-remove-do-proof-capture"
+            and isinstance(document.get("validator_removal_proof_endpoints"), Mapping)
+        )
     required = [
         document.get("status") == "pass",
         document.get("next_phase") == "remove-node-finalize-mainnet",
@@ -374,9 +398,10 @@ def _validate_do_evidence(
         summary.get("service_deletion_performed") is True or summary.get("service_already_absent") is True,
         authority.get("release_consumed") is True,
         authority.get("validator_removal_vote_proven") is True,
+        proof_payload_ok,
         authority.get("service_deletion_proven") is True,
         policy.get("routing_or_topology_published") is False,
-        policy.get("public_http_endpoint_created") is False,
+        proof_endpoint_ok,
         policy.get("service_deletion_is_first") is bool(single_node_decommission),
     ]
     if not all(required):
@@ -490,6 +515,7 @@ def build_node_remove_finalize_evidence(
 
     survivor_observed_set = set(survivor_nodes_observed)
     survivor_guardian_set = set(survivor_guardians_healthy)
+    final_validator_set_proof_sha256_by_voter = dict(do_evidence.get("validator_removal_proof_sha256_by_voter") or {})
     # The node-removal voter guardians are transient execution helpers. The do
     # evidence must prove that they became healthy and completed the validator
     # removal vote before target service deletion. Finalize is a later read-only
@@ -533,6 +559,8 @@ def build_node_remove_finalize_evidence(
         "source_baseline_evidence": dict(do_evidence["source_baseline_evidence"]),
         "pre_removal_topology": dict(do_evidence["current_topology"]),
         "final_topology": dict(do_evidence["post_removal_topology"]),
+        "final_validator_set_source": "node-remove-do-proof-payload",
+        "final_validator_set_proof_sha256_by_voter": final_validator_set_proof_sha256_by_voter,
         "target_service_observation": {
             "node": target["node"],
             "controller_id": target["controller_id"],
@@ -557,6 +585,8 @@ def build_node_remove_finalize_evidence(
             "survivor_validator_removal_guardians_healthy": survivor_guardian_set == survivor_set,
             "validator_removal_vote_required": bool(do_evidence["summary"].get("validator_removal_vote_required", not bool(do_evidence["summary"].get("single_node_decommission")))),
             "validator_removal_vote_previously_performed": bool(do_evidence["summary"].get("validator_removal_vote_performed")),
+            "validator_removal_vote_proven_by_proof_payload": bool(do_evidence["summary"].get("validator_removal_vote_proven_by_proof_payload")),
+            "final_validator_set_verified_by_proof_payload": bool(do_evidence["summary"].get("final_validator_set_verified_by_proof_payload")),
             "single_node_decommission": bool(do_evidence["summary"].get("single_node_decommission")),
             "service_deletion_previously_performed": bool(do_evidence["summary"].get("service_deletion_performed")),
             "routing_or_topology_publication_authorized": False,
@@ -589,6 +619,10 @@ def build_node_remove_finalize_evidence(
             "pre_removal_validator_count": len(do_evidence["current_topology"]["validator_set"]),
             "final_validator_count": len(do_evidence["post_removal_topology"]["validator_set"]),
             "final_validator_set": list(do_evidence["post_removal_topology"]["validator_set"]),
+            "final_validator_set_source": "node-remove-do-proof-payload",
+            "final_validator_set_proof_sha256_by_voter": final_validator_set_proof_sha256_by_voter,
+            "validator_removal_vote_proven_by_proof_payload": bool(do_evidence["summary"].get("validator_removal_vote_proven_by_proof_payload")),
+            "final_validator_set_verified_by_proof_payload": bool(do_evidence["summary"].get("final_validator_set_verified_by_proof_payload")),
             "removed_validator_absent_from_final_set": target["validator_address"] not in do_evidence["post_removal_topology"]["validator_set"],
             "service_deletion_is_first": bool(do_evidence["summary"].get("service_deletion_is_first")),
             "single_node_decommission": bool(do_evidence["summary"].get("single_node_decommission")),
@@ -701,6 +735,20 @@ def verify_node_remove_finalize_evidence(
     policy = document.get("policy")
     if not isinstance(summary, Mapping) or not isinstance(authority, Mapping) or not isinstance(policy, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_EVIDENCE_INVALID", "finalize evidence is incomplete")
+    validator_vote_required = bool(summary.get("validator_removal_vote_required", not bool(summary.get("single_node_decommission"))))
+    proof_source_ok = (
+        summary.get("final_validator_set_source") == "node-remove-do-proof-payload"
+        and isinstance(summary.get("final_validator_set_proof_sha256_by_voter"), Mapping)
+        and document.get("final_validator_set_source") == "node-remove-do-proof-payload"
+        and isinstance(document.get("final_validator_set_proof_sha256_by_voter"), Mapping)
+    )
+    proof_payload_ok = (
+        summary.get("validator_removal_vote_proven_by_proof_payload") is True
+        and summary.get("final_validator_set_verified_by_proof_payload") is True
+        and authority.get("validator_removal_vote_proven_by_proof_payload") is True
+        and authority.get("final_validator_set_verified_by_proof_payload") is True
+        and proof_source_ok
+    ) if validator_vote_required else True
     if not all([
         document.get("status") == "pass",
         summary.get("clean") is True,
@@ -713,6 +761,7 @@ def verify_node_remove_finalize_evidence(
         authority.get("target_service_absence_proven") is True,
         authority.get("survivor_services_observed") is True,
         authority.get("survivor_validator_removal_guardians_required_at_finalize") is False,
+        proof_payload_ok,
         policy.get("finalize_mutation_performed") is False,
         policy.get("allowed_http_methods") == ["GET"],
     ]):
@@ -745,6 +794,8 @@ def verify_node_remove_finalize_evidence(
         "survivor_validator_removal_guardians_healthy": list(summary["survivor_validator_removal_guardians_healthy"]),
         "pre_removal_validator_set": list(document["pre_removal_topology"]["validator_set"]),
         "final_validator_set": list(final_topology["validator_set"]),
+        "final_validator_set_source": document.get("final_validator_set_source"),
+        "final_validator_set_proof_sha256_by_voter": dict(document.get("final_validator_set_proof_sha256_by_voter") or {}),
         "source_do_evidence_sha256": do_sha,
         "source_prep_transaction_sha256": document["source_prep_transaction"]["sha256"],
         "source_baseline_evidence_sha256": document["source_baseline_evidence"]["sha256"],

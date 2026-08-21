@@ -33,6 +33,13 @@ from .coolify_state import (
     _DEFAULT_OPENER,
     resolve_coolify_controller,
 )
+from .deployment_completed_helper_cleanup import (
+    _application_uuid,
+    _controller_config,
+    _resolve_environment_uuid,
+    _temporary_service_body,
+    _wait_for_temporary_service_health,
+)
 from .deployment_genesis import _genesis_policy
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
@@ -399,6 +406,532 @@ def _safe_response(response: Mapping[str, Any]) -> dict[str, Any]:
         "byte_length": response.get("byte_length"),
         "elapsed_ms": response.get("elapsed_ms"),
     }
+
+
+def _single_quote(value: object) -> str:
+    return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
+def _guardian_start_service_name(controller_id: str) -> str:
+    controller = _identifier(controller_id, "controller_id").replace("_", "-")
+    return f"mother-replica-guardian-start-{controller}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S').lower()}"
+
+
+def _application_statuses(payload: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(payload, Mapping):
+        return {}
+    applications = payload.get("applications")
+    if not isinstance(applications, list):
+        return {}
+    records: dict[str, dict[str, str]] = {}
+    for item in applications:
+        if not isinstance(item, Mapping):
+            continue
+        name = _text(item, "name")
+        if not name:
+            continue
+        records[name] = {
+            "name": name,
+            "uuid": _text(item, "uuid", "id"),
+            "status": _service_status(item),
+            "image": _text(item, "image"),
+        }
+    return records
+
+
+def _component_healthy(status: object) -> bool:
+    return isinstance(status, str) and status.startswith("running:healthy") and "unhealthy" not in status
+
+
+def _replica_sync_component_summary(payload: Any, *, node: str) -> dict[str, Any]:
+    applications = _application_statuses(payload)
+    node_record = applications.get(node)
+    guardian_record = applications.get("mother-replica-sync-guardian")
+    init_record = applications.get("mother-replica-init")
+    node_status = node_record.get("status", "") if node_record else ""
+    guardian_status = guardian_record.get("status", "") if guardian_record else ""
+    init_status = init_record.get("status", "") if init_record else ""
+    ok = _component_healthy(node_status) and _component_healthy(guardian_status)
+    return {
+        "component_aware_success": ok,
+        "node_running_healthy": _component_healthy(node_status),
+        "guardian_running_healthy": _component_healthy(guardian_status),
+        "node_status": node_status or "missing",
+        "guardian_status": guardian_status or "missing",
+        "init_status": init_status or "missing",
+        "required_components": {
+            node: node_record or {"name": node, "uuid": "", "status": "missing", "image": ""},
+            "mother-replica-sync-guardian": guardian_record or {"name": "mother-replica-sync-guardian", "uuid": "", "status": "missing", "image": ""},
+        },
+        "optional_components": {
+            "mother-replica-init": init_record or {"name": "mother-replica-init", "uuid": "", "status": "missing", "image": ""},
+        },
+    }
+
+
+def _wait_for_replica_sync_components(
+    *,
+    controller: Any,
+    controller_id: str,
+    service_uuid: str,
+    node: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+    started = time.monotonic()
+    last_summary: dict[str, Any] = {}
+    observed_statuses: list[dict[str, str]] = []
+    observation_count = 0
+    while True:
+        response = _http(
+            controller,
+            "GET",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        observation_count += 1
+        parent_status = ""
+        if response.get("ok"):
+            try:
+                parent_status = _service_status(_service_record(response["payload"], service_uuid=service_uuid, node=node))
+            except MotherDeploymentNodeAddReplicaSyncError:
+                parent_status = _service_status(response.get("payload") if isinstance(response.get("payload"), Mapping) else None)
+            last_summary = _replica_sync_component_summary(response.get("payload"), node=node)
+        else:
+            last_summary = {
+                "component_aware_success": False,
+                "node_running_healthy": False,
+                "guardian_running_healthy": False,
+                "node_status": "unknown",
+                "guardian_status": "unknown",
+                "init_status": "unknown",
+            }
+        statuses = {
+            "parent_status": parent_status,
+            "node_status": str(last_summary.get("node_status") or ""),
+            "guardian_status": str(last_summary.get("guardian_status") or ""),
+            "init_status": str(last_summary.get("init_status") or ""),
+        }
+        observed_statuses.append(statuses)
+        observations.append(
+            {
+                "method": "GET",
+                "endpoint": endpoint,
+                "status": response["status"],
+                "ok": response["ok"],
+                "response_sha256": response["response_sha256"],
+                "byte_length": response["byte_length"],
+                "elapsed_ms": response["elapsed_ms"],
+                "observed_at": _timestamp(),
+                "controller_id": controller_id,
+                "phase": "replica-sync-component-health",
+                **statuses,
+                "component_aware_success": bool(last_summary.get("component_aware_success") is True),
+            }
+        )
+        elapsed = time.monotonic() - started
+        if response.get("ok") and last_summary.get("component_aware_success") is True:
+            return {
+                "healthy": True,
+                "reason": "replica-sync-components-healthy",
+                "service_uuid": service_uuid,
+                "node": node,
+                "component_summary": last_summary,
+                "observed_statuses": observed_statuses,
+                "observation_count": observation_count,
+                "wait_seconds": int(elapsed),
+                "wait_milliseconds": int(round(elapsed * 1000)),
+            }
+        if elapsed >= max_wait_seconds:
+            return {
+                "healthy": False,
+                "reason": "replica-sync-component-health-timeout",
+                "service_uuid": service_uuid,
+                "node": node,
+                "component_summary": last_summary,
+                "observed_statuses": observed_statuses,
+                "observation_count": observation_count,
+                "wait_seconds": int(elapsed),
+                "wait_milliseconds": int(round(elapsed * 1000)),
+            }
+        if poll_interval_seconds > 0:
+            time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
+        else:
+            break
+    return {
+        "healthy": False,
+        "reason": "replica-sync-component-health-timeout",
+        "service_uuid": service_uuid,
+        "node": node,
+        "component_summary": last_summary,
+        "observed_statuses": observed_statuses,
+        "observation_count": observation_count,
+        "wait_seconds": int(time.monotonic() - started),
+        "wait_milliseconds": int(round((time.monotonic() - started) * 1000)),
+    }
+
+
+def _guardian_start_script(*, service_uuid: str, node: str, compose_b64: str, wait_seconds: int, poll_seconds: int) -> str:
+    service = _identifier(service_uuid, "service_uuid")
+    node_name = _identifier(node, "node")
+    wait_limit = max(1, int(wait_seconds))
+    poll_interval = max(1, int(poll_seconds))
+    return "\n".join(
+        [
+            "set -eu",
+            f"TARGET_SERVICE_UUID={_single_quote(service)}",
+            f"NODE_NAME={_single_quote(node_name)}",
+            "GUARDIAN_NAME='mother-replica-sync-guardian'",
+            f"WAIT_LIMIT={wait_limit}",
+            f"POLL_INTERVAL={poll_interval}",
+            "COMPOSE_FILE=/tmp/mother-replica-sync-guardian.yml",
+            "cat > /tmp/mother-replica-sync-guardian.yml.b64 <<'MOTHER_REPLICA_SYNC_GUARDIAN_COMPOSE'",
+            compose_b64,
+            "MOTHER_REPLICA_SYNC_GUARDIAN_COMPOSE",
+            "base64 -d /tmp/mother-replica-sync-guardian.yml.b64 > \"$COMPOSE_FILE\"",
+            "normalize_label() {",
+            "  case \"${1:-}\" in ''|'<no value>'|'<nil>'|'null') printf '' ;; *) printf '%s' \"$1\" ;; esac",
+            "}",
+            "find_project() {",
+            "  uuid=\"$1\"",
+            "  for c in $(docker ps -aq --filter \"label=com.docker.compose.project=$uuid\" 2>/dev/null || true); do",
+            "    project=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    workdir=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project.working_dir\" }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    if [ -n \"$project\" ]; then printf '%s\\n%s\\n' \"$project\" \"$workdir\"; return 0; fi",
+            "  done",
+            "  for c in $(docker ps -aq --filter \"name=$uuid\" 2>/dev/null || true); do",
+            "    project=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    workdir=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project.working_dir\" }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    if [ -n \"$project\" ]; then printf '%s\\n%s\\n' \"$project\" \"$workdir\"; return 0; fi",
+            "  done",
+            "  echo \"target compose project not found for service_uuid=$uuid\" >&2",
+            "  return 1",
+            "}",
+            "node_healthy() {",
+            "  project=\"$1\"",
+            "  ids=\"$(docker ps -aq --filter \"label=com.docker.compose.project=$project\" --filter \"label=com.docker.compose.service=$NODE_NAME\" 2>/dev/null || true)\"",
+            "  for c in $ids; do",
+            "    state=\"$(normalize_label \"$(docker inspect -f '{{ .State.Status }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    health=\"$(normalize_label \"$(docker inspect -f '{{ if .State.Health }}{{ .State.Health.Status }}{{ end }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    if [ \"$state\" = running ] && [ \"$health\" = healthy ]; then return 0; fi",
+            "  done",
+            "  return 1",
+            "}",
+            "guardian_healthy() {",
+            "  project=\"$1\"",
+            "  ids=\"$(docker ps -aq --filter \"label=com.docker.compose.project=$project\" --filter \"label=com.docker.compose.service=$GUARDIAN_NAME\" 2>/dev/null || true)\"",
+            "  for c in $ids; do",
+            "    state=\"$(normalize_label \"$(docker inspect -f '{{ .State.Status }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    health=\"$(normalize_label \"$(docker inspect -f '{{ if .State.Health }}{{ .State.Health.Status }}{{ end }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    if [ \"$state\" = running ] && [ \"$health\" = healthy ]; then return 0; fi",
+            "  done",
+            "  return 1",
+            "}",
+            "info=\"$(find_project \"$TARGET_SERVICE_UUID\")\"",
+            "PROJECT=\"$(printf '%s\\n' \"$info\" | sed -n '1p')\"",
+            "WORKDIR=\"$(printf '%s\\n' \"$info\" | sed -n '2p')\"",
+            "if ! node_healthy \"$PROJECT\"; then",
+            "  echo \"refusing guardian start because $NODE_NAME is not running:healthy in project $PROJECT\" >&2",
+            "  exit 1",
+            "fi",
+            "if [ -n \"$WORKDIR\" ] && [ -d \"$WORKDIR\" ]; then",
+            "  docker compose -p \"$PROJECT\" -f \"$COMPOSE_FILE\" --project-directory \"$WORKDIR\" up -d --no-deps --force-recreate \"$GUARDIAN_NAME\"",
+            "else",
+            "  docker compose -p \"$PROJECT\" -f \"$COMPOSE_FILE\" up -d --no-deps --force-recreate \"$GUARDIAN_NAME\"",
+            "fi",
+            "start=$(date +%s)",
+            "while :; do",
+            "  if guardian_healthy \"$PROJECT\"; then",
+            "    touch /tmp/mother-replica-sync-guardian-started",
+            "    echo mother-replica-sync-guardian-started",
+            "    sleep 120",
+            "    exit 0",
+            "  fi",
+            "  now=$(date +%s)",
+            "  if [ $((now - start)) -ge \"$WAIT_LIMIT\" ]; then",
+            "    echo \"guardian did not become running:healthy\" >&2",
+            "    exit 1",
+            "  fi",
+            "  sleep \"$POLL_INTERVAL\"",
+            "done",
+        ]
+    ) + "\n"
+
+
+def _guardian_start_compose(service_name: str, script: str) -> str:
+    compose = {
+        "services": {
+            service_name: {
+                "image": "docker:27-cli",
+                "command": ["sh", "-lc", script],
+                "volumes": [
+                    "/var/run/docker.sock:/var/run/docker.sock",
+                    "/data/coolify:/data/coolify:ro",
+                ],
+                "restart": "no",
+                "labels": {
+                    "main_computer.mother.component": "replica-sync-guardian-start",
+                    "main_computer.mother.not_a_validator": "true",
+                    "main_computer.mother.not_a_chain_service": "true",
+                },
+                "healthcheck": {
+                    "test": ["CMD-SHELL", "test -f /tmp/mother-replica-sync-guardian-started"],
+                    "interval": "5s",
+                    "timeout": "2s",
+                    "retries": 3,
+                    "start_period": "1s",
+                },
+            }
+        }
+    }
+    return yaml.safe_dump(compose, sort_keys=False)
+
+
+def _guardian_start_base_result(
+    *,
+    status: str,
+    reason: str | None,
+    observations: list[dict[str, Any]],
+    service_uuid: str,
+    service_name: str,
+    target_service_uuid: str,
+    create: Mapping[str, Any] | None = None,
+    start: Mapping[str, Any] | None = None,
+    health: Mapping[str, Any] | None = None,
+    delete: Mapping[str, Any] | None = None,
+    error_code: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    result = {
+        "status": status,
+        "reason": reason,
+        "create": dict(create) if isinstance(create, Mapping) else None,
+        "start": dict(start) if isinstance(start, Mapping) else None,
+        "health": dict(health) if isinstance(health, Mapping) else None,
+        "delete": dict(delete) if isinstance(delete, Mapping) else None,
+        "observations": observations,
+        "temporary_service_created": bool(service_uuid),
+        "temporary_service_deleted": bool(isinstance(delete, Mapping) and delete.get("ok") is True),
+        "temporary_service_uuid": service_uuid or None,
+        "temporary_service_name": service_name,
+        "target_service_uuid": target_service_uuid,
+        "forced_service": "mother-replica-sync-guardian",
+        "node_recreated": False,
+        "init_recreated": False,
+        "parent_redeploy_performed": False,
+        "parent_restart_performed": False,
+    }
+    if error_code:
+        result["error_code"] = error_code
+    if error:
+        result["error"] = error[:512]
+    return result
+
+
+def _run_replica_sync_guardian_start(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+    service_uuid: str,
+    node: str,
+    compose_text: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+) -> dict[str, Any]:
+    observations: list[dict[str, Any]] = []
+    start_service_uuid = ""
+    delete_receipt: dict[str, Any] | None = None
+    create_receipt: dict[str, Any] | None = None
+    start_receipt: dict[str, Any] | None = None
+    health_result: dict[str, Any] | None = None
+    service_name = _guardian_start_service_name(controller_id)
+    controller = resolve_coolify_controller(private_state, network, controller_id)
+    status = "failed"
+    reason: str | None = "temporary-service-not-started"
+    error_code: str | None = None
+    error: str | None = None
+
+    try:
+        controller_config = _controller_config(private_state, network=network, controller_id=controller_id)
+        environment_uuid = _resolve_environment_uuid(
+            controller=controller,
+            controller_id=controller_id,
+            endpoint=f"/api/v1/projects/{urllib.parse.quote(str(controller_config['project_uuid']), safe='')}/environments",
+            expected_name=network,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            observations=observations,
+        )
+        script = _guardian_start_script(
+            service_uuid=service_uuid,
+            node=node,
+            compose_b64=base64.b64encode(compose_text.encode("utf-8")).decode("ascii"),
+            wait_seconds=max(1, int(max_wait_seconds)),
+            poll_seconds=max(1, int(poll_interval_seconds or 1)),
+        )
+        helper_compose = _guardian_start_compose(service_name, script)
+        body = _temporary_service_body(controller_config, service_name, helper_compose)
+        body["environment_name"] = network
+        body["environment_uuid"] = environment_uuid
+        body["description"] = "Ephemeral Mother add-node replica-sync guardian start"
+        body["instant_deploy"] = False
+
+        create_response = _http(
+            controller,
+            "POST",
+            "/api/v1/services",
+            body=body,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        create_receipt = {
+            "method": "POST",
+            "endpoint": "/api/v1/services",
+            "status": create_response["status"],
+            "ok": create_response["ok"],
+            "response_sha256": create_response["response_sha256"],
+            "byte_length": create_response["byte_length"],
+            "elapsed_ms": create_response["elapsed_ms"],
+            "service_name": service_name,
+            "request_body_sha256": hashlib.sha256(canonical_json(body)).hexdigest(),
+        }
+        observations.append({key: create_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+        if not create_response["ok"]:
+            reason = "temporary-service-create-failed"
+            return _guardian_start_base_result(
+                status=status,
+                reason=reason,
+                observations=observations,
+                service_uuid=start_service_uuid,
+                service_name=service_name,
+                target_service_uuid=service_uuid,
+                create=create_receipt,
+            )
+
+        start_service_uuid = _application_uuid(create_response.get("payload"))
+        create_receipt["service_uuid"] = start_service_uuid
+        start_endpoint = f"/api/v1/services/{urllib.parse.quote(start_service_uuid, safe='')}/start"
+        start_response = _http(
+            controller,
+            "POST",
+            start_endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        start_receipt = {
+            "method": "POST",
+            "endpoint": start_endpoint,
+            "status": start_response["status"],
+            "ok": start_response["ok"],
+            "response_sha256": start_response["response_sha256"],
+            "byte_length": start_response["byte_length"],
+            "elapsed_ms": start_response["elapsed_ms"],
+            "service_uuid": start_service_uuid,
+            "service_name": service_name,
+        }
+        observations.append({key: start_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+        if not start_response["ok"]:
+            reason = "temporary-service-start-failed"
+            return _guardian_start_base_result(
+                status=status,
+                reason=reason,
+                observations=observations,
+                service_uuid=start_service_uuid,
+                service_name=service_name,
+                target_service_uuid=service_uuid,
+                create=create_receipt,
+                start=start_receipt,
+            )
+
+        health_result = _wait_for_temporary_service_health(
+            controller=controller,
+            controller_id=controller_id,
+            service_uuid=start_service_uuid,
+            service_name=service_name,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            observations=observations,
+        )
+        if health_result.get("healthy") is True:
+            status = "pass"
+            reason = None
+        else:
+            reason = str(health_result.get("reason") or "temporary-service-not-healthy")
+    except Exception as exc:  # noqa: BLE001
+        status = "failed"
+        reason = "temporary-service-exception"
+        error_code = str(getattr(exc, "code", type(exc).__name__))
+        error = str(exc)
+    finally:
+        if start_service_uuid:
+            endpoint = f"/api/v1/services/{urllib.parse.quote(start_service_uuid, safe='')}"
+            try:
+                response = _http(
+                    controller,
+                    "DELETE",
+                    endpoint,
+                    body=None,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                delete_receipt = {
+                    "method": "DELETE",
+                    "endpoint": endpoint,
+                    "status": response["status"],
+                    "ok": response["ok"] or response["status"] == 404,
+                    "response_sha256": response["response_sha256"],
+                    "byte_length": response["byte_length"],
+                    "elapsed_ms": response["elapsed_ms"],
+                    "service_uuid": start_service_uuid,
+                    "service_name": service_name,
+                }
+            except Exception as exc:  # noqa: BLE001
+                delete_receipt = {
+                    "method": "DELETE",
+                    "endpoint": endpoint,
+                    "status": None,
+                    "ok": False,
+                    "error_code": getattr(exc, "code", type(exc).__name__),
+                    "error": str(exc)[:512],
+                    "service_uuid": start_service_uuid,
+                    "service_name": service_name,
+                }
+            observations.append({key: delete_receipt.get(key) for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms") if key in delete_receipt})
+
+    return _guardian_start_base_result(
+        status=status,
+        reason=reason,
+        observations=observations,
+        service_uuid=start_service_uuid,
+        service_name=service_name,
+        target_service_uuid=service_uuid,
+        create=create_receipt,
+        start=start_receipt,
+        health=health_result,
+        delete=delete_receipt,
+        error_code=error_code,
+        error=error,
+    )
 
 
 def _claim_release(paths: PrivateStatePaths, release: Mapping[str, Any], *, operation: OperationIdentity) -> Path:
@@ -1025,7 +1558,7 @@ def build_node_add_replica_sync_release(
                 {"ordinal": 2, "mutation_id": f"{node}.start-replica-sync-compose", "controller_id": controller_id, "method": "POST", "endpoint": f"/api/v1/services/{service_uuid_quoted}/start", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
             ],
             "proof": {
-                "transport": "coolify-control-plane-only",
+                "transport": "coolify-control-plane-plus-temporary-docker-helper",
                 "manual_ssh_required": False,
                 "public_endpoint_created": False,
                 "guardian_internal_only": True,
@@ -1042,7 +1575,7 @@ def build_node_add_replica_sync_release(
                     "pre-add-validator-set",
                     "target-not-validator",
                 ],
-                "success_signal": "target service reports running:healthy under the replica-sync proof Compose",
+                "success_signal": "target node and mother-replica-sync-guardian components report running:healthy under the replica-sync proof Compose",
             },
         },
         "authority": {
@@ -1053,6 +1586,7 @@ def build_node_add_replica_sync_release(
             "identity_install_authorized": False,
             "replica_start_authorized": True,
             "replica_sync_authorized": True,
+            "temporary_docker_helper_service_authorized": True,
             "validator_admission_authorized": False,
             "validator_vote_authorized": False,
             "validator_activation_authorized": False,
@@ -1060,8 +1594,9 @@ def build_node_add_replica_sync_release(
         },
         "policy": {
             "compiler": "mother-native-add-node-replica-sync-v1",
-            "allowed_http_methods": ["GET", "PATCH", "POST"],
-            "coolify_control_plane_only": True,
+            "allowed_http_methods": ["GET", "PATCH", "POST", "DELETE"],
+            "coolify_control_plane_only": False,
+            "temporary_docker_helper_service_authorized": True,
             "requested_use_limit": 1,
             "identity_install_previously_performed": True,
             "replica_sync_authorized": True,
@@ -1236,6 +1771,8 @@ def execute_node_add_replica_sync_release(
     observations: list[dict[str, Any]] = []
     failure: dict[str, str] | None = None
     proof_report: dict[str, Any] | None = None
+    guardian_start: dict[str, Any] | None = None
+    component_health: dict[str, Any] | None = None
     try:
         service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
         service_detail = _http(controller, "GET", service_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
@@ -1316,23 +1853,44 @@ def execute_node_add_replica_sync_release(
             if not ok:
                 raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_MUTATION_FAILED", f"Coolify rejected replica-sync mutation {mutation['ordinal']}")
 
-        deadline = time.monotonic() + max(0.0, float(max_wait_seconds))
-        healthy = False
-        last_status = ""
-        while True:
-            inventory = _http(controller, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-            if inventory["ok"]:
-                item = _service_record(inventory["payload"], service_uuid=service_uuid, node=node)
-                last_status = _service_status(item)
-                observations.append({"status": last_status, "response_sha256": inventory["response_sha256"], "observed_at": _timestamp()})
-                if last_status == "running:healthy":
-                    healthy = True
-                    break
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(max(0.0, float(poll_interval_seconds)))
-        if not healthy:
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_NOT_HEALTHY", f"target replica sync proof did not reach running:healthy (last status {last_status!r})")
+        guardian_start = _run_replica_sync_guardian_start(
+            private_state,
+            network=network,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            node=node,
+            compose_text=plan["sync_compose"]["canonical_text"],
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+        )
+        if guardian_start.get("status") != "pass":
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_GUARDIAN_START_FAILED",
+                str(guardian_start.get("reason") or "replica-sync guardian did not start"),
+            )
+
+        component_health = _wait_for_replica_sync_components(
+            controller=controller,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            node=node,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            observations=observations,
+        )
+        if component_health.get("healthy") is not True:
+            summary = component_health.get("component_summary") if isinstance(component_health.get("component_summary"), Mapping) else {}
+            last_status = summary.get("guardian_status") or summary.get("node_status") or "unknown"
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_NOT_HEALTHY",
+                f"target replica sync components did not reach running:healthy (last status {last_status!r})",
+            )
 
         post_detail = _http(controller, "GET", service_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
         if not post_detail["ok"]:
@@ -1401,6 +1959,8 @@ def execute_node_add_replica_sync_release(
         "precondition_receipts": preconditions,
         "mutation_receipts": receipts,
         "health_observations": observations,
+        "replica_sync_guardian_start": guardian_start,
+        "replica_sync_component_health": component_health,
         "proof": {
             "mode": "internal-health-assertion-bound-to-replica-sync-compose",
             "manual_ssh_required": False,
@@ -1408,7 +1968,12 @@ def execute_node_add_replica_sync_release(
             "host_rpc_mapping_present": False,
             "host_p2p_mapping_present": False,
             "guardian_internal_only": True,
-            "service_status": observations[-1]["status"] if observations else None,
+            "service_status": (
+                component_health.get("component_summary", {}).get("guardian_status")
+                if isinstance(component_health, Mapping)
+                else None
+            ),
+            "component_health": component_health,
             "compose_verification": proof_report,
             "predicates_proven_by_guardian": list(plan["proof"]["predicates"]),
             "chain_id": plan["chain_id"],
@@ -1430,14 +1995,16 @@ def execute_node_add_replica_sync_release(
             "replica_start_authorized": True,
             "replica_sync_authorized": True,
             "replica_sync_proven": complete,
+            "temporary_docker_helper_service_authorized": True,
             "validator_admission_authorized": False,
             "validator_vote_authorized": False,
             "validator_activation_authorized": False,
             "routing_or_topology_publication_authorized": False,
         },
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH", "POST"],
-            "coolify_control_plane_only": True,
+            "allowed_http_methods": ["GET", "PATCH", "POST", "DELETE"],
+            "coolify_control_plane_only": False,
+            "temporary_docker_helper_service_authorized": True,
             "identity_install_previously_performed": True,
             "replica_node_only": True,
             "manual_ssh_required": False,
@@ -1448,6 +2015,7 @@ def execute_node_add_replica_sync_release(
             "private_state_updated": False,
             "secrets_in_output": False,
             "service_deploy_or_start_performed": complete,
+            "temporary_docker_helper_service_performed": bool(guardian_start and guardian_start.get("temporary_service_created") is True),
             "replica_sync_performed": complete,
             "validator_admission_performed": False,
             "validator_vote_performed": False,
@@ -1484,6 +2052,7 @@ def execute_node_add_replica_sync_release(
         "replica_sync_performed": complete,
         "replica_sync_proven": complete,
         "service_running_healthy": complete,
+        "component_aware_health_verified": bool(component_health and component_health.get("healthy") is True),
         "sync_compose_verified": bool(proof_report and proof_report.get("sync_compose_verified") is True),
         "genesis_file_commitment_verified": complete,
         "chain_id_verified": complete,

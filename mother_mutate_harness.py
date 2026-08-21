@@ -880,8 +880,11 @@ class Harness:
     def cmd(self, *parts: Any) -> list[str]:
         return [sys.executable, str(self.repo_root / "tools" / "mother_deploy.py"), *[str(part) for part in parts]]
 
-    def cleanup_cmd(self, *parts: Any) -> list[str]:
-        return [sys.executable, str(self.repo_root / "tools" / "mother_post_work_cleanup.py"), *[str(part) for part in parts]]
+    def cleanup1_cmd(self, *parts: Any) -> list[str]:
+        return [sys.executable, str(self.repo_root / "tools" / "mother_post_work_cleanup_v2.py"), *[str(part) for part in parts]]
+
+    def cleanup2_cmd(self, *parts: Any) -> list[str]:
+        return [sys.executable, str(self.repo_root / "tools" / "mother_helper_cleanup2_yagni.py"), *[str(part) for part in parts]]
 
     def mutations_allowed(self) -> bool:
         return bool(self.args.execute_mutations and (self.args.yes_i_know_this_mutates_target_host or self.args.yes_i_know_this_mutates_coolify_a))
@@ -1602,46 +1605,51 @@ class Harness:
             self.state["post_work_cleanup_results"] = []
             return
 
-        results: list[dict[str, Any]] = []
-        for target in targets:
-            service_uuid = require("post-work cleanup service_uuid", target["service_uuid"])
-            node = require("post-work cleanup node", target["node"])
-            argv = self.cleanup_cmd(
-                "--runtime-state-root", self.args.runtime_state_root,
-                "--network", self.args.network,
-                "--controller-id", require("post-work cleanup controller_id", target["controller_id"]),
-                "--service-uuid", service_uuid,
-                "--node-name", node,
-                "--workflow", workflow,
-                "--completion-evidence", completion_evidence,
-                "--completion-evidence-sha256", completion_evidence_sha256,
-                "--execute",
-                "--acknowledge-service-uuid", service_uuid,
-                "--allow-compose-rewrite",
-                "--instant-deploy-compose-rewrite",
-                "--allow-service-redeploy-refresh",
-                "--max-wait-seconds", str(self.args.post_work_cleanup_max_wait_seconds),
-                "--poll-interval-seconds", str(self.args.poll_interval_seconds),
-                "--timeout", str(self.args.timeout),
-                "--max-response-bytes", str(self.args.post_work_cleanup_max_response_bytes),
-                "--write-evidence",
-            )
-            if not self.args.no_post_work_cleanup_shim:
-                argv.append("--allow-retired-genesis-proof-guardian-shim")
-            obj = self.run(f"{POST_WORK_CLEANUP_STEP}-{node}", argv)
-            results.append(
-                {
-                    "node": node,
-                    "controller_id": target["controller_id"],
-                    "service_uuid": service_uuid,
-                    "status": obj.get("status"),
-                    "clean": bool(pick(obj, "summary.clean")),
-                    "evidence": pick(obj, "evidence.path"),
-                    "evidence_sha256": pick(obj, "evidence.sha256"),
-                }
-            )
+        cleanup1_argv = self.cleanup1_cmd(
+            "execute",
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--network", self.args.network,
+            "--topology-evidence", completion_evidence,
+            "--acknowledge-topology-evidence-sha256", completion_evidence_sha256,
+            "--cleanup-all",
+            "--max-wait-seconds", str(self.args.post_work_cleanup_max_wait_seconds),
+            "--poll-interval-seconds", str(self.args.poll_interval_seconds),
+            "--timeout", str(self.args.timeout),
+            "--max-response-bytes", str(self.args.post_work_cleanup_max_response_bytes),
+            "--write-evidence",
+        )
+        cleanup1 = self.run(f"{POST_WORK_CLEANUP_STEP}-cleanup1", cleanup1_argv)
 
-        self.state["post_work_cleanup_results"] = results
+        cleanup2_argv = self.cleanup2_cmd(
+            "execute",
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--network", self.args.network,
+            "--topology-evidence", completion_evidence,
+            "--acknowledge-topology-evidence-sha256", completion_evidence_sha256,
+            "--max-wait-seconds", str(self.args.post_work_cleanup_max_wait_seconds),
+            "--poll-interval-seconds", str(self.args.poll_interval_seconds),
+            "--timeout", str(self.args.timeout),
+            "--max-response-bytes", str(self.args.post_work_cleanup_max_response_bytes),
+            "--write-evidence",
+        )
+        cleanup2 = self.run(f"{POST_WORK_CLEANUP_STEP}-cleanup2", cleanup2_argv)
+
+        self.state["post_work_cleanup_results"] = [
+            {
+                "step": "cleanup1",
+                "script": "mother_post_work_cleanup_v2.py",
+                "status": cleanup1.get("status"),
+                "evidence": pick(cleanup1, "evidence.path", "evidence_path"),
+                "evidence_sha256": pick(cleanup1, "evidence.sha256", "evidence_sha256"),
+            },
+            {
+                "step": "cleanup2",
+                "script": "mother_helper_cleanup2_yagni.py",
+                "status": cleanup2.get("status"),
+                "evidence": pick(cleanup2, "evidence.path", "evidence_path"),
+                "evidence_sha256": pick(cleanup2, "evidence.sha256", "evidence_sha256"),
+            },
+        ]
 
     def methods(self) -> dict[str, Any]:
         return {

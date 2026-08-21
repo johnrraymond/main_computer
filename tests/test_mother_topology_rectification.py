@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import yaml
 from datetime import datetime, timezone
@@ -9,10 +10,12 @@ from urllib.parse import urlsplit
 from tools import mother_deploy
 from tools.mother.common.canonical import canonical_json
 from tools.mother.common.deployment_node_add_prep import build_node_add_prep_transaction
+from tools.mother.common.deployment_node_remove_prep import build_node_remove_prep_transaction
 from tools.mother.common.deployment_topology_rectification import (
     adopt_empty_current_topology,
     adopt_fresh_empty_topology,
     detect_topology_staleness,
+    seal_live_current_topology,
     verify_empty_topology_rectification_evidence,
     _validator_admission_public_endpoint_policy_ok,
 )
@@ -68,6 +71,40 @@ class _PresentServicesOpener:
             if uuid not in self.services:
                 return _Response({"message": "not found"}, status=404)
             name, status = self.services[uuid]
+            return _Response({"uuid": uuid, "name": name, "status": status})
+        raise AssertionError(f"unexpected GET path: {parsed.path}")
+
+
+class _ControllerScopedServicesOpener:
+    def __init__(self, services_by_controller: dict[str, dict[str, tuple[str, str]]]) -> None:
+        self.services_by_controller = services_by_controller
+        self.requests: list[dict] = []
+
+    def _controller_id(self, host: str | None) -> str:
+        if host and "coolify-a" in host:
+            return "coolify-a"
+        if host and "coolify-c" in host:
+            return "coolify-c"
+        raise AssertionError(f"unexpected Coolify host: {host}")
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        self.requests.append({"method": request.get_method(), "host": parsed.hostname, "path": parsed.path})
+        assert request.get_method() == "GET"
+        controller_id = self._controller_id(parsed.hostname)
+        services = self.services_by_controller.get(controller_id, {})
+        if parsed.path == "/api/v1/services":
+            return _Response(
+                [
+                    {"uuid": uuid, "name": name, "status": status}
+                    for uuid, (name, status) in sorted(services.items())
+                ]
+            )
+        if parsed.path.startswith("/api/v1/services/"):
+            uuid = parsed.path.rsplit("/", 1)[-1]
+            if uuid not in services:
+                return _Response({"message": "not found"}, status=404)
+            name, status = services[uuid]
             return _Response({"uuid": uuid, "name": name, "status": status})
         raise AssertionError(f"unexpected GET path: {parsed.path}")
 
@@ -381,6 +418,145 @@ def _write_remove_finalize_empty_topology_evidence(paths, private_state) -> tupl
     return path, hashlib.sha256(payload).hexdigest()
 
 
+def _write_three_node_stale_c2_topology_evidence(paths, private_state) -> tuple[Path, str]:
+    _genesis, genesis_sha = _test_genesis(paths, private_state)
+    evidence = {
+        "kind": "main_computer.mother.add_node_post_admission_topology_evidence.v1",
+        "schema_version": 1,
+        "completed_at": "2026-08-20T20:30:00Z",
+        "observed_at": "2026-08-20T20:30:00Z",
+        "status": "pass",
+        "failure": None,
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "mode": "soft",
+        "target": {
+            "node": C2_NODE,
+            "controller_id": "coolify-c",
+            "service_uuid": "old-c2-service",
+            "validator_address": C2_VALIDATOR,
+        },
+        "current_topology": {
+            "source": "test-stale-c2-topology",
+            "chain_id": 42424240,
+            "genesis_sha256": genesis_sha,
+            "nodes": [C1_NODE, A_NODE, C2_NODE],
+            "services": {
+                C1_NODE: {
+                    "node": C1_NODE,
+                    "controller_id": "coolify-c",
+                    "service_uuid": "live-c1-service",
+                    "service_status": "running:healthy",
+                    "readiness_source": "test",
+                    "last_observed_at": "2026-08-20T20:30:00Z",
+                },
+                A_NODE: {
+                    "node": A_NODE,
+                    "controller_id": "coolify-a",
+                    "service_uuid": "live-a-service",
+                    "service_status": "running:healthy",
+                    "readiness_source": "test",
+                    "last_observed_at": "2026-08-20T20:30:00Z",
+                },
+                C2_NODE: {
+                    "node": C2_NODE,
+                    "controller_id": "coolify-c",
+                    "service_uuid": "old-c2-service",
+                    "service_status": "running:healthy",
+                    "readiness_source": "test",
+                    "last_observed_at": "2026-08-20T20:30:00Z",
+                },
+            },
+            "validator_count": 3,
+            "validator_set": [C1_VALIDATOR, A_VALIDATOR, C2_VALIDATOR],
+        },
+        "final_topology": {
+            "source": "test-stale-c2-topology",
+            "chain_id": 42424240,
+            "genesis_sha256": genesis_sha,
+            "nodes": [C1_NODE, A_NODE, C2_NODE],
+            "services": {
+                C1_NODE: {
+                    "node": C1_NODE,
+                    "controller_id": "coolify-c",
+                    "service_uuid": "live-c1-service",
+                    "service_status": "running:healthy",
+                    "readiness_source": "test",
+                    "last_observed_at": "2026-08-20T20:30:00Z",
+                },
+                A_NODE: {
+                    "node": A_NODE,
+                    "controller_id": "coolify-a",
+                    "service_uuid": "live-a-service",
+                    "service_status": "running:healthy",
+                    "readiness_source": "test",
+                    "last_observed_at": "2026-08-20T20:30:00Z",
+                },
+                C2_NODE: {
+                    "node": C2_NODE,
+                    "controller_id": "coolify-c",
+                    "service_uuid": "old-c2-service",
+                    "service_status": "running:healthy",
+                    "readiness_source": "test",
+                    "last_observed_at": "2026-08-20T20:30:00Z",
+                },
+            },
+            "validator_count": 3,
+            "validator_set": [C1_VALIDATOR, A_VALIDATOR, C2_VALIDATOR],
+        },
+        "authority": {
+            "read_only_post_admission_observe": True,
+            "validator_admission_previously_proven": True,
+            "fresh_validator_admission_guardians_verified": True,
+            "topology_current": True,
+            "live_mutation_authorized": False,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "finalize_mutation_performed": False,
+            "chain_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_http_endpoint_created": False,
+            "public_endpoint_created": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "current_topology_marked_by_evidence": True,
+            "source_validator_admission_clean": True,
+            "topology_current": True,
+            "topology_stale": False,
+            "final_nodes": [C1_NODE, A_NODE, C2_NODE],
+            "final_validator_count": 3,
+            "final_validator_set": [C1_VALIDATOR, A_VALIDATOR, C2_VALIDATOR],
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "chain_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "next_phase": "add-node-prep-mainnet",
+        },
+        "live_mutation_performed": False,
+        "chain_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "next_phase": "add-node-prep-mainnet",
+    }
+    payload = canonical_json(evidence)
+    path = paths.root / "evidence" / "deployment-node-add-post-admission-observe" / "stale-c2-topology.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path, hashlib.sha256(payload).hexdigest()
+
+
 def test_detect_topology_staleness_reports_rectification_required_for_absent_single_node(tmp_path: Path) -> None:
     _runtime, paths, private_state = _install(tmp_path)
     evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
@@ -606,6 +782,59 @@ def test_detect_topology_marks_unexpected_live_nodes_stale_split_topology(tmp_pa
     assert result["summary"]["unexpected_live_nodes"] == [C1_NODE]
 
 
+
+def test_seal_live_current_topology_refreshes_uuid_and_remove_prep_targets_live_service(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_three_node_stale_c2_topology_evidence(paths, private_state)
+
+    result = seal_live_current_topology(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        use_live_topology=True,
+        write_evidence=True,
+        now=datetime(2026, 8, 20, 20, 45, 0, tzinfo=timezone.utc),
+        opener=_ControllerScopedServicesOpener(
+            {
+                "coolify-a": {
+                    "live-a-service": (A_NODE, "running:healthy"),
+                },
+                "coolify-c": {
+                    "live-c1-service": (C1_NODE, "running:healthy"),
+                    "live-c2-service": (C2_NODE, "running:unhealthy"),
+                },
+            }
+        ),
+        operation=_operation("seal-live-current-topology"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["kind"] == "main_computer.mother.live_current_topology_evidence.v1"
+    assert result["summary"]["live_topology_sealed"] is True
+    assert result["summary"]["service_uuid_refreshed_nodes"] == [C2_NODE]
+    assert result["final_topology"]["services"][C2_NODE]["service_uuid"] == "live-c2-service"
+    assert result["target"]["service_uuid"] == "live-c2-service"
+    assert result["target"]["previous_service_uuid"] == "old-c2-service"
+
+    written = result["evidence"]
+    prep = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        Path(written["path"]),
+        network="mainnet",
+        target_node=C2_NODE,
+        baseline_evidence_sha256=written["sha256"],
+        baseline_max_age_seconds=604800,
+        created_at="2026-08-20T20:46:00Z",
+        now=datetime(2026, 8, 20, 20, 46, 0, tzinfo=timezone.utc),
+    )
+    assert prep["target"]["service_uuid"] == "live-c2-service"
+    assert prep["target"]["validator_address"] == C2_VALIDATOR
+    assert prep["source_baseline_evidence"]["kind"] == "main_computer.mother.live_current_topology_evidence.v1"
+
+
 def test_empty_topology_rectification_writes_prep_usable_empty_baseline(tmp_path: Path) -> None:
     _runtime, paths, private_state = _install(tmp_path)
     evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
@@ -765,6 +994,7 @@ def test_mother_deploy_cli_exposes_topology_rectification_commands() -> None:
     assert "detect-mother-topology-staleness" in help_text
     assert "adopt-empty-current-topology" in help_text
     assert "adopt-fresh-empty-topology" in help_text
+    assert "seal-live-current-topology" in help_text
     assert "verify-empty-current-topology-evidence" in help_text
 
 

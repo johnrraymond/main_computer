@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import yaml
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -12,6 +13,7 @@ from tools.mother.common.deployment_completed_helper_cleanup import (
     _component_summary,
     _is_completed_helper_name,
     _remove_completed_helpers_from_compose,
+    _restart_existing_helper_application,
 )
 from tools.mother.common.paths import MotherPaths
 from tools.mother.common.private_state import (
@@ -1441,3 +1443,38 @@ def test_completed_helper_cleanup_names_unresolved_late_helper_row_when_remediat
         }
     ]
     assert result["coolify_model_status_exclusion"]["patched_application_success_count"] == 0
+
+
+def test_existing_helper_restart_is_child_only() -> None:
+    class _RestartOpener:
+        def __init__(self) -> None:
+            self.requests: list[tuple[str, str]] = []
+
+        def open(self, request, timeout: float):  # noqa: ANN001
+            parsed = urlsplit(request.full_url)
+            method = request.get_method()
+            path = parsed.path
+            self.requests.append((method, path))
+            return _Response({"ok": True, "uuid": "genesisguardian123"})
+
+    controller = type("_Controller", (), {"base_url": "https://coolify.example", "api_token": TOKEN_A})()
+    opener = _RestartOpener()
+    observations: list[dict[str, object]] = []
+
+    result = _restart_existing_helper_application(
+        controller=controller,
+        parent_service_uuid=SERVICE_UUID,
+        helper_name="mother-genesis-proof-guardian",
+        helper_application_uuid="genesisguardian123",
+        timeout=30.0,
+        max_response_bytes=1024 * 1024,
+        opener=opener,
+        observations=observations,
+    )
+
+    assert result["ok"] is True
+    assert result["cleanup_scope"] == "existing-helper-mimic-restart"
+    assert result["post_restart_health_poll_performed"] is False
+    assert opener.requests == [("POST", "/api/v1/applications/genesisguardian123/restart")]
+    assert not any("/api/v1/services/" in path and path.endswith("/start") for _, path in opener.requests)
+
