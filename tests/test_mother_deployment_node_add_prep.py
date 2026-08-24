@@ -1116,7 +1116,15 @@ def _write_verified_add_node_identity_evidence(tmp_path: Path):
 
 
 class _AddNodeReplicaSyncOpener:
-    def __init__(self, *, private_state, guardian_after_helper_status: str = "running:healthy") -> None:  # noqa: ANN001
+    def __init__(
+        self,
+        *,
+        private_state,
+        guardian_after_helper_status: str = "running:healthy",
+        node_after_start_status: str = "running:healthy",
+        temp_service_after_start_status: str = "running:healthy",
+        temp_service_logs: str = "",
+    ) -> None:  # noqa: ANN001
         document = yaml.safe_load(private_state.document_bytes.decode("utf-8"))
         validator_key = document["networks"]["mainnet"]["validators"][A_NODE]["private_key"]
         hub_key = document["networks"]["mainnet"]["node_seed_material"][A_NODE]["wallets"]["hub_admin"]["private_key"]
@@ -1127,6 +1135,9 @@ class _AddNodeReplicaSyncOpener:
         ]
         self.environments = [{"uuid": "env-mainnet", "name": "mainnet"}]
         self.guardian_after_helper_status = guardian_after_helper_status
+        self.node_after_start_status = node_after_start_status
+        self.temp_service_after_start_status = temp_service_after_start_status
+        self.temp_service_logs = temp_service_logs
         self.temp_service_uuid = "guardian-start-temp"
         self.temp_service_name = ""
         self.temp_service_status = "stopped"
@@ -1180,7 +1191,7 @@ class _AddNodeReplicaSyncOpener:
             self.service["status"] = "exited"
             self.service["applications"] = [
                 {"uuid": "app-guardian", "name": "mother-replica-sync-guardian", "status": "exited"},
-                {"uuid": "app-node", "name": A_NODE, "status": "running:healthy"},
+                {"uuid": "app-node", "name": A_NODE, "status": self.node_after_start_status},
             ]
             return _Response({"message": "start queued"})
         if method == "POST" and path == "/api/v1/services":
@@ -1195,16 +1206,19 @@ class _AddNodeReplicaSyncOpener:
             self.temp_deleted = False
             return _Response({"uuid": self.temp_service_uuid, "name": self.temp_service_name, "status": self.temp_service_status}, status=201)
         if method == "POST" and path == f"/api/v1/services/{self.temp_service_uuid}/start":
-            self.temp_service_status = "running:healthy"
-            self.service["applications"] = [
-                {"uuid": "app-guardian", "name": "mother-replica-sync-guardian", "status": self.guardian_after_helper_status},
-                {"uuid": "app-node", "name": A_NODE, "status": "running:healthy"},
-            ]
+            self.temp_service_status = self.temp_service_after_start_status
+            if self.temp_service_status == "running:healthy":
+                self.service["applications"] = [
+                    {"uuid": "app-guardian", "name": "mother-replica-sync-guardian", "status": self.guardian_after_helper_status},
+                    {"uuid": "app-node", "name": A_NODE, "status": self.node_after_start_status},
+                ]
             return _Response({"message": "temporary helper started"})
         if method == "GET" and path == f"/api/v1/services/{self.temp_service_uuid}":
             if self.temp_deleted:
                 return _Response({"message": "not found"}, status=404)
             return _Response({"uuid": self.temp_service_uuid, "name": self.temp_service_name, "status": self.temp_service_status})
+        if method == "GET" and path == f"/api/v1/services/{self.temp_service_uuid}/logs":
+            return _Response({"logs": self.temp_service_logs})
         if method == "DELETE" and path == f"/api/v1/services/{self.temp_service_uuid}":
             self.temp_deleted = True
             return _Response({"message": "deleted"})
@@ -1335,6 +1349,14 @@ def test_add_node_replica_sync_executes_only_sync_proof(tmp_path: Path) -> None:
     assert result["replica_sync_guardian_start"]["node_recreated"] is False
     assert result["replica_sync_guardian_start"]["init_recreated"] is False
     assert result["summary"]["component_aware_health_verified"] is True
+    target_diagnostics = [
+        item
+        for item in result["health_observations"]
+        if item.get("phase") == "replica-sync-target-before-guardian-start"
+    ]
+    assert len(target_diagnostics) == 1
+    assert target_diagnostics[0]["node_status"] == "running:healthy"
+    assert target_diagnostics[0]["guardian_status"] == "exited"
     assert not any(request["path"] == "/api/v1/deploy" for request in opener.requests)
 
     verified = verify_node_add_replica_sync_evidence(
@@ -1355,6 +1377,76 @@ def test_add_node_replica_sync_executes_only_sync_proof(tmp_path: Path) -> None:
     assert verified["replica_sync_performed"] is True
     assert verified["validator_admission_performed"] is False
     assert verified["next_phase"] == "add-node-validator-admission-mainnet"
+
+
+def test_add_node_replica_sync_captures_read_only_guardian_start_failure_diagnostics(tmp_path: Path) -> None:
+    paths, private_state, identity_evidence_path, identity_evidence_sha = _write_verified_add_node_identity_evidence(tmp_path)
+    release = build_node_add_replica_sync_release(
+        paths,
+        private_state,
+        identity_evidence_path,
+        acknowledged_add_node_identity_evidence_sha256=identity_evidence_sha,
+        created_at="2026-08-11T21:40:00Z",
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+    )
+    release_path, release_sha = write_node_add_replica_sync_release(
+        paths,
+        release,
+        operation=_operation("write-add-replica-sync-release-helper-diagnostic"),
+    )
+    helper_log = (
+        "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG project-not-found "
+        "service_uuid=svc-a1\n"
+    )
+    opener = _AddNodeReplicaSyncOpener(
+        private_state=private_state,
+        node_after_start_status="exited",
+        temp_service_after_start_status="exited",
+        temp_service_logs=helper_log,
+    )
+    result = execute_node_add_replica_sync_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+        now=datetime(2026, 8, 11, 21, 40, 1, tzinfo=timezone.utc),
+        operation=_operation("execute-add-replica-sync-helper-diagnostic"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_GUARDIAN_START_FAILED"
+    diagnostic = result["replica_sync_guardian_start"]["failure_diagnostic"]
+    assert diagnostic["read_only"] is True
+    assert diagnostic["failure_markers"] == ["project-not-found"]
+    assert diagnostic["raw_logs_persisted"] is False
+    assert diagnostic["logs_sha256"] == hashlib.sha256(helper_log.encode("utf-8")).hexdigest()
+    assert diagnostic["logs_byte_length"] == len(helper_log.encode("utf-8"))
+    assert diagnostic["attempts"][0]["endpoint_kind"] == "service-sub-service"
+    assert diagnostic["attempts"][0]["logs_field_present"] is True
+    assert any(
+        request["method"] == "GET"
+        and request["path"] == f"/api/v1/services/{opener.temp_service_uuid}/logs"
+        for request in opener.requests
+    )
+    target_diagnostics = {
+        item["phase"]: item
+        for item in result["health_observations"]
+        if item.get("phase", "").startswith("replica-sync-target-")
+    }
+    assert target_diagnostics["replica-sync-target-before-guardian-start"]["node_status"] == "exited"
+    assert target_diagnostics["replica-sync-target-after-guardian-start-failure"]["node_status"] == "exited"
+    assert result["replica_sync_guardian_start"]["temporary_service_deleted"] is True
 
 
 def test_add_node_replica_sync_fails_if_guardian_sidecar_stays_unhealthy(tmp_path: Path) -> None:

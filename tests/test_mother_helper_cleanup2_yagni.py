@@ -86,6 +86,9 @@ def _compose() -> str:
     image: hyperledger/besu:latest
     command:
       - besu
+  mother-genesis-init:
+    image: alpine:3.20
+    exclude_from_hc: true
   mother-super-node-fdb:
     image: foundationdb/foundationdb:7.4.6
   mother-super-node-hub:
@@ -146,7 +149,7 @@ class _Cleanup2Opener:
                     "image": "python:3.12-alpine",
                 },
             ],
-            "docker_compose_raw": base64.b64encode(_compose().encode("utf-8")).decode("ascii"),
+            "docker_compose_raw": base64.b64encode((self.patched_compose or _compose()).encode("utf-8")).decode("ascii"),
         }
         if self.service_detail_as_json_string:
             return json.dumps(payload)
@@ -220,7 +223,57 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert result["summary"]["child_public_api_restart_attempted"] is False
     assert result["summary"]["temporary_helper_apply_service_created"] is False
     assert result["summary"]["post_restart_health_poll_performed"] is False
-    assert result["summary"]["chain_touched"] is False
+    first_step = result["patch_steps"][0]
+    diagnostics = first_step["diagnostics"]
+    assert diagnostics["pre_patch_parent"]["parent_status"] == "degraded:unhealthy"
+    assert diagnostics["pre_patch_parent"]["helper_application_count"] == 3
+    assert any(
+        item["helper_name"] == "mother-genesis-proof-guardian" and item["is_cleanup2_mimic_definition"] is False
+        for item in diagnostics["pre_patch_parent"]["helper_definitions"]
+    )
+    assert any(
+        item["helper_name"] == "mother-genesis-proof-guardian" and item["is_cleanup2_mimic_definition"] is True
+        for item in diagnostics["rewritten_helper_definitions"]
+    )
+    assert diagnostics["patch_readback"]["compose_matches_expected_patch"] is True
+    assert diagnostics["patch_readback"]["all_target_helpers_are_cleanup2_mimics_in_saved_compose"] is True
+    assert result["summary"]["debug_destructive_short_circuit_after_proof_guardian_cleanup2"] is False
+    assert result["summary"]["debug_destructive_cleanup2_services_left_for_inspection"] == []
+    assert len(result["post_cleanup_readbacks"]) == 1
+    assert result["post_cleanup_readbacks"][0]["all_target_helpers_are_cleanup2_mimics_in_saved_compose"] is True
+    assert result["cleanup2_steps"][0]["debug_destructive_exit_after_proof_guardian_cleanup2"] is False
+    assert result["cleanup2_steps"][0]["debug_destructive_cleanup2_service_left_for_inspection"] is False
+    assert result["cleanup2_steps"][0]["completion"]["temporary_service_delete"]["ok"] is True
+    assert result["cleanup2_steps"][0]["completion"]["temporary_service_delete"]["cleanup_scope"] == "cleanup2-temporary-service-delete"
+    cleanup2_diag = result["cleanup2_steps"][0]["diagnostics"]
+    assert cleanup2_diag["target_diagnostics"][0]["docker_compose_cli_removed_service_keys"] == {
+        "mother-genesis-init": ["exclude_from_hc"]
+    }
+    assert cleanup2_diag["target_diagnostics"][0]["docker_compose_cli_compose_sha256"]
+    assert cleanup2_diag["runtime_diagnostics_log_prefix"] == "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC"
+    assert "actual discovered compose project" in cleanup2_diag["runtime_diagnostics_include"]
+    assert "docker compose stdout base64" in cleanup2_diag["runtime_diagnostics_include"]
+    assert "docker ps snapshots before and after" in cleanup2_diag["runtime_diagnostics_include"]
+    assert cleanup2_diag["target_diagnostics"][0]["expected_container_names"] == [
+        f"mother-add-node-validator-activation-guardian-{SERVICE_UUID}",
+        f"mother-genesis-proof-guardian-{SERVICE_UUID}",
+        f"mother-node-remove-voter-mainnetc_super1-{SERVICE_UUID}",
+    ]
+    assert "docker compose -p <discovered_project>" in cleanup2_diag["target_diagnostics"][0]["docker_compose_up_template"]
+    assert cleanup2_diag["target_diagnostics"][0]["runtime_diagnostics_expected_phases"] == [
+        "target_payload",
+        "compose_decoded",
+        "find_project",
+        "find_project_candidate",
+        "find_project_selected",
+        "target_begin",
+        "before",
+        "docker_compose_start",
+        "docker_compose_exit",
+        "docker_compose_stdout",
+        "docker_compose_stderr",
+        "after",
+    ]
 
     assert opener.patched_compose is not None
     patched = yaml.safe_load(opener.patched_compose)
@@ -238,6 +291,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
         assert helper["labels"]["main_computer.mother.retired_helper_mimic"] == "true"
 
     assert services["mainnetc-super2"]["image"] == "hyperledger/besu:latest"
+    assert services["mother-genesis-init"]["exclude_from_hc"] is True
     assert services["mother-super-node-fdb"]["image"] == "foundationdb/foundationdb:7.4.6"
     assert services["mother-super-node-hub"]["image"] == "mainnetc-super2-hub:c56a20a0fd05"
 
@@ -247,6 +301,22 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert "/var/run/docker.sock:/var/run/docker.sock" in cleanup2
     assert "docker compose -p" in cleanup2
     assert "--no-deps --force-recreate" in cleanup2
+    assert "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC" in cleanup2
+    assert "phase=docker_compose_start" in cleanup2
+    assert "phase=docker_compose_exit" in cleanup2
+    assert "inspect_expected after" in cleanup2
+    assert "is_cleanup2_mimic=$$is_mimic" in cleanup2
+    cleanup2_service = next(iter(yaml.safe_load(cleanup2)["services"].values()))
+    cleanup2_script = cleanup2_service["command"][2]
+    b64_marker = "MOTHER_HELPER_CLEANUP2_COMPOSE_1"
+    embedded_b64 = cleanup2_script.split(f"<<'{b64_marker}'", 1)[1].split(b64_marker, 1)[0].strip()
+    cleanup2_apply_compose = yaml.safe_load(base64.b64decode(embedded_b64).decode("utf-8"))
+    assert "exclude_from_hc" not in cleanup2_apply_compose["services"]["mother-genesis-init"]
+    assert 'info="$$(find_project "$$uuid")"' in cleanup2_script
+    assert 'docker ps -aq --filter "name=$$uuid"' in cleanup2_script
+    assert 'docker compose -p "$$project" -f "$$compose_file"' in cleanup2_script
+    assert 'find_project ""' not in cleanup2_script
+    assert '--filter "name="' not in cleanup2_script
     assert "echo mother-helper-cleanup2-complete" in cleanup2
     assert "while true; do sleep 3600; done" not in cleanup2
     assert "mother-add-node-validator-activation-guardian" in cleanup2

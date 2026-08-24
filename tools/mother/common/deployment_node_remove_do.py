@@ -41,6 +41,7 @@ from .deployment_completed_helper_cleanup import (
 )
 from .deployment_node_remove import MotherDeploymentNodeRemoveError, acknowledgement_for, execute_node_removal
 from .deployment_node_remove_prep import verify_node_remove_prep_transaction
+from .mother_node_remove_helper_setup import MotherNodeRemoveHelperSetupError, setup_node_remove_helper
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
@@ -1821,6 +1822,11 @@ def build_node_remove_do_release(
     service_deletion_is_first = bool(verified.get("service_deletion_is_first"))
     routing_withdrawal_required = bool(verified.get("routing_topology_withdrawal_required_before_service_deletion"))
     request_sha = _request_sha256(verified["target_validator_address"], False)
+    voter_nodes = list(verified["survivor_nodes"])
+    if validator_removal_vote_required and len(current_set) == 2 and len(desired_set) == 1:
+        target_node = _identifier(verified["target_node"], "target node")
+        if target_node not in voter_nodes:
+            voter_nodes.append(target_node)
     release: dict[str, Any] = {
         "kind": _RELEASE_KIND,
         "schema_version": 1,
@@ -1845,7 +1851,7 @@ def build_node_remove_do_release(
             "method": "qbft_proposeValidatorVote" if validator_removal_vote_required else None,
             "params": [verified["target_validator_address"], False] if validator_removal_vote_required else [],
             "request_sha256": request_sha if validator_removal_vote_required else None,
-            "voter_nodes": list(verified["survivor_nodes"]),
+            "voter_nodes": voter_nodes,
             "current_validator_set": current_set,
             "desired_validator_set": desired_set,
         },
@@ -2134,15 +2140,25 @@ def execute_node_remove_do_release(
         proof_endpoints: dict[str, dict[str, Any]] = {}
         guardian_targets: dict[str, dict[str, Any]] = {}
         borrowed_guardians: dict[str, dict[str, Any]] = {}
+        host_helper_guardians: dict[str, dict[str, Any]] = {}
         survivor_compose_texts: dict[str, str] = {}
         vote = release["validator_removal_vote"]
         current_set = [_address(item, "current validator") for item in vote["current_validator_set"]]
         desired_set = [_address(item, "desired validator") for item in vote["desired_validator_set"]]
         target_validator = _address(release["target"]["validator_address"], "target validator")
-        for survivor in release["survivors"]:
-            voter = _identifier(survivor["node"], "survivor node")
-            controller_id = _identifier(survivor["controller_id"], "survivor controller")
-            service_uuid = str(survivor["service_uuid"])
+        voter_services = list(release["survivors"])
+        two_to_one_self_vote = (
+            vote.get("required", True)
+            and len(current_set) == 2
+            and len(desired_set) == 1
+            and release["target"]["node"] in vote.get("voter_nodes", [])
+        )
+        if two_to_one_self_vote:
+            voter_services.append(release["target"])
+        for voter_service in voter_services:
+            voter = _identifier(voter_service["node"], "voter node")
+            controller_id = _identifier(voter_service["controller_id"], "voter controller")
+            service_uuid = str(voter_service["service_uuid"])
             controller = controllers[controller_id]
             endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
             detail = _http(
@@ -2269,7 +2285,11 @@ def execute_node_remove_do_release(
             if not start_accepted:
                 raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} guardian start with HTTP {start['status']}")
 
-            readiness_deadline = time.monotonic() + min(max(float(max_wait_seconds), 0.0), 60.0)
+            readiness_deadline = (
+                time.monotonic()
+                if two_to_one_self_vote
+                else time.monotonic() + min(max(float(max_wait_seconds), 0.0), 60.0)
+            )
             while True:
                 readiness = _observe_removal_guardian_deployment(
                     controller=controller,
@@ -2303,41 +2323,135 @@ def execute_node_remove_do_release(
                     time.sleep(max(0.0, poll_interval_seconds))
 
             if not readiness.get("verified"):
-                borrowed_target = _activate_existing_admission_voter_as_remove_guardian(
-                    controller=controller,
-                    controller_id=controller_id,
+                host_setup_result: dict[str, Any] | None = None
+                host_setup_error: dict[str, str] | None = None
+                host_helper_name = f"{guardian}-{service_uuid}"
+                try:
+                    host_setup_result = setup_node_remove_helper(
+                        private_state=private_state,
+                        network=str(release["network"]),
+                        controller_id=controller_id,
+                        node=voter,
+                        service_uuid=service_uuid,
+                        helper_name=host_helper_name,
+                        helper_python=script,
+                        helper_component="node-remove-do",
+                        expected_proof_kind=_NODE_REMOVE_DO_PROOF_CONTRACT,
+                        proof_host=str(proof_endpoint["host"]),
+                        base_host_port=int(proof_endpoint["base_host_port"]),
+                        proof_host_port=int(proof_endpoint["host_port"]),
+                        execute=True,
+                        timeout=timeout,
+                        max_response_bytes=max_response_bytes,
+                        wait_seconds=(
+                            min(max(float(max_wait_seconds), 0.0), 10.0)
+                            if two_to_one_self_vote
+                            else max(30.0, min(float(max_wait_seconds), 180.0))
+                        ),
+                        poll_interval_seconds=poll_interval_seconds,
+                        keep_runner=False,
+                        opener=opener,
+                    )
+                except MotherNodeRemoveHelperSetupError as exc:
+                    host_setup_error = {"code": exc.code, "message": str(exc)[:512]}
+                    host_setup_result = {"status": "failed", "failure": host_setup_error}
+                except Exception as exc:  # pragma: no cover - defensive diagnostic envelope
+                    host_setup_error = {
+                        "code": "MOTHER_DEPLOY_NODE_REMOVE_DO_HOST_HELPER_SETUP_UNEXPECTED_FAILURE",
+                        "message": str(exc)[:512],
+                    }
+                    host_setup_result = {"status": "failed", "failure": host_setup_error}
+
+                host_helper_guardians[voter] = dict(host_setup_result)
+                for receipt_key, mutation_suffix in (
+                    ("runner_create", "create-host-docker-node-removal-vote-guardian-runner"),
+                    ("runner_start", "start-host-docker-node-removal-vote-guardian-runner"),
+                ):
+                    receipt = host_setup_result.get(receipt_key)
+                    if isinstance(receipt, Mapping):
+                        accepted = bool(receipt.get("ok")) and int(receipt.get("status") or 0) in {200, 201, 202}
+                        mutation_receipts.append({
+                            "ordinal": len(mutation_receipts) + 1,
+                            "phase": "remove-qbft-validator",
+                            "mutation_id": f"{voter}.{mutation_suffix}",
+                            "controller_id": controller_id,
+                            "node": voter,
+                            "service_uuid": service_uuid,
+                            "method": receipt.get("method"),
+                            "endpoint": receipt.get("endpoint"),
+                            "body_sha256": receipt.get("request_body_sha256"),
+                            "guardian_service": host_helper_name,
+                            "guardian_strategy": "host-docker-besu-network-helper",
+                            "proof_endpoint": dict(proof_endpoint),
+                            "response": {
+                                "status": receipt.get("status"),
+                                "ok": receipt.get("ok"),
+                                "response_sha256": receipt.get("response_sha256"),
+                                "byte_length": receipt.get("byte_length"),
+                                "elapsed_ms": receipt.get("elapsed_ms"),
+                            },
+                            "live_write_acknowledged": accepted,
+                            "status": "succeeded" if accepted else "failed",
+                        })
+
+                helper_payload = host_setup_result.get("helper_proof_payload")
+                host_verified = bool(host_setup_result.get("helper_setup_verified")) and _node_remove_do_proof_payload_verified(
+                    helper_payload,
                     voter=voter,
-                    survivor_service_uuid=service_uuid,
-                    script=script,
-                    proof_endpoint=proof_endpoint,
                     release=release,
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
-                    max_wait_seconds=max_wait_seconds,
-                    poll_interval_seconds=poll_interval_seconds,
-                    opener=opener,
-                    mutation_receipts=mutation_receipts,
-                    health_observations=health_observations,
-                    now=now,
                 )
-                if borrowed_target is not None:
-                    guardian = str(borrowed_target["guardian_service"])
+                host_launch_verified = host_verified
+                if two_to_one_self_vote and not host_verified:
+                    runner_create = host_setup_result.get("runner_create")
+                    runner_start = host_setup_result.get("runner_start")
+                    host_launch_verified = bool(
+                        isinstance(runner_create, Mapping)
+                        and runner_create.get("ok") is True
+                        and isinstance(runner_start, Mapping)
+                        and runner_start.get("ok") is True
+                    )
+                    if host_launch_verified:
+                        host_setup_result["two_to_one_launch_verified"] = True
+                host_helper_guardians[voter] = dict(host_setup_result)
+                health_observations.append({
+                    "node": voter,
+                    "controller_id": controller_id,
+                    "service_uuid": service_uuid,
+                    "guardian_service": host_helper_name,
+                    "guardian_strategy": "host-docker-besu-network-helper",
+                    "guardian_deployment_readiness": {
+                        "strategy": "host-docker-besu-network-helper",
+                        "verified": host_launch_verified,
+                        "final_proof_verified": host_verified,
+                        "helper_setup_status": host_setup_result.get("status"),
+                        "helper_setup_failure": host_setup_result.get("failure"),
+                        "helper_name": host_setup_result.get("helper_name", host_helper_name),
+                        "runner_service_uuid": host_setup_result.get("runner_service_uuid"),
+                        "proof_endpoint": dict(proof_endpoint),
+                    },
+                    "guardian_deployment_verified": host_launch_verified,
+                    "guardian_endpoint_reachable": host_launch_verified,
+                    "observed_at": _timestamp(now=now),
+                })
+                if host_launch_verified:
+                    guardian = str(host_setup_result.get("helper_name") or host_helper_name)
                     guardians[voter] = guardian
                     guardian_targets[voter] = {
-                        "strategy": "existing-admission-voter-rewrite",
-                        "controller_id": str(borrowed_target["controller_id"]),
-                        "service_uuid": str(borrowed_target["service_uuid"]),
+                        "strategy": "host-docker-besu-network-helper",
+                        "controller_id": controller_id,
+                        "service_uuid": service_uuid,
                         "survivor_service_uuid": service_uuid,
-                        "record_node": str(borrowed_target["guardian_service"]),
+                        "record_node": voter,
                         "guardian_service": guardian,
                         "proof_endpoint": dict(proof_endpoint),
+                        "runner_service_uuid": host_setup_result.get("runner_service_uuid"),
                     }
-                    borrowed_guardians[voter] = dict(borrowed_target)
                 else:
                     raise _fail(
                         "MOTHER_DEPLOY_NODE_REMOVE_DO_GUARDIAN_DEPLOYMENT_NOT_VERIFIED",
-                        f"{voter} removal guardian endpoint was not reachable after patch/start and no existing admission-voter helper could be borrowed: {readiness!r}",
+                        f"{voter} removal guardian endpoint was not reachable after patch/start and host-Docker helper setup did not verify: {host_setup_result!r}; sibling readiness: {readiness!r}",
                     )
+
 
         deadline = time.monotonic() + max_wait_seconds
         proven_voters: set[str] = set()
@@ -2351,6 +2465,57 @@ def execute_node_remove_do_release(
                 target_uuid = str(target["service_uuid"])
                 record_node = str(target.get("record_node") or voter)
                 strategy = str(target.get("strategy") or "sibling-compose-injection")
+                if strategy == "host-docker-besu-network-helper":
+                    proof_payload: Mapping[str, Any] | None = None
+                    proof_payload_source = "missing"
+                    proof_fetch_summary: dict[str, Any] | None = None
+                    fetched_payload, proof_fetch_summary = _fetch_node_remove_do_proof_payload(
+                        proof_endpoints.get(voter),
+                        timeout=timeout,
+                        max_response_bytes=max_response_bytes,
+                        opener=opener,
+                    )
+                    if isinstance(fetched_payload, Mapping):
+                        proof_payload = fetched_payload
+                        proof_payload_source = "http-public-proof-endpoint"
+                    else:
+                        proof_payload_source = "http-public-proof-endpoint-missing"
+                    proof_payload_missing_fields = _node_remove_do_proof_payload_missing_fields(proof_payload)
+                    proof_payload_verified = _node_remove_do_proof_payload_verified(proof_payload, voter=voter, release=release)
+                    proof_payload_sha = _node_remove_do_proof_payload_sha256(proof_payload) if isinstance(proof_payload, Mapping) else None
+                    proof_payload_status = "verified" if proof_payload_verified else ("missing-fields" if isinstance(proof_payload, Mapping) and proof_payload_missing_fields else "observed" if isinstance(proof_payload, Mapping) else "missing")
+                    if proof_payload_verified:
+                        proven_voters.add(voter)
+                        validator_removal_proofs[voter] = dict(proof_payload)
+                        if proof_payload_sha is not None:
+                            validator_removal_proof_sha256_by_voter[voter] = proof_payload_sha
+                    last_statuses[voter] = (
+                        f"service=host-docker-helper; {guardian}=host-docker-helper; "
+                        f"node-remove-do-proof={proof_payload_status}; source={proof_payload_source}; strategy={strategy}"
+                    )
+                    observation = {
+                        "node": voter,
+                        "controller_id": str(target["controller_id"]),
+                        "service_uuid": target_uuid,
+                        "survivor_service_uuid": target.get("survivor_service_uuid"),
+                        "service_status": "host-docker-helper",
+                        "guardian_service": guardian,
+                        "guardian_strategy": strategy,
+                        "guardian_component_status": "host-docker-helper",
+                        "guardian_component_healthy": proof_payload_verified,
+                        "guardian_healthy": proof_payload_verified,
+                        "guardian_proof_endpoint": dict(proof_endpoints[voter]),
+                        "guardian_proof_payload_source": proof_payload_source,
+                        "guardian_proof_payload_status": proof_payload_status,
+                        "guardian_proof_payload_missing_fields": proof_payload_missing_fields,
+                        "guardian_proof_payload_verified": proof_payload_verified,
+                        "guardian_proof_payload_sha256": proof_payload_sha,
+                        "observed_at": _timestamp(now=now),
+                    }
+                    if proof_fetch_summary is not None:
+                        observation["guardian_proof_fetch"] = proof_fetch_summary
+                    health_observations.append(observation)
+                    continue
                 detail_endpoint = f"/api/v1/services/{urllib.parse.quote(target_uuid, safe='')}"
                 inventory = _http(
                     controller,
@@ -2574,6 +2739,7 @@ def execute_node_remove_do_release(
         "validator_removal_proof_endpoints": proof_endpoints if 'proof_endpoints' in locals() else {},
         "validator_removal_guardian_targets": guardian_targets if 'guardian_targets' in locals() else {},
         "borrowed_survivor_guardians": borrowed_guardians if 'borrowed_guardians' in locals() else {},
+        "host_docker_survivor_guardians": host_helper_guardians if 'host_helper_guardians' in locals() else {},
         "survivor_guardian_cleanup": survivor_guardian_cleanup,
         "service_removal": service_removal,
         "authority": {

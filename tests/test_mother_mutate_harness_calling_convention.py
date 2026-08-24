@@ -387,11 +387,13 @@ def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_script
     assert "deletedservice123" not in captured[1][1]
 
 
-def test_post_work_cleanup_is_not_in_add_or_remove_harness_step_order() -> None:
-    assert harness.POST_WORK_CLEANUP_STEP not in harness.SINGLE_NODE_STEPS
-    assert harness.POST_WORK_CLEANUP_STEP not in harness.REPLICA_ADMISSION_STEPS
-    assert harness.POST_WORK_CLEANUP_STEP not in harness.REMOVE_STEPS
-    assert harness.POST_WORK_CLEANUP_STEP not in harness.STEP_ORDER
+def test_post_work_cleanup_is_terminal_in_add_and_remove_harness_step_order() -> None:
+    assert harness.SINGLE_NODE_STEPS[-1] == harness.POST_WORK_CLEANUP_STEP
+    assert harness.REPLICA_ADMISSION_STEPS[-1] == harness.POST_WORK_CLEANUP_STEP
+    assert harness.REMOVE_STEPS[-1] == harness.POST_WORK_CLEANUP_STEP
+    assert harness.STEP_ORDER[-1] == harness.POST_WORK_CLEANUP_STEP
+    assert harness.STEP_ORDER.count(harness.POST_WORK_CLEANUP_STEP) == 1
+    assert harness.POST_WORK_CLEANUP_STEP not in harness.COMMON_STEPS
     assert harness.POST_WORK_CLEANUP_STEP not in harness.MUTATION_STEPS
 
 
@@ -403,3 +405,58 @@ def test_dynamic_post_work_cleanup_substeps_are_mutation_gated(tmp_path: Path) -
         instance.run("post-work-cleanup-cleanup1", ["python", "-c", "raise SystemExit(99)"])
 
     assert exc.value.code == 3
+
+
+def test_preflight_paranoia_is_in_add_and_remove_before_mutation_planning() -> None:
+    assert harness.COMMON_STEPS[0:2] == ["detect-topology", "preflight-paranoia"]
+    assert harness.REMOVE_STEPS[0:2] == ["detect-topology", "preflight-paranoia"]
+    assert harness.COMMON_STEPS.index("preflight-paranoia") < harness.COMMON_STEPS.index("prep")
+    assert harness.REMOVE_STEPS.index("preflight-paranoia") < harness.REMOVE_STEPS.index("remove-prep")
+    assert "preflight-paranoia" not in harness.MUTATION_STEPS
+
+
+def test_preflight_paranoia_cmd_uses_harness_selected_baseline(tmp_path: Path) -> None:
+    args = _parser_args(tmp_path)
+    args.baseline_evidence = str(tmp_path / "selected-topology.json")
+    args.baseline_evidence_sha256 = "a" * 64
+
+    instance = harness.Harness(args)
+    argv = instance.preflight_paranoia_cmd()
+
+    assert argv[1].endswith("tools/mother_preflight_paranoia.py")
+    assert argv[2] == "add-node"
+    assert argv[argv.index("--topology-evidence") + 1] == args.baseline_evidence
+    assert argv[argv.index("--acknowledge-topology-evidence-sha256") + 1] == args.baseline_evidence_sha256
+    assert argv[argv.index("--node") + 1] == "mainnetc-super2"
+
+
+def test_preflight_paranoia_blocks_with_cleanup_command_as_final_line(tmp_path: Path, capsys) -> None:
+    args = _parser_args(tmp_path)
+    args.baseline_evidence = str(tmp_path / "selected-topology.json")
+    args.baseline_evidence_sha256 = "a" * 64
+
+    instance = harness.Harness(args)
+
+    def fake_run(step: str, argv: list[str], *, allow_failure: bool = False):  # noqa: ARG001
+        assert step == "preflight-paranoia"
+        assert allow_failure is True
+        return {
+            "status": "cleanup-required",
+            "cleanup_required": True,
+            "cleanup_command": "python cleanup2.py execute",
+            "summary": {
+                "clean": False,
+                "active_cleanup_helper_count": 1,
+                "network_mutation_performed": False,
+            },
+        }
+
+    instance.run = fake_run
+
+    with pytest.raises(SystemExit) as exc:
+        instance.step_preflight_paranoia()
+
+    assert exc.value.code == 3
+    output = capsys.readouterr().out
+    assert "MOTHER_MUTATE_HARNESS_PREFLIGHT_PARANOIA_BLOCKED" in output
+    assert output.rstrip().endswith("python cleanup2.py execute")

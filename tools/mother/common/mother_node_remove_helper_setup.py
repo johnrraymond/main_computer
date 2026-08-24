@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Set up a node-remove helper smoke container on the real Besu Docker network.
+"""Set up a node-remove helper container on the real Besu Docker network.
 
 This is intentionally narrow and non-finalizing:
 
 * creates a temporary Coolify Docker-control runner service;
 * the runner finds the exact Besu container for one survivor node;
-* the runner starts/replaces one smoke helper container on that Besu network;
+* the runner starts/replaces one helper container on that Besu network;
 * the helper serves /proof on the requested public host port after it proves:
   - RPC DNS/reachability from the helper network,
   - chain id/block/validator RPCs,
   - /config/genesis.json is visible through --volumes-from the Besu container.
 
-It does not call qbft_proposeValidatorVote, does not delete any target service,
-does not rewrite topology, and does not clean old shims.
+The standalone CLI uses a non-voting probe helper.  Callers may pass an
+already-built node-remove helper script; this module only materializes that
+helper on the real Besu Docker network and verifies its /proof endpoint.
+It does not delete any target service, does not rewrite topology, and does not
+clean old shims.
 """
 
 from __future__ import annotations
@@ -78,22 +81,22 @@ from tools.mother.common.paths import MotherPaths
 from tools.mother.common.private_state import PrivateStateReadResult, read_private_state
 
 
-KIND = "main_computer.mother.node_remove_helper_setup_smoke.v1"
-EVIDENCE_SUBDIR = "node-remove-helper-setup-smoke"
+KIND = "main_computer.mother.node_remove_helper_setup.v1"
+EVIDENCE_SUBDIR = "node-remove-helper-setup"
 PROOF_CONTAINER_PORT = 8798
 PROOF_PORT_OFFSET = 9100
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 UUID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
 
 
-class MotherNodeRemoveHelperSetupSmokeError(RuntimeError):
+class MotherNodeRemoveHelperSetupError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
 
 
-def _fail(code: str, message: str) -> MotherNodeRemoveHelperSetupSmokeError:
-    return MotherNodeRemoveHelperSetupSmokeError(code, message)
+def _fail(code: str, message: str) -> MotherNodeRemoveHelperSetupError:
+    return MotherNodeRemoveHelperSetupError(code, message)
 
 
 def _utc_now() -> str:
@@ -126,7 +129,7 @@ def _safe_node_token(value: str) -> str:
 def _operation(network: str, mode: str) -> OperationIdentity:
     network_id = _identifier(network, "network")
     mode_id = _identifier(mode, "mode")
-    operation_id = f"mother-node-remove-helper-setup-smoke-{mode_id}-{network_id}-{_stamp()}"
+    operation_id = f"mother-node-remove-helper-setup-{mode_id}-{network_id}-{_stamp()}"
     return OperationIdentity(
         operation_id=operation_id,
         request_id=f"{operation_id}-request",
@@ -330,7 +333,7 @@ def collect():
         config_genesis_sha256 = hashlib.sha256(handle.read()).hexdigest()
     now = int(time.time())
     payload = {
-        "kind": "main_computer.mother.node_remove_helper_setup_smoke.proof.v1",
+        "kind": "main_computer.mother.node_remove_helper_setup.proof.v1",
         "node": NODE,
         "service_uuid": SERVICE_UUID,
         "controller_id": CONTROLLER_ID,
@@ -371,7 +374,7 @@ while True:
         write_json(
             ERROR_PATH,
             {
-                "kind": "main_computer.mother.node_remove_helper_setup_smoke.error.v1",
+                "kind": "main_computer.mother.node_remove_helper_setup.error.v1",
                 "error": str(exc),
                 "type": type(exc).__name__,
                 "traceback": traceback.format_exc(limit=6),
@@ -393,13 +396,18 @@ def _runner_script(
     helper_name: str,
     proof_host_port: int,
     controller_id: str,
+    helper_python: str | None = None,
+    helper_component: str = "node-remove-helper-setup",
+    no_validator_vote_label: bool = True,
 ) -> str:
-    helper_b64 = base64.b64encode(_helper_python().encode("utf-8")).decode("ascii")
+    helper_b64 = base64.b64encode((helper_python if helper_python is not None else _helper_python()).encode("utf-8")).decode("ascii")
     node_q = _single_quote(node)
     uuid_q = _single_quote(service_uuid)
     helper_q = _single_quote(helper_name)
     controller_q = _single_quote(controller_id)
     port_q = _single_quote(str(proof_host_port))
+    component_q = _single_quote(helper_component)
+    no_vote_label = "true" if no_validator_vote_label else "false"
     helper_b64_q = _single_quote(helper_b64)
     return f"""set -eu
 echo mother-node-remove-helper-setup-runner-started
@@ -408,6 +416,8 @@ SERVICE_UUID={uuid_q}
 HELPER_NAME={helper_q}
 CONTROLLER_ID={controller_q}
 PROOF_HOST_PORT={port_q}
+HELPER_COMPONENT={component_q}
+NO_VALIDATOR_VOTE_LABEL={no_vote_label}
 BESU_NAME="${{NODE}}-${{SERVICE_UUID}}"
 
 BESU_ID="$(docker ps -q --filter "name=^/${{BESU_NAME}}$" | head -1 || true)"
@@ -444,7 +454,7 @@ docker run -d \\
   --volumes-from "$BESU_ID":ro \\
   -p "${{PROOF_HOST_PORT}}:8798/tcp" \\
   --restart no \\
-  --label main_computer.mother.component=node-remove-helper-setup-smoke \\
+  --label main_computer.mother.component="$HELPER_COMPONENT" \\
   --label main_computer.mother.cleanup_owner=mother-helper-cleanup2-yagni \\
   --label main_computer.mother.cleanup_required=true \\
   --label main_computer.mother.network_helper=true \\
@@ -454,7 +464,7 @@ docker run -d \\
   --label main_computer.mother.besu_network="$BESU_NETWORK" \\
   --label main_computer.mother.not_a_chain_service=true \\
   --label main_computer.mother.no_service_deletion=true \\
-  --label main_computer.mother.no_validator_vote=true \\
+  --label main_computer.mother.no_validator_vote="$NO_VALIDATOR_VOTE_LABEL" \\
   -e MOTHER_NODE_NAME="$NODE" \\
   -e MOTHER_SERVICE_UUID="$SERVICE_UUID" \\
   -e MOTHER_CONTROLLER_ID="$CONTROLLER_ID" \\
@@ -464,7 +474,7 @@ docker run -d \\
   -e MOTHER_RPC_URL="http://${{NODE}}:8545" \\
   -e MOTHER_PROOF_PORT=8798 \\
   python:3.12-alpine \\
-  sh -lc "printf '%s' {helper_b64_q} | base64 -d > /tmp/mother-node-remove-helper-setup-smoke.py && exec python -u /tmp/mother-node-remove-helper-setup-smoke.py"
+  sh -lc "mkdir -p /proof && printf '%s' {helper_b64_q} | base64 -d > /tmp/mother-node-remove-helper-setup.py && exec python -u /tmp/mother-node-remove-helper-setup.py"
 
 touch /tmp/mother-node-remove-helper-setup-runner-done
 echo mother-node-remove-helper-setup-runner-complete
@@ -508,11 +518,21 @@ def _runner_compose(service_name: str, runner_script: str) -> str:
     return yaml.safe_dump(compose, sort_keys=False)
 
 
-def _fetch_json_url(url: str, *, timeout: float, max_response_bytes: int) -> tuple[Mapping[str, Any] | None, dict[str, Any]]:
+
+def _open_url(opener: Any, request: urllib.request.Request, timeout: float):
+    if callable(opener):
+        return opener(request, timeout=timeout)
+    open_method = getattr(opener, "open", None)
+    if callable(open_method):
+        return open_method(request, timeout=timeout)
+    raise TypeError("opener must be callable or provide open(request, timeout=...)")
+
+
+def _fetch_json_url(url: str, *, timeout: float, max_response_bytes: int, opener: Any = urllib.request.urlopen) -> tuple[Mapping[str, Any] | None, dict[str, Any]]:
     request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_url(opener, request, timeout) as response:
             status = int(getattr(response, "status", response.getcode()))
             raw = response.read(max_response_bytes + 1)
     except urllib.error.HTTPError as exc:
@@ -559,13 +579,18 @@ def _write_evidence(runtime_state_root: str | Path, network: str, node: str, evi
     return path
 
 
-def setup_node_remove_helper_smoke(
+def setup_node_remove_helper(
     *,
-    runtime_state_root: str | Path,
+    runtime_state_root: str | Path | None = None,
+    private_state: PrivateStateReadResult | None = None,
     network: str,
     controller_id: str,
     node: str,
     service_uuid: str,
+    helper_name: str | None = None,
+    helper_python: str | None = None,
+    helper_component: str = "node-remove-helper-setup",
+    expected_proof_kind: str = "main_computer.mother.node_remove_helper_setup.proof.v1",
     proof_host: str | None = None,
     base_host_port: int | None = None,
     proof_host_port: int | None = None,
@@ -575,6 +600,7 @@ def setup_node_remove_helper_smoke(
     wait_seconds: float,
     poll_interval_seconds: float,
     keep_runner: bool,
+    opener: Any = urllib.request.urlopen,
 ) -> dict[str, Any]:
     network = _identifier(network, "network")
     controller_id = _identifier(controller_id, "controller_id")
@@ -582,7 +608,10 @@ def setup_node_remove_helper_smoke(
     service_uuid = _uuid(service_uuid, "service_uuid")
     mode = "execute" if execute else "plan"
 
-    private_state = _load_private_state(runtime_state_root, network=network, mode=mode)
+    if private_state is None:
+        if runtime_state_root is None:
+            raise _fail("MOTHER_NODE_REMOVE_HELPER_SETUP_INVALID_ARGUMENT", "runtime_state_root is required when private_state is not supplied")
+        private_state = _load_private_state(runtime_state_root, network=network, mode=mode)
     controller = resolve_coolify_controller(private_state, network, controller_id)
     controller_cfg = _controller_config(private_state, network=network, controller_id=controller_id)
 
@@ -595,7 +624,7 @@ def setup_node_remove_helper_smoke(
         body=None,
         timeout=timeout,
         max_response_bytes=max_response_bytes,
-        opener=urllib.request.urlopen,
+        opener=opener,
     )
     observations.append({
         "phase": "survivor-service-detail",
@@ -618,7 +647,7 @@ def setup_node_remove_helper_smoke(
     if not 1 <= proof_port <= 65535:
         raise _fail("MOTHER_NODE_REMOVE_HELPER_SETUP_INVALID_ARGUMENT", "proof host port outside TCP range")
     public_host = proof_host.strip() if isinstance(proof_host, str) and proof_host.strip() else _controller_public_host(controller)
-    helper_name = f"mother-node-remove-helper-setup-{_safe_node_token(node)}-{service_uuid}"
+    helper_name = _identifier(helper_name, "helper_name") if helper_name is not None else f"mother-node-remove-helper-setup-{_safe_node_token(node)}-{service_uuid}"
     runner_name = f"mother-node-remove-helper-setup-runner-{_safe_node_token(controller_id)}-{_stamp().lower()}"
     proof_url = f"http://{public_host}:{proof_port}/proof"
 
@@ -628,6 +657,9 @@ def setup_node_remove_helper_smoke(
         helper_name=helper_name,
         proof_host_port=proof_port,
         controller_id=controller_id,
+        helper_python=helper_python,
+        helper_component=helper_component,
+        no_validator_vote_label=helper_python is None,
     )
     runner_compose = _runner_compose(runner_name, runner_script)
     result: dict[str, Any] = {
@@ -640,7 +672,7 @@ def setup_node_remove_helper_smoke(
         "helper_name": helper_name,
         "runner_name": runner_name,
         "proof_endpoint": {
-            "kind": "main_computer.mother.node-remove-helper-setup-smoke-public-proof-endpoint.v1",
+            "kind": "main_computer.mother.node-remove-helper-setup-public-proof-endpoint.v1",
             "transport": "http-public-controller",
             "host": public_host,
             "base_host_port": base_port,
@@ -649,7 +681,7 @@ def setup_node_remove_helper_smoke(
             "url": proof_url,
         },
         "policy": {
-            "chain_vote_performed": False,
+            "chain_vote_performed": bool(helper_python is not None),
             "service_deletion_performed": False,
             "topology_mutation_performed": False,
             "temporary_runner_service_created": bool(execute),
@@ -674,12 +706,12 @@ def setup_node_remove_helper_smoke(
         expected_name="mainnet",
         timeout=timeout,
         max_response_bytes=max_response_bytes,
-        opener=urllib.request.urlopen,
+        opener=opener,
         observations=observations,
     )
     body = _temporary_service_body(controller_cfg, runner_name, runner_compose)
     body["environment_uuid"] = env_uuid
-    body["description"] = "Ephemeral Mother node-remove helper setup smoke runner"
+    body["description"] = "Ephemeral Mother node-remove helper setup runner"
     body["instant_deploy"] = False
 
     create = _http(
@@ -689,7 +721,7 @@ def setup_node_remove_helper_smoke(
         body=body,
         timeout=timeout,
         max_response_bytes=max_response_bytes,
-        opener=urllib.request.urlopen,
+        opener=opener,
     )
     result["runner_create"] = {
         "method": "POST",
@@ -716,7 +748,7 @@ def setup_node_remove_helper_smoke(
         body=None,
         timeout=timeout,
         max_response_bytes=max_response_bytes,
-        opener=urllib.request.urlopen,
+        opener=opener,
     )
     result["runner_start"] = {
         "method": "POST",
@@ -736,9 +768,12 @@ def setup_node_remove_helper_smoke(
     proof_payload: Mapping[str, Any] | None = None
     deadline = time.monotonic() + float(wait_seconds)
     while time.monotonic() <= deadline:
-        payload, probe = _fetch_json_url(proof_url, timeout=min(timeout, 12.0), max_response_bytes=max_response_bytes)
+        payload, probe = _fetch_json_url(proof_url, timeout=min(timeout, 12.0), max_response_bytes=max_response_bytes, opener=opener)
         proof_observations.append(probe)
-        if isinstance(payload, Mapping) and payload.get("kind") == "main_computer.mother.node_remove_helper_setup_smoke.proof.v1":
+        if isinstance(payload, Mapping) and (
+            payload.get("kind") == expected_proof_kind
+            or payload.get("node_remove_do_proof_contract") == expected_proof_kind
+        ):
             proof_payload = payload
             break
         time.sleep(max(1.0, min(float(poll_interval_seconds), max(0.0, deadline - time.monotonic()))))
@@ -751,6 +786,7 @@ def setup_node_remove_helper_smoke(
         result["reason"] = "proof-endpoint-not-verified"
 
     if runner_service_uuid is not None and not keep_runner:
+        raise SystemExit("MOTHER_NODE_REMOVE_HELPER_SETUP_DEBUG_EXIT_BEFORE_RUNNER_DELETE")
         delete_endpoint = f"/api/v1/services/{urllib.parse.quote(runner_service_uuid, safe='')}"
         delete = _http(
             controller,
@@ -759,7 +795,7 @@ def setup_node_remove_helper_smoke(
             body=None,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
-            opener=urllib.request.urlopen,
+            opener=opener,
         )
         result["runner_delete"] = {
             "method": "DELETE",
@@ -775,7 +811,7 @@ def setup_node_remove_helper_smoke(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Set up a non-voting node-remove helper smoke container.")
+    parser = argparse.ArgumentParser(description="Set up a node-remove helper container.")
     parser.add_argument("command", choices=["plan", "setup"])
     parser.add_argument("--repo-root", default=None)
     parser.add_argument("--runtime-state-root", required=True)
@@ -809,7 +845,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("setup requires --execute; use plan for a non-mutating plan")
 
     try:
-        result = setup_node_remove_helper_smoke(
+        result = setup_node_remove_helper(
             runtime_state_root=args.runtime_state_root,
             network=args.network,
             controller_id=args.controller_id,
@@ -831,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
             result["evidence_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result.get("status") in {"planned", "pass"} else 2
-    except MotherNodeRemoveHelperSetupSmokeError as exc:
+    except MotherNodeRemoveHelperSetupError as exc:
         print(json.dumps({"status": "failed", "code": exc.code, "message": str(exc)}, indent=2, sort_keys=True), file=sys.stderr)
         return 2
 

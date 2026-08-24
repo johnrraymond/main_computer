@@ -47,6 +47,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--operation-id")
     parser.add_argument("--topology-evidence", required=True)
     parser.add_argument("--acknowledge-topology-evidence-sha256", required=True)
+    parser.add_argument(
+        "--actual-node",
+        action="append",
+        default=[],
+        help="operator-declared live node; repeat to seal an exact non-empty subset of the acknowledged topology",
+    )
     parser.add_argument("--use-live-topology", action="store_true", help="required acknowledgement to seal live service bindings")
     parser.add_argument("--max-age-seconds", type=int, default=86400)
     parser.add_argument("--timeout", type=float, default=30.0)
@@ -67,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.topology_evidence),
             network=args.network,
             acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
+            actual_nodes=args.actual_node,
             use_live_topology=args.use_live_topology,
             max_age_seconds=args.max_age_seconds,
             timeout=args.timeout,

@@ -6,9 +6,10 @@ The harness reduces node mutation babysitting without bypassing Mother authority
 * preflights the supplied topology evidence against live Coolify service reality;
 * halts on stale Mother topology and prints the explicit rectification command;
 * never performs rectification automatically;
+* runs read-only preflight paranoia before mutation planning;
 * runs prep/release/verify/execute steps in order;
 * routes by Mother evidence ``next_phase`` instead of assuming a fixed topology;
-* leaves post-work helper cleanup out of the add/remove harness; run cleanup explicitly.
+* runs evidence-gated post-work helper cleanup after successful add/remove completion.
 
 Supported add-node routes:
 
@@ -46,6 +47,7 @@ from tools.mother.common.canonical import canonical_json
 
 COMMON_STEPS = [
     "detect-topology",
+    "preflight-paranoia",
     "prep",
     "verify-prep",
     "release-do",
@@ -59,6 +61,7 @@ COMMON_STEPS = [
 ]
 
 POST_WORK_CLEANUP_STEP = "post-work-cleanup"
+FRESH_EMPTY_TOPOLOGY_REFRESH_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 SINGLE_NODE_STEPS = [
     "release-bootstrap",
@@ -67,6 +70,7 @@ SINGLE_NODE_STEPS = [
     "verify-bootstrap-evidence",
     "finalize-single-node-proof",
     "verify-single-node-proof",
+    POST_WORK_CLEANUP_STEP,
 ]
 
 REPLICA_ADMISSION_STEPS = [
@@ -79,10 +83,12 @@ REPLICA_ADMISSION_STEPS = [
     "execute-validator-admission",
     "verify-validator-admission-evidence",
     "finalize-post-admission-topology",
+    POST_WORK_CLEANUP_STEP,
 ]
 
 REMOVE_STEPS = [
     "detect-topology",
+    "preflight-paranoia",
     "remove-prep",
     "verify-remove-prep",
     "release-remove-do",
@@ -91,6 +97,7 @@ REMOVE_STEPS = [
     "verify-remove-do-evidence",
     "finalize-remove",
     "verify-remove-finalize",
+    POST_WORK_CLEANUP_STEP,
 ]
 
 
@@ -104,7 +111,13 @@ def _unique_steps(steps: list[str]) -> list[str]:
     return ordered
 
 
-STEP_ORDER = _unique_steps(COMMON_STEPS + SINGLE_NODE_STEPS + REPLICA_ADMISSION_STEPS + REMOVE_STEPS)
+STEP_ORDER = _unique_steps(
+    COMMON_STEPS
+    + [step for step in SINGLE_NODE_STEPS if step != POST_WORK_CLEANUP_STEP]
+    + [step for step in REPLICA_ADMISSION_STEPS if step != POST_WORK_CLEANUP_STEP]
+    + [step for step in REMOVE_STEPS if step != POST_WORK_CLEANUP_STEP]
+    + [POST_WORK_CLEANUP_STEP]
+)
 
 MUTATION_STEPS = {
     "execute-do",
@@ -321,6 +334,8 @@ def capped_remove_do_max_wait_seconds(value: float) -> float:
 REMOVE_FINALIZE_EVIDENCE_KIND = "main_computer.mother.deployment_node_remove_finalize_evidence.v1"
 EMPTY_RECTIFICATION_EVIDENCE_KIND = "main_computer.mother.live_topology_empty_rectification_evidence.v1"
 EMPTY_RECTIFICATION_EVIDENCE_DIRECTORY = "deployment-live-topology-empty-rectification"
+LIVE_CURRENT_TOPOLOGY_EVIDENCE_KIND = "main_computer.mother.live_current_topology_evidence.v1"
+LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY = "deployment-live-current-topology"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -652,10 +667,33 @@ def _baseline_path_recency(path: Path) -> float:
     return path.stat().st_mtime
 
 
+def _successful_live_current_topology_baseline(path: Path) -> bool:
+    if path.parent.name != LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY:
+        return True
+    try:
+        document = _read_json_object(path)
+    except SystemExit:
+        return False
+    return (
+        document.get("kind") == LIVE_CURRENT_TOPOLOGY_EVIDENCE_KIND
+        and document.get("status") == "pass"
+        and document.get("next_phase") == "topology-baseline-ready-mainnet"
+        and pick(document, "summary.clean") is True
+        and pick(document, "summary.complete") is True
+        and pick(document, "summary.live_topology_sealed") is True
+        and isinstance(pick(document, "final_topology.nodes"), list)
+        and isinstance(pick(document, "final_topology.validator_set"), list)
+    )
+
+
 def _auto_baseline_matches(patterns: list[Path]) -> list[Path]:
     matches: list[Path] = []
     for pattern in patterns:
-        matches.extend(path for path in pattern.parent.glob(pattern.name) if path.is_file())
+        matches.extend(
+            path
+            for path in pattern.parent.glob(pattern.name)
+            if path.is_file() and _successful_live_current_topology_baseline(path)
+        )
     return matches
 
 
@@ -759,6 +797,7 @@ def auto_baseline_patterns(args: argparse.Namespace) -> tuple[str, list[Path]]:
                 evidence_root / "deployment-node-add-post-admission-observe" / "*.json",
                 evidence_root / "deployment-node-remove-finalize" / "*.json",
                 evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
+                evidence_root / LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY / "*.json",
                 evidence_root / EMPTY_RECTIFICATION_EVIDENCE_DIRECTORY / "*.json",
             ],
         )
@@ -886,6 +925,77 @@ class Harness:
     def cleanup2_cmd(self, *parts: Any) -> list[str]:
         return [sys.executable, str(self.repo_root / "tools" / "mother_helper_cleanup2_yagni.py"), *[str(part) for part in parts]]
 
+    def preflight_paranoia_cmd(self) -> list[str]:
+        return [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_preflight_paranoia.py"),
+            self.args.operation,
+            "--runtime-state-root",
+            self.args.runtime_state_root,
+            "--network",
+            self.args.network,
+            "--node",
+            self.args.node,
+            "--topology-evidence",
+            require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256",
+            require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+            "--timeout",
+            str(self.args.timeout),
+            "--max-response-bytes",
+            str(self.args.preflight_paranoia_max_response_bytes),
+            "--max-wait-seconds",
+            str(self.args.preflight_paranoia_cleanup_max_wait_seconds),
+            "--poll-interval-seconds",
+            str(self.args.poll_interval_seconds),
+        ]
+
+    def fresh_empty_topology_refresh_cmd(self) -> list[str]:
+        refresh_max_age = max(
+            int(self.args.baseline_max_age_seconds),
+            FRESH_EMPTY_TOPOLOGY_REFRESH_MAX_AGE_SECONDS,
+        )
+        return self.cmd(
+            "adopt-fresh-empty-topology",
+            "--network", self.args.network,
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--topology-evidence", require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256", require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+            "--max-age-seconds", str(refresh_max_age),
+            "--timeout", str(self.args.timeout),
+            "--max-response-bytes", str(self.args.max_response_bytes),
+            "--fresh-chain-reset",
+            "--write-evidence",
+        )
+
+    def seal_live_current_topology_cmd(self, *, actual_nodes: list[str] | None = None) -> list[str]:
+        argv = self.cmd(
+            "seal-live-current-topology",
+            "--network", self.args.network,
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--topology-evidence", require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256", require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+        )
+        for node in actual_nodes or []:
+            argv.extend(["--actual-node", str(node)])
+        argv.extend([
+            "--max-age-seconds", str(self.args.baseline_max_age_seconds),
+            "--timeout", str(self.args.timeout),
+            "--max-response-bytes", str(self.args.max_response_bytes),
+            "--use-live-topology",
+            "--write-evidence",
+        ])
+        return argv
+
+    def _detect_topology_failed_on_stale_evidence_age(self, proc: subprocess.CompletedProcess[str]) -> bool:
+        if self.args.operation != "add-node":
+            return False
+        combined = "\n".join([proc.stdout or "", proc.stderr or ""])
+        return (
+            "MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_STALE" in combined
+            and "topology evidence is outside the freshness window" in combined
+        )
+
     def mutations_allowed(self) -> bool:
         return bool(self.args.execute_mutations and (self.args.yes_i_know_this_mutates_target_host or self.args.yes_i_know_this_mutates_coolify_a))
 
@@ -922,6 +1032,10 @@ class Harness:
         if proc.returncode != 0:
             if allow_failure and obj is not None:
                 return obj
+            if step == "detect-topology" and self._detect_topology_failed_on_stale_evidence_age(proc):
+                print()
+                print(quote_command(self.fresh_empty_topology_refresh_cmd()))
+                raise SystemExit(proc.returncode)
             print(f"\n{step} failed with exit code {proc.returncode}.")
             if obj is not None:
                 evidence_path = pick(obj, "evidence.path", "evidence_path")
@@ -998,9 +1112,44 @@ class Harness:
             print(json.dumps(short_summary("detect-topology", obj), indent=2, sort_keys=True))
             raise SystemExit(3)
         if manual_review_required and (not topology_current or topology_stale):
-            print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_MANUAL_REVIEW_REQUIRED: partial/non-empty live rectification is not implemented.")
+            print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_MANUAL_REVIEW_REQUIRED: supplied topology evidence does not match the live non-empty topology.")
             print(json.dumps(short_summary("detect-topology", obj), indent=2, sort_keys=True))
+            observed_live_nodes = sorted({
+                str(node)
+                for node in (obj.get("observed_live_node_hints") or [])
+                if isinstance(node, str) and node
+            })
+            if observed_live_nodes:
+                print("\nSeal the observed live topology before trying add-node again:")
+                print(quote_command(self.seal_live_current_topology_cmd(actual_nodes=observed_live_nodes)))
+                print("Then rerun add-node using the seal command's evidence path/SHA as the baseline.")
+            else:
+                print("\nNo non-empty live node set was established, so no live-subset seal command is safe to suggest.")
             raise SystemExit(3)
+
+    def step_preflight_paranoia(self) -> None:
+        if self.args.skip_preflight_paranoia:
+            print("\n=== preflight-paranoia skipped ===")
+            return
+
+        obj = self.run("preflight-paranoia", self.preflight_paranoia_cmd(), allow_failure=True)
+        self.state["preflight_paranoia_status"] = obj.get("status")
+        self.state["preflight_paranoia_summary"] = obj.get("summary")
+
+        if obj.get("status") == "pass" and pick(obj, "summary.clean") is True:
+            return
+
+        print("\nMOTHER_MUTATE_HARNESS_PREFLIGHT_PARANOIA_BLOCKED: read-only preflight did not return clean/pass.")
+        print(json.dumps(short_summary("preflight-paranoia", obj), indent=2, sort_keys=True))
+        print("No live mutation was performed by preflight. Fix the reported condition, then rerun the harness.")
+
+        cleanup_command = obj.get("cleanup_command")
+        if cleanup_command:
+            print()
+            print("Run this cleanup command before the mutation:")
+            print(cleanup_command)
+        raise SystemExit(3)
+
 
     def step_prep(self) -> None:
         require("--baseline-evidence", self.state["baseline_evidence"])
@@ -1654,6 +1803,7 @@ class Harness:
     def methods(self) -> dict[str, Any]:
         return {
             "detect-topology": self.step_detect_topology,
+            "preflight-paranoia": self.step_preflight_paranoia,
             "prep": self.step_prep,
             "verify-prep": self.step_verify_prep,
             "release-do": self.step_release_do,
@@ -1742,6 +1892,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--start-at", choices=STEP_ORDER, default="detect-topology")
     parser.add_argument("--skip-staleness-detection", action="store_true")
+    parser.add_argument("--skip-preflight-paranoia", action="store_true")
     parser.add_argument("--execute-mutations", action="store_true")
     parser.add_argument("--yes-i-know-this-mutates-target-host", action="store_true")
     parser.add_argument("--yes-i-know-this-mutates-coolify-a", action="store_true", help="legacy alias for the target-host mutation acknowledgement")
@@ -1755,6 +1906,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--release-expires-in-seconds", type=int, default=900)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    parser.add_argument("--preflight-paranoia-max-response-bytes", type=int, default=12 * 1024 * 1024)
+    parser.add_argument("--preflight-paranoia-cleanup-max-wait-seconds", type=float, default=60.0)
     parser.add_argument("--max-wait-seconds", type=float, default=900.0)
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
 

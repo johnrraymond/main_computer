@@ -5,6 +5,7 @@ import json
 import yaml
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from tools import mother_deploy
@@ -783,6 +784,39 @@ def test_detect_topology_marks_unexpected_live_nodes_stale_split_topology(tmp_pa
 
 
 
+def test_detect_topology_ignores_unexpected_exited_service_as_non_live_inventory(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
+
+    result = detect_topology_staleness(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        now=datetime(2026, 8, 12, 20, 25, 0, tzinfo=timezone.utc),
+        opener=_PresentServiceWithInventoryOpener(
+            service_uuid="stale-service-uuid",
+            services=[
+                {"uuid": "stale-service-uuid", "name": A_NODE, "status": "running:healthy"},
+                {"uuid": "unexpected-c1-service", "name": C1_NODE, "status": "exited"},
+            ],
+        ),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["topology_current"] is True
+    assert result["summary"]["topology_stale"] is False
+    assert result["summary"]["manual_review_required"] is False
+    assert result["present_expected_nodes"] == [A_NODE]
+    assert result["observed_live_node_hints"] == [A_NODE]
+    assert result["unexpected_live_nodes"] == []
+    assert any(
+        item.get("name") == C1_NODE and item.get("status") == "exited"
+        for item in result["observed_service_hints"]
+    )
+
+
 def test_seal_live_current_topology_refreshes_uuid_and_remove_prep_targets_live_service(tmp_path: Path) -> None:
     _runtime, paths, private_state = _install(tmp_path)
     evidence_path, evidence_sha = _write_three_node_stale_c2_topology_evidence(paths, private_state)
@@ -833,6 +867,98 @@ def test_seal_live_current_topology_refreshes_uuid_and_remove_prep_targets_live_
     assert prep["target"]["service_uuid"] == "live-c2-service"
     assert prep["target"]["validator_address"] == C2_VALIDATOR
     assert prep["source_baseline_evidence"]["kind"] == "main_computer.mother.live_current_topology_evidence.v1"
+
+
+def test_seal_live_current_topology_can_seal_operator_declared_live_subset_for_add_node(
+    tmp_path: Path,
+) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_validator_admission_topology_evidence(paths, private_state)
+
+    result = seal_live_current_topology(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        actual_nodes=[C1_NODE],
+        use_live_topology=True,
+        max_age_seconds=864000,
+        write_evidence=True,
+        now=datetime(2026, 8, 22, 22, 40, 30, tzinfo=timezone.utc),
+        opener=_ControllerScopedServicesOpener(
+            {
+                "coolify-a": {},
+                "coolify-c": {
+                    "gr09bevx1ymmiffqwtatro3s": (C1_NODE, "running:unhealthy"),
+                },
+            }
+        ),
+        operation=_operation("seal-live-current-topology-subset"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["mode"] == "read-only-live-current-topology-subset-seal"
+    assert result["final_topology"]["nodes"] == [C1_NODE]
+    assert result["final_topology"]["validator_set"] == [C1_VALIDATOR]
+    assert result["topology_diff"]["removed_nodes"] == [A_NODE]
+    assert result["summary"]["operator_declared_actual_nodes"] == [C1_NODE]
+    assert result["summary"]["validator_set_preserved_from_source_topology"] is False
+    assert result["summary"]["validator_identities_selected_from_source_topology"] is True
+
+    written = result["evidence"]
+    prep = build_node_add_prep_transaction(
+        paths,
+        private_state,
+        Path(written["path"]),
+        network="mainnet",
+        target_node=A_NODE,
+        target_host="coolify-a",
+        mode="soft",
+        baseline_evidence_sha256=written["sha256"],
+        baseline_max_age_seconds=86400,
+        created_at="2026-08-22T22:41:00Z",
+        now=datetime(2026, 8, 22, 22, 41, 0, tzinfo=timezone.utc),
+    )
+    assert prep["current_topology"]["nodes"] == [C1_NODE]
+    assert prep["current_topology"]["validator_set"] == [C1_VALIDATOR]
+    assert prep["post_add_topology"]["nodes"] == [A_NODE, C1_NODE]
+    state_doc = yaml.safe_load(private_state.document_bytes.decode("utf-8"))
+    expected_a_validator = state_doc["networks"]["mainnet"]["validators"][A_NODE]["address"].lower()
+    assert prep["target"]["validator_address"] == expected_a_validator
+    assert prep["target"]["validator_address_source"] == "mother-private-state"
+
+
+def test_seal_live_current_topology_subset_requires_exact_live_declaration(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_validator_admission_topology_evidence(paths, private_state)
+
+    import pytest
+    from tools.mother.common.deployment_topology_rectification import MotherDeploymentTopologyRectificationError
+
+    with pytest.raises(MotherDeploymentTopologyRectificationError) as exc:
+        seal_live_current_topology(
+            paths,
+            private_state,
+            evidence_path,
+            network="mainnet",
+            acknowledged_topology_evidence_sha256=evidence_sha,
+            actual_nodes=[A_NODE],
+            use_live_topology=True,
+            max_age_seconds=864000,
+            now=datetime(2026, 8, 22, 22, 40, 30, tzinfo=timezone.utc),
+            opener=_ControllerScopedServicesOpener(
+                {
+                    "coolify-a": {},
+                    "coolify-c": {
+                        "gr09bevx1ymmiffqwtatro3s": (C1_NODE, "running:unhealthy"),
+                    },
+                }
+            ),
+            operation=_operation("seal-live-current-topology-subset-mismatch"),
+        )
+
+    assert exc.value.code == "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_MISMATCH"
 
 
 def test_empty_topology_rectification_writes_prep_usable_empty_baseline(tmp_path: Path) -> None:
@@ -988,6 +1114,28 @@ def test_empty_topology_rectification_rejects_non_empty_actual_nodes(tmp_path: P
     assert exc.value.code == "MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_NOT_YET_IMPLEMENTED"
 
 
+def test_subset_seal_cli_recommends_bound_helper_cleanup_before_add_node(capsys) -> None:
+    evidence_path = r"C:\\runtime\\state\\mother\\evidence\\deployment-live-current-topology\\sealed.json"
+    evidence_sha = "b" * 64
+    result = {
+        "status": "pass",
+        "topology_diff": {"removed_nodes": ["mainneta-super1"]},
+        "evidence": {"path": evidence_path, "sha256": evidence_sha},
+    }
+    args = SimpleNamespace(runtime_state_root=r"C:\\runtime\\state", network="mainnet")
+
+    mother_deploy._print_subset_seal_cleanup_recommendation(args, result)
+
+    output = capsys.readouterr().out
+    assert "Subset topology seal removed node(s): mainneta-super1." in output
+    assert "Recommended before retrying add-node" in output
+    assert "mother_helper_cleanup2_yagni.py inspect" in output
+    assert "mother_helper_cleanup2_yagni.py execute" in output
+    assert f"--topology-evidence {evidence_path}" in output
+    assert f"--acknowledge-topology-evidence-sha256 {evidence_sha}" in output
+    assert "--write-evidence" in output
+
+
 def test_mother_deploy_cli_exposes_topology_rectification_commands() -> None:
     parser = mother_deploy._parser()
     help_text = parser.format_help()
@@ -1035,6 +1183,119 @@ def test_mutate_harness_stops_on_stale_topology_before_prep(tmp_path: Path, monk
     with pytest.raises(SystemExit) as exc:
         harness.step_detect_topology()
     assert exc.value.code == 3
+
+
+def test_mutate_harness_detect_topology_stale_age_failure_prints_fresh_empty_command_only(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    import mother_mutate_harness
+    import pytest
+
+    sha = "a" * 64
+    args = mother_mutate_harness.build_parser().parse_args(
+        [
+            "add-node",
+            "--runtime-state-root",
+            str(tmp_path),
+            "--baseline-evidence",
+            "old.json",
+            "--baseline-evidence-sha256",
+            sha,
+            "--baseline-max-age-seconds",
+            "86400",
+        ]
+    )
+    harness = mother_mutate_harness.Harness(args)
+
+    def fake_subprocess_run(argv, cwd, text, capture_output):  # noqa: ANN001
+        return mother_mutate_harness.subprocess.CompletedProcess(
+            argv,
+            2,
+            stdout="",
+            stderr="MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_STALE: topology evidence is outside the freshness window\n",
+        )
+
+    monkeypatch.setattr(mother_mutate_harness.subprocess, "run", fake_subprocess_run)
+
+    with pytest.raises(SystemExit) as exc:
+        harness.run("detect-topology", harness.cmd("detect-mother-topology-staleness"))
+
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    expected = mother_mutate_harness.quote_command(harness.fresh_empty_topology_refresh_cmd())
+    assert captured.out.strip().splitlines()[-1] == expected
+    assert "adopt-fresh-empty-topology" in expected
+    assert "--topology-evidence old.json" in expected
+    assert f"--acknowledge-topology-evidence-sha256 {sha}" in expected
+    assert "--max-age-seconds 604800" in expected
+    assert "detect-topology failed with exit code" not in captured.out
+    assert "logs=" not in captured.out
+
+
+def test_mutate_harness_manual_review_prints_live_topology_seal_command(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    import mother_mutate_harness
+    import pytest
+
+    sha = "d" * 64
+    args = mother_mutate_harness.build_parser().parse_args(
+        [
+            "add-node",
+            "--runtime-state-root",
+            str(tmp_path),
+            "--baseline-evidence",
+            "stale-current.json",
+            "--baseline-evidence-sha256",
+            sha,
+            "--baseline-max-age-seconds",
+            "86400",
+        ]
+    )
+    harness = mother_mutate_harness.Harness(args)
+
+    partial = {
+        "status": "manual-review-required",
+        "summary": {
+            "clean": False,
+            "topology_current": False,
+            "topology_stale": True,
+            "rectification_required": False,
+            "manual_review_required": True,
+        },
+        "missing_expected_nodes": ["mainneta-super1"],
+        "present_expected_nodes": ["mainnetc-super1"],
+        "observed_live_node_hints": ["mainnetc-super1"],
+        "unexpected_live_nodes": [],
+    }
+
+    def fake_run(step, argv, allow_failure=False):  # noqa: ANN001
+        assert step == "detect-topology"
+        return partial
+
+    monkeypatch.setattr(harness, "run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        harness.step_detect_topology()
+
+    assert exc.value.code == 3
+    captured = capsys.readouterr()
+    expected = mother_mutate_harness.quote_command(
+        harness.seal_live_current_topology_cmd(actual_nodes=["mainnetc-super1"])
+    )
+    assert expected in captured.out
+    assert "seal-live-current-topology" in expected
+    assert "--topology-evidence stale-current.json" in expected
+    assert f"--acknowledge-topology-evidence-sha256 {sha}" in expected
+    assert "--actual-node mainnetc-super1" in expected
+    assert "--use-live-topology" in expected
+    assert "--write-evidence" in expected
+    assert "Seal the observed live topology before trying add-node again:" in captured.out
+    assert "using the seal command's evidence path/SHA as the baseline" in captured.out
 
 
 def test_mutate_harness_allows_current_topology_even_with_manual_review_status(tmp_path: Path, monkeypatch) -> None:

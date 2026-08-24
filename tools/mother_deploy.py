@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -209,7 +210,8 @@ from tools.mother.common.deployment_node_identity_reservation import (
     MotherDeploymentNodeIdentityReservationError,
     reserve_add_node_identity,
 )
-from tools.mother.common.deployment_node_add_single_node_bootstrap import (
+# Single-node bootstrap v2 rollout. Roll back by removing ``_v2`` from this module path.
+from tools.mother.common.deployment_node_add_single_node_bootstrap_v2 import (
     MotherDeploymentNodeAddSingleNodeBootstrapError,
     adopt_node_add_single_node_bootstrap_live_proof,
     build_node_add_single_node_bootstrap_release,
@@ -220,7 +222,8 @@ from tools.mother.common.deployment_node_add_single_node_bootstrap import (
     verify_node_add_single_node_chain_and_hub_proof_evidence,
     write_node_add_single_node_bootstrap_release,
 )
-from tools.mother.common.deployment_node_add_replica_sync import (
+# Replica-sync v2 rollout. Roll back by removing ``_v2`` from this module path.
+from tools.mother.common.deployment_node_add_replica_sync_v2 import (
     MotherDeploymentNodeAddReplicaSyncError,
     build_node_add_replica_sync_release,
     execute_node_add_replica_sync_release,
@@ -1032,6 +1035,12 @@ def _parser() -> argparse.ArgumentParser:
     seal_live_current_topology_parser.add_argument("--operation-id")
     seal_live_current_topology_parser.add_argument("--topology-evidence", required=True)
     seal_live_current_topology_parser.add_argument("--acknowledge-topology-evidence-sha256", required=True)
+    seal_live_current_topology_parser.add_argument(
+        "--actual-node",
+        action="append",
+        default=[],
+        help="operator-declared live node; repeat to seal an exact non-empty subset of the acknowledged topology",
+    )
     seal_live_current_topology_parser.add_argument("--use-live-topology", action="store_true", help="required acknowledgement that live Coolify primary service bindings should be sealed")
     seal_live_current_topology_parser.add_argument("--max-age-seconds", type=int, default=86400)
     seal_live_current_topology_parser.add_argument("--timeout", type=float, default=30.0)
@@ -6710,6 +6719,48 @@ def _cmd_adopt_fresh_empty_topology(args: argparse.Namespace, private_state) -> 
     return 0
 
 
+def _print_subset_seal_cleanup_recommendation(args: argparse.Namespace, result: dict[str, Any]) -> None:
+    if result.get("status") != "pass":
+        return
+    topology_diff = result.get("topology_diff")
+    removed_nodes = topology_diff.get("removed_nodes") if isinstance(topology_diff, dict) else None
+    if not isinstance(removed_nodes, list) or not removed_nodes:
+        return
+
+    evidence = result.get("evidence")
+    if not isinstance(evidence, dict) or not evidence.get("path") or not evidence.get("sha256"):
+        print(
+            "\nSubset topology seal removed node(s), so stale Mother helper cleanup is recommended "
+            "before retrying add-node. Re-run the seal with --write-evidence so cleanup can be bound "
+            "to the persisted topology evidence."
+        )
+        return
+
+    cleanup_script = REPO_ROOT / "tools" / "mother_helper_cleanup2_yagni.py"
+    common = [
+        "--runtime-state-root",
+        str(args.runtime_state_root),
+        "--network",
+        str(args.network),
+        "--topology-evidence",
+        str(evidence["path"]),
+        "--acknowledge-topology-evidence-sha256",
+        str(evidence["sha256"]),
+    ]
+    inspect_cmd = [sys.executable, str(cleanup_script), "inspect", *common]
+    execute_cmd = [sys.executable, str(cleanup_script), "execute", *common, "--write-evidence"]
+
+    print(
+        "\nSubset topology seal removed node(s): "
+        + ", ".join(str(node) for node in removed_nodes)
+        + "."
+    )
+    print("Recommended before retrying add-node: inspect stale Mother helper services:")
+    print(subprocess.list2cmdline(inspect_cmd))
+    print("If inspection finds supported retired helpers, clean them with:")
+    print(subprocess.list2cmdline(execute_cmd))
+
+
 def _cmd_seal_live_current_topology(args: argparse.Namespace, private_state) -> int:
     result = seal_live_current_topology(
         _paths(args),
@@ -6717,6 +6768,7 @@ def _cmd_seal_live_current_topology(args: argparse.Namespace, private_state) -> 
         Path(args.topology_evidence),
         network=args.network,
         acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
+        actual_nodes=args.actual_node,
         use_live_topology=args.use_live_topology,
         max_age_seconds=args.max_age_seconds,
         timeout=args.timeout,
@@ -6725,6 +6777,7 @@ def _cmd_seal_live_current_topology(args: argparse.Namespace, private_state) -> 
         operation=_operation("seal-live-current-topology", args.network, args.operation_id),
     )
     print(json.dumps(result, indent=2, sort_keys=True))
+    _print_subset_seal_cleanup_recommendation(args, result)
     return 0
 
 

@@ -2040,6 +2040,11 @@ def _preflight_existing_validator_services(
                     "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STALE_BASELINE",
                     f"{voter} selected validator service {uuid} does not match live Coolify detail before candidate mutation",
                 ) from exc
+            service_status = _require_existing_validator_service_healthy(
+                voter=voter,
+                service_uuid=uuid,
+                detail_record=detail_record,
+            )
             compose_text = _compose_text(detail_record)
             service_uuids[voter] = uuid
             detail_records[voter] = detail_record
@@ -2053,7 +2058,7 @@ def _preflight_existing_validator_services(
                 "response_sha256": detail["response_sha256"],
                 "service_uuid": uuid,
                 "service_uuid_source": "replica-sync-evidence",
-                "service_status": _service_status(detail_record),
+                "service_status": service_status,
                 "component_or_service_observed": True,
                 "compose_text_available": True,
                 "compose_text_sha256": hashlib.sha256(compose_text.encode("utf-8")).hexdigest(),
@@ -2090,6 +2095,11 @@ def _preflight_existing_validator_services(
                 "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STALE_BASELINE",
                 f"{voter} selected validator service detail does not match inventory before candidate mutation",
             ) from exc
+        service_status = _require_existing_validator_service_healthy(
+            voter=voter,
+            service_uuid=uuid,
+            detail_record=detail_record,
+        )
         compose_text = _compose_text(detail_record)
         service_uuids[voter] = uuid
         detail_records[voter] = detail_record
@@ -2117,7 +2127,7 @@ def _preflight_existing_validator_services(
             "response_sha256": detail["response_sha256"],
             "service_uuid": uuid,
             "service_uuid_source": "coolify-inventory",
-            "service_status": _service_status(detail_record),
+            "service_status": service_status,
             "component_or_service_observed": True,
             "compose_text_available": True,
             "compose_text_sha256": hashlib.sha256(compose_text.encode("utf-8")).hexdigest(),
@@ -2134,6 +2144,25 @@ def _service_status(record: Mapping[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return "unknown"
+
+
+def _require_existing_validator_service_healthy(
+    *,
+    voter: str,
+    service_uuid: str,
+    detail_record: Mapping[str, Any],
+) -> str:
+    service_status = _service_status(detail_record)
+    if service_status.strip().lower() != "running:healthy":
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_REQUIRED_VALIDATOR_UNHEALTHY",
+            (
+                f"{voter} selected validator service {service_uuid} is {service_status!r} "
+                "before candidate mutation; refusing add-node validator admission until every "
+                "required existing validator service is running:healthy"
+            ),
+        )
+    return service_status
 
 
 def _component_names(record: Mapping[str, Any]) -> set[str]:

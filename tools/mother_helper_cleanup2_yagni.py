@@ -83,7 +83,6 @@ SHIM_IMAGE = "alpine:3.20"
 SHIM_LABEL = "main_computer.mother.post_work_shim"
 MIMIC_LABEL = "main_computer.mother.retired_helper_mimic"
 
-
 class MotherHelperCleanup2YagniError(RuntimeError):
     """Cleanup2 could not produce a trustworthy result."""
 
@@ -554,6 +553,279 @@ def _parse_compose(compose_text: str) -> dict[str, Any]:
     return parsed
 
 
+DOCKER_COMPOSE_CLI_UNSUPPORTED_SERVICE_KEYS = frozenset(
+    {
+        # Coolify accepts/injects this metadata, but the docker compose CLI rejects it
+        # with: Additional property exclude_from_hc is not allowed.
+        "exclude_from_hc",
+    }
+)
+
+
+def _strip_docker_compose_cli_unsupported_service_keys(compose: dict[str, Any]) -> dict[str, list[str]]:
+    """Remove Coolify-only service keys before using docker compose CLI."""
+    services = compose.get("services")
+    removed: dict[str, list[str]] = {}
+    if not isinstance(services, dict):
+        return removed
+
+    for service_name, service in services.items():
+        if not isinstance(service, dict):
+            continue
+        removed_keys: list[str] = []
+        for key in DOCKER_COMPOSE_CLI_UNSUPPORTED_SERVICE_KEYS:
+            if key in service:
+                service.pop(key, None)
+                removed_keys.append(key)
+        if removed_keys:
+            removed[str(service_name)] = sorted(removed_keys)
+    return removed
+
+
+def _docker_compose_cli_apply_compose(compose_text: str) -> tuple[str, dict[str, list[str]]]:
+    """Return the helper apply Compose as accepted by docker compose CLI."""
+    compose = _parse_compose(compose_text)
+    removed = _strip_docker_compose_cli_unsupported_service_keys(compose)
+    return yaml.safe_dump(compose, sort_keys=False), removed
+
+
+def _command_text(value: object) -> str:
+    if isinstance(value, list):
+        return " ".join(str(item) for item in value)
+    if isinstance(value, tuple):
+        return " ".join(str(item) for item in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _short_text(value: object, *, limit: int = 300) -> str:
+    text = _command_text(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...<truncated>"
+
+
+def _helper_definition_diagnostic(
+    compose: Mapping[str, Any],
+    *,
+    helper_name: str,
+    service_uuid: str,
+) -> dict[str, Any]:
+    helper = _helper_name(helper_name)
+    service = _uuid(service_uuid, "service_uuid")
+    services = compose.get("services")
+    definition: Any = services.get(helper) if isinstance(services, Mapping) else None
+    if not isinstance(definition, Mapping):
+        return {
+            "helper_name": helper,
+            "present": False,
+            "expected_cleanup2_container_name": f"{helper}-{service}",
+            "is_cleanup2_mimic_definition": False,
+        }
+
+    labels = definition.get("labels")
+    labels_map = labels if isinstance(labels, Mapping) else {}
+    command = definition.get("command")
+    command_text = _command_text(command)
+    healthcheck = definition.get("healthcheck")
+    healthcheck_map = healthcheck if isinstance(healthcheck, Mapping) else {}
+    selected_labels = {
+        key: labels_map.get(key)
+        for key in (
+            SHIM_LABEL,
+            MIMIC_LABEL,
+            "main_computer.mother.helper",
+            "main_computer.mother.cleanup_scope",
+            "main_computer.mother.not_a_proof_guardian",
+            "main_computer.mother.not_a_validator_voter",
+            "main_computer.mother.not_an_activation_guardian",
+        )
+    }
+    return {
+        "helper_name": helper,
+        "present": True,
+        "image": str(definition.get("image") or ""),
+        "container_name": str(definition.get("container_name") or ""),
+        "expected_cleanup2_container_name": f"{helper}-{service}",
+        "restart": str(definition.get("restart") or ""),
+        "healthcheck_test": healthcheck_map.get("test"),
+        "command_sha256": hashlib.sha256(command_text.encode("utf-8")).hexdigest() if command_text else None,
+        "command_preview": _short_text(command),
+        "selected_labels": selected_labels,
+        "is_cleanup2_mimic_definition": (
+            str(definition.get("image") or "") == SHIM_IMAGE
+            and str(definition.get("container_name") or "") == f"{helper}-{service}"
+            and labels_map.get(MIMIC_LABEL) == "true"
+            and labels_map.get("main_computer.mother.cleanup_scope") == "helper-cleanup2-yagni"
+            and labels_map.get("main_computer.mother.helper") == helper
+            and labels_map.get("main_computer.mother.not_a_proof_guardian") == "true"
+            and labels_map.get("main_computer.mother.not_a_validator_voter") == "true"
+            and labels_map.get("main_computer.mother.not_an_activation_guardian") == "true"
+            and "mother-retired-helper-shim" in command_text
+        ),
+    }
+
+
+def _helper_definitions_diagnostic(
+    compose: Mapping[str, Any],
+    *,
+    helper_names: tuple[str, ...],
+    service_uuid: str,
+) -> list[dict[str, Any]]:
+    return [
+        _helper_definition_diagnostic(compose, helper_name=helper, service_uuid=service_uuid)
+        for helper in helper_names
+    ]
+
+
+def _parent_payload_diagnostic(
+    payload: Any,
+    *,
+    helper_names: tuple[str, ...],
+    service_uuid: str,
+    compose: Mapping[str, Any] | None = None,
+    compose_sha256: str | None = None,
+    source_field: str | None = None,
+    source_encoding: str | None = None,
+) -> dict[str, Any]:
+    decoded = _decode_payload(payload)
+    payload_map = decoded if isinstance(decoded, Mapping) else {}
+    helpers = tuple(_helper_name(item) for item in helper_names)
+    helper_set = set(helpers)
+    applications: list[dict[str, Any]] = []
+    for record in _application_records(payload_map):
+        name = str(record.get("name") or "")
+        if name in helper_set:
+            applications.append(
+                {
+                    "name": name,
+                    "uuid": str(record.get("uuid") or ""),
+                    "status": str(record.get("status") or record.get("service_status") or ""),
+                    "image": str(record.get("image") or ""),
+                }
+            )
+    result: dict[str, Any] = {
+        "service_uuid": service_uuid,
+        "parent_name": str(payload_map.get("name") or ""),
+        "parent_status": str(payload_map.get("status") or payload_map.get("service_status") or ""),
+        "source_field": source_field,
+        "source_encoding": source_encoding,
+        "compose_sha256": compose_sha256,
+        "helper_application_records": applications,
+        "helper_application_count": len(applications),
+    }
+    if compose is not None:
+        result["helper_definitions"] = _helper_definitions_diagnostic(
+            compose,
+            helper_names=helpers,
+            service_uuid=service_uuid,
+        )
+    return result
+
+
+def _cleanup2_target_diagnostic(target: Mapping[str, Any]) -> dict[str, Any]:
+    service_uuid = _uuid(target.get("service_uuid"), "cleanup2 target service_uuid")
+    helpers = tuple(_helper_name(item) for item in target.get("helper_names") or ())
+    return {
+        "node": str(target.get("node") or ""),
+        "service_uuid": service_uuid,
+        "helper_names": list(helpers),
+        "expected_container_names": [f"{helper}-{service_uuid}" for helper in helpers],
+        "project_discovery": {
+            "method": "docker ps -aq --filter name=<service_uuid>; inspect com.docker.compose.project",
+            "service_uuid": service_uuid,
+        },
+        "docker_compose_up_template": (
+            "docker compose -p <discovered_project> -f <decoded_patched_compose> "
+            "--project-directory <discovered_workdir_if_available> up -d --no-deps --force-recreate "
+            + " ".join(helpers)
+        ),
+        "runtime_diagnostics_log_prefix": "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC",
+        "runtime_diagnostics_expected_phases": [
+            "target_payload",
+            "compose_decoded",
+            "find_project",
+            "find_project_candidate",
+            "find_project_selected",
+            "target_begin",
+            "before",
+            "docker_compose_start",
+            "docker_compose_exit",
+            "docker_compose_stdout",
+            "docker_compose_stderr",
+            "after",
+        ],
+        "patched_compose_sha256": str(target.get("patched_compose_sha256") or ""),
+        "docker_compose_cli_compose_sha256": str(target.get("docker_compose_cli_compose_sha256") or ""),
+        "docker_compose_cli_removed_service_keys": dict(target.get("docker_compose_cli_removed_service_keys") or {}),
+    }
+
+
+def _patch_readback_diagnostic(
+    controller: CoolifyController,
+    *,
+    controller_id: str,
+    node: str,
+    service_uuid: str,
+    helper_names: tuple[str, ...],
+    expected_compose_sha256: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    http_observations: list[dict[str, Any]],
+    phase: str,
+) -> dict[str, Any]:
+    try:
+        detail = _service_detail(
+            controller,
+            service_uuid,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        receipt = _receipt_from_detail(detail["receipt"], controller_id=controller_id, node=node, service_uuid=service_uuid)
+        receipt["phase"] = phase
+        http_observations.append(receipt)
+        if detail.get("missing") is True:
+            return {
+                "phase": phase,
+                "ok": False,
+                "reason": "service-detail-404",
+                "receipt": receipt,
+            }
+        compose_text, source_field, source_encoding = _compose_text_from_service_payload(detail["payload"])
+        compose_sha256 = hashlib.sha256(compose_text.encode("utf-8")).hexdigest()
+        parsed = _parse_compose(compose_text)
+        payload_diag = _parent_payload_diagnostic(
+            detail["payload"],
+            helper_names=helper_names,
+            service_uuid=service_uuid,
+            compose=parsed,
+            compose_sha256=compose_sha256,
+            source_field=source_field,
+            source_encoding=source_encoding,
+        )
+        mimic_ok = all(item.get("is_cleanup2_mimic_definition") is True for item in payload_diag.get("helper_definitions", []))
+        return {
+            "phase": phase,
+            "ok": True,
+            "receipt": receipt,
+            "compose_sha256": compose_sha256,
+            "expected_compose_sha256": expected_compose_sha256,
+            "compose_matches_expected_patch": compose_sha256 == expected_compose_sha256,
+            "all_target_helpers_are_cleanup2_mimics_in_saved_compose": mimic_ok,
+            "parent_payload": payload_diag,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "phase": phase,
+            "ok": False,
+            "error_code": getattr(exc, "code", type(exc).__name__),
+            "error": str(exc),
+        }
+
+
 def _mimic_service(service_uuid: str, helper_name: str) -> dict[str, Any]:
     service = _uuid(service_uuid, "service_uuid")
     helper = _helper_name(helper_name)
@@ -733,22 +1005,94 @@ def _single_quote(text: str) -> str:
 def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
     lines = [
         "set -eu",
+        "DIAG_PREFIX=MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC",
+        "diag() { printf '%s %s\n' \"$DIAG_PREFIX\" \"$*\" >&2; }",
+        "diag_file() {",
+        "  phase=\"$1\"",
+        "  name=\"$2\"",
+        "  file=\"$3\"",
+        "  if [ -f \"$file\" ]; then",
+        "    bytes=\"$(wc -c < \"$file\" | tr -d ' ')\"",
+        "    if command -v sha256sum >/dev/null 2>&1; then",
+        "      sha=\"$(sha256sum \"$file\" | awk '{print $1}')\"",
+        "    else",
+        "      sha=\"\"",
+        "    fi",
+        "    b64=\"$(base64 \"$file\" 2>/dev/null | tr -d '\n' || true)\"",
+        "    diag \"phase=$phase artifact=$name bytes=$bytes sha256=$sha base64=$b64\"",
+        "  else",
+        "    diag \"phase=$phase artifact=$name missing=true\"",
+        "  fi",
+        "}",
+        "docker_ps_snapshot() {",
+        "  phase=\"$1\"",
+        "  uuid=\"$2\"",
+        "  diag \"phase=$phase service_uuid=$uuid docker_ps_filter=name=$uuid\"",
+        "  docker ps -a --filter \"name=$uuid\" --format \"$DIAG_PREFIX phase=$phase docker_ps id={{.ID}} name={{.Names}} image={{.Image}} status={{.Status}}\" >&2 || true",
+        "}",
+        "inspect_expected() {",
+        "  phase=\"$1\"",
+        "  uuid=\"$2\"",
+        "  helper=\"$3\"",
+        "  project=\"$4\"",
+        "  cname=\"${helper}-${uuid}\"",
+        "  ids=\"$(docker ps -aq --filter \"name=^${cname}$\" || true)\"",
+        "  cid=\"$(printf '%s\n' \"$ids\" | sed -n '1p')\"",
+        "  count=\"$(printf '%s\n' \"$ids\" | sed '/^$/d' | wc -l | tr -d ' ')\"",
+        "  if [ -z \"$cid\" ]; then",
+        "    diag \"phase=$phase expected_container=$cname helper=$helper project=$project found=false match_count=$count\"",
+        "    return 0",
+        "  fi",
+        "  image=\"$(docker inspect -f '{{ .Config.Image }}' \"$cid\" 2>/dev/null || true)\"",
+        "  status=\"$(docker inspect -f '{{ .State.Status }}' \"$cid\" 2>/dev/null || true)\"",
+        "  running=\"$(docker inspect -f '{{ .State.Running }}' \"$cid\" 2>/dev/null || true)\"",
+        "  health=\"$(docker inspect -f '{{ if .State.Health }}{{ .State.Health.Status }}{{ end }}' \"$cid\" 2>/dev/null || true)\"",
+        "  compose_project=\"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  compose_service=\"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.service\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  retired=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.retired_helper_mimic\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  cleanup_scope=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.cleanup_scope\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  helper_label=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.helper\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  not_proof=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.not_a_proof_guardian\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  not_voter=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.not_a_validator_voter\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  not_activation=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.not_an_activation_guardian\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  post_work_shim=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.post_work_shim\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  cmd_json=\"$(docker inspect -f '{{ json .Config.Cmd }}' \"$cid\" 2>/dev/null || true)\"",
+        "  case \"$cmd_json\" in",
+        "    *mother-retired-helper-shim*) cmd_has_marker=true ;;",
+        "    *) cmd_has_marker=false ;;",
+        "  esac",
+        "  is_mimic=false",
+        "  if [ \"$image\" = \"alpine:3.20\" ] && [ \"$retired\" = \"true\" ] && [ \"$cleanup_scope\" = \"helper-cleanup2-yagni\" ] && [ \"$not_proof\" = \"true\" ] && [ \"$not_voter\" = \"true\" ] && [ \"$not_activation\" = \"true\" ] && [ \"$cmd_has_marker\" = \"true\" ]; then",
+        "    is_mimic=true",
+        "  fi",
+        "  cmd_b64=\"$(printf '%s' \"$cmd_json\" | base64 2>/dev/null | tr -d '\n' || true)\"",
+        "  diag \"phase=$phase expected_container=$cname helper=$helper project=$project found=true match_count=$count container_id=$cid image=$image status=$status running=$running health=$health compose_project=$compose_project compose_service=$compose_service retired_helper_mimic=$retired cleanup_scope=$cleanup_scope helper_label=$helper_label not_a_proof_guardian=$not_proof not_a_validator_voter=$not_voter not_an_activation_guardian=$not_activation post_work_shim=$post_work_shim cmd_has_marker=$cmd_has_marker is_cleanup2_mimic=$is_mimic cmd_json_base64=$cmd_b64\"",
+        "}",
         "echo mother-helper-cleanup2-started",
+        "diag phase=script_start",
         "docker version >/tmp/mother-helper-cleanup2-docker-version.txt",
+        "diag_file script_start docker_version /tmp/mother-helper-cleanup2-docker-version.txt",
         "docker compose version >/tmp/mother-helper-cleanup2-compose-version.txt",
+        "diag_file script_start docker_compose_version /tmp/mother-helper-cleanup2-compose-version.txt",
         "",
         "find_project() {",
         "  uuid=\"$1\"",
         "  ids=\"$(docker ps -aq --filter \"name=$uuid\" || true)\"",
+        "  diag \"phase=find_project service_uuid=$uuid matched_container_ids=$(printf '%s' \"$ids\" | tr '\n' ',')\"",
         "  for c in $ids; do",
         "    project=\"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$c\" 2>/dev/null || true)\"",
         "    workdir=\"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project.working_dir\" }}' \"$c\" 2>/dev/null || true)\"",
+        "    image=\"$(docker inspect -f '{{ .Config.Image }}' \"$c\" 2>/dev/null || true)\"",
+        "    name=\"$(docker inspect -f '{{ .Name }}' \"$c\" 2>/dev/null || true)\"",
+        "    diag \"phase=find_project_candidate service_uuid=$uuid container_id=$c name=$name image=$image project=$project workdir=$workdir\"",
         "    if [ -n \"$project\" ] && [ \"$project\" != '<no value>' ]; then",
-        "      printf '%s\\n%s\\n' \"$project\" \"$workdir\"",
+        "      diag \"phase=find_project_selected service_uuid=$uuid container_id=$c project=$project workdir=$workdir\"",
+        "      printf '%s\n%s\n' \"$project\" \"$workdir\"",
         "      return 0",
         "    fi",
         "  done",
         "  echo \"compose project not found for service_uuid=$uuid\" >&2",
+        "  diag \"phase=find_project_failed service_uuid=$uuid\"",
         "  return 1",
         "}",
         "",
@@ -757,13 +1101,39 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         "  compose_file=\"$2\"",
         "  shift 2",
         "  info=\"$(find_project \"$uuid\")\"",
-        "  project=\"$(printf '%s\\n' \"$info\" | sed -n '1p')\"",
-        "  workdir=\"$(printf '%s\\n' \"$info\" | sed -n '2p')\"",
+        "  project=\"$(printf '%s\n' \"$info\" | sed -n '1p')\"",
+        "  workdir=\"$(printf '%s\n' \"$info\" | sed -n '2p')\"",
+        "  diag \"phase=target_begin service_uuid=$uuid project=$project workdir=$workdir helpers=$* compose_file=$compose_file\"",
+        "  docker_ps_snapshot before \"$uuid\"",
+        "  for helper in \"$@\"; do",
+        "    inspect_expected before \"$uuid\" \"$helper\" \"$project\"",
+        "  done",
+        "  out=\"$(mktemp /tmp/mother-helper-cleanup2-compose-stdout.XXXXXX)\"",
+        "  err=\"$(mktemp /tmp/mother-helper-cleanup2-compose-stderr.XXXXXX)\"",
         "  if [ -n \"$workdir\" ] && [ \"$workdir\" != '<no value>' ] && [ -d \"$workdir\" ]; then",
-        "    docker compose -p \"$project\" -f \"$compose_file\" --project-directory \"$workdir\" up -d --no-deps --force-recreate \"$@\"",
+        "    diag \"phase=docker_compose_start service_uuid=$uuid project=$project workdir=$workdir command=docker compose -p $project -f $compose_file --project-directory $workdir up -d --no-deps --force-recreate $*\"",
+        "    set +e",
+        "    docker compose -p \"$project\" -f \"$compose_file\" --project-directory \"$workdir\" up -d --no-deps --force-recreate \"$@\" >\"$out\" 2>\"$err\"",
+        "    rc=\"$?\"",
+        "    set -e",
         "  else",
-        "    docker compose -p \"$project\" -f \"$compose_file\" up -d --no-deps --force-recreate \"$@\"",
+        "    diag \"phase=docker_compose_start service_uuid=$uuid project=$project workdir=$workdir command=docker compose -p $project -f $compose_file up -d --no-deps --force-recreate $*\"",
+        "    set +e",
+        "    docker compose -p \"$project\" -f \"$compose_file\" up -d --no-deps --force-recreate \"$@\" >\"$out\" 2>\"$err\"",
+        "    rc=\"$?\"",
+        "    set -e",
         "  fi",
+        "  diag \"phase=docker_compose_exit service_uuid=$uuid project=$project exit_code=$rc\"",
+        "  diag_file docker_compose_stdout stdout \"$out\"",
+        "  diag_file docker_compose_stderr stderr \"$err\"",
+        "  cat \"$out\"",
+        "  cat \"$err\" >&2",
+        "  docker_ps_snapshot after \"$uuid\"",
+        "  for helper in \"$@\"; do",
+        "    inspect_expected after \"$uuid\" \"$helper\" \"$project\"",
+        "  done",
+        "  rm -f \"$out\" \"$err\"",
+        "  return \"$rc\"",
         "}",
         "",
     ]
@@ -781,12 +1151,23 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
             )
         b64_var = f"/tmp/mother-helper-cleanup2-{index}.yml.b64"
         compose_file = f"/tmp/mother-helper-cleanup2-{index}.yml"
+        target_payload_message = (
+            f"phase=target_payload index={index} service_uuid={service_uuid} "
+            f"patched_compose_sha256={target.get('patched_compose_sha256') or ''} "
+            f"docker_compose_cli_compose_sha256={target.get('docker_compose_cli_compose_sha256') or ''} "
+            f"expected_container_names={','.join(f'{helper}-{service_uuid}' for helper in helpers)} "
+            f"helpers={','.join(helpers)}"
+        )
         lines.extend(
             [
+                "diag " + _single_quote(target_payload_message),
                 f"cat > {_single_quote(b64_var)} <<'MOTHER_HELPER_CLEANUP2_COMPOSE_{index}'",
                 compose_b64,
                 f"MOTHER_HELPER_CLEANUP2_COMPOSE_{index}",
                 f"base64 -d {_single_quote(b64_var)} > {_single_quote(compose_file)}",
+                "diag "
+                + _single_quote(f"phase=compose_decoded index={index} service_uuid={service_uuid} compose_file={compose_file}"),
+                "diag_file " + _single_quote(f"compose_decoded_{index}") + " " + _single_quote("patched_compose") + " " + _single_quote(compose_file),
                 "run_target "
                 + " ".join(
                     [_single_quote(service_uuid), _single_quote(compose_file)]
@@ -799,6 +1180,7 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
     lines.extend(
         [
             "touch /tmp/mother-helper-cleanup2-done",
+            "diag phase=script_complete",
             "echo mother-helper-cleanup2-complete",
             "exit 0",
         ]
@@ -806,9 +1188,14 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _escape_docker_compose_interpolation(text: str) -> str:
+    """Preserve shell variables when embedding a script in a Docker Compose value."""
+    return text.replace("$", "$$")
+
+
 def _cleanup2_compose(service_name: str, targets: list[Mapping[str, Any]]) -> str:
     name = _identifier(service_name, "cleanup2 service name")
-    script = _cleanup2_script(targets)
+    script = _escape_docker_compose_interpolation(_cleanup2_script(targets))
     compose = {
         "services": {
             name: {
@@ -956,7 +1343,6 @@ def _run_cleanup2_for_controller(
     completion_result: dict[str, Any] | None = None
     delete_receipt: dict[str, Any] | None = None
     service_name = _cleanup2_service_name(controller_id)
-
     try:
         _emit_progress(progress, "cleanup2", "installing cleanup2 service", controller_id=controller_id, target_count=len(targets))
         environment_uuid = _resolve_environment_uuid(
@@ -971,6 +1357,42 @@ def _run_cleanup2_for_controller(
         )
 
         compose = _cleanup2_compose(service_name, targets)
+        cleanup2_script = _cleanup2_script(targets)
+        cleanup2_compose_escaped_script = _escape_docker_compose_interpolation(cleanup2_script)
+        cleanup2_diagnostics = {
+            "cleanup2_compose_sha256": hashlib.sha256(compose.encode("utf-8")).hexdigest(),
+            "cleanup2_script_sha256": hashlib.sha256(cleanup2_script.encode("utf-8")).hexdigest(),
+            "cleanup2_compose_escaped_script_sha256": hashlib.sha256(
+                cleanup2_compose_escaped_script.encode("utf-8")
+            ).hexdigest(),
+            "runtime_diagnostics_log_prefix": "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC",
+            "runtime_diagnostics_capture": (
+                "emitted by the temporary docker:27-cli service to its stdout/stderr logs; "
+                "outer cleanup2 still only waits for temporary service exit"
+            ),
+            "runtime_diagnostics_include": [
+                "docker version",
+                "docker compose version",
+                "matched container ids used for project discovery",
+                "actual discovered compose project",
+                "actual discovered compose working_dir",
+                "actual docker compose up command",
+                "docker compose stdout base64",
+                "docker compose stderr base64",
+                "docker compose exit code",
+                "docker ps snapshots before and after",
+                "docker inspect mimic verdict before and after for each expected helper container",
+            ],
+            "target_diagnostics": [_cleanup2_target_diagnostic(target) for target in targets],
+            "temporary_service_strategy": (
+                "create docker:27-cli service with /var/run/docker.sock; start it; wait only for temporary service exit"
+            ),
+            "debug_destructive_leave_cleanup2_service_after_proof_guardian": False,
+            "debug_destructive_warning": None,
+            "parent_restart_performed": False,
+            "parent_redeploy_performed": False,
+            "post_restart_health_poll_performed": False,
+        }
         body = _temporary_service_body(controller_config, service_name, compose)
         body["environment_uuid"] = environment_uuid
         body["description"] = "Ephemeral Mother cleanup2 exact helper Docker Compose recreate"
@@ -1010,6 +1432,7 @@ def _run_cleanup2_for_controller(
                 "observations": observations,
                 "target_count": len(targets),
                 "targets": _cleanup2_target_summary(targets),
+                "diagnostics": cleanup2_diagnostics,
             }
 
         cleanup_service_uuid = _application_uuid(create_response.get("payload"))
@@ -1051,6 +1474,7 @@ def _run_cleanup2_for_controller(
                 "observations": observations,
                 "target_count": len(targets),
                 "targets": _cleanup2_target_summary(targets),
+                "diagnostics": cleanup2_diagnostics,
             }
 
         completion_result = _wait_for_cleanup2_exit(
@@ -1079,10 +1503,13 @@ def _run_cleanup2_for_controller(
             "observations": observations,
             "target_count": len(targets),
             "targets": _cleanup2_target_summary(targets),
+            "diagnostics": cleanup2_diagnostics,
             "docker_touched": start_receipt["ok"] is True,
             "parent_redeploy_performed": False,
             "parent_restart_performed": False,
             "post_restart_health_poll_performed": False,
+            "debug_destructive_exit_after_proof_guardian_cleanup2": False,
+            "debug_destructive_cleanup2_service_left_for_inspection": False,
         }
     finally:
         if cleanup_service_uuid is not None:
@@ -1128,6 +1555,8 @@ def _cleanup2_target_summary(targets: list[Mapping[str, Any]]) -> list[dict[str,
             "service_uuid": str(item.get("service_uuid") or ""),
             "helper_names": list(item.get("helper_names") or []),
             "patched_compose_sha256": str(item.get("patched_compose_sha256") or ""),
+            "docker_compose_cli_compose_sha256": str(item.get("docker_compose_cli_compose_sha256") or ""),
+            "docker_compose_cli_removed_service_keys": dict(item.get("docker_compose_cli_removed_service_keys") or {}),
         }
         for item in targets
     ]
@@ -1184,6 +1613,7 @@ def run_helper_cleanup2_yagni(
     patch_steps: list[dict[str, Any]] = []
     cleanup2_targets_by_controller: dict[str, list[dict[str, Any]]] = {}
     http_observations: list[dict[str, Any]] = []
+    post_cleanup_readbacks: list[dict[str, Any]] = []
 
     for service_record in services:
         node = _identifier(service_record["node"], "topology node")
@@ -1218,7 +1648,17 @@ def run_helper_cleanup2_yagni(
 
         compose_text, source_field, source_encoding = _compose_text_from_service_payload(detail["payload"])
         parsed_compose = _parse_compose(compose_text)
+        compose_sha256 = hashlib.sha256(compose_text.encode("utf-8")).hexdigest()
         helper_names = _target_helper_names(detail["payload"], parsed_compose)
+        pre_patch_diagnostics = _parent_payload_diagnostic(
+            detail["payload"],
+            helper_names=helper_names,
+            service_uuid=service_uuid,
+            compose=parsed_compose,
+            compose_sha256=compose_sha256,
+            source_field=source_field,
+            source_encoding=source_encoding,
+        )
 
         if not helper_names:
             patch_steps.append(
@@ -1232,6 +1672,9 @@ def run_helper_cleanup2_yagni(
                     "patch_receipt": None,
                     "source_field": source_field,
                     "source_encoding": source_encoding,
+                    "diagnostics": {
+                        "pre_patch_parent": pre_patch_diagnostics,
+                    },
                 }
             )
             continue
@@ -1241,8 +1684,15 @@ def run_helper_cleanup2_yagni(
             service_uuid=service_uuid,
             helper_names=helper_names,
         )
+        rewritten_compose = _parse_compose(rewritten)
+        rewritten_helper_diagnostics = _helper_definitions_diagnostic(
+            rewritten_compose,
+            helper_names=helper_names,
+            service_uuid=service_uuid,
+        )
 
         patch_receipt = None
+        patch_readback = None
         if mode_name == "execute":
             _emit_progress(progress, "patch", "patching helper mimics", node=node, controller_id=controller_id, service_uuid=service_uuid, helper_names=list(helper_names))
             patch_receipt = _patch_parent_compose(
@@ -1267,11 +1717,32 @@ def run_helper_cleanup2_yagni(
                         "patch_receipt": patch_receipt,
                         "source_field": source_field,
                         "source_encoding": source_encoding,
+                        "diagnostics": {
+                            "pre_patch_parent": pre_patch_diagnostics,
+                            "rewritten_helper_definitions": rewritten_helper_diagnostics,
+                        },
                     }
                 )
                 continue
 
         patched_compose_sha256 = hashlib.sha256(rewritten.encode("utf-8")).hexdigest()
+        docker_compose_cli_compose, docker_compose_cli_removed_service_keys = _docker_compose_cli_apply_compose(rewritten)
+        docker_compose_cli_compose_sha256 = hashlib.sha256(docker_compose_cli_compose.encode("utf-8")).hexdigest()
+        if mode_name == "execute":
+            patch_readback = _patch_readback_diagnostic(
+                controller,
+                controller_id=controller_id,
+                node=node,
+                service_uuid=service_uuid,
+                helper_names=helper_names,
+                expected_compose_sha256=patched_compose_sha256,
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                opener=opener,
+                http_observations=http_observations,
+                phase="post-patch-readback",
+            )
+
         patch_steps.append(
             {
                 "node": node,
@@ -1284,6 +1755,13 @@ def run_helper_cleanup2_yagni(
                 "source_field": source_field,
                 "source_encoding": source_encoding,
                 "patched_compose_sha256": patched_compose_sha256,
+                "docker_compose_cli_compose_sha256": docker_compose_cli_compose_sha256,
+                "docker_compose_cli_removed_service_keys": docker_compose_cli_removed_service_keys,
+                "diagnostics": {
+                    "pre_patch_parent": pre_patch_diagnostics,
+                    "rewritten_helper_definitions": rewritten_helper_diagnostics,
+                    "patch_readback": patch_readback,
+                },
             }
         )
         cleanup2_targets_by_controller.setdefault(controller_id, []).append(
@@ -1291,8 +1769,18 @@ def run_helper_cleanup2_yagni(
                 "node": node,
                 "service_uuid": service_uuid,
                 "helper_names": list(helper_names),
-                "compose_b64": base64.b64encode(rewritten.encode("utf-8")).decode("ascii"),
+                "compose_b64": base64.b64encode(docker_compose_cli_compose.encode("utf-8")).decode("ascii"),
                 "patched_compose_sha256": patched_compose_sha256,
+                "docker_compose_cli_compose_sha256": docker_compose_cli_compose_sha256,
+                "docker_compose_cli_removed_service_keys": docker_compose_cli_removed_service_keys,
+                "target_diagnostics": {
+                    "expected_container_names": [f"{helper}-{service_uuid}" for helper in helper_names],
+                    "docker_compose_up_template": (
+                        "docker compose -p <discovered_project> -f <decoded_patched_compose> "
+                        "--project-directory <discovered_workdir_if_available> up -d --no-deps --force-recreate "
+                        + " ".join(helper_names)
+                    ),
+                },
             }
         )
 
@@ -1302,20 +1790,38 @@ def run_helper_cleanup2_yagni(
             targets = cleanup2_targets_by_controller[controller_id]
             if not targets:
                 continue
-            cleanup2_steps.append(
-                _run_cleanup2_for_controller(
-                    private_state,
-                    network=network_id,
-                    controller_id=controller_id,
-                    targets=targets,
-                    timeout=request_timeout,
-                    max_response_bytes=response_limit,
-                    max_wait_seconds=wait_limit,
-                    poll_interval_seconds=poll_interval,
-                    opener=opener,
-                    progress=progress,
-                )
+            cleanup2_step = _run_cleanup2_for_controller(
+                private_state,
+                network=network_id,
+                controller_id=controller_id,
+                targets=targets,
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                max_wait_seconds=wait_limit,
+                poll_interval_seconds=poll_interval,
+                opener=opener,
+                progress=progress,
             )
+            cleanup2_steps.append(cleanup2_step)
+
+        for controller_id in sorted(cleanup2_targets_by_controller):
+            controller = _controller(private_state, network=network_id, controller_id=controller_id)
+            for target in cleanup2_targets_by_controller[controller_id]:
+                post_cleanup_readbacks.append(
+                    _patch_readback_diagnostic(
+                        controller,
+                        controller_id=controller_id,
+                        node=str(target.get("node") or ""),
+                        service_uuid=str(target.get("service_uuid") or ""),
+                        helper_names=tuple(str(item) for item in target.get("helper_names") or ()),
+                        expected_compose_sha256=str(target.get("patched_compose_sha256") or ""),
+                        timeout=request_timeout,
+                        max_response_bytes=response_limit,
+                        opener=opener,
+                        http_observations=http_observations,
+                        phase="post-cleanup2-parent-readback",
+                    )
+                )
 
     patch_ok = all(step["status"] in {"patched", "would-patch", "no-op", "skipped"} for step in patch_steps)
     cleanup2_ok = mode_name == "inspect" or all(step.get("status") == "pass" for step in cleanup2_steps)
@@ -1344,6 +1850,7 @@ def run_helper_cleanup2_yagni(
         ],
         "patch_steps": patch_steps,
         "cleanup2_steps": cleanup2_steps,
+        "post_cleanup_readbacks": post_cleanup_readbacks,
         "http_observations": http_observations,
         "summary": {
             "topology_imported": True,
@@ -1357,6 +1864,14 @@ def run_helper_cleanup2_yagni(
             "cleanup2_controller_count": len(cleanup2_targets_by_controller),
             "cleanup2_performed": mode_name == "execute" and bool(cleanup2_steps),
             "cleanup2_passed": bool(cleanup2_steps) and all(step.get("status") == "pass" for step in cleanup2_steps) if mode_name == "execute" else None,
+            "debug_destructive_short_circuit_after_proof_guardian_cleanup2": False,
+            "debug_destructive_cleanup2_services_left_for_inspection": [],
+            "post_cleanup_readback_count": len(post_cleanup_readbacks),
+            "post_cleanup_readbacks_all_mimics_in_saved_compose": (
+                all(item.get("all_target_helpers_are_cleanup2_mimics_in_saved_compose") is True for item in post_cleanup_readbacks)
+                if post_cleanup_readbacks
+                else None
+            ),
             "parent_redeploy_performed": False,
             "parent_restart_performed": False,
             "child_public_api_restart_attempted": False,

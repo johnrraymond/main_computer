@@ -1,4 +1,11 @@
-"""Guarded generic Mother ``add-node replica-sync`` release and executor.
+"""Guarded generic Mother ``add-node replica-sync`` v2 executor.
+
+V2 preserves the v1 release/evidence contracts while adding an explicit
+permanent-node readiness gate between Coolify ``/start`` acknowledgement and
+the temporary guardian-start helper.  The v1 module remains unchanged so the
+CLI can be rolled back by switching a single executor selector.
+
+Guarded generic Mother ``add-node replica-sync`` release and executor.
 
 This module consumes clean generic add-node identity evidence and authorizes only
 the next live mutation: configure and deploy the target as a non-validator
@@ -63,6 +70,7 @@ _BESU_IMAGE = "hyperledger/besu:latest"
 _PROOF_IMAGE = "python:3.12-alpine"
 _MIN_RELEASE_SECONDS = 1
 _MAX_RELEASE_SECONDS = 900
+_IMPLEMENTATION_VERSION = 2
 _GUARDIAN_START_DIAGNOSTIC_MARKERS = {
     "project-not-found": "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG project-not-found",
     "node-not-running-healthy": "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG node-not-running-healthy",
@@ -544,6 +552,132 @@ def _record_replica_sync_target_diagnostic(
     return record
 
 
+def _wait_for_replica_sync_node_ready(
+    *,
+    controller: Any,
+    controller_id: str,
+    service_uuid: str,
+    node: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Wait for the permanent replica node component before starting the helper.
+
+    Coolify's service ``/start`` acknowledgement is asynchronous.  The guardian
+    helper performs fail-fast Docker assertions, so launching it before the
+    permanent node is reported ``running:healthy`` creates a race with Coolify's
+    deployment materialization.  This waiter establishes that readiness boundary
+    using read-only service-detail GETs.
+    """
+
+    endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+    started = time.monotonic()
+    last_summary: dict[str, Any] = {}
+    observed_statuses: list[dict[str, str]] = []
+    observation_count = 0
+    while True:
+        response = _http(
+            controller,
+            "GET",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        observation_count += 1
+        parent_status = ""
+        if response.get("ok"):
+            try:
+                parent_status = _service_status(
+                    _service_record(response["payload"], service_uuid=service_uuid, node=node)
+                )
+            except MotherDeploymentNodeAddReplicaSyncError:
+                parent_status = _service_status(
+                    response.get("payload") if isinstance(response.get("payload"), Mapping) else None
+                )
+            last_summary = _replica_sync_component_summary(response.get("payload"), node=node)
+        else:
+            last_summary = {
+                "component_aware_success": False,
+                "node_running_healthy": False,
+                "guardian_running_healthy": False,
+                "node_status": "unknown",
+                "guardian_status": "unknown",
+                "init_status": "unknown",
+            }
+
+        statuses = {
+            "parent_status": parent_status,
+            "node_status": str(last_summary.get("node_status") or ""),
+            "guardian_status": str(last_summary.get("guardian_status") or ""),
+            "init_status": str(last_summary.get("init_status") or ""),
+        }
+        observed_statuses.append(statuses)
+        observations.append(
+            {
+                "method": "GET",
+                "endpoint": endpoint,
+                "status": response["status"],
+                "ok": response["ok"],
+                "response_sha256": response["response_sha256"],
+                "byte_length": response["byte_length"],
+                "elapsed_ms": response["elapsed_ms"],
+                "observed_at": _timestamp(),
+                "controller_id": controller_id,
+                "phase": "replica-sync-node-readiness",
+                **statuses,
+                "node_running_healthy": bool(last_summary.get("node_running_healthy") is True),
+            }
+        )
+
+        elapsed = time.monotonic() - started
+        if response.get("ok") and last_summary.get("node_running_healthy") is True:
+            return {
+                "healthy": True,
+                "reason": "replica-sync-node-running-healthy",
+                "service_uuid": service_uuid,
+                "node": node,
+                "component_summary": last_summary,
+                "observed_statuses": observed_statuses,
+                "observation_count": observation_count,
+                "wait_seconds": int(elapsed),
+                "wait_milliseconds": int(round(elapsed * 1000)),
+            }
+        if elapsed >= max_wait_seconds:
+            return {
+                "healthy": False,
+                "reason": "replica-sync-node-readiness-timeout",
+                "service_uuid": service_uuid,
+                "node": node,
+                "component_summary": last_summary,
+                "observed_statuses": observed_statuses,
+                "observation_count": observation_count,
+                "wait_seconds": int(elapsed),
+                "wait_milliseconds": int(round(elapsed * 1000)),
+            }
+        if poll_interval_seconds > 0:
+            time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
+        else:
+            break
+
+    return {
+        "healthy": False,
+        "reason": "replica-sync-node-readiness-timeout",
+        "service_uuid": service_uuid,
+        "node": node,
+        "component_summary": last_summary,
+        "observed_statuses": observed_statuses,
+        "observation_count": observation_count,
+        "wait_seconds": int(time.monotonic() - started),
+        "wait_milliseconds": int(round((time.monotonic() - started) * 1000)),
+    }
+
+
 def _wait_for_replica_sync_components(
     *,
     controller: Any,
@@ -742,11 +876,12 @@ def _guardian_start_script(*, service_uuid: str, node: str, compose_b64: str, wa
 
 
 def _guardian_start_compose(service_name: str, script: str) -> str:
+    escaped_script = script.replace("$", "$$")
     compose = {
         "services": {
             service_name: {
                 "image": "docker:27-cli",
-                "command": ["sh", "-lc", script],
+                "command": ["sh", "-lc", escaped_script],
                 "volumes": [
                     "/var/run/docker.sock:/var/run/docker.sock",
                     "/data/coolify:/data/coolify:ro",
@@ -1951,6 +2086,7 @@ def execute_node_add_replica_sync_release(
     failure: dict[str, str] | None = None
     proof_report: dict[str, Any] | None = None
     guardian_start: dict[str, Any] | None = None
+    node_readiness: dict[str, Any] | None = None
     component_health: dict[str, Any] | None = None
     try:
         service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
@@ -2044,19 +2180,67 @@ def execute_node_add_replica_sync_release(
             observations=observations,
         )
 
-        guardian_start = _run_replica_sync_guardian_start(
-            private_state,
-            network=network,
+        node_readiness = _wait_for_replica_sync_node_ready(
+            controller=controller,
             controller_id=controller_id,
             service_uuid=service_uuid,
             node=node,
-            compose_text=plan["sync_compose"]["canonical_text"],
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             max_wait_seconds=max_wait_seconds,
             poll_interval_seconds=poll_interval_seconds,
             opener=opener,
+            observations=observations,
         )
+        if node_readiness.get("healthy") is not True:
+            summary = (
+                node_readiness.get("component_summary")
+                if isinstance(node_readiness.get("component_summary"), Mapping)
+                else {}
+            )
+            last_status = summary.get("node_status") or "unknown"
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_NODE_NOT_READY",
+                f"target replica node did not reach running:healthy before guardian start "
+                f"(last status {last_status!r})",
+            )
+
+        readiness_summary = (
+            node_readiness.get("component_summary")
+            if isinstance(node_readiness.get("component_summary"), Mapping)
+            else {}
+        )
+        if readiness_summary.get("guardian_running_healthy") is True:
+            guardian_start = {
+                "status": "pass",
+                "reason": "guardian-already-running-healthy",
+                "observations": [],
+                "temporary_service_created": False,
+                "temporary_service_deleted": False,
+                "temporary_service_uuid": None,
+                "temporary_service_name": None,
+                "target_service_uuid": service_uuid,
+                "forced_service": "mother-replica-sync-guardian",
+                "node_recreated": False,
+                "init_recreated": False,
+                "parent_redeploy_performed": False,
+                "parent_restart_performed": False,
+                "skipped": True,
+            }
+        else:
+            guardian_start = _run_replica_sync_guardian_start(
+                private_state,
+                network=network,
+                controller_id=controller_id,
+                service_uuid=service_uuid,
+                node=node,
+                compose_text=plan["sync_compose"]["canonical_text"],
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                opener=opener,
+            )
         if guardian_start.get("status") != "pass":
             _record_replica_sync_target_diagnostic(
                 controller=controller,
@@ -2122,6 +2306,7 @@ def execute_node_add_replica_sync_release(
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
+        "implementation_version": _IMPLEMENTATION_VERSION,
         "started_at": started_at,
         "completed_at": completed_at,
         "status": "pass" if complete else "failed",
@@ -2161,6 +2346,7 @@ def execute_node_add_replica_sync_release(
         "precondition_receipts": preconditions,
         "mutation_receipts": receipts,
         "health_observations": observations,
+        "replica_sync_node_readiness": node_readiness,
         "replica_sync_guardian_start": guardian_start,
         "replica_sync_component_health": component_health,
         "proof": {

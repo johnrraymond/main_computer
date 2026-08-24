@@ -806,6 +806,13 @@ def _service_hints_from_payload(payload: Any) -> list[dict[str, Any]]:
 
 
 
+def _service_hint_is_live(hint: Mapping[str, Any]) -> bool:
+    """Treat only explicitly terminal Coolify services as non-live inventory hints."""
+    status = str(hint.get("status") or "").strip().lower()
+    terminal = status == "exited" or status.startswith("exited:") or status == "stopped" or status.startswith("stopped:")
+    return not terminal
+
+
 def _observed_inventory_errors(detection: Mapping[str, Any]) -> list[dict[str, Any]]:
     hints = detection.get("observed_service_hints")
     if not isinstance(hints, list):
@@ -1261,7 +1268,14 @@ def detect_topology_staleness(
     present_expected = [item["node"] for item in service_results if item["present"]]
     missing_expected = [item["node"] for item in service_results if item["absent"]]
     unknown_expected = [item["node"] for item in service_results if not item["present"] and not item["absent"]]
-    live_node_hints = sorted(set(node for hint in inventory_hints for node in hint.get("node_hints", [])))
+    live_node_hints = sorted(
+        set(
+            node
+            for hint in inventory_hints
+            if _service_hint_is_live(hint)
+            for node in hint.get("node_hints", [])
+        )
+    )
     unexpected_live_nodes = [node for node in live_node_hints if node not in set(nodes)]
     inventory_errors = [hint for hint in inventory_hints if hint.get("error")]
     all_expected_absent = bool(nodes) and len(missing_expected) == len(nodes) and not present_expected and not unknown_expected
@@ -1796,19 +1810,21 @@ def build_live_current_topology_evidence(
     *,
     network: str = "mainnet",
     acknowledged_topology_evidence_sha256: str,
+    actual_nodes: Iterable[str] = (),
     max_age_seconds: int = 86400,
     timeout: float = 30.0,
     max_response_bytes: int = 4 * 1024 * 1024,
     opener: Any = _DEFAULT_OPENER,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Seal the exact live non-empty topology observed in Coolify.
+    """Seal the live non-empty topology observed in Coolify.
 
-    This is a read-only baseline-repair operation.  It does not infer new
-    validator identities.  It carries forward the acknowledged topology's node
-    and validator identities, and it refreshes only the service binding layer
-    after Coolify inventory proves that the live primary service names exactly
-    match the acknowledged nodes with no unexpected nodes.
+    By default the live node set must exactly match the acknowledged topology.
+    When ``actual_nodes`` is supplied, it is an explicit operator declaration
+    of the intended live subset.  The declaration must exactly match live
+    Coolify primary-node inventory and may contain only identities already
+    present in the acknowledged topology.  Validator identities are selected
+    positionally from that acknowledged topology; no new identity is inferred.
     """
 
     detection = detect_topology_staleness(
@@ -1843,9 +1859,40 @@ def build_live_current_topology_evidence(
         raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_DUPLICATE", "expected topology contains duplicate nodes or validators")
 
     live_node_hints = [_identifier(item, "live node hint") for item in detection.get("observed_live_node_hints", [])]
-    if set(live_node_hints) != set(nodes):
-        missing = sorted(set(nodes) - set(live_node_hints))
-        extra = sorted(set(live_node_hints) - set(nodes))
+    operator_actual_nodes = [_identifier(item, "actual node") for item in actual_nodes if str(item or "").strip()]
+    if len(set(operator_actual_nodes)) != len(operator_actual_nodes):
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_INVALID", "--actual-node contains duplicates")
+
+    source_nodes = list(nodes)
+    source_validators = list(validators)
+    source_validator_by_node = {node: source_validators[index] for index, node in enumerate(source_nodes)}
+    live_node_set = set(live_node_hints)
+
+    if operator_actual_nodes:
+        actual_node_set = set(operator_actual_nodes)
+        unknown_actual_nodes = sorted(actual_node_set - set(source_nodes))
+        if unknown_actual_nodes:
+            raise _fail(
+                "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_INVALID",
+                "--actual-node is outside the acknowledged topology: " + ", ".join(unknown_actual_nodes),
+            )
+        if actual_node_set != live_node_set:
+            missing = sorted(actual_node_set - live_node_set)
+            extra = sorted(live_node_set - actual_node_set)
+            pieces = []
+            if missing:
+                pieces.append("declared but not live: " + ", ".join(missing))
+            if extra:
+                pieces.append("live but not declared: " + ", ".join(extra))
+            raise _fail(
+                "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_MISMATCH",
+                "; ".join(pieces) or "--actual-node does not match live Coolify inventory",
+            )
+        nodes = [node for node in source_nodes if node in actual_node_set]
+        validators = [source_validator_by_node[node] for node in nodes]
+    elif live_node_set != set(source_nodes):
+        missing = sorted(set(source_nodes) - live_node_set)
+        extra = sorted(live_node_set - set(source_nodes))
         pieces = []
         if missing:
             pieces.append("missing live nodes: " + ", ".join(missing))
@@ -1856,6 +1903,10 @@ def build_live_current_topology_evidence(
             "; ".join(pieces) or "live node set does not match acknowledged topology",
         )
 
+    if not nodes:
+        raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_EMPTY_REFUSED", "use empty-topology rectification for empty live topology")
+
+    subset_seal = set(nodes) != set(source_nodes)
     primary_hints = _primary_live_service_hints_by_node(detection, nodes)
     completed = _timestamp(now=now)
     old_services_raw = detection.get("expected_services")
@@ -1916,7 +1967,11 @@ def build_live_current_topology_evidence(
         live_target = target
 
     topology = {
-        "source": "read-only-live-current-topology-seal",
+        "source": (
+            "read-only-live-current-topology-subset-seal"
+            if subset_seal
+            else "read-only-live-current-topology-seal"
+        ),
         "chain_id": detection.get("chain_id"),
         "genesis_sha256": detection.get("genesis_sha256"),
         "nodes": nodes,
@@ -1924,7 +1979,9 @@ def build_live_current_topology_evidence(
         "validator_count": len(validators),
         "validator_set": validators,
         "baseline_topology_used_as_live": False,
-        "validator_set_preserved_from_source_topology": True,
+        "validator_set_preserved_from_source_topology": not subset_seal,
+        "validator_identities_selected_from_source_topology": True,
+        "operator_declared_actual_nodes": list(operator_actual_nodes),
         "service_uuid_refreshed_nodes": sorted(refreshed_nodes),
     }
 
@@ -1937,7 +1994,11 @@ def build_live_current_topology_evidence(
         "failure": None,
         "mother_binding": _binding(private_state),
         "network": network,
-        "mode": "read-only-live-current-topology-seal",
+        "mode": (
+            "read-only-live-current-topology-subset-seal"
+            if subset_seal
+            else "read-only-live-current-topology-seal"
+        ),
         "source_previous_topology_evidence": dict(detection.get("topology_evidence") or {}),
         "staleness_detection": {
             "status": detection.get("status"),
@@ -1948,6 +2009,7 @@ def build_live_current_topology_evidence(
             "present_expected_nodes": list(detection.get("present_expected_nodes") or []),
             "missing_expected_nodes": list(detection.get("missing_expected_nodes") or []),
             "observed_live_node_hints": list(detection.get("observed_live_node_hints") or []),
+            "operator_declared_actual_nodes": list(operator_actual_nodes),
             "unexpected_live_nodes": list(detection.get("unexpected_live_nodes") or []),
             "observed_service_hints": list(detection.get("observed_service_hints") or []),
             "network_access_performed": True,
@@ -1958,12 +2020,16 @@ def build_live_current_topology_evidence(
         "current_topology": topology,
         "final_topology": topology,
         "topology_diff": {
-            "operation": "read-only-live-current-topology-seal",
+            "operation": (
+                "read-only-live-current-topology-subset-seal"
+                if subset_seal
+                else "read-only-live-current-topology-seal"
+            ),
             "added_nodes": [],
-            "removed_nodes": [],
+            "removed_nodes": [node for node in source_nodes if node not in set(nodes)],
             "unchanged_nodes": list(nodes),
             "service_uuid_refreshed_nodes": sorted(refreshed_nodes),
-            "pre_validator_count": len(validators),
+            "pre_validator_count": len(source_validators),
             "post_validator_count": len(validators),
         },
         "authority": {
@@ -1971,7 +2037,9 @@ def build_live_current_topology_evidence(
             "use_live_topology": True,
             "live_coolify_primary_services_verified": True,
             "node_identity_preserved": True,
-            "validator_set_preserved_from_source_topology": True,
+            "validator_set_preserved_from_source_topology": not subset_seal,
+            "validator_identities_selected_from_source_topology": True,
+            "operator_declared_actual_nodes": list(operator_actual_nodes),
             "live_mutation_authorized": False,
         },
         "policy": {
@@ -2000,7 +2068,9 @@ def build_live_current_topology_evidence(
             "topology_current": True,
             "topology_stale": False,
             "node_identity_preserved": True,
-            "validator_set_preserved_from_source_topology": True,
+            "validator_set_preserved_from_source_topology": not subset_seal,
+            "validator_identities_selected_from_source_topology": True,
+            "operator_declared_actual_nodes": list(operator_actual_nodes),
             "live_coolify_primary_services_verified": True,
             "service_uuid_refreshed_nodes": sorted(refreshed_nodes),
             "final_nodes": nodes,
@@ -2052,6 +2122,7 @@ def seal_live_current_topology(
     *,
     network: str = "mainnet",
     acknowledged_topology_evidence_sha256: str,
+    actual_nodes: Iterable[str] = (),
     use_live_topology: bool = False,
     max_age_seconds: int = 86400,
     timeout: float = 30.0,
@@ -2069,6 +2140,7 @@ def seal_live_current_topology(
         topology_evidence_path,
         network=network,
         acknowledged_topology_evidence_sha256=acknowledged_topology_evidence_sha256,
+        actual_nodes=actual_nodes,
         max_age_seconds=max_age_seconds,
         timeout=timeout,
         max_response_bytes=max_response_bytes,

@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+import tools.mother.common.deployment_node_remove_do as node_remove_do_module
 from tools import mother_deploy
 from tools.mother.common.deployment_node_remove import (
     MotherDeploymentNodeRemoveError,
@@ -1296,6 +1297,47 @@ def _node_remove_do_proof_for_test(voter: str) -> dict:
     }
 
 
+def _fake_host_docker_helper_setup(**kwargs):
+    voter = kwargs["node"]
+    service_uuid = kwargs["service_uuid"]
+    helper_name = kwargs.get("helper_name") or f"mother-node-remove-voter-{voter.replace('-', '_')}-{service_uuid}"
+    opener = kwargs.get("opener")
+    if opener is not None and hasattr(opener, "guardians"):
+        opener.guardians[service_uuid] = helper_name
+    return {
+        "status": "pass",
+        "helper_setup_verified": True,
+        "helper_name": helper_name,
+        "runner_service_uuid": f"runner-{voter}",
+        "proof_endpoint": {
+            "host": "coolify-c.invalid" if voter.startswith("mainnetc-") else "coolify-a.invalid",
+            "host_port": (30304 if voter.endswith("super2") else 30303) + 9100,
+            "container_port": 8798,
+            "url": f"http://{'coolify-c.invalid' if voter.startswith('mainnetc-') else 'coolify-a.invalid'}:{(30304 if voter.endswith('super2') else 30303) + 9100}/proof",
+        },
+        "helper_proof_payload": _node_remove_do_proof_for_test(voter),
+        "runner_create": {
+            "method": "POST",
+            "endpoint": "/api/v1/services",
+            "status": 201,
+            "ok": True,
+            "response_sha256": "a" * 64,
+            "byte_length": 48,
+            "elapsed_ms": 1,
+            "request_body_sha256": "b" * 64,
+        },
+        "runner_start": {
+            "method": "POST",
+            "endpoint": f"/api/v1/services/runner-{voter}/start",
+            "status": 200,
+            "ok": True,
+            "response_sha256": "c" * 64,
+            "byte_length": 46,
+            "elapsed_ms": 1,
+        },
+    }
+
+
 class _NodeRemoveDoOpener:
     def __init__(
         self,
@@ -1310,6 +1352,7 @@ class _NodeRemoveDoOpener:
         sibling_guardian_never_materializes_nodes: set[str] | None = None,
         existing_admission_voter_helper_nodes: set[str] | None = None,
         existing_admission_voter_helper_application_nodes: set[str] | None = None,
+        proof_factory=None,
     ) -> None:
         self.services = {
             "svca1xxxx": {"host": "coolify-a.invalid", "name": "mainneta-super1", "present": True, "compose": _compose_for_remove_do("mainneta-super1")},
@@ -1329,6 +1372,7 @@ class _NodeRemoveDoOpener:
         self.sibling_guardian_never_materializes_nodes = set(sibling_guardian_never_materializes_nodes or set())
         self.existing_admission_voter_helper_nodes = set(existing_admission_voter_helper_nodes or set())
         self.existing_admission_voter_helper_application_nodes = set(existing_admission_voter_helper_application_nodes or set())
+        self.proof_factory = proof_factory or _node_remove_do_proof_for_test
         self.application_to_service: dict[str, str] = {}
         for node in sorted(self.existing_admission_voter_helper_nodes):
             suffix = "c1" if node.endswith("super1") else "c2" if node.endswith("super2") else "a1"
@@ -1392,7 +1436,7 @@ class _NodeRemoveDoOpener:
                 "status": "running:healthy",
             }
             if self.surface_proofs:
-                application["node_remove_do_proof_payload"] = _node_remove_do_proof_for_test(item.get("borrowed_for_node", item["name"]))
+                application["node_remove_do_proof_payload"] = self.proof_factory(item.get("borrowed_for_node", item["name"]))
             applications = [app for app in applications if app.get("name") != guardian]
             applications.append(application)
         if applications:
@@ -1424,7 +1468,7 @@ class _NodeRemoveDoOpener:
                     expected_host_port = int(proof_endpoint["host_port"])
                 if expected_host_port == int(parsed.port or 0):
                     if uuid in self.guardians and str(proof_node) not in self.proof_endpoint_timeout_nodes:
-                        return _Response(_node_remove_do_proof_for_test(str(proof_node)), status=200)
+                        return _Response(self.proof_factory(str(proof_node)), status=200)
                     matched_dead_endpoint = True
             if matched_dead_endpoint:
                 raise TimeoutError("proof endpoint timed out")
@@ -1634,6 +1678,185 @@ def test_remove_node_do_release_and_execution_deletes_after_survivor_vote_guardi
     assert set(verified_evidence["validator_removal_proof_sha256_by_voter"]) == {"mainnetc-super1", "mainnetc-super2"}
 
 
+
+def test_remove_node_do_two_to_one_adds_target_self_removal_voter_only_for_special_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_remove_finalize_baseline_for_remove_prep(paths, private_state)
+    prep = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node=A_NODE,
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-14T00:36:30Z",
+        now=__import__("datetime").datetime(2026, 8, 14, 0, 36, 30, tzinfo=__import__("datetime").timezone.utc),
+    )
+    prep_path, prep_sha = write_node_remove_prep_transaction(
+        paths,
+        prep,
+        operation=_operation("write-remove-prep-do-two-to-one"),
+    )
+    release = build_node_remove_do_release(
+        paths,
+        private_state,
+        prep_path,
+        acknowledged_prep_transaction_sha256=prep_sha,
+        created_at="2026-08-14T00:37:00Z",
+        expires_in_seconds=900,
+        now=__import__("datetime").datetime(2026, 8, 14, 0, 37, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert release["summary"]["current_validator_count"] == 2
+    assert release["summary"]["post_removal_validator_count"] == 1
+    assert release["summary"]["survivor_nodes"] == [C_NODE]
+    assert release["validator_removal_vote"]["voter_nodes"] == [C_NODE, A_NODE]
+
+    release_path, release_sha = write_node_remove_do_release(
+        paths,
+        release,
+        operation=_operation("write-remove-do-release-two-to-one"),
+    )
+
+    current = [
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+    ]
+    desired = ["0x9b809f05f8d68da17e697cd6ab040d4320494611"]
+    target = "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6"
+
+    def two_to_one_proof(voter: str) -> dict:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "qbft_proposeValidatorVote",
+            "params": [target, False],
+        }
+        return {
+            "node_remove_do_proof_contract": "main_computer.mother.node_remove_do.validator_removal_proof.v1",
+            "voter_node": voter,
+            "chain_id": 42424240,
+            "genesis_sha256": "364df17daf2dfa428bd486e9c4e8b46c70317f65b23b55aaf78f749e15de6c92",
+            "rpc_request_sha256": hashlib.sha256(canonical_json(request)).hexdigest(),
+            "vote_submitted": True,
+            "target_validator": target,
+            "target_validator_absent": True,
+            "expected_current_validator_set": current,
+            "desired_validator_set": desired,
+            "final_validator_set": desired,
+            "latest_validator_set": desired,
+            "first_block_number": 120,
+            "first_block_hash": "0x" + "1" * 64,
+            "first_block_parent_hash": "0x" + "0" * 64,
+            "first_block_validator_set": desired,
+            "second_block_number": 122,
+            "second_block_hash": "0x" + "2" * 64,
+            "second_block_parent_hash": "0x" + "1" * 64,
+            "second_block_validator_set": desired,
+            "block_advance": 2,
+            "latest_block_number": 123,
+            "latest_block_hash": "0x" + "3" * 64,
+            "latest_block_parent_hash": "0x" + "2" * 64,
+            "latest_block_timestamp": 1786485840,
+            "final_pending_votes": {},
+            "proved_at": "2026-08-14T00:38:00Z",
+        }
+
+    host_setup_calls: list[str] = []
+
+    def launch_only_host_helper(**kwargs):
+        voter = kwargs["node"]
+        service_uuid = kwargs["service_uuid"]
+        helper_name = kwargs.get("helper_name") or f"mother-node-remove-voter-{voter.replace('-', '_')}-{service_uuid}"
+        host_setup_calls.append(voter)
+        fake_opener = kwargs.get("opener")
+        if fake_opener is not None and hasattr(fake_opener, "guardians"):
+            fake_opener.guardians[service_uuid] = helper_name
+        return {
+            "status": "failed",
+            "reason": "proof-endpoint-not-verified",
+            "helper_setup_verified": False,
+            "helper_name": helper_name,
+            "runner_service_uuid": f"runner-{voter}",
+            "proof_observations": [
+                {
+                    "elapsed_ms": 12000,
+                    "error_type": "TimeoutError",
+                    "message": "proof endpoint timed out",
+                    "ok": False,
+                    "url": f"http://{'coolify-c.invalid' if voter.startswith('mainnetc-') else 'coolify-a.invalid'}:39403/proof",
+                }
+            ],
+            "helper_proof_payload": None,
+            "runner_create": {
+                "method": "POST",
+                "endpoint": "/api/v1/services",
+                "status": 201,
+                "ok": True,
+                "response_sha256": "a" * 64,
+                "byte_length": 48,
+                "elapsed_ms": 1,
+                "request_body_sha256": "b" * 64,
+            },
+            "runner_start": {
+                "method": "POST",
+                "endpoint": f"/api/v1/services/runner-{voter}/start",
+                "status": 200,
+                "ok": True,
+                "response_sha256": "c" * 64,
+                "byte_length": 46,
+                "elapsed_ms": 1,
+            },
+        }
+
+    monkeypatch.setattr(node_remove_do_module, "setup_node_remove_helper", launch_only_host_helper)
+    opener = _NodeRemoveDoOpener(
+        proof_factory=two_to_one_proof,
+        sibling_guardian_never_materializes_nodes={A_NODE, C_NODE},
+    )
+    opener.services["z7nwwn4jzkvlw8t9cc9zn45s"] = opener.services.pop("svca1xxxx")
+    opener.services["v6gtfm7q4kem6j6qedwxrrav"] = opener.services.pop("svcc1xxxx")
+
+    result = execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-two-to-one"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 14, 0, 38, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "pass", result
+    assert host_setup_calls == [C_NODE, A_NODE]
+    assert result["host_docker_survivor_guardians"][C_NODE]["two_to_one_launch_verified"] is True
+    assert result["host_docker_survivor_guardians"][A_NODE]["two_to_one_launch_verified"] is True
+    assert set(result["validator_removal_proofs"]) == {A_NODE, C_NODE}
+    assert result["summary"]["validator_removal_vote_performed"] is True
+    assert result["summary"]["final_validator_set_verified_by_proof_payload"] is True
+    assert result["summary"]["service_deletion_performed"] is True
+    assert opener.services["z7nwwn4jzkvlw8t9cc9zn45s"]["present"] is False
+
+    delete_index = next(i for i, item in enumerate(opener.requests) if item[0] == "DELETE")
+    voter_patch_indices = [
+        i
+        for i, item in enumerate(opener.requests)
+        if item[0] == "PATCH"
+        and item[2] in {
+            "/api/v1/services/z7nwwn4jzkvlw8t9cc9zn45s",
+            "/api/v1/services/v6gtfm7q4kem6j6qedwxrrav",
+        }
+    ]
+    assert len(voter_patch_indices) == 2
+    assert max(voter_patch_indices) < delete_index
+
+
 def test_remove_node_do_rejects_parent_or_component_health_without_proof_payload(tmp_path: Path) -> None:
     paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
 
@@ -1779,8 +2002,12 @@ def test_remove_node_do_fails_before_proof_polling_when_helper_endpoint_unreacha
     )
 
 
-def test_remove_node_do_borrows_existing_admission_voter_when_sibling_helper_never_materializes(tmp_path: Path) -> None:
+def test_remove_node_do_uses_host_docker_helper_when_sibling_helper_never_materializes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+    monkeypatch.setattr(node_remove_do_module, "setup_node_remove_helper", _fake_host_docker_helper_setup)
 
     opener = _NodeRemoveDoOpener(
         sibling_guardian_never_materializes_nodes={"mainnetc-super2"},
@@ -1793,7 +2020,7 @@ def test_remove_node_do_borrows_existing_admission_voter_when_sibling_helper_nev
         acknowledged_release_sha256=release_sha,
         max_wait_seconds=0,
         poll_interval_seconds=0,
-        operation=_operation("execute-remove-do-borrow-existing-helper"),
+        operation=_operation("execute-remove-do-host-helper"),
         opener=opener,
         now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
     )
@@ -1801,34 +2028,31 @@ def test_remove_node_do_borrows_existing_admission_voter_when_sibling_helper_nev
     assert result["status"] == "pass", result
     assert result["summary"]["service_deletion_performed"] is True
     assert result["summary"]["validator_removal_vote_proven_by_proof_payload"] is True
-    borrowed = result["borrowed_survivor_guardians"]["mainnetc-super2"]
-    assert borrowed["strategy"] == "existing-admission-voter-rewrite"
-    assert borrowed["guardian_service"] == "mother-add-node-validator-admission-voter-mainnetc-super2"
-    assert result["validator_removal_guardian_targets"]["mainnetc-super2"]["strategy"] == "existing-admission-voter-rewrite"
+    assert result["borrowed_survivor_guardians"] == {}
+    host = result["host_docker_survivor_guardians"]["mainnetc-super2"]
+    assert host["status"] == "pass"
+    assert result["validator_removal_guardian_targets"]["mainnetc-super2"]["strategy"] == "host-docker-besu-network-helper"
     assert any(
-        item.get("mutation_id") == "mainnetc-super2.rewrite-existing-admission-voter-as-node-removal-vote-guardian"
+        item.get("mutation_id") == "mainnetc-super2.create-host-docker-node-removal-vote-guardian-runner"
+        and item.get("guardian_strategy") == "host-docker-besu-network-helper"
         and item.get("status") == "succeeded"
         for item in result["mutation_receipts"]
     )
     assert any(
-        item.get("guardian_strategy") == "existing-admission-voter-rewrite"
+        item.get("guardian_strategy") == "host-docker-besu-network-helper"
         and item.get("guardian_deployment_verified") is True
         for item in result["health_observations"]
         if item.get("node") == "mainnetc-super2"
     )
-    assert any(
-        item.get("guardian_strategy") == "existing-admission-voter-rewrite"
-        and item.get("cleanup_action") == "delete-borrowed-helper-service-after-target-removal"
-        and item.get("status") == "succeeded"
-        for item in result["survivor_guardian_cleanup"]
-    )
-    assert opener.services["admc2xxxx"]["present"] is False
+    assert opener.services["admc2xxxx"]["present"] is True
 
 
-
-
-def test_remove_node_do_borrows_nested_existing_admission_voter_application_when_sibling_helper_never_materializes(tmp_path: Path) -> None:
+def test_remove_node_do_ignores_nested_retired_helper_and_uses_host_docker_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+    monkeypatch.setattr(node_remove_do_module, "setup_node_remove_helper", _fake_host_docker_helper_setup)
 
     opener = _NodeRemoveDoOpener(
         sibling_guardian_never_materializes_nodes={"mainnetc-super2"},
@@ -1841,38 +2065,23 @@ def test_remove_node_do_borrows_nested_existing_admission_voter_application_when
         acknowledged_release_sha256=release_sha,
         max_wait_seconds=0,
         poll_interval_seconds=0,
-        operation=_operation("execute-remove-do-borrow-existing-helper-application"),
+        operation=_operation("execute-remove-do-host-helper-application"),
         opener=opener,
         now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
     )
 
     assert result["status"] == "pass", result
-    borrowed = result["borrowed_survivor_guardians"]["mainnetc-super2"]
-    assert borrowed["strategy"] == "existing-admission-voter-rewrite"
-    assert borrowed["borrowed_helper_kind"] == "service-application"
-    assert borrowed["application_uuid"] == "admappchildc2xxxx"
-    assert borrowed["cleanup_action"] == "delete-borrowed-helper-application-after-target-removal"
-    assert result["validator_removal_guardian_targets"]["mainnetc-super2"]["strategy"] == "existing-admission-voter-rewrite"
+    assert result["borrowed_survivor_guardians"] == {}
+    assert result["host_docker_survivor_guardians"]["mainnetc-super2"]["status"] == "pass"
+    assert result["validator_removal_guardian_targets"]["mainnetc-super2"]["strategy"] == "host-docker-besu-network-helper"
     assert any(
-        item.get("mutation_id") == "mainnetc-super2.start-existing-admission-voter-node-removal-vote-guardian"
-        and item.get("endpoint_scope") == "application-restart"
-        and item.get("status") == "succeeded"
-        for item in result["mutation_receipts"]
-    )
-    assert any(
-        item.get("guardian_strategy") == "existing-admission-voter-rewrite"
-        and item.get("guardian_deployment_verified") is True
+        item.get("guardian_strategy") == "host-docker-besu-network-helper"
+        and item.get("guardian_proof_payload_verified") is True
         for item in result["health_observations"]
         if item.get("node") == "mainnetc-super2"
     )
-    assert any(
-        item.get("guardian_strategy") == "existing-admission-voter-rewrite"
-        and item.get("cleanup_action") == "delete-borrowed-helper-application-after-target-removal"
-        and item.get("endpoint_scope") == "service-applications-delete"
-        and item.get("status") == "succeeded"
-        for item in result["survivor_guardian_cleanup"]
-    )
-    assert opener.services["admappc2xxxx"]["present"] is False
+    assert opener.services["admappc2xxxx"]["present"] is True
+
 
 
 def test_remove_node_finalize_reobserves_target_absent_and_survivors(tmp_path: Path) -> None:

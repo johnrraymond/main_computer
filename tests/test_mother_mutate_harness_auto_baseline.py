@@ -117,6 +117,87 @@ def test_add_soft_auto_selects_latest_finalized_topology(tmp_path: Path) -> None
     assert args.baseline_evidence_sha256 == new_sha
 
 
+def test_add_auto_selects_newer_successful_live_current_topology_seal(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "mother" / "evidence" / "deployment-node-add-post-admission-observe" / "20260822T211111Z-old.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.add_node_post_admission_topology_evidence.v1",
+                "completed_at": "2026-08-22T21:11:11Z",
+                "final_topology": {
+                    "nodes": ["mainneta-super1", "mainnetc-super1"],
+                    "validator_set": [
+                        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+                        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                    ],
+                },
+            }
+        ).encode(),
+    )
+    seal_path, seal_sha = _write(
+        tmp_path / "mother" / "evidence" / "deployment-live-current-topology" / "20260822T224916Z-c1-only.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.live_current_topology_evidence.v1",
+                "status": "pass",
+                "completed_at": "2026-08-22T22:49:16Z",
+                "next_phase": "topology-baseline-ready-mainnet",
+                "summary": {
+                    "clean": True,
+                    "complete": True,
+                    "live_topology_sealed": True,
+                    "final_nodes": ["mainnetc-super1"],
+                },
+                "final_topology": {
+                    "nodes": ["mainnetc-super1"],
+                    "validator_set": ["0x9b809f05f8d68da17e697cd6ab040d4320494611"],
+                },
+            }
+        ).encode(),
+    )
+
+    args = _args(tmp_path, operation="add-node", node="mainneta-super1", mode="soft")
+    harness.resolve_baseline_arguments(args)
+
+    assert args.baseline_evidence == seal_path
+    assert args.baseline_evidence_sha256 == seal_sha
+
+
+def test_add_auto_ignores_newer_failed_live_current_topology_seal(tmp_path: Path) -> None:
+    current_path, current_sha = _write(
+        tmp_path / "mother" / "evidence" / "deployment-node-add-post-admission-observe" / "20260822T211111Z-current.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.add_node_post_admission_topology_evidence.v1",
+                "completed_at": "2026-08-22T21:11:11Z",
+                "final_topology": {"nodes": ["mainnetc-super1"]},
+            }
+        ).encode(),
+    )
+    _write(
+        tmp_path / "mother" / "evidence" / "deployment-live-current-topology" / "20260822T224916Z-failed.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.live_current_topology_evidence.v1",
+                "status": "failed",
+                "completed_at": "2026-08-22T22:49:16Z",
+                "next_phase": "manual-review-required",
+                "summary": {"clean": False, "complete": False, "live_topology_sealed": False},
+                "final_topology": {
+                    "nodes": ["mainnetc-super1"],
+                    "validator_set": ["0x9b809f05f8d68da17e697cd6ab040d4320494611"],
+                },
+            }
+        ).encode(),
+    )
+
+    args = _args(tmp_path, operation="add-node", node="mainneta-super1", mode="soft")
+    harness.resolve_baseline_arguments(args)
+
+    assert args.baseline_evidence == current_path
+    assert args.baseline_evidence_sha256 == current_sha
+
+
 def test_supplied_baseline_gets_sha_when_only_path_is_supplied(tmp_path: Path) -> None:
     path, sha = _write(
         tmp_path / "mother" / "evidence" / "deployment-node-remove-finalize" / "20260813T010000Z-mainnetc-super2.json",
