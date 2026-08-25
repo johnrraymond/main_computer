@@ -201,6 +201,13 @@ def _latest_sort_key(path: Path, document: Mapping[str, Any]) -> tuple[str, floa
     return (str(stamp), path.stat().st_mtime if path.exists() else 0.0, path.name)
 
 
+def _marks_current_topology(summary: Mapping[str, Any]) -> bool:
+    return (
+        summary.get("topology_current") is True
+        or summary.get("current_topology_marked_by_evidence") is True
+    )
+
+
 def _emit_progress(progress: ProgressCallback | None, phase: str, message: str, **fields: Any) -> None:
     if progress is not None:
         progress(phase, message, fields)
@@ -372,7 +379,7 @@ def _candidate_topology_evidence(paths: MotherPaths, *, network: str) -> list[di
                 and isinstance(summary, Mapping)
                 and summary.get("complete") is True
                 and summary.get("clean") is True
-                and summary.get("topology_current") is True
+                and _marks_current_topology(summary)
             ):
                 continue
             candidates.append({"path": path, "document": document, "sort_key": _latest_sort_key(path, document)})
@@ -415,7 +422,7 @@ def _load_topology(
         and isinstance(summary, Mapping)
         and summary.get("complete") is True
         and summary.get("clean") is True
-        and summary.get("topology_current") is True
+        and _marks_current_topology(summary)
     ):
         raise MotherHelperCleanup2YagniError(
             "MOTHER_HELPER_CLEANUP2_YAGNI_TOPOLOGY_NOT_ACCEPTED",

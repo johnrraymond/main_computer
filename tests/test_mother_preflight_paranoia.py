@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -180,6 +182,63 @@ services:
     assert result["summary"]["required_validator_unhealthy_count"] == 1
     assert result["required_validator_health_failures"][0]["node"] == "mainnetc-super1"
     assert result["required_validator_health_failures"][0]["service_status"] == "running:unhealthy"
+
+
+def test_add_node_preflight_accepts_acknowledged_empty_topology_evidence(monkeypatch, tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "mother" / "evidence" / "deployment-live-topology-empty-rectification"
+    evidence_dir.mkdir(parents=True)
+    topology = {
+        "kind": "main_computer.mother.live_topology_empty_rectification_evidence.v1",
+        "status": "pass",
+        "network": "mainnet",
+        "completed_at": "2026-08-24T20:58:13Z",
+        "next_phase": "add-node-prep-mainnet",
+        "summary": {
+            "complete": True,
+            "clean": True,
+            "topology_rectified": True,
+            "empty_topology_marked_by_evidence": True,
+            "current_topology_marked_by_evidence": True,
+            "final_nodes": [],
+            "next_phase": "add-node-prep-mainnet",
+        },
+        "final_topology": {
+            "nodes": [],
+            "services": {},
+            "validator_set": [],
+        },
+    }
+    topology_path = evidence_dir / "20260824T205813Z-empty.json"
+    topology_path.write_text(json.dumps(topology, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    topology_sha256 = hashlib.sha256(topology_path.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(paranoia, "_load_private_state", lambda *args, **kwargs: _private_state())
+    monkeypatch.setattr(
+        paranoia,
+        "_load_topology",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("_load_topology should not be called")),
+    )
+    monkeypatch.setattr(
+        paranoia,
+        "_service_detail",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("no live service should be inspected")),
+    )
+
+    result = paranoia.run_preflight_paranoia(
+        operation="add-node",
+        runtime_state_root=tmp_path,
+        network="mainnet",
+        node="mainneta-super1",
+        topology_evidence=topology_path,
+        acknowledged_topology_evidence_sha256=topology_sha256,
+    )
+
+    assert result["status"] == "pass"
+    assert result["cleanup_required"] is False
+    assert result["service_observations"] == []
+    assert result["summary"]["empty_topology_accepted_for_add_node"] is True
+    assert result["topology_evidence"]["path"] == str(topology_path.resolve(strict=False))
+    assert result["topology_evidence"]["sha256"] == topology_sha256
 
 
 

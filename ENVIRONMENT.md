@@ -5,7 +5,7 @@ This folder is the test install of `main_computer`.
 Default runtime:
 
 - provider: `ollama`
-- model: `qwen2.5:1.5b`
+- model: `gemma4:26b`
 - workspace: `$env:USERPROFILE\dsl` on Windows, or the value of `MAIN_COMPUTER_WORKSPACE`
 - optional debug passcode: `MAIN_COMPUTER_OLLAMA_DEBUG_PASSCODE`
 
@@ -240,7 +240,7 @@ Start a local worker in another PowerShell window:
 $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
 python -m main_computer.cli hub-worker `
   --provider ollama `
-  --model qwen2.5:1.5b `
+  --model gemma4:26b `
   --host 127.0.0.1 `
   --port 8771 `
   --hub-url http://127.0.0.1:8770 `
@@ -249,7 +249,7 @@ python -m main_computer.cli hub-worker `
   --hub-credits-per-request 1
 ```
 
-Replace `qwen2.5:1.5b` with the Ollama model installed on the developer machine when needed.
+Replace `gemma4:26b` with another installed Ollama model when needed.
 
 Start a viewport as a Hub client in another PowerShell window:
 
@@ -314,7 +314,7 @@ http://127.0.0.1:8765/debug/text
 http://127.0.0.1:8765/debug/graphical
 ```
 
-Enable it from either debug interface to talk directly to local Ollama with `qwen2.5:1.5b` and to read, write, or ask the local model to revise files inside the running project. Leave `MAIN_COMPUTER_OLLAMA_DEBUG_PASSCODE` unset for local open debug mode, or set it to require the passcode before activation.
+Enable it from either debug interface to talk directly to local Ollama with `gemma4:26b` and to read, write, or ask the local model to revise files inside the running project. Leave `MAIN_COMPUTER_OLLAMA_DEBUG_PASSCODE` unset for local open debug mode, or set it to require the passcode before activation.
 
 Debug assets are stored in `debug_assets` under the running project. Use them for scan logs, model notes, generated snippets, and other debug artifacts that need to be listed and reloaded later.
 

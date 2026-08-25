@@ -150,6 +150,37 @@ def test_execute_finds_latest_evidence_and_rpc_urls_on_disk(tmp_path: Path, monk
     assert result["summary"]["coolify_parent_redeploy_performed"] is False
 
 
+def test_execute_accepts_current_topology_marked_by_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, topology, _topology_sha = _evidence_tree(tmp_path)
+    document = json.loads(topology.read_text(encoding="utf-8"))
+    document["summary"].pop("topology_current")
+    document["summary"]["current_topology_marked_by_evidence"] = True
+    topology_sha = _write_json(topology, document)
+    calls: list[str] = []
+
+    def chain_run(args):  # noqa: ANN001
+        calls.append(args.mode)
+        return {"status": "pass", "mode": args.mode, "summary": {"cleared_count": 0}}
+
+    monkeypatch.setattr("tools.mother_post_work_cleanup_v2.run_chain_cleanup", chain_run)
+
+    result = run_post_work_cleanup_v2(
+        object(),
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology,
+        acknowledged_topology_evidence_sha256=topology_sha,
+        mode="execute",
+    )
+
+    assert result["status"] == "pass"
+    assert result["topology_evidence"]["sha256"] == topology_sha
+    assert calls == ["inspect", "execute"]
+
+
 def test_private_state_operation_identity_matches_repo_model() -> None:
     operation = _operation("mainnet", "execute")
 

@@ -84,7 +84,7 @@ ollama pull gemma4:26b
 To use a different installed Ollama model, set `MAIN_COMPUTER_MODEL` before starting:
 
 ```bat
-set MAIN_COMPUTER_MODEL=qwen2.5:1.5b
+set MAIN_COMPUTER_MODEL=<installed-model-name>
 ```
 
 ## Developer dev environment setup
@@ -238,7 +238,7 @@ Start a local worker and register it with the Hub:
 $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
 python -m main_computer.cli hub-worker `
   --provider ollama `
-  --model qwen2.5:1.5b `
+  --model gemma4:26b `
   --host 127.0.0.1 `
   --port 8771 `
   --hub-url http://127.0.0.1:8770 `
@@ -247,7 +247,7 @@ python -m main_computer.cli hub-worker `
   --hub-credits-per-request 1
 ```
 
-Replace `qwen2.5:1.5b` with the Ollama model installed on the developer machine when needed.
+Replace `gemma4:26b` with another installed Ollama model when needed.
 
 Start the viewport as a Hub client:
 

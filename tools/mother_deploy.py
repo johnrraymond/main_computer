@@ -171,7 +171,7 @@ from tools.mother.common.deployment_node_remove_prep import (
     verify_node_remove_prep_transaction,
     write_node_remove_prep_transaction,
 )
-from tools.mother.common.deployment_node_remove_do import (
+from tools.mother.common.deployment_node_remove_do_v2 import (
     MotherDeploymentNodeRemoveDoError,
     build_node_remove_do_release,
     execute_node_remove_do_release,

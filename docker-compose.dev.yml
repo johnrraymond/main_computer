@@ -25,7 +25,7 @@ services:
       - -noverbose
     environment:
       MAIN_COMPUTER_PROVIDER: hub
-      MAIN_COMPUTER_MODEL: ${MAIN_COMPUTER_MODEL:-qwen2.5:1.5b}
+      MAIN_COMPUTER_MODEL: ${MAIN_COMPUTER_MODEL:-gemma4:26b}
       MAIN_COMPUTER_WORKSPACE: /workspace
       MAIN_COMPUTER_PATH_MODE: ${MAIN_COMPUTER_PATH_MODE:-local}
       MAIN_COMPUTER_HOST_OS: ${MAIN_COMPUTER_HOST_OS:-auto}
@@ -66,7 +66,7 @@ services:
       - --provider
       - ollama
       - --model
-      - ${MAIN_COMPUTER_MODEL:-qwen2.5:1.5b}
+      - ${MAIN_COMPUTER_MODEL:-gemma4:26b}
       - --host
       - 0.0.0.0
       - --port
@@ -82,7 +82,7 @@ services:
       - -noverbose
     environment:
       MAIN_COMPUTER_PROVIDER: ollama
-      MAIN_COMPUTER_MODEL: ${MAIN_COMPUTER_MODEL:-qwen2.5:1.5b}
+      MAIN_COMPUTER_MODEL: ${MAIN_COMPUTER_MODEL:-gemma4:26b}
       OLLAMA_BASE_URL: "${MAIN_COMPUTER_DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       MAIN_COMPUTER_OLLAMA_TIMEOUT_S: ${MAIN_COMPUTER_OLLAMA_TIMEOUT_S:-600}
       MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"

@@ -12,6 +12,7 @@ deletes anything.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -40,6 +41,7 @@ from tools.mother_helper_cleanup2_yagni import (
     _parse_compose,
     _service_detail,
 )
+from tools.mother.common.paths import MotherPaths
 from tools.mother.common.deployment_node_add_validator_admission import (
     _find_conflicting_node_remove_voters,
 )
@@ -63,6 +65,13 @@ class MotherPreflightParanoiaError(RuntimeError):
     """The read-only preflight could not produce a trustworthy result."""
 
 
+def _summary_marks_current_topology(summary: Mapping[str, Any]) -> bool:
+    return (
+        summary.get("topology_current") is True
+        or summary.get("current_topology_marked_by_evidence") is True
+    )
+
+
 def _candidate_is_current(document: Mapping[str, Any], *, network: str) -> bool:
     summary = document.get("summary")
     document_network = document.get("network")
@@ -72,7 +81,7 @@ def _candidate_is_current(document: Mapping[str, Any], *, network: str) -> bool:
         and isinstance(summary, Mapping)
         and summary.get("complete") is True
         and summary.get("clean") is True
-        and summary.get("topology_current") is True
+        and _summary_marks_current_topology(summary)
     )
 
 
@@ -101,6 +110,278 @@ def _discover_current_topology_evidence(runtime_state_root: str | Path, *, netwo
             "no passed, clean, complete, current topology evidence was found on disk"
         )
     return sorted(candidates)[-1][3]
+
+
+def _sha256(value: str, label: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise MotherPreflightParanoiaError(f"{label} must be a lowercase SHA-256 hex digest")
+    return normalized
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _topology_document(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    for key in ("final_topology", "current_topology", "post_add_topology", "post_removal_topology"):
+        value = document.get(key)
+        if isinstance(value, Mapping):
+            return value
+    return document
+
+
+def _string_list(value: Any, label: str) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    items: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text:
+            raise MotherPreflightParanoiaError(f"{label} contains an empty value")
+        items.append(text)
+    return list(dict.fromkeys(items))
+
+
+def _preflight_topology_nodes(document: Mapping[str, Any], topology: Mapping[str, Any]) -> list[str]:
+    summary = document.get("summary")
+    candidates: list[Any] = []
+    if isinstance(summary, Mapping):
+        candidates.append(summary.get("final_nodes"))
+    candidates.extend([topology.get("nodes"), document.get("nodes")])
+
+    for raw in candidates:
+        nodes = _string_list(raw, "topology nodes")
+        if nodes is None:
+            continue
+        if nodes:
+            return nodes
+        if isinstance(summary, Mapping) and summary.get("empty_topology_marked_by_evidence") is True:
+            return []
+
+    observations = document.get("service_observations")
+    if isinstance(observations, list):
+        nodes = [
+            str(item.get("node") or "").strip()
+            for item in observations
+            if isinstance(item, Mapping) and str(item.get("node") or "").strip()
+        ]
+        if nodes:
+            return list(dict.fromkeys(nodes))
+
+    raise MotherPreflightParanoiaError("topology evidence does not list current nodes")
+
+
+def _preflight_service_summary(node: str, record: Mapping[str, Any]) -> dict[str, Any] | None:
+    controller_id = record.get("controller_id")
+    service_uuid = record.get("service_uuid") or record.get("created_service_uuid")
+    if not isinstance(controller_id, str) or not controller_id.strip():
+        return None
+    if not isinstance(service_uuid, str) or not service_uuid.strip():
+        return None
+    return {
+        "node": node,
+        "controller_id": controller_id.strip(),
+        "service_uuid": service_uuid.strip(),
+    }
+
+
+def _preflight_service_records(
+    document: Mapping[str, Any],
+    topology: Mapping[str, Any],
+    nodes: list[str],
+) -> list[dict[str, Any]]:
+    by_node: dict[str, dict[str, Any]] = {}
+
+    raw_services = topology.get("services")
+    if isinstance(raw_services, Mapping):
+        for node in nodes:
+            record = raw_services.get(node)
+            if isinstance(record, Mapping):
+                summary = _preflight_service_summary(node, record)
+                if summary is not None:
+                    by_node[node] = summary
+
+    observations = document.get("service_observations")
+    if isinstance(observations, list):
+        for item in observations:
+            if not isinstance(item, Mapping):
+                continue
+            node = str(item.get("node") or "").strip()
+            if node not in nodes:
+                continue
+            summary = _preflight_service_summary(node, item)
+            if summary is not None:
+                by_node[node] = summary
+
+    missing = [node for node in nodes if node not in by_node]
+    if missing:
+        raise MotherPreflightParanoiaError(
+            "topology evidence lacks service records for: " + ", ".join(missing)
+        )
+    return [by_node[node] for node in nodes]
+
+
+def _load_acknowledged_current_topology_for_preflight(
+    runtime_state_root: str | Path,
+    *,
+    network: str,
+    topology_evidence: str | Path | None,
+    acknowledged_sha256: str | None,
+) -> dict[str, Any] | None:
+    if topology_evidence is None:
+        return None
+
+    paths = MotherPaths(runtime_state_root=Path(runtime_state_root))
+    try:
+        path = paths.validate_contained(topology_evidence)
+    except (TypeError, ValueError) as exc:
+        raise MotherPreflightParanoiaError(str(exc)) from exc
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise MotherPreflightParanoiaError(f"topology evidence does not exist: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise MotherPreflightParanoiaError(f"topology evidence is not valid JSON: {path}") from exc
+    if not isinstance(document, Mapping):
+        raise MotherPreflightParanoiaError(f"topology evidence must be a JSON object: {path}")
+
+    actual_sha = _file_sha256(path)
+    if acknowledged_sha256 is not None and actual_sha != _sha256(acknowledged_sha256, "topology evidence SHA-256"):
+        raise MotherPreflightParanoiaError("acknowledged topology evidence SHA-256 does not match the evidence file")
+
+    document_network = document.get("network")
+    if isinstance(document_network, str) and document_network != network:
+        raise MotherPreflightParanoiaError("topology evidence network does not match --network")
+
+    summary = document.get("summary")
+    if not (
+        document.get("status") == "pass"
+        and isinstance(summary, Mapping)
+        and summary.get("complete") is True
+        and summary.get("clean") is True
+        and _summary_marks_current_topology(summary)
+    ):
+        return None
+
+    topology = _topology_document(document)
+    nodes = _preflight_topology_nodes(document, topology)
+    services = _preflight_service_records(document, topology, nodes)
+    return {
+        "path": path,
+        "sha256": actual_sha,
+        "discovered": False,
+        "document": document,
+        "topology": topology,
+        "nodes": nodes,
+        "services": services,
+        "current_topology_marker_accepted": True,
+        "empty_topology_accepted_for_add_node": (
+            isinstance(summary, Mapping)
+            and summary.get("empty_topology_marked_by_evidence") is True
+            and nodes == []
+        ),
+    }
+
+
+def _explicit_empty_topology_nodes(document: Mapping[str, Any]) -> list[str] | None:
+    summary = document.get("summary")
+    topology = document.get("final_topology")
+    if not isinstance(topology, Mapping):
+        topology = document.get("current_topology")
+    if not isinstance(summary, Mapping) or not isinstance(topology, Mapping):
+        return None
+    if summary.get("empty_topology_marked_by_evidence") is not True:
+        return None
+    if summary.get("current_topology_marked_by_evidence") is not True and summary.get("topology_current") is not True:
+        return None
+
+    final_nodes = summary.get("final_nodes")
+    topology_nodes = topology.get("nodes")
+    if not isinstance(final_nodes, list) or not isinstance(topology_nodes, list):
+        return None
+    if final_nodes or topology_nodes:
+        return None
+
+    services = topology.get("services")
+    if isinstance(services, Mapping) and services:
+        return None
+    validator_set = topology.get("validator_set")
+    if isinstance(validator_set, list) and validator_set:
+        return None
+    return []
+
+
+def _load_acknowledged_empty_topology_for_add_node(
+    runtime_state_root: str | Path,
+    *,
+    network: str,
+    topology_evidence: str | Path | None,
+    acknowledged_sha256: str | None,
+) -> dict[str, Any] | None:
+    if topology_evidence is None:
+        return None
+    if acknowledged_sha256 is None:
+        return None
+
+    paths = MotherPaths(runtime_state_root=Path(runtime_state_root))
+    try:
+        path = paths.validate_contained(topology_evidence)
+    except (TypeError, ValueError) as exc:
+        raise MotherPreflightParanoiaError(str(exc)) from exc
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise MotherPreflightParanoiaError(f"topology evidence does not exist: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise MotherPreflightParanoiaError(f"topology evidence is not valid JSON: {path}") from exc
+    if not isinstance(document, Mapping):
+        raise MotherPreflightParanoiaError(f"topology evidence must be a JSON object: {path}")
+
+    actual_sha = _file_sha256(path)
+    if actual_sha != _sha256(acknowledged_sha256, "topology evidence SHA-256"):
+        raise MotherPreflightParanoiaError("acknowledged topology evidence SHA-256 does not match the evidence file")
+
+    document_network = document.get("network")
+    if isinstance(document_network, str) and document_network != network:
+        raise MotherPreflightParanoiaError("topology evidence network does not match --network")
+
+    summary = document.get("summary")
+    if not (
+        document.get("status") == "pass"
+        and isinstance(summary, Mapping)
+        and summary.get("complete") is True
+        and summary.get("clean") is True
+        and str(summary.get("next_phase") or document.get("next_phase") or "") == f"add-node-prep-{network}"
+    ):
+        return None
+
+    nodes = _explicit_empty_topology_nodes(document)
+    if nodes is None:
+        return None
+
+    topology = document.get("final_topology")
+    if not isinstance(topology, Mapping):
+        topology = document.get("current_topology")
+    if not isinstance(topology, Mapping):
+        topology = {"nodes": [], "services": {}, "validator_set": []}
+
+    return {
+        "path": path,
+        "sha256": actual_sha,
+        "discovered": False,
+        "document": document,
+        "topology": topology,
+        "nodes": nodes,
+        "services": [],
+        "empty_topology_accepted_for_add_node": True,
+    }
 
 
 def _private_validator_address(private_state: Any, *, network: str, node: str) -> str:
@@ -270,12 +551,28 @@ def run_preflight_paranoia(
     )
     try:
         private_state = _load_private_state(runtime_state_root, network=network_name, mode="inspect")
-        topology = _load_topology(
-            runtime_state_root,
-            network=network_name,
-            topology_evidence=selected_topology_evidence,
-            acknowledged_sha256=acknowledged_topology_evidence_sha256,
-        )
+        topology = None
+        if topology_evidence is not None or acknowledged_topology_evidence_sha256 is not None:
+            topology = _load_acknowledged_current_topology_for_preflight(
+                runtime_state_root,
+                network=network_name,
+                topology_evidence=selected_topology_evidence,
+                acknowledged_sha256=acknowledged_topology_evidence_sha256,
+            )
+        if topology is None and operation_name == "add-node":
+            topology = _load_acknowledged_empty_topology_for_add_node(
+                runtime_state_root,
+                network=network_name,
+                topology_evidence=selected_topology_evidence,
+                acknowledged_sha256=acknowledged_topology_evidence_sha256,
+            )
+        if topology is None:
+            topology = _load_topology(
+                runtime_state_root,
+                network=network_name,
+                topology_evidence=selected_topology_evidence,
+                acknowledged_sha256=acknowledged_topology_evidence_sha256,
+            )
     except MotherHelperCleanup2YagniError as exc:
         raise MotherPreflightParanoiaError(f"{exc.code}: {exc}") from exc
 
@@ -445,6 +742,8 @@ def run_preflight_paranoia(
             "blocking_conflict_count": len(blocking_conflicts),
             "required_validator_unhealthy_count": len(required_validator_health_failures),
             "cleanup_command_emitted": command is not None,
+            "current_topology_marker_accepted": bool(topology.get("current_topology_marker_accepted")),
+            "empty_topology_accepted_for_add_node": bool(topology.get("empty_topology_accepted_for_add_node")),
             "network_mutation_performed": False,
             "clean": (not cleanup_required and not required_validator_unhealthy),
         },

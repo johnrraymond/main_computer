@@ -68,13 +68,13 @@ python .\scripts\smoke_hub_network_client.py --network test
 ## Pull a model into host or remote Ollama
 
 ```powershell
-ollama pull qwen2.5:1.5b
+ollama pull gemma4:26b
 ```
 
-Or choose another model:
+Or choose another installed model:
 
 ```powershell
-$env:MAIN_COMPUTER_MODEL = "gemma4:26b"
+$env:MAIN_COMPUTER_MODEL = "<installed-model-name>"
 ollama pull $env:MAIN_COMPUTER_MODEL
 ```
 

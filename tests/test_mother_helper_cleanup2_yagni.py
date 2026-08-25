@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -378,6 +379,31 @@ def test_cleanup2_yagni_inspect_imports_topology_without_mutation(tmp_path: Path
     assert [(item["method"], item["path"]) for item in opener.requests] == [
         ("GET", f"/api/v1/services/{SERVICE_UUID}")
     ]
+
+
+def test_cleanup2_yagni_accepts_current_topology_marked_by_evidence(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    document = json.loads(topology_path.read_text(encoding="utf-8"))
+    document["summary"].pop("topology_current")
+    document["summary"]["current_topology_marked_by_evidence"] = True
+    body = json.dumps(document, indent=2, sort_keys=True) + "\n"
+    topology_path.write_text(body, encoding="utf-8")
+    topology_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    opener = _Cleanup2Opener()
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        acknowledged_topology_evidence_sha256=topology_sha,
+        mode="inspect",
+        opener=opener,
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["topology_imported"] is True
+    assert result["topology_evidence"]["sha256"] == topology_sha
 
 
 def test_cleanup2_yagni_skips_missing_topology_service_404(tmp_path: Path) -> None:

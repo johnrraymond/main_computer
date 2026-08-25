@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import pytest
 
 import tools.mother.common.deployment_node_remove_do as node_remove_do_module
+import tools.mother.common.deployment_node_remove_do_v2 as node_remove_do_v2_module
 from tools import mother_deploy
 from tools.mother.common.deployment_node_remove import (
     MotherDeploymentNodeRemoveError,
@@ -1147,6 +1148,48 @@ def test_node_remove_voter_guardian_is_one_shot_and_no_restart() -> None:
     parsed = yaml.safe_load(compose)
     assert name == "mother-node-remove-voter-mainnetc_super1"
     assert parsed["services"][name]["restart"] == "no"
+
+
+def test_node_remove_v2_voter_guardian_is_durable_and_restarted() -> None:
+    script = node_remove_do_v2_module._removal_voter_script(
+        voter="mainnetc-super1",
+        target_validator="0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        current_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+            "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        ],
+        desired_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        chain_id=42424240,
+        genesis_sha256="d" * 64,
+        request_sha256="e" * 64,
+    )
+    assert "MOTHER_NODE_REMOVE_DO_PROOF_JSON=" in script
+    assert "write_json(PROOF, proof)" in script
+    assert "time.sleep(3600)" not in script
+    assert "\n        break\n" not in script
+    assert script.index("threading.Thread(target=serve_proof") < script.index("while True:")
+    assert script.index("prove()") < script.index("time.sleep(6)")
+
+    compose, name = node_remove_do_v2_module._install_removal_guardian(
+        "services:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\n",
+        voter="mainnetc-super1",
+        script=script,
+    )
+    import yaml
+
+    parsed = yaml.safe_load(compose)
+    assert name == "mother-node-remove-voter-mainnetc_super1"
+    assert parsed["services"][name]["restart"] == "unless-stopped"
+    assert parsed["services"][name]["volumes"] == ["mother-config:/config:ro", "mother-node-remove-do-proof:/proof"]
+
+
+def test_remove_node_cli_routes_do_phase_to_v2_executor() -> None:
+    assert mother_deploy.execute_node_remove_do_release is node_remove_do_v2_module.execute_node_remove_do_release
+    assert mother_deploy.build_node_remove_do_release is node_remove_do_v2_module.build_node_remove_do_release
 
 
 def test_node_remove_conflict_detector_finds_same_target_add_voter() -> None:
