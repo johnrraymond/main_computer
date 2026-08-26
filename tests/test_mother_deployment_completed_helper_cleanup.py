@@ -97,7 +97,7 @@ def test_completed_helper_cleanup_recognizes_dynamic_voter_helper_names() -> Non
     assert not _is_completed_helper_name("mother-super-node-hub")
 
 
-def test_completed_helper_cleanup_classifies_only_successful_terminal_dynamic_voters() -> None:
+def test_completed_helper_cleanup_classifies_exited_dynamic_voters_as_completed() -> None:
     summary = _component_summary(
         payload={
             "name": "mainneta-super1",
@@ -107,18 +107,18 @@ def test_completed_helper_cleanup_classifies_only_successful_terminal_dynamic_vo
                 _application("mainneta-super1", "core", "running:healthy", "hyperledger/besu:latest"),
                 _application("mother-add-node-validator-admission-voter-mainneta-super1", "add", "exited:0"),
                 _application("mother-node-remove-voter-mainneta_super1", "remove", "running:healthy"),
-                _application("mother-add-node-validator-admission-voter-mainnetc-super1", "ambiguous", "exited"),
+                _application("mother-node-remove-voter-mainnetc_super2", "remove-c2", "Exited"),
             ],
         },
         node="mainneta-super1",
         required_component_names=(),
     )
     assert [item["name"] for item in summary["completed_helper_candidates"]] == [
-        "mother-add-node-validator-admission-voter-mainneta-super1"
+        "mother-add-node-validator-admission-voter-mainneta-super1",
+        "mother-node-remove-voter-mainnetc_super2",
     ]
     assert [item["name"] for item in summary["running_or_nonterminal_completed_helpers"]] == [
         "mother-node-remove-voter-mainneta_super1",
-        "mother-add-node-validator-admission-voter-mainnetc-super1",
     ]
 
 

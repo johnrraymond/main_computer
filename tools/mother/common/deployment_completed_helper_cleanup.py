@@ -220,6 +220,7 @@ def _terminal_completed(status: str) -> bool:
 def _terminal_completed_success(status: str) -> bool:
     normalized = status.strip().lower()
     return normalized in {
+        "exited",
         "exited:0",
         "stopped:0",
         "exited (0)",

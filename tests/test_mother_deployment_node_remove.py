@@ -1951,6 +1951,102 @@ def test_remove_node_do_accepts_http_proof_endpoint_when_component_lacks_payload
     assert any(item.get("guardian_proof_payload_source") == "http-public-proof-endpoint" for item in result["health_observations"])
 
 
+def test_remove_node_do_deployment_readiness_uses_verified_proof_payload_not_endpoint_payload(tmp_path: Path) -> None:
+    _paths, _private_state, release_path, _release_sha = _write_remove_do_release_for_test(tmp_path)
+    release = json.loads(release_path.read_text(encoding="utf-8"))
+    controller = type("Controller", (), {"base_url": "https://coolify-c.invalid", "api_token": TOKEN_C})()
+    proof_endpoint = {
+        "url": "http://coolify-c.invalid:12103/proof",
+        "host_port": 12103,
+        "container_port": 8798,
+    }
+
+    class _ProofPayloadButNoEndpointOpener:
+        def __init__(self, detail_payload: dict) -> None:
+            self.detail_payload = detail_payload
+
+        def open(self, request, timeout: float):  # noqa: ANN001
+            parsed = urlsplit(request.full_url)
+            if parsed.path == "/proof":
+                return _Response({"message": "missing"}, status=404)
+            assert parsed.hostname == "coolify-c.invalid"
+            assert request.headers.get("Authorization") == f"Bearer {TOKEN_C}"
+            assert parsed.path in {"/api/v1/services/svcc1xxxx", "/api/v1/services/admc1xxxx"}
+            assert timeout > 0
+            return _Response(self.detail_payload)
+
+    guardian = "mother-node-remove-voter-mainnetc_super1"
+    service_observation = node_remove_do_v2_module._observe_removal_guardian_deployment(
+        controller=controller,
+        endpoint="/api/v1/services/svcc1xxxx",
+        voter="mainnetc-super1",
+        service_uuid="svcc1xxxx",
+        guardian=guardian,
+        proof_endpoint=proof_endpoint,
+        release=release,
+        timeout=1,
+        max_response_bytes=131072,
+        opener=_ProofPayloadButNoEndpointOpener(
+            {
+                "uuid": "svcc1xxxx",
+                "name": "mainnetc-super1",
+                "status": "running:unhealthy",
+                "docker_compose_raw": (
+                    "services:\n"
+                    "  mainnetc-super1:\n"
+                    "    image: hyperledger/besu:latest\n"
+                    f"  {guardian}:\n"
+                    "    image: python:3.12-alpine\n"
+                ),
+                "applications": [
+                    {
+                        "uuid": "appc1xxxx",
+                        "name": guardian,
+                        "status": "running:unhealthy",
+                        "node_remove_do_proof_payload": _node_remove_do_proof_for_test("mainnetc-super1"),
+                    }
+                ],
+            }
+        ),
+    )
+
+    assert service_observation["verified"] is True
+    assert service_observation["guardian_proof_payload_verified"] is True
+    assert service_observation["proof_endpoint_reachable"] is True
+
+    borrowed = "mother-add-node-validator-admission-voter-mainnetc-super1"
+    borrowed_observation = node_remove_do_v2_module._observe_borrowed_removal_guardian_deployment(
+        controller=controller,
+        endpoint="/api/v1/services/admc1xxxx",
+        voter="mainnetc-super1",
+        service_uuid="admc1xxxx",
+        helper_name=borrowed,
+        application_uuid=None,
+        proof_endpoint=proof_endpoint,
+        release=release,
+        timeout=1,
+        max_response_bytes=131072,
+        opener=_ProofPayloadButNoEndpointOpener(
+            {
+                "uuid": "admc1xxxx",
+                "name": borrowed,
+                "status": "running:unhealthy",
+                "docker_compose_raw": (
+                    "services:\n"
+                    f"  {borrowed}:\n"
+                    "    image: python:3.12-alpine\n"
+                    "    command: node-remove-do\n"
+                ),
+                "node_remove_do_proof_payload": _node_remove_do_proof_for_test("mainnetc-super1"),
+            }
+        ),
+    )
+
+    assert borrowed_observation["verified"] is True
+    assert borrowed_observation["guardian_proof_payload_verified"] is True
+    assert borrowed_observation["proof_endpoint_reachable"] is True
+
+
 def test_remove_node_do_uses_service_start_after_patch_for_remove_guardians(tmp_path: Path) -> None:
     paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
 

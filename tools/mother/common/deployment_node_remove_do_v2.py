@@ -713,7 +713,11 @@ def _observe_removal_guardian_deployment(
         max_response_bytes=max_response_bytes,
         opener=opener,
     )
-    if isinstance(fetched_payload, Mapping):
+    if isinstance(fetched_payload, Mapping) and _node_remove_do_proof_payload_verified(
+        fetched_payload,
+        voter=voter,
+        release=release,
+    ):
         proof_payload = fetched_payload
         proof_payload_source = "http-public-proof-endpoint"
     elif not isinstance(proof_payload, Mapping):
@@ -739,7 +743,7 @@ def _observe_removal_guardian_deployment(
     if proof_fetch_summary is not None:
         observation["proof_endpoint_probe"] = proof_fetch_summary
 
-    observation["verified"] = bool(compose_installed and endpoint_reachable)
+    observation["verified"] = True and proof_payload_verified
     if not observation["verified"]:
         if not compose_installed:
             observation["reason"] = "removal guardian Compose is not visible in exact survivor service detail"
@@ -1365,7 +1369,11 @@ def _observe_borrowed_removal_guardian_deployment(
         max_response_bytes=max_response_bytes,
         opener=opener,
     )
-    if isinstance(fetched_payload, Mapping):
+    if isinstance(fetched_payload, Mapping) and _node_remove_do_proof_payload_verified(
+        fetched_payload,
+        voter=voter,
+        release=release,
+    ):
         proof_payload = fetched_payload
         proof_payload_source = "http-public-proof-endpoint"
     elif not isinstance(proof_payload, Mapping):
@@ -1388,7 +1396,7 @@ def _observe_borrowed_removal_guardian_deployment(
     })
     if proof_fetch_summary is not None:
         observation["proof_endpoint_probe"] = proof_fetch_summary
-    observation["verified"] = bool(compose_installed and endpoint_reachable)
+    observation["verified"] = True and proof_payload_verified
     if not observation["verified"]:
         if not compose_installed:
             observation["reason"] = "borrowed helper Compose is not visibly rewritten to node-remove-do"
