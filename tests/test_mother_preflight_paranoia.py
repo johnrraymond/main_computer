@@ -184,6 +184,100 @@ services:
     assert result["required_validator_health_failures"][0]["service_status"] == "running:unhealthy"
 
 
+def test_preflight_recommends_cleanup_for_unhealthy_parent_with_retired_helpers(monkeypatch, tmp_path: Path) -> None:
+    compose = """
+services:
+  mainnetc-super1:
+    image: hyperledger/besu:latest
+  mother-node-remove-voter-mainnetc_super1:
+    image: alpine:3.20
+    labels:
+      main_computer.mother.post_work_shim: "true"
+      main_computer.mother.retired_helper_mimic: "true"
+      main_computer.mother.cleanup_scope: helper-cleanup2-yagni
+      main_computer.mother.not_a_validator_voter: "true"
+    command:
+      - sh
+      - -lc
+      - while true; do sleep 30; done
+"""
+    topology_path = _install_fakes(
+        monkeypatch,
+        tmp_path,
+        compose,
+        service_status="degraded:unhealthy",
+    )
+
+    result = paranoia.run_preflight_paranoia(
+        operation="add-node",
+        runtime_state_root=tmp_path,
+        network="mainnet",
+        node="mainneta-super1",
+        python_executable="python.exe",
+    )
+
+    assert result["status"] == "required-validator-unhealthy"
+    assert result["cleanup_required"] is False
+    assert result["required_validator_unhealthy"] is True
+    assert result["summary"]["retired_cleanup_helper_count"] == 1
+    assert result["summary"]["cleanup_command_emitted"] is True
+    assert "mother_helper_cleanup2_yagni.py execute" in result["cleanup_command"]
+    assert f"--topology-evidence {topology_path}" in result["cleanup_command"]
+
+
+def test_preflight_cli_prints_recommended_cleanup_command_as_final_line(monkeypatch, tmp_path: Path, capsys) -> None:
+    cleanup_command = "python mother_helper_cleanup2_yagni.py execute --write-evidence"
+
+    def fake_run_preflight_paranoia(**kwargs):  # noqa: ARG001
+        return {
+            "kind": paranoia.KIND,
+            "schema_version": 1,
+            "status": "required-validator-unhealthy",
+            "operation": "add-node",
+            "network": "mainnet",
+            "target_node": "mainneta-super1",
+            "target_validator": A1,
+            "read_only": True,
+            "cleanup_required": False,
+            "required_validator_unhealthy": True,
+            "cleanup_command": cleanup_command,
+            "topology_evidence": {"path": str(tmp_path / "topology.json"), "sha256": "a" * 64},
+            "active_cleanup_helpers": [],
+            "retired_cleanup_helpers": [{"helper_service": "mother-node-remove-voter-mainnetc_super1"}],
+            "blocking_conflicts": [],
+            "required_validator_health_failures": [{"node": "mainnetc-super1"}],
+            "service_observations": [],
+            "summary": {
+                "active_cleanup_helper_count": 0,
+                "retired_cleanup_helper_count": 1,
+                "blocking_conflict_count": 0,
+                "required_validator_unhealthy_count": 1,
+                "cleanup_command_emitted": True,
+                "network_mutation_performed": False,
+                "clean": False,
+            },
+        }
+
+    monkeypatch.setattr(paranoia, "run_preflight_paranoia", fake_run_preflight_paranoia)
+
+    code = paranoia.main(
+        [
+            "add-node",
+            "--runtime-state-root",
+            str(tmp_path),
+            "--network",
+            "mainnet",
+            "--node",
+            "mainneta-super1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert code == 0
+    assert "MOTHER_PREFLIGHT_PARANOIA_REQUIRED_VALIDATOR_UNHEALTHY" in output
+    assert output.rstrip().endswith(cleanup_command)
+
+
 def test_add_node_preflight_accepts_acknowledged_empty_topology_evidence(monkeypatch, tmp_path: Path) -> None:
     evidence_dir = tmp_path / "mother" / "evidence" / "deployment-live-topology-empty-rectification"
     evidence_dir.mkdir(parents=True)

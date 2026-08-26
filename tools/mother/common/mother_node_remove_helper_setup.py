@@ -786,7 +786,6 @@ def setup_node_remove_helper(
         result["reason"] = "proof-endpoint-not-verified"
 
     if runner_service_uuid is not None and not keep_runner:
-        raise SystemExit("MOTHER_NODE_REMOVE_HELPER_SETUP_DEBUG_EXIT_BEFORE_RUNNER_DELETE")
         delete_endpoint = f"/api/v1/services/{urllib.parse.quote(runner_service_uuid, safe='')}"
         delete = _http(
             controller,

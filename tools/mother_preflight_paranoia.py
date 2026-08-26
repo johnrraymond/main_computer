@@ -695,7 +695,10 @@ def run_preflight_paranoia(
     topology_path = str(topology["path"])
     topology_sha256 = str(topology["sha256"])
     command = None
-    if cleanup_required:
+    cleanup_command_recommended = cleanup_required or (
+        required_validator_unhealthy and bool(retired_helpers)
+    )
+    if cleanup_command_recommended:
         command = _cleanup_command(
             python_executable=python_executable or sys.executable,
             runtime_state_root=runtime_state_root,
@@ -813,7 +816,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     print(json.dumps(result, indent=2, sort_keys=True))
-    if result["cleanup_required"]:
+    if result.get("cleanup_command"):
         print()
         print("Run this cleanup command before the mutation:")
         print(result["cleanup_command"])

@@ -269,6 +269,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
         "find_project_selected",
         "target_begin",
         "before",
+        "remove_expected_container_before_recreate",
         "docker_compose_start",
         "docker_compose_exit",
         "docker_compose_stdout",
@@ -304,6 +305,9 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert "--no-deps --force-recreate" in cleanup2
     assert "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC" in cleanup2
     assert "phase=docker_compose_start" in cleanup2
+    assert "phase=remove_expected_container_before_recreate" in cleanup2
+    assert "docker rm -f" in cleanup2
+    assert "$$cid" in cleanup2
     assert "phase=docker_compose_exit" in cleanup2
     assert "inspect_expected after" in cleanup2
     assert "is_cleanup2_mimic=$$is_mimic" in cleanup2
