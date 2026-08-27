@@ -188,6 +188,26 @@ class _Cleanup2Opener:
             return _Response({"message": "Service starting request queued."})
         if method == "GET" and path == f"/api/v1/services/{CLEANUP2_UUID}":
             return _Response({"uuid": CLEANUP2_UUID, "name": "mother-helper-cleanup2-coolify-c", "status": "exited"})
+        if method == "GET" and path == f"/api/v1/services/{CLEANUP2_UUID}/logs":
+            if not parsed.query.startswith("sub_service_name=mother-helper-cleanup2-coolify-c"):
+                return _Response({"message": "sub_service_name is required"}, status=400)
+            return _Response(
+                {
+                    "logs": "\n".join(
+                        [
+                            "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=script_start",
+                            f"MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=target_payload service_uuid={SERVICE_UUID}",
+                            f"MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=find_project service_uuid={SERVICE_UUID}",
+                            f"MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=find_project_selected service_uuid={SERVICE_UUID} project={SERVICE_UUID} workdir=/data/coolify/services/{SERVICE_UUID}",
+                            f"MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=target_begin service_uuid={SERVICE_UUID} project={SERVICE_UUID}",
+                            f"MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=remove_expected_container_before_recreate expected_container=mother-node-remove-voter-mainnetc_super1-{SERVICE_UUID} helper=mother-node-remove-voter-mainnetc_super1 project={SERVICE_UUID} removing=true",
+                            f"MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=docker_compose_exit service_uuid={SERVICE_UUID} project={SERVICE_UUID} exit_code=0",
+                            f"MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=after expected_container=mother-node-remove-voter-mainnetc_super1-{SERVICE_UUID} helper=mother-node-remove-voter-mainnetc_super1 project={SERVICE_UUID} is_cleanup2_mimic=true",
+                            "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC phase=script_complete",
+                        ]
+                    )
+                }
+            )
         if method == "DELETE" and path == f"/api/v1/services/{CLEANUP2_UUID}":
             return _Response({"deleted": True})
 
@@ -218,6 +238,15 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert result["summary"]["cleanup2_passed"] is True
     assert result["cleanup2_steps"][0]["completion"]["completed"] is True
     assert result["cleanup2_steps"][0]["completion"]["reason"] == "cleanup2-exited"
+    assert result["cleanup2_steps"][0]["completion"]["runtime_diagnostics_observed"] is True
+    assert result["cleanup2_steps"][0]["completion"]["remove_node_helper_cleanup_reached"] is True
+    assert result["cleanup2_steps"][0]["completion"]["why_cleanup_action_not_proven"] == "runtime-diagnostics-observed-without-runtime-failure"
+    runtime_diag = result["cleanup2_steps"][0]["completion"]["runtime_diagnostics"]
+    assert runtime_diag["expected_phase_observed"]["remove_expected_container_before_recreate"] is True
+    assert runtime_diag["expected_helper_remove_reached"]["mother-node-remove-voter-mainnetc_super1"] is True
+    assert runtime_diag["expected_container_remove_reached"][f"mother-node-remove-voter-mainnetc_super1-{SERVICE_UUID}"] is True
+    assert result["summary"]["cleanup2_runtime_diagnostics_observed_count"] == 1
+    assert result["summary"]["cleanup2_remove_node_helper_cleanup_reached"] is True
     assert result["cleanup2_steps"][0]["health"] is None
     assert result["summary"]["parent_redeploy_performed"] is False
     assert result["summary"]["parent_restart_performed"] is False
@@ -333,11 +362,57 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert ("PATCH", f"/api/v1/services/{SERVICE_UUID}") in paths
     assert ("POST", "/api/v1/services") in paths
     assert ("POST", f"/api/v1/services/{CLEANUP2_UUID}/start") in paths
+    assert ("GET", f"/api/v1/services/{CLEANUP2_UUID}/logs") in paths
     assert ("DELETE", f"/api/v1/services/{CLEANUP2_UUID}") in paths
+    log_request = next(item for item in opener.requests if item["path"] == f"/api/v1/services/{CLEANUP2_UUID}/logs")
+    assert log_request["query"].startswith("sub_service_name=mother-helper-cleanup2-coolify-c")
     assert all(path != "/api/v1/deploy" for _method, path in paths)
     assert all(path != f"/api/v1/services/{SERVICE_UUID}/start" for _method, path in paths)
     assert all(path != f"/api/v1/services/{SERVICE_UUID}/restart" for _method, path in paths)
     assert all("/applications/" not in path for _method, path in paths)
+
+
+
+class _Cleanup2LogsUnavailableOpener(_Cleanup2Opener):
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        if request.get_method() == "GET" and parsed.path == f"/api/v1/services/{CLEANUP2_UUID}/logs":
+            self.requests.append(
+                {
+                    "method": request.get_method(),
+                    "host": parsed.hostname or "",
+                    "path": parsed.path,
+                    "query": parsed.query,
+                    "body": None,
+                }
+            )
+            return _Response({"message": "sub_service_name is required"}, status=400)
+        return super().open(request, timeout)
+
+
+def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2LogsUnavailableOpener()
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+    )
+
+    completion = result["cleanup2_steps"][0]["completion"]
+    assert completion["runtime_diagnostics_observed"] is False
+    assert completion["remove_node_helper_cleanup_reached"] is False
+    assert completion["why_cleanup_action_not_proven"] == "runtime-logs-unavailable"
+    selected_endpoint = completion["runtime_diagnostics"]["why_cleanup_action_not_proven_detail"]["selected_logs_endpoint"]
+    assert selected_endpoint.startswith(f"/api/v1/services/{CLEANUP2_UUID}/logs?sub_service_name=mother-helper-cleanup2-coolify-c-")
+    assert result["summary"]["cleanup2_runtime_diagnostics_observed_count"] == 0
+    assert result["summary"]["cleanup2_remove_node_helper_cleanup_reached"] is False
 
 
 def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path: Path) -> None:

@@ -53,6 +53,25 @@ from tools.mother.common.private_state import PrivateStateReadResult, read_priva
 KIND = "main_computer.mother.helper_cleanup2_yagni.v1"
 EVIDENCE_SUBDIR = "mother-helper-cleanup2-yagni"
 CLEANUP2_PREFIX = "mother-helper-cleanup2"
+RUNTIME_DIAGNOSTIC_PREFIX = "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC"
+RUNTIME_DIAGNOSTIC_PHASES = (
+    "script_start",
+    "target_payload",
+    "compose_decoded",
+    "find_project",
+    "find_project_candidate",
+    "find_project_selected",
+    "find_project_failed",
+    "target_begin",
+    "before",
+    "remove_expected_container_before_recreate",
+    "docker_compose_start",
+    "docker_compose_exit",
+    "docker_compose_stdout",
+    "docker_compose_stderr",
+    "after",
+    "script_complete",
+)
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -748,7 +767,7 @@ def _cleanup2_target_diagnostic(target: Mapping[str, Any]) -> dict[str, Any]:
             "--project-directory <discovered_workdir_if_available> up -d --no-deps --force-recreate "
             + " ".join(helpers)
         ),
-        "runtime_diagnostics_log_prefix": "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC",
+        "runtime_diagnostics_log_prefix": RUNTIME_DIAGNOSTIC_PREFIX,
         "runtime_diagnostics_expected_phases": [
             "target_payload",
             "compose_decoded",
@@ -1269,6 +1288,300 @@ def _cleanup2_service_status(payload: object) -> str:
     return ""
 
 
+
+def _iter_log_text_values(value: object) -> list[str]:
+    """Return likely log text values without scanning compose/source fields.
+
+    Service detail payloads contain the generated cleanup2 script.  Scanning every
+    string field causes false positives with literal ``$$helper`` and ``$$cname``
+    from saved Compose.  This helper only accepts string leaves that are plausibly
+    log/output fields, plus a bare string response from a logs endpoint.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        result: list[str] = []
+        for key, child in value.items():
+            key_text = str(key).lower()
+            if key_text in {"docker_compose", "docker_compose_raw", "command", "commands", "compose", "raw"}:
+                continue
+            if key_text in {"log", "logs", "message", "output", "stdout", "stderr", "content", "data"}:
+                result.extend(_iter_log_text_values(child))
+            elif isinstance(child, (list, tuple)):
+                result.extend(_iter_log_text_values(child))
+            elif isinstance(child, Mapping):
+                result.extend(_iter_log_text_values(child))
+        return result
+    if isinstance(value, (list, tuple)):
+        result: list[str] = []
+        for item in value:
+            result.extend(_iter_log_text_values(item))
+        return result
+    return []
+
+
+def _parse_runtime_diagnostic_line(line: str) -> dict[str, str] | None:
+    if RUNTIME_DIAGNOSTIC_PREFIX not in line:
+        return None
+    text = line.split(RUNTIME_DIAGNOSTIC_PREFIX, 1)[1].strip()
+    event: dict[str, str] = {}
+    for token in text.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        event[key] = value.strip()
+    return event if event else None
+
+
+def _runtime_diagnostic_events_from_payload(payload: object) -> list[dict[str, str]]:
+    decoded = _decode_payload(payload)
+    events: list[dict[str, str]] = []
+    for text_value in _iter_log_text_values(decoded):
+        for line in str(text_value).splitlines():
+            event = _parse_runtime_diagnostic_line(line)
+            if event is not None:
+                events.append(event)
+    return events
+
+
+def _runtime_diagnostic_summary(events: list[dict[str, str]], targets: list[Mapping[str, Any]]) -> dict[str, Any]:
+    expected_helpers: list[str] = []
+    expected_containers: list[str] = []
+    expected_remove_node_helpers: list[str] = []
+    for target in targets:
+        service_uuid = str(target.get("service_uuid") or "")
+        for helper in target.get("helper_names") or []:
+            helper_text = str(helper)
+            if helper_text not in expected_helpers:
+                expected_helpers.append(helper_text)
+            container = f"{helper_text}-{service_uuid}"
+            if container not in expected_containers:
+                expected_containers.append(container)
+            if helper_text.startswith("mother-node-remove-voter-") and helper_text not in expected_remove_node_helpers:
+                expected_remove_node_helpers.append(helper_text)
+
+    phase_counts: dict[str, int] = {}
+    for event in events:
+        phase = str(event.get("phase") or "")
+        if phase:
+            phase_counts[phase] = phase_counts.get(phase, 0) + 1
+
+    expected_phase_observed = {phase: phase_counts.get(phase, 0) > 0 for phase in RUNTIME_DIAGNOSTIC_PHASES}
+    expected_helper_remove_reached = {
+        helper: any(
+            event.get("phase") == "remove_expected_container_before_recreate" and event.get("helper") == helper
+            for event in events
+        )
+        for helper in expected_helpers
+    }
+    expected_container_remove_reached = {
+        container: any(
+            event.get("phase") == "remove_expected_container_before_recreate" and event.get("expected_container") == container
+            for event in events
+        )
+        for container in expected_containers
+    }
+    remove_node_helpers_seen = [
+        helper for helper in expected_remove_node_helpers if expected_helper_remove_reached.get(helper) is True
+    ]
+
+    reason = None
+    reason_detail: dict[str, Any] = {}
+    if not events:
+        reason = "runtime-diagnostics-not-observed"
+    elif expected_phase_observed.get("script_start") is not True:
+        reason = "cleanup2-script-start-not-observed"
+    elif expected_phase_observed.get("target_payload") is not True:
+        reason = "cleanup2-script-started-before-target-payload"
+    elif expected_phase_observed.get("find_project_failed") is True:
+        reason = "compose-project-discovery-failed"
+        reason_detail["failed_service_uuids"] = sorted(
+            {event.get("service_uuid") for event in events if event.get("phase") == "find_project_failed" and event.get("service_uuid")}
+        )
+    elif expected_phase_observed.get("target_begin") is not True:
+        reason = "target-runner-not-reached-after-project-discovery"
+    elif expected_phase_observed.get("remove_expected_container_before_recreate") is not True:
+        reason = "remove-loop-not-reached"
+    elif expected_remove_node_helpers and not remove_node_helpers_seen:
+        reason = "remove-node-helper-remove-loop-not-reached"
+    else:
+        failing_exits = [
+            event for event in events
+            if event.get("phase") == "docker_compose_exit" and event.get("exit_code") not in {None, "", "0"}
+        ]
+        if failing_exits:
+            reason = "docker-compose-recreate-failed"
+            reason_detail["docker_compose_exit_events"] = failing_exits[:5]
+        else:
+            after_not_mimic = [
+                event for event in events
+                if event.get("phase") == "after"
+                and event.get("expected_container") in expected_containers
+                and event.get("is_cleanup2_mimic") == "false"
+            ]
+            if after_not_mimic:
+                reason = "post-recreate-container-not-mimic"
+                reason_detail["after_not_mimic_events"] = after_not_mimic[:5]
+            else:
+                reason = "runtime-diagnostics-observed-without-runtime-failure"
+
+    return {
+        "observed": bool(events),
+        "event_count": len(events),
+        "events_sample": events[:20],
+        "phase_counts": phase_counts,
+        "expected_phase_observed": expected_phase_observed,
+        "expected_helpers": expected_helpers,
+        "expected_containers": expected_containers,
+        "expected_remove_node_helpers": expected_remove_node_helpers,
+        "expected_helper_remove_reached": expected_helper_remove_reached,
+        "expected_container_remove_reached": expected_container_remove_reached,
+        "remove_node_helpers_seen": remove_node_helpers_seen,
+        "remove_node_helper_cleanup_reached": bool(remove_node_helpers_seen) if expected_remove_node_helpers else False,
+        "why_cleanup_action_not_proven": reason,
+        "why_cleanup_action_not_proven_detail": reason_detail,
+    }
+
+
+def _cleanup2_log_probe(
+    *,
+    controller: CoolifyController,
+    controller_id: str,
+    endpoint: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        response = _http(
+            controller,
+            "GET",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        events = _runtime_diagnostic_events_from_payload(response.get("payload"))
+        observation = {
+            "method": "GET",
+            "endpoint": endpoint,
+            "status": response["status"],
+            "ok": response["ok"],
+            "response_sha256": response["response_sha256"],
+            "byte_length": response["byte_length"],
+            "elapsed_ms": response["elapsed_ms"],
+            "controller_id": controller_id,
+            "phase": "cleanup2-runtime-diagnostic-log-probe",
+            "runtime_diagnostics_observed": bool(events),
+            "runtime_diagnostic_event_count": len(events),
+        }
+        observations.append(observation)
+        return {
+            "source": f"coolify-get:{endpoint}",
+            "endpoint": endpoint,
+            "http_ok": response["ok"],
+            "http_status": response["status"],
+            "observed": bool(events),
+            "event_count": len(events),
+            "events": events,
+            "error_code": None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "source": f"coolify-get:{endpoint}",
+            "endpoint": endpoint,
+            "http_ok": False,
+            "http_status": None,
+            "observed": False,
+            "event_count": 0,
+            "events": [],
+            "error_code": getattr(exc, "code", type(exc).__name__),
+            "error": str(exc),
+        }
+
+
+def _collect_cleanup2_runtime_diagnostics(
+    *,
+    controller: CoolifyController,
+    controller_id: str,
+    service_uuid: str,
+    service_name: str,
+    targets: list[Mapping[str, Any]],
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    service = _uuid(service_uuid, "cleanup2 service_uuid")
+    encoded_service = urllib.parse.quote(service, safe="")
+    encoded_service_name = urllib.parse.quote(service_name, safe="")
+    probes: list[dict[str, Any]] = []
+
+    # Coolify service-compose logs require the compose service name selector.
+    # The unqualified /logs route can return 400 even when logs exist.
+    selected_logs_endpoint = f"/api/v1/services/{encoded_service}/logs?sub_service_name={encoded_service_name}"
+    probes.append(
+        _cleanup2_log_probe(
+            controller=controller,
+            controller_id=controller_id,
+            endpoint=selected_logs_endpoint,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            observations=observations,
+        )
+    )
+
+    if not any(item.get("observed") for item in probes):
+        legacy_logs_endpoint = f"/api/v1/services/{encoded_service}/logs"
+        probes.append(
+            _cleanup2_log_probe(
+                controller=controller,
+                controller_id=controller_id,
+                endpoint=legacy_logs_endpoint,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                observations=observations,
+            )
+        )
+
+    events: list[dict[str, str]] = []
+    for probe in probes:
+        events.extend(list(probe.get("events") or []))
+
+    summary = _runtime_diagnostic_summary(events, targets)
+    summary["sources"] = [
+        {
+            "source": str(probe.get("source") or ""),
+            "endpoint": str(probe.get("endpoint") or ""),
+            "http_ok": probe.get("http_ok"),
+            "http_status": probe.get("http_status"),
+            "observed": bool(probe.get("observed")),
+            "event_count": int(probe.get("event_count") or 0),
+            "error_code": probe.get("error_code"),
+        }
+        for probe in probes
+    ]
+    summary["sources_with_events"] = [item["source"] for item in summary["sources"] if item["observed"]]
+    if not events:
+        summary["why_cleanup_action_not_proven"] = "runtime-logs-unavailable"
+        summary["why_cleanup_action_not_proven_detail"] = {
+            "selected_logs_endpoint": selected_logs_endpoint,
+            "probe_statuses": summary["sources"],
+            "note": (
+                "No runtime diagnostic log lines were returned by read-only Coolify log probes, "
+                "so cleanup2 cannot prove whether the remove loop ran."
+            ),
+        }
+    return summary
+
+
 def _wait_for_cleanup2_exit(
     *,
     controller: CoolifyController,
@@ -1281,6 +1594,7 @@ def _wait_for_cleanup2_exit(
     poll_interval_seconds: float,
     opener: Any,
     observations: list[dict[str, Any]],
+    targets: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
     service = _uuid(service_uuid, "cleanup2 service_uuid")
     endpoint = f"/api/v1/services/{urllib.parse.quote(service, safe='')}"
@@ -1320,6 +1634,17 @@ def _wait_for_cleanup2_exit(
 
         if response["ok"] and status.startswith("exited"):
             elapsed = time.monotonic() - started
+            runtime_diagnostics = _collect_cleanup2_runtime_diagnostics(
+                controller=controller,
+                controller_id=controller_id,
+                service_uuid=service,
+                service_name=service_name,
+                targets=targets,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                observations=observations,
+            )
             return {
                 "completed": True,
                 "reason": "cleanup2-exited",
@@ -1333,10 +1658,25 @@ def _wait_for_cleanup2_exit(
                 "wait_seconds": int(max_wait_seconds),
                 "wait_milliseconds": int(elapsed * 1000),
                 "post_restart_health_poll_performed": False,
+                "runtime_diagnostics": runtime_diagnostics,
+                "runtime_diagnostics_observed": runtime_diagnostics.get("observed") is True,
+                "remove_node_helper_cleanup_reached": runtime_diagnostics.get("remove_node_helper_cleanup_reached"),
+                "why_cleanup_action_not_proven": runtime_diagnostics.get("why_cleanup_action_not_proven"),
             }
 
         elapsed = time.monotonic() - started
         if elapsed >= max_wait_seconds:
+            runtime_diagnostics = _collect_cleanup2_runtime_diagnostics(
+                controller=controller,
+                controller_id=controller_id,
+                service_uuid=service,
+                service_name=service_name,
+                targets=targets,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                observations=observations,
+            )
             return {
                 "completed": False,
                 "reason": "cleanup2-exit-timeout",
@@ -1350,6 +1690,10 @@ def _wait_for_cleanup2_exit(
                 "wait_seconds": int(max_wait_seconds),
                 "wait_milliseconds": int(elapsed * 1000),
                 "post_restart_health_poll_performed": False,
+                "runtime_diagnostics": runtime_diagnostics,
+                "runtime_diagnostics_observed": runtime_diagnostics.get("observed") is True,
+                "remove_node_helper_cleanup_reached": runtime_diagnostics.get("remove_node_helper_cleanup_reached"),
+                "why_cleanup_action_not_proven": runtime_diagnostics.get("why_cleanup_action_not_proven"),
             }
 
         time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
@@ -1397,10 +1741,10 @@ def _run_cleanup2_for_controller(
             "cleanup2_compose_escaped_script_sha256": hashlib.sha256(
                 cleanup2_compose_escaped_script.encode("utf-8")
             ).hexdigest(),
-            "runtime_diagnostics_log_prefix": "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC",
+            "runtime_diagnostics_log_prefix": RUNTIME_DIAGNOSTIC_PREFIX,
             "runtime_diagnostics_capture": (
-                "emitted by the temporary docker:27-cli service to its stdout/stderr logs; "
-                "outer cleanup2 still only waits for temporary service exit"
+                "emitted by the temporary docker:27-cli service to stdout/stderr; "
+                "outer cleanup2 now reads the service logs with sub_service_name and records why the remove loop was or was not observed"
             ),
             "runtime_diagnostics_include": [
                 "docker version",
@@ -1520,6 +1864,7 @@ def _run_cleanup2_for_controller(
             poll_interval_seconds=poll_interval_seconds,
             opener=opener,
             observations=observations,
+            targets=targets,
         )
         ok = completion_result.get("completed") is True
         return {
@@ -1896,6 +2241,27 @@ def run_helper_cleanup2_yagni(
             "cleanup2_controller_count": len(cleanup2_targets_by_controller),
             "cleanup2_performed": mode_name == "execute" and bool(cleanup2_steps),
             "cleanup2_passed": bool(cleanup2_steps) and all(step.get("status") == "pass" for step in cleanup2_steps) if mode_name == "execute" else None,
+            "cleanup2_runtime_diagnostics_observed_count": sum(
+                1
+                for step in cleanup2_steps
+                if isinstance(step.get("completion"), Mapping)
+                and step["completion"].get("runtime_diagnostics_observed") is True
+            ),
+            "cleanup2_remove_node_helper_cleanup_reached": (
+                any(
+                    step.get("completion", {}).get("remove_node_helper_cleanup_reached") is True
+                    for step in cleanup2_steps
+                    if isinstance(step.get("completion"), Mapping)
+                )
+                if cleanup2_steps
+                else None
+            ),
+            "cleanup2_why_cleanup_action_not_proven": [
+                step.get("completion", {}).get("why_cleanup_action_not_proven")
+                for step in cleanup2_steps
+                if isinstance(step.get("completion"), Mapping)
+                and step.get("completion", {}).get("why_cleanup_action_not_proven") is not None
+            ],
             "debug_destructive_short_circuit_after_proof_guardian_cleanup2": False,
             "debug_destructive_cleanup2_services_left_for_inspection": [],
             "post_cleanup_readback_count": len(post_cleanup_readbacks),
