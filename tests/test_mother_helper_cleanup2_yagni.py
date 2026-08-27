@@ -71,6 +71,7 @@ def _install(tmp_path: Path):
                 "mainnetc-super2": {
                     "controller_id": "coolify-c",
                     "service_uuid": SERVICE_UUID,
+                    "chain_rpc_url": "http://mainnet-rpc.invalid",
                 }
             },
             "validator_set": [],
@@ -111,6 +112,7 @@ class _Cleanup2Opener:
         self.patched_compose: str | None = None
         self.cleanup2_compose: str | None = None
         self.parent_restart_requested = False
+        self.rpc_block_number_reads = 0
         self.service_detail_as_json_string = service_detail_as_json_string
         self.service_detail_status = service_detail_status
 
@@ -164,6 +166,16 @@ class _Cleanup2Opener:
         method = request.get_method()
         body = json.loads(request.data.decode("utf-8")) if request.data else None
         self.requests.append({"method": method, "host": host, "path": path, "query": parsed.query, "body": body})
+
+        if host == "mainnet-rpc.invalid":
+            assert method == "POST"
+            assert request.headers.get("Content-type") == "application/json"
+            if body["method"] == "eth_chainId":
+                return _Response({"jsonrpc": "2.0", "id": 1, "result": hex(42424240)})
+            if body["method"] == "eth_blockNumber":
+                self.rpc_block_number_reads += 1
+                block_number = 100 if self.rpc_block_number_reads == 1 else 101
+                return _Response({"jsonrpc": "2.0", "id": 1, "result": hex(block_number)})
 
         assert host == "coolify-c.invalid"
         assert request.headers.get("Authorization") == f"Bearer {TOKEN_C}"
@@ -262,7 +274,14 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert result["summary"]["child_public_api_restart_attempted"] is False
     assert result["summary"]["temporary_helper_apply_service_created"] is False
     assert result["summary"]["post_restart_health_poll_performed"] is True
-    assert sleep_calls == [90.0]
+    assert result["summary"]["chain_block_advance_wait_performed"] is True
+    assert result["summary"]["chain_block_advance_completed"] is True
+    assert result["summary"]["chain_block_advance_poll_interval_seconds"] == 10.0
+    assert result["summary"]["chain_block_advance_max_wait_seconds"] == 600.0
+    assert result["chain_block_advance"]["completed"] is True
+    assert result["chain_block_advance"]["block_advance"] == 1
+    assert result["chain_block_advance"]["poll_count"] == 2
+    assert sleep_calls == [90.0, 10.0]
     first_step = result["patch_steps"][0]
     diagnostics = first_step["diagnostics"]
     assert diagnostics["pre_patch_parent"]["parent_status"] == "degraded:unhealthy"
@@ -437,7 +456,7 @@ def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_pa
         sleeper=sleep_calls.append,
     )
 
-    assert sleep_calls == [90.0]
+    assert sleep_calls == [90.0, 10.0]
     completion = result["cleanup2_steps"][0]["completion"]
     assert completion["runtime_diagnostics_observed"] is False
     assert completion["remove_node_helper_cleanup_reached"] is False
@@ -465,7 +484,7 @@ def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path:
         sleeper=sleep_calls.append,
     )
 
-    assert sleep_calls == [90.0]
+    assert sleep_calls == [90.0, 10.0]
     assert result["status"] == "pass"
     assert result["summary"]["targeted_helper_service_count"] == 3
     assert opener.patched_compose is not None
