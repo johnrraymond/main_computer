@@ -110,6 +110,7 @@ class _Cleanup2Opener:
         self.requests: list[dict] = []
         self.patched_compose: str | None = None
         self.cleanup2_compose: str | None = None
+        self.parent_restart_requested = False
         self.service_detail_as_json_string = service_detail_as_json_string
         self.service_detail_status = service_detail_status
 
@@ -117,7 +118,7 @@ class _Cleanup2Opener:
         payload = {
             "uuid": SERVICE_UUID,
             "name": "mainnetc-super2",
-            "status": "degraded:unhealthy",
+            "status": "running:healthy" if self.parent_restart_requested else "degraded:unhealthy",
             "applications": [
                 {
                     "name": "mainnetc-super2",
@@ -176,6 +177,9 @@ class _Cleanup2Opener:
             assert body["instant_deploy"] is False
             self.patched_compose = base64.b64decode(body["docker_compose_raw"]).decode("utf-8")
             return _Response({"uuid": SERVICE_UUID, "updated": True})
+        if method == "POST" and path == f"/api/v1/services/{SERVICE_UUID}/restart":
+            self.parent_restart_requested = True
+            return _Response({"message": "Service restarting request queued."})
         if method == "GET" and path == "/api/v1/projects/project-c/environments":
             return _Response([{"name": "mainnet", "uuid": "env-c"}])
         if method == "POST" and path == "/api/v1/services":
@@ -217,6 +221,7 @@ class _Cleanup2Opener:
 def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener()
+    sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
         private_state,
@@ -227,6 +232,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
         max_wait_seconds=0,
         poll_interval_seconds=0,
         opener=opener,
+        sleeper=sleep_calls.append,
     )
 
     assert result["status"] == "pass"
@@ -249,10 +255,14 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert result["summary"]["cleanup2_remove_node_helper_cleanup_reached"] is True
     assert result["cleanup2_steps"][0]["health"] is None
     assert result["summary"]["parent_redeploy_performed"] is False
-    assert result["summary"]["parent_restart_performed"] is False
+    assert result["summary"]["parent_restart_performed"] is True
+    assert result["summary"]["parent_restart_request_count"] == 1
+    assert result["summary"]["parent_restart_wait_count"] == 1
+    assert result["summary"]["parent_restart_waits_all_running_healthy"] is True
     assert result["summary"]["child_public_api_restart_attempted"] is False
     assert result["summary"]["temporary_helper_apply_service_created"] is False
-    assert result["summary"]["post_restart_health_poll_performed"] is False
+    assert result["summary"]["post_restart_health_poll_performed"] is True
+    assert sleep_calls == [90.0]
     first_step = result["patch_steps"][0]
     diagnostics = first_step["diagnostics"]
     assert diagnostics["pre_patch_parent"]["parent_status"] == "degraded:unhealthy"
@@ -268,13 +278,25 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert diagnostics["patch_readback"]["compose_matches_expected_patch"] is True
     assert diagnostics["patch_readback"]["all_target_helpers_are_cleanup2_mimics_in_saved_compose"] is True
     assert result["summary"]["debug_destructive_short_circuit_after_proof_guardian_cleanup2"] is False
-    assert result["summary"]["debug_destructive_cleanup2_services_left_for_inspection"] == []
+    left_for_inspection = result["summary"]["debug_destructive_cleanup2_services_left_for_inspection"]
+    assert left_for_inspection[0]["controller_id"] == "coolify-c"
+    assert left_for_inspection[0]["service_uuid"] == CLEANUP2_UUID
+    assert left_for_inspection[0]["service_name"].startswith("mother-helper-cleanup2-coolify-c-")
     assert len(result["post_cleanup_readbacks"]) == 1
     assert result["post_cleanup_readbacks"][0]["all_target_helpers_are_cleanup2_mimics_in_saved_compose"] is True
+    assert result["parent_restart_receipts"][0]["endpoint"] == f"/api/v1/services/{SERVICE_UUID}/restart"
+    assert result["parent_restart_receipts"][0]["ok"] is True
+    assert result["parent_restart_receipts"][0]["restart_scope"] == "post-cleanup2-parent-status-reconcile"
+    assert result["parent_restart_waits"][0]["completed"] is True
+    assert result["parent_restart_waits"][0]["initial_settle_seconds"] == 90.0
+    assert result["parent_restart_waits"][0]["final_status"] == "running:healthy"
     assert result["cleanup2_steps"][0]["debug_destructive_exit_after_proof_guardian_cleanup2"] is False
-    assert result["cleanup2_steps"][0]["debug_destructive_cleanup2_service_left_for_inspection"] is False
-    assert result["cleanup2_steps"][0]["completion"]["temporary_service_delete"]["ok"] is True
-    assert result["cleanup2_steps"][0]["completion"]["temporary_service_delete"]["cleanup_scope"] == "cleanup2-temporary-service-delete"
+    assert result["cleanup2_steps"][0]["debug_destructive_cleanup2_service_left_for_inspection"] is True
+    assert result["cleanup2_steps"][0]["completion"]["temporary_service_delete"]["skipped"] is True
+    assert (
+        result["cleanup2_steps"][0]["completion"]["temporary_service_delete"]["cleanup_scope"]
+        == "cleanup2-temporary-service-delete-disabled"
+    )
     cleanup2_diag = result["cleanup2_steps"][0]["diagnostics"]
     assert cleanup2_diag["target_diagnostics"][0]["docker_compose_cli_removed_service_keys"] == {
         "mother-genesis-init": ["exclude_from_hc"]
@@ -333,12 +355,19 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert "docker compose -p" in cleanup2
     assert "--no-deps --force-recreate" in cleanup2
     assert "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC" in cleanup2
+    assert "MOTHER_HELPER_CLEANUP2_BRANCH" in cleanup2
+    assert "phase=target_begin_before_find_project" in cleanup2
+    assert "phase=remove_loop_before_call" in cleanup2
+    assert "phase=remove_expected_container_before_recreate_enter" in cleanup2
+    assert "phase=remove_expected_container_before_recreate_before_rm" in cleanup2
+    assert "phase=docker_compose_before_start" in cleanup2
     assert "phase=docker_compose_start" in cleanup2
     assert "phase=remove_expected_container_before_recreate" in cleanup2
     assert "docker rm -f" in cleanup2
     assert "$$cid" in cleanup2
     assert "phase=docker_compose_exit" in cleanup2
-    assert "inspect_expected after" in cleanup2
+    assert "inspect_expected" in cleanup2
+    assert "after" in cleanup2
     assert "is_cleanup2_mimic=$$is_mimic" in cleanup2
     cleanup2_service = next(iter(yaml.safe_load(cleanup2)["services"].values()))
     cleanup2_script = cleanup2_service["command"][2]
@@ -363,12 +392,13 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert ("POST", "/api/v1/services") in paths
     assert ("POST", f"/api/v1/services/{CLEANUP2_UUID}/start") in paths
     assert ("GET", f"/api/v1/services/{CLEANUP2_UUID}/logs") in paths
-    assert ("DELETE", f"/api/v1/services/{CLEANUP2_UUID}") in paths
+    assert ("POST", f"/api/v1/services/{SERVICE_UUID}/restart") in paths
+    assert ("DELETE", f"/api/v1/services/{CLEANUP2_UUID}") not in paths
     log_request = next(item for item in opener.requests if item["path"] == f"/api/v1/services/{CLEANUP2_UUID}/logs")
     assert log_request["query"].startswith("sub_service_name=mother-helper-cleanup2-coolify-c")
     assert all(path != "/api/v1/deploy" for _method, path in paths)
     assert all(path != f"/api/v1/services/{SERVICE_UUID}/start" for _method, path in paths)
-    assert all(path != f"/api/v1/services/{SERVICE_UUID}/restart" for _method, path in paths)
+    assert paths.index(("GET", f"/api/v1/services/{CLEANUP2_UUID}/logs")) < paths.index(("POST", f"/api/v1/services/{SERVICE_UUID}/restart"))
     assert all("/applications/" not in path for _method, path in paths)
 
 
@@ -393,6 +423,7 @@ class _Cleanup2LogsUnavailableOpener(_Cleanup2Opener):
 def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2LogsUnavailableOpener()
+    sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
         private_state,
@@ -403,8 +434,10 @@ def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_pa
         max_wait_seconds=0,
         poll_interval_seconds=0,
         opener=opener,
+        sleeper=sleep_calls.append,
     )
 
+    assert sleep_calls == [90.0]
     completion = result["cleanup2_steps"][0]["completion"]
     assert completion["runtime_diagnostics_observed"] is False
     assert completion["remove_node_helper_cleanup_reached"] is False
@@ -418,6 +451,7 @@ def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_pa
 def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener(service_detail_as_json_string=True)
+    sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
         private_state,
@@ -428,8 +462,10 @@ def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path:
         max_wait_seconds=0,
         poll_interval_seconds=0,
         opener=opener,
+        sleeper=sleep_calls.append,
     )
 
+    assert sleep_calls == [90.0]
     assert result["status"] == "pass"
     assert result["summary"]["targeted_helper_service_count"] == 3
     assert opener.patched_compose is not None

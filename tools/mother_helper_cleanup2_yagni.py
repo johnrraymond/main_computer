@@ -8,9 +8,12 @@ This script does only the agreed cleanup2 flow:
 3. Install and run one temporary cleanup2 service per controller.  cleanup2
    uses the local Docker socket to recreate only the named helper Compose
    services that Coolify's public API cannot restart as child resources.
+4. For each touched parent service, queue Coolify Restart, wait 90 seconds,
+   then wait for the top-level service status to become running:healthy before
+   restarting the next touched parent service.
 
 It does not call public child application restart/deploy APIs, parent start,
-parent restart, parent deploy, Besu/FDB/Hub services, or helper health polling.
+parent deploy, Besu/FDB/Hub services, or child-resource health polling.
 """
 
 from __future__ import annotations
@@ -101,6 +104,7 @@ FORBIDDEN_SERVICE_NAMES = frozenset(
 SHIM_IMAGE = "alpine:3.20"
 SHIM_LABEL = "main_computer.mother.post_work_shim"
 MIMIC_LABEL = "main_computer.mother.retired_helper_mimic"
+PARENT_RESTART_SETTLE_SECONDS = 90.0
 
 class MotherHelperCleanup2YagniError(RuntimeError):
     """Cleanup2 could not produce a trustworthy result."""
@@ -972,6 +976,115 @@ def _patch_parent_compose(
     }
 
 
+
+def _restart_parent_service(
+    controller: CoolifyController,
+    service_uuid: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    service = _uuid(service_uuid, "service_uuid")
+    endpoint = f"/api/v1/services/{urllib.parse.quote(service, safe='')}/restart"
+    response = _http(
+        controller,
+        "POST",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    return {
+        "method": "POST",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "service_uuid": service,
+        "restart_scope": "post-cleanup2-parent-status-reconcile",
+    }
+
+
+def _wait_for_parent_service_running_healthy(
+    controller: CoolifyController,
+    *,
+    controller_id: str,
+    node: str,
+    service_uuid: str,
+    initial_settle_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    sleeper: Callable[[float], None],
+    http_observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    service = _uuid(service_uuid, "service_uuid")
+    settle_seconds = _nonnegative(initial_settle_seconds, "initial_settle_seconds")
+    if settle_seconds:
+        sleeper(settle_seconds)
+
+    observed_statuses: list[str] = []
+    observed_receipts: list[dict[str, Any]] = []
+    started = time.monotonic()
+    while True:
+        detail = _service_detail(
+            controller,
+            service,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        receipt = _receipt_from_detail(detail["receipt"], controller_id=controller_id, node=node, service_uuid=service)
+        receipt["phase"] = "post-parent-restart-status-poll"
+        observed_receipts.append(receipt)
+        http_observations.append(receipt)
+
+        status = ""
+        if detail.get("missing") is not True and isinstance(detail.get("payload"), Mapping):
+            status = _safe_scalar(detail["payload"].get("status")).strip()
+        observed_statuses.append(status)
+
+        if status == "running:healthy":
+            return {
+                "completed": True,
+                "reason": "parent-service-running-healthy",
+                "service_uuid": service,
+                "node": node,
+                "controller_id": controller_id,
+                "initial_settle_seconds": settle_seconds,
+                "final_status": status,
+                "observed_statuses": observed_statuses,
+                "observation_count": len(observed_statuses),
+                "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
+                "receipts": observed_receipts,
+            }
+
+        elapsed = time.monotonic() - started
+        if elapsed >= max_wait_seconds:
+            return {
+                "completed": False,
+                "reason": "parent-service-running-healthy-timeout",
+                "service_uuid": service,
+                "node": node,
+                "controller_id": controller_id,
+                "initial_settle_seconds": settle_seconds,
+                "final_status": status,
+                "observed_statuses": observed_statuses,
+                "observation_count": len(observed_statuses),
+                "wait_milliseconds_after_settle": int(elapsed * 1000),
+                "receipts": observed_receipts,
+            }
+
+        sleeper(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
+
+
+
 def _controller(
     private_state: PrivateStateReadResult,
     *,
@@ -1034,6 +1147,7 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         "set -eu",
         "DIAG_PREFIX=MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC",
         "diag() { printf '%s %s\n' \"$DIAG_PREFIX\" \"$*\" >&2; }",
+        "branch() { printf '%s %s\n' MOTHER_HELPER_CLEANUP2_BRANCH \"$*\" >&2; }",
         "diag_file() {",
         "  phase=\"$1\"",
         "  name=\"$2\"",
@@ -1100,23 +1214,28 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         "  helper=\"$2\"",
         "  project=\"$3\"",
         "  cname=\"${helper}-${uuid}\"",
+        "  branch \"phase=remove_expected_container_before_recreate_enter service_uuid=$uuid helper=$helper expected_container=$cname project=$project\"",
         "  ids=\"$(docker ps -aq --filter \"name=^/${cname}$\" || true)\"",
         "  count=\"$(printf '%s\\n' \"$ids\" | sed '/^$/d' | wc -l | tr -d ' ')\"",
         "  if [ \"$count\" = \"0\" ]; then",
+        "    branch \"phase=remove_expected_container_before_recreate_no_match service_uuid=$uuid helper=$helper expected_container=$cname project=$project match_count=$count\"",
         "    diag \"phase=remove_expected_container_before_recreate expected_container=$cname helper=$helper project=$project found=false match_count=0 removed=false\"",
         "    return 0",
         "  fi",
         "  if [ \"$count\" != \"1\" ]; then",
+        "    branch \"phase=remove_expected_container_before_recreate_non_unique service_uuid=$uuid helper=$helper expected_container=$cname project=$project match_count=$count\"",
         "    diag \"phase=remove_expected_container_before_recreate expected_container=$cname helper=$helper project=$project refused=true reason=non_unique_match match_count=$count removed=false\"",
         "    return 1",
         "  fi",
         "  cid=\"$(printf '%s\\n' \"$ids\" | sed -n '1p')\"",
         "  image=\"$(docker inspect -f '{{ .Config.Image }}' \"$cid\" 2>/dev/null || true)\"",
         "  status=\"$(docker inspect -f '{{ .State.Status }}' \"$cid\" 2>/dev/null || true)\"",
+        "  branch \"phase=remove_expected_container_before_recreate_before_rm service_uuid=$uuid helper=$helper expected_container=$cname project=$project container_id=$cid image=$image status=$status\"",
         "  diag \"phase=remove_expected_container_before_recreate expected_container=$cname helper=$helper project=$project container_id=$cid image=$image status=$status removing=true\"",
         "  docker rm -f \"$cid\"",
         "}",
         "echo mother-helper-cleanup2-started",
+        "branch phase=script_start",
         "diag phase=script_start",
         "docker version >/tmp/mother-helper-cleanup2-docker-version.txt",
         "diag_file script_start docker_version /tmp/mother-helper-cleanup2-docker-version.txt",
@@ -1148,19 +1267,23 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         "  uuid=\"$1\"",
         "  compose_file=\"$2\"",
         "  shift 2",
+        "  branch \"phase=target_begin_before_find_project service_uuid=$uuid helpers=$*\"",
         "  info=\"$(find_project \"$uuid\")\"",
         "  project=\"$(printf '%s\n' \"$info\" | sed -n '1p')\"",
         "  workdir=\"$(printf '%s\n' \"$info\" | sed -n '2p')\"",
+        "  branch \"phase=target_begin_after_find_project service_uuid=$uuid project=$project workdir=$workdir helpers=$*\"",
         "  diag \"phase=target_begin service_uuid=$uuid project=$project workdir=$workdir helpers=$* compose_file=$compose_file\"",
         "  docker_ps_snapshot before \"$uuid\"",
         "  for helper in \"$@\"; do",
         "    inspect_expected before \"$uuid\" \"$helper\" \"$project\"",
         "  done",
         "  for helper in \"$@\"; do",
+        "    branch \"phase=remove_loop_before_call service_uuid=$uuid helper=$helper expected_container=${helper}-${uuid} project=$project\"",
         "    remove_expected_container_before_recreate \"$uuid\" \"$helper\" \"$project\"",
         "  done",
         "  out=\"$(mktemp /tmp/mother-helper-cleanup2-compose-stdout.XXXXXX)\"",
         "  err=\"$(mktemp /tmp/mother-helper-cleanup2-compose-stderr.XXXXXX)\"",
+        "  branch \"phase=docker_compose_before_start service_uuid=$uuid project=$project helpers=$*\"",
         "  if [ -n \"$workdir\" ] && [ \"$workdir\" != '<no value>' ] && [ -d \"$workdir\" ]; then",
         "    diag \"phase=docker_compose_start service_uuid=$uuid project=$project workdir=$workdir command=docker compose -p $project -f $compose_file --project-directory $workdir up -d --no-deps --force-recreate $*\"",
         "    set +e",
@@ -1174,6 +1297,7 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         "    rc=\"$?\"",
         "    set -e",
         "  fi",
+        "  branch \"phase=docker_compose_after_exit service_uuid=$uuid project=$project exit_code=$rc\"",
         "  diag \"phase=docker_compose_exit service_uuid=$uuid project=$project exit_code=$rc\"",
         "  diag_file docker_compose_stdout stdout \"$out\"",
         "  diag_file docker_compose_stderr stderr \"$err\"",
@@ -1211,6 +1335,7 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         )
         lines.extend(
             [
+                "branch " + _single_quote(target_payload_message),
                 "diag " + _single_quote(target_payload_message),
                 f"cat > {_single_quote(b64_var)} <<'MOTHER_HELPER_CLEANUP2_COMPOSE_{index}'",
                 compose_b64,
@@ -1219,6 +1344,7 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
                 "diag "
                 + _single_quote(f"phase=compose_decoded index={index} service_uuid={service_uuid} compose_file={compose_file}"),
                 "diag_file " + _single_quote(f"compose_decoded_{index}") + " " + _single_quote("patched_compose") + " " + _single_quote(compose_file),
+                "branch " + _single_quote(f"phase=run_target_call index={index} service_uuid={service_uuid} helpers={','.join(helpers)}"),
                 "run_target "
                 + " ".join(
                     [_single_quote(service_uuid), _single_quote(compose_file)]
@@ -1231,6 +1357,7 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
     lines.extend(
         [
             "touch /tmp/mother-helper-cleanup2-done",
+            "branch phase=script_complete",
             "diag phase=script_complete",
             "echo mother-helper-cleanup2-complete",
             "exit 0",
@@ -1761,7 +1888,8 @@ def _run_cleanup2_for_controller(
             ],
             "target_diagnostics": [_cleanup2_target_diagnostic(target) for target in targets],
             "temporary_service_strategy": (
-                "create docker:27-cli service with /var/run/docker.sock; start it; wait only for temporary service exit"
+                "create docker:27-cli service with /var/run/docker.sock; start it; wait for temporary service exit; "
+                "leave the temporary service for manual docker logs inspection"
             ),
             "debug_destructive_leave_cleanup2_service_after_proof_guardian": False,
             "debug_destructive_warning": None,
@@ -1769,6 +1897,21 @@ def _run_cleanup2_for_controller(
             "parent_redeploy_performed": False,
             "post_restart_health_poll_performed": False,
         }
+        _emit_progress(
+            progress,
+            "debug",
+            "branch cleanup2 script generated",
+            controller_id=controller_id,
+            service_name=service_name,
+            target_count=len(targets),
+            cleanup2_script_sha256=cleanup2_diagnostics["cleanup2_script_sha256"],
+            remove_node_helpers=[
+                helper
+                for target in targets
+                for helper in list(target.get("helper_names") or [])
+                if str(helper).startswith("mother-node-remove-voter-")
+            ],
+        )
         body = _temporary_service_body(controller_config, service_name, compose)
         body["environment_uuid"] = environment_uuid
         body["description"] = "Ephemeral Mother cleanup2 exact helper Docker Compose recreate"
@@ -1813,6 +1956,15 @@ def _run_cleanup2_for_controller(
 
         cleanup_service_uuid = _application_uuid(create_response.get("payload"))
         create_receipt["service_uuid"] = cleanup_service_uuid
+        _emit_progress(
+            progress,
+            "debug",
+            "branch cleanup2 service created",
+            controller_id=controller_id,
+            service_name=service_name,
+            cleanup_service_uuid=cleanup_service_uuid,
+            target_count=len(targets),
+        )
         start_endpoint = f"/api/v1/services/{urllib.parse.quote(cleanup_service_uuid, safe='')}/start"
         _emit_progress(progress, "cleanup2", "starting cleanup2 service", controller_id=controller_id, cleanup_service_uuid=cleanup_service_uuid)
         start_response = _http(
@@ -1853,6 +2005,14 @@ def _run_cleanup2_for_controller(
                 "diagnostics": cleanup2_diagnostics,
             }
 
+        _emit_progress(
+            progress,
+            "debug",
+            "branch cleanup2 wait begin",
+            controller_id=controller_id,
+            service_name=service_name,
+            cleanup_service_uuid=cleanup_service_uuid,
+        )
         completion_result = _wait_for_cleanup2_exit(
             controller=controller,
             controller_id=controller_id,
@@ -1865,6 +2025,19 @@ def _run_cleanup2_for_controller(
             opener=opener,
             observations=observations,
             targets=targets,
+        )
+        _emit_progress(
+            progress,
+            "debug",
+            "branch cleanup2 wait complete",
+            controller_id=controller_id,
+            service_name=service_name,
+            cleanup_service_uuid=cleanup_service_uuid,
+            completed=completion_result.get("completed"),
+            final_status=completion_result.get("final_status"),
+            runtime_diagnostics_observed=completion_result.get("runtime_diagnostics_observed"),
+            remove_node_helper_cleanup_reached=completion_result.get("remove_node_helper_cleanup_reached"),
+            why_cleanup_action_not_proven=completion_result.get("why_cleanup_action_not_proven"),
         )
         ok = completion_result.get("completed") is True
         return {
@@ -1886,43 +2059,24 @@ def _run_cleanup2_for_controller(
             "parent_restart_performed": False,
             "post_restart_health_poll_performed": False,
             "debug_destructive_exit_after_proof_guardian_cleanup2": False,
-            "debug_destructive_cleanup2_service_left_for_inspection": False,
+            "debug_destructive_cleanup2_service_left_for_inspection": True,
         }
     finally:
         if cleanup_service_uuid is not None:
             endpoint = f"/api/v1/services/{urllib.parse.quote(cleanup_service_uuid, safe='')}"
-            try:
-                response = _http(
-                    controller,
-                    "DELETE",
-                    endpoint,
-                    body=None,
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
-                    opener=opener,
-                )
-                delete_receipt = {
-                    "method": "DELETE",
-                    "endpoint": endpoint,
-                    "status": response["status"],
-                    "ok": response["ok"] or response["status"] == 404,
-                    "response_sha256": response["response_sha256"],
-                    "byte_length": response["byte_length"],
-                    "elapsed_ms": response["elapsed_ms"],
-                    "service_uuid": cleanup_service_uuid,
-                    "service_name": service_name,
-                    "cleanup_scope": "cleanup2-temporary-service-delete",
-                }
-                observations.append({key: delete_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
-                if completion_result is not None:
-                    completion_result["temporary_service_delete"] = delete_receipt
-            except Exception as exc:  # noqa: BLE001
-                if completion_result is not None:
-                    completion_result["temporary_service_delete"] = {
-                        "ok": False,
-                        "error_code": getattr(exc, "code", type(exc).__name__),
-                        "error": str(exc),
-                    }
+            delete_receipt = {
+                "method": "DELETE",
+                "endpoint": endpoint,
+                "status": None,
+                "ok": None,
+                "skipped": True,
+                "reason": "cleanup2-temporary-service-delete-disabled-for-manual-log-inspection",
+                "service_uuid": cleanup_service_uuid,
+                "service_name": service_name,
+                "cleanup_scope": "cleanup2-temporary-service-delete-disabled",
+            }
+            if completion_result is not None:
+                completion_result["temporary_service_delete"] = delete_receipt
 
 
 def _cleanup2_target_summary(targets: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1961,6 +2115,7 @@ def run_helper_cleanup2_yagni(
     poll_interval_seconds: float = 5.0,
     opener: Any = urllib.request.urlopen,
     progress: ProgressCallback | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     mode_name = _identifier(mode, "mode")
     if mode_name not in {"inspect", "execute"}:
@@ -1991,6 +2146,8 @@ def run_helper_cleanup2_yagni(
     cleanup2_targets_by_controller: dict[str, list[dict[str, Any]]] = {}
     http_observations: list[dict[str, Any]] = []
     post_cleanup_readbacks: list[dict[str, Any]] = []
+    parent_restart_receipts: list[dict[str, Any]] = []
+    parent_restart_waits: list[dict[str, Any]] = []
 
     for service_record in services:
         node = _identifier(service_record["node"], "topology node")
@@ -2027,6 +2184,17 @@ def run_helper_cleanup2_yagni(
         parsed_compose = _parse_compose(compose_text)
         compose_sha256 = hashlib.sha256(compose_text.encode("utf-8")).hexdigest()
         helper_names = _target_helper_names(detail["payload"], parsed_compose)
+        _emit_progress(
+            progress,
+            "debug",
+            "branch helper discovery",
+            node=node,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            helper_names=list(helper_names),
+            remove_node_helpers=[name for name in helper_names if name.startswith("mother-node-remove-voter-")],
+            remove_node_helper_selected=any(name.startswith("mother-node-remove-voter-") for name in helper_names),
+        )
         pre_patch_diagnostics = _parent_payload_diagnostic(
             detail["payload"],
             helper_names=helper_names,
@@ -2038,6 +2206,14 @@ def run_helper_cleanup2_yagni(
         )
 
         if not helper_names:
+            _emit_progress(
+                progress,
+                "debug",
+                "branch no helpers selected",
+                node=node,
+                controller_id=controller_id,
+                service_uuid=service_uuid,
+            )
             patch_steps.append(
                 {
                     "node": node,
@@ -2056,6 +2232,15 @@ def run_helper_cleanup2_yagni(
             )
             continue
 
+        _emit_progress(
+            progress,
+            "debug",
+            "branch rewriting helper mimics",
+            node=node,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            helper_names=list(helper_names),
+        )
         rewritten, rewrite_summary = _rewrite_helper_mimics(
             compose_text,
             service_uuid=service_uuid,
@@ -2141,6 +2326,17 @@ def run_helper_cleanup2_yagni(
                 },
             }
         )
+        _emit_progress(
+            progress,
+            "debug",
+            "branch cleanup2 target queued",
+            node=node,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            helper_names=list(helper_names),
+            expected_container_names=[f"{helper}-{service_uuid}" for helper in helper_names],
+            remove_node_helpers=[name for name in helper_names if name.startswith("mother-node-remove-voter-")],
+        )
         cleanup2_targets_by_controller.setdefault(controller_id, []).append(
             {
                 "node": node,
@@ -2167,6 +2363,20 @@ def run_helper_cleanup2_yagni(
             targets = cleanup2_targets_by_controller[controller_id]
             if not targets:
                 continue
+            _emit_progress(
+                progress,
+                "debug",
+                "branch cleanup2 controller selected",
+                controller_id=controller_id,
+                target_count=len(targets),
+                service_uuids=[str(target.get("service_uuid") or "") for target in targets],
+                remove_node_helpers=[
+                    helper
+                    for target in targets
+                    for helper in list(target.get("helper_names") or [])
+                    if str(helper).startswith("mother-node-remove-voter-")
+                ],
+            )
             cleanup2_step = _run_cleanup2_for_controller(
                 private_state,
                 network=network_id,
@@ -2200,9 +2410,65 @@ def run_helper_cleanup2_yagni(
                     )
                 )
 
+        for controller_id in sorted(cleanup2_targets_by_controller):
+            controller = _controller(private_state, network=network_id, controller_id=controller_id)
+            for target in cleanup2_targets_by_controller[controller_id]:
+                node = str(target.get("node") or "")
+                service_uuid = str(target.get("service_uuid") or "")
+                _emit_progress(
+                    progress,
+                    "cleanup2",
+                    "restarting parent service after cleanup2",
+                    node=node,
+                    controller_id=controller_id,
+                    service_uuid=service_uuid,
+                )
+                restart_receipt = _restart_parent_service(
+                    controller,
+                    service_uuid,
+                    timeout=request_timeout,
+                    max_response_bytes=response_limit,
+                    opener=opener,
+                )
+                restart_receipt["controller_id"] = controller_id
+                restart_receipt["node"] = node
+                parent_restart_receipts.append(restart_receipt)
+                http_observations.append(
+                    {
+                        key: restart_receipt[key]
+                        for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+                    }
+                )
+
+                _emit_progress(
+                    progress,
+                    "cleanup2",
+                    "waiting before parent restart status check",
+                    node=node,
+                    controller_id=controller_id,
+                    service_uuid=service_uuid,
+                    settle_seconds=PARENT_RESTART_SETTLE_SECONDS,
+                )
+                wait_result = _wait_for_parent_service_running_healthy(
+                    controller,
+                    controller_id=controller_id,
+                    node=node,
+                    service_uuid=service_uuid,
+                    initial_settle_seconds=PARENT_RESTART_SETTLE_SECONDS,
+                    timeout=request_timeout,
+                    max_response_bytes=response_limit,
+                    max_wait_seconds=wait_limit,
+                    poll_interval_seconds=poll_interval,
+                    opener=opener,
+                    sleeper=sleeper,
+                    http_observations=http_observations,
+                )
+                parent_restart_waits.append(wait_result)
+
     patch_ok = all(step["status"] in {"patched", "would-patch", "no-op", "skipped"} for step in patch_steps)
     cleanup2_ok = mode_name == "inspect" or all(step.get("status") == "pass" for step in cleanup2_steps)
-    status = "pass" if patch_ok and cleanup2_ok else "failed"
+    parent_restart_ok = mode_name == "inspect" or all(wait.get("completed") is True for wait in parent_restart_waits)
+    status = "pass" if patch_ok and cleanup2_ok and parent_restart_ok else "failed"
 
     target_count = sum(len(item["helper_names"]) for items in cleanup2_targets_by_controller.values() for item in items)
     return {
@@ -2228,6 +2494,8 @@ def run_helper_cleanup2_yagni(
         "patch_steps": patch_steps,
         "cleanup2_steps": cleanup2_steps,
         "post_cleanup_readbacks": post_cleanup_readbacks,
+        "parent_restart_receipts": parent_restart_receipts,
+        "parent_restart_waits": parent_restart_waits,
         "http_observations": http_observations,
         "summary": {
             "topology_imported": True,
@@ -2263,7 +2531,19 @@ def run_helper_cleanup2_yagni(
                 and step.get("completion", {}).get("why_cleanup_action_not_proven") is not None
             ],
             "debug_destructive_short_circuit_after_proof_guardian_cleanup2": False,
-            "debug_destructive_cleanup2_services_left_for_inspection": [],
+            "debug_destructive_cleanup2_services_left_for_inspection": [
+                {
+                    "controller_id": step.get("controller_id"),
+                    "service_uuid": step.get("cleanup_service_uuid"),
+                    "service_name": (
+                        step.get("completion", {}).get("service_name")
+                        if isinstance(step.get("completion"), Mapping)
+                        else step.get("create", {}).get("service_name") if isinstance(step.get("create"), Mapping) else None
+                    ),
+                }
+                for step in cleanup2_steps
+                if step.get("cleanup_service_uuid")
+            ],
             "post_cleanup_readback_count": len(post_cleanup_readbacks),
             "post_cleanup_readbacks_all_mimics_in_saved_compose": (
                 all(item.get("all_target_helpers_are_cleanup2_mimics_in_saved_compose") is True for item in post_cleanup_readbacks)
@@ -2271,10 +2551,17 @@ def run_helper_cleanup2_yagni(
                 else None
             ),
             "parent_redeploy_performed": False,
-            "parent_restart_performed": False,
+            "parent_restart_performed": bool(parent_restart_receipts),
+            "parent_restart_request_count": len(parent_restart_receipts),
+            "parent_restart_wait_count": len(parent_restart_waits),
+            "parent_restart_waits_all_running_healthy": (
+                all(wait.get("completed") is True for wait in parent_restart_waits)
+                if parent_restart_waits
+                else None
+            ),
             "child_public_api_restart_attempted": False,
             "temporary_helper_apply_service_created": False,
-            "post_restart_health_poll_performed": False,
+            "post_restart_health_poll_performed": bool(parent_restart_waits),
             "chain_touched": False,
         },
     }
