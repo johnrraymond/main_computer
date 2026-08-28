@@ -51,7 +51,7 @@ import urllib.error
 import urllib.request
 
 
-SCRIPT_VERSION = "6.0.0"
+SCRIPT_VERSION = "6.0.1"
 DEFAULT_MODELS = ["qwen3.8:27b", "gemma4:26b"]
 DEFAULT_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 DEFAULT_OUT_ROOT = Path("diagnostics_output") / "ollama_model_contest"
@@ -770,7 +770,8 @@ def preflight(args: argparse.Namespace, out_dir: Path) -> tuple[dict[str, Any], 
     print(f"  generate_url: {args.generate_url}")
     print("  call path: imported main_computer.rag_gremlin_pyramid_atom_smoke.call_ollama_generate_streaming")
     print("  transport: /api/generate stream=true, byte-by-byte JSONL read, repo prepare_ollama_generate_payload")
-    print(f"  think: {'on' if args.think_value is True else 'off' if args.think_value is False else 'default/off'}")
+    print(f"  benchmark think: {'on' if args.think_value is True else 'off' if args.think_value is False else 'default/off'}")
+    print("  preflight think: off (transport probe)")
     print()
 
     diagnostics: dict[str, Any] = {
@@ -823,6 +824,12 @@ def preflight(args: argparse.Namespace, out_dir: Path) -> tuple[dict[str, Any], 
             model_diag["show"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
             print(f"    show: failed: {model_diag['show']['error']}")
 
+        # Preflight validates the transport/model route, not reasoning quality.
+        # A 16-token READY probe cannot safely run with thinking enabled because
+        # thinking-capable models may spend the entire budget in the separate
+        # `thinking` stream and reach done_reason=length before emitting a final
+        # `response`. Keep the probe non-thinking; measured hardness tasks still
+        # use args.think_value.
         text, summary, error = call_model_via_rag_generate(
             model=model,
             prompt="Reply with exactly one word: READY",
@@ -833,7 +840,7 @@ def preflight(args: argparse.Namespace, out_dir: Path) -> tuple[dict[str, Any], 
             temperature=0.0,
             quiet_helper_log=True,
             keep_alive=args.keep_alive,
-            think_value=args.think_value,
+            think_value=False,
         )
         model_diag["rag_generate_probe"] = {
             "ok": error is None and bool(text.strip()),
@@ -947,7 +954,10 @@ def run_warmup(args: argparse.Namespace, out_dir: Path, model: str, warmup_idx: 
         temperature=0.0,
         quiet_helper_log=args.quiet_helper_log,
         keep_alive=args.keep_alive,
-        think_value=args.think_value,
+        # Warmup exists only to load the model before measured runs. Keep it
+        # non-thinking so the tiny warmup budget cannot be consumed by hidden
+        # reasoning. Measured tasks retain the requested think policy.
+        think_value=False,
     )
     wall_s = time.perf_counter() - started
     score, max_score, note = score_exact_ready(text) if not error else (0, 2, error)
@@ -1160,6 +1170,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Thinking: {'on' if args.think_value is True else 'off' if args.think_value is False else 'default/off'}")
     print(f"Schedule: {args.schedule}")
     print(f"Warmup runs per model: {args.warmup_runs}")
+    print("Warmup thinking: off (load-only warmup)")
     print(f"keep_alive: {args.keep_alive or '<omitted>'}")
     print(f"Output: {out_dir}")
     print()
