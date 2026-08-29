@@ -311,10 +311,16 @@ def _single_quote(text: str) -> str:
     return "'" + text.replace("'", "'\"'\"'") + "'"
 
 
-def _watch_service_name(controller_id: str, target_node: str) -> str:
+def _watch_service_name_prefix(controller_id: str, target_node: str) -> str:
     controller = _identifier(controller_id, "controller_id").replace("_", "-")
     node = _identifier(target_node, "target_node").replace("_", "-")
-    return f"{WATCH_PREFIX}-{controller}-{node}-{_stamp().lower()}"
+    return f"{WATCH_PREFIX}-{controller}-{node}-"
+
+
+def _watch_service_name(controller_id: str, target_node: str) -> str:
+    return f"{_watch_service_name_prefix(controller_id, target_node)}{_stamp().lower()}"
+
+
 
 
 def _watch_script(
@@ -326,191 +332,276 @@ def _watch_script(
     expected_chain_id: int | None,
     endpoint_port: int,
 ) -> str:
-    expected = "" if expected_chain_id is None else str(expected_chain_id)
-    lines = [
-        "set -eu",
-        f"NETWORK={_single_quote(network)}",
-        f"CONTROLLER_ID={_single_quote(controller_id)}",
-        f"TARGET_NODE={_single_quote(target_node)}",
-        f"SERVICE_UUID={_single_quote(service_uuid)}",
-        f"EXPECTED_CHAIN_ID={_single_quote(expected)}",
-        f"ENDPOINT_PORT={int(endpoint_port)}",
-        f"PREFIX={_single_quote(RUNTIME_LOG_PREFIX)}",
-        "TARGET_CONTAINER=\"${TARGET_NODE}-${SERVICE_UUID}\"",
-        "WWW=/www",
-        "BLOCK_FILE=\"$WWW/block\"",
-        "mkdir -p \"$WWW\"",
-        "log() { printf '%s %s\n' \"$PREFIX\" \"$*\" >&2; }",
-        "json_safe() { printf '%s' \"$1\" | tr '\\r\\n\\\"\\\\' '    ' | cut -c1-500; }",
-        "write_status() {",
-        "  ok=\"$1\"",
-        "  reason=\"$(json_safe \"${2:-}\")\"",
-        "  block=\"${3:-}\"",
-        "  block_hex=\"$(json_safe \"${4:-}\")\"",
-        "  chain=\"${5:-}\"",
-        "  peer=\"$(json_safe \"${6:-}\")\"",
-        "  ts=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
-        "  tmp=\"$BLOCK_FILE.tmp\"",
-        "  if [ -n \"$block\" ]; then block_json=\"$block\"; else block_json=null; fi",
-        "  if [ -n \"$chain\" ]; then chain_json=\"$chain\"; else chain_json=null; fi",
-        "  cat > \"$tmp\" <<EOF",
-        "{\"ok\":$ok,\"reason\":\"$reason\",\"network\":\"$NETWORK\",\"controller_id\":\"$CONTROLLER_ID\",\"target_node\":\"$TARGET_NODE\",\"service_uuid\":\"$SERVICE_UUID\",\"target_container\":\"$TARGET_CONTAINER\",\"chain_id\":$chain_json,\"expected_chain_id\":\"$EXPECTED_CHAIN_ID\",\"block_number\":$block_json,\"block_hex\":\"$block_hex\",\"peer_count_hex\":\"$peer\",\"observed_at\":\"$ts\"}",
-        "EOF",
-        "  mv \"$tmp\" \"$BLOCK_FILE\"",
-        "}",
-        "hex_to_int() {",
-        "  value=\"$1\"",
-        "  case \"$value\" in",
-        "    0x*) : ;;",
-        "    *) return 1 ;;",
-        "  esac",
-        "  printf '%s\n' \"$((value))\"",
-        "}",
-        "json_result_string() { sed -n 's/.*\"result\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' | sed -n '1p'; }",
-        "rpc() {",
-        "  cid=\"$1\"",
-        "  method=\"$2\"",
-        "  params=\"${3:-[]}\"",
-        "  payload=\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"method\\\":\\\"${method}\\\",\\\"params\\\":${params}}\"",
-        "  docker run --rm --network \"container:${cid}\" alpine:3.20 sh -c 'wget -qO- --header=\"Content-Type: application/json\" --post-data=\"$1\" http://127.0.0.1:8545' sh \"$payload\"",
-        "}",
-        "sample_once() {",
-        "  ids=\"$(docker ps -aq --filter \"name=^/${TARGET_CONTAINER}$\" | sed '/^$/d' || true)\"",
-        "  count=\"$(printf '%s\n' \"$ids\" | sed '/^$/d' | wc -l | tr -d ' ')\"",
-        "  if [ \"$count\" != \"1\" ]; then",
-        "    write_status false \"container-not-unique:$count\" \"\" \"\" \"\" \"\"",
-        "    return 0",
-        "  fi",
-        "  cid=\"$(printf '%s\n' \"$ids\" | sed -n '1p')\"",
-        "  chain_raw=\"$(rpc \"$cid\" eth_chainId [] 2>/tmp/mother-block-advance-rpc.err || true)\"",
-        "  chain_hex=\"$(printf '%s' \"$chain_raw\" | json_result_string)\"",
-        "  chain=\"$(hex_to_int \"$chain_hex\" 2>/dev/null || true)\"",
-        "  if [ -z \"$chain\" ]; then",
-        "    err=\"$(cat /tmp/mother-block-advance-rpc.err 2>/dev/null | tr '\\n' ' ' | cut -c1-300 || true)\"",
-        "    write_status false \"chain-id-rpc-failed:$err\" \"\" \"\" \"\" \"\"",
-        "    return 0",
-        "  fi",
-        "  if [ -n \"$EXPECTED_CHAIN_ID\" ] && [ \"$chain\" != \"$EXPECTED_CHAIN_ID\" ]; then",
-        "    write_status false \"chain-id-mismatch:$chain\" \"\" \"\" \"$chain\" \"\"",
-        "    return 0",
-        "  fi",
-        "  block_raw=\"$(rpc \"$cid\" eth_blockNumber [] 2>/tmp/mother-block-advance-rpc.err || true)\"",
-        "  block_hex=\"$(printf '%s' \"$block_raw\" | json_result_string)\"",
-        "  block=\"$(hex_to_int \"$block_hex\" 2>/dev/null || true)\"",
-        "  if [ -z \"$block\" ]; then",
-        "    err=\"$(cat /tmp/mother-block-advance-rpc.err 2>/dev/null | tr '\\n' ' ' | cut -c1-300 || true)\"",
-        "    write_status false \"block-number-rpc-failed:$err\" \"\" \"\" \"$chain\" \"\"",
-        "    return 0",
-        "  fi",
-        "  peer_raw=\"$(rpc \"$cid\" net_peerCount [] 2>/tmp/mother-block-advance-rpc.err || true)\"",
-        "  peer_hex=\"$(printf '%s' \"$peer_raw\" | json_result_string)\"",
-        "  write_status true ok \"$block\" \"$block_hex\" \"$chain\" \"$peer_hex\"",
-        "}",
-        "write_status false starting \"\" \"\" \"\" \"\"",
-        "log \"phase=endpoint_start network=$NETWORK controller_id=$CONTROLLER_ID target_node=$TARGET_NODE service_uuid=$SERVICE_UUID target_container=$TARGET_CONTAINER endpoint_port=$ENDPOINT_PORT\"",
-        "log \"phase=runtime_probe docker_cli=$(docker --version 2>&1 | tr '\\n' ' ' | cut -c1-200 || true) busybox=$(busybox 2>&1 | head -n 1 | cut -c1-200 || true) apk=$(command -v apk 2>/dev/null || true) httpd=$(command -v httpd 2>/dev/null || true)\"",
-        "busybox_has_httpd() { busybox --list 2>/dev/null | grep -qx httpd; }",
-        "select_httpd_provider() {",
-        "  if command -v httpd >/dev/null 2>&1; then HTTPD_PROVIDER=httpd; return 0; fi",
-        "  if busybox_has_httpd; then HTTPD_PROVIDER=busybox; return 0; fi",
-        "  if command -v apk >/dev/null 2>&1; then",
-        "    log \"phase=httpd_provider_install_begin package=busybox-extras reason=missing-httpd\"",
-        "    APK_LOG=/tmp/mother-block-advance-apk-add.log",
-        "    if apk add --no-cache busybox-extras >\"$APK_LOG\" 2>&1; then",
-        "      log \"phase=httpd_provider_install_done package=busybox-extras\"",
-        "    else",
-        "      APK_EXIT=$?",
-        "      APK_EXCERPT=$(tail -n 20 \"$APK_LOG\" 2>/dev/null | tr '\\n' ' ' | cut -c1-500 || true)",
-        "      write_status false \"httpd-install-failed:$APK_EXIT:$APK_EXCERPT\" \"\" \"\" \"\" \"\"",
-        "      log \"phase=httpd_provider_install_failed exit_code=$APK_EXIT excerpt=$APK_EXCERPT hold_for_inspection=true\"",
-        "      return 1",
-        "    fi",
-        "  fi",
-        "  if command -v httpd >/dev/null 2>&1; then HTTPD_PROVIDER=httpd; return 0; fi",
-        "  if busybox_has_httpd; then HTTPD_PROVIDER=busybox; return 0; fi",
-        "  write_status false httpd-provider-missing \"\" \"\" \"\" \"\"",
-        "  log \"phase=httpd_provider_missing hold_for_inspection=true\"",
-        "  return 1",
-        "}",
-        "start_httpd() {",
-        "  case \"${HTTPD_PROVIDER:-}\" in",
-        "    httpd) httpd -f -p \"0.0.0.0:${ENDPOINT_PORT}\" -h \"$WWW\" & ;;",
-        "    busybox) busybox httpd -f -p \"0.0.0.0:${ENDPOINT_PORT}\" -h \"$WWW\" & ;;",
-        "    *) return 1 ;;",
-        "  esac",
-        "  HTTPD_PID=$!",
-        "  return 0",
-        "}",
-        "if ! select_httpd_provider; then",
-        "  while true; do sleep 3600; done",
-        "fi",
-        "log \"phase=httpd_provider_selected provider=$HTTPD_PROVIDER binary=$(command -v httpd 2>/dev/null || true) busybox_has_httpd=$(busybox_has_httpd && printf true || printf false)\"",
-        "while true; do sample_once || true; sleep 2; done &",
-        "SAMPLER_PID=$!",
-        "log \"phase=sampler_started pid=$SAMPLER_PID\"",
-        "if ! start_httpd; then",
-        "  write_status false httpd-start-command-failed \"\" \"\" \"\" \"\"",
-        "  log \"phase=httpd_start_failed provider=${HTTPD_PROVIDER:-missing} hold_for_inspection=true\"",
-        "  while true; do sleep 3600; done",
-        "fi",
-        "log \"phase=httpd_started pid=$HTTPD_PID provider=$HTTPD_PROVIDER hold_for_inspection=true\"",
-        "while kill -0 \"$HTTPD_PID\" 2>/dev/null; do sleep 2; done",
-        "HTTPD_EXIT=0",
-        "wait \"$HTTPD_PID\" || HTTPD_EXIT=$?",
-        "write_status false \"httpd-exited:$HTTPD_EXIT\" \"\" \"\" \"\" \"\"",
-        "log \"phase=httpd_exit exit_code=$HTTPD_EXIT provider=$HTTPD_PROVIDER hold_for_inspection=true\"",
-        "while true; do sleep 3600; done",
-    ]
-    inner_script = "\n".join(lines) + "\n"
-    marker = "MOTHER_BLOCK_ADVANCE_WATCH_SCRIPT_EOF"
-    if marker in inner_script:
-        raise ValueError("watch script contains wrapper heredoc marker")
-    wrapper_lines = [
-        # PID 1 must be a non-fragile inspection wrapper.  The watcher itself is
-        # written to a child script; if that child exits for any reason, PID 1
-        # records the failure and sleeps forever so Docker/Coolify have a live
-        # container to inspect.
-        "set +e",
-        "PREFIX=" + _single_quote(RUNTIME_LOG_PREFIX),
-        "WWW=/www",
-        "BLOCK_FILE=\"$WWW/block\"",
-        "mkdir -p \"$WWW\"",
-        "wrapper_log() { printf '%s %s\\n' \"$PREFIX\" \"$*\" >&2; }",
-        "wrapper_json_safe() { printf '%s' \"$1\" | tr '\\r\\n\\\"\\\\' '    ' | cut -c1-500; }",
-        "wrapper_write_status() {",
-        "  reason=\"$(wrapper_json_safe \"${1:-watcher-wrapper-failed}\")\"",
-        "  ts=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
-        "  tmp=\"$BLOCK_FILE.tmp\"",
-        "  cat > \"$tmp\" <<EOF",
-        "{\"ok\":false,\"reason\":\"$reason\",\"observed_at\":\"$ts\",\"pid1_hold\":true}",
-        "EOF",
-        "  mv \"$tmp\" \"$BLOCK_FILE\"",
-        "}",
-        "WATCH_SCRIPT=/tmp/mother-block-advance-watch-child.sh",
-        "cat > \"$WATCH_SCRIPT\" <<'" + marker + "'",
-        inner_script.rstrip("\n"),
-        marker,
-        "chmod +x \"$WATCH_SCRIPT\"",
-        "wrapper_log \"phase=pid1_wrapper_start child_script=$WATCH_SCRIPT hold_for_inspection=true\"",
-        "sh \"$WATCH_SCRIPT\" &",
-        "WATCH_PID=$!",
-        "wrapper_log \"phase=pid1_wrapper_child_started pid=$WATCH_PID\"",
-        "while kill -0 \"$WATCH_PID\" 2>/dev/null; do sleep 2; done",
-        "WATCH_EXIT=0",
-        "wait \"$WATCH_PID\" || WATCH_EXIT=$?",
-        "wrapper_write_status \"watcher-child-exited:$WATCH_EXIT\"",
-        "wrapper_log \"phase=pid1_wrapper_child_exit exit_code=$WATCH_EXIT hold_for_inspection=true\"",
-        "while true; do sleep 3600; done",
-    ]
-    return "\n".join(wrapper_lines) + "\n"
+    """Build a proof-guardian-style Python block endpoint.
 
+    This intentionally follows the existing Mother /proof guardians:
+    a Python HTTP server serves a JSON artifact path while the same long-lived
+    process keeps producing that artifact.  Docker access is still required to
+    observe the target Besu container from the controller host, so the helper
+    installs docker-cli inside the Python Alpine image if the image does not
+    already provide it.
+    """
+
+    config = {
+        "network": network,
+        "controller_id": controller_id,
+        "target_node": target_node,
+        "service_uuid": service_uuid,
+        "expected_chain_id": expected_chain_id,
+        "endpoint_port": int(endpoint_port),
+        "runtime_log_prefix": RUNTIME_LOG_PREFIX,
+        "www": "/www",
+        "block_file": "/www/block",
+    }
+    config_json = json.dumps(config, sort_keys=True, separators=(",", ":"))
+
+    template = """import http.server
+import json
+import os
+import shutil
+import subprocess
+import threading
+import time
+import traceback
+from datetime import datetime, timezone
+
+CONFIG = __CONFIG_JSON__
+NETWORK = CONFIG["network"]
+CONTROLLER_ID = CONFIG["controller_id"]
+TARGET_NODE = CONFIG["target_node"]
+SERVICE_UUID = CONFIG["service_uuid"]
+EXPECTED_CHAIN_ID = CONFIG["expected_chain_id"]
+ENDPOINT_PORT = int(CONFIG["endpoint_port"])
+PREFIX = CONFIG["runtime_log_prefix"]
+WWW = CONFIG["www"]
+BLOCK_FILE = CONFIG["block_file"]
+TARGET_CONTAINER = TARGET_NODE + "-" + SERVICE_UUID
+MAX_FILE_BYTES = 65536
+
+os.makedirs(WWW, exist_ok=True)
+
+
+def utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def safe_text(value, limit=500):
+    text = str(value)
+    return text.replace("\\r", " ").replace("\\n", " ").replace(chr(34), " ").replace(chr(92), " ")[:limit]
+
+
+def log(phase, **fields):
+    parts = [PREFIX, "phase=" + str(phase)]
+    for key in sorted(fields):
+        parts.append(str(key) + "=" + safe_text(fields[key]))
+    print(" ".join(parts), flush=True)
+
+
+def write_json_file(path, payload):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def write_status(ok, reason, block_number=None, block_hex="", chain_id=None, peer_count_hex=""):
+    payload = {
+        "ok": bool(ok),
+        "reason": safe_text(reason),
+        "network": NETWORK,
+        "controller_id": CONTROLLER_ID,
+        "target_node": TARGET_NODE,
+        "service_uuid": SERVICE_UUID,
+        "target_container": TARGET_CONTAINER,
+        "chain_id": chain_id,
+        "expected_chain_id": "" if EXPECTED_CHAIN_ID is None else str(EXPECTED_CHAIN_ID),
+        "block_number": block_number,
+        "block_hex": safe_text(block_hex),
+        "peer_count_hex": safe_text(peer_count_hex),
+        "observed_at": utc_now(),
+        "server": "python-http.server.ThreadingHTTPServer",
+    }
+    write_json_file(BLOCK_FILE, payload)
+
+
+class BlockHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def do_GET(self):
+        if self.path not in ("/block", "/block.json"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        try:
+            with open(BLOCK_FILE, "rb") as handle:
+                raw = handle.read(MAX_FILE_BYTES)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+
+def serve_block():
+    try:
+        http.server.ThreadingHTTPServer(("0.0.0.0", ENDPOINT_PORT), BlockHandler).serve_forever()
+    except Exception as exc:
+        write_status(False, "http-server-failed:" + safe_text(exc))
+        log("http_server_failed", error=safe_text(exc), traceback=safe_text(traceback.format_exc(), 1000))
+
+
+def run_command(argv, timeout=30):
+    return subprocess.run(
+        argv,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def ensure_docker_cli():
+    existing = shutil.which("docker")
+    if existing:
+        return True
+    if not shutil.which("apk"):
+        write_status(False, "docker-cli-missing-and-apk-missing")
+        log("docker_cli_missing", reason="apk-missing")
+        return False
+
+    log("docker_cli_install_begin", package="docker-cli")
+    proc = run_command(["apk", "add", "--no-cache", "docker-cli"], timeout=180)
+    excerpt = (proc.stdout + " " + proc.stderr).strip()[-1000:]
+    if proc.returncode != 0:
+        write_status(False, "docker-cli-install-failed:" + str(proc.returncode) + ":" + safe_text(excerpt))
+        log("docker_cli_install_failed", exit_code=proc.returncode, excerpt=excerpt)
+        return False
+
+    existing = shutil.which("docker")
+    if not existing:
+        write_status(False, "docker-cli-install-did-not-provide-binary")
+        log("docker_cli_install_missing_binary")
+        return False
+
+    log("docker_cli_install_done", binary=existing)
+    return True
+
+
+def json_rpc(container_id, method, params=None):
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": [] if params is None else params}, separators=(",", ":"))
+    proc = run_command(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "container:" + container_id,
+            "alpine:3.20",
+            "wget",
+            "-qO-",
+            "--header=Content-Type: application/json",
+            "--post-data=" + payload,
+            "http://127.0.0.1:8545",
+        ],
+        timeout=45,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(method + " rpc failed rc=" + str(proc.returncode) + " stderr=" + safe_text(proc.stderr))
+    try:
+        response = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(method + " rpc returned invalid json:" + safe_text(proc.stdout)) from exc
+    if isinstance(response, dict) and response.get("error") is not None:
+        raise RuntimeError(method + " rpc error:" + safe_text(response.get("error")))
+    if not isinstance(response, dict) or "result" not in response:
+        raise RuntimeError(method + " rpc result missing")
+    return response["result"]
+
+
+def hex_to_int(value):
+    if not isinstance(value, str) or not value.startswith("0x"):
+        raise ValueError("not a hex quantity")
+    return int(value, 16)
+
+
+def sample_once():
+    if not ensure_docker_cli():
+        return
+
+    proc = run_command(["docker", "ps", "-a", "--filter", "name=" + TARGET_CONTAINER, "--format", "{{.ID}} {{.Names}}"], timeout=15)
+    if proc.returncode != 0:
+        write_status(False, "docker-ps-failed:" + safe_text(proc.stderr))
+        log("docker_ps_failed", exit_code=proc.returncode, stderr=safe_text(proc.stderr))
+        return
+
+    matches = []
+    for line in proc.stdout.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) == 2 and parts[1] == TARGET_CONTAINER:
+            matches.append(parts[0])
+    if len(matches) != 1:
+        write_status(False, "container-not-unique:" + str(len(matches)))
+        log("target_container_not_unique", count=len(matches), target_container=TARGET_CONTAINER)
+        return
+
+    cid = matches[0]
+    chain_hex = json_rpc(cid, "eth_chainId", [])
+    chain_id = hex_to_int(chain_hex)
+    if EXPECTED_CHAIN_ID is not None and chain_id != int(EXPECTED_CHAIN_ID):
+        write_status(False, "chain-id-mismatch:" + str(chain_id), chain_id=chain_id)
+        log("chain_id_mismatch", actual_chain_id=chain_id, expected_chain_id=EXPECTED_CHAIN_ID)
+        return
+
+    block_hex = json_rpc(cid, "eth_blockNumber", [])
+    block_number = hex_to_int(block_hex)
+    try:
+        peer_count_hex = json_rpc(cid, "net_peerCount", [])
+    except Exception as exc:
+        peer_count_hex = ""
+        log("peer_count_unavailable", error=safe_text(exc))
+
+    write_status(True, "ok", block_number=block_number, block_hex=block_hex, chain_id=chain_id, peer_count_hex=peer_count_hex)
+    log("sample_ok", block_number=block_number, block_hex=block_hex, chain_id=chain_id, peer_count_hex=peer_count_hex)
+
+
+log(
+    "endpoint_start",
+    network=NETWORK,
+    controller_id=CONTROLLER_ID,
+    target_node=TARGET_NODE,
+    service_uuid=SERVICE_UUID,
+    target_container=TARGET_CONTAINER,
+    endpoint_port=ENDPOINT_PORT,
+    server="python-http.server.ThreadingHTTPServer",
+)
+write_status(False, "starting")
+
+server_thread = threading.Thread(target=serve_block, daemon=True)
+server_thread.start()
+log("block_server_started", path="/block", alt_path="/block.json", port=ENDPOINT_PORT, thread_alive=server_thread.is_alive())
+
+while True:
+    try:
+        sample_once()
+    except Exception as exc:
+        write_status(False, "sample-failed:" + safe_text(exc))
+        log("sample_failed", error=safe_text(exc), traceback=safe_text(traceback.format_exc(), 1000))
+    time.sleep(2)
+"""
+    return template.replace("__CONFIG_JSON__", config_json)
 
 
 def _compose_command_escape(text: str) -> str:
-    # Docker Compose interpolates $VAR, ${VAR}, $(), and $((...)) in YAML before
-    # the container is created.  The watcher command intentionally contains shell
-    # variables that must be expanded inside the container, so every dollar must
-    # be escaped as $$ in the compose document.
+    # Docker Compose interpolates shell-dollar syntax before the container is
+    # created.  The Python proof-style watcher is generated without such syntax,
+    # but keep the helper for future shell payloads.
     return text.replace("$", "$$")
 
 
@@ -518,8 +609,8 @@ def _watch_compose(service_name: str, watch_script: str, *, host_port: int, endp
     document = {
         "services": {
             service_name: {
-                "image": "docker:27-cli",
-                "command": ["sh", "-lc", _compose_command_escape(watch_script)],
+                "image": "python:3.12-alpine",
+                "command": ["python", "-u", "-c", watch_script],
                 "volumes": ["/var/run/docker.sock:/var/run/docker.sock"],
                 "ports": [f"{int(host_port)}:{int(endpoint_port)}"],
                 "restart": "unless-stopped",
@@ -717,6 +808,13 @@ def _service_status_is_terminal(value: object) -> bool:
     return status.startswith(("exited", "dead", "failed", "error"))
 
 
+def _service_status_is_endpoint_probe_eligible(value: object) -> bool:
+    status = str(value or "").strip().lower()
+    if not status or _service_status_is_terminal(status):
+        return False
+    return _service_status_is_running(status) or status.startswith(("starting", "restarting"))
+
+
 def _service_record_summaries(payload: object, *, service_uuid: str | None = None, service_name: str | None = None) -> list[dict[str, Any]]:
     """Return compact service records found in a Coolify payload.
 
@@ -780,6 +878,7 @@ def _summarize_service_payload(payload: object, *, service_uuid: str, service_na
         "service_status": status or None,
         "running": _service_status_is_running(status),
         "terminal": _service_status_is_terminal(status),
+        "endpoint_probe_eligible": _service_status_is_endpoint_probe_eligible(status),
         "matches_sample": matched[:5],
     }
 
@@ -1235,6 +1334,275 @@ def _trigger_watch_service_deploy(
     return result
 
 
+
+def _watch_service_cleanup_candidate_score(record: Mapping[str, Any]) -> int:
+    """Prefer parent Coolify service records over nested application rows.
+
+    ``GET /api/v1/services`` can include a service object and its application
+    object with the same generated name. Only the parent service UUID is
+    deletable at ``/api/v1/services/{uuid}``; the child application UUID returns
+    404 from that endpoint. The score keeps cleanup focused on parent services
+    while remaining tolerant of Coolify shape changes.
+    """
+
+    score = 0
+    if isinstance(record.get("applications"), list) or isinstance(record.get("databases"), list):
+        score += 100
+    if "compose_parsing_version" in record or "docker_compose" in record or "docker_compose_raw" in record:
+        score += 60
+    if "destination_id" in record or "environment_id" in record or "server_id" in record:
+        score += 40
+    if "service_type" in record or "destination_type" in record:
+        score += 20
+    if "service_id" in record and ("image" in record or "ports" in record):
+        score -= 100
+    if "image" in record and "ports" in record:
+        score -= 40
+    return score
+
+
+def _watch_service_cleanup_candidates(payload: object, *, service_name_prefix: str) -> list[dict[str, Any]]:
+    prefix = str(service_name_prefix or "").strip()
+    if not prefix:
+        return []
+
+    by_name: dict[str, dict[str, Any]] = {}
+
+    def consider(record: Mapping[str, Any]) -> None:
+        uuid_text = str(record.get("uuid") or "").strip()
+        name_text = str(record.get("name") or record.get("service_name") or "").strip()
+        status_text = str(record.get("status") or record.get("service_status") or "").strip()
+        if not uuid_text or not name_text.startswith(prefix):
+            return
+
+        score = _watch_service_cleanup_candidate_score(record)
+        if score < 0:
+            return
+        candidate = {
+            "uuid": uuid_text,
+            "name": name_text,
+            "status": status_text or None,
+            "record_score": score,
+        }
+        previous = by_name.get(name_text)
+        if previous is None or score > int(previous.get("record_score") or 0):
+            by_name[name_text] = candidate
+
+    def walk(item: object) -> None:
+        if isinstance(item, Mapping):
+            consider(item)
+            for value in item.values():
+                if isinstance(value, (Mapping, list, tuple)):
+                    walk(value)
+        elif isinstance(item, (list, tuple)):
+            for value in item:
+                walk(value)
+
+    walk(payload)
+    candidates = list(by_name.values())
+    candidates.sort(key=lambda item: (str(item.get("name") or ""), str(item.get("uuid") or "")))
+    return candidates
+
+
+def _list_stale_watch_services(
+    *,
+    controller: CoolifyController,
+    controller_id: str,
+    service_name_prefix: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    observations: list[dict[str, Any]],
+    phase: str,
+) -> dict[str, Any]:
+    response = _http(
+        controller,
+        "GET",
+        "/api/v1/services",
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    candidates = _watch_service_cleanup_candidates(
+        response.get("payload"),
+        service_name_prefix=service_name_prefix,
+    )
+    receipt = {
+        "method": "GET",
+        "endpoint": "/api/v1/services",
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "phase": phase,
+        "service_name_prefix": service_name_prefix,
+        "candidate_count": len(candidates),
+        "candidates": candidates[:25],
+    }
+    observations.append(
+        {
+            "method": "GET",
+            "endpoint": "/api/v1/services",
+            "status": response["status"],
+            "ok": response["ok"],
+            "response_sha256": response["response_sha256"],
+            "byte_length": response["byte_length"],
+            "elapsed_ms": response["elapsed_ms"],
+            "controller_id": controller_id,
+            "phase": phase,
+            "service_name_prefix": service_name_prefix,
+            "candidate_count": len(candidates),
+        }
+    )
+    return receipt
+
+
+def _delete_stale_watch_services(
+    *,
+    controller: CoolifyController,
+    controller_id: str,
+    service_name_prefix: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    observations: list[dict[str, Any]],
+    debug: bool,
+) -> dict[str, Any]:
+    """Remove old block-watch services for the same controller/target.
+
+    The block watcher intentionally reuses the proof-style deterministic host
+    port derived from the target node's P2P port. That is only safe when there is
+    at most one watcher for the target. Previous failed diagnostics are left for
+    inspection, so this preflight deletes only services with the exact generated
+    block-watch prefix for the same controller and target before creating a new
+    watcher.
+    """
+
+    started = time.monotonic()
+    prefix = str(service_name_prefix or "").strip()
+    list_receipt = _list_stale_watch_services(
+        controller=controller,
+        controller_id=controller_id,
+        service_name_prefix=prefix,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        observations=observations,
+        phase="stale-watch-service-cleanup-list",
+    )
+    candidates = list(list_receipt.get("candidates") or [])
+    _debug(
+        debug,
+        "stale-watch-service-cleanup-list",
+        service_name_prefix=prefix,
+        candidate_count=len(candidates),
+        candidates=candidates[:10],
+    )
+    delete_receipts: list[dict[str, Any]] = []
+    for candidate in candidates:
+        service_uuid = _uuid(candidate.get("uuid"), "stale_watch_service_uuid")
+        endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+        response = _http(
+            controller,
+            "DELETE",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        cleanup_ok = bool(response["ok"]) or int(response["status"]) == 404
+        receipt = {
+            "method": "DELETE",
+            "endpoint": endpoint,
+            "status": response["status"],
+            "ok": response["ok"],
+            "cleanup_ok": cleanup_ok,
+            "response_sha256": response["response_sha256"],
+            "byte_length": response["byte_length"],
+            "elapsed_ms": response["elapsed_ms"],
+            "service_uuid": service_uuid,
+            "service_name": candidate.get("name"),
+            "service_status": candidate.get("status"),
+            "record_score": candidate.get("record_score"),
+            "cleanup_scope": "block-advance-watch-stale-precreate",
+        }
+        delete_receipts.append(receipt)
+        observations.append(
+            {
+                key: receipt[key]
+                for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+            }
+        )
+        _debug(
+            debug,
+            "stale-watch-service-delete-done",
+            service_uuid=service_uuid,
+            service_name=candidate.get("name"),
+            service_status=candidate.get("status"),
+            ok=receipt.get("cleanup_ok"),
+            http_status=response.get("status"),
+            elapsed_ms=response.get("elapsed_ms"),
+            record_score=candidate.get("record_score"),
+        )
+
+    wait_attempts: list[dict[str, Any]] = []
+    remaining = candidates
+    blocking_delete_failures = [receipt for receipt in delete_receipts if receipt.get("cleanup_ok") is not True]
+    if candidates and not blocking_delete_failures:
+        while True:
+            elapsed = time.monotonic() - started
+            if elapsed >= max_wait_seconds:
+                break
+            time.sleep(min(max(0.01, poll_interval_seconds), max(0.0, max_wait_seconds - elapsed)))
+            wait_receipt = _list_stale_watch_services(
+                controller=controller,
+                controller_id=controller_id,
+                service_name_prefix=prefix,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                observations=observations,
+                phase="stale-watch-service-cleanup-wait",
+            )
+            remaining = list(wait_receipt.get("candidates") or [])
+            wait_attempts.append(
+                {
+                    "candidate_count": len(remaining),
+                    "http_status": wait_receipt.get("status"),
+                    "http_ok": wait_receipt.get("ok"),
+                    "elapsed_milliseconds": int((time.monotonic() - started) * 1000),
+                }
+            )
+            _debug(
+                debug,
+                "stale-watch-service-cleanup-wait",
+                service_name_prefix=prefix,
+                remaining_count=len(remaining),
+                elapsed_ms=wait_receipt.get("elapsed_ms"),
+            )
+            if not remaining:
+                break
+
+    return {
+        "service_name_prefix": prefix,
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "delete_attempts": delete_receipts,
+        "wait_attempts": wait_attempts,
+        "remaining_count": len(remaining),
+        "remaining": remaining[:25],
+        "ok": (not remaining and not blocking_delete_failures),
+        "blocking_delete_failures": blocking_delete_failures[:10],
+        "wait_milliseconds": int((time.monotonic() - started) * 1000),
+        "cleanup_scope": "block-advance-watch-stale-precreate",
+    }
+
+
 def _read_watch_service_detail(
     *,
     controller: CoolifyController,
@@ -1578,6 +1946,7 @@ def _wait_for_watch_service_running(
                 "service_matched": summary.get("matched"),
                 "running": summary.get("running"),
                 "terminal": summary.get("terminal"),
+                "endpoint_probe_eligible": summary.get("endpoint_probe_eligible"),
                 "elapsed_milliseconds": int(elapsed * 1000),
                 "terminal_grace_remaining_seconds": terminal_grace_remaining,
             }
@@ -1592,6 +1961,7 @@ def _wait_for_watch_service_running(
             service_status=status or None,
             running=summary.get("running"),
             terminal=summary.get("terminal"),
+            endpoint_probe_eligible=summary.get("endpoint_probe_eligible"),
             terminal_grace_remaining_seconds=terminal_grace_remaining,
             elapsed_ms=detail.get("elapsed_ms"),
         )
@@ -1605,7 +1975,29 @@ def _wait_for_watch_service_running(
             )
             return {
                 "running": True,
+                "endpoint_probe_eligible": True,
                 "reason": "service-running",
+                "service_uuid": service,
+                "service_name": service_name,
+                "service_status": status,
+                "statuses": statuses,
+                "attempts": attempts,
+                "detail": detail,
+                "wait_milliseconds": int(elapsed * 1000),
+            }
+        if detail.get("ok") is True and summary.get("matched") is True and summary.get("endpoint_probe_eligible") is True:
+            _debug(
+                debug,
+                "temporary-service-endpoint-probe-eligible",
+                service_uuid=service,
+                service_status=status,
+                running=summary.get("running"),
+                wait_milliseconds=int(elapsed * 1000),
+            )
+            return {
+                "running": bool(summary.get("running")),
+                "endpoint_probe_eligible": True,
+                "reason": "service-endpoint-probe-eligible",
                 "service_uuid": service,
                 "service_name": service_name,
                 "service_status": status,
@@ -1650,6 +2042,7 @@ def _wait_for_watch_service_running(
                 )
                 return {
                     "running": False,
+                    "endpoint_probe_eligible": False,
                     "reason": "service-terminal-after-start-grace-before-endpoint",
                     "service_uuid": service,
                     "service_name": service_name,
@@ -1686,6 +2079,7 @@ def _wait_for_watch_service_running(
             )
             return {
                 "running": False,
+                "endpoint_probe_eligible": False,
                 "reason": "service-not-running-before-endpoint",
                 "service_uuid": service,
                 "service_name": service_name,
@@ -2055,6 +2449,7 @@ def run_block_advance_watch(
     controller_config = _controller_config(private_state, network=network_id, controller_id=controller_name)
     observations: list[dict[str, Any]] = []
 
+    service_name_prefix = _watch_service_name_prefix(controller_name, target_record["node"])
     service_name = _watch_service_name(controller_name, target_record["node"])
     block_endpoint = _watch_block_endpoint(
         target_record,
@@ -2121,148 +2516,183 @@ def run_block_advance_watch(
     deployment_readiness: dict[str, Any] | None = None
     completion: dict[str, Any] | None = None
     delete_receipt: dict[str, Any] | None = None
+    stale_cleanup: dict[str, Any] | None = None
     status = "failed"
     reason = "not-started"
 
     try:
-        _debug(
-            debug,
-            "temporary-service-create-begin",
-            service_name=service_name,
-            compose_sha256=hashlib.sha256(compose.encode("utf-8")).hexdigest(),
-            watch_script_sha256=hashlib.sha256(watch_script.encode("utf-8")).hexdigest(),
-        )
-        create_response = _http(
-            controller,
-            "POST",
-            "/api/v1/services",
-            body=body,
+        stale_cleanup = _delete_stale_watch_services(
+            controller=controller,
+            controller_id=controller_name,
+            service_name_prefix=service_name_prefix,
             timeout=timeout_s,
             max_response_bytes=max_bytes,
+            max_wait_seconds=min(max_wait, 30.0),
+            poll_interval_seconds=poll_interval,
             opener=opener,
+            observations=observations,
+            debug=debug,
         )
-        create_receipt = {
-            "method": "POST",
-            "endpoint": "/api/v1/services",
-            "status": create_response["status"],
-            "ok": create_response["ok"],
-            "response_sha256": create_response["response_sha256"],
-            "byte_length": create_response["byte_length"],
-            "elapsed_ms": create_response["elapsed_ms"],
-            "service_name": service_name,
-            "request_body_sha256": hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-            "compose_sha256": hashlib.sha256(compose.encode("utf-8")).hexdigest(),
-            "watch_script_sha256": hashlib.sha256(watch_script.encode("utf-8")).hexdigest(),
-            "payload": create_response.get("payload"),
-            "cleanup_scope": "block-advance-watch-temporary-service",
-        }
-        observations.append({key: create_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
-        _debug(
-            debug,
-            "temporary-service-create-done",
-            ok=create_receipt.get("ok"),
-            http_status=create_receipt.get("status"),
-            elapsed_ms=create_receipt.get("elapsed_ms"),
-            payload=create_response.get("payload"),
-        )
-        if not create_response["ok"]:
-            reason = "create-failed"
-            completion = None
+        if stale_cleanup.get("ok") is not True:
+            reason = "stale-watch-service-cleanup-failed"
+            _debug(
+                debug,
+                "stale-watch-service-cleanup-failed",
+                service_name_prefix=service_name_prefix,
+                candidate_count=stale_cleanup.get("candidate_count"),
+                remaining_count=stale_cleanup.get("remaining_count"),
+                wait_milliseconds=stale_cleanup.get("wait_milliseconds"),
+            )
         else:
-            proposed_service_uuid = _application_uuid(create_response.get("payload"))
-            create_receipt["service_uuid"] = proposed_service_uuid
-            _debug(debug, "temporary-service-created", proposed_service_uuid=proposed_service_uuid)
-
-            create_readback = _wait_for_created_watch_service_row(
-                controller=controller,
-                controller_id=controller_name,
-                proposed_service_uuid=proposed_service_uuid,
+            _debug(
+                debug,
+                "stale-watch-service-cleanup-done",
+                service_name_prefix=service_name_prefix,
+                candidate_count=stale_cleanup.get("candidate_count"),
+                remaining_count=stale_cleanup.get("remaining_count"),
+                wait_milliseconds=stale_cleanup.get("wait_milliseconds"),
+            )
+            _debug(
+                debug,
+                "temporary-service-create-begin",
                 service_name=service_name,
+                compose_sha256=hashlib.sha256(compose.encode("utf-8")).hexdigest(),
+                watch_script_sha256=hashlib.sha256(watch_script.encode("utf-8")).hexdigest(),
+            )
+            create_response = _http(
+                controller,
+                "POST",
+                "/api/v1/services",
+                body=body,
                 timeout=timeout_s,
                 max_response_bytes=max_bytes,
-                max_wait_seconds=min(max_wait, 60.0),
-                poll_interval_seconds=poll_interval,
                 opener=opener,
-                observations=observations,
-                debug=debug,
             )
-            if create_readback.get("resolved") is not True:
-                watch_service_uuid = proposed_service_uuid
-                reason = str(create_readback.get("reason") or "created-service-row-not-readable")
-                _debug(
-                    debug,
-                    "temporary-service-readback-failed",
-                    proposed_service_uuid=proposed_service_uuid,
-                    reason=reason,
-                )
+            create_receipt = {
+                "method": "POST",
+                "endpoint": "/api/v1/services",
+                "status": create_response["status"],
+                "ok": create_response["ok"],
+                "response_sha256": create_response["response_sha256"],
+                "byte_length": create_response["byte_length"],
+                "elapsed_ms": create_response["elapsed_ms"],
+                "service_name": service_name,
+                "request_body_sha256": hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                "compose_sha256": hashlib.sha256(compose.encode("utf-8")).hexdigest(),
+                "watch_script_sha256": hashlib.sha256(watch_script.encode("utf-8")).hexdigest(),
+                "payload": create_response.get("payload"),
+                "cleanup_scope": "block-advance-watch-temporary-service",
+            }
+            observations.append({key: create_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")})
+            _debug(
+                debug,
+                "temporary-service-create-done",
+                ok=create_receipt.get("ok"),
+                http_status=create_receipt.get("status"),
+                elapsed_ms=create_receipt.get("elapsed_ms"),
+                payload=create_response.get("payload"),
+            )
+            if not create_response["ok"]:
+                reason = "create-failed"
+                completion = None
             else:
-                watch_service_uuid = _uuid(create_readback.get("service_uuid"), "watch_service_uuid")
-                if watch_service_uuid != proposed_service_uuid:
-                    create_receipt["resolved_service_uuid"] = watch_service_uuid
-                _debug(
-                    debug,
-                    "temporary-service-readback-done",
-                    proposed_service_uuid=proposed_service_uuid,
-                    watch_service_uuid=watch_service_uuid,
-                    reason=create_readback.get("reason"),
-                    wait_milliseconds=create_readback.get("wait_milliseconds"),
-                )
+                proposed_service_uuid = _application_uuid(create_response.get("payload"))
+                create_receipt["service_uuid"] = proposed_service_uuid
+                _debug(debug, "temporary-service-created", proposed_service_uuid=proposed_service_uuid)
 
-                start_receipt = _trigger_watch_service_deploy(
+                create_readback = _wait_for_created_watch_service_row(
                     controller=controller,
                     controller_id=controller_name,
-                    service_uuid=watch_service_uuid,
+                    proposed_service_uuid=proposed_service_uuid,
                     service_name=service_name,
                     timeout=timeout_s,
                     max_response_bytes=max_bytes,
+                    max_wait_seconds=min(max_wait, 60.0),
+                    poll_interval_seconds=poll_interval,
                     opener=opener,
                     observations=observations,
                     debug=debug,
                 )
-                if start_receipt.get("ok") is not True:
-                    reason = "deploy-trigger-failed"
+                if create_readback.get("resolved") is not True:
+                    watch_service_uuid = proposed_service_uuid
+                    reason = str(create_readback.get("reason") or "created-service-row-not-readable")
+                    _debug(
+                        debug,
+                        "temporary-service-readback-failed",
+                        proposed_service_uuid=proposed_service_uuid,
+                        reason=reason,
+                    )
                 else:
-                    deployment_readiness = _wait_for_watch_service_running(
+                    watch_service_uuid = _uuid(create_readback.get("service_uuid"), "watch_service_uuid")
+                    if watch_service_uuid != proposed_service_uuid:
+                        create_receipt["resolved_service_uuid"] = watch_service_uuid
+                    _debug(
+                        debug,
+                        "temporary-service-readback-done",
+                        proposed_service_uuid=proposed_service_uuid,
+                        watch_service_uuid=watch_service_uuid,
+                        reason=create_readback.get("reason"),
+                        wait_milliseconds=create_readback.get("wait_milliseconds"),
+                    )
+
+                    start_receipt = _trigger_watch_service_deploy(
                         controller=controller,
                         controller_id=controller_name,
-                        server_uuid=str(controller_config.get("server_uuid") or "") or None,
                         service_uuid=watch_service_uuid,
                         service_name=service_name,
                         timeout=timeout_s,
                         max_response_bytes=max_bytes,
-                        max_wait_seconds=min(max_wait, 120.0),
-                        poll_interval_seconds=poll_interval,
-                        terminal_grace_seconds=min(start_terminal_grace, min(max_wait, 120.0)),
                         opener=opener,
                         observations=observations,
                         debug=debug,
                     )
-                    if deployment_readiness.get("running") is not True:
-                        reason = str(deployment_readiness.get("reason") or "service-not-running-before-endpoint")
-                        _debug(
-                            debug,
-                            "temporary-service-not-running",
-                            watch_service_uuid=watch_service_uuid,
-                            reason=reason,
-                            service_status=deployment_readiness.get("service_status"),
-                        )
+                    if start_receipt.get("ok") is not True:
+                        reason = "deploy-trigger-failed"
                     else:
-                        completion = _wait_for_block_endpoint(
-                            endpoint_url=endpoint_url,
-                            expected_chain_id=chain_id,
+                        deployment_readiness = _wait_for_watch_service_running(
+                            controller=controller,
+                            controller_id=controller_name,
+                            server_uuid=str(controller_config.get("server_uuid") or "") or None,
+                            service_uuid=watch_service_uuid,
+                            service_name=service_name,
                             timeout=timeout_s,
                             max_response_bytes=max_bytes,
-                            max_wait_seconds=max_wait,
+                            max_wait_seconds=min(max_wait, 120.0),
                             poll_interval_seconds=poll_interval,
+                            terminal_grace_seconds=min(start_terminal_grace, min(max_wait, 120.0)),
                             opener=opener,
                             observations=observations,
                             debug=debug,
                         )
-                        if completion.get("completed") is True:
-                            status = "pass"
-                            reason = "block-advanced"
+                        if (
+                            deployment_readiness.get("running") is not True
+                            and deployment_readiness.get("endpoint_probe_eligible") is not True
+                        ):
+                            reason = str(deployment_readiness.get("reason") or "service-not-running-before-endpoint")
+                            _debug(
+                                debug,
+                                "temporary-service-not-running",
+                                watch_service_uuid=watch_service_uuid,
+                                reason=reason,
+                                service_status=deployment_readiness.get("service_status"),
+                            )
                         else:
-                            reason = str(completion.get("reason") or "block-advance-not-proven")
+                            completion = _wait_for_block_endpoint(
+                                endpoint_url=endpoint_url,
+                                expected_chain_id=chain_id,
+                                timeout=timeout_s,
+                                max_response_bytes=max_bytes,
+                                max_wait_seconds=max_wait,
+                                poll_interval_seconds=poll_interval,
+                                opener=opener,
+                                observations=observations,
+                                debug=debug,
+                            )
+                            if completion.get("completed") is True:
+                                status = "pass"
+                                reason = "block-advanced"
+                            else:
+                                reason = str(completion.get("reason") or "block-advance-not-proven")
     finally:
         should_delete = (
             watch_service_uuid is not None
@@ -2333,6 +2763,7 @@ def run_block_advance_watch(
             "delete_on_failure": bool(delete_on_failure),
         },
         "block_endpoint": dict(block_endpoint),
+        "stale_cleanup": stale_cleanup,
         "create": create_receipt,
         "create_readback": create_readback,
         "start": start_receipt,
@@ -2346,7 +2777,10 @@ def run_block_advance_watch(
                 start_receipt is not None
                 and start_receipt.get("ok") is True
                 and deployment_readiness is not None
-                and deployment_readiness.get("running") is True
+                and (
+                    deployment_readiness.get("running") is True
+                    or deployment_readiness.get("endpoint_probe_eligible") is True
+                )
             ),
             "block_advance_max_wait_seconds": max_wait,
             "block_advance_poll_interval_seconds": poll_interval,
@@ -2359,9 +2793,23 @@ def run_block_advance_watch(
             ),
             "block_endpoint_observed": bool(endpoint_observations),
             "block_endpoint_observation_count": len(endpoint_observations) if isinstance(endpoint_observations, list) else 0,
+            "stale_watch_service_cleanup_ok": stale_cleanup is not None and stale_cleanup.get("ok") is True,
+            "stale_watch_service_cleanup_candidate_count": (
+                stale_cleanup.get("candidate_count") if isinstance(stale_cleanup, Mapping) else None
+            ),
+            "stale_watch_service_cleanup_remaining_count": (
+                stale_cleanup.get("remaining_count") if isinstance(stale_cleanup, Mapping) else None
+            ),
             "temporary_service_created": create_receipt is not None and create_receipt.get("ok") is True,
             "temporary_service_readback_resolved": create_readback is not None and create_readback.get("resolved") is True,
             "temporary_service_running_before_endpoint": deployment_readiness is not None and deployment_readiness.get("running") is True,
+            "temporary_service_endpoint_probe_eligible_before_endpoint": (
+                deployment_readiness is not None
+                and (
+                    deployment_readiness.get("running") is True
+                    or deployment_readiness.get("endpoint_probe_eligible") is True
+                )
+            ),
             "temporary_service_left_for_inspection": bool(watch_service_uuid and delete_receipt is None),
             "temporary_service_deleted": delete_receipt is not None and delete_receipt.get("ok") is True,
         },

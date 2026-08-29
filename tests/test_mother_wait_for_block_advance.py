@@ -18,6 +18,7 @@ from tools.mother.common.private_state import (
 from tools.mother_wait_for_block_advance import (
     _watch_compose,
     _watch_script,
+    _watch_service_cleanup_candidates,
     resolve_watch_target,
     run_block_advance_watch,
 )
@@ -36,7 +37,7 @@ def test_default_opener_is_urlopen_not_module() -> None:
 
 
 
-def test_watch_script_wraps_fragile_child_under_pid1_hold() -> None:
+def test_watch_script_uses_proof_guardian_style_python_server() -> None:
     script = _watch_script(
         network="mainnet",
         controller_id="coolify-a",
@@ -46,22 +47,19 @@ def test_watch_script_wraps_fragile_child_under_pid1_hold() -> None:
         endpoint_port=8797,
     )
 
-    first_line = next(line for line in script.splitlines() if line.strip())
-    assert first_line == "set +e"
-    assert 'cat > "$WATCH_SCRIPT" <<\'MOTHER_BLOCK_ADVANCE_WATCH_SCRIPT_EOF\'' in script
-    assert 'sh "$WATCH_SCRIPT" &' in script
-    assert 'phase=pid1_wrapper_child_exit' in script
-    assert 'while true; do sleep 3600; done' in script
-    assert script.index("set +e") < script.index("set -eu")
-    assert script.index('sh "$WATCH_SCRIPT" &') > script.index("set -eu")
-    assert "busybox-extras" in script
-    assert "phase=httpd_provider_install_begin" in script
-    assert "phase=httpd_provider_selected" in script
-    assert "httpd-provider-missing" in script
-    assert "httpd -f -p" in script
-    assert "busybox httpd -f -p" in script
+    assert "http.server.ThreadingHTTPServer" in script
+    assert "class BlockHandler(http.server.BaseHTTPRequestHandler)" in script
+    assert 'self.path not in ("/block", "/block.json")' in script
+    assert "def sample_once()" in script
+    assert '"docker", "ps"' in script
+    assert "docker-cli" in script
+    assert "busybox httpd" not in script
+    assert "httpd -f" not in script
+    assert "WATCH_SCRIPT" not in script
+    assert "$" not in script
 
-def test_watch_compose_escapes_container_shell_dollars_for_compose() -> None:
+
+def test_watch_compose_uses_python_proof_style_command_without_shell_interpolation() -> None:
     script = _watch_script(
         network="mainnet",
         controller_id="coolify-a",
@@ -72,14 +70,74 @@ def test_watch_compose_escapes_container_shell_dollars_for_compose() -> None:
     )
 
     compose = _watch_compose("mother-block-advance-watch-test", script, host_port=39303, endpoint_port=8797)
-    command = yaml.safe_load(compose)["services"]["mother-block-advance-watch-test"]["command"][2]
+    service = yaml.safe_load(compose)["services"]["mother-block-advance-watch-test"]
+    command = service["command"]
 
-    assert 'BLOCK_FILE="$$WWW/block"' in command
-    assert 'TARGET_CONTAINER="$${TARGET_NODE}-$${SERVICE_UUID}"' in command
-    assert "WATCH_PID=$$!" in command
-    assert "$$((value))" in command
-    assert "$$(date" in command
-    assert re.search(r"(?<!\$)\$(?!\$)", command) is None
+    assert service["image"] == "python:3.12-alpine"
+    assert command[:3] == ["python", "-u", "-c"]
+    assert command[-1] == script
+    assert "http.server.ThreadingHTTPServer" in command[-1]
+    assert "$" not in command[-1]
+    assert re.search(r"(?<!\$)\$(?!\$)", command[-1]) is None
+
+
+def test_stale_watch_cleanup_candidates_ignore_nested_application_rows() -> None:
+    name = "mother-block-advance-watch-coolify-a-mainneta-super1-20260828t002936z"
+    payload = {
+        "services": [
+            {
+                "uuid": "parent-service-uuid",
+                "name": name,
+                "status": "running:unknown",
+                "environment_id": 38,
+                "destination_id": 0,
+                "applications": [
+                    {
+                        "uuid": "child-application-uuid",
+                        "name": name,
+                        "status": "running:unknown",
+                        "service_id": 333,
+                        "image": "python:3.12-alpine",
+                        "ports": "39303:8797",
+                    }
+                ],
+            }
+        ]
+    }
+
+    candidates = _watch_service_cleanup_candidates(
+        payload,
+        service_name_prefix="mother-block-advance-watch-coolify-a-mainneta-super1-",
+    )
+
+    assert candidates == [
+        {
+            "uuid": "parent-service-uuid",
+            "name": name,
+            "status": "running:unknown",
+            "record_score": 140,
+        }
+    ]
+
+    child_only = {
+        "services": [
+            {
+                "uuid": "child-application-uuid",
+                "name": name,
+                "status": "running:unknown",
+                "service_id": 333,
+                "image": "python:3.12-alpine",
+                "ports": "39303:8797",
+            }
+        ]
+    }
+    assert (
+        _watch_service_cleanup_candidates(
+            child_only,
+            service_name_prefix="mother-block-advance-watch-coolify-a-mainneta-super1-",
+        )
+        == []
+    )
 
 
 class _Response:
@@ -175,6 +233,7 @@ class _WatchOpener:
         deploy_status: int = 200,
         deploy_payload: dict | None = None,
         diagnostic_payloads: dict[str, dict] | None = None,
+        stale_services: list[dict] | None = None,
     ) -> None:
         self.requests: list[dict] = []
         self.block_payloads = list(block_payloads)
@@ -184,6 +243,7 @@ class _WatchOpener:
         self.deploy_status = deploy_status
         self.deploy_payload = deploy_payload if deploy_payload is not None else {"message": "Deployment request queued."}
         self.diagnostic_payloads = dict(diagnostic_payloads or {})
+        self.stale_services = list(stale_services or [])
         self.compose = ""
         self.service_name = ""
 
@@ -227,14 +287,14 @@ class _WatchOpener:
                             "uuid": "watchappuuid123",
                             "name": self.service_name,
                             "status": status,
-                            "image": "docker:27-cli",
+                            "image": "python:3.12-alpine",
                             "ports": "39305:8797",
                         }
                     ],
                 }
             )
         if method == "GET" and path == "/api/v1/services":
-            return _Response({"services": self.inventory_candidates})
+            return _Response({"services": [*self.stale_services, *self.inventory_candidates]})
         if method == "POST" and path == "/api/v1/deploy":
             assert parsed.query == f"uuid={WATCH_UUID}&force=true"
             return _Response(self.deploy_payload, status=self.deploy_status)
@@ -280,7 +340,9 @@ class _WatchOpener:
                 "block_number": 100,
             }
             return _Response(payload)
-        if method == "DELETE" and path == f"/api/v1/services/{WATCH_UUID}":
+        if method == "DELETE" and path.startswith("/api/v1/services/"):
+            service_uuid = path.rsplit("/", 1)[-1]
+            self.stale_services = [item for item in self.stale_services if item.get("uuid") != service_uuid]
             return _Response({"deleted": True})
 
         raise AssertionError(f"unexpected request: {method} {path}?{parsed.query}")
@@ -349,13 +411,16 @@ def test_block_advance_watch_creates_endpoint_service_and_passes_when_endpoint_a
     assert result["block_endpoint"]["host_port"] == 39305
     assert result["block_endpoint"]["container_port"] == 8797
     assert result["block_endpoint"]["port_source"] == "p2p_port_plus_offset"
-    assert "docker:27-cli" in opener.compose
-    assert "httpd -f" in opener.compose
-    assert "hold_for_inspection=true" in opener.compose
+    assert "python:3.12-alpine" in opener.compose
+    assert "http.server.ThreadingHTTPServer" in opener.compose
+    assert "busybox httpd" not in opener.compose
+    assert "httpd -f" not in opener.compose
     assert "ports:" in opener.compose
     assert "39305:8797" in opener.compose
-    assert f"TARGET_NODE='mainneta-super1'" in opener.compose
-    assert f"SERVICE_UUID='{A1_UUID}'" in opener.compose
+    compose_service = yaml.safe_load(opener.compose)["services"][opener.service_name]
+    watch_command = compose_service["command"][-1]
+    assert '"target_node":"mainneta-super1"' in watch_command
+    assert f'"service_uuid":"{A1_UUID}"' in watch_command
     assert any(req["method"] == "POST" and req["path"] == "/api/v1/deploy" and req["query"] == f"uuid={WATCH_UUID}&force=true" for req in opener.requests)
     assert not any(req["method"] == "GET" and req["path"] == "/api/v1/deploy" for req in opener.requests)
     assert not any(req["path"].endswith("/start") for req in opener.requests)
@@ -392,6 +457,81 @@ def test_block_advance_watch_ignores_stale_exited_status_after_queued_start(tmp_
     assert result["start"]["selected_operation"] == "generic-deploy"
     assert any(req["path"] == "/block" for req in opener.requests)
 
+
+def test_block_advance_watch_polls_endpoint_when_service_is_starting_unknown(tmp_path: Path) -> None:
+    runtime, private_state, topology_path, _ = _install(tmp_path)
+    opener = _WatchOpener(
+        [
+            {"ok": True, "chain_id": 42424240, "block_number": 100},
+            {"ok": True, "chain_id": 42424240, "block_number": 101},
+        ],
+        service_detail_statuses=["exited", "starting:unknown"],
+    )
+
+    result = run_block_advance_watch(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        controller_id="coolify-a",
+        target="coolify-a-1",
+        topology_evidence=topology_path,
+        max_wait_seconds=0.08,
+        poll_interval_seconds=0.01,
+        start_terminal_grace_seconds=0.08,
+        opener=opener,
+    )
+
+    assert result["status"] == "pass"
+    assert result["deployment_readiness"]["running"] is False
+    assert result["deployment_readiness"]["endpoint_probe_eligible"] is True
+    assert result["deployment_readiness"]["reason"] == "service-endpoint-probe-eligible"
+    assert result["deployment_readiness"]["service_status"] == "starting:unknown"
+    assert result["summary"]["temporary_service_running_before_endpoint"] is False
+    assert result["summary"]["temporary_service_endpoint_probe_eligible_before_endpoint"] is True
+    assert any(req["path"] == "/block" for req in opener.requests)
+
+
+
+def test_block_advance_watch_deletes_stale_same_target_watchers_before_create(tmp_path: Path) -> None:
+    runtime, private_state, topology_path, _ = _install(tmp_path)
+    stale_uuid = "oldwatchserviceuuid123"
+    stale_name = "mother-block-advance-watch-coolify-a-mainneta-super1-20260828t002936z"
+    opener = _WatchOpener(
+        [
+            {"ok": True, "chain_id": 42424240, "block_number": 100},
+            {"ok": True, "chain_id": 42424240, "block_number": 101},
+        ],
+        service_detail_statuses=["exited", "starting:unknown"],
+        stale_services=[
+            {
+                "uuid": stale_uuid,
+                "name": stale_name,
+                "status": "running:unknown",
+            }
+        ],
+    )
+
+    result = run_block_advance_watch(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        controller_id="coolify-a",
+        target="coolify-a-1",
+        topology_evidence=topology_path,
+        max_wait_seconds=0.08,
+        poll_interval_seconds=0.01,
+        start_terminal_grace_seconds=0.08,
+        opener=opener,
+    )
+
+    assert result["status"] == "pass"
+    assert result["stale_cleanup"]["candidate_count"] == 1
+    assert result["stale_cleanup"]["remaining_count"] == 0
+    assert result["stale_cleanup"]["delete_attempts"][0]["service_uuid"] == stale_uuid
+    delete_index = next(i for i, req in enumerate(opener.requests) if req["method"] == "DELETE" and req["path"] == f"/api/v1/services/{stale_uuid}")
+    create_index = next(i for i, req in enumerate(opener.requests) if req["method"] == "POST" and req["path"] == "/api/v1/services")
+    assert delete_index < create_index
+    assert any(req["path"] == "/block" for req in opener.requests)
 
 def test_block_advance_watch_fails_when_endpoint_does_not_advance(tmp_path: Path) -> None:
     runtime, private_state, topology_path, _ = _install(tmp_path)
@@ -574,4 +714,5 @@ def test_block_advance_watch_collects_failure_diagnostics_and_keeps_runtime_aliv
     assert channels["service-application-logs"]["log_excerpts"][0] == "compose failed before container create"
     assert any(req["method"] == "GET" and req["path"] == "/api/v1/deployments" for req in opener.requests)
     assert any(req["method"] == "GET" and req["path"] == f"/api/v1/applications/watchappuuid123/logs" for req in opener.requests)
-    assert "while true; do sleep 3600; done" in opener.compose
+    assert "http.server.ThreadingHTTPServer" in opener.compose
+    assert "busybox httpd" not in opener.compose

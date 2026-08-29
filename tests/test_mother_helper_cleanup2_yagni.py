@@ -38,6 +38,40 @@ class _Response:
         return None
 
 
+class _CompletedProcess:
+    def __init__(self, argv: list[str], returncode: int, stdout: str, stderr: str = "") -> None:
+        self.args = argv
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _BlockAdvanceWaiterRunner:
+    def __init__(self, *, status: str = "pass", completed: bool = True, returncode: int = 0) -> None:
+        self.calls: list[dict] = []
+        self.status = status
+        self.completed = completed
+        self.returncode = returncode
+
+    def __call__(self, argv, **kwargs):  # noqa: ANN001
+        self.calls.append({"argv": list(argv), "kwargs": dict(kwargs)})
+        payload = {
+            "kind": "main_computer.mother.wait_for_block_advance.v1",
+            "status": self.status,
+            "reason": "block-advanced" if self.status == "pass" else "block-endpoint-timeout",
+            "controller_id": "coolify-c",
+            "target": "mainnetc-super2",
+            "completion": {
+                "completed": self.completed,
+                "reason": "block-advanced" if self.completed else "block-endpoint-timeout",
+                "baseline_block_number": 100,
+                "latest_block_number": 106 if self.completed else 100,
+                "block_advance": 6 if self.completed else 0,
+            },
+        }
+        return _CompletedProcess(list(argv), self.returncode, json.dumps(payload))
+
+
 def _install(tmp_path: Path):
     runtime = tmp_path / "runtime" / "state"
     paths = MotherPaths(runtime_state_root=runtime).resolve_private_state_paths()
@@ -71,7 +105,6 @@ def _install(tmp_path: Path):
                 "mainnetc-super2": {
                     "controller_id": "coolify-c",
                     "service_uuid": SERVICE_UUID,
-                    "chain_rpc_url": "http://mainnet-rpc.invalid",
                 }
             },
             "validator_set": [],
@@ -112,7 +145,6 @@ class _Cleanup2Opener:
         self.patched_compose: str | None = None
         self.cleanup2_compose: str | None = None
         self.parent_restart_requested = False
-        self.rpc_block_number_reads = 0
         self.service_detail_as_json_string = service_detail_as_json_string
         self.service_detail_status = service_detail_status
 
@@ -166,16 +198,6 @@ class _Cleanup2Opener:
         method = request.get_method()
         body = json.loads(request.data.decode("utf-8")) if request.data else None
         self.requests.append({"method": method, "host": host, "path": path, "query": parsed.query, "body": body})
-
-        if host == "mainnet-rpc.invalid":
-            assert method == "POST"
-            assert request.headers.get("Content-type") == "application/json"
-            if body["method"] == "eth_chainId":
-                return _Response({"jsonrpc": "2.0", "id": 1, "result": hex(42424240)})
-            if body["method"] == "eth_blockNumber":
-                self.rpc_block_number_reads += 1
-                block_number = 100 if self.rpc_block_number_reads == 1 else 101
-                return _Response({"jsonrpc": "2.0", "id": 1, "result": hex(block_number)})
 
         assert host == "coolify-c.invalid"
         assert request.headers.get("Authorization") == f"Bearer {TOKEN_C}"
@@ -233,6 +255,7 @@ class _Cleanup2Opener:
 def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener()
+    block_waiter = _BlockAdvanceWaiterRunner()
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -245,6 +268,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
         poll_interval_seconds=0,
         opener=opener,
         sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
     )
 
     assert result["status"] == "pass"
@@ -274,14 +298,27 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert result["summary"]["child_public_api_restart_attempted"] is False
     assert result["summary"]["temporary_helper_apply_service_created"] is False
     assert result["summary"]["post_restart_health_poll_performed"] is True
-    assert result["summary"]["chain_block_advance_wait_performed"] is True
-    assert result["summary"]["chain_block_advance_completed"] is True
-    assert result["summary"]["chain_block_advance_poll_interval_seconds"] == 10.0
-    assert result["summary"]["chain_block_advance_max_wait_seconds"] == 600.0
-    assert result["chain_block_advance"]["completed"] is True
-    assert result["chain_block_advance"]["block_advance"] == 1
-    assert result["chain_block_advance"]["poll_count"] == 2
-    assert sleep_calls == [90.0, 10.0]
+    assert result["summary"]["block_advance_waiter_prepared"] is True
+    assert result["summary"]["block_advance_waiter_invoked"] is True
+    assert result["summary"]["block_advance_waiter_invoked_count"] == 1
+    assert result["summary"]["block_advance_waiter_passed_count"] == 1
+    assert result["summary"]["block_advance_waiter_all_passed"] is True
+    assert result["summary"]["block_advance_waiter_script"] == "tools/mother_wait_for_block_advance.py"
+    assert result["summary"]["direct_chain_height_polling_removed"] is True
+    assert result["block_advance_waiter"]["status"] == "pass"
+    assert result["block_advance_waiter"]["invoked"] is True
+    assert result["block_advance_waiter"]["direct_besu_rpc_from_cleanup"] is False
+    assert result["block_advance_waits"][0]["status"] == "pass"
+    assert result["block_advance_waits"][0]["controller_id"] == "coolify-c"
+    assert result["block_advance_waits"][0]["target_node"] == "mainnetc-super2"
+    assert result["block_advance_waits"][0]["block_advance"] == 6
+    assert block_waiter.calls
+    waiter_argv = block_waiter.calls[0]["argv"]
+    assert waiter_argv[1] == "tools/mother_wait_for_block_advance.py"
+    assert waiter_argv[2:5] == ["mainnet", "coolify-c", "mainnetc-super2"]
+    assert "--runtime-state-root" in waiter_argv
+    assert "--quiet" in waiter_argv
+    assert sleep_calls == [90.0]
     first_step = result["patch_steps"][0]
     diagnostics = first_step["diagnostics"]
     assert diagnostics["pre_patch_parent"]["parent_status"] == "degraded:unhealthy"
@@ -419,7 +456,20 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert all(path != f"/api/v1/services/{SERVICE_UUID}/start" for _method, path in paths)
     assert paths.index(("GET", f"/api/v1/services/{CLEANUP2_UUID}/logs")) < paths.index(("POST", f"/api/v1/services/{SERVICE_UUID}/restart"))
     assert all("/applications/" not in path for _method, path in paths)
+    assert all(item["host"] == "coolify-c.invalid" for item in opener.requests)
 
+
+
+class _Cleanup2ParentNeverHealthyOpener(_Cleanup2Opener):
+    def _parent_service_payload(self):
+        payload = super()._parent_service_payload()
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if self.parent_restart_requested:
+            payload["status"] = "degraded:unhealthy"
+        if self.service_detail_as_json_string:
+            return json.dumps(payload)
+        return payload
 
 
 class _Cleanup2LogsUnavailableOpener(_Cleanup2Opener):
@@ -442,6 +492,7 @@ class _Cleanup2LogsUnavailableOpener(_Cleanup2Opener):
 def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2LogsUnavailableOpener()
+    block_waiter = _BlockAdvanceWaiterRunner()
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -454,9 +505,11 @@ def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_pa
         poll_interval_seconds=0,
         opener=opener,
         sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
     )
 
-    assert sleep_calls == [90.0, 10.0]
+    assert sleep_calls == [90.0]
+    assert block_waiter.calls
     completion = result["cleanup2_steps"][0]["completion"]
     assert completion["runtime_diagnostics_observed"] is False
     assert completion["remove_node_helper_cleanup_reached"] is False
@@ -470,6 +523,7 @@ def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_pa
 def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener(service_detail_as_json_string=True)
+    block_waiter = _BlockAdvanceWaiterRunner()
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -482,13 +536,97 @@ def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path:
         poll_interval_seconds=0,
         opener=opener,
         sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
     )
 
-    assert sleep_calls == [90.0, 10.0]
+    assert sleep_calls == [90.0]
+    assert block_waiter.calls
     assert result["status"] == "pass"
     assert result["summary"]["targeted_helper_service_count"] == 3
     assert opener.patched_compose is not None
     assert opener.cleanup2_compose is not None
+
+
+def test_cleanup2_yagni_runs_block_waiter_after_parent_status_timeout(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2ParentNeverHealthyOpener()
+    block_waiter = _BlockAdvanceWaiterRunner()
+    sleep_calls: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+        sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
+    )
+
+    assert sleep_calls == [90.0]
+    assert result["parent_restart_waits"][0]["completed"] is False
+    assert result["parent_restart_waits"][0]["final_status"] == "degraded:unhealthy"
+    assert result["summary"]["parent_restart_waits_all_running_healthy"] is False
+    assert result["summary"]["parent_restart_request_count"] == 1
+    assert result["summary"]["block_advance_waiter_expected_count"] == 1
+    assert result["summary"]["block_advance_waiter_invoked_count"] == 1
+    assert result["summary"]["block_advance_waiter_passed_count"] == 1
+    assert result["summary"]["block_advance_waiter_all_passed"] is True
+    assert result["block_advance_waiter"]["expected_wait_count"] == 1
+    assert result["block_advance_waiter"]["wait_count"] == 1
+    assert result["block_advance_waits"][0]["status"] == "pass"
+    assert block_waiter.calls
+    assert result["status"] == "pass"
+
+
+def test_cleanup2_yagni_fails_when_delegated_block_waiter_fails(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2Opener()
+    block_waiter = _BlockAdvanceWaiterRunner(status="failed", completed=False, returncode=2)
+    sleep_calls: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+        sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
+    )
+
+    assert sleep_calls == [90.0]
+    assert result["status"] == "failed"
+    assert result["summary"]["parent_restart_waits_all_running_healthy"] is True
+    assert result["summary"]["block_advance_waiter_invoked"] is True
+    assert result["summary"]["block_advance_waiter_invoked_count"] == 1
+    assert result["summary"]["block_advance_waiter_passed_count"] == 0
+    assert result["summary"]["block_advance_waiter_all_passed"] is False
+    assert result["block_advance_waiter"]["status"] == "failed"
+    assert result["block_advance_waits"][0]["status"] == "failed"
+    assert result["block_advance_waits"][0]["reason"] == "block-advance-waiter-nonzero-exit"
+    assert result["block_advance_waits"][0]["direct_besu_rpc_from_cleanup"] is False
+
+
+def test_cleanup2_yagni_does_not_reintroduce_direct_rpc_block_height_markers() -> None:
+    source = Path("tools/mother_helper_cleanup2_yagni.py").read_text(encoding="utf-8")
+    forbidden = [
+        "CHAIN_BLOCK_ADVANCE",
+        "CHAIN_RPC_USER_AGENT",
+        "_wait_for_chain_block_advance",
+        "_rpc_post",
+        "eth_chainId",
+        "eth_blockNumber",
+        "chain_rpc_url",
+    ]
+    for marker in forbidden:
+        assert marker not in source
 
 
 def test_cleanup2_yagni_inspect_imports_topology_without_mutation(tmp_path: Path) -> None:

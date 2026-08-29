@@ -11,11 +11,11 @@ This script does only the agreed cleanup2 flow:
 4. For each touched parent service, queue Coolify Restart, wait 90 seconds,
    then wait for the top-level service status to become running:healthy before
    restarting the next touched parent service.
-5. After cleanup/restart reconciliation, wait for the chain block height to
-   advance before reporting the network clean.
+5. Leave block-advance proof to tools/mother_wait_for_block_advance.py.  This
+   cleanup script does not do its own chain-height or Besu RPC probing.
 
 It does not call public child application restart/deploy APIs, parent start,
-parent deploy, Besu/FDB/Hub services, or child-resource health polling.
+parent deploy, Besu/FDB/Hub services, Besu RPC, or child-resource health polling.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 from typing import Any, Callable, Mapping
@@ -106,11 +107,9 @@ FORBIDDEN_SERVICE_NAMES = frozenset(
 SHIM_IMAGE = "alpine:3.20"
 SHIM_LABEL = "main_computer.mother.post_work_shim"
 MIMIC_LABEL = "main_computer.mother.retired_helper_mimic"
-CHAIN_BLOCK_ADVANCE_MAX_WAIT_SECONDS = 600.0
-CHAIN_BLOCK_ADVANCE_POLL_INTERVAL_SECONDS = 10.0
-CHAIN_BLOCK_ADVANCE_REQUIRED_DELTA = 1
-CHAIN_RPC_USER_AGENT = "main-computer-mother-helper-cleanup2-chain-liveness/1"
 PARENT_RESTART_SETTLE_SECONDS = 90.0
+BLOCK_ADVANCE_WAITER_SCRIPT = "tools/mother_wait_for_block_advance.py"
+BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS = 720.0
 
 class MotherHelperCleanup2YagniError(RuntimeError):
     """Cleanup2 could not produce a trustworthy result."""
@@ -218,7 +217,7 @@ def _service_summary(
             value = record.get(key)
             if isinstance(value, Mapping):
                 result[key] = dict(value)
-        for key in ("vpn_ip", "p2p_port", "p2p_endpoint", "enode", "rpc_url", "chain_rpc_url"):
+        for key in ("vpn_ip", "p2p_port", "p2p_endpoint", "enode"):
             value = record.get(key)
             if value is not None:
                 result[key] = value
@@ -1091,349 +1090,6 @@ def _wait_for_parent_service_running_healthy(
 
 
 
-
-def _private_state_document(private_state: PrivateStateReadResult) -> Mapping[str, Any]:
-    try:
-        document = json.loads(private_state.canonical_object_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise MotherHelperCleanup2YagniError(
-            "MOTHER_HELPER_CLEANUP2_YAGNI_PRIVATE_STATE_INVALID",
-            "private state is not valid JSON",
-        ) from exc
-    if not isinstance(document, Mapping):
-        raise MotherHelperCleanup2YagniError(
-            "MOTHER_HELPER_CLEANUP2_YAGNI_PRIVATE_STATE_INVALID",
-            "private state must be a JSON object",
-        )
-    return document
-
-
-def _network_state(private_state: PrivateStateReadResult, *, network: str) -> Mapping[str, Any]:
-    document = _private_state_document(private_state)
-    networks = document.get("networks")
-    body = networks.get(network) if isinstance(networks, Mapping) else None
-    if not isinstance(body, Mapping):
-        return {}
-    return body
-
-
-def _rpc_url_with_default_scheme(value: object) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    parsed = urllib.parse.urlsplit(text)
-    if parsed.scheme and parsed.netloc:
-        return text
-    return ""
-
-
-def _append_rpc_candidate(
-    candidates: list[dict[str, str]],
-    seen: set[str],
-    value: object,
-    *,
-    source: str,
-    node: str | None = None,
-) -> None:
-    url = _rpc_url_with_default_scheme(value)
-    if not url or url in seen:
-        return
-    seen.add(url)
-    candidate = {"url": url, "source": source}
-    if node:
-        candidate["node"] = node
-    candidates.append(candidate)
-
-
-def _shared_rpc_route_host(network_state: Mapping[str, Any]) -> str:
-    rpc = network_state.get("rpc_route") if isinstance(network_state.get("rpc_route"), Mapping) else None
-    for field in ("host", "hostname", "public_host"):
-        value = rpc.get(field) if isinstance(rpc, Mapping) else None
-        if isinstance(value, str) and re.fullmatch(r"[a-z0-9.-]+", value):
-            return value
-    allfather = network_state.get("allfather")
-    domain = allfather.get("public_domain") if isinstance(allfather, Mapping) else None
-    if isinstance(domain, str) and re.fullmatch(r"[a-z0-9.-]+", domain):
-        return f"mainnet-rpc.{domain}"
-    return ""
-
-
-def _chain_rpc_candidates(
-    private_state: PrivateStateReadResult,
-    *,
-    network: str,
-    topology: Mapping[str, Any],
-    services: list[Mapping[str, Any]],
-) -> list[dict[str, str]]:
-    candidates: list[dict[str, str]] = []
-    seen: set[str] = set()
-
-    for key in ("chain_rpc_url", "rpc_url"):
-        _append_rpc_candidate(candidates, seen, topology.get(key), source=f"topology.{key}")
-
-    for service in services:
-        node = str(service.get("node") or "")
-        for key in ("chain_rpc_url", "rpc_url"):
-            _append_rpc_candidate(candidates, seen, service.get(key), source=f"service.{key}", node=node)
-        for route_key in ("validator_route", "rpc_route"):
-            route = service.get(route_key)
-            if isinstance(route, Mapping):
-                for key in ("chain_rpc_url", "rpc_url", "url"):
-                    _append_rpc_candidate(
-                        candidates,
-                        seen,
-                        route.get(key),
-                        source=f"service.{route_key}.{key}",
-                        node=node,
-                    )
-
-    network_state = _network_state(private_state, network=network)
-    for key in ("chain_rpc_url", "rpc_url"):
-        _append_rpc_candidate(candidates, seen, network_state.get(key), source=f"private_state.network.{key}")
-    shared_host = _shared_rpc_route_host(network_state)
-    if shared_host:
-        _append_rpc_candidate(
-            candidates,
-            seen,
-            f"https://{shared_host}",
-            source="private_state.network.rpc_route",
-        )
-
-    return candidates
-
-
-def _expected_chain_id(private_state: PrivateStateReadResult, *, network: str, topology: Mapping[str, Any]) -> int | None:
-    value = topology.get("chain_id")
-    if value is None:
-        value = _network_state(private_state, network=network).get("chain_id")
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        chain_id = int(value)
-    except (TypeError, ValueError):
-        return None
-    return chain_id if chain_id > 0 else None
-
-
-def _open_request(opener: Any, request: urllib.request.Request, *, timeout: float):
-    return opener.open(request, timeout=timeout) if hasattr(opener, "open") else opener(request, timeout=timeout)
-
-
-def _rpc_post(
-    *,
-    rpc_url: str,
-    method: str,
-    params: list[Any],
-    timeout: float,
-    max_response_bytes: int,
-    opener: Any,
-) -> dict[str, Any]:
-    body = json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        rpc_url,
-        data=body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": CHAIN_RPC_USER_AGENT,
-        },
-        method="POST",
-    )
-    started = time.monotonic()
-    try:
-        response = _open_request(opener, request, timeout=float(timeout))
-        try:
-            status = int(getattr(response, "status", response.getcode()))
-            raw = response.read(max_response_bytes + 1)
-        finally:
-            response.close()
-    except Exception as exc:  # noqa: BLE001 - retry loop records operator-facing failures.
-        return {
-            "rpc_url": rpc_url,
-            "method": method,
-            "ok": False,
-            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
-        }
-
-    too_large = len(raw) > max_response_bytes
-    payload: Any = None
-    error: str | None = None
-    if too_large:
-        error = "response-too-large"
-    else:
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            error = f"invalid-json: {type(exc).__name__}"
-
-    result_present = isinstance(payload, Mapping) and "result" in payload
-    json_rpc_error = payload.get("error") if isinstance(payload, Mapping) else None
-    return {
-        "rpc_url": rpc_url,
-        "method": method,
-        "http_status": status,
-        "ok": 200 <= status < 300 and error is None and json_rpc_error is None and result_present,
-        "result": payload.get("result") if result_present else None,
-        "json_rpc_error": json_rpc_error,
-        "error": error,
-        "byte_length": len(raw),
-        "response_sha256": hashlib.sha256(raw[:max_response_bytes]).hexdigest(),
-        "elapsed_ms": int((time.monotonic() - started) * 1000),
-    }
-
-
-def _hex_quantity_to_int(value: Any) -> int:
-    if isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]+", value):
-        return int(value, 16)
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-        return value
-    raise ValueError(f"not an Ethereum JSON-RPC quantity: {value!r}")
-
-
-def _wait_for_chain_block_advance(
-    private_state: PrivateStateReadResult,
-    *,
-    network: str,
-    topology: Mapping[str, Any],
-    services: list[Mapping[str, Any]],
-    timeout: float,
-    max_response_bytes: int,
-    max_wait_seconds: float,
-    poll_interval_seconds: float,
-    opener: Any,
-    sleeper: Callable[[float], None],
-    progress: ProgressCallback | None,
-) -> dict[str, Any]:
-    expected_chain_id = _expected_chain_id(private_state, network=network, topology=topology)
-    candidates = _chain_rpc_candidates(private_state, network=network, topology=topology, services=services)
-    if expected_chain_id is None:
-        return {
-            "completed": False,
-            "reason": "expected-chain-id-unavailable",
-            "candidates": candidates,
-        }
-    if not candidates:
-        return {
-            "completed": False,
-            "reason": "chain-rpc-candidates-unavailable",
-            "expected_chain_id": expected_chain_id,
-            "candidates": [],
-        }
-
-    started = time.monotonic()
-    first_observed_block_by_url: dict[str, int] = {}
-    latest_block_by_url: dict[str, int] = {}
-    observations: list[dict[str, Any]] = []
-    poll_count = 0
-    last_error = ""
-
-    while True:
-        poll_count += 1
-        for candidate in candidates:
-            rpc_url = candidate["url"]
-            chain_observation = _rpc_post(
-                rpc_url=rpc_url,
-                method="eth_chainId",
-                params=[],
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-            )
-            block_observation = _rpc_post(
-                rpc_url=rpc_url,
-                method="eth_blockNumber",
-                params=[],
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-            )
-            observation = {
-                "poll": poll_count,
-                "candidate": dict(candidate),
-                "chain_id_ok": False,
-                "block_number": None,
-                "first_observed_block": first_observed_block_by_url.get(rpc_url),
-                "block_advance": None,
-                "chain_id_observation": chain_observation,
-                "block_observation": block_observation,
-            }
-            observations.append(observation)
-
-            try:
-                if chain_observation.get("ok") is not True:
-                    raise RuntimeError("eth_chainId failed")
-                chain_id = _hex_quantity_to_int(chain_observation.get("result"))
-                observation["chain_id"] = chain_id
-                observation["chain_id_ok"] = chain_id == expected_chain_id
-                if chain_id != expected_chain_id:
-                    raise RuntimeError(f"expected chain id {expected_chain_id}, got {chain_id}")
-                if block_observation.get("ok") is not True:
-                    raise RuntimeError("eth_blockNumber failed")
-                block_number = _hex_quantity_to_int(block_observation.get("result"))
-                latest_block_by_url[rpc_url] = block_number
-                observation["block_number"] = block_number
-                if rpc_url not in first_observed_block_by_url:
-                    first_observed_block_by_url[rpc_url] = block_number
-                first_observed = first_observed_block_by_url[rpc_url]
-                advance = block_number - first_observed
-                observation["first_observed_block"] = first_observed
-                observation["block_advance"] = advance
-                _emit_progress(
-                    progress,
-                    "cleanup2",
-                    "chain block advance probe",
-                    rpc_url=rpc_url,
-                    rpc_url_source=candidate.get("source"),
-                    block_number=block_number,
-                    first_observed_block=first_observed,
-                    block_advance=advance,
-                )
-                if advance >= CHAIN_BLOCK_ADVANCE_REQUIRED_DELTA:
-                    return {
-                        "completed": True,
-                        "reason": "chain-block-advanced",
-                        "expected_chain_id": expected_chain_id,
-                        "rpc_url": rpc_url,
-                        "rpc_url_source": candidate.get("source"),
-                        "first_observed_block": first_observed,
-                        "final_block_number": block_number,
-                        "block_advance": advance,
-                        "required_block_advance": CHAIN_BLOCK_ADVANCE_REQUIRED_DELTA,
-                        "poll_count": poll_count,
-                        "poll_interval_seconds": poll_interval_seconds,
-                        "max_wait_seconds": max_wait_seconds,
-                        "wait_milliseconds": int((time.monotonic() - started) * 1000),
-                        "candidates": candidates,
-                        "observations": observations,
-                    }
-                last_error = f"block has not advanced beyond first observed block {first_observed}"
-            except Exception as exc:  # noqa: BLE001 - keep probing other candidates until timeout.
-                last_error = str(exc)
-                observation["error"] = last_error
-
-        elapsed = time.monotonic() - started
-        if elapsed >= max_wait_seconds:
-            return {
-                "completed": False,
-                "reason": "chain-block-advance-timeout",
-                "expected_chain_id": expected_chain_id,
-                "first_observed_blocks": dict(first_observed_block_by_url),
-                "latest_blocks": dict(latest_block_by_url),
-                "required_block_advance": CHAIN_BLOCK_ADVANCE_REQUIRED_DELTA,
-                "poll_count": poll_count,
-                "poll_interval_seconds": poll_interval_seconds,
-                "max_wait_seconds": max_wait_seconds,
-                "wait_milliseconds": int(elapsed * 1000),
-                "last_error": last_error,
-                "candidates": candidates,
-                "observations": observations,
-            }
-        sleeper(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
 
 
 def _controller(
@@ -2452,6 +2108,154 @@ def _receipt_from_detail(receipt: Mapping[str, Any], *, controller_id: str, node
     return result
 
 
+def _coerce_subprocess_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _tail_text(value: object, *, limit: int = 8000) -> str:
+    text = _coerce_subprocess_text(value)
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _run_block_advance_waiter(
+    *,
+    network: str,
+    controller_id: str,
+    target_node: str,
+    service_uuid: str,
+    runtime_state_root: str | Path,
+    runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Run the standalone block-advance waiter after one parent stack restart."""
+
+    argv = [
+        sys.executable,
+        BLOCK_ADVANCE_WAITER_SCRIPT,
+        network,
+        controller_id,
+        target_node,
+        "--runtime-state-root",
+        str(runtime_state_root),
+        "--quiet",
+    ]
+    started = time.monotonic()
+    receipt: dict[str, Any] = {
+        "script": BLOCK_ADVANCE_WAITER_SCRIPT,
+        "argv": list(argv),
+        "cwd": str(REPO_ROOT),
+        "invoked": True,
+        "controller_id": controller_id,
+        "node": target_node,
+        "target_node": target_node,
+        "service_uuid": service_uuid,
+        "direct_besu_rpc_from_cleanup": False,
+        "direct_chain_height_polling_from_cleanup": False,
+    }
+
+    run = runner or subprocess.run
+    try:
+        completed = run(
+            argv,
+            cwd=str(REPO_ROOT),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        receipt.update(
+            {
+                "status": "failed",
+                "reason": "block-advance-waiter-timeout",
+                "returncode": None,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "stdout_sha256": hashlib.sha256(_coerce_subprocess_text(exc.stdout).encode("utf-8")).hexdigest(),
+                "stdout_byte_length": len(_coerce_subprocess_text(exc.stdout).encode("utf-8")),
+                "stderr_tail": _tail_text(exc.stderr),
+                "result": None,
+            }
+        )
+        return receipt
+    except Exception as exc:  # pragma: no cover - defensive subprocess boundary
+        receipt.update(
+            {
+                "status": "failed",
+                "reason": "block-advance-waiter-exec-failed",
+                "returncode": None,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "error": str(exc),
+                "stdout_sha256": None,
+                "stdout_byte_length": 0,
+                "stderr_tail": "",
+                "result": None,
+            }
+        )
+        return receipt
+
+    stdout = _coerce_subprocess_text(getattr(completed, "stdout", ""))
+    stderr = _coerce_subprocess_text(getattr(completed, "stderr", ""))
+    returncode = int(getattr(completed, "returncode", 1))
+    receipt.update(
+        {
+            "returncode": returncode,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
+            "stdout_byte_length": len(stdout.encode("utf-8")),
+            "stderr_tail": _tail_text(stderr),
+        }
+    )
+
+    parsed: Any = None
+    parse_error: str | None = None
+    stripped = stdout.strip()
+    if stripped:
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            parse_error = f"{exc.msg} at line {exc.lineno} column {exc.colno}"
+    else:
+        parse_error = "stdout-empty"
+
+    receipt["result"] = parsed if isinstance(parsed, Mapping) else None
+    if parse_error is not None:
+        receipt["status"] = "failed"
+        receipt["reason"] = "block-advance-waiter-json-invalid" if stripped else "block-advance-waiter-json-missing"
+        receipt["parse_error"] = parse_error
+        return receipt
+
+    if not isinstance(parsed, Mapping):
+        receipt["status"] = "failed"
+        receipt["reason"] = "block-advance-waiter-json-not-object"
+        return receipt
+
+    completion = parsed.get("completion")
+    completed_ok = isinstance(completion, Mapping) and completion.get("completed") is True
+    parsed_status = str(parsed.get("status") or "")
+    if returncode == 0 and parsed_status == "pass" and completed_ok:
+        receipt["status"] = "pass"
+        receipt["reason"] = str(parsed.get("reason") or completion.get("reason") or "block-advanced")
+        receipt["baseline_block_number"] = completion.get("baseline_block_number")
+        receipt["latest_block_number"] = completion.get("latest_block_number")
+        receipt["block_advance"] = completion.get("block_advance")
+        return receipt
+
+    receipt["status"] = "failed"
+    if returncode != 0:
+        receipt["reason"] = "block-advance-waiter-nonzero-exit"
+    elif parsed_status != "pass":
+        receipt["reason"] = str(parsed.get("reason") or "block-advance-waiter-status-failed")
+    else:
+        receipt["reason"] = "block-advance-waiter-completion-missing"
+    return receipt
+
+
 def run_helper_cleanup2_yagni(
     private_state: PrivateStateReadResult,
     *,
@@ -2467,6 +2271,7 @@ def run_helper_cleanup2_yagni(
     opener: Any = urllib.request.urlopen,
     progress: ProgressCallback | None = None,
     sleeper: Callable[[float], None] = time.sleep,
+    block_advance_waiter_runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     mode_name = _identifier(mode, "mode")
     if mode_name not in {"inspect", "execute"}:
@@ -2499,7 +2304,7 @@ def run_helper_cleanup2_yagni(
     post_cleanup_readbacks: list[dict[str, Any]] = []
     parent_restart_receipts: list[dict[str, Any]] = []
     parent_restart_waits: list[dict[str, Any]] = []
-    chain_block_advance: dict[str, Any] | None = None
+    block_advance_waits: list[dict[str, Any]] = []
 
     for service_record in services:
         node = _identifier(service_record["node"], "topology node")
@@ -2762,7 +2567,10 @@ def run_helper_cleanup2_yagni(
                     )
                 )
 
+        stop_restart_sequence = False
         for controller_id in sorted(cleanup2_targets_by_controller):
+            if stop_restart_sequence:
+                break
             controller = _controller(private_state, network=network_id, controller_id=controller_id)
             for target in cleanup2_targets_by_controller[controller_id]:
                 node = str(target.get("node") or "")
@@ -2817,44 +2625,62 @@ def run_helper_cleanup2_yagni(
                 )
                 parent_restart_waits.append(wait_result)
 
+                _emit_progress(
+                    progress,
+                    "cleanup2",
+                    "waiting for block advance after parent restart",
+                    node=node,
+                    controller_id=controller_id,
+                    service_uuid=service_uuid,
+                    delegated_script=BLOCK_ADVANCE_WAITER_SCRIPT,
+                )
+                block_wait_result = _run_block_advance_waiter(
+                    network=network_id,
+                    controller_id=controller_id,
+                    target_node=node,
+                    service_uuid=service_uuid,
+                    runtime_state_root=runtime_state_root,
+                    runner=block_advance_waiter_runner,
+                )
+                block_advance_waits.append(block_wait_result)
+                _emit_progress(
+                    progress,
+                    "cleanup2",
+                    "block advance waiter completed",
+                    node=node,
+                    controller_id=controller_id,
+                    service_uuid=service_uuid,
+                    status=block_wait_result.get("status"),
+                    reason=block_wait_result.get("reason"),
+                    baseline_block_number=block_wait_result.get("baseline_block_number"),
+                    latest_block_number=block_wait_result.get("latest_block_number"),
+                    block_advance=block_wait_result.get("block_advance"),
+                )
+                if block_wait_result.get("status") != "pass":
+                    stop_restart_sequence = True
+                    break
+
     patch_ok = all(step["status"] in {"patched", "would-patch", "no-op", "skipped"} for step in patch_steps)
     cleanup2_ok = mode_name == "inspect" or all(step.get("status") == "pass" for step in cleanup2_steps)
-    parent_restart_ok = mode_name == "inspect" or all(wait.get("completed") is True for wait in parent_restart_waits)
-
-    if (
-        mode_name == "execute"
-        and cleanup2_targets_by_controller
-        and patch_ok
-        and cleanup2_ok
-        and parent_restart_ok
-    ):
-        _emit_progress(
-            progress,
-            "cleanup2",
-            "waiting for chain block advance after cleanup2",
-            poll_interval_seconds=CHAIN_BLOCK_ADVANCE_POLL_INTERVAL_SECONDS,
-            max_wait_seconds=CHAIN_BLOCK_ADVANCE_MAX_WAIT_SECONDS,
-        )
-        chain_block_advance = _wait_for_chain_block_advance(
-            private_state,
-            network=network_id,
-            topology=topology["topology"],
-            services=services,
-            timeout=request_timeout,
-            max_response_bytes=response_limit,
-            max_wait_seconds=CHAIN_BLOCK_ADVANCE_MAX_WAIT_SECONDS,
-            poll_interval_seconds=CHAIN_BLOCK_ADVANCE_POLL_INTERVAL_SECONDS,
-            opener=opener,
-            sleeper=sleeper,
-            progress=progress,
-        )
-
-    chain_block_advance_ok = (
-        mode_name == "inspect"
-        or not cleanup2_targets_by_controller
-        or (isinstance(chain_block_advance, Mapping) and chain_block_advance.get("completed") is True)
+    parent_restart_ok = mode_name == "inspect" or all(receipt.get("ok") is True for receipt in parent_restart_receipts)
+    expected_block_advance_wait_count = len(parent_restart_receipts)
+    block_advance_waiter_ok = mode_name == "inspect" or (
+        len(block_advance_waits) == expected_block_advance_wait_count
+        and all(wait.get("status") == "pass" for wait in block_advance_waits)
     )
-    status = "pass" if patch_ok and cleanup2_ok and parent_restart_ok and chain_block_advance_ok else "failed"
+    block_advance_waiter = {
+        "status": "pass" if block_advance_waiter_ok else "failed",
+        "script": BLOCK_ADVANCE_WAITER_SCRIPT,
+        "invoked": bool(block_advance_waits),
+        "wait_count": len(block_advance_waits),
+        "expected_wait_count": expected_block_advance_wait_count,
+        "passed_count": sum(1 for wait in block_advance_waits if wait.get("status") == "pass"),
+        "direct_besu_rpc_from_cleanup": False,
+        "direct_chain_height_polling_from_cleanup": False,
+        "waits": block_advance_waits,
+    }
+
+    status = "pass" if patch_ok and cleanup2_ok and parent_restart_ok and block_advance_waiter_ok else "failed"
 
     target_count = sum(len(item["helper_names"]) for items in cleanup2_targets_by_controller.values() for item in items)
     return {
@@ -2882,7 +2708,8 @@ def run_helper_cleanup2_yagni(
         "post_cleanup_readbacks": post_cleanup_readbacks,
         "parent_restart_receipts": parent_restart_receipts,
         "parent_restart_waits": parent_restart_waits,
-        "chain_block_advance": chain_block_advance,
+        "block_advance_waits": block_advance_waits,
+        "block_advance_waiter": block_advance_waiter,
         "http_observations": http_observations,
         "summary": {
             "topology_imported": True,
@@ -2949,12 +2776,19 @@ def run_helper_cleanup2_yagni(
             "child_public_api_restart_attempted": False,
             "temporary_helper_apply_service_created": False,
             "post_restart_health_poll_performed": bool(parent_restart_waits),
-            "chain_block_advance_wait_performed": chain_block_advance is not None,
-            "chain_block_advance_completed": (
-                chain_block_advance.get("completed") if isinstance(chain_block_advance, Mapping) else None
+            "block_advance_waiter_prepared": True,
+            "block_advance_waiter_invoked": bool(block_advance_waits),
+            "block_advance_waiter_invoked_count": len(block_advance_waits),
+            "block_advance_waiter_expected_count": expected_block_advance_wait_count,
+            "block_advance_waiter_passed_count": sum(1 for wait in block_advance_waits if wait.get("status") == "pass"),
+            "block_advance_waiter_all_passed": (
+                len(block_advance_waits) == expected_block_advance_wait_count
+                and all(wait.get("status") == "pass" for wait in block_advance_waits)
+                if parent_restart_receipts or block_advance_waits
+                else None
             ),
-            "chain_block_advance_poll_interval_seconds": CHAIN_BLOCK_ADVANCE_POLL_INTERVAL_SECONDS,
-            "chain_block_advance_max_wait_seconds": CHAIN_BLOCK_ADVANCE_MAX_WAIT_SECONDS,
+            "block_advance_waiter_script": BLOCK_ADVANCE_WAITER_SCRIPT,
+            "direct_chain_height_polling_removed": True,
             "chain_touched": False,
         },
     }
