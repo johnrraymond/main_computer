@@ -52,6 +52,9 @@ def test_watch_script_uses_proof_guardian_style_python_server() -> None:
     assert 'self.path not in ("/block", "/block.json")' in script
     assert "def sample_once()" in script
     assert '"docker", "ps"' in script
+    assert "label=com.docker.compose.project=" in script
+    assert "label=com.docker.compose.service=" in script
+    assert "target_container_selected_by_compose_labels" in script
     assert "docker-cli" in script
     assert "busybox httpd" not in script
     assert "httpd -f" not in script
@@ -565,6 +568,16 @@ def test_block_advance_watch_fails_when_endpoint_does_not_advance(tmp_path: Path
     assert result["summary"]["temporary_service_running_before_endpoint"] is True
     assert result["summary"]["temporary_service_deleted"] is False
     assert result["summary"]["temporary_service_left_for_inspection"] is True
+    assert result["summary"]["endpoint_failure_diagnostics_captured"] is True
+    assert result["summary"]["endpoint_failure_diagnostics_channel_count"] >= 3
+    assert result["summary"]["temporary_service_status_after_endpoint_failure"] == "running:healthy"
+    assert result["endpoint_failure_readback"]["phase"] == "temporary-service-post-endpoint-failure-readback"
+    assert result["endpoint_failure_diagnostics"]["reason"] == "block-endpoint-timeout"
+    channels = {channel["channel"]: channel for channel in result["endpoint_failure_diagnostics"]["channels"]}
+    assert "deployment-list" in channels
+    assert "service-application-logs" in channels
+    assert channels["service-application-logs"]["log_excerpts"][0] == "compose failed before container create"
+    assert any(req["method"] == "GET" and req["path"] == f"/api/v1/applications/watchappuuid123/logs" for req in opener.requests)
 
 
 

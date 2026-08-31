@@ -546,6 +546,37 @@ def sample_once():
         parts = line.strip().split(maxsplit=1)
         if len(parts) == 2 and parts[1] == TARGET_CONTAINER:
             matches.append(parts[0])
+
+    if len(matches) != 1:
+        label_proc = run_command(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                "label=com.docker.compose.project=" + SERVICE_UUID,
+                "--filter",
+                "label=com.docker.compose.service=" + TARGET_NODE,
+                "--format",
+                "{{.ID}} {{.Names}}",
+            ],
+            timeout=15,
+        )
+        if label_proc.returncode != 0:
+            write_status(False, "docker-label-ps-failed:" + safe_text(label_proc.stderr))
+            log("docker_label_ps_failed", exit_code=label_proc.returncode, stderr=safe_text(label_proc.stderr))
+            return
+
+        label_matches = []
+        for line in label_proc.stdout.splitlines():
+            parts = line.strip().split(maxsplit=1)
+            if len(parts) == 2:
+                label_matches.append(parts[0])
+
+        if len(label_matches) == 1:
+            log("target_container_selected_by_compose_labels", container_id=label_matches[0], target_node=TARGET_NODE, service_uuid=SERVICE_UUID)
+            matches = label_matches
+
     if len(matches) != 1:
         write_status(False, "container-not-unique:" + str(len(matches)))
         log("target_container_not_unique", count=len(matches), target_container=TARGET_CONTAINER)
@@ -2515,6 +2546,8 @@ def run_block_advance_watch(
     start_receipt: dict[str, Any] | None = None
     deployment_readiness: dict[str, Any] | None = None
     completion: dict[str, Any] | None = None
+    endpoint_failure_readback: dict[str, Any] | None = None
+    endpoint_failure_diagnostics: dict[str, Any] | None = None
     delete_receipt: dict[str, Any] | None = None
     stale_cleanup: dict[str, Any] | None = None
     status = "failed"
@@ -2693,6 +2726,31 @@ def run_block_advance_watch(
                                 reason = "block-advanced"
                             else:
                                 reason = str(completion.get("reason") or "block-advance-not-proven")
+                                endpoint_failure_readback = _read_watch_service_detail(
+                                    controller=controller,
+                                    controller_id=controller_name,
+                                    service_uuid=watch_service_uuid,
+                                    service_name=service_name,
+                                    timeout=timeout_s,
+                                    max_response_bytes=max_bytes,
+                                    opener=opener,
+                                    observations=observations,
+                                    phase="temporary-service-post-endpoint-failure-readback",
+                                )
+                                endpoint_failure_diagnostics = _read_watch_failure_diagnostics(
+                                    controller=controller,
+                                    controller_id=controller_name,
+                                    server_uuid=str(controller_config.get("server_uuid") or "") or None,
+                                    service_uuid=watch_service_uuid,
+                                    service_name=service_name,
+                                    service_detail=endpoint_failure_readback,
+                                    timeout=timeout_s,
+                                    max_response_bytes=max_bytes,
+                                    opener=opener,
+                                    observations=observations,
+                                    debug=debug,
+                                    reason=reason,
+                                )
     finally:
         should_delete = (
             watch_service_uuid is not None
@@ -2769,6 +2827,8 @@ def run_block_advance_watch(
         "start": start_receipt,
         "deployment_readiness": deployment_readiness,
         "completion": completion,
+        "endpoint_failure_readback": endpoint_failure_readback,
+        "endpoint_failure_diagnostics": endpoint_failure_diagnostics,
         "delete": delete_receipt,
         "observations": observations,
         "summary": {
@@ -2809,6 +2869,19 @@ def run_block_advance_watch(
                     deployment_readiness.get("running") is True
                     or deployment_readiness.get("endpoint_probe_eligible") is True
                 )
+            ),
+            "temporary_service_status_after_endpoint_failure": (
+                endpoint_failure_readback.get("summary", {}).get("service_status")
+                if isinstance(endpoint_failure_readback, Mapping)
+                and isinstance(endpoint_failure_readback.get("summary"), Mapping)
+                else None
+            ),
+            "endpoint_failure_diagnostics_captured": endpoint_failure_diagnostics is not None,
+            "endpoint_failure_diagnostics_channel_count": (
+                len(endpoint_failure_diagnostics.get("channels", []))
+                if isinstance(endpoint_failure_diagnostics, Mapping)
+                and isinstance(endpoint_failure_diagnostics.get("channels"), list)
+                else 0
             ),
             "temporary_service_left_for_inspection": bool(watch_service_uuid and delete_receipt is None),
             "temporary_service_deleted": delete_receipt is not None and delete_receipt.get("ok") is True,
