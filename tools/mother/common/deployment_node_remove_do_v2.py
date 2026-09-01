@@ -387,14 +387,18 @@ def _node_remove_do_proof_payload_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(dict(value))).hexdigest()
 
 
-def _pending_votes_mentions_target(value: Any, *, target_validator: str) -> bool:
+def _pending_votes_has_unresolved_target(value: Any, *, target_validator: str) -> bool:
     target = target_validator.lower()
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if target in str(key).lower() or _pending_votes_mentions_target(item, target_validator=target):
+            if target in str(key).lower():
+                if item is False:
+                    continue
+                return True
+            if _pending_votes_has_unresolved_target(item, target_validator=target):
                 return True
     elif isinstance(value, list):
-        return any(_pending_votes_mentions_target(item, target_validator=target) for item in value)
+        return any(_pending_votes_has_unresolved_target(item, target_validator=target) for item in value)
     elif isinstance(value, str):
         return target in value.lower()
     return False
@@ -471,7 +475,7 @@ def _node_remove_do_proof_payload_verified(
     pending = payload.get("final_pending_votes")
     if not isinstance(pending, Mapping):
         return False
-    if _pending_votes_mentions_target(pending, target_validator=str(payload.get("target_validator"))):
+    if _pending_votes_has_unresolved_target(pending, target_validator=str(payload.get("target_validator"))):
         return False
     return True
 
@@ -656,6 +660,38 @@ def _node_remove_do_proof_endpoint_reachable(fetch_summary: Mapping[str, Any], p
     # response must be a JSON object; invalid 200 content is not enough to prove
     # the scoped helper is reachable.
     return status == 404 or isinstance(payload, Mapping)
+
+
+def _node_remove_do_sibling_guardian_launch_verified(readiness: Mapping[str, Any]) -> bool:
+    if readiness.get("verified") is True:
+        return True
+    if readiness.get("removal_guardian_compose_installed") is not True:
+        return False
+    if readiness.get("proof_endpoint_reachable") is not True:
+        return False
+    if readiness.get("guardian_component_known") is not True:
+        return False
+    status = str(readiness.get("guardian_component_status") or "")
+    return status in {"running:healthy", "running"} or _terminal_completed_component_status(status)
+
+
+def _node_remove_do_host_helper_launch_verified(result: Mapping[str, Any]) -> bool:
+    if result.get("helper_setup_verified") is True:
+        return True
+
+    def accepted(receipt: Any) -> bool:
+        return (
+            isinstance(receipt, Mapping)
+            and receipt.get("ok") is True
+            and int(receipt.get("status") or 0) in {200, 201, 202}
+        )
+
+    endpoint_seen = any(
+        isinstance(item, Mapping) and item.get("status") == 404
+        for item in result.get("proof_observations") or []
+    )
+
+    return accepted(result.get("runner_create")) and accepted(result.get("runner_start")) and endpoint_seen
 
 
 def _observe_removal_guardian_deployment(
@@ -2291,7 +2327,7 @@ def execute_node_remove_do_release(
             if not start_accepted:
                 raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} guardian start with HTTP {start['status']}")
 
-            readiness_deadline = (
+            launch_deadline = (
                 time.monotonic()
                 if two_to_one_self_vote
                 else time.monotonic() + min(max(float(max_wait_seconds), 0.0), 60.0)
@@ -2321,14 +2357,14 @@ def execute_node_remove_do_release(
                     "observed_at": _timestamp(now=now),
                 })
 
-                if readiness.get("verified"):
+                if _node_remove_do_sibling_guardian_launch_verified(readiness):
                     break
-                if time.monotonic() >= readiness_deadline:
+                if time.monotonic() >= launch_deadline:
                     break
                 if poll_interval_seconds:
                     time.sleep(max(0.0, poll_interval_seconds))
 
-            if not readiness.get("verified"):
+            if not _node_remove_do_sibling_guardian_launch_verified(readiness):
                 host_setup_result: dict[str, Any] | None = None
                 host_setup_error: dict[str, str] | None = None
                 host_helper_name = f"{guardian}-{service_uuid}"
@@ -2406,18 +2442,9 @@ def execute_node_remove_do_release(
                     voter=voter,
                     release=release,
                 )
-                host_launch_verified = host_verified
-                if two_to_one_self_vote and not host_verified:
-                    runner_create = host_setup_result.get("runner_create")
-                    runner_start = host_setup_result.get("runner_start")
-                    host_launch_verified = bool(
-                        isinstance(runner_create, Mapping)
-                        and runner_create.get("ok") is True
-                        and isinstance(runner_start, Mapping)
-                        and runner_start.get("ok") is True
-                    )
-                    if host_launch_verified:
-                        host_setup_result["two_to_one_launch_verified"] = True
+                host_launch_verified = host_verified or _node_remove_do_host_helper_launch_verified(host_setup_result)
+                if host_launch_verified and not host_verified and two_to_one_self_vote:
+                    host_setup_result["two_to_one_launch_verified"] = True
                 host_helper_guardians[voter] = dict(host_setup_result)
                 health_observations.append({
                     "node": voter,

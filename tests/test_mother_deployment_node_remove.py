@@ -1340,6 +1340,29 @@ def _node_remove_do_proof_for_test(voter: str) -> dict:
     }
 
 
+def test_remove_node_do_proof_accepts_cleared_target_pending_vote(tmp_path: Path) -> None:
+    _paths, _private_state, release_path, _release_sha = _write_remove_do_release_for_test(tmp_path)
+    release = json.loads(release_path.read_text(encoding="utf-8"))
+    target = release["target"]["validator_address"]
+
+    payload = _node_remove_do_proof_for_test("mainnetc-super2")
+    payload["final_pending_votes"] = {target: False}
+
+    assert node_remove_do_v2_module._node_remove_do_proof_payload_verified(
+        payload,
+        voter="mainnetc-super2",
+        release=release,
+    ) is True
+
+    payload["final_pending_votes"] = {target: True}
+
+    assert node_remove_do_v2_module._node_remove_do_proof_payload_verified(
+        payload,
+        voter="mainnetc-super2",
+        release=release,
+    ) is False
+
+
 def _fake_host_docker_helper_setup(**kwargs):
     voter = kwargs["node"]
     service_uuid = kwargs["service_uuid"]
@@ -2184,6 +2207,86 @@ def test_remove_node_do_uses_host_docker_helper_when_sibling_helper_never_materi
         if item.get("node") == "mainnetc-super2"
     )
     assert opener.services["admc2xxxx"]["present"] is True
+
+
+def test_remove_node_do_v2_stages_all_host_helpers_before_final_proof_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+    helper_calls: list[str] = []
+
+    def launch_only_host_helper(**kwargs):
+        voter = str(kwargs["node"])
+        service_uuid = str(kwargs["service_uuid"])
+        helper_name = str(kwargs.get("helper_name") or f"mother-node-remove-voter-{voter.replace('-', '_')}-{service_uuid}")
+        helper_calls.append(voter)
+        return {
+            "status": "failed",
+            "helper_setup_verified": False,
+            "helper_name": helper_name,
+            "runner_service_uuid": f"runner-{voter}",
+            "proof_endpoint": {
+                "host": "coolify-c.invalid",
+                "host_port": (30304 if voter.endswith("super2") else 30303) + 9100,
+                "container_port": 8798,
+                "url": f"http://coolify-c.invalid:{(30304 if voter.endswith('super2') else 30303) + 9100}/proof",
+            },
+            "proof_observations": [
+                {
+                    "status": 404,
+                    "ok": False,
+                    "json_object": False,
+                    "byte_length": 0,
+                }
+            ],
+            "reason": "proof-endpoint-not-verified",
+            "runner_create": {
+                "method": "POST",
+                "endpoint": "/api/v1/services",
+                "status": 201,
+                "ok": True,
+                "response_sha256": "a" * 64,
+                "byte_length": 48,
+                "elapsed_ms": 1,
+                "request_body_sha256": "b" * 64,
+            },
+            "runner_start": {
+                "method": "POST",
+                "endpoint": f"/api/v1/services/runner-{voter}/start",
+                "status": 200,
+                "ok": True,
+                "response_sha256": "c" * 64,
+                "byte_length": 46,
+                "elapsed_ms": 1,
+            },
+        }
+
+    monkeypatch.setattr(node_remove_do_v2_module, "setup_node_remove_helper", launch_only_host_helper)
+
+    opener = _NodeRemoveDoOpener(
+        surface_endpoint_proofs=False,
+        sibling_guardian_never_materializes_nodes={"mainnetc-super1", "mainnetc-super2"},
+    )
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-v2-stage-all-before-proof"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert helper_calls == ["mainnetc-super1", "mainnetc-super2"]
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_VALIDATOR_REMOVAL_NOT_PROVEN"
+    assert set(result["host_docker_survivor_guardians"]) == {"mainnetc-super1", "mainnetc-super2"}
+    assert set(result["validator_removal_guardian_targets"]) == {"mainnetc-super1", "mainnetc-super2"}
+    assert result["summary"]["service_deletion_performed"] is False
+    assert not any(item[0] == "DELETE" for item in opener.requests)
 
 
 def test_remove_node_do_ignores_nested_retired_helper_and_uses_host_docker_helper(

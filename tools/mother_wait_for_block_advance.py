@@ -61,7 +61,8 @@ WATCH_PREFIX = "mother-block-advance-watch"
 RUNTIME_LOG_PREFIX = "MOTHER_BLOCK_ADVANCE_WATCH"
 BLOCK_ENDPOINT_CONTAINER_PORT = 8797
 BLOCK_ENDPOINT_HOST_PORT_OFFSET = 9000
-START_TERMINAL_GRACE_SECONDS = 90.0
+TIME_WAIT_MULT = 2
+START_TERMINAL_GRACE_SECONDS = 90.0 * TIME_WAIT_MULT
 DIAGNOSTIC_LOG_EXCERPT_CHARS = 4000
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -2690,9 +2691,9 @@ def run_block_advance_watch(
                             service_name=service_name,
                             timeout=timeout_s,
                             max_response_bytes=max_bytes,
-                            max_wait_seconds=min(max_wait, 120.0),
+                            max_wait_seconds=min(max_wait, 120.0 * TIME_WAIT_MULT),
                             poll_interval_seconds=poll_interval,
-                            terminal_grace_seconds=min(start_terminal_grace, min(max_wait, 120.0)),
+                            terminal_grace_seconds=min(start_terminal_grace, min(max_wait, 120.0 * TIME_WAIT_MULT)),
                             opener=opener,
                             observations=observations,
                             debug=debug,
