@@ -1570,7 +1570,7 @@ def _replica_sync_compose(
         "    command:",
         "      - --data-path=/var/lib/besu",
         "      - --genesis-file=/config/genesis.json",
-        "      - --sync-min-peers=1",
+        "      - --sync-min-peers=0",
         "      - --node-private-key-file=/config/nodekey",
         f"      - --network-id={chain_id}",
         "      - --sync-mode=FULL",

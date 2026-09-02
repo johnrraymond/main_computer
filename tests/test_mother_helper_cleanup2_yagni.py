@@ -20,6 +20,10 @@ from tests.test_mother_deployment_executor import TOKEN_C, _operation, _starter_
 
 SERVICE_UUID = "hbu0v62iaea6uuy2360x29ba"
 CLEANUP2_UUID = "cleanup2serviceuuid"
+OLD_CLEANUP2_UUID = "oldcleanup2serviceuuid"
+WATCH_UUID = "blockwatchserviceuuid"
+OLD_WATCH_UUID = "oldblockwatchserviceuuid"
+UNRELATED_SERVICE_UUID = "unrelatedserviceuuid"
 
 
 class _Response:
@@ -140,13 +144,21 @@ def _compose() -> str:
 
 
 class _Cleanup2Opener:
-    def __init__(self, *, service_detail_as_json_string: bool = False, service_detail_status: int = 200) -> None:
+    def __init__(
+        self,
+        *,
+        service_detail_as_json_string: bool = False,
+        service_detail_status: int = 200,
+        cleanup_delete_visibility_lag: int = 0,
+    ) -> None:
         self.requests: list[dict] = []
         self.patched_compose: str | None = None
         self.cleanup2_compose: str | None = None
         self.parent_restart_requested = False
         self.service_detail_as_json_string = service_detail_as_json_string
         self.service_detail_status = service_detail_status
+        self.cleanup_delete_visibility_lag = cleanup_delete_visibility_lag
+        self.cleanup_inventory_reads_after_delete = 0
 
     def _parent_service_payload(self):
         payload = {
@@ -216,6 +228,40 @@ class _Cleanup2Opener:
             return _Response({"message": "Service restarting request queued."})
         if method == "GET" and path == "/api/v1/projects/project-c/environments":
             return _Response([{"name": "mainnet", "uuid": "env-c"}])
+        if method == "GET" and path == "/api/v1/services":
+            deleted = {item["path"].rsplit("/", 1)[-1] for item in self.requests if item["method"] == "DELETE"}
+            effective_deleted: set[str] = set()
+            if deleted:
+                self.cleanup_inventory_reads_after_delete += 1
+                if self.cleanup_inventory_reads_after_delete > self.cleanup_delete_visibility_lag:
+                    effective_deleted = deleted
+            resources = [
+                {"uuid": SERVICE_UUID, "name": "mainnetc-super2", "status": "running:healthy"},
+                {
+                    "uuid": CLEANUP2_UUID,
+                    "name": "mother-helper-cleanup2-coolify-c-20260831t000000z",
+                    "status": "exited",
+                },
+                {
+                    "uuid": OLD_CLEANUP2_UUID,
+                    "name": "mother-helper-cleanup2-coolify-c-20260830t000000z",
+                    "status": "exited",
+                },
+                {
+                    "uuid": WATCH_UUID,
+                    "name": "mother-block-advance-watch-coolify-c-mainnetc-super2-20260831t000000z",
+                    "status": "running:unknown",
+                },
+                {
+                    "uuid": OLD_WATCH_UUID,
+                    "name": "mother-block-advance-watch-coolify-c-mainnetc-super2-20260830t000000z",
+                    "status": "exited",
+                },
+                {"uuid": UNRELATED_SERVICE_UUID, "name": "mainnetc-unrelated", "status": "running:healthy"},
+            ]
+            return _Response([item for item in resources if item["uuid"] not in effective_deleted])
+        if method == "GET" and path == "/api/v1/resources":
+            return _Response([])
         if method == "POST" and path == "/api/v1/services":
             assert body["project_uuid"] == "project-c"
             assert body["server_uuid"] == "server-c"
@@ -246,7 +292,12 @@ class _Cleanup2Opener:
                     )
                 }
             )
-        if method == "DELETE" and path == f"/api/v1/services/{CLEANUP2_UUID}":
+        if method == "DELETE" and path in {
+            f"/api/v1/services/{CLEANUP2_UUID}",
+            f"/api/v1/services/{OLD_CLEANUP2_UUID}",
+            f"/api/v1/services/{WATCH_UUID}",
+            f"/api/v1/services/{OLD_WATCH_UUID}",
+        }:
             return _Response({"deleted": True})
 
         raise AssertionError(f"unexpected request: {method} {path}?{parsed.query}")
@@ -316,6 +367,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     waiter_argv = block_waiter.calls[0]["argv"]
     assert waiter_argv[1] == "tools/mother_wait_for_block_advance.py"
     assert waiter_argv[2:5] == ["mainnet", "coolify-c", "mainnetc-super2"]
+    assert waiter_argv[waiter_argv.index("--target-service-uuid") + 1] == SERVICE_UUID
     assert "--runtime-state-root" in waiter_argv
     assert "--quiet" in waiter_argv
     assert sleep_calls == [90.0]
@@ -460,6 +512,91 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
 
 
 
+def test_cleanup2_yagni_cleanup_on_clean_sweeps_cleanup_owned_temporary_services(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2Opener()
+    block_waiter = _BlockAdvanceWaiterRunner()
+    sleep_calls: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+        sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
+        cleanup_on_clean=True,
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["cleanup_on_clean_requested"] is True
+    assert result["summary"]["cleanup_on_clean_eligible"] is True
+    assert result["summary"]["cleanup_on_clean_performed"] is True
+    assert result["summary"]["cleanup_on_clean_sweep_count"] == 1
+    assert result["summary"]["cleanup_on_clean_deleted_count"] == 4
+    assert result["summary"]["cleanup_on_clean_delete_failed_count"] == 0
+    assert result["summary"]["cleanup_on_clean_remaining_count"] == 0
+    assert result["summary"]["cleanup_on_clean_all_deleted"] is True
+    assert result["summary"]["debug_destructive_cleanup2_services_left_for_inspection"] == []
+
+    paths = [(item["method"], item["path"]) for item in opener.requests]
+    assert ("DELETE", f"/api/v1/services/{CLEANUP2_UUID}") in paths
+    assert ("DELETE", f"/api/v1/services/{OLD_CLEANUP2_UUID}") in paths
+    assert ("DELETE", f"/api/v1/services/{WATCH_UUID}") in paths
+    assert ("DELETE", f"/api/v1/services/{OLD_WATCH_UUID}") in paths
+    assert ("DELETE", f"/api/v1/services/{SERVICE_UUID}") not in paths
+    assert ("DELETE", f"/api/v1/services/{UNRELATED_SERVICE_UUID}") not in paths
+
+    assert paths.index(("GET", "/api/v1/services")) > paths.index(
+        ("POST", f"/api/v1/services/{SERVICE_UUID}/restart")
+    )
+
+    step = result["cleanup2_steps"][0]
+    assert step["debug_destructive_cleanup2_service_left_for_inspection"] is False
+    assert step["delete"]["ok"] is True
+    assert step["delete"]["cleanup_scope"] == "cleanup-on-clean-temporary-service-sweep"
+    assert step["completion"]["temporary_service_delete"]["ok"] is True
+
+
+def test_cleanup2_yagni_cleanup_on_clean_polls_until_deleted_services_disappear(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2Opener(cleanup_delete_visibility_lag=1)
+    block_waiter = _BlockAdvanceWaiterRunner()
+    sleep_calls: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=5,
+        poll_interval_seconds=1,
+        opener=opener,
+        sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
+        cleanup_on_clean=True,
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["cleanup_on_clean_requested"] is True
+    assert result["summary"]["cleanup_on_clean_eligible"] is True
+    assert result["summary"]["cleanup_on_clean_performed"] is True
+    assert result["summary"]["cleanup_on_clean_deleted_count"] == 4
+    assert result["summary"]["cleanup_on_clean_remaining_count"] == 0
+    assert result["summary"]["cleanup_on_clean_all_deleted"] is True
+
+    sweep = result["cleanup_on_clean"]["sweeps"][0]
+    assert sweep["verification_reason"] == "cleanup-owned-temporary-services-absent"
+    assert sweep["verification_checks"][0]["remaining_expected_absent_count"] == 4
+    assert sweep["verification_checks"][-1]["remaining_expected_absent_count"] == 0
+    assert 1 in sleep_calls
+
+
 class _Cleanup2ParentNeverHealthyOpener(_Cleanup2Opener):
     def _parent_service_payload(self):
         payload = super()._parent_service_payload()
@@ -599,6 +736,7 @@ def test_cleanup2_yagni_fails_when_delegated_block_waiter_fails(tmp_path: Path) 
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        cleanup_on_clean=True,
     )
 
     assert sleep_calls == [90.0]
@@ -612,6 +750,17 @@ def test_cleanup2_yagni_fails_when_delegated_block_waiter_fails(tmp_path: Path) 
     assert result["block_advance_waits"][0]["status"] == "failed"
     assert result["block_advance_waits"][0]["reason"] == "block-advance-waiter-nonzero-exit"
     assert result["block_advance_waits"][0]["direct_besu_rpc_from_cleanup"] is False
+    assert result["summary"]["cleanup_on_clean_requested"] is True
+    assert result["summary"]["cleanup_on_clean_eligible"] is False
+    assert result["summary"]["cleanup_on_clean_performed"] is False
+    assert result["summary"]["cleanup_on_clean_deleted_count"] == 0
+    assert result["summary"]["cleanup_on_clean_remaining_count"] == 0
+    assert result["summary"]["debug_destructive_cleanup2_services_left_for_inspection"]
+
+    paths = [(item["method"], item["path"]) for item in opener.requests]
+    assert ("GET", "/api/v1/services") not in paths
+    assert ("DELETE", f"/api/v1/services/{CLEANUP2_UUID}") not in paths
+    assert ("DELETE", f"/api/v1/services/{WATCH_UUID}") not in paths
 
 
 def test_cleanup2_yagni_does_not_reintroduce_direct_rpc_block_height_markers() -> None:
@@ -714,4 +863,21 @@ def test_cleanup2_yagni_skips_missing_topology_service_404(tmp_path: Path) -> No
     assert [(item["method"], item["path"]) for item in opener.requests] == [
         ("GET", f"/api/v1/services/{SERVICE_UUID}")
     ]
+
+
+def test_cleanup2_yagni_parser_accepts_cleanup_on_clean() -> None:
+    from tools.mother_helper_cleanup2_yagni import _build_parser
+
+    args = _build_parser().parse_args(
+        [
+            "execute",
+            "--runtime-state-root",
+            "runtime/state",
+            "--network",
+            "mainnet",
+            "--cleanup-on-clean",
+        ]
+    )
+
+    assert args.cleanup_on_clean is True
 

@@ -516,6 +516,32 @@ def build_node_remove_finalize_evidence(
     survivor_observed_set = set(survivor_nodes_observed)
     survivor_guardian_set = set(survivor_guardians_healthy)
     final_validator_set_proof_sha256_by_voter = dict(do_evidence.get("validator_removal_proof_sha256_by_voter") or {})
+    survivor_observations_by_node = {
+        str(item.get("node") or ""): item
+        for item in survivor_observations
+        if item.get("node")
+    }
+    current_topology_services = do_evidence["current_topology"].get("services")
+    if not isinstance(current_topology_services, Mapping):
+        current_topology_services = {}
+    final_topology = dict(do_evidence["post_removal_topology"])
+    final_topology["services"] = {}
+    for survivor in do_evidence["survivors"]:
+        node = str(survivor["node"])
+        previous_service = current_topology_services.get(node)
+        if not isinstance(previous_service, Mapping):
+            previous_service = {}
+        observation = survivor_observations_by_node.get(node)
+        if not isinstance(observation, Mapping):
+            observation = {}
+        final_topology["services"][node] = {
+            "node": node,
+            "controller_id": survivor["controller_id"],
+            "service_uuid": survivor["service_uuid"],
+            "service_status": observation.get("service_status") or previous_service.get("service_status"),
+            "last_observed_at": observation.get("observed_at") or previous_service.get("last_observed_at"),
+            "readiness_source": "node-remove-finalize-survivor-observation",
+        }
     # The node-removal voter guardians are transient execution helpers. The do
     # evidence must prove that they became healthy and completed the validator
     # removal vote before target service deletion. Finalize is a later read-only
@@ -558,7 +584,7 @@ def build_node_remove_finalize_evidence(
         "source_prep_transaction": dict(do_evidence["source_transaction"]),
         "source_baseline_evidence": dict(do_evidence["source_baseline_evidence"]),
         "pre_removal_topology": dict(do_evidence["current_topology"]),
-        "final_topology": dict(do_evidence["post_removal_topology"]),
+        "final_topology": final_topology,
         "final_validator_set_source": "node-remove-do-proof-payload",
         "final_validator_set_proof_sha256_by_voter": final_validator_set_proof_sha256_by_voter,
         "target_service_observation": {
@@ -609,6 +635,9 @@ def build_node_remove_finalize_evidence(
         "summary": {
             "clean": complete,
             "complete": complete,
+            "topology_current": complete,
+            "topology_stale": False if complete else None,
+            "current_topology_marked_by_evidence": complete,
             "target_node": target["node"],
             "target_validator_address": target["validator_address"],
             "target_service_absent": target_absent,

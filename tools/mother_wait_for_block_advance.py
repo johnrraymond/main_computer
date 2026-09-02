@@ -61,8 +61,6 @@ WATCH_PREFIX = "mother-block-advance-watch"
 RUNTIME_LOG_PREFIX = "MOTHER_BLOCK_ADVANCE_WATCH"
 BLOCK_ENDPOINT_CONTAINER_PORT = 8797
 BLOCK_ENDPOINT_HOST_PORT_OFFSET = 9000
-TIME_WAIT_MULT = 2
-START_TERMINAL_GRACE_SECONDS = 90.0 * TIME_WAIT_MULT
 DIAGNOSTIC_LOG_EXCERPT_CHARS = 4000
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -1923,207 +1921,6 @@ def _wait_for_created_watch_service_row(
         time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
 
 
-def _wait_for_watch_service_running(
-    *,
-    controller: CoolifyController,
-    controller_id: str,
-    server_uuid: str | None,
-    service_uuid: str,
-    service_name: str,
-    timeout: float,
-    max_response_bytes: int,
-    max_wait_seconds: float,
-    poll_interval_seconds: float,
-    terminal_grace_seconds: float,
-    opener: Any,
-    observations: list[dict[str, Any]],
-    debug: bool,
-) -> dict[str, Any]:
-    started = time.monotonic()
-    service = _uuid(service_uuid, "watch_service_uuid")
-    statuses: list[str] = []
-    attempts: list[dict[str, Any]] = []
-    _debug(
-        debug,
-        "temporary-service-deploy-wait-begin",
-        service_uuid=service,
-        service_name=service_name,
-        max_wait_seconds=max_wait_seconds,
-        poll_interval_seconds=poll_interval_seconds,
-        terminal_grace_seconds=terminal_grace_seconds,
-    )
-    while True:
-        detail = _read_watch_service_detail(
-            controller=controller,
-            controller_id=controller_id,
-            service_uuid=service,
-            service_name=service_name,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            observations=observations,
-            phase="temporary-service-deploy-status",
-        )
-        summary = detail.get("summary") if isinstance(detail.get("summary"), Mapping) else {}
-        status = str(summary.get("service_status") or "")
-        if status:
-            statuses.append(status)
-        elapsed = time.monotonic() - started
-        terminal_grace_remaining = max(0.0, terminal_grace_seconds - elapsed)
-        attempts.append(
-            {
-                "http_status": detail.get("status"),
-                "http_ok": detail.get("ok"),
-                "service_status": status or None,
-                "service_matched": summary.get("matched"),
-                "running": summary.get("running"),
-                "terminal": summary.get("terminal"),
-                "endpoint_probe_eligible": summary.get("endpoint_probe_eligible"),
-                "elapsed_milliseconds": int(elapsed * 1000),
-                "terminal_grace_remaining_seconds": terminal_grace_remaining,
-            }
-        )
-        _debug(
-            debug,
-            "temporary-service-status-poll",
-            service_uuid=service,
-            http_ok=detail.get("ok"),
-            http_status=detail.get("status"),
-            service_matched=summary.get("matched"),
-            service_status=status or None,
-            running=summary.get("running"),
-            terminal=summary.get("terminal"),
-            endpoint_probe_eligible=summary.get("endpoint_probe_eligible"),
-            terminal_grace_remaining_seconds=terminal_grace_remaining,
-            elapsed_ms=detail.get("elapsed_ms"),
-        )
-        if detail.get("ok") is True and summary.get("matched") is True and summary.get("running") is True:
-            _debug(
-                debug,
-                "temporary-service-running",
-                service_uuid=service,
-                service_status=status,
-                wait_milliseconds=int(elapsed * 1000),
-            )
-            return {
-                "running": True,
-                "endpoint_probe_eligible": True,
-                "reason": "service-running",
-                "service_uuid": service,
-                "service_name": service_name,
-                "service_status": status,
-                "statuses": statuses,
-                "attempts": attempts,
-                "detail": detail,
-                "wait_milliseconds": int(elapsed * 1000),
-            }
-        if detail.get("ok") is True and summary.get("matched") is True and summary.get("endpoint_probe_eligible") is True:
-            _debug(
-                debug,
-                "temporary-service-endpoint-probe-eligible",
-                service_uuid=service,
-                service_status=status,
-                running=summary.get("running"),
-                wait_milliseconds=int(elapsed * 1000),
-            )
-            return {
-                "running": bool(summary.get("running")),
-                "endpoint_probe_eligible": True,
-                "reason": "service-endpoint-probe-eligible",
-                "service_uuid": service,
-                "service_name": service_name,
-                "service_status": status,
-                "statuses": statuses,
-                "attempts": attempts,
-                "detail": detail,
-                "wait_milliseconds": int(elapsed * 1000),
-            }
-        if detail.get("ok") is True and summary.get("matched") is True and summary.get("terminal") is True:
-            if elapsed < terminal_grace_seconds:
-                _debug(
-                    debug,
-                    "temporary-service-terminal-ignored",
-                    service_uuid=service,
-                    service_status=status,
-                    terminal_grace_remaining_seconds=max(0.0, terminal_grace_seconds - elapsed),
-                    wait_milliseconds=int(elapsed * 1000),
-                    reason="queued-start-grace-period",
-                )
-            else:
-                _debug(
-                    debug,
-                    "temporary-service-terminal",
-                    service_uuid=service,
-                    service_status=status,
-                    wait_milliseconds=int(elapsed * 1000),
-                    terminal_grace_seconds=terminal_grace_seconds,
-                )
-                diagnostics = _read_watch_failure_diagnostics(
-                    controller=controller,
-                    controller_id=controller_id,
-                    server_uuid=server_uuid,
-                    service_uuid=service,
-                    service_name=service_name,
-                    service_detail=detail,
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
-                    opener=opener,
-                    observations=observations,
-                    debug=debug,
-                    reason="service-terminal-after-start-grace-before-endpoint",
-                )
-                return {
-                    "running": False,
-                    "endpoint_probe_eligible": False,
-                    "reason": "service-terminal-after-start-grace-before-endpoint",
-                    "service_uuid": service,
-                    "service_name": service_name,
-                    "service_status": status,
-                    "statuses": statuses,
-                    "attempts": attempts,
-                    "detail": detail,
-                    "diagnostics": diagnostics,
-                    "terminal_grace_seconds": terminal_grace_seconds,
-                    "wait_milliseconds": int(elapsed * 1000),
-                }
-        if elapsed >= max_wait_seconds:
-            _debug(
-                debug,
-                "temporary-service-deploy-timeout",
-                service_uuid=service,
-                last_service_status=status or None,
-                attempt_count=len(attempts),
-                wait_milliseconds=int(elapsed * 1000),
-            )
-            diagnostics = _read_watch_failure_diagnostics(
-                controller=controller,
-                controller_id=controller_id,
-                server_uuid=server_uuid,
-                service_uuid=service,
-                service_name=service_name,
-                service_detail=detail,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                observations=observations,
-                debug=debug,
-                reason="service-not-running-before-endpoint",
-            )
-            return {
-                "running": False,
-                "endpoint_probe_eligible": False,
-                "reason": "service-not-running-before-endpoint",
-                "service_uuid": service,
-                "service_name": service_name,
-                "service_status": status or None,
-                "statuses": statuses,
-                "attempts": attempts,
-                "detail": detail,
-                "diagnostics": diagnostics,
-                "wait_milliseconds": int(elapsed * 1000),
-            }
-        time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
-
 
 def _iter_log_text_values(value: object) -> list[str]:
     if isinstance(value, str):
@@ -2414,11 +2211,11 @@ def run_block_advance_watch(
     topology_evidence: str | Path | None = None,
     acknowledged_topology_evidence_sha256: str | None = None,
     expected_chain_id: int | None = None,
+    target_service_uuid: str | None = None,
     timeout: float = 30.0,
     max_response_bytes: int = 4 * 1024 * 1024,
-    max_wait_seconds: float = 600.0,
+    max_wait_seconds: float = 900.0,
     poll_interval_seconds: float = 10.0,
-    start_terminal_grace_seconds: float = START_TERMINAL_GRACE_SECONDS,
     leave_service: bool = False,
     delete_on_failure: bool = False,
     opener: Any = urllib.request.urlopen,
@@ -2435,7 +2232,6 @@ def run_block_advance_watch(
         )
     max_wait = _positive_float(max_wait_seconds, "max_wait_seconds")
     poll_interval = _positive_float(poll_interval_seconds, "poll_interval_seconds")
-    start_terminal_grace = _nonnegative_float(start_terminal_grace_seconds, "start_terminal_grace_seconds")
     if poll_interval > max_wait:
         raise MotherWaitForBlockAdvanceError(
             "MOTHER_WAIT_FOR_BLOCK_ADVANCE_INVALID_ARGUMENT",
@@ -2451,7 +2247,6 @@ def run_block_advance_watch(
         runtime_state_root=runtime_state_root,
         max_wait_seconds=max_wait,
         poll_interval_seconds=poll_interval,
-        start_terminal_grace_seconds=start_terminal_grace,
     )
 
     topology = _load_topology(
@@ -2466,6 +2261,12 @@ def run_block_advance_watch(
         controller_id=controller_name,
         target=target,
     )
+    topology_target_service_uuid = target_record["service_uuid"]
+    target_service_uuid_source = "topology"
+    if target_service_uuid is not None:
+        target_record = dict(target_record)
+        target_record["service_uuid"] = _uuid(target_service_uuid, "target_service_uuid")
+        target_service_uuid_source = "explicit"
     chain_id = expected_chain_id if expected_chain_id is not None else _topology_chain_id(topology)
     _debug(
         debug,
@@ -2474,6 +2275,8 @@ def run_block_advance_watch(
         topology_sha256=topology.get("sha256"),
         target_node=target_record["node"],
         target_service_uuid=target_record["service_uuid"],
+        topology_target_service_uuid=topology_target_service_uuid,
+        target_service_uuid_source=target_service_uuid_source,
         expected_chain_id=chain_id,
     )
 
@@ -2683,75 +2486,47 @@ def run_block_advance_watch(
                     if start_receipt.get("ok") is not True:
                         reason = "deploy-trigger-failed"
                     else:
-                        deployment_readiness = _wait_for_watch_service_running(
-                            controller=controller,
-                            controller_id=controller_name,
-                            server_uuid=str(controller_config.get("server_uuid") or "") or None,
-                            service_uuid=watch_service_uuid,
-                            service_name=service_name,
+                        completion = _wait_for_block_endpoint(
+                            endpoint_url=endpoint_url,
+                            expected_chain_id=chain_id,
                             timeout=timeout_s,
                             max_response_bytes=max_bytes,
-                            max_wait_seconds=min(max_wait, 120.0 * TIME_WAIT_MULT),
+                            max_wait_seconds=max_wait,
                             poll_interval_seconds=poll_interval,
-                            terminal_grace_seconds=min(start_terminal_grace, min(max_wait, 120.0 * TIME_WAIT_MULT)),
                             opener=opener,
                             observations=observations,
                             debug=debug,
                         )
-                        if (
-                            deployment_readiness.get("running") is not True
-                            and deployment_readiness.get("endpoint_probe_eligible") is not True
-                        ):
-                            reason = str(deployment_readiness.get("reason") or "service-not-running-before-endpoint")
-                            _debug(
-                                debug,
-                                "temporary-service-not-running",
-                                watch_service_uuid=watch_service_uuid,
-                                reason=reason,
-                                service_status=deployment_readiness.get("service_status"),
-                            )
+                        if completion.get("completed") is True:
+                            status = "pass"
+                            reason = "block-advanced"
                         else:
-                            completion = _wait_for_block_endpoint(
-                                endpoint_url=endpoint_url,
-                                expected_chain_id=chain_id,
+                            reason = str(completion.get("reason") or "block-advance-not-proven")
+                            endpoint_failure_readback = _read_watch_service_detail(
+                                controller=controller,
+                                controller_id=controller_name,
+                                service_uuid=watch_service_uuid,
+                                service_name=service_name,
                                 timeout=timeout_s,
                                 max_response_bytes=max_bytes,
-                                max_wait_seconds=max_wait,
-                                poll_interval_seconds=poll_interval,
+                                opener=opener,
+                                observations=observations,
+                                phase="temporary-service-post-endpoint-failure-readback",
+                            )
+                            endpoint_failure_diagnostics = _read_watch_failure_diagnostics(
+                                controller=controller,
+                                controller_id=controller_name,
+                                server_uuid=str(controller_config.get("server_uuid") or "") or None,
+                                service_uuid=watch_service_uuid,
+                                service_name=service_name,
+                                service_detail=endpoint_failure_readback,
+                                timeout=timeout_s,
+                                max_response_bytes=max_bytes,
                                 opener=opener,
                                 observations=observations,
                                 debug=debug,
+                                reason=reason,
                             )
-                            if completion.get("completed") is True:
-                                status = "pass"
-                                reason = "block-advanced"
-                            else:
-                                reason = str(completion.get("reason") or "block-advance-not-proven")
-                                endpoint_failure_readback = _read_watch_service_detail(
-                                    controller=controller,
-                                    controller_id=controller_name,
-                                    service_uuid=watch_service_uuid,
-                                    service_name=service_name,
-                                    timeout=timeout_s,
-                                    max_response_bytes=max_bytes,
-                                    opener=opener,
-                                    observations=observations,
-                                    phase="temporary-service-post-endpoint-failure-readback",
-                                )
-                                endpoint_failure_diagnostics = _read_watch_failure_diagnostics(
-                                    controller=controller,
-                                    controller_id=controller_name,
-                                    server_uuid=str(controller_config.get("server_uuid") or "") or None,
-                                    service_uuid=watch_service_uuid,
-                                    service_name=service_name,
-                                    service_detail=endpoint_failure_readback,
-                                    timeout=timeout_s,
-                                    max_response_bytes=max_bytes,
-                                    opener=opener,
-                                    observations=observations,
-                                    debug=debug,
-                                    reason=reason,
-                                )
     finally:
         should_delete = (
             watch_service_uuid is not None
@@ -2809,6 +2584,8 @@ def run_block_advance_watch(
         "target": target,
         "target_node": target_record["node"],
         "service_uuid": target_record["service_uuid"],
+        "topology_service_uuid": topology_target_service_uuid,
+        "target_service_uuid_source": target_service_uuid_source,
         "expected_chain_id": chain_id,
         "topology_evidence": {
             "path": str(topology.get("path")),
@@ -2837,15 +2614,11 @@ def run_block_advance_watch(
             "block_advance_wait_performed": (
                 start_receipt is not None
                 and start_receipt.get("ok") is True
-                and deployment_readiness is not None
-                and (
-                    deployment_readiness.get("running") is True
-                    or deployment_readiness.get("endpoint_probe_eligible") is True
-                )
+                and completion is not None
             ),
             "block_advance_max_wait_seconds": max_wait,
             "block_advance_poll_interval_seconds": poll_interval,
-            "start_terminal_grace_seconds": start_terminal_grace,
+            "temporary_service_status_gate_used": False,
             "baseline_block_number": (
                 completion.get("baseline_block_number") if isinstance(completion, Mapping) else None
             ),
@@ -2863,14 +2636,6 @@ def run_block_advance_watch(
             ),
             "temporary_service_created": create_receipt is not None and create_receipt.get("ok") is True,
             "temporary_service_readback_resolved": create_readback is not None and create_readback.get("resolved") is True,
-            "temporary_service_running_before_endpoint": deployment_readiness is not None and deployment_readiness.get("running") is True,
-            "temporary_service_endpoint_probe_eligible_before_endpoint": (
-                deployment_readiness is not None
-                and (
-                    deployment_readiness.get("running") is True
-                    or deployment_readiness.get("endpoint_probe_eligible") is True
-                )
-            ),
             "temporary_service_status_after_endpoint_failure": (
                 endpoint_failure_readback.get("summary", {}).get("service_status")
                 if isinstance(endpoint_failure_readback, Mapping)
@@ -2919,20 +2684,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-state-root", default=Path("runtime/state"), type=Path)
     parser.add_argument("--topology-evidence", type=Path)
     parser.add_argument("--acknowledge-topology-evidence-sha256")
+    parser.add_argument("--target-service-uuid")
     parser.add_argument("--expected-chain-id", type=int)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
-    parser.add_argument("--max-wait-seconds", type=float, default=600.0)
+    parser.add_argument("--max-wait-seconds", type=float, default=900.0)
     parser.add_argument("--poll-interval-seconds", type=float, default=10.0)
-    parser.add_argument(
-        "--start-terminal-grace-seconds",
-        type=float,
-        default=START_TERMINAL_GRACE_SECONDS,
-        help=(
-            "After a Coolify deploy trigger queues a job, ignore exited/dead service status "
-            "for this many seconds before treating it as terminal."
-        ),
-    )
     parser.add_argument("--leave-service", action="store_true", help="Leave the temporary diagnostic service for manual log inspection")
     parser.add_argument("--delete-on-failure", action="store_true", help="Delete the temporary service even when the diagnostic fails")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress/debug lines on stderr")
@@ -2954,11 +2711,11 @@ def main(argv: list[str] | None = None) -> int:
             topology_evidence=args.topology_evidence,
             acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
             expected_chain_id=args.expected_chain_id,
+            target_service_uuid=args.target_service_uuid,
             timeout=args.timeout,
             max_response_bytes=args.max_response_bytes,
             max_wait_seconds=args.max_wait_seconds,
             poll_interval_seconds=args.poll_interval_seconds,
-            start_terminal_grace_seconds=args.start_terminal_grace_seconds,
             leave_service=args.leave_service,
             delete_on_failure=args.delete_on_failure,
             debug=not args.quiet,

@@ -2382,6 +2382,9 @@ def test_remove_node_finalize_reobserves_target_absent_and_survivors(tmp_path: P
     )
     assert finalized["status"] == "pass", finalized
     assert finalized["summary"]["target_service_absent"] is True
+    assert finalized["summary"]["topology_current"] is True
+    assert finalized["summary"]["topology_stale"] is False
+    assert finalized["summary"]["current_topology_marked_by_evidence"] is True
     assert finalized["summary"]["survivor_nodes_observed"] == ["mainnetc-super1", "mainnetc-super2"]
     assert finalized["summary"]["survivor_validator_removal_guardians_required_at_finalize"] is False
     assert finalized["summary"]["survivor_validator_removal_guardians_healthy"] == []
@@ -2392,6 +2395,18 @@ def test_remove_node_finalize_reobserves_target_absent_and_survivors(tmp_path: P
     assert finalized["summary"]["final_validator_set_source"] == "node-remove-do-proof-payload"
     assert set(finalized["summary"]["final_validator_set_proof_sha256_by_voter"]) == {"mainnetc-super1", "mainnetc-super2"}
     assert finalized["summary"]["next_phase"] == "remove-node-finalized-mainnet"
+    final_services = finalized["final_topology"]["services"]
+    assert set(final_services) == {"mainnetc-super1", "mainnetc-super2"}
+    assert final_services["mainnetc-super1"]["controller_id"] == "coolify-c"
+    assert final_services["mainnetc-super1"]["service_uuid"] == "svcc1xxxx"
+    assert final_services["mainnetc-super1"]["service_status"] == "running:unhealthy"
+    assert final_services["mainnetc-super1"]["last_observed_at"] == "2026-08-11T19:25:00Z"
+    assert final_services["mainnetc-super1"]["readiness_source"] == "node-remove-finalize-survivor-observation"
+    assert final_services["mainnetc-super2"]["controller_id"] == "coolify-c"
+    assert final_services["mainnetc-super2"]["service_uuid"] == "svcc2xxxx"
+    assert final_services["mainnetc-super2"]["service_status"] == "running:unhealthy"
+    assert final_services["mainnetc-super2"]["last_observed_at"] == "2026-08-11T19:25:00Z"
+    assert final_services["mainnetc-super2"]["readiness_source"] == "node-remove-finalize-survivor-observation"
 
     verified = verify_node_remove_finalize_evidence(
         paths,
@@ -2708,8 +2723,12 @@ def test_remove_node_single_node_harness_cli_and_do_finalize_empty_topology(tmp_
     assert finalized["status"] == "pass", finalized
     assert finalized["summary"]["single_node_decommission"] is True
     assert finalized["summary"]["target_service_absent"] is True
+    assert finalized["summary"]["topology_current"] is True
+    assert finalized["summary"]["topology_stale"] is False
+    assert finalized["summary"]["current_topology_marked_by_evidence"] is True
     assert finalized["summary"]["final_validator_count"] == 0
     assert finalized["final_topology"]["nodes"] == []
+    assert finalized["final_topology"]["services"] == {}
 
     verified_final = verify_node_remove_finalize_evidence(
         paths,

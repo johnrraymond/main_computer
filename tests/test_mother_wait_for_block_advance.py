@@ -27,6 +27,7 @@ from tests.test_mother_deployment_executor import TOKEN_A, _operation, _starter_
 
 WATCH_UUID = "watchserviceuuid123"
 A1_UUID = "kgznwqhti3mp3nlw9fjoande"
+LIVE_A1_UUID = "0qdafrfnzqgkjlpdlzpswlnu"
 C1_UUID = "j612v991dn0jnc5fd9ey9vww"
 C2_UUID = "svs97fliveoalq1yxqo9mv8q"
 
@@ -34,6 +35,23 @@ C2_UUID = "svs97fliveoalq1yxqo9mv8q"
 
 def test_default_opener_is_urlopen_not_module() -> None:
     assert run_block_advance_watch.__kwdefaults__["opener"] is urllib.request.urlopen
+
+
+
+def test_parser_accepts_explicit_target_service_uuid() -> None:
+    from tools.mother_wait_for_block_advance import _build_parser
+
+    args = _build_parser().parse_args(
+        [
+            "mainnet",
+            "coolify-a",
+            "mainneta-super1",
+            "--target-service-uuid",
+            LIVE_A1_UUID,
+        ]
+    )
+
+    assert args.target_service_uuid == LIVE_A1_UUID
 
 
 
@@ -278,6 +296,7 @@ class _WatchOpener:
             if self.detail_http_status != 200:
                 return _Response({"error": "missing"}, status=self.detail_http_status)
             status = self.service_detail_statuses.pop(0) if self.service_detail_statuses else "running:healthy"
+            self.requests[-1]["service_status_returned"] = status
             return _Response(
                 {
                     "uuid": WATCH_UUID,
@@ -407,7 +426,7 @@ def test_block_advance_watch_creates_endpoint_service_and_passes_when_endpoint_a
     assert result["summary"]["temporary_service_deleted"] is True
     assert result["summary"]["block_endpoint_observed"] is True
     assert result["summary"]["temporary_service_readback_resolved"] is True
-    assert result["summary"]["temporary_service_running_before_endpoint"] is True
+    assert result["summary"]["temporary_service_status_gate_used"] is False
     assert result["block_endpoint"]["host"] == "coolify-a.invalid"
     assert result["block_endpoint"]["route_host"] == "10.116.0.3"
     assert result["block_endpoint"]["url"] == "http://coolify-a.invalid:39305/block"
@@ -430,7 +449,42 @@ def test_block_advance_watch_creates_endpoint_service_and_passes_when_endpoint_a
     assert any(req["path"] == "/block" for req in opener.requests)
 
 
-def test_block_advance_watch_ignores_stale_exited_status_after_queued_start(tmp_path: Path) -> None:
+def test_block_advance_watch_uses_explicit_target_service_uuid_for_watcher_container(tmp_path: Path) -> None:
+    runtime, private_state, topology_path, _ = _install(tmp_path)
+    opener = _WatchOpener(
+        [
+            {"ok": True, "chain_id": 42424240, "block_number": 100},
+            {"ok": True, "chain_id": 42424240, "block_number": 101},
+        ]
+    )
+
+    result = run_block_advance_watch(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        controller_id="coolify-a",
+        target="mainneta-super1",
+        topology_evidence=topology_path,
+        target_service_uuid=LIVE_A1_UUID,
+        max_wait_seconds=0.05,
+        poll_interval_seconds=0.01,
+        opener=opener,
+    )
+
+    assert result["status"] == "pass"
+    assert result["target_node"] == "mainneta-super1"
+    assert result["service_uuid"] == LIVE_A1_UUID
+    assert result["topology_service_uuid"] == A1_UUID
+    assert result["target_service_uuid_source"] == "explicit"
+
+    compose_service = yaml.safe_load(opener.compose)["services"][opener.service_name]
+    watch_command = compose_service["command"][-1]
+    assert f'"service_uuid":"{LIVE_A1_UUID}"' in watch_command
+    assert f'"service_uuid":"{A1_UUID}"' not in watch_command
+    assert any(req["path"] == "/block" for req in opener.requests)
+
+
+def test_block_advance_watch_polls_endpoint_after_deploy_even_when_status_is_exited(tmp_path: Path) -> None:
     runtime, private_state, topology_path, _ = _install(tmp_path)
     opener = _WatchOpener(
         [
@@ -449,26 +503,26 @@ def test_block_advance_watch_ignores_stale_exited_status_after_queued_start(tmp_
         topology_evidence=topology_path,
         max_wait_seconds=0.08,
         poll_interval_seconds=0.01,
-        start_terminal_grace_seconds=0.08,
         opener=opener,
     )
 
     assert result["status"] == "pass"
-    assert result["summary"]["temporary_service_running_before_endpoint"] is True
-    assert result["deployment_readiness"]["statuses"][:2] == ["exited", "running:healthy"]
-    assert result["deployment_readiness"]["reason"] == "service-running"
+    assert result["deployment_readiness"] is None
+    assert result["summary"]["block_advance_wait_performed"] is True
+    assert result["summary"]["block_endpoint_observed"] is True
+    assert result["summary"]["temporary_service_status_gate_used"] is False
     assert result["start"]["selected_operation"] == "generic-deploy"
     assert any(req["path"] == "/block" for req in opener.requests)
 
 
-def test_block_advance_watch_polls_endpoint_when_service_is_starting_unknown(tmp_path: Path) -> None:
+def test_block_advance_watch_polls_endpoint_without_waiting_for_running_status(tmp_path: Path) -> None:
     runtime, private_state, topology_path, _ = _install(tmp_path)
     opener = _WatchOpener(
         [
             {"ok": True, "chain_id": 42424240, "block_number": 100},
             {"ok": True, "chain_id": 42424240, "block_number": 101},
         ],
-        service_detail_statuses=["exited", "starting:unknown"],
+        service_detail_statuses=["exited", "starting:unknown", "starting:unknown", "running:healthy"],
     )
 
     result = run_block_advance_watch(
@@ -480,17 +534,63 @@ def test_block_advance_watch_polls_endpoint_when_service_is_starting_unknown(tmp
         topology_evidence=topology_path,
         max_wait_seconds=0.08,
         poll_interval_seconds=0.01,
-        start_terminal_grace_seconds=0.08,
         opener=opener,
     )
 
     assert result["status"] == "pass"
-    assert result["deployment_readiness"]["running"] is False
-    assert result["deployment_readiness"]["endpoint_probe_eligible"] is True
-    assert result["deployment_readiness"]["reason"] == "service-endpoint-probe-eligible"
-    assert result["deployment_readiness"]["service_status"] == "starting:unknown"
-    assert result["summary"]["temporary_service_running_before_endpoint"] is False
-    assert result["summary"]["temporary_service_endpoint_probe_eligible_before_endpoint"] is True
+    assert result["deployment_readiness"] is None
+    assert result["summary"]["temporary_service_status_gate_used"] is False
+    assert result["summary"]["block_advance_wait_performed"] is True
+    assert result["summary"]["block_endpoint_observed"] is True
+
+    deploy_index = next(
+        i for i, req in enumerate(opener.requests)
+        if req["method"] == "POST" and req["path"] == "/api/v1/deploy"
+    )
+    first_block_index = next(i for i, req in enumerate(opener.requests) if req["path"] == "/block")
+
+    assert first_block_index > deploy_index
+    assert not any(
+        req["method"] == "GET" and req["path"] == f"/api/v1/services/{WATCH_UUID}"
+        for req in opener.requests[deploy_index + 1:first_block_index]
+    )
+
+
+def test_block_advance_watch_polls_endpoint_even_when_service_status_never_becomes_running(tmp_path: Path) -> None:
+    runtime, private_state, topology_path, _ = _install(tmp_path)
+    opener = _WatchOpener(
+        [
+            {"ok": True, "chain_id": 42424240, "block_number": 100},
+            {"ok": True, "chain_id": 42424240, "block_number": 101},
+        ],
+        service_detail_statuses=[
+            "exited",
+            "starting:unknown",
+            "starting:unknown",
+            "starting:unknown",
+            "starting:unknown",
+            "starting:unknown",
+        ],
+    )
+
+    result = run_block_advance_watch(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        controller_id="coolify-a",
+        target="coolify-a-1",
+        topology_evidence=topology_path,
+        max_wait_seconds=0.03,
+        poll_interval_seconds=0.01,
+        opener=opener,
+    )
+
+    assert result["status"] == "pass"
+    assert result["reason"] == "block-advanced"
+    assert result["deployment_readiness"] is None
+    assert result["summary"]["block_endpoint_observed"] is True
+    assert result["summary"]["block_advance_wait_performed"] is True
+    assert result["summary"]["temporary_service_status_gate_used"] is False
     assert any(req["path"] == "/block" for req in opener.requests)
 
 
@@ -504,7 +604,7 @@ def test_block_advance_watch_deletes_stale_same_target_watchers_before_create(tm
             {"ok": True, "chain_id": 42424240, "block_number": 100},
             {"ok": True, "chain_id": 42424240, "block_number": 101},
         ],
-        service_detail_statuses=["exited", "starting:unknown"],
+        service_detail_statuses=["exited", "running:healthy"],
         stale_services=[
             {
                 "uuid": stale_uuid,
@@ -523,7 +623,6 @@ def test_block_advance_watch_deletes_stale_same_target_watchers_before_create(tm
         topology_evidence=topology_path,
         max_wait_seconds=0.08,
         poll_interval_seconds=0.01,
-        start_terminal_grace_seconds=0.08,
         opener=opener,
     )
 
@@ -565,7 +664,7 @@ def test_block_advance_watch_fails_when_endpoint_does_not_advance(tmp_path: Path
     assert result["summary"]["latest_block_number"] == 100
     assert result["summary"]["block_endpoint_observed"] is True
     assert result["summary"]["temporary_service_readback_resolved"] is True
-    assert result["summary"]["temporary_service_running_before_endpoint"] is True
+    assert result["summary"]["temporary_service_status_gate_used"] is False
     assert result["summary"]["temporary_service_deleted"] is False
     assert result["summary"]["temporary_service_left_for_inspection"] is True
     assert result["summary"]["endpoint_failure_diagnostics_captured"] is True
@@ -647,7 +746,7 @@ def test_block_advance_watch_accepts_coolify_deployments_array_response(tmp_path
     assert result["start"]["accepted"] is True
     assert result["start"]["attempts"][0]["accepted"] is True
     assert result["start"]["attempts"][0]["payload"]["deployments"][0]["resource_uuid"] == WATCH_UUID
-    assert result["summary"]["temporary_service_running_before_endpoint"] is True
+    assert result["summary"]["temporary_service_status_gate_used"] is False
     assert result["summary"]["block_endpoint_observed"] is True
     assert any(req["method"] == "POST" and req["path"] == "/api/v1/deploy" for req in opener.requests)
     assert not any(req["path"].endswith("/start") for req in opener.requests)
@@ -712,13 +811,17 @@ def test_block_advance_watch_collects_failure_diagnostics_and_keeps_runtime_aliv
         topology_evidence=topology_path,
         max_wait_seconds=0.04,
         poll_interval_seconds=0.01,
-        start_terminal_grace_seconds=0.02,
         opener=opener,
     )
 
     assert result["status"] == "failed"
-    assert result["reason"] == "service-terminal-after-start-grace-before-endpoint"
-    diagnostics = result["deployment_readiness"]["diagnostics"]
+    assert result["reason"] == "block-endpoint-timeout"
+    assert result["deployment_readiness"] is None
+    assert result["completion"] is not None
+    assert result["summary"]["block_advance_wait_performed"] is True
+    assert result["summary"]["block_endpoint_observed"] is True
+    assert result["summary"]["temporary_service_status_gate_used"] is False
+    diagnostics = result["endpoint_failure_diagnostics"]
     assert diagnostics["runtime_identity"]["selected_application_uuid"] == "watchappuuid123"
     assert diagnostics["runtime_identity"]["expected_container_name"] == f"{opener.service_name}-{WATCH_UUID}"
     channels = {channel["channel"]: channel for channel in diagnostics["channels"]}

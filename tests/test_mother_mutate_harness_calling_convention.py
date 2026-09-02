@@ -320,6 +320,7 @@ def test_add_node_harness_runs_cleanup1_then_cleanup2_once(tmp_path: Path) -> No
     assert cleanup2_argv[1].endswith("tools/mother_helper_cleanup2_yagni.py")
     assert cleanup2_argv[2] == "execute"
     assert "--cleanup-all" not in cleanup2_argv
+    assert "--cleanup-on-clean" in cleanup2_argv
     assert cleanup2_argv[cleanup2_argv.index("--topology-evidence") + 1] == evidence_path
     assert cleanup2_argv[cleanup2_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
 
@@ -381,6 +382,7 @@ def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_script
     ]
     assert captured[0][1][1].endswith("tools/mother_post_work_cleanup_v2.py")
     assert captured[1][1][1].endswith("tools/mother_helper_cleanup2_yagni.py")
+    assert "--cleanup-on-clean" in captured[1][1]
     assert captured[0][1][captured[0][1].index("--topology-evidence") + 1] == evidence_path
     assert captured[1][1][captured[1][1].index("--topology-evidence") + 1] == evidence_path
     assert "deletedservice123" not in captured[0][1]

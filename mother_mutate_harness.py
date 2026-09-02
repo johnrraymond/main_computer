@@ -1780,6 +1780,7 @@ class Harness:
             "--timeout", str(self.args.timeout),
             "--max-response-bytes", str(self.args.post_work_cleanup_max_response_bytes),
             "--write-evidence",
+            "--cleanup-on-clean",
         )
         cleanup2 = self.run(f"{POST_WORK_CLEANUP_STEP}-cleanup2", cleanup2_argv)
 

@@ -59,6 +59,7 @@ from tools.mother.common.private_state import PrivateStateReadResult, read_priva
 KIND = "main_computer.mother.helper_cleanup2_yagni.v1"
 EVIDENCE_SUBDIR = "mother-helper-cleanup2-yagni"
 CLEANUP2_PREFIX = "mother-helper-cleanup2"
+BLOCK_ADVANCE_WATCH_PREFIX = "mother-block-advance-watch"
 RUNTIME_DIAGNOSTIC_PREFIX = "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC"
 RUNTIME_DIAGNOSTIC_PHASES = (
     "script_start",
@@ -1012,6 +1013,226 @@ def _restart_parent_service(
         "service_uuid": service,
         "restart_scope": "post-cleanup2-parent-status-reconcile",
     }
+
+
+def _cleanup_on_clean_prefixes(controller_id: str) -> tuple[str, str]:
+    controller = _identifier(controller_id, "controller_id")
+    return (
+        f"{CLEANUP2_PREFIX}-{controller}-",
+        f"{BLOCK_ADVANCE_WATCH_PREFIX}-{controller}-",
+    )
+
+
+def _cleanup_on_clean_candidates_from_payload(
+    payload: Any,
+    *,
+    controller_id: str,
+    prefixes: tuple[str, ...],
+    source_endpoint: str,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            name = value.get("name")
+            uuid = value.get("uuid") or value.get("service_uuid") or value.get("id")
+            if isinstance(name, str) and isinstance(uuid, str) and any(name.startswith(prefix) for prefix in prefixes):
+                candidates.append(
+                    {
+                        "controller_id": controller_id,
+                        "service_uuid": uuid,
+                        "service_name": name,
+                        "status": value.get("status"),
+                        "source_endpoint": source_endpoint,
+                    }
+                )
+            for child in value.values():
+                if isinstance(child, (Mapping, list)):
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(payload)
+    return candidates
+
+
+def _cleanup_on_clean_inventory(
+    controller: CoolifyController,
+    *,
+    controller_id: str,
+    prefixes: tuple[str, ...],
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    endpoints = ("/api/v1/services", "/api/v1/resources")
+    observations: list[dict[str, Any]] = []
+    by_uuid: dict[str, dict[str, Any]] = {}
+
+    for endpoint in endpoints:
+        response = _http(
+            controller,
+            "GET",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        observations.append(
+            {
+                "method": "GET",
+                "endpoint": endpoint,
+                "status": response["status"],
+                "ok": response["ok"],
+                "response_sha256": response["response_sha256"],
+                "byte_length": response["byte_length"],
+                "elapsed_ms": response["elapsed_ms"],
+                "controller_id": controller_id,
+                "phase": "cleanup-on-clean-temporary-service-inventory",
+            }
+        )
+
+        if response.get("ok") is True:
+            for candidate in _cleanup_on_clean_candidates_from_payload(
+                response.get("payload"),
+                controller_id=controller_id,
+                prefixes=prefixes,
+                source_endpoint=endpoint,
+            ):
+                by_uuid.setdefault(str(candidate["service_uuid"]), candidate)
+
+    return {
+        "controller_id": controller_id,
+        "prefixes": list(prefixes),
+        "candidate_count": len(by_uuid),
+        "candidates": list(by_uuid.values()),
+        "observations": observations,
+    }
+
+
+def _cleanup_on_clean_delete_candidate(
+    controller: CoolifyController,
+    candidate: Mapping[str, Any],
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    service_uuid = _uuid(candidate.get("service_uuid"), "cleanup_on_clean_service_uuid")
+    service_name = str(candidate.get("service_name") or "")
+    endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+    response = _http(
+        controller,
+        "DELETE",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    return {
+        "method": "DELETE",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "service_uuid": service_uuid,
+        "service_name": service_name,
+        "cleanup_scope": "cleanup-on-clean-temporary-service-sweep",
+    }
+
+
+def _wait_for_cleanup_on_clean_absence(
+    controller: CoolifyController,
+    *,
+    controller_id: str,
+    prefixes: tuple[str, ...],
+    expected_absent_service_uuids: set[str],
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    sleeper: Callable[[float], None],
+) -> dict[str, Any]:
+    expected_absent = {str(item) for item in expected_absent_service_uuids if str(item)}
+    wait_limit = _nonnegative(max_wait_seconds, "cleanup_on_clean_verify_max_wait_seconds")
+    poll_interval = _nonnegative(poll_interval_seconds, "cleanup_on_clean_verify_poll_interval_seconds")
+    started = time.monotonic()
+    observations: list[dict[str, Any]] = []
+    verification_checks: list[dict[str, Any]] = []
+
+    while True:
+        inventory = _cleanup_on_clean_inventory(
+            controller,
+            controller_id=controller_id,
+            prefixes=prefixes,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        observations.extend(inventory["observations"])
+
+        remaining_candidates = list(inventory["candidates"])
+        remaining_expected = [
+            candidate
+            for candidate in remaining_candidates
+            if str(candidate.get("service_uuid") or "") in expected_absent
+        ]
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        verification_checks.append(
+            {
+                "elapsed_ms": elapsed_ms,
+                "candidate_count": inventory["candidate_count"],
+                "expected_absent_count": len(expected_absent),
+                "remaining_expected_absent_count": len(remaining_expected),
+                "remaining_expected_absent_service_uuids": [
+                    str(candidate.get("service_uuid") or "") for candidate in remaining_expected
+                ],
+                "remaining_expected_absent_service_names": [
+                    str(candidate.get("service_name") or "") for candidate in remaining_expected
+                ],
+            }
+        )
+
+        if not remaining_expected:
+            result = dict(inventory)
+            result["verified_absent"] = True
+            result["reason"] = "cleanup-owned-temporary-services-absent"
+            result["expected_absent_service_uuids"] = sorted(expected_absent)
+            result["remaining_expected_absent_candidates"] = []
+            result["verification_checks"] = verification_checks
+            result["observations"] = observations
+            return result
+
+        elapsed = time.monotonic() - started
+        if elapsed >= wait_limit:
+            result = dict(inventory)
+            result["verified_absent"] = False
+            result["reason"] = "cleanup-owned-temporary-services-still-present"
+            result["expected_absent_service_uuids"] = sorted(expected_absent)
+            result["remaining_expected_absent_candidates"] = remaining_expected
+            result["verification_checks"] = verification_checks
+            result["observations"] = observations
+            return result
+
+        remaining_wait = max(0.0, wait_limit - elapsed)
+        sleep_seconds = min(poll_interval, remaining_wait) if poll_interval > 0 else 0.0
+        if sleep_seconds <= 0:
+            result = dict(inventory)
+            result["verified_absent"] = False
+            result["reason"] = "cleanup-owned-temporary-services-still-present-without-poll-interval"
+            result["expected_absent_service_uuids"] = sorted(expected_absent)
+            result["remaining_expected_absent_candidates"] = remaining_expected
+            result["verification_checks"] = verification_checks
+            result["observations"] = observations
+            return result
+
+        sleeper(sleep_seconds)
 
 
 def _wait_for_parent_service_running_healthy(
@@ -2140,6 +2361,8 @@ def _run_block_advance_waiter(
         network,
         controller_id,
         target_node,
+        "--target-service-uuid",
+        service_uuid,
         "--runtime-state-root",
         str(runtime_state_root),
         "--quiet",
@@ -2272,6 +2495,7 @@ def run_helper_cleanup2_yagni(
     progress: ProgressCallback | None = None,
     sleeper: Callable[[float], None] = time.sleep,
     block_advance_waiter_runner: Callable[..., Any] | None = None,
+    cleanup_on_clean: bool = False,
 ) -> dict[str, Any]:
     mode_name = _identifier(mode, "mode")
     if mode_name not in {"inspect", "execute"}:
@@ -2680,7 +2904,135 @@ def run_helper_cleanup2_yagni(
         "waits": block_advance_waits,
     }
 
-    status = "pass" if patch_ok and cleanup2_ok and parent_restart_ok and block_advance_waiter_ok else "failed"
+    base_status = "pass" if patch_ok and cleanup2_ok and parent_restart_ok and block_advance_waiter_ok else "failed"
+    cleanup_on_clean_sweeps: list[dict[str, Any]] = []
+    cleanup_on_clean_delete_receipts: list[dict[str, Any]] = []
+    cleanup_on_clean_remaining: list[dict[str, Any]] = []
+    cleanup_on_clean_eligible = mode_name == "execute" and base_status == "pass"
+
+    if cleanup_on_clean and cleanup_on_clean_eligible:
+        for controller_id in sorted(cleanup2_targets_by_controller):
+            controller = _controller(private_state, network=network_id, controller_id=controller_id)
+            prefixes = _cleanup_on_clean_prefixes(controller_id)
+
+            before = _cleanup_on_clean_inventory(
+                controller,
+                controller_id=controller_id,
+                prefixes=prefixes,
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                opener=opener,
+            )
+            http_observations.extend(before["observations"])
+
+            delete_receipts: list[dict[str, Any]] = []
+            for candidate in before["candidates"]:
+                try:
+                    receipt = _cleanup_on_clean_delete_candidate(
+                        controller,
+                        candidate,
+                        timeout=request_timeout,
+                        max_response_bytes=response_limit,
+                        opener=opener,
+                    )
+                except Exception as exc:
+                    receipt = {
+                        "method": "DELETE",
+                        "endpoint": f"/api/v1/services/{urllib.parse.quote(str(candidate.get('service_uuid') or ''), safe='')}",
+                        "status": None,
+                        "ok": False,
+                        "error": str(exc),
+                        "service_uuid": str(candidate.get("service_uuid") or ""),
+                        "service_name": str(candidate.get("service_name") or ""),
+                        "cleanup_scope": "cleanup-on-clean-temporary-service-sweep",
+                    }
+                delete_receipts.append(receipt)
+                cleanup_on_clean_delete_receipts.append(receipt)
+
+                if receipt.get("ok") is True:
+                    http_observations.append(
+                        {
+                            key: receipt[key]
+                            for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+                            if key in receipt
+                        }
+                    )
+
+            expected_absent_service_uuids = {
+                str(candidate.get("service_uuid") or "")
+                for candidate in before["candidates"]
+                if candidate.get("service_uuid")
+            }
+            after = _wait_for_cleanup_on_clean_absence(
+                controller,
+                controller_id=controller_id,
+                prefixes=prefixes,
+                expected_absent_service_uuids=expected_absent_service_uuids,
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                max_wait_seconds=wait_limit,
+                poll_interval_seconds=poll_interval,
+                opener=opener,
+                sleeper=sleeper,
+            )
+            http_observations.extend(after["observations"])
+            cleanup_on_clean_remaining.extend(after.get("remaining_expected_absent_candidates", []))
+
+            cleanup_on_clean_sweeps.append(
+                {
+                    "controller_id": controller_id,
+                    "prefixes": list(prefixes),
+                    "before_candidate_count": before["candidate_count"],
+                    "delete_count": len(delete_receipts),
+                    "delete_ok_count": sum(1 for item in delete_receipts if item.get("ok") is True),
+                    "delete_failed_count": sum(1 for item in delete_receipts if item.get("ok") is not True),
+                    "remaining_count": len(after.get("remaining_expected_absent_candidates", [])),
+                    "candidate_count_after_verify": after["candidate_count"],
+                    "verification_reason": after.get("reason"),
+                    "verification_checks": after.get("verification_checks", []),
+                    "before_candidates": before["candidates"],
+                    "delete_receipts": delete_receipts,
+                    "remaining_candidates": after.get("remaining_expected_absent_candidates", []),
+                    "inventory_candidates_after_verify": after["candidates"],
+                    "ok": after.get("verified_absent") is True,
+                }
+            )
+
+    cleanup_on_clean_verified_absent_by_uuid: set[str] = set()
+    for sweep in cleanup_on_clean_sweeps:
+        remaining_uuids = {
+            str(candidate.get("service_uuid") or "")
+            for candidate in sweep.get("remaining_candidates", [])
+        }
+        for candidate in sweep.get("before_candidates", []):
+            service_uuid = str(candidate.get("service_uuid") or "")
+            if service_uuid and service_uuid not in remaining_uuids:
+                cleanup_on_clean_verified_absent_by_uuid.add(service_uuid)
+
+    cleanup_on_clean_delete_by_uuid = {
+        str(item.get("service_uuid")): item
+        for item in cleanup_on_clean_delete_receipts
+        if item.get("service_uuid")
+    }
+    for step in cleanup2_steps:
+        cleanup_uuid = str(step.get("cleanup_service_uuid") or "")
+        if cleanup_uuid in cleanup_on_clean_verified_absent_by_uuid:
+            receipt = cleanup_on_clean_delete_by_uuid[cleanup_uuid]
+            step["delete"] = receipt
+            step["debug_destructive_cleanup2_service_left_for_inspection"] = False
+            completion = step.get("completion")
+            if isinstance(completion, dict):
+                completion["temporary_service_delete"] = receipt
+
+    cleanup_on_clean_sweep_ok = (
+        all(sweep.get("ok") is True for sweep in cleanup_on_clean_sweeps)
+        if cleanup_on_clean_sweeps
+        else None
+    )
+
+    status = base_status
+    if cleanup_on_clean and cleanup_on_clean_eligible and cleanup_on_clean_sweep_ok is not True:
+        status = "failed"
 
     target_count = sum(len(item["helper_names"]) for items in cleanup2_targets_by_controller.values() for item in items)
     return {
@@ -2710,6 +3062,15 @@ def run_helper_cleanup2_yagni(
         "parent_restart_waits": parent_restart_waits,
         "block_advance_waits": block_advance_waits,
         "block_advance_waiter": block_advance_waiter,
+        "cleanup_on_clean": {
+            "requested": bool(cleanup_on_clean),
+            "eligible": cleanup_on_clean_eligible,
+            "performed": bool(cleanup_on_clean_sweeps),
+            "sweeps": cleanup_on_clean_sweeps,
+            "deleted_count": len(cleanup_on_clean_verified_absent_by_uuid),
+            "delete_failed_count": sum(1 for item in cleanup_on_clean_delete_receipts if item.get("ok") is not True),
+            "remaining_count": len(cleanup_on_clean_remaining),
+        },
         "http_observations": http_observations,
         "summary": {
             "topology_imported": True,
@@ -2723,6 +3084,14 @@ def run_helper_cleanup2_yagni(
             "cleanup2_controller_count": len(cleanup2_targets_by_controller),
             "cleanup2_performed": mode_name == "execute" and bool(cleanup2_steps),
             "cleanup2_passed": bool(cleanup2_steps) and all(step.get("status") == "pass" for step in cleanup2_steps) if mode_name == "execute" else None,
+            "cleanup_on_clean_requested": bool(cleanup_on_clean),
+            "cleanup_on_clean_eligible": cleanup_on_clean_eligible,
+            "cleanup_on_clean_performed": bool(cleanup_on_clean_sweeps),
+            "cleanup_on_clean_sweep_count": len(cleanup_on_clean_sweeps),
+            "cleanup_on_clean_deleted_count": len(cleanup_on_clean_verified_absent_by_uuid),
+            "cleanup_on_clean_delete_failed_count": sum(1 for item in cleanup_on_clean_delete_receipts if item.get("ok") is not True),
+            "cleanup_on_clean_remaining_count": len(cleanup_on_clean_remaining),
+            "cleanup_on_clean_all_deleted": cleanup_on_clean_sweep_ok,
             "cleanup2_runtime_diagnostics_observed_count": sum(
                 1
                 for step in cleanup2_steps
@@ -2757,6 +3126,7 @@ def run_helper_cleanup2_yagni(
                 }
                 for step in cleanup2_steps
                 if step.get("cleanup_service_uuid")
+                and step.get("debug_destructive_cleanup2_service_left_for_inspection") is True
             ],
             "post_cleanup_readback_count": len(post_cleanup_readbacks),
             "post_cleanup_readbacks_all_mimics_in_saved_compose": (
@@ -2817,6 +3187,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
     parser.add_argument("--write-evidence", action="store_true")
     parser.add_argument("--quiet-progress", action="store_true")
+    parser.add_argument(
+        "--cleanup-on-clean",
+        action="store_true",
+        help="after a clean/pass run, delete cleanup-owned temporary Coolify services by prefix",
+    )
     return parser
 
 
@@ -2838,6 +3213,7 @@ def main(argv: list[str] | None = None) -> int:
             max_wait_seconds=args.max_wait_seconds,
             poll_interval_seconds=args.poll_interval_seconds,
             progress=progress,
+            cleanup_on_clean=args.cleanup_on_clean,
         )
         if args.write_evidence:
             result = dict(result)
