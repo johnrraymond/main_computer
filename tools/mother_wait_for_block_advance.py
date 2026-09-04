@@ -2214,7 +2214,7 @@ def run_block_advance_watch(
     target_service_uuid: str | None = None,
     timeout: float = 30.0,
     max_response_bytes: int = 4 * 1024 * 1024,
-    max_wait_seconds: float = 900.0,
+    max_wait_seconds: float = 600.0,
     poll_interval_seconds: float = 10.0,
     leave_service: bool = False,
     delete_on_failure: bool = False,
@@ -2688,7 +2688,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-chain-id", type=int)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
-    parser.add_argument("--max-wait-seconds", type=float, default=900.0)
+    parser.add_argument("--max-wait-seconds", type=float, default=600.0)
     parser.add_argument("--poll-interval-seconds", type=float, default=10.0)
     parser.add_argument("--leave-service", action="store_true", help="Leave the temporary diagnostic service for manual log inspection")
     parser.add_argument("--delete-on-failure", action="store_true", help="Delete the temporary service even when the diagnostic fails")

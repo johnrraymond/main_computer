@@ -8,6 +8,7 @@ Besu RPC routes are intentionally outside this helper.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import ipaddress
 import json
 import re
 import urllib.parse
@@ -69,6 +70,40 @@ def _valid_host(value: Any) -> str | None:
     if not text or any(ch.isspace() for ch in text) or "/" in text or "\\" in text or "\x00" in text:
         return None
     return text
+
+
+def _unusable_advertised_host(value: str) -> bool:
+    text = value.strip().strip("[]")
+    lower = text.rstrip(".").lower()
+    if lower in {"", "localhost", "0.0.0.0", "::", "::1"} or lower.startswith("127."):
+        return True
+    try:
+        parsed = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return parsed.is_loopback or parsed.is_unspecified
+
+
+def validator_route_advertised_host(route: Mapping[str, Any]) -> str | None:
+    """Return the route host safe to advertise in Besu's P2P enode.
+
+    Besu defaults to 127.0.0.1 when --p2p-host is omitted.  Added nodes
+    must fail closed instead of producing loopback or wildcard enodes.
+    """
+
+    for key in ("advertised_host", "vpn_ip", "p2p_host", "host"):
+        candidate = _valid_host(route.get(key))
+        if candidate is not None and not _unusable_advertised_host(candidate):
+            return candidate
+
+    for key in ("p2p_endpoint", "endpoint", "enode"):
+        parsed = _endpoint_host_port(route.get(key))
+        if parsed is None:
+            continue
+        candidate, _port = parsed
+        if not _unusable_advertised_host(candidate):
+            return candidate
+    return None
 
 
 def _controller_record(network_doc: Mapping[str, Any], controller_id: str) -> Mapping[str, Any]:

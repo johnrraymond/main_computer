@@ -43,7 +43,7 @@ from .deployment_completed_helper_cleanup import (
 from .deployment_genesis import _genesis_policy
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
-from .deployment_validator_routes import ensure_service_validator_route, validator_route_from_record
+from .deployment_validator_routes import ensure_service_validator_route, validator_route_advertised_host, validator_route_from_record
 
 
 _RELEASE_KIND = "main_computer.mother.deployment_node_add_replica_sync_release.v1"
@@ -1386,8 +1386,12 @@ def _replica_sync_compose(
     bootnode_enode: str,
     target_validator_node_id: str,
     target_validator_address: str,
+    candidate_p2p_host: str,
     candidate_p2p_port: int,
 ) -> str:
+    advertised_host = validator_route_advertised_host({"advertised_host": candidate_p2p_host})
+    if advertised_host is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ROUTE_INVALID", "candidate P2P advertised host is missing or not reachable")
     candidate_p2p_port = int(candidate_p2p_port)
     if not 1 <= candidate_p2p_port <= 65535:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ROUTE_INVALID", "candidate P2P port is invalid")
@@ -1440,6 +1444,7 @@ def _replica_sync_compose(
         "      - --sync-mode=FULL",
         "      - --data-storage-format=BONSAI",
         "      - --p2p-enabled=true",
+        f"      - --p2p-host={advertised_host}",
         f"      - --p2p-port={candidate_p2p_port}",
         "      - --discovery-enabled=true",
         f"      - --bootnodes={bootnode_enode}",
@@ -1521,6 +1526,7 @@ def _compose_report(*, observed: str, expected: str, node: str) -> dict[str, Any
         "uses_node_private_key_file": "--node-private-key-file=/config/nodekey" in observed_text,
         "sync_mode_full": "--sync-mode=FULL" in observed_text,
         "bootnode_present": "--bootnodes=enode://" in observed_text,
+        "p2p_advertised_host_enabled": "--p2p-host=" in observed_text and "--p2p-host=127.0.0.1" not in observed_text,
         "p2p_container_port_enabled": f"--p2p-port={expected_p2p_port}" in observed_text,
         "host_p2p_tcp_port_absent": f"{expected_p2p_port}:{expected_p2p_port}/tcp" not in observed_text,
         "host_p2p_udp_port_absent": f"{expected_p2p_port}:{expected_p2p_port}/udp" not in observed_text,
@@ -1654,6 +1660,9 @@ def build_node_add_replica_sync_release(
         candidate_route = identity_evidence.get("prepared_post_add_topology", {}).get("target_validator_route")
     if not isinstance(candidate_route, Mapping):
         candidate_route = validator_route_from_record(target) or {}
+    candidate_p2p_host = validator_route_advertised_host(candidate_route)
+    if candidate_p2p_host is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ROUTE_INVALID", "candidate validator route advertised P2P host is missing or not reachable")
     candidate_p2p_port = int(candidate_route.get("p2p_port") or 30303)
     if not 1 <= candidate_p2p_port <= 65535:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ROUTE_INVALID", "candidate validator route P2P port is invalid")
@@ -1668,6 +1677,7 @@ def build_node_add_replica_sync_release(
         bootnode_enode=bootnode["enode"],
         target_validator_node_id=target_validator_node_id,
         target_validator_address=target_validator,
+        candidate_p2p_host=candidate_p2p_host,
         candidate_p2p_port=candidate_p2p_port,
     )
     compose_bytes = compose.encode("utf-8")
@@ -1711,6 +1721,7 @@ def build_node_add_replica_sync_release(
             "expected_validator_set": expected_validators,
             "target_validator_address": target_validator,
             "candidate_validator_route": dict(candidate_route),
+            "candidate_p2p_host": candidate_p2p_host,
             "candidate_p2p_port": candidate_p2p_port,
             "bootnode": bootnode,
             "replica_node_identity_source": "runtime-generated-non-validator",
@@ -1726,6 +1737,7 @@ def build_node_add_replica_sync_release(
                 "host_rpc_mapping_present": False,
                 "host_p2p_mapping_present": False,
                 "host_p2p_publication_authorized": False,
+                "candidate_p2p_host": candidate_p2p_host,
                 "candidate_p2p_port": candidate_p2p_port,
             },
             "preconditions": [

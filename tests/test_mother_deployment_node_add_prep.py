@@ -1259,6 +1259,8 @@ def test_add_node_replica_sync_release_authorizes_sync_only(tmp_path: Path) -> N
     assert release["proof_plan"]["replica_node_identity_source"] == "runtime-generated-non-validator"
     compose = release["proof_plan"]["sync_compose"]["canonical_text"]
     assert "MC_MOTHER_VALIDATOR_PRIVATE_KEY" not in compose
+    assert "--p2p-host=" in compose
+    assert "--p2p-host=127.0.0.1" not in compose
     assert "od -An -N32 -tx1 /dev/urandom" in compose
     assert "replica node identity is the target validator identity" in compose
 

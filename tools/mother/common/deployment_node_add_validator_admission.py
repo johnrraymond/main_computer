@@ -46,7 +46,7 @@ from .deployment_completed_helper_cleanup import (
 from .deployment_node_add_replica_sync import verify_node_add_replica_sync_evidence
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
-from .deployment_validator_routes import ensure_service_validator_route, validator_route_from_record
+from .deployment_validator_routes import ensure_service_validator_route, validator_route_advertised_host, validator_route_from_record
 from .ethereum_identity import checksum_address
 
 
@@ -707,10 +707,14 @@ def _candidate_activation_compose(
     genesis_sha256: str,
     target_node_id: str,
     desired_validators: Iterable[str],
+    candidate_p2p_host: str,
     candidate_p2p_port: int,
     candidate_validator_route: Mapping[str, Any] | None = None,
     proof_public_host: str | None = None,
 ) -> str:
+    advertised_host = validator_route_advertised_host({"advertised_host": candidate_p2p_host})
+    if advertised_host is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate P2P advertised host is missing or not reachable")
     candidate_p2p_port = int(candidate_p2p_port)
     if not 1 <= candidate_p2p_port <= 65535:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate P2P port is invalid")
@@ -784,6 +788,7 @@ def _candidate_activation_compose(
         "      - --sync-mode=FULL",
         "      - --data-storage-format=BONSAI",
         "      - --p2p-enabled=true",
+        f"      - --p2p-host={advertised_host}",
         f"      - --p2p-port={candidate_p2p_port}",
         "      - --discovery-enabled=true",
         f"      - --bootnodes={bootnode_enode}",
@@ -1342,6 +1347,9 @@ def _load_sync_context(
         candidate_route = proof_summary.get("candidate_validator_route") if isinstance(proof_summary.get("candidate_validator_route"), Mapping) else None
     if not isinstance(candidate_route, Mapping):
         candidate_route = validator_route_from_record(target) or {}
+    candidate_p2p_host = validator_route_advertised_host(candidate_route)
+    if candidate_p2p_host is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route advertised P2P host is missing or not reachable")
     candidate_p2p_port = int(candidate_route.get("p2p_port") or proof_summary.get("candidate_p2p_port") or 30303)
     if not 1 <= candidate_p2p_port <= 65535:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route P2P port is invalid")
@@ -1374,6 +1382,7 @@ def _load_sync_context(
         genesis_sha256=genesis_sha256,
         target_node_id=target_node_id,
         desired_validators=desired_set,
+        candidate_p2p_host=candidate_p2p_host,
         candidate_p2p_port=candidate_p2p_port,
         candidate_validator_route=candidate_route,
         proof_public_host=proof_public_host,
@@ -1407,6 +1416,7 @@ def _load_sync_context(
         "candidate_validator_enode": candidate_validator_enode,
         "candidate_validator_enode_sha256": hashlib.sha256(candidate_validator_enode.encode("utf-8")).hexdigest(),
         "candidate_validator_route": dict(candidate_route),
+        "candidate_p2p_host": candidate_p2p_host,
         "candidate_p2p_port": candidate_p2p_port,
         "candidate_activation_proof_endpoint": dict(candidate_activation_proof_endpoint),
         "service_routes": service_routes,
@@ -1494,6 +1504,7 @@ def build_node_add_validator_admission_release(
             "validator_node_id_sha256": context["target_validator_node_id_sha256"],
             "validator_enode_sha256": context["candidate_validator_enode_sha256"],
             "validator_route": dict(context["candidate_validator_route"]),
+            "p2p_host": context["candidate_p2p_host"],
             "p2p_port": context["candidate_p2p_port"],
             "p2p_endpoint": context["candidate_validator_route"].get("p2p_endpoint"),
         },
@@ -1511,6 +1522,7 @@ def build_node_add_validator_admission_release(
             "genesis_sha256": context["genesis_sha256"],
             "bootnode": dict(context["bootnode"]),
             "candidate_validator_route": dict(context["candidate_validator_route"]),
+            "candidate_p2p_host": context["candidate_p2p_host"],
             "candidate_p2p_port": context["candidate_p2p_port"],
             "candidate_activation_proof_endpoint": dict(context["candidate_activation_proof_endpoint"]),
             "service_routes": {node: dict(route) for node, route in context["service_routes"].items()},

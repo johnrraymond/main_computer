@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from tools.mother.common.deployment_validator_routes import (
     allocate_candidate_validator_route,
     ensure_service_validator_route,
+    validator_route_advertised_host,
 )
 
 
@@ -133,3 +134,16 @@ def test_existing_service_route_is_returned_exactly_for_bootnode_selection() -> 
     assert route["vpn_ip"] == "10.116.0.3"
     assert route["p2p_port"] == 30304
     assert route["p2p_endpoint"] == "10.116.0.3:30304"
+
+
+def test_validator_route_advertised_host_rejects_loopback_and_wildcard() -> None:
+    assert validator_route_advertised_host({"advertised_host": "127.0.0.1"}) is None
+    assert validator_route_advertised_host({"advertised_host": "0.0.0.0"}) is None
+    assert validator_route_advertised_host({"p2p_endpoint": "127.0.0.1:30303"}) is None
+
+
+def test_validator_route_advertised_host_accepts_route_sources() -> None:
+    assert validator_route_advertised_host({"advertised_host": "10.116.0.3"}) == "10.116.0.3"
+    assert validator_route_advertised_host({"vpn_ip": "10.116.0.4"}) == "10.116.0.4"
+    assert validator_route_advertised_host({"p2p_endpoint": "10.116.0.5:30305"}) == "10.116.0.5"
+    assert validator_route_advertised_host({"enode": "enode://" + "a" * 128 + "@10.116.0.6:30306"}) == "10.116.0.6"
