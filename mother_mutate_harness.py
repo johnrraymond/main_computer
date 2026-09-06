@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.mother.common.canonical import canonical_json
+from tools.mother.common.static_node_precleanup_gate import build_static_node_precleanup_argv
 
 
 COMMON_STEPS = [
@@ -987,15 +988,6 @@ class Harness:
         ])
         return argv
 
-    def _detect_topology_failed_on_stale_evidence_age(self, proc: subprocess.CompletedProcess[str]) -> bool:
-        if self.args.operation != "add-node":
-            return False
-        combined = "\n".join([proc.stdout or "", proc.stderr or ""])
-        return (
-            "MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_STALE" in combined
-            and "topology evidence is outside the freshness window" in combined
-        )
-
     def mutations_allowed(self) -> bool:
         return bool(self.args.execute_mutations and (self.args.yes_i_know_this_mutates_target_host or self.args.yes_i_know_this_mutates_coolify_a))
 
@@ -1032,10 +1024,6 @@ class Harness:
         if proc.returncode != 0:
             if allow_failure and obj is not None:
                 return obj
-            if step == "detect-topology" and self._detect_topology_failed_on_stale_evidence_age(proc):
-                print()
-                print(quote_command(self.fresh_empty_topology_refresh_cmd()))
-                raise SystemExit(proc.returncode)
             print(f"\n{step} failed with exit code {proc.returncode}.")
             if obj is not None:
                 evidence_path = pick(obj, "evidence.path", "evidence_path")
@@ -1754,6 +1742,27 @@ class Harness:
             self.state["post_work_cleanup_results"] = []
             return
 
+        static_node_precleanup = None
+        if self.args.operation == "add-node":
+            static_node_precleanup_argv = build_static_node_precleanup_argv(
+                repo_root=self.repo_root,
+                network=self.args.network,
+                runtime_state_root=self.args.runtime_state_root,
+                topology_evidence=completion_evidence,
+                acknowledged_topology_evidence_sha256=completion_evidence_sha256,
+                exclude_nodes=(),
+                preserve_services=not self.args.delete_static_node_precleanup_services,
+                probe_node_info=False,
+                max_wait_seconds=self.args.post_work_cleanup_max_wait_seconds,
+                poll_interval_seconds=self.args.poll_interval_seconds,
+                timeout=self.args.timeout,
+                max_response_bytes=self.args.post_work_cleanup_max_response_bytes,
+            )
+            static_node_precleanup = self.run(
+                f"{POST_WORK_CLEANUP_STEP}-static-node-precleanup",
+                static_node_precleanup_argv,
+            )
+
         cleanup1_argv = self.cleanup1_cmd(
             "execute",
             "--runtime-state-root", self.args.runtime_state_root,
@@ -1784,7 +1793,17 @@ class Harness:
         )
         cleanup2 = self.run(f"{POST_WORK_CLEANUP_STEP}-cleanup2", cleanup2_argv)
 
-        self.state["post_work_cleanup_results"] = [
+        results: list[dict[str, Any]] = []
+        if static_node_precleanup is not None:
+            results.append({
+                "step": "static-node-precleanup",
+                "script": "mother_bootnode_precleanup.py",
+                "status": static_node_precleanup.get("status"),
+                "evidence": pick(static_node_precleanup, "evidence.path", "evidence_path"),
+                "evidence_sha256": pick(static_node_precleanup, "evidence.sha256", "evidence_sha256"),
+            })
+
+        results.extend([
             {
                 "step": "cleanup1",
                 "script": "mother_post_work_cleanup_v2.py",
@@ -1799,7 +1818,9 @@ class Harness:
                 "evidence": pick(cleanup2, "evidence.path", "evidence_path"),
                 "evidence_sha256": pick(cleanup2, "evidence.sha256", "evidence_sha256"),
             },
-        ]
+        ])
+
+        self.state["post_work_cleanup_results"] = results
 
     def methods(self) -> dict[str, Any]:
         return {
@@ -1959,6 +1980,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--post-work-cleanup-max-wait-seconds", type=float, default=180.0)
     parser.add_argument("--post-work-cleanup-max-response-bytes", type=int, default=12 * 1024 * 1024)
+    parser.add_argument(
+        "--delete-static-node-precleanup-services",
+        action="store_true",
+        help="delete temporary static-node writer services after successful add-node precleanup; default preserves them for inspection",
+    )
     return parser
 
 

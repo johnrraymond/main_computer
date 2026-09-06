@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
@@ -29,6 +30,27 @@ A_NODE = "mainneta-super1"
 A_UUID = "pc20bsxvq3ykjnpzque08l63"
 C_NODE = "mainnetc-super1"
 C_UUID = "t125pkvf4z1v3ipzwtgn2t38"
+
+
+def _static_node_precleanup_pass(**kwargs: Any) -> dict[str, Any]:
+    return {
+        "status": "pass",
+        "policy": {"live_mutation_performed": True},
+        "summary": {
+            "write_count": 2,
+            "delete_count": 0,
+            "writer_service_count": 2,
+            "writer_service_passed_count": 2,
+        },
+        "plan": {
+            "excluded_nodes": list(kwargs.get("exclude_nodes", [])),
+        },
+    }
+
+
+@pytest.fixture(autouse=True)
+def _default_static_node_precleanup_for_remove_do_v2(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(node_remove_do_v2_module, "run_static_node_precleanup_gate", _static_node_precleanup_pass)
 
 
 class _NodeRemoveOpener:
@@ -241,6 +263,7 @@ def test_cli_exposes_documented_remove_node_stage_surface() -> None:
             "actions/deployment-node-remove-do-releases/example.json",
             "--acknowledge-release-sha256",
             "0" * 64,
+            "--delete-static-node-precleanup-services",
             "--execute",
         ]
     )
@@ -1663,6 +1686,173 @@ def _write_remove_do_release_for_test(tmp_path: Path):
     return paths, private_state, release_path, release_sha
 
 
+def test_remove_node_do_evidence_sensitive_failure_reports_redacted_path(tmp_path: Path) -> None:
+    _, paths, _private_state = _install(tmp_path)
+    evidence = {
+        "kind": node_remove_do_v2_module._EVIDENCE_KIND,
+        "completed_at": "2026-08-11T19:24:00Z",
+        "service_removal": {
+            "status": "failed",
+            "diagnostics": [
+                {"message": "provider returned secret storage policy violation"},
+            ],
+        },
+    }
+
+    with pytest.raises(node_remove_do_v2_module.MotherDeploymentNodeRemoveDoError) as raised:
+        node_remove_do_v2_module._write_evidence(
+            paths,
+            evidence,
+            operation=_operation("write-remove-do-sensitive-diagnostics"),
+        )
+
+    assert raised.value.code == "MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID"
+    message = str(raised.value)
+    assert "sensitive marker 'secret'" in message
+    assert "$.service_removal.diagnostics[0].message" in message
+    assert "value_length=" in message
+    assert "provider returned secret storage policy violation" not in message
+
+
+def test_remove_node_do_evidence_kind_failure_reports_observed_kind(tmp_path: Path) -> None:
+    _, paths, _private_state = _install(tmp_path)
+
+    with pytest.raises(node_remove_do_v2_module.MotherDeploymentNodeRemoveDoError) as raised:
+        node_remove_do_v2_module._write_evidence(
+            paths,
+            {"kind": "wrong.kind", "completed_at": "2026-08-11T19:24:00Z"},
+            operation=_operation("write-remove-do-kind-diagnostics"),
+        )
+
+    assert raised.value.code == "MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID"
+    assert "invalid kind 'wrong.kind'" in str(raised.value)
+    assert node_remove_do_v2_module._EVIDENCE_KIND in str(raised.value)
+
+
+def test_remove_node_do_v2_runs_static_node_precleanup_before_survivor_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+    events: list[str] = []
+    precleanup_calls: list[dict[str, Any]] = []
+
+    def fake_precleanup(**kwargs: Any) -> dict[str, Any]:
+        events.append("static-node-precleanup")
+        precleanup_calls.append(kwargs)
+        return _static_node_precleanup_pass(**kwargs)
+
+    def fake_cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        events.append(f"survivor-cleanup:{kwargs['node']}")
+        return {"status": "pass", "summary": {"clean": True, "complete": True}}
+
+    def fake_remove(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        events.append(f"service-removal:{kwargs['node']}")
+        return {"status": "pass", "already_absent": False}
+
+    monkeypatch.setattr(node_remove_do_v2_module, "run_static_node_precleanup_gate", fake_precleanup)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_completed_mother_helper_cleanup", fake_cleanup)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_node_removal", fake_remove)
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        delete_static_node_precleanup_services=False,
+        operation=_operation("execute-remove-do-static-precleanup-order"),
+        opener=_NodeRemoveDoOpener(),
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "pass"
+    assert events[0] == "static-node-precleanup"
+    assert events[-1] == "service-removal:mainneta-super1"
+    assert any(item.startswith("survivor-cleanup:") for item in events[1:-1])
+
+    call = precleanup_calls[0]
+    assert call["network"] == "mainnet"
+    assert call["runtime_state_root"] == paths.root.parent
+    assert call["exclude_nodes"] == ["mainneta-super1"]
+    assert call["preserve_services"] is True
+    assert call["probe_node_info"] is False
+    assert call["failure_code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_FAILED"
+    assert call["context"] == "survivor cleanup"
+    assert call["topology_evidence"]
+    assert call["acknowledged_topology_evidence_sha256"]
+
+
+def test_remove_node_do_v2_static_node_precleanup_failure_stops_cleanup_and_service_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+
+    def fake_precleanup(**kwargs: Any) -> dict[str, Any]:
+        raise node_remove_do_v2_module.StaticNodePrecleanupGateError(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_FAILED",
+            "static-node precleanup did not pass before survivor cleanup",
+        )
+
+    def fail_cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("survivor cleanup must not run after static-node precleanup failure")
+
+    def fail_remove(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("target service removal must not run after static-node precleanup failure")
+
+    monkeypatch.setattr(node_remove_do_v2_module, "run_static_node_precleanup_gate", fake_precleanup)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_completed_mother_helper_cleanup", fail_cleanup)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_node_removal", fail_remove)
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-static-precleanup-failure"),
+        opener=_NodeRemoveDoOpener(),
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_FAILED"
+    assert result["summary"]["service_deletion_performed"] is False
+    assert result["policy"]["static_node_precleanup_live_mutation_performed"] is False
+
+
+def test_remove_node_do_v2_records_static_node_precleanup_mutation_in_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+
+    monkeypatch.setattr(node_remove_do_v2_module, "run_static_node_precleanup_gate", _static_node_precleanup_pass)
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-static-precleanup-evidence"),
+        opener=_NodeRemoveDoOpener(),
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["static_node_precleanup"]["status"] == "pass"
+    assert result["policy"]["static_node_precleanup_required"] is True
+    assert result["policy"]["static_node_precleanup_performed"] is True
+    assert result["policy"]["static_node_precleanup_live_mutation_performed"] is True
+    assert result["summary"]["static_node_precleanup_write_count"] == 2
+    assert result["summary"]["static_node_precleanup_writer_service_count"] == 2
+    assert result["summary"]["live_mutation_performed"] is True
+
+
 def test_remove_node_do_release_and_execution_deletes_after_survivor_vote_guardians(tmp_path: Path) -> None:
     _, paths, private_state = _install(tmp_path)
     baseline_path, baseline_sha = _write_t3_baseline_for_remove_prep(paths, private_state)
@@ -2485,11 +2675,13 @@ def test_remove_node_do_cli_exposes_release_verify_do_and_evidence() -> None:
             "actions/deployment-node-remove-do-releases/example.json",
             "--acknowledge-release-sha256",
             "0" * 64,
+            "--delete-static-node-precleanup-services",
             "--execute",
         ]
     )
     assert do_args.command == "remove-node"
     assert do_args.remove_node_phase == "do"
+    assert do_args.delete_static_node_precleanup_services is True
     assert do_args.execute is True
 
     finalize_args = parser.parse_args(

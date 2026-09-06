@@ -305,18 +305,30 @@ def test_add_node_harness_runs_cleanup1_then_cleanup2_once(tmp_path: Path) -> No
     instance.step_post_work_cleanup()
 
     assert [step for step, _ in captured] == [
+        "post-work-cleanup-static-node-precleanup",
         "post-work-cleanup-cleanup1",
         "post-work-cleanup-cleanup2",
     ]
 
-    cleanup1_argv = captured[0][1]
+    static_precleanup_argv = captured[0][1]
+    assert static_precleanup_argv[1].endswith("tools/mother_bootnode_precleanup.py")
+    assert static_precleanup_argv[2] == "mainnet"
+    assert "--execute" in static_precleanup_argv
+    assert "--allow-mutation" in static_precleanup_argv
+    assert "--no-live-node-info" in static_precleanup_argv
+    assert "--preserve-services" in static_precleanup_argv
+    assert "--exclude-node" not in static_precleanup_argv
+    assert static_precleanup_argv[static_precleanup_argv.index("--topology-evidence") + 1] == evidence_path
+    assert static_precleanup_argv[static_precleanup_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
+
+    cleanup1_argv = captured[1][1]
     assert cleanup1_argv[1].endswith("tools/mother_post_work_cleanup_v2.py")
     assert cleanup1_argv[2] == "execute"
     assert "--cleanup-all" in cleanup1_argv
     assert cleanup1_argv[cleanup1_argv.index("--topology-evidence") + 1] == evidence_path
     assert cleanup1_argv[cleanup1_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
 
-    cleanup2_argv = captured[1][1]
+    cleanup2_argv = captured[2][1]
     assert cleanup2_argv[1].endswith("tools/mother_helper_cleanup2_yagni.py")
     assert cleanup2_argv[2] == "execute"
     assert "--cleanup-all" not in cleanup2_argv
@@ -338,8 +350,9 @@ def test_add_node_harness_runs_cleanup1_then_cleanup2_once(tmp_path: Path) -> No
     }
     assert forbidden.isdisjoint(cleanup1_argv)
     assert forbidden.isdisjoint(cleanup2_argv)
-    assert instance.state["post_work_cleanup_results"][0]["step"] == "cleanup1"
-    assert instance.state["post_work_cleanup_results"][1]["step"] == "cleanup2"
+    assert instance.state["post_work_cleanup_results"][0]["step"] == "static-node-precleanup"
+    assert instance.state["post_work_cleanup_results"][1]["step"] == "cleanup1"
+    assert instance.state["post_work_cleanup_results"][2]["step"] == "cleanup2"
 
 
 def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_scripts(tmp_path: Path) -> None:
@@ -380,6 +393,7 @@ def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_script
         "post-work-cleanup-cleanup1",
         "post-work-cleanup-cleanup2",
     ]
+    assert all(step != "post-work-cleanup-static-node-precleanup" for step, _ in captured)
     assert captured[0][1][1].endswith("tools/mother_post_work_cleanup_v2.py")
     assert captured[1][1][1].endswith("tools/mother_helper_cleanup2_yagni.py")
     assert "--cleanup-on-clean" in captured[1][1]
@@ -387,6 +401,47 @@ def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_script
     assert captured[1][1][captured[1][1].index("--topology-evidence") + 1] == evidence_path
     assert "deletedservice123" not in captured[0][1]
     assert "deletedservice123" not in captured[1][1]
+
+
+def test_add_node_static_node_precleanup_delete_flag_omits_preserve_services(tmp_path: Path) -> None:
+    args = _parser_args(
+        tmp_path,
+        [
+            "add-node",
+            "--runtime-state-root",
+            str(tmp_path),
+            "--network",
+            "mainnet",
+            "--node",
+            "mainnetc-super2",
+            "--host",
+            "coolify-c",
+            "--run-dir",
+            str(tmp_path / "runs"),
+            "--delete-static-node-precleanup-services",
+        ],
+    )
+    evidence_path, evidence_sha = _cleanup_completion_evidence(tmp_path, operation="add-node")
+    args.post_admission_topology_evidence = evidence_path
+    args.post_admission_topology_evidence_sha256 = evidence_sha
+
+    captured: list[tuple[str, list[str]]] = []
+
+    def fake_run(step: str, argv: list[str], *, allow_failure: bool = False):  # noqa: ARG001
+        captured.append((step, argv))
+        return {
+            "status": "pass",
+            "summary": {"clean": True},
+            "evidence_path": str(tmp_path / f"{step}.json"),
+            "evidence_sha256": "e" * 64,
+        }
+
+    instance = harness.Harness(args)
+    instance.run = fake_run
+    instance.step_post_work_cleanup()
+
+    assert captured[0][0] == "post-work-cleanup-static-node-precleanup"
+    assert "--preserve-services" not in captured[0][1]
 
 
 def test_post_work_cleanup_is_terminal_in_add_and_remove_harness_step_order() -> None:

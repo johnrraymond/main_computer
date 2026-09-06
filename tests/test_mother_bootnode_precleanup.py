@@ -399,6 +399,16 @@ def test_private_state_supplies_node_ids_from_real_mother_node_shape_before_live
         "mainneta-super1",
         "mainnetc-super1",
     }
+    private_state_observations = result["private_state_node_info"]["observations"]
+    assert {
+        item["node"]: item["node_id_source"]
+        for item in private_state_observations
+        if item["ok"]
+    } == {
+        "mainneta-super1": "mother_private_state.validator_identity",
+        "mainnetc-super1": "mother_private_state.validator_identity",
+    }
+    assert all("private_key" not in item.get("node_id_source", "") for item in private_state_observations)
     assert {item.get("skipped") for item in result["live_node_info_observations"]} == {True}
 
 

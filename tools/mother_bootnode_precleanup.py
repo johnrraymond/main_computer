@@ -1638,14 +1638,14 @@ def _collect_private_state_node_info(
             identity = _private_state_validator_identity(private_state, network=network, node=node)
             infos[node] = {
                 "node_id": identity["node_id"],
-                "node_id_source": "mother_private_state.validator_private_key",
+                "node_id_source": "mother_private_state.validator_identity",
                 "validator_ref": identity["validator_ref"],
                 "validator_address": identity["validator_address"],
             }
             observations.append({
                 "node": node,
                 "ok": True,
-                "node_id_source": "mother_private_state.validator_private_key",
+                "node_id_source": "mother_private_state.validator_identity",
                 "validator_ref": identity["validator_ref"],
                 "validator_address": identity["validator_address"],
             })

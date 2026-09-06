@@ -41,6 +41,11 @@ from .deployment_completed_helper_cleanup import (
 )
 from .deployment_node_remove import MotherDeploymentNodeRemoveError, acknowledgement_for, execute_node_removal
 from .deployment_node_remove_prep import verify_node_remove_prep_transaction
+from .static_node_precleanup_gate import (
+    StaticNodePrecleanupGateError,
+    run_static_node_precleanup_gate,
+    topology_evidence_from_mapping,
+)
 from .mother_node_remove_helper_setup import MotherNodeRemoveHelperSetupError, setup_node_remove_helper
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
@@ -185,15 +190,57 @@ def _digest_without(document: Mapping[str, Any], field: str) -> str:
     return hashlib.sha256(canonical_json(payload)).hexdigest()
 
 
-def _contains_sensitive(value: Any) -> bool:
+def _sensitive_path(parts: tuple[str, ...]) -> str:
+    if not parts:
+        return "$"
+    rendered = "$"
+    for part in parts:
+        if part.startswith("["):
+            rendered += part
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part):
+            rendered += f".{part}"
+        else:
+            rendered += f"[{part!r}]"
+    return rendered
+
+
+def _find_sensitive_marker(value: Any, *, path: tuple[str, ...] = ()) -> dict[str, Any] | None:
     if isinstance(value, str):
-        text = value.lower()
-        return any(marker.lower() in text for marker in _SENSITIVE_MARKERS)
+        lowered = value.lower()
+        for marker in _SENSITIVE_MARKERS:
+            if marker.lower() in lowered:
+                return {
+                    "path": _sensitive_path(path),
+                    "marker": marker,
+                    "value_type": "str",
+                    "value_length": len(value),
+                }
+        return None
     if isinstance(value, Mapping):
-        return any(_contains_sensitive(item) for item in value.values())
+        for key, item in value.items():
+            hit = _find_sensitive_marker(item, path=(*path, str(key)))
+            if hit:
+                return hit
+        return None
     if isinstance(value, (list, tuple, set)):
-        return any(_contains_sensitive(item) for item in value)
-    return False
+        for index, item in enumerate(value):
+            hit = _find_sensitive_marker(item, path=(*path, f"[{index}]"))
+            if hit:
+                return hit
+        return None
+    return None
+
+
+def _format_sensitive_hit(hit: Mapping[str, Any]) -> str:
+    return (
+        f"sensitive marker {hit.get('marker')!r} at {hit.get('path')} "
+        f"(value_type={hit.get('value_type')}, "
+        f"value_length={hit.get('value_length')})"
+    )
+
+
+def _contains_sensitive(value: Any) -> bool:
+    return _find_sensitive_marker(value) is not None
 
 
 def _relative(paths: PrivateStatePaths, path: Path, *, label: str) -> str:
@@ -1951,8 +1998,13 @@ def build_node_remove_do_release(
         "next_phase": f"remove-node-do-{verified['network']}",
     }
     release["node_remove_do_release_sha256"] = _digest_without(release, "node_remove_do_release_sha256")
-    if _contains_sensitive(release):
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_SENSITIVE", "node-removal do release contains sensitive material")
+    sensitive_hit = _find_sensitive_marker(release)
+    if sensitive_hit:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_SENSITIVE",
+            "node-removal do release contains sensitive material: "
+            + _format_sensitive_hit(sensitive_hit),
+        )
     return release
 
 
@@ -1963,8 +2015,18 @@ def write_node_remove_do_release(
     operation: OperationIdentity,
 ) -> tuple[Path, str]:
     document = dict(release)
-    if document.get("kind") != _RELEASE_KIND or _contains_sensitive(document):
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "node-removal do release is malformed or sensitive")
+    if document.get("kind") != _RELEASE_KIND:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID",
+            f"node-removal do release has invalid kind {document.get('kind')!r}; expected {_RELEASE_KIND!r}",
+        )
+    sensitive_hit = _find_sensitive_marker(document)
+    if sensitive_hit:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID",
+            "node-removal do release contains sensitive material: "
+            + _format_sensitive_hit(sensitive_hit),
+        )
     digest = _digest_without(document, "node_remove_do_release_sha256")
     if document.get("node_remove_do_release_sha256") != digest:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "node-removal do release digest mismatch")
@@ -1995,13 +2057,22 @@ def verify_node_remove_do_release(
 ) -> dict[str, Any]:
     document, _, _file_sha = _canonical_under(paths, Path(release_path), _RELEASE_DIRECTORY, "node-removal do release")
     digest = _digest_without(document, "node_remove_do_release_sha256")
-    if (
-        document.get("kind") != _RELEASE_KIND
-        or document.get("mother_binding") != _binding(private_state)
-        or document.get("node_remove_do_release_sha256") != digest
-        or _contains_sensitive(document)
-    ):
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "node-removal do release is invalid")
+    if document.get("kind") != _RELEASE_KIND:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID",
+            f"node-removal do release has invalid kind {document.get('kind')!r}; expected {_RELEASE_KIND!r}",
+        )
+    if document.get("mother_binding") != _binding(private_state):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "node-removal do release Mother binding mismatch")
+    if document.get("node_remove_do_release_sha256") != digest:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID", "node-removal do release digest mismatch")
+    sensitive_hit = _find_sensitive_marker(document)
+    if sensitive_hit:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_INVALID",
+            "node-removal do release contains sensitive material: "
+            + _format_sensitive_hit(sensitive_hit),
+        )
     age = _age_seconds(document.get("created_at"), now=now)
     if age > max_age_seconds:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_STALE", "node-removal do release is outside the freshness window")
@@ -2080,8 +2151,18 @@ def inspect_node_remove_do_release(
 
 def _write_evidence(paths: PrivateStatePaths, evidence: Mapping[str, Any], *, operation: OperationIdentity) -> tuple[Path, str]:
     document = dict(evidence)
-    if document.get("kind") != _EVIDENCE_KIND or _contains_sensitive(document):
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "node-removal do evidence is malformed or sensitive")
+    if document.get("kind") != _EVIDENCE_KIND:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID",
+            f"node-removal do evidence has invalid kind {document.get('kind')!r}; expected {_EVIDENCE_KIND!r}",
+        )
+    sensitive_hit = _find_sensitive_marker(document)
+    if sensitive_hit:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID",
+            "node-removal do evidence contains sensitive material: "
+            + _format_sensitive_hit(sensitive_hit),
+        )
     payload = canonical_json(document)
     digest = hashlib.sha256(payload).hexdigest()
     root = _ensure_directory(paths, _EVIDENCE_DIRECTORY, operation=operation)
@@ -2110,6 +2191,7 @@ def execute_node_remove_do_release(
     max_wait_seconds: float = 300.0,
     poll_interval_seconds: float = 5.0,
     allow_missing_service: bool = False,
+    delete_static_node_precleanup_services: bool = False,
     max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
     opener: Any = _DEFAULT_OPENER,
     now: datetime | None = None,
@@ -2169,6 +2251,7 @@ def execute_node_remove_do_release(
     survivor_guardian_cleanup: list[dict[str, Any]] = []
     validator_removal_proofs: dict[str, dict[str, Any]] = {}
     validator_removal_proof_sha256_by_voter: dict[str, str] = {}
+    static_node_precleanup: dict[str, Any] | None = None
     service_removal: dict[str, Any] | None = None
     failure: dict[str, str] | None = None
 
@@ -2641,6 +2724,31 @@ def execute_node_remove_do_release(
                 f"validator-removal proof payloads were not verified: {last_statuses!r}",
             )
 
+        try:
+            topology_evidence, topology_sha256 = topology_evidence_from_mapping(
+                release.get("source_baseline_evidence"),
+                invalid_code="MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_BASELINE_INVALID",
+                context="remove-node release source baseline",
+            )
+            static_node_precleanup = run_static_node_precleanup_gate(
+                network=release["network"],
+                runtime_state_root=paths.root.parent,
+                topology_evidence=topology_evidence,
+                acknowledged_topology_evidence_sha256=topology_sha256,
+                exclude_nodes=[release["target"]["node"]],
+                preserve_services=not delete_static_node_precleanup_services,
+                probe_node_info=False,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                opener=opener,
+                failure_code="MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_FAILED",
+                context="survivor cleanup",
+            )
+        except StaticNodePrecleanupGateError as exc:
+            raise _fail(exc.code, str(exc)) from exc
+
         for survivor in release["survivors"]:
             voter = _identifier(survivor["node"], "survivor node")
             controller_id = _identifier(survivor["controller_id"], "survivor controller")
@@ -2743,7 +2851,20 @@ def execute_node_remove_do_release(
     proof_payload_vote_proven = bool(vote_required and guardian_complete)
     service_deleted = bool(service_removal and service_removal.get("status") == "pass" and service_removal.get("already_absent") is not True)
     service_already_absent = bool(service_removal and service_removal.get("already_absent") is True)
-    live_mutation = any(item.get("live_write_acknowledged") is True for item in mutation_receipts) or service_deleted
+    static_node_precleanup_mutated = bool(
+        isinstance(static_node_precleanup, Mapping)
+        and static_node_precleanup.get("policy", {}).get("live_mutation_performed") is True
+    )
+    static_node_precleanup_summary = (
+        static_node_precleanup.get("summary", {})
+        if isinstance(static_node_precleanup, Mapping)
+        else {}
+    )
+    live_mutation = (
+        static_node_precleanup_mutated
+        or any(item.get("live_write_acknowledged") is True for item in mutation_receipts)
+        or service_deleted
+    )
     complete = failure is None and guardian_complete and bool(service_removal and service_removal.get("status") == "pass")
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
@@ -2773,6 +2894,7 @@ def execute_node_remove_do_release(
         "validator_removal_guardian_targets": guardian_targets if 'guardian_targets' in locals() else {},
         "borrowed_survivor_guardians": borrowed_guardians if 'borrowed_guardians' in locals() else {},
         "host_docker_survivor_guardians": host_helper_guardians if 'host_helper_guardians' in locals() else {},
+        "static_node_precleanup": static_node_precleanup,
         "survivor_guardian_cleanup": survivor_guardian_cleanup,
         "service_removal": service_removal,
         "authority": {
@@ -2800,6 +2922,10 @@ def execute_node_remove_do_release(
             "routing_or_topology_published": False,
             "routing_or_topology_withdrawn": bool(release.get("routing_topology_withdrawal", {}).get("authorized")),
             "validator_activation_performed": False,
+            "static_node_precleanup_required": True,
+            "static_node_precleanup_performed": static_node_precleanup is not None,
+            "static_node_precleanup_live_mutation_performed": static_node_precleanup_mutated,
+            "static_node_precleanup_preserve_services": not delete_static_node_precleanup_services,
             "single_node_decommission": bool(release.get("policy", {}).get("single_node_decommission")),
             "validator_removal_vote_required": vote_required,
             "service_deletion_is_first": bool(release.get("policy", {}).get("service_deletion_is_first")),
@@ -2822,7 +2948,16 @@ def execute_node_remove_do_release(
             "validator_removal_proof_voters": sorted(validator_removal_proofs),
             "service_deletion_performed": service_deleted,
             "service_already_absent": service_already_absent,
-            "network_access_performed": bool(mutation_receipts or health_observations or service_removal),
+            "static_node_precleanup_status": (
+                static_node_precleanup.get("status")
+                if isinstance(static_node_precleanup, Mapping)
+                else None
+            ),
+            "static_node_precleanup_write_count": static_node_precleanup_summary.get("write_count", 0),
+            "static_node_precleanup_delete_count": static_node_precleanup_summary.get("delete_count", 0),
+            "static_node_precleanup_writer_service_count": static_node_precleanup_summary.get("writer_service_count", 0),
+            "static_node_precleanup_writer_service_passed_count": static_node_precleanup_summary.get("writer_service_passed_count", 0),
+            "network_access_performed": bool(static_node_precleanup or mutation_receipts or health_observations or service_removal),
             "live_mutation_performed": live_mutation,
             "routing_or_topology_published": False,
             "public_endpoint_created": bool(proof_endpoints) if 'proof_endpoints' in locals() else False,
@@ -2853,8 +2988,20 @@ def verify_node_remove_do_evidence(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     document, _, digest = _canonical_under(paths, Path(evidence_path), _EVIDENCE_DIRECTORY, "node-removal do evidence")
-    if document.get("kind") != _EVIDENCE_KIND or document.get("mother_binding") != _binding(private_state) or _contains_sensitive(document):
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "node-removal do evidence is invalid or sensitive")
+    if document.get("kind") != _EVIDENCE_KIND:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID",
+            f"node-removal do evidence has invalid kind {document.get('kind')!r}; expected {_EVIDENCE_KIND!r}",
+        )
+    if document.get("mother_binding") != _binding(private_state):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "node-removal do evidence Mother binding mismatch")
+    sensitive_hit = _find_sensitive_marker(document)
+    if sensitive_hit:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID",
+            "node-removal do evidence contains sensitive material: "
+            + _format_sensitive_hit(sensitive_hit),
+        )
     age = _age_seconds(document.get("completed_at"), now=now)
     if age > max_age_seconds:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_STALE", "node-removal do evidence is outside the freshness window")

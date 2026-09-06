@@ -580,6 +580,58 @@ def test_detect_topology_staleness_reports_rectification_required_for_absent_sin
     assert result["target"]["validator_address"] == A_VALIDATOR
 
 
+def test_detect_topology_uses_live_checks_not_wall_clock_freshness(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
+    opener = _PresentServicesOpener({"stale-service-uuid": (A_NODE, "running:healthy")})
+
+    result = detect_topology_staleness(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        max_age_seconds=1,
+        now=datetime(2026, 9, 4, 19, 9, 0, tzinfo=timezone.utc),
+        opener=opener,
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["topology_current"] is True
+    assert result["summary"]["topology_stale"] is False
+    assert result["topology_evidence"]["age_seconds"] > 1
+    assert result["present_expected_nodes"] == [A_NODE]
+    assert sorted(request["path"] for request in opener.requests) == [
+        "/api/v1/services",
+        "/api/v1/services",
+        "/api/v1/services/stale-service-uuid",
+    ]
+
+
+def test_add_node_prep_accepts_acknowledged_old_baseline_evidence(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
+
+    prep = build_node_add_prep_transaction(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        target_node=C1_NODE,
+        target_host="coolify-c",
+        mode="soft",
+        baseline_evidence_sha256=evidence_sha,
+        baseline_max_age_seconds=1,
+        created_at="2026-09-04T19:10:00Z",
+        now=datetime(2026, 9, 4, 19, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert prep["source_baseline_evidence"]["sha256"] == evidence_sha
+    assert prep["source_baseline_evidence"]["age_seconds"] > 1
+    assert prep["current_topology"]["nodes"] == [A_NODE]
+    assert prep["post_add_topology"]["nodes"] == [A_NODE, C1_NODE]
+
+
 
 def test_detect_topology_accepts_validator_admission_evidence_without_sensitive_false_positive(tmp_path: Path) -> None:
     _, paths, private_state = _install(tmp_path)
@@ -1185,7 +1237,7 @@ def test_mutate_harness_stops_on_stale_topology_before_prep(tmp_path: Path, monk
     assert exc.value.code == 3
 
 
-def test_mutate_harness_detect_topology_stale_age_failure_prints_fresh_empty_command_only(
+def test_mutate_harness_detect_topology_failure_does_not_offer_age_reset_command(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -1224,14 +1276,9 @@ def test_mutate_harness_detect_topology_stale_age_failure_prints_fresh_empty_com
 
     assert exc.value.code == 2
     captured = capsys.readouterr()
-    expected = mother_mutate_harness.quote_command(harness.fresh_empty_topology_refresh_cmd())
-    assert captured.out.strip().splitlines()[-1] == expected
-    assert "adopt-fresh-empty-topology" in expected
-    assert "--topology-evidence old.json" in expected
-    assert f"--acknowledge-topology-evidence-sha256 {sha}" in expected
-    assert "--max-age-seconds 604800" in expected
-    assert "detect-topology failed with exit code" not in captured.out
-    assert "logs=" not in captured.out
+    assert "detect-topology failed with exit code 2." in captured.out
+    assert "adopt-fresh-empty-topology" not in captured.out
+    assert "logs=" in captured.out
 
 
 def test_mutate_harness_manual_review_prints_live_topology_seal_command(

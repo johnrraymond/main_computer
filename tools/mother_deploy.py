@@ -1270,6 +1270,11 @@ def _parser() -> argparse.ArgumentParser:
     remove_node_do.add_argument("--max-wait-seconds", type=float, default=300.0)
     remove_node_do.add_argument("--poll-interval-seconds", type=float, default=5.0)
     remove_node_do.add_argument("--allow-missing-service", action="store_true")
+    remove_node_do.add_argument(
+        "--delete-static-node-precleanup-services",
+        action="store_true",
+        help="delete temporary static-node writer services after successful remove-node precleanup; default preserves them for inspection",
+    )
     remove_node_do.add_argument("--execute", action="store_true", help="required to perform live mutation")
 
     remove_node_finalize = remove_node_subparsers.add_parser(
@@ -7175,6 +7180,7 @@ def _cmd_remove_node_do(args: argparse.Namespace, private_state) -> int:
         max_wait_seconds=args.max_wait_seconds,
         poll_interval_seconds=args.poll_interval_seconds,
         allow_missing_service=args.allow_missing_service,
+        delete_static_node_precleanup_services=args.delete_static_node_precleanup_services,
         operation=_operation("execute-node-remove-do", args.network, args.operation_id),
     )
     print(json.dumps(result, indent=2, sort_keys=True))

@@ -512,9 +512,10 @@ def _load_baseline(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_BASELINE_CHANGED", "current Mother private-state binding no longer matches baseline evidence")
     if not _baseline_clean(document):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_BASELINE_INVALID", "baseline evidence is not a clean topology proof for add-node prep")
+    # Age is diagnostic only. A baseline evidence file is accepted or rejected by
+    # its acknowledged SHA, network, Mother private-state binding, cleanliness,
+    # and topology contents, not by a freshness window.
     age = _age_seconds(document.get("completed_at"), now=now)
-    if age > max_age_seconds:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_BASELINE_STALE", "baseline evidence is outside the freshness window")
     nodes, validators, chain_id, genesis_sha256, services = _topology_from_baseline(document)
     return document, digest, age, nodes, validators, chain_id, genesis_sha256, services
 

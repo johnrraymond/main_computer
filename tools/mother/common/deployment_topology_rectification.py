@@ -1211,9 +1211,10 @@ def detect_topology_staleness(
     detection_document = _topology_detection_document(document)
     if _contains_sensitive(detection_document):
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_SENSITIVE", "topology evidence contains sensitive material")
+    # Age is diagnostic only. An acknowledged topology evidence file does not
+    # become invalid because wall-clock time passed; the live Coolify checks below
+    # are the authority for whether the topology is current, stale, or split.
     age = _age_seconds(document.get("completed_at"), now=now)
-    if age > max_age_seconds:
-        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_STALE", "topology evidence is outside the freshness window")
 
     nodes, validators, chain_id, genesis_sha, services = _nodes_and_services(detection_document)
     target = _latest_known_target(detection_document, nodes, validators, services)
@@ -2504,9 +2505,10 @@ def verify_empty_topology_rectification_evidence(
         or _contains_sensitive(document)
     ):
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "rectification evidence is invalid")
+    # Age is diagnostic only. Empty-topology rectification evidence is validated
+    # by its digest, binding, policy, and topology contents rather than by
+    # elapsed wall-clock time.
     age = _age_seconds(document.get("completed_at"), now=now)
-    if age > max_age_seconds:
-        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_STALE", "rectification evidence is outside the freshness window")
     clean = all([
         document.get("status") == "pass",
         document.get("failure") is None,
