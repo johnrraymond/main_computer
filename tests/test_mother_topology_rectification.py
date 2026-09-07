@@ -981,6 +981,86 @@ def test_seal_live_current_topology_can_seal_operator_declared_live_subset_for_a
     assert prep["target"]["validator_address_source"] == "mother-private-state"
 
 
+def test_seal_live_current_topology_ignores_undeclared_hint_without_primary_row(
+    tmp_path: Path,
+) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_three_node_stale_c2_topology_evidence(paths, private_state)
+
+    result = seal_live_current_topology(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        actual_nodes=[C1_NODE, C2_NODE],
+        use_live_topology=True,
+        max_age_seconds=864000,
+        write_evidence=True,
+        now=datetime(2026, 9, 4, 22, 8, 9, tzinfo=timezone.utc),
+        opener=_ControllerScopedServicesOpener(
+            {
+                "coolify-a": {
+                    "a1-helper-service": (f"{A_NODE}-cleanup-helper", "running:healthy"),
+                },
+                "coolify-c": {
+                    "live-c1-service": (C1_NODE, "running:healthy"),
+                    "live-c2-service": (C2_NODE, "running:healthy"),
+                },
+            }
+        ),
+        operation=_operation("seal-live-current-topology-c1-c2-with-a1-ghost-hint"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["mode"] == "read-only-live-current-topology-subset-seal"
+    assert result["final_topology"]["nodes"] == [C1_NODE, C2_NODE]
+    assert result["final_topology"]["validator_set"] == [C1_VALIDATOR, C2_VALIDATOR]
+    assert result["topology_diff"]["removed_nodes"] == [A_NODE]
+    assert result["staleness_detection"]["observed_live_node_hints"] == [A_NODE, C1_NODE, C2_NODE]
+    assert result["summary"]["operator_declared_actual_nodes"] == [C1_NODE, C2_NODE]
+    assert result["summary"]["operator_ignored_non_primary_live_node_hints"] == [A_NODE]
+    assert result["final_topology"]["operator_ignored_non_primary_live_node_hints"] == [A_NODE]
+
+
+def test_seal_live_current_topology_rejects_undeclared_exact_primary_live_node(
+    tmp_path: Path,
+) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_three_node_stale_c2_topology_evidence(paths, private_state)
+
+    import pytest
+    from tools.mother.common.deployment_topology_rectification import MotherDeploymentTopologyRectificationError
+
+    with pytest.raises(MotherDeploymentTopologyRectificationError) as exc:
+        seal_live_current_topology(
+            paths,
+            private_state,
+            evidence_path,
+            network="mainnet",
+            acknowledged_topology_evidence_sha256=evidence_sha,
+            actual_nodes=[C1_NODE, C2_NODE],
+            use_live_topology=True,
+            max_age_seconds=864000,
+            now=datetime(2026, 9, 4, 22, 8, 9, tzinfo=timezone.utc),
+            opener=_ControllerScopedServicesOpener(
+                {
+                    "coolify-a": {
+                        "live-a-service": (A_NODE, "running:healthy"),
+                    },
+                    "coolify-c": {
+                        "live-c1-service": (C1_NODE, "running:healthy"),
+                        "live-c2-service": (C2_NODE, "running:healthy"),
+                    },
+                }
+            ),
+            operation=_operation("seal-live-current-topology-c1-c2-with-a1-primary"),
+        )
+
+    assert exc.value.code == "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_MISMATCH"
+    assert str(exc.value) == f"live primary node not declared: {A_NODE}"
+
+
 def test_seal_live_current_topology_subset_requires_exact_live_declaration(tmp_path: Path) -> None:
     _runtime, paths, private_state = _install(tmp_path)
     evidence_path, evidence_sha = _write_validator_admission_topology_evidence(paths, private_state)

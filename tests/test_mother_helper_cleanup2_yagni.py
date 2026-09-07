@@ -14,11 +14,16 @@ from tools.mother.common.private_state import (
     prepare_private_state_bootstrap,
     read_private_state,
 )
-from tools.mother_helper_cleanup2_yagni import run_helper_cleanup2_yagni
+from tools.mother_helper_cleanup2_yagni import (
+    BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS,
+    BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS,
+    run_helper_cleanup2_yagni,
+)
 from tests.test_mother_deployment_executor import TOKEN_C, _operation, _starter_document
 
 
 SERVICE_UUID = "hbu0v62iaea6uuy2360x29ba"
+SERVICE_ID = 276
 CLEANUP2_UUID = "cleanup2serviceuuid"
 OLD_CLEANUP2_UUID = "oldcleanup2serviceuuid"
 WATCH_UUID = "blockwatchserviceuuid"
@@ -162,6 +167,7 @@ class _Cleanup2Opener:
 
     def _parent_service_payload(self):
         payload = {
+            "id": SERVICE_ID,
             "uuid": SERVICE_UUID,
             "name": "mainnetc-super2",
             "status": "running:healthy" if self.parent_restart_requested else "degraded:unhealthy",
@@ -179,22 +185,28 @@ class _Cleanup2Opener:
                     "image": "foundationdb/foundationdb:7.4.6",
                 },
                 {
+                    "id": 582,
                     "name": "mother-add-node-validator-activation-guardian",
                     "uuid": "fn56xb2ew0z1mf3fwcz4n56s",
                     "status": "exited",
                     "image": "python:3.12-alpine",
+                    "service_id": SERVICE_ID,
                 },
                 {
+                    "id": 583,
                     "name": "mother-genesis-proof-guardian",
                     "uuid": "q10fqh85lqjon9r89rq5ni7x",
                     "status": "exited",
                     "image": "python:3.12-alpine",
+                    "service_id": SERVICE_ID,
                 },
                 {
+                    "id": 591,
                     "name": "mother-node-remove-voter-mainnetc_super1",
                     "uuid": "removevoterhelperuuid",
                     "status": "exited",
                     "image": "python:3.12-alpine",
+                    "service_id": SERVICE_ID,
                 },
             ],
             "docker_compose_raw": base64.b64encode((self.patched_compose or _compose()).encode("utf-8")).decode("ascii"),
@@ -369,7 +381,11 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert waiter_argv[2:5] == ["mainnet", "coolify-c", "mainnetc-super2"]
     assert waiter_argv[waiter_argv.index("--target-service-uuid") + 1] == SERVICE_UUID
     assert "--runtime-state-root" in waiter_argv
+    assert waiter_argv[waiter_argv.index("--max-wait-seconds") + 1] == str(BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS)
     assert "--quiet" in waiter_argv
+    assert block_waiter.calls[0]["kwargs"]["timeout"] == BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS
+    assert BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS == 1200.0
+    assert BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS > BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS
     assert sleep_calls == [90.0]
     first_step = result["patch_steps"][0]
     diagnostics = first_step["diagnostics"]
@@ -450,6 +466,38 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
         assert helper["healthcheck"]["test"] == ["CMD-SHELL", "echo ok"]
         assert "while true" in " ".join(helper["command"])
         assert helper["labels"]["main_computer.mother.retired_helper_mimic"] == "true"
+        assert helper["labels"]["coolify.managed"] == "true"
+        assert helper["labels"]["coolify.serviceId"] == str(SERVICE_ID)
+        assert helper["labels"]["coolify.type"] == "service"
+        assert helper["labels"]["coolify.service.subType"] == "application"
+
+    assert services["mother-add-node-validator-activation-guardian"]["labels"]["coolify.name"] == (
+        f"mother-add-node-validator-activation-guardian-{SERVICE_UUID}"
+    )
+    assert services["mother-add-node-validator-activation-guardian"]["labels"]["coolify.service.subId"] == "582"
+    assert services["mother-add-node-validator-activation-guardian"]["labels"]["coolify.service.subName"] == (
+        "mother-add-node-validator-activation-guardian"
+    )
+    assert services["mother-genesis-proof-guardian"]["labels"]["coolify.service.subId"] == "583"
+    assert services["mother-node-remove-voter-mainnetc_super1"]["labels"]["coolify.name"] == (
+        f"mother-node-remove-voter-mainnetc-super1-{SERVICE_UUID}"
+    )
+    assert services["mother-node-remove-voter-mainnetc_super1"]["labels"]["coolify.service.subId"] == "591"
+    assert services["mother-node-remove-voter-mainnetc_super1"]["labels"]["coolify.service.subName"] == (
+        "mother-node-remove-voter-mainnetc-super1"
+    )
+
+    assert diagnostics["rewritten_helper_definitions"][0]["coolify_identity"]["coolify_identity_labels_present"] is True
+    assert diagnostics["rewritten_helper_definitions"][1]["coolify_identity"]["coolify_identity_labels_present"] is True
+    assert diagnostics["rewritten_helper_definitions"][2]["coolify_identity"]["coolify_identity_labels_present"] is True
+    assert diagnostics["rewritten_helper_definitions"][2]["coolify_identity"]["coolify_name_matches_expected_container"] is False
+    assert (
+        diagnostics["rewritten_helper_definitions"][2]["coolify_identity"][
+            "coolify_name_matches_expected_coolify_label_name"
+        ]
+        is True
+    )
+    assert first_step["rewrite_summary"]["coolify_identity_labelled_helper_count"] == 3
 
     assert services["mainnetc-super2"]["image"] == "hyperledger/besu:latest"
     assert services["mother-genesis-init"]["exclude_from_hc"] is True

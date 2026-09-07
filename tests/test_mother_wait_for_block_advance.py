@@ -55,6 +55,23 @@ def test_parser_accepts_explicit_target_service_uuid() -> None:
 
 
 
+
+def test_default_block_advance_wait_is_twenty_minutes() -> None:
+    from tools.mother_wait_for_block_advance import _build_parser
+
+    assert run_block_advance_watch.__kwdefaults__["max_wait_seconds"] == 1200.0
+
+    args = _build_parser().parse_args(
+        [
+            "mainnet",
+            "coolify-a",
+            "mainneta-super1",
+        ]
+    )
+
+    assert args.max_wait_seconds == 1200.0
+
+
 def test_watch_script_uses_proof_guardian_style_python_server() -> None:
     script = _watch_script(
         network="mainnet",

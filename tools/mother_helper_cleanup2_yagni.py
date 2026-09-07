@@ -108,9 +108,19 @@ FORBIDDEN_SERVICE_NAMES = frozenset(
 SHIM_IMAGE = "alpine:3.20"
 SHIM_LABEL = "main_computer.mother.post_work_shim"
 MIMIC_LABEL = "main_computer.mother.retired_helper_mimic"
+COOLIFY_IDENTITY_LABELS = (
+    "coolify.managed",
+    "coolify.serviceId",
+    "coolify.type",
+    "coolify.name",
+    "coolify.service.subId",
+    "coolify.service.subType",
+    "coolify.service.subName",
+)
 PARENT_RESTART_SETTLE_SECONDS = 90.0
 BLOCK_ADVANCE_WAITER_SCRIPT = "tools/mother_wait_for_block_advance.py"
-BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS = 720.0
+BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS = 1200.0
+BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS = 1320.0
 
 class MotherHelperCleanup2YagniError(RuntimeError):
     """Cleanup2 could not produce a trustworthy result."""
@@ -505,7 +515,7 @@ def _safe_scalar(value: object) -> str:
     return ""
 
 
-def _application_records(payload: Any) -> list[dict[str, str]]:
+def _application_records(payload: Any) -> list[dict[str, Any]]:
     payload = _decode_payload(payload)
     if isinstance(payload, list):
         raw_items = payload
@@ -519,16 +529,27 @@ def _application_records(payload: Any) -> list[dict[str, str]]:
     else:
         raw_items = []
 
-    records: list[dict[str, str]] = []
+    records: list[dict[str, Any]] = []
     for item in raw_items:
         if not isinstance(item, Mapping):
             continue
         name = _safe_scalar(item.get("name")).strip()
         uuid = _safe_scalar(item.get("uuid")).strip()
-        status = _safe_scalar(item.get("status")).strip()
+        status = _safe_scalar(item.get("status") or item.get("service_status")).strip()
         image = _safe_scalar(item.get("image")).strip()
         if name and uuid:
-            records.append({"name": name, "uuid": uuid, "status": status, "image": image})
+            records.append(
+                {
+                    "id": _safe_scalar(item.get("id")).strip(),
+                    "name": name,
+                    "uuid": uuid,
+                    "status": status,
+                    "image": image,
+                    "exclude_from_status": item.get("exclude_from_status"),
+                    "service_id": _safe_scalar(item.get("service_id")).strip(),
+                    "updated_at": _safe_scalar(item.get("updated_at")).strip(),
+                }
+            )
     return records
 
 
@@ -625,6 +646,181 @@ def _docker_compose_cli_apply_compose(compose_text: str) -> tuple[str, dict[str,
     return yaml.safe_dump(compose, sort_keys=False), removed
 
 
+def _compose_labels_to_map(labels: object) -> dict[str, str]:
+    """Normalize Compose label forms for diagnostics without changing pass/fail behavior."""
+    if isinstance(labels, Mapping):
+        return {str(key): _safe_scalar(value).strip() for key, value in labels.items()}
+    if isinstance(labels, (list, tuple)):
+        result: dict[str, str] = {}
+        for item in labels:
+            text = str(item)
+            if "=" not in text:
+                continue
+            key, value = text.split("=", 1)
+            key = key.strip()
+            if key:
+                result[key] = value.strip()
+        return result
+    return {}
+
+
+def _compose_label_shape(labels: object) -> str:
+    if isinstance(labels, Mapping):
+        return "mapping"
+    if isinstance(labels, (list, tuple)):
+        return "list"
+    if labels is None:
+        return "missing"
+    return type(labels).__name__
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coolify_label_service_name(name: str) -> str:
+    """Return the service-name spelling Coolify uses in docker labels."""
+    return name.replace("_", "-")
+
+
+def _compose_coolify_labels(labels: object) -> dict[str, str]:
+    """Preserve Coolify's docker identity labels from a service definition."""
+    return {
+        key: value
+        for key, value in _compose_labels_to_map(labels).items()
+        if key.startswith("coolify.") and value
+    }
+
+
+def _expected_coolify_labels_from_application_record(
+    record: Mapping[str, Any],
+    *,
+    service_uuid: str,
+    parent_service_id: object = "",
+) -> dict[str, str]:
+    """Build the minimum Coolify identity labels needed to reconcile a child app container."""
+    helper = _helper_name(record.get("name") or "")
+    service = _uuid(service_uuid, "service_uuid")
+    app_id = _safe_scalar(record.get("id")).strip()
+    service_id = _safe_scalar(record.get("service_id") or parent_service_id).strip()
+    label_name = _coolify_label_service_name(helper)
+
+    labels: dict[str, str] = {
+        "coolify.managed": "true",
+        "coolify.type": "service",
+    }
+    if service_id:
+        labels["coolify.serviceId"] = service_id
+    if helper:
+        labels["coolify.name"] = f"{label_name}-{service}"
+        labels["coolify.service.subName"] = label_name
+    if app_id:
+        labels["coolify.service.subId"] = app_id
+        labels["coolify.service.subType"] = "application"
+    return labels
+
+
+def _helper_coolify_labels_by_name(
+    payload: Any,
+    *,
+    service_uuid: str,
+    helper_names: tuple[str, ...],
+) -> dict[str, dict[str, str]]:
+    decoded = _decode_payload(payload)
+    payload_map = decoded if isinstance(decoded, Mapping) else {}
+    parent_service_id = payload_map.get("id") or payload_map.get("service_id") or ""
+    helper_set = {_helper_name(item) for item in helper_names}
+    result: dict[str, dict[str, str]] = {}
+    for record in _application_records(payload_map):
+        raw_name = record.get("name") or ""
+        if not _helper_allowed(raw_name):
+            continue
+        helper = _helper_name(raw_name)
+        if helper in helper_set:
+            result[helper] = _expected_coolify_labels_from_application_record(
+                record,
+                service_uuid=service_uuid,
+                parent_service_id=parent_service_id,
+            )
+    return result
+
+
+def _status_rollup_poison_candidate(status: object, exclude_from_status: object) -> bool:
+    text = str(status or "").strip().lower()
+    if _truthy(exclude_from_status) or text.endswith(":excluded"):
+        return False
+    return text == "exited" or "unhealthy" in text or text.startswith("degraded")
+
+
+def _coolify_identity_label_diagnostic(labels: object, *, helper_name: str, service_uuid: str) -> dict[str, Any]:
+    normalized = _compose_labels_to_map(labels)
+    selected = {key: normalized.get(key, "") for key in COOLIFY_IDENTITY_LABELS}
+    required = (
+        "coolify.serviceId",
+        "coolify.name",
+        "coolify.service.subId",
+        "coolify.service.subType",
+        "coolify.service.subName",
+    )
+    missing = [key for key in required if not selected.get(key)]
+    expected_container_name = f"{helper_name}-{service_uuid}"
+    expected_coolify_label_name = f"{_coolify_label_service_name(helper_name)}-{service_uuid}"
+    return {
+        "label_shape": _compose_label_shape(labels),
+        "normalized_label_count": len(normalized),
+        "selected_coolify_labels": selected,
+        "coolify_identity_labels_present": not missing,
+        "missing_coolify_identity_labels": missing,
+        "expected_container_name": expected_container_name,
+        "expected_coolify_label_name": expected_coolify_label_name,
+        "coolify_name_matches_expected_container": selected.get("coolify.name") == expected_container_name,
+        "coolify_name_matches_expected_coolify_label_name": selected.get("coolify.name") == expected_coolify_label_name,
+        "coolify_sub_name_matches_helper_name": selected.get("coolify.service.subName") == helper_name,
+        "coolify_sub_name_matches_coolify_label_service_name": (
+            selected.get("coolify.service.subName") == _coolify_label_service_name(helper_name)
+        ),
+    }
+
+
+def _helper_application_record_diagnostic(
+    record: Mapping[str, Any],
+    *,
+    service_uuid: str,
+    parent_service_id: object = "",
+) -> dict[str, Any]:
+    name = str(record.get("name") or "")
+    app_id = str(record.get("id") or "")
+    service_id = str(record.get("service_id") or parent_service_id or "")
+    status = str(record.get("status") or "")
+    exclude_from_status = record.get("exclude_from_status")
+    expected_labels = _expected_coolify_labels_from_application_record(
+        record,
+        service_uuid=service_uuid,
+        parent_service_id=parent_service_id,
+    )
+    return {
+        "id": app_id,
+        "uuid": str(record.get("uuid") or ""),
+        "name": name,
+        "status": status,
+        "image": str(record.get("image") or ""),
+        "exclude_from_status": exclude_from_status,
+        "service_id": service_id,
+        "updated_at": str(record.get("updated_at") or ""),
+        "expected_container_name": f"{name}-{service_uuid}",
+        "expected_coolify_labels": {
+            "coolify.serviceId": expected_labels.get("coolify.serviceId", ""),
+            "coolify.name": expected_labels.get("coolify.name", ""),
+            "coolify.service.subId": expected_labels.get("coolify.service.subId", ""),
+            "coolify.service.subType": expected_labels.get("coolify.service.subType", ""),
+            "coolify.service.subName": expected_labels.get("coolify.service.subName", ""),
+        },
+        "status_rollup_poison_candidate": _status_rollup_poison_candidate(status, exclude_from_status),
+    }
+
+
 def _command_text(value: object) -> str:
     if isinstance(value, list):
         return " ".join(str(item) for item in value)
@@ -662,6 +858,7 @@ def _helper_definition_diagnostic(
 
     labels = definition.get("labels")
     labels_map = labels if isinstance(labels, Mapping) else {}
+    normalized_labels = _compose_labels_to_map(labels)
     command = definition.get("command")
     command_text = _command_text(command)
     healthcheck = definition.get("healthcheck")
@@ -678,6 +875,19 @@ def _helper_definition_diagnostic(
             "main_computer.mother.not_an_activation_guardian",
         )
     }
+    normalized_selected_labels = {
+        key: normalized_labels.get(key)
+        for key in (
+            SHIM_LABEL,
+            MIMIC_LABEL,
+            "main_computer.mother.helper",
+            "main_computer.mother.cleanup_scope",
+            "main_computer.mother.not_a_proof_guardian",
+            "main_computer.mother.not_a_validator_voter",
+            "main_computer.mother.not_an_activation_guardian",
+        )
+    }
+    coolify_identity = _coolify_identity_label_diagnostic(labels, helper_name=helper, service_uuid=service)
     return {
         "helper_name": helper,
         "present": True,
@@ -689,6 +899,9 @@ def _helper_definition_diagnostic(
         "command_sha256": hashlib.sha256(command_text.encode("utf-8")).hexdigest() if command_text else None,
         "command_preview": _short_text(command),
         "selected_labels": selected_labels,
+        "normalized_selected_labels": normalized_selected_labels,
+        "label_shape": _compose_label_shape(labels),
+        "coolify_identity": coolify_identity,
         "is_cleanup2_mimic_definition": (
             str(definition.get("image") or "") == SHIM_IMAGE
             and str(definition.get("container_name") or "") == f"{helper}-{service}"
@@ -729,20 +942,21 @@ def _parent_payload_diagnostic(
     payload_map = decoded if isinstance(decoded, Mapping) else {}
     helpers = tuple(_helper_name(item) for item in helper_names)
     helper_set = set(helpers)
+    parent_service_id = payload_map.get("id") or payload_map.get("service_id") or ""
     applications: list[dict[str, Any]] = []
     for record in _application_records(payload_map):
         name = str(record.get("name") or "")
         if name in helper_set:
             applications.append(
-                {
-                    "name": name,
-                    "uuid": str(record.get("uuid") or ""),
-                    "status": str(record.get("status") or record.get("service_status") or ""),
-                    "image": str(record.get("image") or ""),
-                }
+                _helper_application_record_diagnostic(
+                    record,
+                    service_uuid=service_uuid,
+                    parent_service_id=parent_service_id,
+                )
             )
     result: dict[str, Any] = {
         "service_uuid": service_uuid,
+        "parent_id": _safe_scalar(parent_service_id).strip(),
         "parent_name": str(payload_map.get("name") or ""),
         "parent_status": str(payload_map.get("status") or payload_map.get("service_status") or ""),
         "source_field": source_field,
@@ -750,13 +964,33 @@ def _parent_payload_diagnostic(
         "compose_sha256": compose_sha256,
         "helper_application_records": applications,
         "helper_application_count": len(applications),
+        "helper_status_rollup_poison_candidates": [
+            item for item in applications if item.get("status_rollup_poison_candidate") is True
+        ],
+        "helper_status_rollup_poison_candidate_count": sum(
+            1 for item in applications if item.get("status_rollup_poison_candidate") is True
+        ),
     }
     if compose is not None:
-        result["helper_definitions"] = _helper_definitions_diagnostic(
+        helper_definitions = _helper_definitions_diagnostic(
             compose,
             helper_names=helpers,
             service_uuid=service_uuid,
         )
+        result["helper_definitions"] = helper_definitions
+        result["helper_compose_coolify_identity_missing"] = [
+            {
+                "helper_name": item.get("helper_name"),
+                "expected_container_name": item.get("expected_cleanup2_container_name"),
+                "missing_coolify_identity_labels": item.get("coolify_identity", {}).get("missing_coolify_identity_labels", []),
+                "selected_coolify_labels": item.get("coolify_identity", {}).get("selected_coolify_labels", {}),
+                "label_shape": item.get("label_shape"),
+            }
+            for item in helper_definitions
+            if item.get("present") is True
+            and item.get("coolify_identity", {}).get("coolify_identity_labels_present") is not True
+        ]
+        result["helper_compose_coolify_identity_missing_count"] = len(result["helper_compose_coolify_identity_missing"])
     return result
 
 
@@ -796,6 +1030,8 @@ def _cleanup2_target_diagnostic(target: Mapping[str, Any]) -> dict[str, Any]:
         "patched_compose_sha256": str(target.get("patched_compose_sha256") or ""),
         "docker_compose_cli_compose_sha256": str(target.get("docker_compose_cli_compose_sha256") or ""),
         "docker_compose_cli_removed_service_keys": dict(target.get("docker_compose_cli_removed_service_keys") or {}),
+        "helper_application_records": list(target.get("helper_application_records") or []),
+        "helper_compose_coolify_identity_missing": list(target.get("helper_compose_coolify_identity_missing") or []),
     }
 
 
@@ -863,9 +1099,36 @@ def _patch_readback_diagnostic(
         }
 
 
-def _mimic_service(service_uuid: str, helper_name: str) -> dict[str, Any]:
+def _mimic_service(
+    service_uuid: str,
+    helper_name: str,
+    *,
+    original_service: Mapping[str, Any] | None = None,
+    coolify_identity_labels: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     service = _uuid(service_uuid, "service_uuid")
     helper = _helper_name(helper_name)
+    original_labels: dict[str, str] = {}
+    if isinstance(original_service, Mapping):
+        original_labels = _compose_coolify_labels(original_service.get("labels"))
+
+    labels: dict[str, str] = dict(original_labels)
+    for key, value in (coolify_identity_labels or {}).items():
+        if str(key).startswith("coolify.") and str(value).strip():
+            labels.setdefault(str(key), str(value).strip())
+
+    labels.update(
+        {
+            SHIM_LABEL: "true",
+            MIMIC_LABEL: "true",
+            "main_computer.mother.helper": helper,
+            "main_computer.mother.cleanup_scope": "helper-cleanup2-yagni",
+            "main_computer.mother.not_a_proof_guardian": "true",
+            "main_computer.mother.not_a_validator_voter": "true",
+            "main_computer.mother.not_an_activation_guardian": "true",
+        }
+    )
+
     return {
         "image": SHIM_IMAGE,
         "container_name": f"{helper}-{service}",
@@ -882,15 +1145,7 @@ def _mimic_service(service_uuid: str, helper_name: str) -> dict[str, Any]:
             "start_period": "1s",
         },
         "restart": "unless-stopped",
-        "labels": {
-            SHIM_LABEL: "true",
-            MIMIC_LABEL: "true",
-            "main_computer.mother.helper": helper,
-            "main_computer.mother.cleanup_scope": "helper-cleanup2-yagni",
-            "main_computer.mother.not_a_proof_guardian": "true",
-            "main_computer.mother.not_a_validator_voter": "true",
-            "main_computer.mother.not_an_activation_guardian": "true",
-        },
+        "labels": labels,
     }
 
 
@@ -916,16 +1171,34 @@ def _rewrite_helper_mimics(
     *,
     service_uuid: str,
     helper_names: tuple[str, ...],
+    parent_payload: Any | None = None,
 ) -> tuple[str, dict[str, Any]]:
     compose = _parse_compose(compose_text)
     services = compose["services"]
 
     non_targets_before = {name: definition for name, definition in services.items() if name not in set(helper_names)}
+    app_coolify_labels = _helper_coolify_labels_by_name(
+        parent_payload,
+        service_uuid=service_uuid,
+        helper_names=helper_names,
+    )
     installed: list[str] = []
+    coolify_identity_labelled: list[str] = []
 
     for helper in helper_names:
         name = _helper_name(helper)
-        services[name] = _mimic_service(service_uuid, name)
+        original_service = services.get(name)
+        if not isinstance(original_service, Mapping):
+            original_service = None
+        services[name] = _mimic_service(
+            service_uuid,
+            name,
+            original_service=original_service,
+            coolify_identity_labels=app_coolify_labels.get(name, {}),
+        )
+        mimic_labels = _compose_labels_to_map(services[name].get("labels"))
+        if all(mimic_labels.get(key) for key in ("coolify.serviceId", "coolify.name", "coolify.service.subId")):
+            coolify_identity_labelled.append(name)
         installed.append(name)
 
     non_targets_after = {name: definition for name, definition in services.items() if name not in set(helper_names)}
@@ -939,6 +1212,8 @@ def _rewrite_helper_mimics(
     return rewritten, {
         "installed_helper_names": installed,
         "installed_helper_count": len(installed),
+        "coolify_identity_labelled_helper_names": coolify_identity_labelled,
+        "coolify_identity_labelled_helper_count": len(coolify_identity_labelled),
     }
 
 
@@ -1397,7 +1672,7 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         "  phase=\"$1\"",
         "  uuid=\"$2\"",
         "  diag \"phase=$phase service_uuid=$uuid docker_ps_filter=name=$uuid\"",
-        "  docker ps -a --filter \"name=$uuid\" --format \"$DIAG_PREFIX phase=$phase docker_ps id={{.ID}} name={{.Names}} image={{.Image}} status={{.Status}}\" >&2 || true",
+        "  docker ps -a --filter \"name=$uuid\" --format \"$DIAG_PREFIX phase=$phase docker_ps id={{.ID}} name={{.Names}} image={{.Image}} status={{.Status}} compose_project={{.Label \\\"com.docker.compose.project\\\"}} compose_service={{.Label \\\"com.docker.compose.service\\\"}} coolify_service_id={{.Label \\\"coolify.serviceId\\\"}} coolify_name={{.Label \\\"coolify.name\\\"}} coolify_sub_id={{.Label \\\"coolify.service.subId\\\"}}\" >&2 || true",
         "}",
         "inspect_expected() {",
         "  phase=\"$1\"",
@@ -1418,6 +1693,22 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         "  health=\"$(docker inspect -f '{{ if .State.Health }}{{ .State.Health.Status }}{{ end }}' \"$cid\" 2>/dev/null || true)\"",
         "  compose_project=\"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$cid\" 2>/dev/null || true)\"",
         "  compose_service=\"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.service\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  compose_config_files=\"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project.config_files\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  compose_workdir=\"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project.working_dir\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  coolify_managed=\"$(docker inspect -f '{{ index .Config.Labels \"coolify.managed\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  coolify_service_id=\"$(docker inspect -f '{{ index .Config.Labels \"coolify.serviceId\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  coolify_name=\"$(docker inspect -f '{{ index .Config.Labels \"coolify.name\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  coolify_sub_id=\"$(docker inspect -f '{{ index .Config.Labels \"coolify.service.subId\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  coolify_sub_type=\"$(docker inspect -f '{{ index .Config.Labels \"coolify.service.subType\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  coolify_sub_name=\"$(docker inspect -f '{{ index .Config.Labels \"coolify.service.subName\" }}' \"$cid\" 2>/dev/null || true)\"",
+        "  coolify_identity_complete=false",
+        "  if [ -n \"$coolify_service_id\" ] && [ \"$coolify_service_id\" != '<no value>' ] && [ -n \"$coolify_name\" ] && [ \"$coolify_name\" != '<no value>' ] && [ -n \"$coolify_sub_id\" ] && [ \"$coolify_sub_id\" != '<no value>' ] && [ -n \"$coolify_sub_type\" ] && [ \"$coolify_sub_type\" != '<no value>' ] && [ -n \"$coolify_sub_name\" ] && [ \"$coolify_sub_name\" != '<no value>' ]; then",
+        "    coolify_identity_complete=true",
+        "  fi",
+        "  runtime_from_cleanup2_tmp_compose=false",
+        "  case \"$compose_config_files\" in",
+        "    /tmp/mother-helper-cleanup2-*.yml*) runtime_from_cleanup2_tmp_compose=true ;;",
+        "  esac",
         "  retired=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.retired_helper_mimic\" }}' \"$cid\" 2>/dev/null || true)\"",
         "  cleanup_scope=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.cleanup_scope\" }}' \"$cid\" 2>/dev/null || true)\"",
         "  helper_label=\"$(docker inspect -f '{{ index .Config.Labels \"main_computer.mother.helper\" }}' \"$cid\" 2>/dev/null || true)\"",
@@ -1435,7 +1726,7 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
         "    is_mimic=true",
         "  fi",
         "  cmd_b64=\"$(printf '%s' \"$cmd_json\" | base64 2>/dev/null | tr -d '\n' || true)\"",
-        "  diag \"phase=$phase expected_container=$cname helper=$helper project=$project found=true match_count=$count container_id=$cid image=$image status=$status running=$running health=$health compose_project=$compose_project compose_service=$compose_service retired_helper_mimic=$retired cleanup_scope=$cleanup_scope helper_label=$helper_label not_a_proof_guardian=$not_proof not_a_validator_voter=$not_voter not_an_activation_guardian=$not_activation post_work_shim=$post_work_shim cmd_has_marker=$cmd_has_marker is_cleanup2_mimic=$is_mimic cmd_json_base64=$cmd_b64\"",
+        "  diag \"phase=$phase expected_container=$cname helper=$helper project=$project found=true match_count=$count container_id=$cid image=$image status=$status running=$running health=$health compose_project=$compose_project compose_service=$compose_service compose_config_files=$compose_config_files compose_workdir=$compose_workdir coolify_managed=$coolify_managed coolify_service_id=$coolify_service_id coolify_name=$coolify_name coolify_sub_id=$coolify_sub_id coolify_sub_type=$coolify_sub_type coolify_sub_name=$coolify_sub_name coolify_identity_complete=$coolify_identity_complete runtime_from_cleanup2_tmp_compose=$runtime_from_cleanup2_tmp_compose retired_helper_mimic=$retired cleanup_scope=$cleanup_scope helper_label=$helper_label not_a_proof_guardian=$not_proof not_a_validator_voter=$not_voter not_an_activation_guardian=$not_activation post_work_shim=$post_work_shim cmd_has_marker=$cmd_has_marker is_cleanup2_mimic=$is_mimic cmd_json_base64=$cmd_b64\"",
         "}",
         "remove_expected_container_before_recreate() {",
         "  uuid=\"$1\"",
@@ -1561,10 +1852,37 @@ def _cleanup2_script(targets: list[Mapping[str, Any]]) -> str:
             f"expected_container_names={','.join(f'{helper}-{service_uuid}' for helper in helpers)} "
             f"helpers={','.join(helpers)}"
         )
+        expected_identity_lines: list[str] = []
+        app_records = {
+            str(record.get("name") or ""): record
+            for record in target.get("helper_application_records") or []
+            if isinstance(record, Mapping)
+        }
+        for helper in helpers:
+            app_record = app_records.get(helper, {})
+            expected_labels = app_record.get("expected_coolify_labels") if isinstance(app_record, Mapping) else {}
+            if not isinstance(expected_labels, Mapping):
+                expected_labels = {}
+            expected_identity_lines.append(
+                "diag "
+                + _single_quote(
+                    f"phase=expected_coolify_identity index={index} service_uuid={service_uuid} "
+                    f"helper={helper} expected_container={helper}-{service_uuid} "
+                    f"app_uuid={app_record.get('uuid') or ''} app_id={app_record.get('id') or ''} "
+                    f"app_status={app_record.get('status') or ''} "
+                    f"exclude_from_status={app_record.get('exclude_from_status')} "
+                    f"status_rollup_poison_candidate={app_record.get('status_rollup_poison_candidate')} "
+                    f"expected_coolify_serviceId={expected_labels.get('coolify.serviceId') or ''} "
+                    f"expected_coolify_name={expected_labels.get('coolify.name') or ''} "
+                    f"expected_coolify_subId={expected_labels.get('coolify.service.subId') or ''} "
+                    f"expected_coolify_subName={expected_labels.get('coolify.service.subName') or ''}"
+                )
+            )
         lines.extend(
             [
                 "branch " + _single_quote(target_payload_message),
                 "diag " + _single_quote(target_payload_message),
+                *expected_identity_lines,
                 f"cat > {_single_quote(b64_var)} <<'MOTHER_HELPER_CLEANUP2_COMPOSE_{index}'",
                 compose_b64,
                 f"MOTHER_HELPER_CLEANUP2_COMPOSE_{index}",
@@ -1783,6 +2101,49 @@ def _runtime_diagnostic_summary(events: list[dict[str, str]], targets: list[Mapp
             else:
                 reason = "runtime-diagnostics-observed-without-runtime-failure"
 
+    post_recreate_events = [
+        event
+        for event in events
+        if event.get("phase") == "after" and event.get("expected_container") in expected_containers
+    ]
+    post_recreate_coolify_identity_findings = []
+    for event in post_recreate_events:
+        missing_coolify_labels = [
+            label
+            for key, label in (
+                ("coolify_service_id", "coolify.serviceId"),
+                ("coolify_name", "coolify.name"),
+                ("coolify_sub_id", "coolify.service.subId"),
+                ("coolify_sub_type", "coolify.service.subType"),
+                ("coolify_sub_name", "coolify.service.subName"),
+            )
+            if not str(event.get(key) or "").strip() or str(event.get(key) or "").strip() == "<no"
+        ]
+        post_recreate_coolify_identity_findings.append(
+            {
+                "expected_container": event.get("expected_container"),
+                "helper": event.get("helper"),
+                "found": event.get("found"),
+                "status": event.get("status"),
+                "running": event.get("running"),
+                "health": event.get("health"),
+                "compose_project": event.get("compose_project"),
+                "compose_service": event.get("compose_service"),
+                "compose_config_files": event.get("compose_config_files"),
+                "compose_workdir": event.get("compose_workdir"),
+                "coolify_managed": event.get("coolify_managed"),
+                "coolify_service_id": event.get("coolify_service_id"),
+                "coolify_name": event.get("coolify_name"),
+                "coolify_sub_id": event.get("coolify_sub_id"),
+                "coolify_sub_type": event.get("coolify_sub_type"),
+                "coolify_sub_name": event.get("coolify_sub_name"),
+                "coolify_identity_complete": event.get("coolify_identity_complete"),
+                "missing_coolify_identity_labels": missing_coolify_labels,
+                "runtime_from_cleanup2_tmp_compose": event.get("runtime_from_cleanup2_tmp_compose"),
+                "is_cleanup2_mimic": event.get("is_cleanup2_mimic"),
+            }
+        )
+
     return {
         "observed": bool(events),
         "event_count": len(events),
@@ -1796,6 +2157,15 @@ def _runtime_diagnostic_summary(events: list[dict[str, str]], targets: list[Mapp
         "expected_container_remove_reached": expected_container_remove_reached,
         "remove_node_helpers_seen": remove_node_helpers_seen,
         "remove_node_helper_cleanup_reached": bool(remove_node_helpers_seen) if expected_remove_node_helpers else False,
+        "post_recreate_coolify_identity_findings": post_recreate_coolify_identity_findings,
+        "post_recreate_coolify_identity_missing_count": sum(
+            1 for item in post_recreate_coolify_identity_findings if item.get("missing_coolify_identity_labels")
+        ),
+        "post_recreate_cleanup2_tmp_compose_container_count": sum(
+            1
+            for item in post_recreate_coolify_identity_findings
+            if item.get("runtime_from_cleanup2_tmp_compose") == "true"
+        ),
         "why_cleanup_action_not_proven": reason,
         "why_cleanup_action_not_proven_detail": reason_detail,
     }
@@ -2108,6 +2478,9 @@ def _run_cleanup2_for_controller(
                 "actual discovered compose project",
                 "actual discovered compose working_dir",
                 "actual docker compose up command",
+                "expected Coolify child application identity for each helper",
+                "runtime container Coolify label values after recreate",
+                "runtime container compose config file path after recreate",
                 "docker compose stdout base64",
                 "docker compose stderr base64",
                 "docker compose exit code",
@@ -2365,6 +2738,8 @@ def _run_block_advance_waiter(
         service_uuid,
         "--runtime-state-root",
         str(runtime_state_root),
+        "--max-wait-seconds",
+        str(BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS),
         "--quiet",
     ]
     started = time.monotonic()
@@ -2626,6 +3001,7 @@ def run_helper_cleanup2_yagni(
             compose_text,
             service_uuid=service_uuid,
             helper_names=helper_names,
+            parent_payload=detail["payload"],
         )
         rewritten_compose = _parse_compose(rewritten)
         rewritten_helper_diagnostics = _helper_definitions_diagnostic(
@@ -2727,6 +3103,10 @@ def run_helper_cleanup2_yagni(
                 "patched_compose_sha256": patched_compose_sha256,
                 "docker_compose_cli_compose_sha256": docker_compose_cli_compose_sha256,
                 "docker_compose_cli_removed_service_keys": docker_compose_cli_removed_service_keys,
+                "helper_application_records": list(pre_patch_diagnostics.get("helper_application_records") or []),
+                "helper_compose_coolify_identity_missing": list(
+                    pre_patch_diagnostics.get("helper_compose_coolify_identity_missing") or []
+                ),
                 "target_diagnostics": {
                     "expected_container_names": [f"{helper}-{service_uuid}" for helper in helper_names],
                     "docker_compose_up_template": (
@@ -2734,6 +3114,22 @@ def run_helper_cleanup2_yagni(
                         "--project-directory <discovered_workdir_if_available> up -d --no-deps --force-recreate "
                         + " ".join(helper_names)
                     ),
+                    "helper_application_records": list(pre_patch_diagnostics.get("helper_application_records") or []),
+                    "helper_compose_coolify_identity_missing": list(
+                        pre_patch_diagnostics.get("helper_compose_coolify_identity_missing") or []
+                    ),
+                    "rewritten_helper_compose_coolify_identity_missing": [
+                        {
+                            "helper_name": item.get("helper_name"),
+                            "expected_container_name": item.get("expected_cleanup2_container_name"),
+                            "missing_coolify_identity_labels": item.get("coolify_identity", {}).get("missing_coolify_identity_labels", []),
+                            "selected_coolify_labels": item.get("coolify_identity", {}).get("selected_coolify_labels", {}),
+                            "label_shape": item.get("label_shape"),
+                        }
+                        for item in rewritten_helper_diagnostics
+                        if item.get("present") is True
+                        and item.get("coolify_identity", {}).get("coolify_identity_labels_present") is not True
+                    ],
                 },
             }
         )

@@ -820,13 +820,16 @@ def _observed_inventory_errors(detection: Mapping[str, Any]) -> list[dict[str, A
     return [dict(item) for item in hints if isinstance(item, Mapping) and item.get("error")]
 
 
-def _primary_live_service_hints_by_node(detection: Mapping[str, Any], nodes: Iterable[str]) -> dict[str, dict[str, Any]]:
-    """Return one exact top-level Coolify service hint for every expected node.
+def _live_primary_service_hint_matches_by_node(
+    detection: Mapping[str, Any],
+    nodes: Iterable[str],
+) -> dict[str, list[Mapping[str, Any]]]:
+    """Return exact top-level Coolify service hint matches for the requested nodes.
 
     Helper containers often mention a node name in their command, description, or
     generated name.  A live topology seal must not accidentally bind a helper, so
-    this helper accepts only inventory rows whose service name exactly matches the
-    Mother node identity.
+    exact primary service rows are the only rows whose service name exactly
+    matches the Mother node identity.
     """
 
     expected = [_identifier(node, "live topology node") for node in nodes]
@@ -844,7 +847,13 @@ def _primary_live_service_hints_by_node(detection: Mapping[str, Any], nodes: Ite
         for node in expected:
             if name == node:
                 by_node[node].append(item)
+    return by_node
 
+
+def _primary_live_service_hints_by_node(detection: Mapping[str, Any], nodes: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Return one exact top-level Coolify service hint for every expected node."""
+
+    by_node = _live_primary_service_hint_matches_by_node(detection, nodes)
     missing = [node for node, matches in by_node.items() if not matches]
     if missing:
         raise _fail(
@@ -1822,9 +1831,10 @@ def build_live_current_topology_evidence(
 
     By default the live node set must exactly match the acknowledged topology.
     When ``actual_nodes`` is supplied, it is an explicit operator declaration
-    of the intended live subset.  The declaration must exactly match live
-    Coolify primary-node inventory and may contain only identities already
-    present in the acknowledged topology.  Validator identities are selected
+    of the intended live subset.  Declared nodes must have exact Coolify
+    primary-node inventory rows and may contain only identities already present
+    in the acknowledged topology.  Extra broad live hints only block the seal
+    when they also have exact primary rows.  Validator identities are selected
     positionally from that acknowledged topology; no new identity is inferred.
     """
 
@@ -1868,6 +1878,7 @@ def build_live_current_topology_evidence(
     source_validators = list(validators)
     source_validator_by_node = {node: source_validators[index] for index, node in enumerate(source_nodes)}
     live_node_set = set(live_node_hints)
+    ignored_non_primary_live_node_hints: list[str] = []
 
     if operator_actual_nodes:
         actual_node_set = set(operator_actual_nodes)
@@ -1877,18 +1888,26 @@ def build_live_current_topology_evidence(
                 "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_INVALID",
                 "--actual-node is outside the acknowledged topology: " + ", ".join(unknown_actual_nodes),
             )
-        if actual_node_set != live_node_set:
-            missing = sorted(actual_node_set - live_node_set)
-            extra = sorted(live_node_set - actual_node_set)
-            pieces = []
-            if missing:
-                pieces.append("declared but not live: " + ", ".join(missing))
-            if extra:
-                pieces.append("live but not declared: " + ", ".join(extra))
-            raise _fail(
-                "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_MISMATCH",
-                "; ".join(pieces) or "--actual-node does not match live Coolify inventory",
+
+        # Broad live hints are diagnostic.  A manual seal is blocked only by an
+        # undeclared node that is also present as an exact primary Coolify
+        # service row.  Hints without an exact primary row are stale/helper/ghost
+        # references and must not override the operator's declared seal set.
+        extra_live_hints = sorted(live_node_set - actual_node_set)
+        if extra_live_hints:
+            primary_extra_matches = _live_primary_service_hint_matches_by_node(detection, extra_live_hints)
+            undeclared_primary_nodes = sorted(
+                node
+                for node, matches in primary_extra_matches.items()
+                if matches
             )
+            if undeclared_primary_nodes:
+                raise _fail(
+                    "MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_MISMATCH",
+                    "live primary node not declared: " + ", ".join(undeclared_primary_nodes),
+                )
+            ignored_non_primary_live_node_hints = extra_live_hints
+
         nodes = [node for node in source_nodes if node in actual_node_set]
         validators = [source_validator_by_node[node] for node in nodes]
     elif live_node_set != set(source_nodes):
@@ -1983,6 +2002,7 @@ def build_live_current_topology_evidence(
         "validator_set_preserved_from_source_topology": not subset_seal,
         "validator_identities_selected_from_source_topology": True,
         "operator_declared_actual_nodes": list(operator_actual_nodes),
+        "operator_ignored_non_primary_live_node_hints": list(ignored_non_primary_live_node_hints),
         "service_uuid_refreshed_nodes": sorted(refreshed_nodes),
     }
 
@@ -2011,6 +2031,7 @@ def build_live_current_topology_evidence(
             "missing_expected_nodes": list(detection.get("missing_expected_nodes") or []),
             "observed_live_node_hints": list(detection.get("observed_live_node_hints") or []),
             "operator_declared_actual_nodes": list(operator_actual_nodes),
+            "operator_ignored_non_primary_live_node_hints": list(ignored_non_primary_live_node_hints),
             "unexpected_live_nodes": list(detection.get("unexpected_live_nodes") or []),
             "observed_service_hints": list(detection.get("observed_service_hints") or []),
             "network_access_performed": True,
@@ -2041,6 +2062,7 @@ def build_live_current_topology_evidence(
             "validator_set_preserved_from_source_topology": not subset_seal,
             "validator_identities_selected_from_source_topology": True,
             "operator_declared_actual_nodes": list(operator_actual_nodes),
+            "operator_ignored_non_primary_live_node_hints": list(ignored_non_primary_live_node_hints),
             "live_mutation_authorized": False,
         },
         "policy": {
@@ -2072,6 +2094,7 @@ def build_live_current_topology_evidence(
             "validator_set_preserved_from_source_topology": not subset_seal,
             "validator_identities_selected_from_source_topology": True,
             "operator_declared_actual_nodes": list(operator_actual_nodes),
+            "operator_ignored_non_primary_live_node_hints": list(ignored_non_primary_live_node_hints),
             "live_coolify_primary_services_verified": True,
             "service_uuid_refreshed_nodes": sorted(refreshed_nodes),
             "final_nodes": nodes,
