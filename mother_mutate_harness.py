@@ -809,6 +809,7 @@ def auto_baseline_patterns(args: argparse.Namespace) -> tuple[str, list[Path]]:
             evidence_root / "deployment-node-add-post-admission-observe" / "*.json",
             evidence_root / "deployment-node-remove-finalize" / "*.json",
             evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
+            evidence_root / LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY / "*.json",
         ],
     )
 

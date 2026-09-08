@@ -524,7 +524,12 @@ def _normalize_live_current_topology_baseline(
         summary.get("topology_current") is True,
         summary.get("topology_stale") is False,
         summary.get("node_identity_preserved") is True,
-        summary.get("validator_set_preserved_from_source_topology") is True,
+        # A live-current subset seal intentionally changes the validator set by
+        # removing already-missing stale nodes. Remove prep only requires that
+        # the surviving validator identities were selected from the source
+        # topology; it must not require the old stale validator set to be
+        # preserved exactly.
+        summary.get("validator_identities_selected_from_source_topology") is True,
         summary.get("live_coolify_primary_services_verified") is True,
         document.get("next_phase") == f"topology-baseline-ready-{network}",
         document.get("failure") is None,

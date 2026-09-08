@@ -232,6 +232,104 @@ def test_remove_node_auto_selects_latest_current_topology_candidate(tmp_path: Pa
     assert args.baseline_evidence_sha256 == remove_sha
 
 
+def test_remove_node_auto_selects_newer_successful_live_current_topology_seal(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "mother" / "evidence" / "deployment-node-add-post-admission-observe" / "20260904T220809Z-mainnet-topology-finalize-from-mainnetc-super2.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.add_node_post_admission_topology_evidence.v1",
+                "completed_at": "2026-09-04T22:08:09Z",
+                "final_topology": {
+                    "nodes": ["mainneta-super1", "mainnetc-super1", "mainnetc-super2"],
+                    "validator_set": [
+                        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+                        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                        "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+                    ],
+                },
+            }
+        ).encode(),
+    )
+    seal_path, seal_sha = _write(
+        tmp_path / "mother" / "evidence" / "deployment-live-current-topology" / "20260908T002018Z-mainnet-live-current-topology-703a7f62955b1a15.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.live_current_topology_evidence.v1",
+                "status": "pass",
+                "completed_at": "2026-09-08T00:20:18Z",
+                "next_phase": "topology-baseline-ready-mainnet",
+                "summary": {
+                    "clean": True,
+                    "complete": True,
+                    "live_topology_sealed": True,
+                    "final_nodes": ["mainnetc-super1", "mainnetc-super2"],
+                },
+                "final_topology": {
+                    "nodes": ["mainnetc-super1", "mainnetc-super2"],
+                    "validator_set": [
+                        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                        "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+                    ],
+                },
+            }
+        ).encode(),
+    )
+
+    args = _args(tmp_path, operation="remove-node", node="mainnetc-super2", mode="reactivate")
+    harness.resolve_baseline_arguments(args)
+
+    assert args.baseline_evidence == seal_path
+    assert args.baseline_evidence_sha256 == seal_sha
+
+
+def test_remove_node_auto_ignores_newer_failed_live_current_topology_seal(tmp_path: Path) -> None:
+    current_path, current_sha = _write(
+        tmp_path / "mother" / "evidence" / "deployment-node-add-post-admission-observe" / "20260904T220809Z-mainnet-topology-finalize-from-mainnetc-super2.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.add_node_post_admission_topology_evidence.v1",
+                "completed_at": "2026-09-04T22:08:09Z",
+                "final_topology": {
+                    "nodes": ["mainnetc-super1", "mainnetc-super2"],
+                    "validator_set": [
+                        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                        "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+                    ],
+                },
+            }
+        ).encode(),
+    )
+    _write(
+        tmp_path / "mother" / "evidence" / "deployment-live-current-topology" / "20260908T002018Z-mainnet-live-current-topology-failed.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.live_current_topology_evidence.v1",
+                "status": "failed",
+                "completed_at": "2026-09-08T00:20:18Z",
+                "next_phase": "manual-review-required",
+                "summary": {
+                    "clean": False,
+                    "complete": False,
+                    "live_topology_sealed": False,
+                },
+                "final_topology": {
+                    "nodes": ["mainnetc-super1", "mainnetc-super2"],
+                    "validator_set": [
+                        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+                        "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+                    ],
+                },
+            }
+        ).encode(),
+    )
+
+    args = _args(tmp_path, operation="remove-node", node="mainnetc-super2", mode="reactivate")
+    harness.resolve_baseline_arguments(args)
+
+    assert args.baseline_evidence == current_path
+    assert args.baseline_evidence_sha256 == current_sha
+
+
 def test_add_auto_selects_empty_rectification_baseline(tmp_path: Path) -> None:
     path, sha = _write(
         tmp_path / "mother" / "evidence" / "deployment-live-topology-empty-rectification" / "20260814T201500Z-empty.json",

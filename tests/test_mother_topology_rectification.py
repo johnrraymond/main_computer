@@ -981,6 +981,66 @@ def test_seal_live_current_topology_can_seal_operator_declared_live_subset_for_a
     assert prep["target"]["validator_address_source"] == "mother-private-state"
 
 
+def test_remove_node_prep_accepts_operator_declared_live_subset_topology_seal(
+    tmp_path: Path,
+) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_three_node_stale_c2_topology_evidence(paths, private_state)
+
+    result = seal_live_current_topology(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        actual_nodes=[C1_NODE, C2_NODE],
+        use_live_topology=True,
+        max_age_seconds=864000,
+        write_evidence=True,
+        now=datetime(2026, 8, 22, 23, 40, 30, tzinfo=timezone.utc),
+        opener=_ControllerScopedServicesOpener(
+            {
+                "coolify-a": {},
+                "coolify-c": {
+                    "live-c1-service": (C1_NODE, "running:healthy"),
+                    "live-c2-service": (C2_NODE, "running:healthy"),
+                },
+            }
+        ),
+        operation=_operation("seal-live-current-topology-subset"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["mode"] == "read-only-live-current-topology-subset-seal"
+    assert result["summary"]["validator_set_preserved_from_source_topology"] is False
+    assert result["summary"]["validator_identities_selected_from_source_topology"] is True
+    assert result["final_topology"]["nodes"] == [C1_NODE, C2_NODE]
+    assert result["topology_diff"]["removed_nodes"] == [A_NODE]
+
+    written = result["evidence"]
+    prep = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        Path(written["path"]),
+        network="mainnet",
+        target_node=C2_NODE,
+        mode="soft",
+        baseline_evidence_sha256=written["sha256"],
+        baseline_max_age_seconds=86400,
+        created_at="2026-08-22T23:41:00Z",
+        now=datetime(2026, 8, 22, 23, 41, 0, tzinfo=timezone.utc),
+    )
+
+    assert prep["source_baseline_evidence"]["kind"] == "main_computer.mother.live_current_topology_evidence.v1"
+    assert prep["current_topology"]["nodes"] == [C1_NODE, C2_NODE]
+    assert prep["current_topology"]["validator_set"] == [C1_VALIDATOR, C2_VALIDATOR]
+    assert prep["target"]["node"] == C2_NODE
+    assert prep["target"]["service_uuid"] == "live-c2-service"
+    assert prep["target"]["validator_address"] == C2_VALIDATOR
+    assert prep["post_removal_topology"]["nodes"] == [C1_NODE]
+    assert prep["post_removal_topology"]["validator_set"] == [C1_VALIDATOR]
+
+
 def test_seal_live_current_topology_ignores_undeclared_hint_without_primary_row(
     tmp_path: Path,
 ) -> None:
