@@ -970,13 +970,22 @@ class Harness:
             "--write-evidence",
         )
 
-    def seal_live_current_topology_cmd(self, *, actual_nodes: list[str] | None = None) -> list[str]:
+    def seal_live_current_topology_cmd(
+        self,
+        *,
+        actual_nodes: list[str] | None = None,
+        topology_evidence: str | None = None,
+        topology_evidence_sha256: str | None = None,
+    ) -> list[str]:
         argv = self.cmd(
             "seal-live-current-topology",
             "--network", self.args.network,
             "--runtime-state-root", self.args.runtime_state_root,
-            "--topology-evidence", require("--baseline-evidence", self.state["baseline_evidence"]),
-            "--acknowledge-topology-evidence-sha256", require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+            "--topology-evidence", require("--topology-evidence", topology_evidence or self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256", require(
+                "--topology-evidence-sha256",
+                topology_evidence_sha256 or self.state["baseline_evidence_sha256"],
+            ),
         )
         for node in actual_nodes or []:
             argv.extend(["--actual-node", str(node)])
@@ -988,6 +997,29 @@ class Harness:
             "--write-evidence",
         ])
         return argv
+
+    def write_cleanup_topology_evidence(
+        self,
+        *,
+        step_name: str,
+        topology_evidence: str | None = None,
+        topology_evidence_sha256: str | None = None,
+    ) -> tuple[str, str]:
+        obj = self.run(
+            step_name,
+            self.seal_live_current_topology_cmd(
+                topology_evidence=topology_evidence,
+                topology_evidence_sha256=topology_evidence_sha256,
+            ),
+        )
+        evidence = require(
+            "cleanup live-current topology evidence path",
+            pick(obj, "evidence.path", "evidence_path"),
+        )
+        evidence_sha = pick(obj, "evidence.sha256", "evidence_sha256")
+        if not evidence_sha:
+            evidence_sha = _file_sha256(evidence)
+        return str(evidence), str(evidence_sha)
 
     def mutations_allowed(self) -> bool:
         return bool(self.args.execute_mutations and (self.args.yes_i_know_this_mutates_target_host or self.args.yes_i_know_this_mutates_coolify_a))
@@ -1134,9 +1166,25 @@ class Harness:
 
         cleanup_command = obj.get("cleanup_command")
         if cleanup_command:
+            cleanup_evidence, cleanup_evidence_sha256 = self.write_cleanup_topology_evidence(
+                step_name="preflight-cleanup-topology-seal",
+            )
+            cleanup2_argv = self.cleanup2_cmd(
+                "execute",
+                "--runtime-state-root", self.args.runtime_state_root,
+                "--network", self.args.network,
+                "--topology-evidence", cleanup_evidence,
+                "--acknowledge-topology-evidence-sha256", cleanup_evidence_sha256,
+                "--max-wait-seconds", str(self.args.preflight_paranoia_cleanup_max_wait_seconds),
+                "--poll-interval-seconds", str(self.args.poll_interval_seconds),
+                "--timeout", str(self.args.timeout),
+                "--max-response-bytes", str(self.args.preflight_paranoia_max_response_bytes),
+                "--write-evidence",
+                "--cleanup-on-clean",
+            )
             print()
             print("Run this cleanup command before the mutation:")
-            print(cleanup_command)
+            print(quote_command(cleanup2_argv))
         raise SystemExit(3)
 
 
@@ -1725,7 +1773,12 @@ class Harness:
             return
 
         completion_evidence, completion_evidence_sha256, workflow = self._post_work_cleanup_evidence()
-        document = _read_harness_json(completion_evidence, label="post-work cleanup completion evidence")
+        cleanup_evidence, cleanup_evidence_sha256 = self.write_cleanup_topology_evidence(
+            step_name=f"{POST_WORK_CLEANUP_STEP}-topology-seal",
+            topology_evidence=completion_evidence,
+            topology_evidence_sha256=completion_evidence_sha256,
+        )
+        document = _read_harness_json(cleanup_evidence, label="post-work cleanup live-current topology evidence")
         targets = _service_cleanup_targets(document)
         if not targets:
             print(f"\n=== {POST_WORK_CLEANUP_STEP} ===")
@@ -1739,6 +1792,8 @@ class Harness:
                 },
                 "completion_evidence": completion_evidence,
                 "completion_evidence_sha256": completion_evidence_sha256,
+                "cleanup_topology_evidence": cleanup_evidence,
+                "cleanup_topology_evidence_sha256": cleanup_evidence_sha256,
             }, indent=2, sort_keys=True))
             self.state["post_work_cleanup_results"] = []
             return
@@ -1752,7 +1807,7 @@ class Harness:
                 topology_evidence=completion_evidence,
                 acknowledged_topology_evidence_sha256=completion_evidence_sha256,
                 exclude_nodes=(),
-                preserve_services=not self.args.delete_static_node_precleanup_services,
+                preserve_services=False,
                 probe_node_info=False,
                 max_wait_seconds=self.args.post_work_cleanup_max_wait_seconds,
                 poll_interval_seconds=self.args.poll_interval_seconds,
@@ -1768,8 +1823,8 @@ class Harness:
             "execute",
             "--runtime-state-root", self.args.runtime_state_root,
             "--network", self.args.network,
-            "--topology-evidence", completion_evidence,
-            "--acknowledge-topology-evidence-sha256", completion_evidence_sha256,
+            "--topology-evidence", cleanup_evidence,
+            "--acknowledge-topology-evidence-sha256", cleanup_evidence_sha256,
             "--cleanup-all",
             "--max-wait-seconds", str(self.args.post_work_cleanup_max_wait_seconds),
             "--poll-interval-seconds", str(self.args.poll_interval_seconds),
@@ -1783,8 +1838,8 @@ class Harness:
             "execute",
             "--runtime-state-root", self.args.runtime_state_root,
             "--network", self.args.network,
-            "--topology-evidence", completion_evidence,
-            "--acknowledge-topology-evidence-sha256", completion_evidence_sha256,
+            "--topology-evidence", cleanup_evidence,
+            "--acknowledge-topology-evidence-sha256", cleanup_evidence_sha256,
             "--max-wait-seconds", str(self.args.post_work_cleanup_max_wait_seconds),
             "--poll-interval-seconds", str(self.args.poll_interval_seconds),
             "--timeout", str(self.args.timeout),
@@ -1979,12 +2034,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not install the retired genesis proof guardian health shim during final cleanup",
     )
-    parser.add_argument("--post-work-cleanup-max-wait-seconds", type=float, default=180.0)
+    parser.add_argument("--post-work-cleanup-max-wait-seconds", type=float, default=360.0)
     parser.add_argument("--post-work-cleanup-max-response-bytes", type=int, default=12 * 1024 * 1024)
     parser.add_argument(
         "--delete-static-node-precleanup-services",
         action="store_true",
-        help="delete temporary static-node writer services after successful add-node precleanup; default preserves them for inspection",
+        help="deprecated/no-op; temporary static-node writer services are deleted after successful add-node precleanup",
     )
     return parser
 

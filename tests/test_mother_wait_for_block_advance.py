@@ -56,6 +56,21 @@ def test_parser_accepts_explicit_target_service_uuid() -> None:
 
 
 
+def test_parser_accepts_wait_forever_after_baseline_alias() -> None:
+    from tools.mother_wait_for_block_advance import _build_parser
+
+    args = _build_parser().parse_args(
+        [
+            "mainnet",
+            "coolify-a",
+            "mainneta-super1",
+            "--wait-forever",
+        ]
+    )
+
+    assert args.wait_forever_after_baseline is True
+
+
 def test_default_block_advance_wait_is_twenty_minutes() -> None:
     from tools.mother_wait_for_block_advance import _build_parser
 
@@ -387,6 +402,24 @@ class _WatchOpener:
         raise AssertionError(f"unexpected request: {method} {path}?{parsed.query}")
 
 
+class _EndpointUnavailableWatchOpener(_WatchOpener):
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        if request.get_method() == "GET" and parsed.path == "/block":
+            self.requests.append(
+                {
+                    "method": request.get_method(),
+                    "host": parsed.hostname or "",
+                    "port": parsed.port,
+                    "path": parsed.path,
+                    "query": parsed.query,
+                    "body": None,
+                }
+            )
+            raise OSError("simulated connection refused")
+        return super().open(request, timeout)
+
+
 def test_resolve_watch_target_accepts_controller_slot_alias(tmp_path: Path) -> None:
     _, _, _, topology_info = _install(tmp_path)
 
@@ -464,6 +497,68 @@ def test_block_advance_watch_creates_endpoint_service_and_passes_when_endpoint_a
     assert not any(req["method"] == "GET" and req["path"] == "/api/v1/deploy" for req in opener.requests)
     assert not any(req["path"].endswith("/start") for req in opener.requests)
     assert any(req["path"] == "/block" for req in opener.requests)
+
+
+def test_block_advance_watch_wait_forever_after_baseline_still_passes_on_advance(tmp_path: Path) -> None:
+    runtime, private_state, topology_path, _ = _install(tmp_path)
+    opener = _WatchOpener(
+        [
+            {"ok": True, "chain_id": 42424240, "block_number": 100},
+            {"ok": True, "chain_id": 42424240, "block_number": 101},
+        ]
+    )
+
+    result = run_block_advance_watch(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        controller_id="coolify-a",
+        target="coolify-a-1",
+        topology_evidence=topology_path,
+        max_wait_seconds=0.05,
+        poll_interval_seconds=0.01,
+        opener=opener,
+        wait_forever_after_baseline=True,
+    )
+
+    assert result["status"] == "pass"
+    assert result["wait_contract"]["wait_forever_after_baseline"] is True
+    assert result["wait_contract"]["finite_wait_scope"] == "watcher-setup-and-baseline"
+    assert result["wait_contract"]["infinite_wait_scope"] == "block-advance-after-baseline"
+    assert result["completion"]["baseline_observed"] is True
+    assert result["completion"]["wait_forever_after_baseline"] is True
+    assert result["summary"]["block_advance_wait_forever_after_baseline"] is True
+    assert result["summary"]["block_endpoint_baseline_observed"] is True
+    assert result["summary"]["block_endpoint_timeout_scope"] is None
+
+
+def test_block_advance_watch_wait_forever_after_baseline_still_has_finite_baseline_timeout(tmp_path: Path) -> None:
+    runtime, private_state, topology_path, _ = _install(tmp_path)
+    opener = _EndpointUnavailableWatchOpener([{}])
+
+    result = run_block_advance_watch(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        controller_id="coolify-a",
+        target="coolify-a-1",
+        topology_evidence=topology_path,
+        max_wait_seconds=0.02,
+        poll_interval_seconds=0.01,
+        opener=opener,
+        wait_forever_after_baseline=True,
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "block-endpoint-baseline-timeout"
+    assert result["wait_contract"]["wait_forever_after_baseline"] is True
+    assert result["completion"]["baseline_observed"] is False
+    assert result["completion"]["timeout_scope"] == "endpoint-setup-or-baseline"
+    assert result["summary"]["block_advance_wait_forever_after_baseline"] is True
+    assert result["summary"]["block_endpoint_observed"] is True
+    assert result["summary"]["block_endpoint_baseline_observed"] is False
+    assert result["summary"]["block_endpoint_timeout_scope"] == "endpoint-setup-or-baseline"
+    assert result["summary"]["endpoint_failure_diagnostics_captured"] is True
 
 
 def test_block_advance_watch_uses_explicit_target_service_uuid_for_watcher_container(tmp_path: Path) -> None:

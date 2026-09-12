@@ -1784,11 +1784,12 @@ def test_remove_node_do_v2_runs_static_node_precleanup_before_survivor_cleanup(
     assert call["acknowledged_topology_evidence_sha256"]
 
 
-def test_remove_node_do_v2_static_node_precleanup_failure_stops_cleanup_and_service_delete(
+def test_remove_node_do_v2_static_node_precleanup_failure_after_proof_warns_and_continues(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+    events: list[str] = []
 
     def fake_precleanup(**kwargs: Any) -> dict[str, Any]:
         raise node_remove_do_v2_module.StaticNodePrecleanupGateError(
@@ -1796,15 +1797,17 @@ def test_remove_node_do_v2_static_node_precleanup_failure_stops_cleanup_and_serv
             "static-node precleanup did not pass before survivor cleanup",
         )
 
-    def fail_cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        raise AssertionError("survivor cleanup must not run after static-node precleanup failure")
+    def fake_cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        events.append(f"survivor-cleanup:{kwargs['node']}")
+        return {"status": "pass", "summary": {"clean": True, "complete": True}}
 
-    def fail_remove(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        raise AssertionError("target service removal must not run after static-node precleanup failure")
+    def fake_remove(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        events.append(f"service-removal:{kwargs['node']}")
+        return {"status": "pass", "already_absent": False}
 
     monkeypatch.setattr(node_remove_do_v2_module, "run_static_node_precleanup_gate", fake_precleanup)
-    monkeypatch.setattr(node_remove_do_v2_module, "execute_completed_mother_helper_cleanup", fail_cleanup)
-    monkeypatch.setattr(node_remove_do_v2_module, "execute_node_removal", fail_remove)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_completed_mother_helper_cleanup", fake_cleanup)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_node_removal", fake_remove)
 
     result = node_remove_do_v2_module.execute_node_remove_do_release(
         paths,
@@ -1813,15 +1816,26 @@ def test_remove_node_do_v2_static_node_precleanup_failure_stops_cleanup_and_serv
         acknowledged_release_sha256=release_sha,
         max_wait_seconds=0,
         poll_interval_seconds=0,
-        operation=_operation("execute-remove-do-static-precleanup-failure"),
+        operation=_operation("execute-remove-do-static-precleanup-failure-warning"),
         opener=_NodeRemoveDoOpener(),
         now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
     )
 
-    assert result["status"] == "failed"
-    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_FAILED"
-    assert result["summary"]["service_deletion_performed"] is False
+    assert result["status"] == "pass"
+    assert result["failure"] is None
+    assert result["summary"]["service_deletion_performed"] is True
+    assert result["validator_removal_vote_performed"] is True
+    assert result["summary"]["validator_removal_vote_proven_by_proof_payload"] is True
+    assert result["static_node_precleanup"] is None
+    assert result["static_node_precleanup_warning"]["code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_FAILED"
+    assert result["static_node_precleanup_warning"]["blocking"] is False
     assert result["policy"]["static_node_precleanup_live_mutation_performed"] is False
+    assert result["policy"]["static_node_precleanup_warning_present"] is True
+    assert result["policy"]["static_node_precleanup_blocking_after_validator_removal_proof"] is False
+    assert result["summary"]["static_node_precleanup_warning_present"] is True
+    assert result["summary"]["static_node_precleanup_warning_code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_FAILED"
+    assert any(item.startswith("survivor-cleanup:") for item in events)
+    assert events[-1] == "service-removal:mainneta-super1"
 
 
 def test_remove_node_do_v2_records_static_node_precleanup_mutation_in_evidence(
@@ -2397,6 +2411,17 @@ def test_remove_node_do_uses_host_docker_helper_when_sibling_helper_never_materi
         if item.get("node") == "mainnetc-super2"
     )
     assert opener.services["admc2xxxx"]["present"] is True
+
+
+
+def test_remove_node_do_v2_host_helper_launch_wait_uses_normal_window() -> None:
+    wait = node_remove_do_v2_module._node_remove_do_host_helper_launch_wait_seconds
+
+    assert wait(-1.0) == 0.0
+    assert wait(0.0) == 0.0
+    assert wait(5.0) == 30.0
+    assert wait(45.0) == 45.0
+    assert wait(300.0) == 180.0
 
 
 def test_remove_node_do_v2_stages_all_host_helpers_before_final_proof_gate(

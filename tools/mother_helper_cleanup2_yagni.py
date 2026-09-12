@@ -121,6 +121,7 @@ PARENT_RESTART_SETTLE_SECONDS = 90.0
 BLOCK_ADVANCE_WAITER_SCRIPT = "tools/mother_wait_for_block_advance.py"
 BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS = 1200.0
 BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS = 1320.0
+BLOCK_ADVANCE_WAITER_WAIT_FOREVER_TOPOLOGY_NODE_COUNT = 2
 
 class MotherHelperCleanup2YagniError(RuntimeError):
     """Cleanup2 could not produce a trustworthy result."""
@@ -551,6 +552,119 @@ def _application_records(payload: Any) -> list[dict[str, Any]]:
                 }
             )
     return records
+
+
+def _status_is_running(value: object) -> bool:
+    normalized = _safe_scalar(value).strip().lower()
+    return normalized.startswith("running") and "unhealthy" not in normalized
+
+
+def _status_is_terminal_nonrunning(value: object) -> bool:
+    normalized = _safe_scalar(value).strip().lower()
+    if not normalized:
+        return False
+    if normalized.startswith(("exited", "dead", "removing")):
+        return True
+    return "failed" in normalized or "error" in normalized
+
+
+def _redact_sequence(value: object, *, limit: int = 20) -> list[str] | None:
+    if not isinstance(value, (list, tuple)):
+        return None
+    return [_safe_scalar(item).strip() for item in list(value)[:limit]]
+
+
+def _compose_primary_service_diagnostic(
+    compose: Mapping[str, Any] | None,
+    *,
+    node: str,
+    service_uuid: str,
+) -> dict[str, Any]:
+    service_name = _identifier(node, "node")
+    services = compose.get("services") if isinstance(compose, Mapping) else None
+    definition = services.get(service_name) if isinstance(services, Mapping) else None
+    if not isinstance(definition, Mapping):
+        return {
+            "service_name": service_name,
+            "service_uuid": service_uuid,
+            "compose_service_present": False,
+            "expected_container_name": f"{service_name}-{service_uuid}",
+        }
+
+    labels = _compose_labels_to_map(definition.get("labels"))
+    return {
+        "service_name": service_name,
+        "service_uuid": service_uuid,
+        "compose_service_present": True,
+        "image": _safe_scalar(definition.get("image")).strip(),
+        "container_name": _safe_scalar(definition.get("container_name")).strip() or None,
+        "expected_container_name": _safe_scalar(definition.get("container_name")).strip() or f"{service_name}-{service_uuid}",
+        "restart": _safe_scalar(definition.get("restart")).strip() or None,
+        "depends_on_present": "depends_on" in definition,
+        "ports": _redact_sequence(definition.get("ports")),
+        "volumes": _redact_sequence(definition.get("volumes")),
+        "coolify_name_label": labels.get("coolify.name"),
+        "coolify_service_sub_id": labels.get("coolify.service.subId"),
+        "mother_node_label": labels.get("main_computer.mother.node"),
+    }
+
+
+def _primary_application_boundary_diagnostic(
+    payload: Any,
+    *,
+    node: str,
+    service_uuid: str,
+    phase: str,
+    compose: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    decoded = _decode_payload(payload)
+    payload_map = decoded if isinstance(decoded, Mapping) else {}
+    node_name = _identifier(node, "node")
+    records = _application_records(payload_map)
+    matching = [record for record in records if str(record.get("name") or "") == node_name]
+    if not matching:
+        besu_records = [
+            record for record in records if _safe_scalar(record.get("image")).strip().startswith("hyperledger/besu")
+        ]
+        if len(besu_records) == 1:
+            matching = besu_records
+
+    record = matching[0] if matching else None
+    app_status = _safe_scalar(record.get("status")).strip() if record else ""
+    app_running = _status_is_running(app_status)
+    app_terminal_nonrunning = _status_is_terminal_nonrunning(app_status)
+    app_pending = record is not None and not app_running and not app_terminal_nonrunning
+    app_uuid = _safe_scalar(record.get("uuid")).strip() if record else ""
+    compose_diag = _compose_primary_service_diagnostic(compose, node=node_name, service_uuid=service_uuid)
+
+    reason = "primary-application-running"
+    if record is None:
+        reason = "primary-application-record-missing"
+    elif app_terminal_nonrunning:
+        reason = "primary-application-terminal-nonrunning"
+    elif app_pending:
+        reason = "primary-application-pending"
+
+    return {
+        "phase": phase,
+        "node": node_name,
+        "service_uuid": service_uuid,
+        "parent_status": _safe_scalar(payload_map.get("status") or payload_map.get("service_status")).strip(),
+        "application_present": record is not None,
+        "application_uuid": app_uuid or None,
+        "application_name": _safe_scalar(record.get("name")).strip() if record else None,
+        "application_image": _safe_scalar(record.get("image")).strip() if record else None,
+        "application_status": app_status or None,
+        "application_running": app_running,
+        "application_terminal_nonrunning": app_terminal_nonrunning,
+        "application_pending": app_pending,
+        "application_exclude_from_status": record.get("exclude_from_status") if record else None,
+        "application_updated_at": _safe_scalar(record.get("updated_at")).strip() if record else None,
+        "parent_rollup_can_mask_primary": bool(record and record.get("exclude_from_status") is True),
+        "compose_primary_service": compose_diag,
+        "boundary_ok": record is not None and app_running,
+        "reason": reason,
+    }
 
 
 def _decode_compose_value(value: object) -> tuple[str, str]:
@@ -1258,6 +1372,19 @@ def _patch_parent_compose(
 
 
 
+def _restart_response_payload_summary(payload: Any) -> dict[str, Any]:
+    decoded = _decode_payload(payload)
+    if isinstance(decoded, Mapping):
+        return {
+            key: decoded.get(key)
+            for key in ("message", "uuid", "deployment_uuid", "status")
+            if key in decoded
+        }
+    if isinstance(decoded, str):
+        return {"text_tail": _tail_text(decoded, limit=1000)}
+    return {"type": type(decoded).__name__}
+
+
 def _restart_parent_service(
     controller: CoolifyController,
     service_uuid: str,
@@ -1287,6 +1414,7 @@ def _restart_parent_service(
         "elapsed_ms": response["elapsed_ms"],
         "service_uuid": service,
         "restart_scope": "post-cleanup2-parent-status-reconcile",
+        "response_payload_summary": _restart_response_payload_summary(response.get("payload")),
     }
 
 
@@ -1532,6 +1660,7 @@ def _wait_for_parent_service_running_healthy(
 
     observed_statuses: list[str] = []
     observed_receipts: list[dict[str, Any]] = []
+    primary_boundary_observations: list[dict[str, Any]] = []
     started = time.monotonic()
     while True:
         detail = _service_detail(
@@ -1547,30 +1676,72 @@ def _wait_for_parent_service_running_healthy(
         http_observations.append(receipt)
 
         status = ""
+        primary_boundary: dict[str, Any] | None = None
         if detail.get("missing") is not True and isinstance(detail.get("payload"), Mapping):
             status = _safe_scalar(detail["payload"].get("status")).strip()
+            try:
+                compose_text, _source_field, _source_encoding = _compose_text_from_service_payload(detail["payload"])
+                parsed_compose = _parse_compose(compose_text)
+            except Exception:
+                parsed_compose = None
+            primary_boundary = _primary_application_boundary_diagnostic(
+                detail["payload"],
+                node=node,
+                service_uuid=service,
+                phase="post-parent-restart-status-poll",
+                compose=parsed_compose,
+            )
+            primary_boundary_observations.append(primary_boundary)
         observed_statuses.append(status)
 
         if status == "running:healthy":
-            return {
-                "completed": True,
-                "reason": "parent-service-running-healthy",
-                "service_uuid": service,
-                "node": node,
-                "controller_id": controller_id,
-                "initial_settle_seconds": settle_seconds,
-                "final_status": status,
-                "observed_statuses": observed_statuses,
-                "observation_count": len(observed_statuses),
-                "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
-                "receipts": observed_receipts,
-            }
+            if primary_boundary is not None and primary_boundary.get("boundary_ok") is True:
+                return {
+                    "completed": True,
+                    "reason": "parent-service-and-primary-application-running",
+                    "service_uuid": service,
+                    "node": node,
+                    "controller_id": controller_id,
+                    "initial_settle_seconds": settle_seconds,
+                    "final_status": status,
+                    "observed_statuses": observed_statuses,
+                    "observation_count": len(observed_statuses),
+                    "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
+                    "receipts": observed_receipts,
+                    "primary_application_boundary": primary_boundary,
+                    "primary_application_observations": primary_boundary_observations,
+                    "primary_application_boundary_ok": True,
+                }
+            if primary_boundary is not None and primary_boundary.get("application_terminal_nonrunning") is True:
+                return {
+                    "completed": False,
+                    "reason": "primary-application-terminal-after-parent-restart",
+                    "service_uuid": service,
+                    "node": node,
+                    "controller_id": controller_id,
+                    "initial_settle_seconds": settle_seconds,
+                    "final_status": status,
+                    "observed_statuses": observed_statuses,
+                    "observation_count": len(observed_statuses),
+                    "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
+                    "receipts": observed_receipts,
+                    "primary_application_boundary": primary_boundary,
+                    "primary_application_observations": primary_boundary_observations,
+                    "primary_application_boundary_ok": False,
+                }
 
         elapsed = time.monotonic() - started
         if elapsed >= max_wait_seconds:
+            last_primary_boundary = primary_boundary_observations[-1] if primary_boundary_observations else None
+            parent_running_healthy_observed = any(item == "running:healthy" for item in observed_statuses)
+            timeout_reason = (
+                "primary-application-running-healthy-timeout-after-parent-restart"
+                if parent_running_healthy_observed
+                else "parent-service-running-healthy-timeout"
+            )
             return {
                 "completed": False,
-                "reason": "parent-service-running-healthy-timeout",
+                "reason": timeout_reason,
                 "service_uuid": service,
                 "node": node,
                 "controller_id": controller_id,
@@ -1580,6 +1751,13 @@ def _wait_for_parent_service_running_healthy(
                 "observation_count": len(observed_statuses),
                 "wait_milliseconds_after_settle": int(elapsed * 1000),
                 "receipts": observed_receipts,
+                "primary_application_boundary": last_primary_boundary,
+                "primary_application_observations": primary_boundary_observations,
+                "primary_application_boundary_ok": (
+                    last_primary_boundary.get("boundary_ok") is True
+                    if isinstance(last_primary_boundary, Mapping)
+                    else None
+                ),
             }
 
         sleeper(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
@@ -2724,6 +2902,8 @@ def _run_block_advance_waiter(
     target_node: str,
     service_uuid: str,
     runtime_state_root: str | Path,
+    topology_node_count: int | None = None,
+    wait_forever_after_baseline: bool = False,
     runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Run the standalone block-advance waiter after one parent stack restart."""
@@ -2742,6 +2922,9 @@ def _run_block_advance_waiter(
         str(BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS),
         "--quiet",
     ]
+    if wait_forever_after_baseline:
+        argv.append("--wait-forever-after-baseline")
+    subprocess_timeout = None if wait_forever_after_baseline else BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS
     started = time.monotonic()
     receipt: dict[str, Any] = {
         "script": BLOCK_ADVANCE_WAITER_SCRIPT,
@@ -2752,6 +2935,9 @@ def _run_block_advance_waiter(
         "node": target_node,
         "target_node": target_node,
         "service_uuid": service_uuid,
+        "topology_node_count": topology_node_count,
+        "wait_forever_after_baseline": bool(wait_forever_after_baseline),
+        "subprocess_timeout_seconds": subprocess_timeout,
         "direct_besu_rpc_from_cleanup": False,
         "direct_chain_height_polling_from_cleanup": False,
     }
@@ -2764,7 +2950,7 @@ def _run_block_advance_waiter(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS,
+            timeout=subprocess_timeout,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
@@ -2822,6 +3008,52 @@ def _run_block_advance_waiter(
         parse_error = "stdout-empty"
 
     receipt["result"] = parsed if isinstance(parsed, Mapping) else None
+    if isinstance(parsed, Mapping):
+        receipt["waiter_status"] = parsed.get("status")
+        receipt["waiter_reason"] = parsed.get("reason")
+        waiter_summary = parsed.get("summary")
+        if isinstance(waiter_summary, Mapping):
+            receipt["waiter_summary"] = {
+                key: waiter_summary.get(key)
+                for key in (
+                    "block_advance_completed",
+                    "block_advance_wait_performed",
+                    "block_advance_wait_forever_after_baseline",
+                    "block_advance_finite_wait_scope",
+                    "block_advance_infinite_wait_scope",
+                    "baseline_block_number",
+                    "latest_block_number",
+                    "block_endpoint_observed",
+                    "block_endpoint_observation_count",
+                    "block_endpoint_baseline_observed",
+                    "block_endpoint_timeout_scope",
+                    "temporary_service_created",
+                    "temporary_service_readback_resolved",
+                    "temporary_service_status_after_endpoint_failure",
+                    "endpoint_failure_diagnostics_captured",
+                    "temporary_service_left_for_inspection",
+                )
+                if key in waiter_summary
+            }
+        waiter_completion = parsed.get("completion")
+        if isinstance(waiter_completion, Mapping):
+            receipt["waiter_completion"] = {
+                key: waiter_completion.get(key)
+                for key in (
+                    "completed",
+                    "reason",
+                    "timeout_scope",
+                    "endpoint_url",
+                    "baseline_block_number",
+                    "latest_block_number",
+                    "block_advance",
+                    "baseline_observed",
+                    "wait_forever_after_baseline",
+                    "observation_count",
+                    "wait_milliseconds",
+                )
+                if key in waiter_completion
+            }
     if parse_error is not None:
         receipt["status"] = "failed"
         receipt["reason"] = "block-advance-waiter-json-invalid" if stripped else "block-advance-waiter-json-missing"
@@ -3244,6 +3476,20 @@ def run_helper_cleanup2_yagni(
                     http_observations=http_observations,
                 )
                 parent_restart_waits.append(wait_result)
+                if wait_result.get("completed") is not True:
+                    _emit_progress(
+                        progress,
+                        "cleanup2",
+                        "parent restart boundary failed before block waiter",
+                        node=node,
+                        controller_id=controller_id,
+                        service_uuid=service_uuid,
+                        reason=wait_result.get("reason"),
+                        final_status=wait_result.get("final_status"),
+                        primary_application_boundary=wait_result.get("primary_application_boundary"),
+                    )
+                    stop_restart_sequence = True
+                    break
 
                 _emit_progress(
                     progress,
@@ -3253,6 +3499,14 @@ def run_helper_cleanup2_yagni(
                     controller_id=controller_id,
                     service_uuid=service_uuid,
                     delegated_script=BLOCK_ADVANCE_WAITER_SCRIPT,
+                    topology_node_count=len(topology.get("nodes") or []),
+                    wait_forever_after_baseline=(
+                        len(topology.get("nodes") or []) == BLOCK_ADVANCE_WAITER_WAIT_FOREVER_TOPOLOGY_NODE_COUNT
+                    ),
+                )
+                topology_node_count = len(topology.get("nodes") or [])
+                wait_forever_after_baseline = (
+                    topology_node_count == BLOCK_ADVANCE_WAITER_WAIT_FOREVER_TOPOLOGY_NODE_COUNT
                 )
                 block_wait_result = _run_block_advance_waiter(
                     network=network_id,
@@ -3260,6 +3514,8 @@ def run_helper_cleanup2_yagni(
                     target_node=node,
                     service_uuid=service_uuid,
                     runtime_state_root=runtime_state_root,
+                    topology_node_count=topology_node_count,
+                    wait_forever_after_baseline=wait_forever_after_baseline,
                     runner=block_advance_waiter_runner,
                 )
                 block_advance_waits.append(block_wait_result)
@@ -3275,6 +3531,9 @@ def run_helper_cleanup2_yagni(
                     baseline_block_number=block_wait_result.get("baseline_block_number"),
                     latest_block_number=block_wait_result.get("latest_block_number"),
                     block_advance=block_wait_result.get("block_advance"),
+                    wait_forever_after_baseline=block_wait_result.get("wait_forever_after_baseline"),
+                    waiter_reason=block_wait_result.get("waiter_reason"),
+                    waiter_completion=block_wait_result.get("waiter_completion"),
                 )
                 if block_wait_result.get("status") != "pass":
                     stop_restart_sequence = True
@@ -3282,7 +3541,13 @@ def run_helper_cleanup2_yagni(
 
     patch_ok = all(step["status"] in {"patched", "would-patch", "no-op", "skipped"} for step in patch_steps)
     cleanup2_ok = mode_name == "inspect" or all(step.get("status") == "pass" for step in cleanup2_steps)
-    parent_restart_ok = mode_name == "inspect" or all(receipt.get("ok") is True for receipt in parent_restart_receipts)
+    parent_restart_request_ok = mode_name == "inspect" or all(receipt.get("ok") is True for receipt in parent_restart_receipts)
+    parent_restart_boundary_ok = mode_name == "inspect" or (
+        all(wait.get("completed") is True for wait in parent_restart_waits)
+        if parent_restart_receipts
+        else True
+    )
+    parent_restart_ok = parent_restart_request_ok and parent_restart_boundary_ok
     expected_block_advance_wait_count = len(parent_restart_receipts)
     block_advance_waiter_ok = mode_name == "inspect" or (
         len(block_advance_waits) == expected_block_advance_wait_count
@@ -3297,6 +3562,9 @@ def run_helper_cleanup2_yagni(
         "passed_count": sum(1 for wait in block_advance_waits if wait.get("status") == "pass"),
         "direct_besu_rpc_from_cleanup": False,
         "direct_chain_height_polling_from_cleanup": False,
+        "wait_forever_after_baseline_count": sum(
+            1 for wait in block_advance_waits if wait.get("wait_forever_after_baseline") is True
+        ),
         "waits": block_advance_waits,
     }
 
@@ -3533,12 +3801,31 @@ def run_helper_cleanup2_yagni(
             "parent_redeploy_performed": False,
             "parent_restart_performed": bool(parent_restart_receipts),
             "parent_restart_request_count": len(parent_restart_receipts),
+            "parent_restart_request_all_accepted": parent_restart_request_ok,
             "parent_restart_wait_count": len(parent_restart_waits),
+            "parent_restart_boundary_all_passed": parent_restart_boundary_ok,
             "parent_restart_waits_all_running_healthy": (
                 all(wait.get("completed") is True for wait in parent_restart_waits)
                 if parent_restart_waits
                 else None
             ),
+            "primary_application_boundary_performed": bool(parent_restart_waits),
+            "primary_application_boundary_all_running": (
+                all(wait.get("primary_application_boundary_ok") is True for wait in parent_restart_waits)
+                if parent_restart_waits
+                else None
+            ),
+            "primary_application_boundary_failures": [
+                {
+                    "node": wait.get("node"),
+                    "controller_id": wait.get("controller_id"),
+                    "service_uuid": wait.get("service_uuid"),
+                    "reason": wait.get("reason"),
+                    "primary_application_boundary": wait.get("primary_application_boundary"),
+                }
+                for wait in parent_restart_waits
+                if wait.get("primary_application_boundary_ok") is not True
+            ],
             "child_public_api_restart_attempted": False,
             "temporary_helper_apply_service_created": False,
             "post_restart_health_poll_performed": bool(parent_restart_waits),
@@ -3554,6 +3841,7 @@ def run_helper_cleanup2_yagni(
                 else None
             ),
             "block_advance_waiter_script": BLOCK_ADVANCE_WAITER_SCRIPT,
+            "block_advance_waiter_wait_forever_after_baseline_count": block_advance_waiter["wait_forever_after_baseline_count"],
             "direct_chain_height_polling_removed": True,
             "chain_touched": False,
         },

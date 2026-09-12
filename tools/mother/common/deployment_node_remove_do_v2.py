@@ -741,6 +741,13 @@ def _node_remove_do_host_helper_launch_verified(result: Mapping[str, Any]) -> bo
     return accepted(result.get("runner_create")) and accepted(result.get("runner_start")) and endpoint_seen
 
 
+def _node_remove_do_host_helper_launch_wait_seconds(max_wait_seconds: float) -> float:
+    wait = max(float(max_wait_seconds), 0.0)
+    if wait <= 0.0:
+        return 0.0
+    return max(30.0, min(wait, 180.0))
+
+
 def _observe_removal_guardian_deployment(
     *,
     controller: Any,
@@ -2252,6 +2259,7 @@ def execute_node_remove_do_release(
     validator_removal_proofs: dict[str, dict[str, Any]] = {}
     validator_removal_proof_sha256_by_voter: dict[str, str] = {}
     static_node_precleanup: dict[str, Any] | None = None
+    static_node_precleanup_warning: dict[str, Any] | None = None
     service_removal: dict[str, Any] | None = None
     failure: dict[str, str] | None = None
 
@@ -2410,11 +2418,7 @@ def execute_node_remove_do_release(
             if not start_accepted:
                 raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} guardian start with HTTP {start['status']}")
 
-            launch_deadline = (
-                time.monotonic()
-                if two_to_one_self_vote
-                else time.monotonic() + min(max(float(max_wait_seconds), 0.0), 60.0)
-            )
+            launch_deadline = time.monotonic() + min(max(float(max_wait_seconds), 0.0), 60.0)
             while True:
                 readiness = _observe_removal_guardian_deployment(
                     controller=controller,
@@ -2468,11 +2472,7 @@ def execute_node_remove_do_release(
                         execute=True,
                         timeout=timeout,
                         max_response_bytes=max_response_bytes,
-                        wait_seconds=(
-                            min(max(float(max_wait_seconds), 0.0), 10.0)
-                            if two_to_one_self_vote
-                            else max(30.0, min(float(max_wait_seconds), 180.0))
-                        ),
+                        wait_seconds=_node_remove_do_host_helper_launch_wait_seconds(max_wait_seconds),
                         poll_interval_seconds=poll_interval_seconds,
                         keep_runner=False,
                         opener=opener,
@@ -2747,7 +2747,12 @@ def execute_node_remove_do_release(
                 context="survivor cleanup",
             )
         except StaticNodePrecleanupGateError as exc:
-            raise _fail(exc.code, str(exc)) from exc
+            static_node_precleanup_warning = {
+                "code": exc.code,
+                "message": str(exc)[:512],
+                "scope": "post-validator-removal-proof-survivor-static-node-cleanup",
+                "blocking": False,
+            }
 
         for survivor in release["survivors"]:
             voter = _identifier(survivor["node"], "survivor node")
@@ -2895,6 +2900,7 @@ def execute_node_remove_do_release(
         "borrowed_survivor_guardians": borrowed_guardians if 'borrowed_guardians' in locals() else {},
         "host_docker_survivor_guardians": host_helper_guardians if 'host_helper_guardians' in locals() else {},
         "static_node_precleanup": static_node_precleanup,
+        "static_node_precleanup_warning": static_node_precleanup_warning,
         "survivor_guardian_cleanup": survivor_guardian_cleanup,
         "service_removal": service_removal,
         "authority": {
@@ -2926,6 +2932,8 @@ def execute_node_remove_do_release(
             "static_node_precleanup_performed": static_node_precleanup is not None,
             "static_node_precleanup_live_mutation_performed": static_node_precleanup_mutated,
             "static_node_precleanup_preserve_services": not delete_static_node_precleanup_services,
+            "static_node_precleanup_warning_present": static_node_precleanup_warning is not None,
+            "static_node_precleanup_blocking_after_validator_removal_proof": False,
             "single_node_decommission": bool(release.get("policy", {}).get("single_node_decommission")),
             "validator_removal_vote_required": vote_required,
             "service_deletion_is_first": bool(release.get("policy", {}).get("service_deletion_is_first")),
@@ -2957,6 +2965,12 @@ def execute_node_remove_do_release(
             "static_node_precleanup_delete_count": static_node_precleanup_summary.get("delete_count", 0),
             "static_node_precleanup_writer_service_count": static_node_precleanup_summary.get("writer_service_count", 0),
             "static_node_precleanup_writer_service_passed_count": static_node_precleanup_summary.get("writer_service_passed_count", 0),
+            "static_node_precleanup_warning_present": static_node_precleanup_warning is not None,
+            "static_node_precleanup_warning_code": (
+                static_node_precleanup_warning.get("code")
+                if isinstance(static_node_precleanup_warning, Mapping)
+                else None
+            ),
             "network_access_performed": bool(static_node_precleanup or mutation_receipts or health_observations or service_removal),
             "live_mutation_performed": live_mutation,
             "routing_or_topology_published": False,

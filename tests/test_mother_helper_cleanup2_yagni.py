@@ -17,6 +17,8 @@ from tools.mother.common.private_state import (
 from tools.mother_helper_cleanup2_yagni import (
     BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS,
     BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS,
+    BLOCK_ADVANCE_WAITER_WAIT_FOREVER_TOPOLOGY_NODE_COUNT,
+    _run_block_advance_waiter,
     run_helper_cleanup2_yagni,
 )
 from tests.test_mother_deployment_executor import TOKEN_C, _operation, _starter_document
@@ -79,6 +81,29 @@ class _BlockAdvanceWaiterRunner:
             },
         }
         return _CompletedProcess(list(argv), self.returncode, json.dumps(payload))
+
+
+def test_cleanup2_block_waiter_wait_forever_after_baseline_has_no_wrapper_timeout() -> None:
+    block_waiter = _BlockAdvanceWaiterRunner()
+
+    result = _run_block_advance_waiter(
+        network="mainnet",
+        controller_id="coolify-c",
+        target_node="mainnetc-super1",
+        service_uuid=SERVICE_UUID,
+        runtime_state_root=r"C:\Users\subsi\main_computer\runtime\state",
+        topology_node_count=BLOCK_ADVANCE_WAITER_WAIT_FOREVER_TOPOLOGY_NODE_COUNT,
+        wait_forever_after_baseline=True,
+        runner=block_waiter,
+    )
+
+    assert result["status"] == "pass"
+    assert result["topology_node_count"] == 2
+    assert result["wait_forever_after_baseline"] is True
+    assert result["subprocess_timeout_seconds"] is None
+    waiter_call = block_waiter.calls[0]
+    assert "--wait-forever-after-baseline" in waiter_call["argv"]
+    assert waiter_call["kwargs"]["timeout"] is None
 
 
 def _install(tmp_path: Path):
@@ -383,6 +408,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert "--runtime-state-root" in waiter_argv
     assert waiter_argv[waiter_argv.index("--max-wait-seconds") + 1] == str(BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS)
     assert "--quiet" in waiter_argv
+    assert "--wait-forever-after-baseline" not in waiter_argv
     assert block_waiter.calls[0]["kwargs"]["timeout"] == BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS
     assert BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS == 1200.0
     assert BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS > BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS
@@ -657,6 +683,48 @@ class _Cleanup2ParentNeverHealthyOpener(_Cleanup2Opener):
         return payload
 
 
+class _Cleanup2PrimaryExitedAfterRestartOpener(_Cleanup2Opener):
+    def _parent_service_payload(self):
+        payload = super()._parent_service_payload()
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if self.parent_restart_requested:
+            payload["status"] = "running:healthy"
+            for record in payload.get("applications", []):
+                if record.get("name") == "mainnetc-super2":
+                    record["status"] = "exited"
+                    record["exclude_from_status"] = True
+                    record["updated_at"] = "2026-09-09T19:29:24"
+        if self.service_detail_as_json_string:
+            return json.dumps(payload)
+        return payload
+
+
+class _Cleanup2PrimaryStartingThenHealthyAfterRestartOpener(_Cleanup2Opener):
+    def __init__(self) -> None:
+        super().__init__()
+        self.restart_parent_detail_reads = 0
+
+    def _parent_service_payload(self):
+        payload = super()._parent_service_payload()
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if self.parent_restart_requested:
+            self.restart_parent_detail_reads += 1
+            payload["status"] = "running:healthy"
+            for record in payload.get("applications", []):
+                if record.get("name") == "mainnetc-super2":
+                    record["exclude_from_status"] = True
+                    record["updated_at"] = "2026-09-10T03:36:57"
+                    if self.restart_parent_detail_reads == 1:
+                        record["status"] = "starting:unknown"
+                    else:
+                        record["status"] = "running:healthy"
+        if self.service_detail_as_json_string:
+            return json.dumps(payload)
+        return payload
+
+
 class _Cleanup2LogsUnavailableOpener(_Cleanup2Opener):
     def open(self, request, timeout: float):  # noqa: ANN001
         parsed = urlsplit(request.full_url)
@@ -732,7 +800,7 @@ def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path:
     assert opener.cleanup2_compose is not None
 
 
-def test_cleanup2_yagni_runs_block_waiter_after_parent_status_timeout(tmp_path: Path) -> None:
+def test_cleanup2_yagni_stops_before_block_waiter_after_parent_status_timeout(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2ParentNeverHealthyOpener()
     block_waiter = _BlockAdvanceWaiterRunner()
@@ -755,16 +823,99 @@ def test_cleanup2_yagni_runs_block_waiter_after_parent_status_timeout(tmp_path: 
     assert result["parent_restart_waits"][0]["completed"] is False
     assert result["parent_restart_waits"][0]["final_status"] == "degraded:unhealthy"
     assert result["summary"]["parent_restart_waits_all_running_healthy"] is False
+    assert result["summary"]["parent_restart_boundary_all_passed"] is False
     assert result["summary"]["parent_restart_request_count"] == 1
     assert result["summary"]["block_advance_waiter_expected_count"] == 1
+    assert result["summary"]["block_advance_waiter_invoked_count"] == 0
+    assert result["summary"]["block_advance_waiter_passed_count"] == 0
+    assert result["summary"]["block_advance_waiter_all_passed"] is False
+    assert result["block_advance_waiter"]["expected_wait_count"] == 1
+    assert result["block_advance_waiter"]["wait_count"] == 0
+    assert result["block_advance_waits"] == []
+    assert block_waiter.calls == []
+    assert result["status"] == "failed"
+
+
+def test_cleanup2_yagni_fails_before_block_waiter_when_primary_app_exited_after_restart(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2PrimaryExitedAfterRestartOpener()
+    block_waiter = _BlockAdvanceWaiterRunner()
+    sleep_calls: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+        sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
+        cleanup_on_clean=True,
+    )
+
+    assert result["status"] == "failed"
+    assert sleep_calls == [90.0]
+    assert block_waiter.calls == []
+    wait = result["parent_restart_waits"][0]
+    assert wait["completed"] is False
+    assert wait["reason"] == "primary-application-terminal-after-parent-restart"
+    assert wait["primary_application_boundary_ok"] is False
+    boundary = wait["primary_application_boundary"]
+    assert boundary["application_present"] is True
+    assert boundary["application_status"] == "exited"
+    assert boundary["application_terminal_nonrunning"] is True
+    assert boundary["application_pending"] is False
+    assert boundary["application_exclude_from_status"] is True
+    assert boundary["parent_rollup_can_mask_primary"] is True
+    assert boundary["compose_primary_service"]["compose_service_present"] is True
+    assert boundary["compose_primary_service"]["image"] == "hyperledger/besu:latest"
+    assert result["summary"]["parent_restart_boundary_all_passed"] is False
+    assert result["summary"]["primary_application_boundary_all_running"] is False
+    assert result["summary"]["primary_application_boundary_failures"][0]["node"] == "mainnetc-super2"
+    assert result["summary"]["block_advance_waiter_invoked_count"] == 0
+    assert result["summary"]["cleanup_on_clean_eligible"] is False
+
+
+def test_cleanup2_yagni_polls_primary_app_until_healthy_after_parent_is_healthy(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2PrimaryStartingThenHealthyAfterRestartOpener()
+    block_waiter = _BlockAdvanceWaiterRunner()
+    sleep_calls: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=5,
+        poll_interval_seconds=0,
+        opener=opener,
+        sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
+        cleanup_on_clean=True,
+    )
+
+    assert result["status"] == "pass"
+    assert sleep_calls[0] == 90.0
+    assert block_waiter.calls
+    wait = result["parent_restart_waits"][0]
+    assert wait["completed"] is True
+    assert wait["reason"] == "parent-service-and-primary-application-running"
+    assert wait["observation_count"] == 2
+    assert wait["primary_application_boundary_ok"] is True
+    assert wait["primary_application_observations"][0]["application_status"] == "starting:unknown"
+    assert wait["primary_application_observations"][0]["application_pending"] is True
+    assert wait["primary_application_observations"][0]["application_terminal_nonrunning"] is False
+    assert wait["primary_application_observations"][1]["application_status"] == "running:healthy"
+    assert wait["primary_application_observations"][1]["application_running"] is True
+    assert result["summary"]["parent_restart_boundary_all_passed"] is True
+    assert result["summary"]["primary_application_boundary_all_running"] is True
     assert result["summary"]["block_advance_waiter_invoked_count"] == 1
     assert result["summary"]["block_advance_waiter_passed_count"] == 1
-    assert result["summary"]["block_advance_waiter_all_passed"] is True
-    assert result["block_advance_waiter"]["expected_wait_count"] == 1
-    assert result["block_advance_waiter"]["wait_count"] == 1
-    assert result["block_advance_waits"][0]["status"] == "pass"
-    assert block_waiter.calls
-    assert result["status"] == "pass"
 
 
 def test_cleanup2_yagni_fails_when_delegated_block_waiter_fails(tmp_path: Path) -> None:

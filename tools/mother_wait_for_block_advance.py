@@ -2041,6 +2041,7 @@ def _wait_for_block_endpoint(
     opener: Any,
     observations: list[dict[str, Any]],
     debug: bool,
+    wait_forever_after_baseline: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
     endpoint_observations: list[dict[str, Any]] = []
@@ -2056,6 +2057,7 @@ def _wait_for_block_endpoint(
         expected_chain_id=expected_chain_id,
         max_wait_seconds=max_wait_seconds,
         poll_interval_seconds=poll_interval_seconds,
+        wait_forever_after_baseline=wait_forever_after_baseline,
     )
 
     while True:
@@ -2139,13 +2141,19 @@ def _wait_for_block_endpoint(
                     "block_advance": latest_block - baseline_block,
                     "baseline_payload": dict(baseline_payload or {}),
                     "latest_payload": dict(latest_payload or {}),
+                    "baseline_observed": True,
+                    "wait_forever_after_baseline": bool(wait_forever_after_baseline),
+                    "timeout_scope": None,
                     "observations": endpoint_observations,
                     "observation_count": len(endpoint_observations),
                     "wait_milliseconds": int(elapsed * 1000),
                 }
 
         elapsed = time.monotonic() - started
-        if elapsed >= max_wait_seconds:
+        deadline_reached = elapsed >= max_wait_seconds
+        if deadline_reached and not (wait_forever_after_baseline and baseline_block is not None):
+            timeout_scope = "endpoint-setup-or-baseline" if baseline_block is None else "block-advance-after-baseline"
+            timeout_reason = "block-endpoint-baseline-timeout" if baseline_block is None else "block-endpoint-timeout"
             _debug(
                 debug,
                 "block-endpoint-timeout",
@@ -2153,21 +2161,30 @@ def _wait_for_block_endpoint(
                 latest_block_number=latest_block,
                 observation_count=len(endpoint_observations),
                 wait_milliseconds=int(elapsed * 1000),
+                timeout_scope=timeout_scope,
+                timeout_reason=timeout_reason,
             )
             return {
                 "completed": False,
-                "reason": "block-endpoint-timeout",
+                "reason": timeout_reason,
+                "timeout_scope": timeout_scope,
                 "endpoint_url": endpoint_url,
                 "baseline_block_number": baseline_block,
                 "latest_block_number": latest_block,
                 "baseline_payload": dict(baseline_payload or {}),
                 "latest_payload": dict(latest_payload or {}),
+                "baseline_observed": baseline_block is not None,
+                "wait_forever_after_baseline": bool(wait_forever_after_baseline),
                 "observations": endpoint_observations,
                 "observation_count": len(endpoint_observations),
                 "wait_milliseconds": int(elapsed * 1000),
             }
 
-        time.sleep(min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed)))
+        if wait_forever_after_baseline and baseline_block is not None:
+            sleep_seconds = poll_interval_seconds
+        else:
+            sleep_seconds = min(poll_interval_seconds, max(0.0, max_wait_seconds - elapsed))
+        time.sleep(sleep_seconds)
 
 
 def _delete_watch_service(
@@ -2218,6 +2235,7 @@ def run_block_advance_watch(
     poll_interval_seconds: float = 10.0,
     leave_service: bool = False,
     delete_on_failure: bool = False,
+    wait_forever_after_baseline: bool = False,
     opener: Any = urllib.request.urlopen,
     debug: bool = True,
 ) -> dict[str, Any]:
@@ -2247,6 +2265,7 @@ def run_block_advance_watch(
         runtime_state_root=runtime_state_root,
         max_wait_seconds=max_wait,
         poll_interval_seconds=poll_interval,
+        wait_forever_after_baseline=wait_forever_after_baseline,
     )
 
     topology = _load_topology(
@@ -2496,6 +2515,7 @@ def run_block_advance_watch(
                             opener=opener,
                             observations=observations,
                             debug=debug,
+                            wait_forever_after_baseline=wait_forever_after_baseline,
                         )
                         if completion.get("completed") is True:
                             status = "pass"
@@ -2599,6 +2619,12 @@ def run_block_advance_watch(
             "delete_on_failure": bool(delete_on_failure),
         },
         "block_endpoint": dict(block_endpoint),
+        "wait_contract": {
+            "endpoint_setup_timeout_seconds": max_wait,
+            "wait_forever_after_baseline": bool(wait_forever_after_baseline),
+            "infinite_wait_scope": "block-advance-after-baseline" if wait_forever_after_baseline else None,
+            "finite_wait_scope": "watcher-setup-and-baseline" if wait_forever_after_baseline else "watcher-setup-baseline-and-advance",
+        },
         "stale_cleanup": stale_cleanup,
         "create": create_receipt,
         "create_readback": create_readback,
@@ -2618,6 +2644,9 @@ def run_block_advance_watch(
             ),
             "block_advance_max_wait_seconds": max_wait,
             "block_advance_poll_interval_seconds": poll_interval,
+            "block_advance_wait_forever_after_baseline": bool(wait_forever_after_baseline),
+            "block_advance_finite_wait_scope": "watcher-setup-and-baseline" if wait_forever_after_baseline else "watcher-setup-baseline-and-advance",
+            "block_advance_infinite_wait_scope": "block-advance-after-baseline" if wait_forever_after_baseline else None,
             "temporary_service_status_gate_used": False,
             "baseline_block_number": (
                 completion.get("baseline_block_number") if isinstance(completion, Mapping) else None
@@ -2627,6 +2656,16 @@ def run_block_advance_watch(
             ),
             "block_endpoint_observed": bool(endpoint_observations),
             "block_endpoint_observation_count": len(endpoint_observations) if isinstance(endpoint_observations, list) else 0,
+            "block_endpoint_baseline_observed": (
+                completion.get("baseline_observed")
+                if isinstance(completion, Mapping)
+                else None
+            ),
+            "block_endpoint_timeout_scope": (
+                completion.get("timeout_scope")
+                if isinstance(completion, Mapping)
+                else None
+            ),
             "stale_watch_service_cleanup_ok": stale_cleanup is not None and stale_cleanup.get("ok") is True,
             "stale_watch_service_cleanup_candidate_count": (
                 stale_cleanup.get("candidate_count") if isinstance(stale_cleanup, Mapping) else None
@@ -2692,6 +2731,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-interval-seconds", type=float, default=10.0)
     parser.add_argument("--leave-service", action="store_true", help="Leave the temporary diagnostic service for manual log inspection")
     parser.add_argument("--delete-on-failure", action="store_true", help="Delete the temporary service even when the diagnostic fails")
+    parser.add_argument(
+        "--wait-forever-after-baseline",
+        "--wait-forever",
+        dest="wait_forever_after_baseline",
+        action="store_true",
+        help=(
+            "Use --max-wait-seconds only for watcher setup and first valid /block baseline; "
+            "after a baseline block is observed, wait indefinitely for block advancement."
+        ),
+    )
     parser.add_argument("--quiet", action="store_true", help="Suppress progress/debug lines on stderr")
     parser.add_argument("--write-evidence", action="store_true")
     return parser
@@ -2718,6 +2767,7 @@ def main(argv: list[str] | None = None) -> int:
             poll_interval_seconds=args.poll_interval_seconds,
             leave_service=args.leave_service,
             delete_on_failure=args.delete_on_failure,
+            wait_forever_after_baseline=args.wait_forever_after_baseline,
             debug=not args.quiet,
         )
         if args.write_evidence:

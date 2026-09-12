@@ -271,11 +271,17 @@ def _cleanup_completion_evidence(tmp_path: Path, *, operation: str) -> tuple[str
                     "node": "mainneta-super1",
                     "controller_id": "coolify-a",
                     "service_uuid": "mzg0ttmqt4yqsurwjkv5un4a",
+                    "p2p_endpoint": "10.116.0.3:30303",
+                    "p2p_port": 30303,
+                    "vpn_ip": "10.116.0.3",
                 },
                 "mainnetc-super1": {
                     "node": "mainnetc-super1",
                     "controller_id": "coolify-c",
                     "service_uuid": "j1445405xyjkbeld0se5j8i8",
+                    "p2p_endpoint": "10.116.0.2:30303",
+                    "p2p_port": 30303,
+                    "vpn_ip": "10.116.0.2",
                 },
             },
         },
@@ -283,9 +289,74 @@ def _cleanup_completion_evidence(tmp_path: Path, *, operation: str) -> tuple[str
     return _write_json(tmp_path / "post-admission.json", document)
 
 
+def _cleanup_live_current_topology_evidence(tmp_path: Path, *, operation: str) -> tuple[str, str]:
+    if operation == "remove-node":
+        document = {
+            "kind": "main_computer.mother.live_current_topology_evidence.v1",
+            "status": "pass",
+            "failure": None,
+            "network": "mainnet",
+            "summary": {
+                "clean": True,
+                "topology_current": True,
+                "topology_stale": False,
+            },
+            "final_topology": {
+                "nodes": ["mainnetc-super1"],
+                "services": {
+                    "mainnetc-super1": {
+                        "node": "mainnetc-super1",
+                        "controller_id": "coolify-c",
+                        "service_uuid": "fresh-c1-service",
+                    },
+                },
+            },
+        }
+        return _write_json(tmp_path / "live-current-cleanup-topology-remove.json", document)
+
+    document = {
+        "kind": "main_computer.mother.live_current_topology_evidence.v1",
+        "status": "pass",
+        "failure": None,
+        "network": "mainnet",
+        "summary": {
+            "clean": True,
+            "topology_current": True,
+            "topology_stale": False,
+        },
+        "final_topology": {
+            "nodes": ["mainneta-super1", "mainnetc-super1"],
+            "services": {
+                "mainneta-super1": {
+                    "node": "mainneta-super1",
+                    "controller_id": "coolify-a",
+                    "service_uuid": "fresh-a-service",
+                },
+                "mainnetc-super1": {
+                    "node": "mainnetc-super1",
+                    "controller_id": "coolify-c",
+                    "service_uuid": "fresh-c1-service",
+                },
+            },
+        },
+    }
+    return _write_json(tmp_path / "live-current-cleanup-topology-add.json", document)
+
+
 def test_add_node_harness_runs_cleanup1_then_cleanup2_once(tmp_path: Path) -> None:
     args = _parser_args(tmp_path)
     evidence_path, evidence_sha = _cleanup_completion_evidence(tmp_path, operation="add-node")
+    fresh_evidence_path, fresh_evidence_sha = _cleanup_live_current_topology_evidence(tmp_path, operation="add-node")
+    baseline_path, baseline_sha = _write_json(
+        tmp_path / "empty-baseline.json",
+        {
+            "kind": "main_computer.mother.live_topology_empty_rectification_evidence.v1",
+            "status": "pass",
+            "final_topology": {"nodes": [], "services": {}},
+        },
+    )
+    args.baseline_evidence = baseline_path
+    args.baseline_evidence_sha256 = baseline_sha
     args.post_admission_topology_evidence = evidence_path
     args.post_admission_topology_evidence_sha256 = evidence_sha
 
@@ -293,6 +364,15 @@ def test_add_node_harness_runs_cleanup1_then_cleanup2_once(tmp_path: Path) -> No
 
     def fake_run(step: str, argv: list[str], *, allow_failure: bool = False):  # noqa: ARG001
         captured.append((step, argv))
+        if step == "post-work-cleanup-topology-seal":
+            return {
+                "status": "pass",
+                "summary": {"clean": True},
+                "evidence": {
+                    "path": fresh_evidence_path,
+                    "sha256": fresh_evidence_sha,
+                },
+            }
         return {
             "status": "pass",
             "summary": {"clean": True},
@@ -305,36 +385,43 @@ def test_add_node_harness_runs_cleanup1_then_cleanup2_once(tmp_path: Path) -> No
     instance.step_post_work_cleanup()
 
     assert [step for step, _ in captured] == [
+        "post-work-cleanup-topology-seal",
         "post-work-cleanup-static-node-precleanup",
         "post-work-cleanup-cleanup1",
         "post-work-cleanup-cleanup2",
     ]
 
-    static_precleanup_argv = captured[0][1]
+    topology_seal_argv = captured[0][1]
+    assert topology_seal_argv[topology_seal_argv.index("--topology-evidence") + 1] == evidence_path
+    assert topology_seal_argv[topology_seal_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
+    assert baseline_path not in topology_seal_argv
+    assert baseline_sha not in topology_seal_argv
+
+    static_precleanup_argv = captured[1][1]
     assert static_precleanup_argv[1].endswith("tools/mother_bootnode_precleanup.py")
     assert static_precleanup_argv[2] == "mainnet"
     assert "--execute" in static_precleanup_argv
     assert "--allow-mutation" in static_precleanup_argv
     assert "--no-live-node-info" in static_precleanup_argv
-    assert "--preserve-services" in static_precleanup_argv
+    assert "--preserve-services" not in static_precleanup_argv
     assert "--exclude-node" not in static_precleanup_argv
     assert static_precleanup_argv[static_precleanup_argv.index("--topology-evidence") + 1] == evidence_path
     assert static_precleanup_argv[static_precleanup_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
 
-    cleanup1_argv = captured[1][1]
+    cleanup1_argv = captured[2][1]
     assert cleanup1_argv[1].endswith("tools/mother_post_work_cleanup_v2.py")
     assert cleanup1_argv[2] == "execute"
     assert "--cleanup-all" in cleanup1_argv
-    assert cleanup1_argv[cleanup1_argv.index("--topology-evidence") + 1] == evidence_path
-    assert cleanup1_argv[cleanup1_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
+    assert cleanup1_argv[cleanup1_argv.index("--topology-evidence") + 1] == fresh_evidence_path
+    assert cleanup1_argv[cleanup1_argv.index("--acknowledge-topology-evidence-sha256") + 1] == fresh_evidence_sha
 
-    cleanup2_argv = captured[2][1]
+    cleanup2_argv = captured[3][1]
     assert cleanup2_argv[1].endswith("tools/mother_helper_cleanup2_yagni.py")
     assert cleanup2_argv[2] == "execute"
     assert "--cleanup-all" not in cleanup2_argv
     assert "--cleanup-on-clean" in cleanup2_argv
-    assert cleanup2_argv[cleanup2_argv.index("--topology-evidence") + 1] == evidence_path
-    assert cleanup2_argv[cleanup2_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
+    assert cleanup2_argv[cleanup2_argv.index("--topology-evidence") + 1] == fresh_evidence_path
+    assert cleanup2_argv[cleanup2_argv.index("--acknowledge-topology-evidence-sha256") + 1] == fresh_evidence_sha
 
     forbidden = {
         "--workflow",
@@ -371,6 +458,23 @@ def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_script
         ],
     )
     evidence_path, evidence_sha = _cleanup_completion_evidence(tmp_path, operation="remove-node")
+    fresh_evidence_path, fresh_evidence_sha = _cleanup_live_current_topology_evidence(tmp_path, operation="remove-node")
+    baseline_path, baseline_sha = _write_json(
+        tmp_path / "pre-remove-baseline.json",
+        {
+            "kind": "main_computer.mother.deployment_node_remove_prep_evidence.v1",
+            "status": "pass",
+            "final_topology": {
+                "nodes": ["mainnetc-super1", "mainnetc-super2"],
+                "services": {
+                    "mainnetc-super1": {"node": "mainnetc-super1", "controller_id": "coolify-c", "service_uuid": "stale-c1"},
+                    "mainnetc-super2": {"node": "mainnetc-super2", "controller_id": "coolify-c", "service_uuid": "stale-c2"},
+                },
+            },
+        },
+    )
+    args.baseline_evidence = baseline_path
+    args.baseline_evidence_sha256 = baseline_sha
     args.remove_finalize_evidence = evidence_path
     args.remove_finalize_evidence_sha256 = evidence_sha
 
@@ -378,6 +482,15 @@ def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_script
 
     def fake_run(step: str, argv: list[str], *, allow_failure: bool = False):  # noqa: ARG001
         captured.append((step, argv))
+        if step == "post-work-cleanup-topology-seal":
+            return {
+                "status": "pass",
+                "summary": {"clean": True},
+                "evidence": {
+                    "path": fresh_evidence_path,
+                    "sha256": fresh_evidence_sha,
+                },
+            }
         return {
             "status": "pass",
             "summary": {"clean": True},
@@ -390,17 +503,26 @@ def test_remove_node_harness_post_work_cleanup_uses_topology_wide_cleanup_script
     instance.step_post_work_cleanup()
 
     assert [step for step, _ in captured] == [
+        "post-work-cleanup-topology-seal",
         "post-work-cleanup-cleanup1",
         "post-work-cleanup-cleanup2",
     ]
     assert all(step != "post-work-cleanup-static-node-precleanup" for step, _ in captured)
-    assert captured[0][1][1].endswith("tools/mother_post_work_cleanup_v2.py")
-    assert captured[1][1][1].endswith("tools/mother_helper_cleanup2_yagni.py")
-    assert "--cleanup-on-clean" in captured[1][1]
-    assert captured[0][1][captured[0][1].index("--topology-evidence") + 1] == evidence_path
-    assert captured[1][1][captured[1][1].index("--topology-evidence") + 1] == evidence_path
-    assert "deletedservice123" not in captured[0][1]
+    topology_seal_argv = captured[0][1]
+    assert topology_seal_argv[topology_seal_argv.index("--topology-evidence") + 1] == evidence_path
+    assert topology_seal_argv[topology_seal_argv.index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
+    assert baseline_path not in topology_seal_argv
+    assert baseline_sha not in topology_seal_argv
+
+    assert captured[1][1][1].endswith("tools/mother_post_work_cleanup_v2.py")
+    assert captured[2][1][1].endswith("tools/mother_helper_cleanup2_yagni.py")
+    assert "--cleanup-on-clean" in captured[2][1]
+    assert captured[1][1][captured[1][1].index("--topology-evidence") + 1] == fresh_evidence_path
+    assert captured[2][1][captured[2][1].index("--topology-evidence") + 1] == fresh_evidence_path
+    assert captured[1][1][captured[1][1].index("--acknowledge-topology-evidence-sha256") + 1] == fresh_evidence_sha
+    assert captured[2][1][captured[2][1].index("--acknowledge-topology-evidence-sha256") + 1] == fresh_evidence_sha
     assert "deletedservice123" not in captured[1][1]
+    assert "deletedservice123" not in captured[2][1]
 
 
 def test_add_node_static_node_precleanup_delete_flag_omits_preserve_services(tmp_path: Path) -> None:
@@ -422,6 +544,9 @@ def test_add_node_static_node_precleanup_delete_flag_omits_preserve_services(tmp
         ],
     )
     evidence_path, evidence_sha = _cleanup_completion_evidence(tmp_path, operation="add-node")
+    fresh_evidence_path, fresh_evidence_sha = _cleanup_live_current_topology_evidence(tmp_path, operation="add-node")
+    args.baseline_evidence = evidence_path
+    args.baseline_evidence_sha256 = evidence_sha
     args.post_admission_topology_evidence = evidence_path
     args.post_admission_topology_evidence_sha256 = evidence_sha
 
@@ -429,6 +554,15 @@ def test_add_node_static_node_precleanup_delete_flag_omits_preserve_services(tmp
 
     def fake_run(step: str, argv: list[str], *, allow_failure: bool = False):  # noqa: ARG001
         captured.append((step, argv))
+        if step == "post-work-cleanup-topology-seal":
+            return {
+                "status": "pass",
+                "summary": {"clean": True},
+                "evidence": {
+                    "path": fresh_evidence_path,
+                    "sha256": fresh_evidence_sha,
+                },
+            }
         return {
             "status": "pass",
             "summary": {"clean": True},
@@ -440,8 +574,32 @@ def test_add_node_static_node_precleanup_delete_flag_omits_preserve_services(tmp
     instance.run = fake_run
     instance.step_post_work_cleanup()
 
-    assert captured[0][0] == "post-work-cleanup-static-node-precleanup"
-    assert "--preserve-services" not in captured[0][1]
+    assert captured[0][0] == "post-work-cleanup-topology-seal"
+    assert captured[1][0] == "post-work-cleanup-static-node-precleanup"
+    assert "--preserve-services" not in captured[1][1]
+    assert captured[1][1][captured[1][1].index("--topology-evidence") + 1] == evidence_path
+    assert captured[1][1][captured[1][1].index("--acknowledge-topology-evidence-sha256") + 1] == evidence_sha
+
+
+def test_static_node_precleanup_gate_deletes_writer_services_by_default(tmp_path: Path) -> None:
+    argv = harness.build_static_node_precleanup_argv(
+        repo_root=ROOT,
+        network="mainnet",
+        runtime_state_root=tmp_path,
+        topology_evidence=tmp_path / "topology.json",
+        acknowledged_topology_evidence_sha256="a" * 64,
+    )
+    assert "--preserve-services" not in argv
+
+    preserved_argv = harness.build_static_node_precleanup_argv(
+        repo_root=ROOT,
+        network="mainnet",
+        runtime_state_root=tmp_path,
+        topology_evidence=tmp_path / "topology.json",
+        acknowledged_topology_evidence_sha256="a" * 64,
+        preserve_services=True,
+    )
+    assert "--preserve-services" in preserved_argv
 
 
 def test_post_work_cleanup_is_terminal_in_add_and_remove_harness_step_order() -> None:
@@ -487,26 +645,40 @@ def test_preflight_paranoia_cmd_uses_harness_selected_baseline(tmp_path: Path) -
     assert argv[argv.index("--node") + 1] == "mainnetc-super2"
 
 
-def test_preflight_paranoia_blocks_with_cleanup_command_as_final_line(tmp_path: Path, capsys) -> None:
+def test_preflight_paranoia_blocks_with_fresh_cleanup_topology_command(tmp_path: Path, capsys) -> None:
     args = _parser_args(tmp_path)
-    args.baseline_evidence = str(tmp_path / "selected-topology.json")
-    args.baseline_evidence_sha256 = "a" * 64
+    selected_evidence, selected_sha = _cleanup_completion_evidence(tmp_path, operation="add-node")
+    fresh_evidence_path, fresh_evidence_sha = _cleanup_live_current_topology_evidence(tmp_path, operation="add-node")
+    args.baseline_evidence = selected_evidence
+    args.baseline_evidence_sha256 = selected_sha
 
     instance = harness.Harness(args)
+    captured: list[tuple[str, list[str], bool]] = []
 
     def fake_run(step: str, argv: list[str], *, allow_failure: bool = False):  # noqa: ARG001
-        assert step == "preflight-paranoia"
-        assert allow_failure is True
-        return {
-            "status": "cleanup-required",
-            "cleanup_required": True,
-            "cleanup_command": "python cleanup2.py execute",
-            "summary": {
-                "clean": False,
-                "active_cleanup_helper_count": 1,
-                "network_mutation_performed": False,
-            },
-        }
+        captured.append((step, argv, allow_failure))
+        if step == "preflight-paranoia":
+            assert allow_failure is True
+            return {
+                "status": "cleanup-required",
+                "cleanup_required": True,
+                "cleanup_command": "python cleanup2.py execute --topology-evidence stale.json",
+                "summary": {
+                    "clean": False,
+                    "active_cleanup_helper_count": 1,
+                    "network_mutation_performed": False,
+                },
+            }
+        if step == "preflight-cleanup-topology-seal":
+            return {
+                "status": "pass",
+                "summary": {"clean": True},
+                "evidence": {
+                    "path": fresh_evidence_path,
+                    "sha256": fresh_evidence_sha,
+                },
+            }
+        raise AssertionError(step)
 
     instance.run = fake_run
 
@@ -515,5 +687,13 @@ def test_preflight_paranoia_blocks_with_cleanup_command_as_final_line(tmp_path: 
 
     assert exc.value.code == 3
     output = capsys.readouterr().out
+    assert [step for step, _, _ in captured] == [
+        "preflight-paranoia",
+        "preflight-cleanup-topology-seal",
+    ]
     assert "MOTHER_MUTATE_HARNESS_PREFLIGHT_PARANOIA_BLOCKED" in output
-    assert output.rstrip().endswith("python cleanup2.py execute")
+    assert "Run this cleanup command before the mutation:" in output
+    assert "mother_helper_cleanup2_yagni.py" in output
+    assert fresh_evidence_path in output
+    assert fresh_evidence_sha in output
+    assert "stale.json" not in output
