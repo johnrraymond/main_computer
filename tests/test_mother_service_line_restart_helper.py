@@ -41,11 +41,19 @@ class FakeResponse:
 
 
 class FakeCoolifyOpener:
-    def __init__(self, *, delete_ok: bool = True, logs_payload: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        delete_ok: bool = True,
+        logs_payload: object | None = None,
+        target_status: str | list[str] = "running:healthy",
+    ) -> None:
         self.calls: list[dict[str, object]] = []
         self.created_body: dict[str, object] | None = None
         self.delete_ok = delete_ok
         self.logs_payload = logs_payload
+        self.target_status = target_status
+        self.target_status_reads = 0
 
     def __call__(self, request, timeout: float):  # noqa: ANN001 - urllib-compatible fake
         parsed = urllib.parse.urlsplit(request.full_url)
@@ -74,6 +82,25 @@ class FakeCoolifyOpener:
 
         if method == "GET" and path == f"/api/v1/services/{HELPER_SERVICE_UUID}":
             return FakeResponse(200, {"uuid": HELPER_SERVICE_UUID, "name": "mother-service-line-restart-coolify-c-mainnetc-super1-test", "status": "exited:0"})
+
+        if method == "GET" and path == f"/api/v1/services/{PARENT_SERVICE_UUID}":
+            if isinstance(self.target_status, list):
+                index = min(self.target_status_reads, len(self.target_status) - 1)
+                target_status = self.target_status[index]
+                self.target_status_reads += 1
+            else:
+                target_status = self.target_status
+            return FakeResponse(
+                200,
+                {
+                    "uuid": PARENT_SERVICE_UUID,
+                    "name": NODE,
+                    "status": target_status,
+                    "service_applications": [
+                        {"uuid": "serviceapplicationuuid", "name": NODE, "status": target_status}
+                    ],
+                },
+            )
 
         if method == "GET" and path.startswith(f"/api/v1/services/{HELPER_SERVICE_UUID}/logs"):
             payload = self.logs_payload
@@ -246,7 +273,7 @@ def test_execute_deletes_helper_after_exit_when_requested(tmp_path: Path) -> Non
     assert any(call["method"] == "DELETE" and call["path"] == f"/api/v1/services/{HELPER_SERVICE_UUID}" for call in opener.calls)
 
 
-def test_execute_fails_when_helper_result_logs_are_unavailable(tmp_path: Path) -> None:
+def test_execute_infers_success_from_target_readback_when_helper_logs_are_unavailable(tmp_path: Path) -> None:
     opener = FakeCoolifyOpener(logs_payload={"logs": "no restart helper result here"})
 
     result = execute_service_line_restart_helper(
@@ -262,9 +289,99 @@ def test_execute_fails_when_helper_result_logs_are_unavailable(tmp_path: Path) -
         opener=opener,
     )
 
-    assert result["status"] == "failed"
-    assert result["reason"] == "helper-result-not-observed"
+    assert result["status"] == "pass"
+    assert result["reason"] == "helper-result-inferred-from-target-readback"
+    assert result["result_source"] == "target-service-line-readback"
     assert result["logs"]["observed"] is False
+    assert result["target_service_line_readback"]["running_healthy_observed"] is True
+    assert result["target_service_line_readback_wait"]["completed"] is True
+    assert result["target_service_line_readback_wait"]["observation_count"] == 1
+    assert result["after_status"] == "running:healthy"
+    assert result["after_running"] == "true"
+    assert result["after_health"] == "healthy"
+
+
+def test_execute_polls_stale_target_readback_until_healthy_when_helper_logs_are_unavailable(tmp_path: Path) -> None:
+    opener = FakeCoolifyOpener(
+        logs_payload={"logs": "no restart helper result here"},
+        target_status=["exited", "running:healthy"],
+    )
+
+    result = execute_service_line_restart_helper(
+        private_state(),
+        runtime_state_root=tmp_path,
+        network="mainnet",
+        mode="execute",
+        node=NODE,
+        display_name="Mainnetc Super1",
+        timeout=1.0,
+        max_wait_seconds=1.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+    )
+
+    assert result["status"] == "pass"
+    assert result["reason"] == "helper-result-inferred-from-target-readback"
+    assert result["result_source"] == "target-service-line-readback"
+    assert result["target_service_line_readback_wait"]["completed"] is True
+    assert result["target_service_line_readback_wait"]["reason"] == "target-service-line-running-healthy"
+    assert result["target_service_line_readback_wait"]["observation_count"] == 2
+    assert [
+        item["selected_status"]
+        for item in result["target_service_line_readback_wait"]["observations"]
+    ] == ["exited", "running:healthy"]
+    assert opener.target_status_reads == 2
+
+
+def test_execute_times_out_when_logs_unavailable_and_target_never_becomes_healthy(tmp_path: Path) -> None:
+    opener = FakeCoolifyOpener(logs_payload={"logs": "no restart helper result here"}, target_status="exited")
+
+    result = execute_service_line_restart_helper(
+        private_state(),
+        runtime_state_root=tmp_path,
+        network="mainnet",
+        mode="execute",
+        node=NODE,
+        display_name="Mainnetc Super1",
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "target-service-line-readback-timeout"
+    assert result["logs"]["observed"] is False
+    assert result["target_service_line_readback"]["running_healthy_observed"] is False
+    assert result["target_service_line_readback_wait"]["completed"] is False
+    assert result["target_service_line_readback_wait"]["observation_count"] == 1
+
+
+def test_execute_does_not_override_observed_helper_failure_with_target_readback(tmp_path: Path) -> None:
+    opener = FakeCoolifyOpener(
+        logs_payload={
+            "logs": f"{RUNTIME_PREFIX} phase=complete status=failed reason=candidate-count-not-one candidate_count=2"
+        },
+        target_status="running:healthy",
+    )
+
+    result = execute_service_line_restart_helper(
+        private_state(),
+        runtime_state_root=tmp_path,
+        network="mainnet",
+        mode="execute",
+        node=NODE,
+        display_name="Mainnetc Super1",
+        timeout=1.0,
+        max_wait_seconds=1.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "candidate-count-not-one"
+    assert result["result_source"] == "runtime-logs"
+    assert result["target_service_line_readback"] is None
 
 
 def test_inspect_mode_resolves_target_without_creating_helper(tmp_path: Path) -> None:

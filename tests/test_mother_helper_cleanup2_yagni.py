@@ -18,7 +18,9 @@ from tools.mother_helper_cleanup2_yagni import (
     BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS,
     BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS,
     BLOCK_ADVANCE_WAITER_WAIT_FOREVER_TOPOLOGY_NODE_COUNT,
+    SERVICE_LINE_RESTART_HELPER_SCRIPT,
     _run_block_advance_waiter,
+    _run_service_line_restart_helper,
     run_helper_cleanup2_yagni,
 )
 from tests.test_mother_deployment_executor import TOKEN_C, _operation, _starter_document
@@ -81,6 +83,46 @@ class _BlockAdvanceWaiterRunner:
             },
         }
         return _CompletedProcess(list(argv), self.returncode, json.dumps(payload))
+
+
+class _ServiceLineRestartRunner:
+    def __init__(self, *, opener: object | None = None, status: str = "pass", returncode: int = 0) -> None:
+        self.calls: list[dict] = []
+        self.opener = opener
+        self.status = status
+        self.returncode = returncode
+
+    def __call__(self, argv, **kwargs):  # noqa: ANN001
+        argv = list(argv)
+        self.calls.append({"argv": argv, "kwargs": dict(kwargs)})
+        controller_id = argv[argv.index("--controller-id") + 1]
+        service_uuid = argv[argv.index("--service-uuid") + 1]
+        service_line = argv[argv.index("--service-line") + 1]
+        if self.status == "pass" and self.opener is not None:
+            setattr(self.opener, "parent_restart_requested", True)
+        payload = {
+            "kind": "main_computer.mother.service_line_restart_helper.v1",
+            "status": self.status,
+            "reason": "service-line-running" if self.status == "pass" else "candidate-not-running",
+            "mode": "execute",
+            "network": "mainnet",
+            "controller_id": controller_id,
+            "service_uuid": service_uuid,
+            "service_line": service_line,
+            "helper_service_uuid": "restarthelperserviceuuid",
+            "helper_delete_requested": True,
+            "helper_delete_performed": self.status == "pass",
+            "helper_left_for_inspection": self.status != "pass",
+            "selected_container_id": "container123",
+            "selected_container_name": f"{service_line}-{service_uuid}",
+            "action": "restart",
+            "after_status": "running",
+            "after_running": "true",
+            "after_health": "healthy",
+        }
+        return _CompletedProcess(argv, self.returncode, json.dumps(payload))
+
+
 
 
 def test_cleanup2_block_waiter_wait_forever_after_baseline_has_no_wrapper_timeout() -> None:
@@ -173,6 +215,59 @@ def _compose() -> str:
 """
 
 
+def test_cleanup2_service_line_restart_helper_invocation_parses_pass() -> None:
+    runner = _ServiceLineRestartRunner()
+    result = _run_service_line_restart_helper(
+        network="mainnet",
+        controller_id="coolify-c",
+        service_uuid=SERVICE_UUID,
+        service_line="mainnetc-super2",
+        runtime_state_root="runtime/state",
+        timeout=30.0,
+        max_response_bytes=1024,
+        max_wait_seconds=60.0,
+        poll_interval_seconds=5.0,
+        runner=runner,
+    )
+
+    assert result["status"] == "pass"
+    assert result["ok"] is True
+    assert result["script"] == SERVICE_LINE_RESTART_HELPER_SCRIPT
+    assert result["restart_scope"] == "post-cleanup2-single-compose-service-line"
+    argv = runner.calls[0]["argv"]
+    assert argv[1] == SERVICE_LINE_RESTART_HELPER_SCRIPT
+    assert argv[2] == "execute"
+    assert argv[argv.index("--runtime-state-root") + 1] == "runtime/state"
+    assert argv[argv.index("--network") + 1] == "mainnet"
+    assert argv[argv.index("--controller-id") + 1] == "coolify-c"
+    assert argv[argv.index("--service-uuid") + 1] == SERVICE_UUID
+    assert argv[argv.index("--service-line") + 1] == "mainnetc-super2"
+    assert "--delete-helper-after-exit" in argv
+
+
+def test_cleanup2_service_line_restart_helper_invocation_reports_failure() -> None:
+    runner = _ServiceLineRestartRunner(status="failed", returncode=2)
+    result = _run_service_line_restart_helper(
+        network="mainnet",
+        controller_id="coolify-c",
+        service_uuid=SERVICE_UUID,
+        service_line="mainnetc-super2",
+        runtime_state_root="runtime/state",
+        timeout=30.0,
+        max_response_bytes=1024,
+        max_wait_seconds=60.0,
+        poll_interval_seconds=5.0,
+        runner=runner,
+    )
+
+    assert result["status"] == "failed"
+    assert result["ok"] is False
+    assert result["reason"] == "service-line-restart-helper-nonzero-exit"
+    assert result["helper_status"] == "failed"
+
+
+
+
 class _Cleanup2Opener:
     def __init__(
         self,
@@ -208,6 +303,14 @@ class _Cleanup2Opener:
                     "uuid": "fdbbbbbbbbbbbbbbbbbbbbbb",
                     "status": "running:healthy",
                     "image": "foundationdb/foundationdb:7.4.6",
+                },
+                {
+                    "id": 581,
+                    "name": "mother-genesis-init",
+                    "uuid": "genesisinithelperuuid",
+                    "status": "exited",
+                    "image": "alpine:3.20",
+                    "service_id": SERVICE_ID,
                 },
                 {
                     "id": 582,
@@ -344,6 +447,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener()
     block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -357,12 +461,13 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
     )
 
     assert result["status"] == "pass"
     assert result["summary"]["topology_imported"] is True
     assert result["summary"]["targeted_super_node_count"] == 1
-    assert result["summary"]["targeted_helper_service_count"] == 3
+    assert result["summary"]["targeted_helper_service_count"] == 4
     assert result["summary"]["compose_patch_accepted_count"] == 1
     assert result["summary"]["cleanup2_controller_count"] == 1
     assert result["summary"]["cleanup2_passed"] is True
@@ -379,7 +484,14 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert result["summary"]["cleanup2_remove_node_helper_cleanup_reached"] is True
     assert result["cleanup2_steps"][0]["health"] is None
     assert result["summary"]["parent_redeploy_performed"] is False
-    assert result["summary"]["parent_restart_performed"] is True
+    assert result["summary"]["service_line_restart_performed"] is True
+    assert result["summary"]["service_line_restart_count"] == 1
+    assert result["summary"]["service_line_restart_all_passed"] is True
+    assert result["summary"]["service_line_restart_helper_script"] == SERVICE_LINE_RESTART_HELPER_SCRIPT
+    assert result["summary"]["mimic_service_line_restart_performed"] is True
+    assert result["summary"]["mimic_service_line_restart_count"] == 4
+    assert result["summary"]["mimic_service_line_restart_all_passed"] is True
+    assert result["summary"]["parent_restart_performed"] is False
     assert result["summary"]["parent_restart_request_count"] == 1
     assert result["summary"]["parent_restart_wait_count"] == 1
     assert result["summary"]["parent_restart_waits_all_running_healthy"] is True
@@ -416,7 +528,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     first_step = result["patch_steps"][0]
     diagnostics = first_step["diagnostics"]
     assert diagnostics["pre_patch_parent"]["parent_status"] == "degraded:unhealthy"
-    assert diagnostics["pre_patch_parent"]["helper_application_count"] == 3
+    assert diagnostics["pre_patch_parent"]["helper_application_count"] == 4
     assert any(
         item["helper_name"] == "mother-genesis-proof-guardian" and item["is_cleanup2_mimic_definition"] is False
         for item in diagnostics["pre_patch_parent"]["helper_definitions"]
@@ -434,9 +546,26 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert left_for_inspection[0]["service_name"].startswith("mother-helper-cleanup2-coolify-c-")
     assert len(result["post_cleanup_readbacks"]) == 1
     assert result["post_cleanup_readbacks"][0]["all_target_helpers_are_cleanup2_mimics_in_saved_compose"] is True
-    assert result["parent_restart_receipts"][0]["endpoint"] == f"/api/v1/services/{SERVICE_UUID}/restart"
-    assert result["parent_restart_receipts"][0]["ok"] is True
-    assert result["parent_restart_receipts"][0]["restart_scope"] == "post-cleanup2-parent-status-reconcile"
+    assert result["service_line_restart_receipts"][0]["ok"] is True
+    assert result["service_line_restart_receipts"][0]["script"] == SERVICE_LINE_RESTART_HELPER_SCRIPT
+    assert result["service_line_restart_receipts"][0]["restart_scope"] == "post-cleanup2-single-compose-service-line"
+    assert result["service_line_restart_receipts"][0]["service_line"] == "mainnetc-super2"
+    assert result["service_line_restart_receipts"][0]["restart_role"] == "primary-node"
+    mimic_lines = [receipt["service_line"] for receipt in result["mimic_service_line_restart_receipts"]]
+    assert mimic_lines == [
+        "mother-add-node-validator-activation-guardian",
+        "mother-genesis-init",
+        "mother-genesis-proof-guardian",
+        "mother-node-remove-voter-mainnetc_super1",
+    ]
+    assert all(receipt["restart_role"] == "helper-mimic" for receipt in result["mimic_service_line_restart_receipts"])
+    restart_argv = service_line_restart.calls[-1]["argv"]
+    assert restart_argv[1] == SERVICE_LINE_RESTART_HELPER_SCRIPT
+    assert restart_argv[2] == "execute"
+    assert restart_argv[restart_argv.index("--controller-id") + 1] == "coolify-c"
+    assert restart_argv[restart_argv.index("--service-uuid") + 1] == SERVICE_UUID
+    assert restart_argv[restart_argv.index("--service-line") + 1] == "mainnetc-super2"
+    assert "--delete-helper-after-exit" in restart_argv
     assert result["parent_restart_waits"][0]["completed"] is True
     assert result["parent_restart_waits"][0]["initial_settle_seconds"] == 90.0
     assert result["parent_restart_waits"][0]["final_status"] == "running:healthy"
@@ -448,9 +577,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
         == "cleanup2-temporary-service-delete-disabled"
     )
     cleanup2_diag = result["cleanup2_steps"][0]["diagnostics"]
-    assert cleanup2_diag["target_diagnostics"][0]["docker_compose_cli_removed_service_keys"] == {
-        "mother-genesis-init": ["exclude_from_hc"]
-    }
+    assert cleanup2_diag["target_diagnostics"][0]["docker_compose_cli_removed_service_keys"] == {}
     assert cleanup2_diag["target_diagnostics"][0]["docker_compose_cli_compose_sha256"]
     assert cleanup2_diag["runtime_diagnostics_log_prefix"] == "MOTHER_HELPER_CLEANUP2_RUNTIME_DIAGNOSTIC"
     assert "actual discovered compose project" in cleanup2_diag["runtime_diagnostics_include"]
@@ -458,6 +585,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert "docker ps snapshots before and after" in cleanup2_diag["runtime_diagnostics_include"]
     assert cleanup2_diag["target_diagnostics"][0]["expected_container_names"] == [
         f"mother-add-node-validator-activation-guardian-{SERVICE_UUID}",
+        f"mother-genesis-init-{SERVICE_UUID}",
         f"mother-genesis-proof-guardian-{SERVICE_UUID}",
         f"mother-node-remove-voter-mainnetc_super1-{SERVICE_UUID}",
     ]
@@ -483,6 +611,7 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     services = patched["services"]
     for name in (
         "mother-add-node-validator-activation-guardian",
+        "mother-genesis-init",
         "mother-genesis-proof-guardian",
         "mother-node-remove-voter-mainnetc_super1",
     ):
@@ -504,6 +633,8 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert services["mother-add-node-validator-activation-guardian"]["labels"]["coolify.service.subName"] == (
         "mother-add-node-validator-activation-guardian"
     )
+    assert services["mother-genesis-init"]["labels"]["coolify.service.subId"] == "581"
+    assert services["mother-genesis-init"]["labels"]["coolify.service.subName"] == "mother-genesis-init"
     assert services["mother-genesis-proof-guardian"]["labels"]["coolify.service.subId"] == "583"
     assert services["mother-node-remove-voter-mainnetc_super1"]["labels"]["coolify.name"] == (
         f"mother-node-remove-voter-mainnetc-super1-{SERVICE_UUID}"
@@ -516,17 +647,18 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert diagnostics["rewritten_helper_definitions"][0]["coolify_identity"]["coolify_identity_labels_present"] is True
     assert diagnostics["rewritten_helper_definitions"][1]["coolify_identity"]["coolify_identity_labels_present"] is True
     assert diagnostics["rewritten_helper_definitions"][2]["coolify_identity"]["coolify_identity_labels_present"] is True
-    assert diagnostics["rewritten_helper_definitions"][2]["coolify_identity"]["coolify_name_matches_expected_container"] is False
+    assert diagnostics["rewritten_helper_definitions"][3]["coolify_identity"]["coolify_identity_labels_present"] is True
+    assert diagnostics["rewritten_helper_definitions"][3]["coolify_identity"]["coolify_name_matches_expected_container"] is False
     assert (
-        diagnostics["rewritten_helper_definitions"][2]["coolify_identity"][
+        diagnostics["rewritten_helper_definitions"][3]["coolify_identity"][
             "coolify_name_matches_expected_coolify_label_name"
         ]
         is True
     )
-    assert first_step["rewrite_summary"]["coolify_identity_labelled_helper_count"] == 3
+    assert first_step["rewrite_summary"]["coolify_identity_labelled_helper_count"] == 4
 
     assert services["mainnetc-super2"]["image"] == "hyperledger/besu:latest"
-    assert services["mother-genesis-init"]["exclude_from_hc"] is True
+    assert services["mother-genesis-init"]["labels"]["main_computer.mother.retired_helper_mimic"] == "true"
     assert services["mother-super-node-fdb"]["image"] == "foundationdb/foundationdb:7.4.6"
     assert services["mother-super-node-hub"]["image"] == "mainnetc-super2-hub:c56a20a0fd05"
 
@@ -574,13 +706,14 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert ("POST", "/api/v1/services") in paths
     assert ("POST", f"/api/v1/services/{CLEANUP2_UUID}/start") in paths
     assert ("GET", f"/api/v1/services/{CLEANUP2_UUID}/logs") in paths
-    assert ("POST", f"/api/v1/services/{SERVICE_UUID}/restart") in paths
+    assert ("POST", f"/api/v1/services/{SERVICE_UUID}/restart") not in paths
     assert ("DELETE", f"/api/v1/services/{CLEANUP2_UUID}") not in paths
     log_request = next(item for item in opener.requests if item["path"] == f"/api/v1/services/{CLEANUP2_UUID}/logs")
     assert log_request["query"].startswith("sub_service_name=mother-helper-cleanup2-coolify-c")
     assert all(path != "/api/v1/deploy" for _method, path in paths)
     assert all(path != f"/api/v1/services/{SERVICE_UUID}/start" for _method, path in paths)
-    assert paths.index(("GET", f"/api/v1/services/{CLEANUP2_UUID}/logs")) < paths.index(("POST", f"/api/v1/services/{SERVICE_UUID}/restart"))
+    assert service_line_restart.calls
+    assert paths.index(("GET", f"/api/v1/services/{CLEANUP2_UUID}/logs")) < len(paths)
     assert all("/applications/" not in path for _method, path in paths)
     assert all(item["host"] == "coolify-c.invalid" for item in opener.requests)
 
@@ -590,6 +723,7 @@ def test_cleanup2_yagni_cleanup_on_clean_sweeps_cleanup_owned_temporary_services
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener()
     block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -603,6 +737,7 @@ def test_cleanup2_yagni_cleanup_on_clean_sweeps_cleanup_owned_temporary_services
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
         cleanup_on_clean=True,
     )
 
@@ -625,8 +760,9 @@ def test_cleanup2_yagni_cleanup_on_clean_sweeps_cleanup_owned_temporary_services
     assert ("DELETE", f"/api/v1/services/{SERVICE_UUID}") not in paths
     assert ("DELETE", f"/api/v1/services/{UNRELATED_SERVICE_UUID}") not in paths
 
+    assert ("POST", f"/api/v1/services/{SERVICE_UUID}/restart") not in paths
     assert paths.index(("GET", "/api/v1/services")) > paths.index(
-        ("POST", f"/api/v1/services/{SERVICE_UUID}/restart")
+        ("GET", f"/api/v1/services/{CLEANUP2_UUID}/logs")
     )
 
     step = result["cleanup2_steps"][0]
@@ -640,6 +776,7 @@ def test_cleanup2_yagni_cleanup_on_clean_polls_until_deleted_services_disappear(
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener(cleanup_delete_visibility_lag=1)
     block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -653,6 +790,7 @@ def test_cleanup2_yagni_cleanup_on_clean_polls_until_deleted_services_disappear(
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
         cleanup_on_clean=True,
     )
 
@@ -746,6 +884,7 @@ def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_pa
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2LogsUnavailableOpener()
     block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -759,6 +898,7 @@ def test_cleanup2_yagni_reports_unknown_when_runtime_logs_are_unavailable(tmp_pa
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
     )
 
     assert sleep_calls == [90.0]
@@ -777,6 +917,7 @@ def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener(service_detail_as_json_string=True)
     block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -790,20 +931,62 @@ def test_cleanup2_yagni_decodes_service_detail_returned_as_json_string(tmp_path:
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
     )
 
     assert sleep_calls == [90.0]
     assert block_waiter.calls
     assert result["status"] == "pass"
-    assert result["summary"]["targeted_helper_service_count"] == 3
+    assert result["summary"]["targeted_helper_service_count"] == 4
     assert opener.patched_compose is not None
     assert opener.cleanup2_compose is not None
+
+
+def test_cleanup2_yagni_fails_before_boundary_when_service_line_restart_helper_fails(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2Opener()
+    block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener, status="failed", returncode=2)
+    sleep_calls: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        opener=opener,
+        sleeper=sleep_calls.append,
+        block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
+    )
+
+    assert result["status"] == "failed"
+    assert result["mimic_service_line_restart_receipts"][0]["ok"] is False
+    assert result["mimic_service_line_restart_receipts"][0]["reason"] == "service-line-restart-helper-nonzero-exit"
+    assert result["mimic_service_line_restart_receipts"][0]["restart_role"] == "helper-mimic"
+    assert result["summary"]["mimic_service_line_restart_performed"] is True
+    assert result["summary"]["mimic_service_line_restart_all_passed"] is False
+    assert result["summary"]["service_line_restart_performed"] is False
+    assert result["summary"]["service_line_restart_all_passed"] is True
+    assert result["summary"]["parent_restart_boundary_all_passed"] is True
+    assert result["summary"]["block_advance_waiter_expected_count"] == 0
+    assert result["summary"]["block_advance_waiter_invoked_count"] == 0
+    assert result["parent_restart_waits"] == []
+    assert result["service_line_restart_receipts"] == []
+    assert block_waiter.calls == []
+    assert sleep_calls == []
+
+
 
 
 def test_cleanup2_yagni_stops_before_block_waiter_after_parent_status_timeout(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2ParentNeverHealthyOpener()
     block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -817,29 +1000,33 @@ def test_cleanup2_yagni_stops_before_block_waiter_after_parent_status_timeout(tm
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
     )
 
     assert sleep_calls == [90.0]
-    assert result["parent_restart_waits"][0]["completed"] is False
+    assert result["parent_restart_waits"][0]["completed"] is True
     assert result["parent_restart_waits"][0]["final_status"] == "degraded:unhealthy"
+    assert result["parent_restart_waits"][0]["reason"] == "primary-application-running-parent-rollup-ignored"
+    assert result["parent_restart_waits"][0]["parent_rollup_ignored_after_primary_boundary"] is True
     assert result["summary"]["parent_restart_waits_all_running_healthy"] is False
-    assert result["summary"]["parent_restart_boundary_all_passed"] is False
+    assert result["summary"]["parent_restart_boundary_all_passed"] is True
     assert result["summary"]["parent_restart_request_count"] == 1
     assert result["summary"]["block_advance_waiter_expected_count"] == 1
-    assert result["summary"]["block_advance_waiter_invoked_count"] == 0
-    assert result["summary"]["block_advance_waiter_passed_count"] == 0
-    assert result["summary"]["block_advance_waiter_all_passed"] is False
+    assert result["summary"]["block_advance_waiter_invoked_count"] == 1
+    assert result["summary"]["block_advance_waiter_passed_count"] == 1
+    assert result["summary"]["block_advance_waiter_all_passed"] is True
     assert result["block_advance_waiter"]["expected_wait_count"] == 1
-    assert result["block_advance_waiter"]["wait_count"] == 0
-    assert result["block_advance_waits"] == []
-    assert block_waiter.calls == []
-    assert result["status"] == "failed"
+    assert result["block_advance_waiter"]["wait_count"] == 1
+    assert result["block_advance_waits"][0]["status"] == "pass"
+    assert block_waiter.calls
+    assert result["status"] == "pass"
 
 
 def test_cleanup2_yagni_fails_before_block_waiter_when_primary_app_exited_after_restart(tmp_path: Path) -> None:
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2PrimaryExitedAfterRestartOpener()
     block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -853,6 +1040,7 @@ def test_cleanup2_yagni_fails_before_block_waiter_when_primary_app_exited_after_
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
         cleanup_on_clean=True,
     )
 
@@ -883,6 +1071,7 @@ def test_cleanup2_yagni_polls_primary_app_until_healthy_after_parent_is_healthy(
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2PrimaryStartingThenHealthyAfterRestartOpener()
     block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -896,6 +1085,7 @@ def test_cleanup2_yagni_polls_primary_app_until_healthy_after_parent_is_healthy(
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
         cleanup_on_clean=True,
     )
 
@@ -922,6 +1112,7 @@ def test_cleanup2_yagni_fails_when_delegated_block_waiter_fails(tmp_path: Path) 
     runtime, private_state, topology_path = _install(tmp_path)
     opener = _Cleanup2Opener()
     block_waiter = _BlockAdvanceWaiterRunner(status="failed", completed=False, returncode=2)
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
     sleep_calls: list[float] = []
 
     result = run_helper_cleanup2_yagni(
@@ -935,6 +1126,7 @@ def test_cleanup2_yagni_fails_when_delegated_block_waiter_fails(tmp_path: Path) 
         opener=opener,
         sleeper=sleep_calls.append,
         block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
         cleanup_on_clean=True,
     )
 

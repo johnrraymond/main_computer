@@ -8,14 +8,18 @@ This script does only the agreed cleanup2 flow:
 3. Install and run one temporary cleanup2 service per controller.  cleanup2
    uses the local Docker socket to recreate only the named helper Compose
    services that Coolify's public API cannot restart as child resources.
-4. For each touched parent service, queue Coolify Restart, wait 90 seconds,
-   then wait for the top-level service status to become running:healthy before
-   restarting the next touched parent service.
-5. Leave block-advance proof to tools/mother_wait_for_block_advance.py.  This
+4. Restart each rewritten retired-helper mimic Compose service line with the
+   standalone service-line restart helper so exited one-shot rows stop poisoning
+   the Coolify parent rollup.
+5. For each touched parent service, run the standalone service-line restart
+   helper against the node's exact Compose service line, wait 90 seconds, then
+   wait for the primary application boundary.  A degraded parent rollup is not
+   fatal once the primary application is running healthy.
+6. Leave block-advance proof to tools/mother_wait_for_block_advance.py.  This
    cleanup script does not do its own chain-height or Besu RPC probing.
 
 It does not call public child application restart/deploy APIs, parent start,
-parent deploy, Besu/FDB/Hub services, Besu RPC, or child-resource health polling.
+parent restart, parent deploy, Besu/FDB/Hub services, or Besu RPC.
 """
 
 from __future__ import annotations
@@ -88,6 +92,7 @@ HELPER_EXACT_NAMES = frozenset(
     {
         "mother-add-node-validator-activation-guardian",
         "mother-genesis-proof-guardian",
+        "mother-genesis-init",
     }
 )
 HELPER_PREFIXES = (
@@ -101,7 +106,6 @@ FORBIDDEN_SERVICE_NAMES = frozenset(
         "mother-replica-sync-guardian",
         "mother-replica-init",
         "mother-validator-activation-init",
-        "mother-genesis-init",
     }
 )
 
@@ -118,6 +122,8 @@ COOLIFY_IDENTITY_LABELS = (
     "coolify.service.subName",
 )
 PARENT_RESTART_SETTLE_SECONDS = 90.0
+SERVICE_LINE_RESTART_HELPER_SCRIPT = "tools/mother_service_line_restart_helper.py"
+SERVICE_LINE_RESTART_HELPER_SUBPROCESS_TIMEOUT_PADDING_SECONDS = 180.0
 BLOCK_ADVANCE_WAITER_SCRIPT = "tools/mother_wait_for_block_advance.py"
 BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS = 1200.0
 BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS = 1320.0
@@ -987,6 +993,7 @@ def _helper_definition_diagnostic(
             "main_computer.mother.not_a_proof_guardian",
             "main_computer.mother.not_a_validator_voter",
             "main_computer.mother.not_an_activation_guardian",
+            "main_computer.mother.not_a_genesis_init",
         )
     }
     normalized_selected_labels = {
@@ -999,6 +1006,7 @@ def _helper_definition_diagnostic(
             "main_computer.mother.not_a_proof_guardian",
             "main_computer.mother.not_a_validator_voter",
             "main_computer.mother.not_an_activation_guardian",
+            "main_computer.mother.not_a_genesis_init",
         )
     }
     coolify_identity = _coolify_identity_label_diagnostic(labels, helper_name=helper, service_uuid=service)
@@ -1025,6 +1033,7 @@ def _helper_definition_diagnostic(
             and labels_map.get("main_computer.mother.not_a_proof_guardian") == "true"
             and labels_map.get("main_computer.mother.not_a_validator_voter") == "true"
             and labels_map.get("main_computer.mother.not_an_activation_guardian") == "true"
+            and labels_map.get("main_computer.mother.not_a_genesis_init") == "true"
             and "mother-retired-helper-shim" in command_text
         ),
     }
@@ -1240,6 +1249,7 @@ def _mimic_service(
             "main_computer.mother.not_a_proof_guardian": "true",
             "main_computer.mother.not_a_validator_voter": "true",
             "main_computer.mother.not_an_activation_guardian": "true",
+            "main_computer.mother.not_a_genesis_init": "true",
         }
     )
 
@@ -1370,52 +1380,6 @@ def _patch_parent_compose(
         "patch_scope": "helper-mimic-compose-only",
     }
 
-
-
-def _restart_response_payload_summary(payload: Any) -> dict[str, Any]:
-    decoded = _decode_payload(payload)
-    if isinstance(decoded, Mapping):
-        return {
-            key: decoded.get(key)
-            for key in ("message", "uuid", "deployment_uuid", "status")
-            if key in decoded
-        }
-    if isinstance(decoded, str):
-        return {"text_tail": _tail_text(decoded, limit=1000)}
-    return {"type": type(decoded).__name__}
-
-
-def _restart_parent_service(
-    controller: CoolifyController,
-    service_uuid: str,
-    *,
-    timeout: float,
-    max_response_bytes: int,
-    opener: Any,
-) -> dict[str, Any]:
-    service = _uuid(service_uuid, "service_uuid")
-    endpoint = f"/api/v1/services/{urllib.parse.quote(service, safe='')}/restart"
-    response = _http(
-        controller,
-        "POST",
-        endpoint,
-        body=None,
-        timeout=timeout,
-        max_response_bytes=max_response_bytes,
-        opener=opener,
-    )
-    return {
-        "method": "POST",
-        "endpoint": endpoint,
-        "status": response["status"],
-        "ok": response["ok"],
-        "response_sha256": response["response_sha256"],
-        "byte_length": response["byte_length"],
-        "elapsed_ms": response["elapsed_ms"],
-        "service_uuid": service,
-        "restart_scope": "post-cleanup2-parent-status-reconcile",
-        "response_payload_summary": _restart_response_payload_summary(response.get("payload")),
-    }
 
 
 def _cleanup_on_clean_prefixes(controller_id: str) -> tuple[str, str]:
@@ -1694,41 +1658,44 @@ def _wait_for_parent_service_running_healthy(
             primary_boundary_observations.append(primary_boundary)
         observed_statuses.append(status)
 
-        if status == "running:healthy":
-            if primary_boundary is not None and primary_boundary.get("boundary_ok") is True:
-                return {
-                    "completed": True,
-                    "reason": "parent-service-and-primary-application-running",
-                    "service_uuid": service,
-                    "node": node,
-                    "controller_id": controller_id,
-                    "initial_settle_seconds": settle_seconds,
-                    "final_status": status,
-                    "observed_statuses": observed_statuses,
-                    "observation_count": len(observed_statuses),
-                    "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
-                    "receipts": observed_receipts,
-                    "primary_application_boundary": primary_boundary,
-                    "primary_application_observations": primary_boundary_observations,
-                    "primary_application_boundary_ok": True,
-                }
-            if primary_boundary is not None and primary_boundary.get("application_terminal_nonrunning") is True:
-                return {
-                    "completed": False,
-                    "reason": "primary-application-terminal-after-parent-restart",
-                    "service_uuid": service,
-                    "node": node,
-                    "controller_id": controller_id,
-                    "initial_settle_seconds": settle_seconds,
-                    "final_status": status,
-                    "observed_statuses": observed_statuses,
-                    "observation_count": len(observed_statuses),
-                    "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
-                    "receipts": observed_receipts,
-                    "primary_application_boundary": primary_boundary,
-                    "primary_application_observations": primary_boundary_observations,
-                    "primary_application_boundary_ok": False,
-                }
+        if primary_boundary is not None and primary_boundary.get("boundary_ok") is True:
+            result = {
+                "completed": True,
+                "reason": "parent-service-and-primary-application-running",
+                "service_uuid": service,
+                "node": node,
+                "controller_id": controller_id,
+                "initial_settle_seconds": settle_seconds,
+                "final_status": status,
+                "observed_statuses": observed_statuses,
+                "observation_count": len(observed_statuses),
+                "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
+                "receipts": observed_receipts,
+                "primary_application_boundary": primary_boundary,
+                "primary_application_observations": primary_boundary_observations,
+                "primary_application_boundary_ok": True,
+            }
+            if status != "running:healthy":
+                result["reason"] = "primary-application-running-parent-rollup-ignored"
+                result["parent_rollup_ignored_after_primary_boundary"] = True
+            return result
+        if primary_boundary is not None and primary_boundary.get("application_terminal_nonrunning") is True:
+            return {
+                "completed": False,
+                "reason": "primary-application-terminal-after-parent-restart",
+                "service_uuid": service,
+                "node": node,
+                "controller_id": controller_id,
+                "initial_settle_seconds": settle_seconds,
+                "final_status": status,
+                "observed_statuses": observed_statuses,
+                "observation_count": len(observed_statuses),
+                "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
+                "receipts": observed_receipts,
+                "primary_application_boundary": primary_boundary,
+                "primary_application_observations": primary_boundary_observations,
+                "primary_application_boundary_ok": False,
+            }
 
         elapsed = time.monotonic() - started
         if elapsed >= max_wait_seconds:
@@ -3086,6 +3053,146 @@ def _run_block_advance_waiter(
     return receipt
 
 
+def _run_service_line_restart_helper(
+    *,
+    network: str,
+    controller_id: str,
+    service_uuid: str,
+    service_line: str,
+    runtime_state_root: str | Path,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    network_id = _identifier(network, "network")
+    controller = _identifier(controller_id, "controller_id")
+    parent_service_uuid = _uuid(service_uuid, "service_uuid")
+    line = _identifier(service_line, "service_line")
+    script = SERVICE_LINE_RESTART_HELPER_SCRIPT
+    argv = [
+        sys.executable,
+        script,
+        "execute",
+        "--runtime-state-root",
+        str(runtime_state_root),
+        "--network",
+        network_id,
+        "--controller-id",
+        controller,
+        "--service-uuid",
+        parent_service_uuid,
+        "--service-line",
+        line,
+        "--delete-helper-after-exit",
+        "--timeout",
+        str(timeout),
+        "--max-response-bytes",
+        str(int(max_response_bytes)),
+        "--max-wait-seconds",
+        str(max_wait_seconds),
+        "--poll-interval-seconds",
+        str(poll_interval_seconds),
+    ]
+    subprocess_timeout = max_wait_seconds + max(timeout * 4.0, SERVICE_LINE_RESTART_HELPER_SUBPROCESS_TIMEOUT_PADDING_SECONDS)
+    run = runner or subprocess.run
+    started = time.monotonic()
+    try:
+        completed = run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=subprocess_timeout,
+            cwd=str(REPO_ROOT),
+        )
+        returncode = int(getattr(completed, "returncode", 1))
+        stdout = str(getattr(completed, "stdout", "") or "")
+        stderr = str(getattr(completed, "stderr", "") or "")
+        timed_out = False
+        timeout_error = None
+    except subprocess.TimeoutExpired as exc:
+        returncode = -1
+        stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
+        stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", errors="replace")
+        timed_out = True
+        timeout_error = str(exc)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    stdout_bytes = stdout.encode("utf-8", errors="replace")
+    stderr_bytes = stderr.encode("utf-8", errors="replace")
+    receipt: dict[str, Any] = {
+        "status": "failed",
+        "ok": False,
+        "reason": None,
+        "script": script,
+        "argv": argv,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "timeout_seconds": subprocess_timeout,
+        "elapsed_ms": elapsed_ms,
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stdout_byte_length": len(stdout_bytes),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "stderr_byte_length": len(stderr_bytes),
+        "stderr_tail": stderr[-4000:] if stderr else "",
+        "controller_id": controller,
+        "service_uuid": parent_service_uuid,
+        "service_line": line,
+        "restart_scope": "post-cleanup2-single-compose-service-line",
+        "forbidden_parent_restart": True,
+    }
+    if timed_out:
+        receipt["reason"] = "service-line-restart-helper-timeout"
+        receipt["error"] = timeout_error
+        return receipt
+
+    parsed: Any = None
+    parse_error: str | None = None
+    stripped = stdout.strip()
+    if stripped:
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            parse_error = f"{exc.msg} at line {exc.lineno} column {exc.colno}"
+    else:
+        parse_error = "stdout-empty"
+
+    receipt["result"] = parsed if isinstance(parsed, Mapping) else None
+    if isinstance(parsed, Mapping):
+        receipt["helper_status"] = parsed.get("status")
+        receipt["helper_reason"] = parsed.get("reason")
+        receipt["helper_service_uuid"] = parsed.get("helper_service_uuid")
+        receipt["helper_delete_requested"] = parsed.get("helper_delete_requested")
+        receipt["helper_delete_performed"] = parsed.get("helper_delete_performed")
+        receipt["helper_left_for_inspection"] = parsed.get("helper_left_for_inspection")
+        receipt["selected_container_id"] = parsed.get("selected_container_id")
+        receipt["selected_container_name"] = parsed.get("selected_container_name")
+        receipt["action"] = parsed.get("action")
+        receipt["after_status"] = parsed.get("after_status")
+        receipt["after_running"] = parsed.get("after_running")
+        receipt["after_health"] = parsed.get("after_health")
+    if parse_error is not None:
+        receipt["reason"] = "service-line-restart-helper-json-invalid" if stripped else "service-line-restart-helper-json-missing"
+        receipt["parse_error"] = parse_error
+        return receipt
+    if not isinstance(parsed, Mapping):
+        receipt["reason"] = "service-line-restart-helper-json-not-object"
+        return receipt
+
+    if returncode == 0 and parsed.get("status") == "pass":
+        receipt["status"] = "pass"
+        receipt["ok"] = True
+        receipt["reason"] = str(parsed.get("reason") or "service-line-restart-helper-pass")
+        return receipt
+
+    if returncode != 0:
+        receipt["reason"] = "service-line-restart-helper-nonzero-exit"
+    else:
+        receipt["reason"] = str(parsed.get("reason") or "service-line-restart-helper-status-failed")
+    return receipt
+
+
 def run_helper_cleanup2_yagni(
     private_state: PrivateStateReadResult,
     *,
@@ -3102,6 +3209,7 @@ def run_helper_cleanup2_yagni(
     progress: ProgressCallback | None = None,
     sleeper: Callable[[float], None] = time.sleep,
     block_advance_waiter_runner: Callable[..., Any] | None = None,
+    service_line_restart_helper_runner: Callable[..., Any] | None = None,
     cleanup_on_clean: bool = False,
 ) -> dict[str, Any]:
     mode_name = _identifier(mode, "mode")
@@ -3133,7 +3241,8 @@ def run_helper_cleanup2_yagni(
     cleanup2_targets_by_controller: dict[str, list[dict[str, Any]]] = {}
     http_observations: list[dict[str, Any]] = []
     post_cleanup_readbacks: list[dict[str, Any]] = []
-    parent_restart_receipts: list[dict[str, Any]] = []
+    mimic_service_line_restart_receipts: list[dict[str, Any]] = []
+    service_line_restart_receipts: list[dict[str, Any]] = []
     parent_restart_waits: list[dict[str, Any]] = []
     block_advance_waits: list[dict[str, Any]] = []
 
@@ -3420,6 +3529,65 @@ def run_helper_cleanup2_yagni(
                 )
 
         stop_restart_sequence = False
+        seen_mimic_restarts: set[tuple[str, str, str]] = set()
+        for controller_id in sorted(cleanup2_targets_by_controller):
+            if stop_restart_sequence:
+                break
+            for target in cleanup2_targets_by_controller[controller_id]:
+                node = str(target.get("node") or "")
+                service_uuid = str(target.get("service_uuid") or "")
+                for helper in target.get("mimic_service_lines") or target.get("helper_names") or []:
+                    service_line = str(helper)
+                    key = (controller_id, service_uuid, service_line)
+                    if key in seen_mimic_restarts:
+                        continue
+                    seen_mimic_restarts.add(key)
+                    _emit_progress(
+                        progress,
+                        "cleanup2",
+                        "restarting rewritten helper mimic service line after cleanup2",
+                        node=node,
+                        controller_id=controller_id,
+                        service_uuid=service_uuid,
+                        service_line=service_line,
+                        delegated_script=SERVICE_LINE_RESTART_HELPER_SCRIPT,
+                    )
+                    mimic_restart_receipt = _run_service_line_restart_helper(
+                        network=network_id,
+                        controller_id=controller_id,
+                        service_uuid=service_uuid,
+                        service_line=service_line,
+                        runtime_state_root=runtime_state_root,
+                        timeout=request_timeout,
+                        max_response_bytes=response_limit,
+                        max_wait_seconds=wait_limit,
+                        poll_interval_seconds=poll_interval,
+                        runner=service_line_restart_helper_runner,
+                    )
+                    mimic_restart_receipt["controller_id"] = controller_id
+                    mimic_restart_receipt["node"] = node
+                    mimic_restart_receipt["service_uuid"] = service_uuid
+                    mimic_restart_receipt["service_line"] = service_line
+                    mimic_restart_receipt["helper_name"] = service_line
+                    mimic_restart_receipt["restart_role"] = "helper-mimic"
+                    mimic_service_line_restart_receipts.append(mimic_restart_receipt)
+                    if mimic_restart_receipt.get("ok") is not True:
+                        _emit_progress(
+                            progress,
+                            "cleanup2",
+                            "helper mimic service line restart failed before primary restart",
+                            node=node,
+                            controller_id=controller_id,
+                            service_uuid=service_uuid,
+                            service_line=service_line,
+                            reason=mimic_restart_receipt.get("reason"),
+                            helper_status=mimic_restart_receipt.get("helper_status"),
+                        )
+                        stop_restart_sequence = True
+                        break
+                if stop_restart_sequence:
+                    break
+
         for controller_id in sorted(cleanup2_targets_by_controller):
             if stop_restart_sequence:
                 break
@@ -3430,35 +3598,51 @@ def run_helper_cleanup2_yagni(
                 _emit_progress(
                     progress,
                     "cleanup2",
-                    "restarting parent service after cleanup2",
+                    "restarting primary service line after cleanup2",
                     node=node,
                     controller_id=controller_id,
                     service_uuid=service_uuid,
+                    service_line=node,
+                    delegated_script=SERVICE_LINE_RESTART_HELPER_SCRIPT,
                 )
-                restart_receipt = _restart_parent_service(
-                    controller,
-                    service_uuid,
+                restart_receipt = _run_service_line_restart_helper(
+                    network=network_id,
+                    controller_id=controller_id,
+                    service_uuid=service_uuid,
+                    service_line=node,
+                    runtime_state_root=runtime_state_root,
                     timeout=request_timeout,
                     max_response_bytes=response_limit,
-                    opener=opener,
+                    max_wait_seconds=wait_limit,
+                    poll_interval_seconds=poll_interval,
+                    runner=service_line_restart_helper_runner,
                 )
                 restart_receipt["controller_id"] = controller_id
                 restart_receipt["node"] = node
-                parent_restart_receipts.append(restart_receipt)
-                http_observations.append(
-                    {
-                        key: restart_receipt[key]
-                        for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")
-                    }
-                )
+                restart_receipt["restart_role"] = "primary-node"
+                service_line_restart_receipts.append(restart_receipt)
+                if restart_receipt.get("ok") is not True:
+                    _emit_progress(
+                        progress,
+                        "cleanup2",
+                        "primary service line restart helper failed before boundary wait",
+                        node=node,
+                        controller_id=controller_id,
+                        service_uuid=service_uuid,
+                        reason=restart_receipt.get("reason"),
+                        helper_status=restart_receipt.get("helper_status"),
+                    )
+                    stop_restart_sequence = True
+                    break
 
                 _emit_progress(
                     progress,
                     "cleanup2",
-                    "waiting before parent restart status check",
+                    "waiting before service-line restart status check",
                     node=node,
                     controller_id=controller_id,
                     service_uuid=service_uuid,
+                    service_line=node,
                     settle_seconds=PARENT_RESTART_SETTLE_SECONDS,
                 )
                 wait_result = _wait_for_parent_service_running_healthy(
@@ -3480,7 +3664,7 @@ def run_helper_cleanup2_yagni(
                     _emit_progress(
                         progress,
                         "cleanup2",
-                        "parent restart boundary failed before block waiter",
+                        "service-line restart boundary failed before block waiter",
                         node=node,
                         controller_id=controller_id,
                         service_uuid=service_uuid,
@@ -3494,7 +3678,7 @@ def run_helper_cleanup2_yagni(
                 _emit_progress(
                     progress,
                     "cleanup2",
-                    "waiting for block advance after parent restart",
+                    "waiting for block advance after service-line restart",
                     node=node,
                     controller_id=controller_id,
                     service_uuid=service_uuid,
@@ -3541,14 +3725,21 @@ def run_helper_cleanup2_yagni(
 
     patch_ok = all(step["status"] in {"patched", "would-patch", "no-op", "skipped"} for step in patch_steps)
     cleanup2_ok = mode_name == "inspect" or all(step.get("status") == "pass" for step in cleanup2_steps)
-    parent_restart_request_ok = mode_name == "inspect" or all(receipt.get("ok") is True for receipt in parent_restart_receipts)
+    mimic_service_line_restart_ok = mode_name == "inspect" or all(
+        receipt.get("ok") is True for receipt in mimic_service_line_restart_receipts
+    )
+    service_line_restart_ok = mode_name == "inspect" or all(receipt.get("ok") is True for receipt in service_line_restart_receipts)
     parent_restart_boundary_ok = mode_name == "inspect" or (
-        all(wait.get("completed") is True for wait in parent_restart_waits)
-        if parent_restart_receipts
+        (
+            service_line_restart_ok
+            and len(parent_restart_waits) == len(service_line_restart_receipts)
+            and all(wait.get("completed") is True for wait in parent_restart_waits)
+        )
+        if service_line_restart_receipts
         else True
     )
-    parent_restart_ok = parent_restart_request_ok and parent_restart_boundary_ok
-    expected_block_advance_wait_count = len(parent_restart_receipts)
+    parent_restart_ok = service_line_restart_ok and parent_restart_boundary_ok
+    expected_block_advance_wait_count = len(service_line_restart_receipts)
     block_advance_waiter_ok = mode_name == "inspect" or (
         len(block_advance_waits) == expected_block_advance_wait_count
         and all(wait.get("status") == "pass" for wait in block_advance_waits)
@@ -3568,7 +3759,15 @@ def run_helper_cleanup2_yagni(
         "waits": block_advance_waits,
     }
 
-    base_status = "pass" if patch_ok and cleanup2_ok and parent_restart_ok and block_advance_waiter_ok else "failed"
+    base_status = (
+        "pass"
+        if patch_ok
+        and cleanup2_ok
+        and mimic_service_line_restart_ok
+        and parent_restart_ok
+        and block_advance_waiter_ok
+        else "failed"
+    )
     cleanup_on_clean_sweeps: list[dict[str, Any]] = []
     cleanup_on_clean_delete_receipts: list[dict[str, Any]] = []
     cleanup_on_clean_remaining: list[dict[str, Any]] = []
@@ -3722,7 +3921,9 @@ def run_helper_cleanup2_yagni(
         "patch_steps": patch_steps,
         "cleanup2_steps": cleanup2_steps,
         "post_cleanup_readbacks": post_cleanup_readbacks,
-        "parent_restart_receipts": parent_restart_receipts,
+        "mimic_service_line_restart_receipts": mimic_service_line_restart_receipts,
+        "service_line_restart_receipts": service_line_restart_receipts,
+        "parent_restart_receipts": service_line_restart_receipts,
         "parent_restart_waits": parent_restart_waits,
         "block_advance_waits": block_advance_waits,
         "block_advance_waiter": block_advance_waiter,
@@ -3799,13 +4000,20 @@ def run_helper_cleanup2_yagni(
                 else None
             ),
             "parent_redeploy_performed": False,
-            "parent_restart_performed": bool(parent_restart_receipts),
-            "parent_restart_request_count": len(parent_restart_receipts),
-            "parent_restart_request_all_accepted": parent_restart_request_ok,
+            "mimic_service_line_restart_performed": bool(mimic_service_line_restart_receipts),
+            "mimic_service_line_restart_count": len(mimic_service_line_restart_receipts),
+            "mimic_service_line_restart_all_passed": mimic_service_line_restart_ok,
+            "service_line_restart_performed": bool(service_line_restart_receipts),
+            "service_line_restart_count": len(service_line_restart_receipts),
+            "service_line_restart_all_passed": service_line_restart_ok,
+            "service_line_restart_helper_script": SERVICE_LINE_RESTART_HELPER_SCRIPT,
+            "parent_restart_performed": False,
+            "parent_restart_request_count": len(service_line_restart_receipts),
+            "parent_restart_request_all_accepted": service_line_restart_ok,
             "parent_restart_wait_count": len(parent_restart_waits),
             "parent_restart_boundary_all_passed": parent_restart_boundary_ok,
             "parent_restart_waits_all_running_healthy": (
-                all(wait.get("completed") is True for wait in parent_restart_waits)
+                all(wait.get("final_status") == "running:healthy" for wait in parent_restart_waits)
                 if parent_restart_waits
                 else None
             ),
@@ -3837,7 +4045,7 @@ def run_helper_cleanup2_yagni(
             "block_advance_waiter_all_passed": (
                 len(block_advance_waits) == expected_block_advance_wait_count
                 and all(wait.get("status") == "pass" for wait in block_advance_waits)
-                if parent_restart_receipts or block_advance_waits
+                if service_line_restart_receipts or block_advance_waits
                 else None
             ),
             "block_advance_waiter_script": BLOCK_ADVANCE_WAITER_SCRIPT,

@@ -227,7 +227,18 @@ def _write_validator_admission_topology_evidence(paths, private_state) -> tuple[
         ],
         "mutation_receipts": [
             {"node": C1_NODE, "controller_id": "coolify-c", "service_uuid": "gr09bevx1ymmiffqwtatro3s", "method": "PATCH", "status": "succeeded", "live_write_acknowledged": True},
-            {"node": A_NODE, "controller_id": "coolify-a", "service_uuid": "ypp612nb7zx4kiye8di8ciby", "method": "PATCH", "status": "succeeded", "live_write_acknowledged": True},
+            {
+                "node": A_NODE,
+                "controller_id": "coolify-a",
+                "service_uuid": "disposable-voter-row-uuid",
+                "validator_parent_service_uuid": "ypp612nb7zx4kiye8di8ciby",
+                "method": "POST",
+                "status": "succeeded",
+                "live_write_acknowledged": True,
+                "lifecycle_scope": "disposable-service-row",
+                "guardian_service": "mother-add-node-validator-admission-voter-mainneta-super1",
+                "mutation_id": "mainneta-super1.create-disposable-add-node-validator-admission-voter",
+            },
         ],
         "health_observations": [
             {"node": C1_NODE, "controller_id": "coolify-c", "service_uuid": "gr09bevx1ymmiffqwtatro3s", "status": "degraded:unhealthy", "component_or_service_healthy": True, "observed_at": "2026-08-13T00:40:19Z"},
@@ -656,8 +667,37 @@ def test_detect_topology_accepts_validator_admission_evidence_without_sensitive_
     assert result["summary"]["topology_stale"] is False
     assert result["expected_nodes"] == [A_NODE, C1_NODE]
     assert result["expected_validator_set"] == [A_VALIDATOR, C1_VALIDATOR]
+    assert result["expected_services"][A_NODE]["service_uuid"] == "ypp612nb7zx4kiye8di8ciby"
+    assert result["expected_services"][A_NODE]["service_uuid"] != "disposable-voter-row-uuid"
     assert result["expected_services"][C1_NODE]["service_uuid"] == "gr09bevx1ymmiffqwtatro3s"
     assert result["present_expected_nodes"] == [A_NODE, C1_NODE]
+
+
+def test_detect_topology_ignores_deleted_disposable_validator_admission_voter_row(tmp_path: Path) -> None:
+    _, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_validator_admission_topology_evidence(paths, private_state)
+
+    result = detect_topology_staleness(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        opener=_PresentServicesOpener(
+            {
+                "ypp612nb7zx4kiye8di8ciby": (A_NODE, "running:healthy"),
+                "gr09bevx1ymmiffqwtatro3s": (C1_NODE, "running:healthy"),
+            }
+        ),
+        now=datetime(2026, 8, 13, 0, 42, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["summary"]["topology_current"] is True
+    assert result["summary"]["topology_stale"] is False
+    assert result["missing_expected_nodes"] == []
+    assert result["expected_services"][A_NODE]["service_uuid"] == "ypp612nb7zx4kiye8di8ciby"
+    assert result["expected_services"][A_NODE]["service_uuid"] != "disposable-voter-row-uuid"
+    assert result["expected_services"][C1_NODE]["service_uuid"] == "gr09bevx1ymmiffqwtatro3s"
 
 
 def test_detect_topology_accepts_failed_post_admission_health_for_remove_remediation(tmp_path: Path) -> None:

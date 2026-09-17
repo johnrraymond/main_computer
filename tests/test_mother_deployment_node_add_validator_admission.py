@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import inspect
+import json
 from types import SimpleNamespace
 
 import yaml
@@ -29,7 +30,14 @@ from tools.mother.common.deployment_node_add_validator_admission import (
     _component_healthy,
     _component_proven,
     _find_conflicting_node_remove_voters,
-    _install_voter_guardian,
+    _create_start_disposable_service_row,
+    _delete_disposable_service_row,
+    _disposable_service_row_body,
+    _candidate_parent_activation_compose_without_transient_guardians,
+    _replace_candidate_parent_service_row,
+    _disposable_candidate_activation_guardian_compose,
+    _disposable_guardian_service_row_name,
+    _disposable_voter_guardian_compose,
     _http,
     _parse_bootnode_p2p_endpoint,
     _preflight_existing_validator_services,
@@ -38,7 +46,7 @@ from tools.mother.common.deployment_node_add_validator_admission import (
     _service_uuid_hints_from_replica_sync_evidence,
     _wait_for_admission_proof_guardians,
     _validator_vote_address,
-    _validator_admission_public_endpoint_policy_ok,
+    _public_endpoint_policy_clean,
     _QBFT_STALE_VOTE_QUIET_SECONDS,
     _voter_guardian_script,
 )
@@ -61,6 +69,7 @@ def test_add_node_validator_activation_compose_is_internal_and_uses_env_referenc
             "0x9b809f05f8d68da17e697cd6ab040d4320494611",
             "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
         ],
+        candidate_p2p_host="10.116.0.3",
         candidate_p2p_port=30304,
         candidate_validator_route={"advertised_host": "10.116.0.3", "p2p_endpoint": "10.116.0.3:30304"},
         proof_public_host="198.199.75.153",
@@ -92,6 +101,39 @@ def test_add_node_validator_activation_compose_is_internal_and_uses_env_referenc
     assert "main_computer.mother.validator-activation: active" in compose
     assert "--p2p-port=30304" in compose
     assert "30303:30303" not in compose
+
+
+def test_candidate_parent_activation_compose_keeps_durable_proof_guardian_endpoint() -> None:
+    genesis = b'{"config":{"chainId":42424240}}'
+    genesis_b64 = base64.b64encode(genesis).decode("ascii")
+    genesis_sha = hashlib.sha256(genesis).hexdigest()
+    parent_compose = _candidate_activation_compose(
+        target_node="mainnetc-super1",
+        genesis_b64=genesis_b64,
+        bootnode_enode="enode://" + "a" * 128 + "@10.116.0.3:30303",
+        chain_id=42424240,
+        genesis_sha256=genesis_sha,
+        target_node_id="b" * 128,
+        desired_validators=[
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        ],
+        candidate_p2p_host="10.116.0.2",
+        candidate_p2p_port=30303,
+        candidate_validator_route={"advertised_host": "10.116.0.2", "p2p_endpoint": "10.116.0.2:30303"},
+    )
+    parsed = yaml.safe_load(parent_compose)
+
+    assert set(parsed["services"]) == {
+        "mother-validator-activation-init",
+        "mainnetc-super1",
+        "mother-add-node-validator-activation-guardian",
+        "mother-replica-sync-guardian",
+    }
+    assert parsed["services"]["mother-add-node-validator-activation-guardian"]["ports"] == ["39303:8797/tcp"]
+    assert parsed["volumes"]["mother-add-node-validator-admission-proof"] is None
+    assert parsed["services"]["mainnetc-super1"]["image"] == "hyperledger/besu:latest"
+    assert parsed["services"]["mother-validator-activation-init"]["environment"]["MC_MOTHER_VALIDATOR_PRIVATE_KEY"] == "${MC_MOTHER_VALIDATOR_PRIVATE_KEY}"
 
 
 def test_replica_sync_release_reference_uses_logical_self_digest_not_file_bytes() -> None:
@@ -176,7 +218,7 @@ def test_validator_admission_voter_guardian_auto_cleans_satisfied_stale_votes_af
 
 
 
-def test_validator_admission_voter_guardian_is_one_shot_and_no_restart() -> None:
+def test_validator_admission_voter_guardian_is_disposable_row_on_parent_network() -> None:
     candidate = "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876"
     script = _voter_guardian_script(
         voter="mainnetc-super1",
@@ -197,17 +239,156 @@ def test_validator_admission_voter_guardian_is_one_shot_and_no_restart() -> None
     )
     assert script.index("clear_health()") < script.index("if hashlib.sha256(encoded(REQUEST))")
     assert script.index("prove()") < script.index("time.sleep(3600)") < script.index("break")
-    assert "time.sleep(6)" in script
-    assert script.index("except Exception as exc:") < script.index("time.sleep(6)")
 
-    compose, name = _install_voter_guardian(
-        "services:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\n",
+    compose, name = _disposable_voter_guardian_compose(
         voter="mainnetc-super1",
+        voter_service_uuid="parentuuid123",
         script=script,
     )
     parsed = yaml.safe_load(compose)
     assert name == "mother-add-node-validator-admission-voter-mainnetc-super1"
-    assert parsed["services"][name]["restart"] == "no"
+    assert set(parsed["services"]) == {name}
+    service = parsed["services"][name]
+    assert service["restart"] == "no"
+    assert "depends_on" not in service
+    assert service["networks"] == ["validator-parent"]
+    assert "ports" not in service
+    assert "expose" not in service
+    assert parsed["networks"]["validator-parent"]["external"] is True
+    assert parsed["networks"]["validator-parent"]["name"] == "parentuuid123"
+    assert {
+        "type": "bind",
+        "source": "/var/lib/docker/volumes/parentuuid123_mother-config/_data",
+        "target": "/config",
+        "read_only": True,
+    } in service["volumes"]
+    assert {
+        "type": "volume",
+        "source": "mother-add-node-validator-admission-proof",
+        "target": "/proof",
+    } in service["volumes"]
+    assert "parentuuid123_mother-config" not in parsed.get("volumes", {})
+    assert parsed["volumes"] == {"mother-add-node-validator-admission-proof": None}
+    assert "mother-config:/config:ro" not in compose
+    assert "mother-config:/config" not in compose
+    assert "_mother-config:/config" not in compose
+    config_mounts = [
+        item
+        for item in service["volumes"]
+        if isinstance(item, dict) and item.get("target") == "/config"
+    ]
+    assert all(item.get("type") != "volume" for item in config_mounts)
+    assert service["labels"]["main_computer.mother.disposable-service-row"] == "true"
+    assert service["labels"]["main_computer.mother.voter-parent-service-uuid"] == "parentuuid123"
+
+
+def test_validator_admission_voter_guardian_uses_concrete_parent_config_volume() -> None:
+    script = _voter_guardian_script(
+        voter="mainneta-super1",
+        candidate="0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        candidate_enode="enode://" + "a" * 128 + "@10.116.0.2:30303",
+        current_validators=[
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        desired_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        chain_id=42424240,
+        genesis_sha256="d" * 64,
+        request_sha256="e" * 64,
+    )
+
+    compose, name = _disposable_voter_guardian_compose(
+        voter="mainneta-super1",
+        voter_service_uuid="likua4ndhukvmocr8kcbescr",
+        script=script,
+    )
+
+    assert "/var/lib/docker/volumes/likua4ndhukvmocr8kcbescr_mother-config/_data" in compose
+    assert "source: likua4ndhukvmocr8kcbescr_mother-config" not in compose
+    assert "mother-config:/config" not in compose
+    assert "gigxy9tymtewtfnjsuzvqgnx_mother-config" not in compose
+
+    parsed = yaml.safe_load(compose)
+    service = parsed["services"][name]
+    config_mounts = [
+        item
+        for item in service["volumes"]
+        if isinstance(item, dict) and item.get("target") == "/config"
+    ]
+
+    assert config_mounts == [
+        {
+            "type": "bind",
+            "source": "/var/lib/docker/volumes/likua4ndhukvmocr8kcbescr_mother-config/_data",
+            "target": "/config",
+            "read_only": True,
+        }
+    ]
+    assert "likua4ndhukvmocr8kcbescr_mother-config" not in parsed.get("volumes", {})
+    assert parsed["volumes"] == {"mother-add-node-validator-admission-proof": None}
+
+
+def test_validator_admission_voter_guardian_config_mount_is_absolute_bind_not_named_volume() -> None:
+    script = _voter_guardian_script(
+        voter="mainneta-super1",
+        candidate="0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        candidate_enode="enode://" + "a" * 128 + "@10.116.0.2:30303",
+        current_validators=[
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        desired_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        chain_id=42424240,
+        genesis_sha256="d" * 64,
+        request_sha256="e" * 64,
+    )
+
+    compose, name = _disposable_voter_guardian_compose(
+        voter="mainneta-super1",
+        voter_service_uuid="swemlqvubu95viucashf1ia7",
+        script=script,
+    )
+
+    parsed = yaml.safe_load(compose)
+    service = parsed["services"][name]
+    config_mounts = [
+        item
+        for item in service["volumes"]
+        if isinstance(item, dict) and item.get("target") == "/config"
+    ]
+
+    assert config_mounts == [
+        {
+            "type": "bind",
+            "source": "/var/lib/docker/volumes/swemlqvubu95viucashf1ia7_mother-config/_data",
+            "target": "/config",
+            "read_only": True,
+        }
+    ]
+    assert "swemlqvubu95viucashf1ia7_mother-config" not in parsed.get("volumes", {})
+    assert "type: volume" not in yaml.safe_dump(config_mounts, sort_keys=False)
+    assert "_mother-config:/config" not in compose
+
+
+def test_validator_admission_candidate_activation_guardian_is_embedded_in_replaced_parent_for_public_proof() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "_disposable_candidate_activation_guardian_compose(" not in executor_source
+    assert "create-disposable-validator-activation-guardian" not in executor_source
+    assert "candidate-activation-guardian-owned-by-replaced-parent-service-row" in executor_source
+    assert "guardian_service_uuids[candidate_node] = target_uuid" in executor_source
+    assert '"guardian_lifecycle_scope": "embedded-in-candidate-parent-service-row"' in executor_source
+
+
+def test_validator_admission_disposable_guardian_row_name_is_timestamped_and_slugged() -> None:
+    name = _disposable_guardian_service_row_name("mother-add-node-validator-admission-voter-mainneta-super1")
+    assert name.startswith("mother-add-node-validator-admission-voter-mainneta-super1-")
+    assert ":" not in name
+    assert "+" not in name
 
 
 def test_validator_admission_conflict_detector_finds_same_candidate_remove_voter() -> None:
@@ -295,6 +476,7 @@ def test_validator_activation_guardian_explicitly_peers_bootnode() -> None:
             "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
             "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
         ],
+        candidate_p2p_host="10.116.0.3",
         candidate_p2p_port=30304,
     )
 
@@ -325,6 +507,7 @@ def test_validator_activation_guardian_clears_stale_health_and_uses_operation_sp
             "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
             "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
         ],
+        candidate_p2p_host="10.116.0.3",
         candidate_p2p_port=30304,
     )
 
@@ -656,6 +839,7 @@ def test_validator_admission_verify_allows_public_candidate_activation_proof_end
             "transport": "http-public-controller",
             "public_http_endpoint_created": True,
             "url": "http://198.199.75.153:39303/proof",
+            "host": "198.199.75.153",
         },
         "routing_or_topology_published": False,
     }
@@ -670,7 +854,7 @@ def test_validator_admission_verify_allows_public_candidate_activation_proof_end
         "routing_or_topology_published": False,
     }
 
-    assert _validator_admission_public_endpoint_policy_ok(document, summary, policy)
+    assert _public_endpoint_policy_clean(document, summary, policy)
 
 
 def test_validator_admission_verify_rejects_unscoped_public_endpoint() -> None:
@@ -678,7 +862,7 @@ def test_validator_admission_verify_rejects_unscoped_public_endpoint() -> None:
     summary = {"public_endpoint_created": True, "routing_or_topology_published": False}
     policy = {"public_http_endpoint_created": True, "routing_or_topology_published": False}
 
-    assert not _validator_admission_public_endpoint_policy_ok(document, summary, policy)
+    assert not _public_endpoint_policy_clean(document, summary, policy)
 
 
 def test_validator_admission_requires_canonical_history_contract_for_durable_proof() -> None:
@@ -743,6 +927,7 @@ def test_validator_admission_guardian_scripts_bind_health_to_canonical_block_his
             "0x72151668fe7a691eab99c4779d406380c1d0cfd0",
             "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
         ],
+        candidate_p2p_host="10.0.0.1",
         candidate_p2p_port=30303,
     )
 
@@ -775,46 +960,639 @@ def test_validator_admission_http_accepts_coolify_controller_objects() -> None:
     assert opener.timeout == 3.0
 
 
-def test_validator_admission_starts_services_with_lifecycle_endpoint() -> None:
+
+
+def test_validator_admission_disposable_service_row_body_is_fresh_row_create_body() -> None:
+    body = _disposable_service_row_body(
+        {
+            "project_uuid": "project123",
+            "server_uuid": "server456",
+        },
+        network="mainnet",
+        environment_uuid="env789",
+        service_name="mother-disposable-test",
+        compose="services:\n  mother-disposable-test:\n    image: alpine:3.20\n",
+        description="Disposable test row",
+    )
+
+    assert body["project_uuid"] == "project123"
+    assert body["server_uuid"] == "server456"
+    assert body["environment_name"] == "mainnet"
+    assert body["environment_uuid"] == "env789"
+    assert body["name"] == "mother-disposable-test"
+    assert body["description"] == "Disposable test row"
+    assert body["instant_deploy"] is False
+    assert base64.b64decode(body["docker_compose_raw"]).decode("utf-8").startswith("services:")
+
+
+class _DisposableLifecycleResponse:
+    def __init__(self, status: int, payload: object):
+        self.status = status
+        self.headers = {"Content-Type": "application/json"}
+        self._payload = canonical_json(payload)
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def close(self):
+        self.closed = True
+
+    def read(self, _limit):
+        return self._payload
+
+    def getcode(self):
+        return self.status
+
+
+class _DisposableLifecycleOpener:
+    def __init__(self):
+        self.requests = []
+
+    def open(self, request, timeout=None):
+        self.requests.append((request, timeout))
+        path = request.full_url
+        method = request.get_method()
+        if method == "GET" and path.endswith("/api/v1/projects/project123/environments"):
+            return _DisposableLifecycleResponse(
+                200,
+                [{"name": "mainnet", "uuid": "env789"}],
+            )
+        if method == "POST" and path.endswith("/api/v1/services"):
+            return _DisposableLifecycleResponse(
+                201,
+                {"uuid": "createdrow123"},
+            )
+        if method == "POST" and path.endswith("/api/v1/services/createdrow123/start"):
+            return _DisposableLifecycleResponse(
+                200,
+                {"message": "started"},
+            )
+        raise AssertionError(path)
+
+
+def test_validator_admission_create_start_disposable_service_row_uses_fresh_row_start(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tools.mother.common.deployment_node_add_validator_admission._controller_config",
+        lambda *_args, **_kwargs: {"project_uuid": "project123", "server_uuid": "server456"},
+    )
+    opener = _DisposableLifecycleOpener()
+
+    receipt = _create_start_disposable_service_row(
+        object(),
+        network="mainnet",
+        controller=SimpleNamespace(base_url="https://coolify.example", api_token="token"),
+        controller_id="coolify-c",
+        service_name="mother-disposable-test",
+        compose="services:\n  mother-disposable-test:\n    image: alpine:3.20\n",
+        description="Disposable test row",
+        timeout=3.0,
+        max_response_bytes=1000,
+        opener=opener,
+    )
+
+    assert receipt["status"] == "succeeded"
+    assert receipt["reason"] == "disposable-service-row-started"
+    assert receipt["service_uuid"] == "createdrow123"
+    assert receipt["create"]["endpoint"] == "/api/v1/services"
+    assert receipt["start"]["endpoint"] == "/api/v1/services/createdrow123/start"
+    assert receipt["create"]["lifecycle_scope"] == "disposable-service-row"
+    assert receipt["start"]["lifecycle_scope"] == "disposable-service-row"
+
+    methods = [request.get_method() for request, _timeout in opener.requests]
+    assert methods == ["GET", "POST", "POST"]
+
+    urls = [request.full_url for request, _timeout in opener.requests]
+    assert urls[0].endswith("/api/v1/projects/project123/environments")
+    assert urls[1].endswith("/api/v1/services")
+    assert urls[2].endswith("/api/v1/services/createdrow123/start")
+
+
+
+def test_validator_admission_replace_candidate_parent_row_deletes_binds_envs_then_starts(monkeypatch) -> None:
+    class CandidateParentReplaceOpener:
+        def __init__(self):
+            self.requests = []
+            self.envs: dict[str, dict[str, str]] = {}
+
+        def open(self, request, timeout=None):
+            self.requests.append((request, timeout))
+            path = request.full_url
+            method = request.get_method()
+            body = json.loads(request.data.decode("utf-8")) if request.data else None
+            if method == "GET" and path.endswith("/api/v1/projects/project123/environments"):
+                return _DisposableLifecycleResponse(200, [{"name": "mainnet", "uuid": "env789"}])
+            if method == "DELETE" and path.endswith("/api/v1/services/oldtarget123"):
+                return _DisposableLifecycleResponse(200, {"message": "deleted"})
+            if method == "POST" and path.endswith("/api/v1/services"):
+                compose = base64.b64decode(body["docker_compose_raw"]).decode("utf-8")
+                parsed = yaml.safe_load(compose)
+                assert body["name"] == "mainnetc-super1"
+                assert set(parsed["services"]) == {"mainnetc-super1"}
+                assert body["instant_deploy"] is False
+                return _DisposableLifecycleResponse(201, {"uuid": "newtarget456"})
+            if method == "POST" and path.endswith("/api/v1/services/newtarget456/envs"):
+                assert body["key"] in {"MC_MOTHER_VALIDATOR_PRIVATE_KEY", "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY"}
+                assert isinstance(body["value"], str) and body["value"].startswith("0x")
+                self.envs[body["key"]] = {"uuid": "env-" + body["key"].lower(), "key": body["key"], "value": body["value"]}
+                return _DisposableLifecycleResponse(201, {"uuid": self.envs[body["key"]]["uuid"]})
+            if method == "GET" and path.endswith("/api/v1/services/newtarget456/envs"):
+                return _DisposableLifecycleResponse(200, list(self.envs.values()))
+            if method == "POST" and path.endswith("/api/v1/services/newtarget456/start"):
+                return _DisposableLifecycleResponse(200, {"message": "started"})
+            raise AssertionError(f"{method} {path}")
+
+    monkeypatch.setattr(
+        "tools.mother.common.deployment_node_add_validator_admission._controller_config",
+        lambda *_args, **_kwargs: {"project_uuid": "project123", "server_uuid": "server456"},
+    )
+    private_state = SimpleNamespace(
+        document_bytes=canonical_json(
+            {
+                "networks": {
+                    "mainnet": {
+                        "validators": {
+                            "mainnetc-super1": {"private_key": "0x" + "1" * 64},
+                        },
+                        "deployment": {
+                            "targets": {
+                                "mainnetc-super1": {
+                                    "hub_admin_private_key_path": "secrets.hub_admin.private_key",
+                                }
+                            }
+                        },
+                    }
+                },
+                "secrets": {
+                    "hub_admin": {"private_key": "0x" + "2" * 64},
+                },
+            }
+        )
+    )
+    opener = CandidateParentReplaceOpener()
+
+    receipt = _replace_candidate_parent_service_row(
+        private_state,
+        network="mainnet",
+        controller=SimpleNamespace(base_url="https://coolify.example", api_token="token"),
+        controller_id="coolify-c",
+        candidate_node="mainnetc-super1",
+        previous_service_uuid="oldtarget123",
+        compose="services:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\n",
+        description="candidate parent",
+        timeout=3.0,
+        max_response_bytes=1000,
+        opener=opener,
+    )
+
+    assert receipt["status"] == "succeeded"
+    assert receipt["reason"] == "candidate-parent-service-row-replaced-and-started"
+    assert receipt["previous_service_uuid"] == "oldtarget123"
+    assert receipt["service_uuid"] == "newtarget456"
+    assert receipt["delete_previous"]["endpoint"] == "/api/v1/services/oldtarget123"
+    assert receipt["create"]["endpoint"] == "/api/v1/services"
+    assert [item["environment_key"] for item in receipt["envs"]] == [
+        "MC_MOTHER_VALIDATOR_PRIVATE_KEY",
+        "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY",
+    ]
+    assert all("value" not in item for item in receipt["envs"])
+    assert all(item["env_bind_readback_verified"] is True for item in receipt["envs"])
+    assert receipt["start"]["endpoint"] == "/api/v1/services/newtarget456/start"
+
+    methods = [request.get_method() for request, _timeout in opener.requests]
+    assert methods == ["GET", "DELETE", "POST", "POST", "GET", "POST", "GET", "POST"]
+
+
+def test_validator_admission_replace_candidate_parent_row_tolerates_env_409_with_matching_value_readback(monkeypatch) -> None:
+    class CandidateParentReplaceOpener:
+        def __init__(self):
+            self.requests = []
+            self.envs = {
+                "MC_MOTHER_VALIDATOR_PRIVATE_KEY": {
+                    "uuid": "env-validator",
+                    "key": "MC_MOTHER_VALIDATOR_PRIVATE_KEY",
+                    "value": "0x" + "1" * 64,
+                }
+            }
+
+        def open(self, request, timeout=None):
+            self.requests.append((request, timeout))
+            path = request.full_url
+            method = request.get_method()
+            body = json.loads(request.data.decode("utf-8")) if request.data else None
+            if method == "GET" and path.endswith("/api/v1/projects/project123/environments"):
+                return _DisposableLifecycleResponse(200, [{"name": "mainnet", "uuid": "env789"}])
+            if method == "DELETE" and path.endswith("/api/v1/services/oldtarget123"):
+                return _DisposableLifecycleResponse(200, {"message": "deleted"})
+            if method == "POST" and path.endswith("/api/v1/services"):
+                return _DisposableLifecycleResponse(201, {"uuid": "newtarget456"})
+            if method == "POST" and path.endswith("/api/v1/services/newtarget456/envs"):
+                assert body["key"] in {"MC_MOTHER_VALIDATOR_PRIVATE_KEY", "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY"}
+                if body["key"] == "MC_MOTHER_VALIDATOR_PRIVATE_KEY":
+                    return _DisposableLifecycleResponse(409, {"message": "Environment variable already exists"})
+                self.envs[body["key"]] = {"uuid": "env-" + body["key"].lower(), "key": body["key"], "value": body["value"]}
+                return _DisposableLifecycleResponse(201, {"uuid": self.envs[body["key"]]["uuid"]})
+            if method == "GET" and path.endswith("/api/v1/services/newtarget456/envs"):
+                return _DisposableLifecycleResponse(200, list(self.envs.values()))
+            if method == "POST" and path.endswith("/api/v1/services/newtarget456/start"):
+                return _DisposableLifecycleResponse(200, {"message": "started"})
+            raise AssertionError(f"{method} {path}")
+
+    monkeypatch.setattr(
+        "tools.mother.common.deployment_node_add_validator_admission._controller_config",
+        lambda *_args, **_kwargs: {"project_uuid": "project123", "server_uuid": "server456"},
+    )
+    private_state = SimpleNamespace(
+        document_bytes=canonical_json(
+            {
+                "networks": {
+                    "mainnet": {
+                        "validators": {
+                            "mainnetc-super1": {"private_key": "0x" + "1" * 64},
+                        },
+                        "deployment": {
+                            "targets": {
+                                "mainnetc-super1": {
+                                    "hub_admin_private_key_path": "secrets.hub_admin.private_key",
+                                }
+                            }
+                        },
+                    }
+                },
+                "secrets": {
+                    "hub_admin": {"private_key": "0x" + "2" * 64},
+                },
+            }
+        )
+    )
+    opener = CandidateParentReplaceOpener()
+
+    receipt = _replace_candidate_parent_service_row(
+        private_state,
+        network="mainnet",
+        controller=SimpleNamespace(base_url="https://coolify.example", api_token="token"),
+        controller_id="coolify-c",
+        candidate_node="mainnetc-super1",
+        previous_service_uuid="oldtarget123",
+        compose="services:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\n",
+        description="candidate parent",
+        timeout=3.0,
+        max_response_bytes=1000,
+        opener=opener,
+    )
+
+    assert receipt["status"] == "succeeded"
+    assert receipt["reason"] == "candidate-parent-service-row-replaced-and-started"
+    assert receipt["service_uuid"] == "newtarget456"
+    validator_env = receipt["envs"][0]
+    assert validator_env["environment_key"] == "MC_MOTHER_VALIDATOR_PRIVATE_KEY"
+    assert validator_env["status"] == 409
+    assert validator_env["http_ok"] is False
+    assert validator_env["ok"] is True
+    assert validator_env["reason"] == "env-key-already-present-with-matching-value-after-create"
+    assert validator_env["env_bind_conflict_readback_performed"] is True
+    assert validator_env["env_bind_conflict_readback_verified"] is True
+    assert validator_env["env_bind_conflict_readback_reason"] == "exact-key-value-matched-on-new-service-row"
+    assert validator_env["env_bind_conflict_readback_matches"] == 1
+    assert validator_env["env_bind_repair_performed"] is False
+    assert receipt["start"]["endpoint"] == "/api/v1/services/newtarget456/start"
+
+    methods = [request.get_method() for request, _timeout in opener.requests]
+    assert methods == ["GET", "DELETE", "POST", "POST", "GET", "POST", "GET", "POST"]
+
+
+def test_validator_admission_replace_candidate_parent_row_repairs_empty_env_409_placeholder(monkeypatch) -> None:
+    class CandidateParentReplaceOpener:
+        def __init__(self):
+            self.requests = []
+            self.envs = {
+                "MC_MOTHER_VALIDATOR_PRIVATE_KEY": {
+                    "uuid": "env-validator",
+                    "key": "MC_MOTHER_VALIDATOR_PRIVATE_KEY",
+                    "value": "",
+                }
+            }
+
+        def open(self, request, timeout=None):
+            self.requests.append((request, timeout))
+            path = request.full_url
+            method = request.get_method()
+            body = json.loads(request.data.decode("utf-8")) if request.data else None
+            if method == "GET" and path.endswith("/api/v1/projects/project123/environments"):
+                return _DisposableLifecycleResponse(200, [{"name": "mainnet", "uuid": "env789"}])
+            if method == "DELETE" and path.endswith("/api/v1/services/oldtarget123"):
+                return _DisposableLifecycleResponse(200, {"message": "deleted"})
+            if method == "POST" and path.endswith("/api/v1/services"):
+                return _DisposableLifecycleResponse(201, {"uuid": "newtarget456"})
+            if method == "POST" and path.endswith("/api/v1/services/newtarget456/envs"):
+                assert body["key"] in {"MC_MOTHER_VALIDATOR_PRIVATE_KEY", "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY"}
+                if body["key"] == "MC_MOTHER_VALIDATOR_PRIVATE_KEY":
+                    return _DisposableLifecycleResponse(409, {"message": "Environment variable already exists"})
+                self.envs[body["key"]] = {"uuid": "env-" + body["key"].lower(), "key": body["key"], "value": body["value"]}
+                return _DisposableLifecycleResponse(201, {"uuid": self.envs[body["key"]]["uuid"]})
+            if method == "PATCH" and path.endswith("/api/v1/services/newtarget456/envs/env-validator"):
+                assert body["key"] == "MC_MOTHER_VALIDATOR_PRIVATE_KEY"
+                assert body["value"] == "0x" + "1" * 64
+                self.envs[body["key"]]["value"] = body["value"]
+                return _DisposableLifecycleResponse(200, {"uuid": "env-validator"})
+            if method == "GET" and path.endswith("/api/v1/services/newtarget456/envs"):
+                return _DisposableLifecycleResponse(200, list(self.envs.values()))
+            if method == "POST" and path.endswith("/api/v1/services/newtarget456/start"):
+                return _DisposableLifecycleResponse(200, {"message": "started"})
+            raise AssertionError(f"{method} {path}")
+
+    monkeypatch.setattr(
+        "tools.mother.common.deployment_node_add_validator_admission._controller_config",
+        lambda *_args, **_kwargs: {"project_uuid": "project123", "server_uuid": "server456"},
+    )
+    private_state = SimpleNamespace(
+        document_bytes=canonical_json(
+            {
+                "networks": {
+                    "mainnet": {
+                        "validators": {
+                            "mainnetc-super1": {"private_key": "0x" + "1" * 64},
+                        },
+                        "deployment": {
+                            "targets": {
+                                "mainnetc-super1": {
+                                    "hub_admin_private_key_path": "secrets.hub_admin.private_key",
+                                }
+                            }
+                        },
+                    }
+                },
+                "secrets": {
+                    "hub_admin": {"private_key": "0x" + "2" * 64},
+                },
+            }
+        )
+    )
+    opener = CandidateParentReplaceOpener()
+
+    receipt = _replace_candidate_parent_service_row(
+        private_state,
+        network="mainnet",
+        controller=SimpleNamespace(base_url="https://coolify.example", api_token="token"),
+        controller_id="coolify-c",
+        candidate_node="mainnetc-super1",
+        previous_service_uuid="oldtarget123",
+        compose="services:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\n",
+        description="candidate parent",
+        timeout=3.0,
+        max_response_bytes=1000,
+        opener=opener,
+    )
+
+    assert receipt["status"] == "succeeded"
+    validator_env = receipt["envs"][0]
+    assert validator_env["environment_key"] == "MC_MOTHER_VALIDATOR_PRIVATE_KEY"
+    assert validator_env["status"] == 409
+    assert validator_env["env_bind_conflict_readback_verified"] is False
+    assert validator_env["env_bind_conflict_readback_reason"] == "exact-key-value-empty-on-new-service-row"
+    assert validator_env["env_bind_repair_performed"] is True
+    assert validator_env["env_bind_repair_verified"] is True
+    assert validator_env["reason"] == "env-key-conflict-repaired-after-readback-mismatch"
+    assert validator_env["env_bind_repair_attempts"][0]["method"] == "PATCH"
+    assert validator_env["env_bind_repair_attempts"][0]["endpoint"].endswith("/api/v1/services/newtarget456/envs/env-validator")
+    assert validator_env["env_bind_repair_readback"]["matched_value_sha256_matches"] is True
+    assert receipt["start"]["endpoint"] == "/api/v1/services/newtarget456/start"
+
+    methods = [request.get_method() for request, _timeout in opener.requests]
+    assert methods == ["GET", "DELETE", "POST", "POST", "GET", "PATCH", "GET", "POST", "GET", "POST"]
+
+
+def test_validator_admission_replace_candidate_parent_row_rejects_env_409_without_matching_value_readback(monkeypatch) -> None:
+    class CandidateParentReplaceOpener:
+        def __init__(self):
+            self.requests = []
+            self.envs = {
+                "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY": {
+                    "uuid": "env-hub",
+                    "key": "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY",
+                    "value": "0x" + "2" * 64,
+                }
+            }
+
+        def open(self, request, timeout=None):
+            self.requests.append((request, timeout))
+            path = request.full_url
+            method = request.get_method()
+            body = json.loads(request.data.decode("utf-8")) if request.data else None
+            if method == "GET" and path.endswith("/api/v1/projects/project123/environments"):
+                return _DisposableLifecycleResponse(200, [{"name": "mainnet", "uuid": "env789"}])
+            if method == "DELETE" and path.endswith("/api/v1/services/oldtarget123"):
+                return _DisposableLifecycleResponse(200, {"message": "deleted"})
+            if method == "POST" and path.endswith("/api/v1/services"):
+                return _DisposableLifecycleResponse(201, {"uuid": "newtarget456"})
+            if method == "POST" and path.endswith("/api/v1/services/newtarget456/envs"):
+                assert body["key"] in {"MC_MOTHER_VALIDATOR_PRIVATE_KEY", "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY"}
+                if body["key"] == "MC_MOTHER_VALIDATOR_PRIVATE_KEY":
+                    return _DisposableLifecycleResponse(409, {"message": "Environment variable already exists"})
+                self.envs[body["key"]] = {"uuid": "env-" + body["key"].lower(), "key": body["key"], "value": body["value"]}
+                return _DisposableLifecycleResponse(201, {"uuid": self.envs[body["key"]]["uuid"]})
+            if method == "GET" and path.endswith("/api/v1/services/newtarget456/envs"):
+                return _DisposableLifecycleResponse(200, list(self.envs.values()))
+            if method == "POST" and path.endswith("/api/v1/services/newtarget456/start"):
+                raise AssertionError("candidate parent replacement must not start after unverified env 409")
+            raise AssertionError(f"{method} {path}")
+
+    monkeypatch.setattr(
+        "tools.mother.common.deployment_node_add_validator_admission._controller_config",
+        lambda *_args, **_kwargs: {"project_uuid": "project123", "server_uuid": "server456"},
+    )
+    private_state = SimpleNamespace(
+        document_bytes=canonical_json(
+            {
+                "networks": {
+                    "mainnet": {
+                        "validators": {
+                            "mainnetc-super1": {"private_key": "0x" + "1" * 64},
+                        },
+                        "deployment": {
+                            "targets": {
+                                "mainnetc-super1": {
+                                    "hub_admin_private_key_path": "secrets.hub_admin.private_key",
+                                }
+                            }
+                        },
+                    }
+                },
+                "secrets": {
+                    "hub_admin": {"private_key": "0x" + "2" * 64},
+                },
+            }
+        )
+    )
+    opener = CandidateParentReplaceOpener()
+
+    receipt = _replace_candidate_parent_service_row(
+        private_state,
+        network="mainnet",
+        controller=SimpleNamespace(base_url="https://coolify.example", api_token="token"),
+        controller_id="coolify-c",
+        candidate_node="mainnetc-super1",
+        previous_service_uuid="oldtarget123",
+        compose="services:\n  mainnetc-super1:\n    image: hyperledger/besu:latest\n",
+        description="candidate parent",
+        timeout=3.0,
+        max_response_bytes=1000,
+        opener=opener,
+    )
+
+    assert receipt["status"] == "failed"
+    assert receipt["reason"] == "candidate-parent-service-row-env-bind-failed"
+    assert receipt["service_uuid"] == "newtarget456"
+    assert receipt["partial_replacement_service_uuid"] == "newtarget456"
+    validator_env = receipt["envs"][0]
+    assert validator_env["status"] == 409
+    assert validator_env["ok"] is False
+    assert validator_env["reason"] == "env-key-conflict-but-readback-unverified"
+    assert validator_env["env_bind_conflict_readback_verified"] is False
+    assert validator_env["env_bind_conflict_readback_reason"] == "exact-key-not-present-on-new-service-row"
+    assert validator_env["env_bind_repair_performed"] is False
+    assert receipt["start"] is None
+    assert not any(request.full_url.endswith("/api/v1/services/newtarget456/start") for request, _timeout in opener.requests)
+
+def test_validator_admission_delete_disposable_service_row_targets_exact_created_uuid() -> None:
+    class DeleteOpener:
+        def __init__(self):
+            self.request = None
+
+        def open(self, request, timeout=None):
+            self.request = request
+            return _DisposableLifecycleResponse(200, {"message": "deleted"})
+
+    opener = DeleteOpener()
+    receipt = _delete_disposable_service_row(
+        controller=SimpleNamespace(base_url="https://coolify.example", api_token="token"),
+        controller_id="coolify-c",
+        service_uuid="createdrow123",
+        service_name="mother-disposable-test",
+        timeout=3.0,
+        max_response_bytes=1000,
+        opener=opener,
+    )
+
+    assert receipt["status"] == "succeeded"
+    assert receipt["reason"] == "disposable-service-row-deleted"
+    assert receipt["method"] == "DELETE"
+    assert receipt["endpoint"] == "/api/v1/services/createdrow123"
+    assert receipt["service_uuid"] == "createdrow123"
+    assert receipt["service_name"] == "mother-disposable-test"
+    assert receipt["lifecycle_scope"] == "disposable-service-row"
+    assert opener.request.get_method() == "DELETE"
+    assert opener.request.full_url.endswith("/api/v1/services/createdrow123")
+
+
+def test_validator_admission_delete_disposable_service_row_treats_404_as_already_absent() -> None:
+    class DeleteOpener:
+        def __init__(self):
+            self.request = None
+
+        def open(self, request, timeout=None):
+            self.request = request
+            return _DisposableLifecycleResponse(404, {"message": "not found"})
+
+    receipt = _delete_disposable_service_row(
+        controller=SimpleNamespace(base_url="https://coolify.example", api_token="token"),
+        controller_id="coolify-c",
+        service_uuid="createdrow123",
+        service_name="mother-disposable-test",
+        timeout=3.0,
+        max_response_bytes=1000,
+        opener=DeleteOpener(),
+    )
+
+    assert receipt["status"] == "succeeded"
+    assert receipt["reason"] == "disposable-service-row-already-absent"
+    assert receipt["http_status"] == 404
+    assert receipt["http_ok"] is False
+    assert receipt["ok"] is True
+
+
+def test_validator_admission_uses_fresh_parent_row_for_candidate_and_disposable_voter_rows() -> None:
     executor_source = inspect.getsource(execute_node_add_validator_admission_release)
     release_source = inspect.getsource(build_node_add_validator_admission_release)
 
     assert "/api/v1/deploy" not in executor_source
-    assert '"/api/v1/services/{urllib.parse.quote(target_uuid, safe=\'\')}/start"' in executor_source
-    assert '"/api/v1/services/{urllib.parse.quote(uuid, safe=\'\')}/start"' in executor_source
-    assert '_http(target_controller, "POST", start_endpoint' in executor_source
-    assert '_http(controller, "POST", start_endpoint' in executor_source
-    assert '"allowed_http_methods": ["GET", "PATCH", "POST"]' in release_source
+    assert '"PATCH"' not in executor_source
+    assert "activation Compose PATCH" not in executor_source
+    assert '"/api/v1/services/{urllib.parse.quote(target_uuid, safe=\'\')}/start"' not in executor_source
+    assert '"/api/v1/services/{urllib.parse.quote(uuid, safe=\'\')}/start"' not in executor_source
+    assert "_replace_candidate_parent_service_row" in executor_source
+    assert "_candidate_parent_activation_compose_without_transient_guardians" not in executor_source
+    assert "_create_start_disposable_service_row" in executor_source
+    assert "_disposable_candidate_activation_guardian_compose" not in executor_source
+    assert "_disposable_voter_guardian_compose" in executor_source
+    assert "POST_CREATE_AND_START_DISPOSABLE_SERVICE" in executor_source
+    assert '"allowed_http_methods": ["GET", "POST", "DELETE"]' in release_source
+    assert '"service_creation_authorized": True' in release_source
+    assert '"transient_admission_guardian_service_creation_authorized": True' in release_source
+    assert '"transient_admission_guardian_service_delete_authorized": True' in release_source
+    assert '"candidate_parent_service_replacement_authorized": True' in release_source
 
 
-def test_validator_admission_tolerates_existing_voter_start_400_until_guardian_proof() -> None:
+def test_validator_admission_does_not_patch_or_start_parent_rows_for_transient_guardians() -> None:
     executor_source = inspect.getsource(execute_node_add_validator_admission_release)
 
-    assert "start_rejected_nonfatal = start[\"status\"] == 400" in executor_source
-    assert "start_accepted = start_ok or start_rejected_nonfatal" in executor_source
-    assert "\"coolify_start_rejected_nonfatal\"" in executor_source
-    assert "exact voter guardian health proof remains required" in executor_source
+    assert "start_rejected_nonfatal = start[\"status\"] == 400" not in executor_source
+    assert "\"coolify_start_rejected_nonfatal\"" not in executor_source
+    assert "\"coolify_target_start_rejected_nonfatal\"" not in executor_source
+    assert "install-add-node-validator-admission-guardian" not in executor_source
+    assert "start-add-node-validator-admission-guardian" not in executor_source
+    assert "install-validator-activation-compose" not in executor_source
+    assert "start-validator-activation-compose" not in executor_source
+    assert "_install_voter_guardian" not in executor_source
+    assert "_recover_target_start_rejection" not in executor_source
+    assert "create-disposable-add-node-validator-admission-voter" in executor_source
+    assert "replace-candidate-parent-validator-service-row" in executor_source
+    assert "create-disposable-validator-activation-guardian" not in executor_source
 
-    start_index = executor_source.index("coolify_start_rejected_nonfatal")
-    proof_index = executor_source.index("_wait_for_admission_proof_guardians")
-    assert start_index < proof_index
 
-
-def test_validator_admission_recovers_target_start_400_when_activation_service_is_already_running() -> None:
+def test_validator_admission_splits_validator_parent_rows_from_guardian_rows() -> None:
     executor_source = inspect.getsource(execute_node_add_validator_admission_release)
-    recovery_source = inspect.getsource(_recover_target_start_rejection)
 
-    assert "target_start_rejected_nonfatal = target_start_recovery.get(\"verified\") is True" in executor_source
-    assert "\"coolify_target_start_rejected_nonfatal\"" in executor_source
-    assert "_recover_target_start_rejection" in executor_source
-    assert "exact target activation guardian proof remains required" in executor_source
-    assert "mother-validator-activation-init" in recovery_source
-    assert "main_computer.mother.validator-activation: active" in recovery_source
-    assert "service_started" in recovery_source
+    assert "validator_service_uuids" in executor_source
+    assert "guardian_service_uuids" in executor_source
+    assert "validator_service_uuids.update(voter_service_uuids)" in executor_source
+    assert "validator_service_uuids[candidate_node] = target_uuid" in executor_source
+    assert "guardian_service_uuids[candidate_node] = target_uuid" in executor_source
+    assert "guardian_service_uuids[voter] = voter_guardian_service_uuid" in executor_source
+    assert "all_service_uuids=guardian_service_uuids" in executor_source
+    assert "all_service_uuids=validator_service_uuids" in executor_source
 
-    start_index = executor_source.index("coolify_target_start_rejected_nonfatal")
-    proof_index = executor_source.index("_wait_for_admission_proof_guardians")
-    assert start_index < proof_index
+
+def test_validator_admission_reads_target_validator_node_id_from_release_target_not_plan() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert 'target_validator_node_id = _identifier(target["validator_node_id"], "target validator node ID")' in executor_source
+    assert 'guardian_service_uuids[candidate_node] = target_uuid' in executor_source
+    assert 'plan["target_validator_node_id"]' not in executor_source
+
+
+def test_validator_admission_deletes_disposable_voter_rows_after_durable_proof() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "_delete_disposable_service_row" in executor_source
+    assert "voter_guardian_service_rows.items()" in executor_source
+    assert "target_activation_guardian_row" in executor_source
+    assert "validator_parent_service_uuid" in executor_source
+    assert "post-admission-candidate-parent-cleanup-skipped-no-patch" in executor_source
+    assert "execute_completed_mother_helper_cleanup(" not in executor_source
+    assert "required_component_names=(_RETIRED_REPLICA_SYNC_GUARDIAN_NAME,)" not in executor_source
+    assert "required_component_names=()" not in executor_source
+
+
+def test_validator_admission_counts_candidate_parent_replacement_plus_voter_rows() -> None:
+    executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+
+    assert "initial_planned_mutations = 1 + len(voter_nodes)" in executor_source
+    assert "initial_planned_mutations = 2 + len(voter_nodes)" not in executor_source
+    assert "initial_planned_mutations = 2 + 2 * len(voter_nodes)" not in executor_source
 
 
 def test_validator_admission_does_not_post_start_after_successful_admission_proof() -> None:
@@ -826,21 +1604,111 @@ def test_validator_admission_does_not_post_start_after_successful_admission_proo
     assert "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_REFRESH" not in executor_source
 
     proof_index = executor_source.index("admission-proof-before-validator-refresh")
-    cleanup_index = executor_source.index("execute_completed_mother_helper_cleanup")
+    cleanup_index = executor_source.index("post-admission-candidate-parent-cleanup-skipped-no-patch")
     assert proof_index < cleanup_index
     assert "post_admission_cleanup_warning" in executor_source
-    assert "POST_ADMISSION_HEALTH_UNCLEAN_NONFATAL" in executor_source
+    assert "POST_ADMISSION_CLEANUP_SKIPPED_NO_PATCH_NONFATAL" in executor_source
 
 
 def test_validator_admission_restarts_and_reobserves_qbft_transition_before_failure() -> None:
     executor_source = inspect.getsource(execute_node_add_validator_admission_release)
+    recovery_source = inspect.getsource(_restart_validator_services_for_qbft_transition)
 
-    assert "/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/restart" in inspect.getsource(
-        _restart_validator_services_for_qbft_transition
-    )
+    assert "run_service_line_restart_helper" in recovery_source
+    assert "service_line=node" in recovery_source
+    assert "delete_helper_after_exit=True" in recovery_source
+    assert "/restart" not in recovery_source
+    assert '"SERVICE_LINE_RESTART_HELPER"' in recovery_source
+    assert '"exact-compose-service-line"' in recovery_source
     assert "admission-proof-after-qbft-transition-restart" in executor_source
     assert "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_QBFT_TRANSITION_RESTART_FAILED" in executor_source
     assert "max(max_wait_seconds, _ADMISSION_PROOF_TRANSITION_RECOVERY_MAX_WAIT_SECONDS)" in executor_source
+
+
+def test_validator_admission_qbft_recovery_uses_exact_service_line_restart(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_restart_helper(private_state, **kwargs):
+        calls.append({"private_state": private_state, **kwargs})
+        return {
+            "status": "pass",
+            "reason": "target-service-line-running-healthy",
+            "service_line": kwargs["service_line"],
+        }
+
+    monkeypatch.setattr(
+        "tools.mother.common.deployment_node_add_validator_admission.run_service_line_restart_helper",
+        fake_restart_helper,
+    )
+
+    private_state = SimpleNamespace(name="private")
+    opener = object()
+    receipts = _restart_validator_services_for_qbft_transition(
+        private_state=private_state,
+        runtime_state_root="runtime/state",
+        network="mainnet",
+        nodes=["mainneta-super1", "mainnetc-super1"],
+        controllers={"coolify-a": SimpleNamespace(), "coolify-c": SimpleNamespace()},
+        node_to_controller={"mainneta-super1": "coolify-a", "mainnetc-super1": "coolify-c"},
+        all_service_uuids={"mainneta-super1": "9vorogh3accl2xqcgbwjabv0", "mainnetc-super1": "4vcbyjta6tbf9wibt4zbb8hd"},
+        timeout=30.0,
+        max_response_bytes=12 * 1024 * 1024,
+        max_wait_seconds=360.0,
+        poll_interval_seconds=5.0,
+        opener=opener,
+    )
+
+    assert [receipt["service_line"] for receipt in receipts] == ["mainneta-super1", "mainnetc-super1"]
+    assert [receipt["status"] for receipt in receipts] == ["succeeded", "succeeded"]
+    assert [receipt["method"] for receipt in receipts] == ["SERVICE_LINE_RESTART_HELPER", "SERVICE_LINE_RESTART_HELPER"]
+    assert all(receipt["restart_scope"] == "exact-compose-service-line" for receipt in receipts)
+    assert all("endpoint" not in receipt for receipt in receipts)
+
+    assert [call["service_line"] for call in calls] == ["mainneta-super1", "mainnetc-super1"]
+    assert [call["service_uuid"] for call in calls] == ["9vorogh3accl2xqcgbwjabv0", "4vcbyjta6tbf9wibt4zbb8hd"]
+    assert [call["controller_id"] for call in calls] == ["coolify-a", "coolify-c"]
+    assert all(call["private_state"] is private_state for call in calls)
+    assert all(call["runtime_state_root"] == "runtime/state" for call in calls)
+    assert all(call["network"] == "mainnet" for call in calls)
+    assert all(call["mode"] == "execute" for call in calls)
+    assert all(call["delete_helper_after_exit"] is True for call in calls)
+    assert all(call["opener"] is opener for call in calls)
+
+
+def test_validator_admission_qbft_recovery_reports_service_line_restart_failure(monkeypatch) -> None:
+    def fake_restart_helper(private_state, **kwargs):
+        return {
+            "status": "failed",
+            "reason": "target-service-line-readback-timeout",
+            "service_line": kwargs["service_line"],
+        }
+
+    monkeypatch.setattr(
+        "tools.mother.common.deployment_node_add_validator_admission.run_service_line_restart_helper",
+        fake_restart_helper,
+    )
+
+    receipts = _restart_validator_services_for_qbft_transition(
+        private_state=SimpleNamespace(),
+        runtime_state_root="runtime/state",
+        network="mainnet",
+        nodes=["mainnetc-super2"],
+        controllers={"coolify-c": SimpleNamespace()},
+        node_to_controller={"mainnetc-super2": "coolify-c"},
+        all_service_uuids={"mainnetc-super2": "swzkebua6h7lxyznmrio17ug"},
+        timeout=30.0,
+        max_response_bytes=12 * 1024 * 1024,
+        max_wait_seconds=360.0,
+        poll_interval_seconds=5.0,
+        opener=object(),
+    )
+
+    assert len(receipts) == 1
+    assert receipts[0]["status"] == "failed"
+    assert receipts[0]["method"] == "SERVICE_LINE_RESTART_HELPER"
+    assert receipts[0]["restart_scope"] == "exact-compose-service-line"
+    assert receipts[0]["service_line"] == "mainnetc-super2"
+    assert receipts[0]["result"]["reason"] == "target-service-line-readback-timeout"
 
 
 def test_validator_admission_reports_proof_timeout_after_patient_recovery_wait() -> None:
@@ -1012,6 +1880,85 @@ def test_validator_admission_wait_captures_mother_side_public_proof_endpoint() -
         "0x9b809f05f8d68da17e697cd6ab040d4320494611",
         "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
     ]
+
+
+class _AdmissionProofExitedGuardianDiagnosticOpener:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def open(self, request, timeout=None):
+        url = request.full_url
+        self.calls.append(url)
+        if url.endswith("/api/v1/services/candidate-service"):
+            payload = {
+                "uuid": "candidate-service",
+                "name": "mainneta-super1",
+                "status": "degraded:unhealthy",
+                "applications": [
+                    {
+                        "uuid": "guardian-child",
+                        "name": "mother-add-node-validator-activation-guardian",
+                        "status": "exited",
+                        "exit_code": 1,
+                        "image": "python:3.12-alpine",
+                    }
+                ],
+            }
+            return _StatusResponse(canonical_json(payload), status=200)
+        if url.endswith("/api/v1/services/candidate-service/logs?sub_service_name=mother-add-node-validator-activation-guardian"):
+            return _StatusResponse(
+                canonical_json({"logs": "Traceback: RuntimeError('target validator node identity mismatch')"}),
+                status=200,
+            )
+        if url.endswith("/api/v1/services/candidate-service/logs"):
+            return _StatusResponse(canonical_json({"logs": "parent compose project degraded"}), status=200)
+        return _StatusResponse(canonical_json({"message": "not found"}), status=404)
+
+
+def test_validator_admission_captures_debug_snapshot_when_activation_guardian_exits() -> None:
+    opener = _AdmissionProofExitedGuardianDiagnosticOpener()
+    observations: list[dict] = []
+    controllers = {
+        "coolify-a": SimpleNamespace(base_url="https://coolify-a.example", api_token="secret-token"),
+    }
+
+    healthy, last_statuses = _wait_for_admission_proof_guardians(
+        nodes=["mainneta-super1"],
+        candidate_node="mainneta-super1",
+        desired_validator_set=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        controllers=controllers,
+        node_to_controller={"mainneta-super1": "coolify-a"},
+        all_service_uuids={"mainneta-super1": "candidate-service"},
+        voter_guardian_names={},
+        target_guardian_name="mother-add-node-validator-activation-guardian",
+        candidate_activation_proof_endpoint=None,
+        observations=observations,
+        observation_phase="admission-proof-before-validator-refresh",
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        timeout=3.0,
+        max_response_bytes=10000,
+        opener=opener,
+        durable_sample_count=1,
+    )
+
+    assert healthy == set()
+    assert "mother-add-node-validator-activation-guardian=exited" in last_statuses["mainneta-super1"]
+    candidate_observation = observations[-1]
+    debug = candidate_observation["guardian_failure_debug_snapshot"]
+    assert debug["kind"] == "main_computer.mother.validator_admission_guardian_debug_snapshot.v1"
+    assert debug["service_uuid"] == "candidate-service"
+    assert debug["proof_guardian_name"] == "mother-add-node-validator-activation-guardian"
+    assert debug["proof_guardian_component_records"][0]["status"] == "exited"
+    assert debug["proof_guardian_component_records"][0]["exit_code"] == 1
+    assert debug["log_probe_performed"] is True
+    assert len(debug["log_probes"]) == 2
+    assert debug["log_probes"][0]["status"] == 200
+    assert "target validator node identity mismatch" in debug["log_probes"][0]["payload_excerpt"]["text"]
+    assert any("logs?sub_service_name=mother-add-node-validator-activation-guardian" in call for call in opener.calls)
 
 
 def test_validator_admission_wait_is_candidate_activation_driven_after_voter_exclusion() -> None:

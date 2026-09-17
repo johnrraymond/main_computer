@@ -3,9 +3,9 @@
 This phase consumes clean ``deployment-node-add-replica-sync`` evidence and
 performs the next live boundary only after an explicit expiring operator release:
 
-* replace the target standby replica Compose with validator-activation Compose
-  that uses the already-installed ``MC_MOTHER_VALIDATOR_PRIVATE_KEY`` env value;
-* install internal-only voting guardians on every existing validator service;
+* replace the target standby replica service row with a fresh validator-activation
+  service row and bind its identity env values before start;
+* create internal-only disposable voting guardian service rows for every existing validator service;
 * have the existing validators cast the exact QBFT add-validator vote for the
   prepared target; and
 * prove the final validator set, target activation, and fresh block production.
@@ -41,6 +41,9 @@ from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
 from .deployment_completed_helper_cleanup import (
     MotherDeploymentCompletedHelperCleanupError,
+    _application_uuid,
+    _controller_config,
+    _resolve_environment_uuid,
     execute_completed_mother_helper_cleanup,
 )
 from .deployment_node_add_replica_sync import verify_node_add_replica_sync_evidence
@@ -48,6 +51,7 @@ from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 from .deployment_validator_routes import ensure_service_validator_route, validator_route_advertised_host, validator_route_from_record
 from .ethereum_identity import checksum_address
+from tools.mother_service_line_restart_helper import run_service_line_restart_helper
 
 
 _RELEASE_KIND = "main_computer.mother.deployment_node_add_validator_admission_release.v1"
@@ -1097,53 +1101,211 @@ def _guardian_service_name(voter: str) -> str:
     return f"mother-add-node-validator-admission-voter-{safe}"
 
 
-def _install_voter_guardian(compose_text: str, *, voter: str, script: str) -> tuple[str, str]:
-    try:
-        document = yaml.safe_load(compose_text)
-    except yaml.YAMLError as exc:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "voter service Compose cannot be parsed") from exc
-    if not isinstance(document, dict):
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "voter Compose root is invalid")
-    services = document.setdefault("services", {})
-    if not isinstance(services, dict) or voter not in services:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", f"{voter} service is missing from Compose")
-    name = _guardian_service_name(voter)
-    services[name] = {
-        "image": _GUARDIAN_IMAGE,
-        "restart": "no",
-        "read_only": True,
-        "depends_on": {voter: {"condition": "service_started"}},
-        "command": ["python", "-u", "-c", script],
-        "healthcheck": {
-            "test": [
-                "CMD", "python", "-c",
-                f"import os,time; p='/proof/{voter.replace('-', '_')}-add-node-validator-admission-healthy'; assert os.path.isfile(p) and time.time()-os.path.getmtime(p) < 45",
-            ],
-            "interval": "10s",
-            "timeout": "5s",
-            "retries": 24,
-            "start_period": "30s",
+def _disposable_guardian_service_row_name(guardian_name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9-]+", "-", _identifier(guardian_name, "guardian service")).strip("-").lower()
+    stamp = re.sub(r"[^0-9A-Za-z]+", "", _timestamp()).lower()[:15] or "now"
+    return f"{safe}-{stamp}"
+
+
+def _disposable_voter_guardian_compose(
+    *,
+    voter: str,
+    voter_service_uuid: str,
+    script: str,
+) -> tuple[str, str]:
+    voter_name = _identifier(voter, "voter node")
+    parent_uuid = _identifier(voter_service_uuid, f"{voter_name} validator parent service UUID")
+    parent_config_volume = f"{parent_uuid}_mother-config"
+    parent_config_bind_source = f"/var/lib/docker/volumes/{parent_config_volume}/_data"
+    proof_volume = "mother-add-node-validator-admission-proof"
+    name = _guardian_service_name(voter_name)
+    proof_marker = f"/proof/{voter_name.replace('-', '_')}-add-node-validator-admission-healthy"
+    document = {
+        "services": {
+            name: {
+                "image": _GUARDIAN_IMAGE,
+                "restart": "no",
+                "read_only": True,
+                "command": ["python", "-u", "-c", script],
+                "networks": ["validator-parent"],
+                "volumes": [
+                    {
+                        "type": "bind",
+                        "source": parent_config_bind_source,
+                        "target": "/config",
+                        "read_only": True,
+                    },
+                    {
+                        "type": "volume",
+                        "source": proof_volume,
+                        "target": "/proof",
+                    },
+                ],
+                "healthcheck": {
+                    "test": [
+                        "CMD",
+                        "python",
+                        "-c",
+                        f"import os,time; p={proof_marker!r}; assert os.path.isfile(p) and time.time()-os.path.getmtime(p) < 45",
+                    ],
+                    "interval": "10s",
+                    "timeout": "5s",
+                    "retries": 24,
+                    "start_period": "30s",
+                },
+                "labels": {
+                    "main_computer.mother.stage": "add-node-validator-admission",
+                    "main_computer.mother.voter-node": voter_name,
+                    "main_computer.mother.voter-parent-service-uuid": parent_uuid,
+                    "main_computer.mother.disposable-service-row": "true",
+                    "main_computer.mother.routing-publication": "blocked",
+                },
+            }
         },
-        "volumes": ["mother-config:/config:ro", "mother-add-node-validator-admission-proof:/proof"],
-        "labels": {
-            "main_computer.mother.stage": "add-node-validator-admission",
-            "main_computer.mother.voter-node": voter,
-            "main_computer.mother.routing-publication": "blocked",
+        "networks": {
+            "validator-parent": {
+                "external": True,
+                "name": parent_uuid,
+            }
+        },
+        "volumes": {
+            proof_volume: None,
         },
     }
-    volumes = document.setdefault("volumes", {})
-    if not isinstance(volumes, dict):
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "Compose volumes section is invalid")
-    volumes.setdefault("mother-add-node-validator-admission-proof", None)
-    updated = yaml.safe_dump(document, sort_keys=False)
-    section = updated.split(f"  {name}:", 1)[1].split("\nvolumes:", 1)[0]
+    compose = yaml.safe_dump(document, sort_keys=False)
+    section = compose.split(f"  {name}:", 1)[1].split("\nnetworks:", 1)[0]
     if any(marker in section for marker in ("ports:", "expose:", "traefik.", "fqdn:", "domains:")):
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_GUARDIAN_EXPOSED", "add-node validator-admission guardian must remain internal-only")
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_GUARDIAN_EXPOSED", "add-node validator-admission voter guardian must remain internal-only")
     if "8545:8545" in section:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_RPC_EXPOSED", "add-node validator admission guardian must not publish JSON-RPC")
-    return updated, name
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_RPC_EXPOSED", "add-node validator admission voter guardian must not publish JSON-RPC")
+    rendered = yaml.safe_load(compose)
+    config_mounts = [
+        item
+        for item in rendered["services"][name].get("volumes", [])
+        if isinstance(item, Mapping) and item.get("target") == "/config"
+    ]
+    if config_mounts != [
+        {
+            "type": "bind",
+            "source": parent_config_bind_source,
+            "target": "/config",
+            "read_only": True,
+        }
+    ]:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_VOTER_CONFIG_VOLUME_INVALID",
+            "add-node validator-admission voter guardian must bind-mount voter parent mother-config data directory",
+        )
+    if any(isinstance(item, Mapping) and item.get("target") == "/config" and item.get("type") == "volume" for item in rendered["services"][name].get("volumes", [])):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_VOTER_CONFIG_VOLUME_INVALID",
+            "add-node validator-admission voter guardian must not use a named Docker volume for /config",
+        )
+    if "_mother-config:/config" in compose or "mother-config:/config" in compose:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_VOTER_CONFIG_VOLUME_INVALID",
+            "add-node validator-admission voter guardian must not use service-scoped mother-config volume syntax",
+        )
+    return compose, name
 
 
+def _disposable_candidate_activation_guardian_compose(
+    *,
+    target_node: str,
+    target_service_uuid: str,
+    target_node_id: str,
+    bootnode_enode: str,
+    desired_validators: Iterable[str],
+    chain_id: int,
+    genesis_sha256: str,
+    proof_endpoint: Mapping[str, Any],
+) -> tuple[str, str]:
+    target_name = _identifier(target_node, "candidate node")
+    parent_uuid = _identifier(target_service_uuid, "candidate parent service UUID")
+    name = "mother-add-node-validator-activation-guardian"
+    desired_validator_list = [str(item) for item in desired_validators]
+    proof_stem = _activation_guardian_proof_stem(
+        target_node=target_name,
+        target_node_id=target_node_id,
+        bootnode_enode=bootnode_enode,
+        desired_validators=desired_validator_list,
+        chain_id=chain_id,
+        genesis_sha256=genesis_sha256,
+    )
+    guardian_script = _activation_guardian_script(
+        target_node=target_name,
+        target_node_id=target_node_id,
+        bootnode_enode=bootnode_enode,
+        desired_validators=desired_validator_list,
+        chain_id=chain_id,
+        genesis_sha256=genesis_sha256,
+    )
+    try:
+        host_port = int(proof_endpoint["host_port"])
+        container_port = int(proof_endpoint.get("container_port") or _CANDIDATE_ACTIVATION_PROOF_HTTP_PORT)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate activation proof endpoint is invalid for disposable guardian row") from exc
+    if not 1 <= host_port <= 65535 or not 1 <= container_port <= 65535:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate activation proof endpoint port is outside the valid TCP range")
+    proof_port_binding = f"{host_port}:{container_port}/tcp"
+    bind_host = proof_endpoint.get("bind_host")
+    if isinstance(bind_host, str) and bind_host.strip() and bind_host.strip() not in {"0.0.0.0", "::"}:
+        proof_port_binding = f"{bind_host.strip()}:{host_port}:{container_port}/tcp"
+
+    document = {
+        "services": {
+            name: {
+                "image": _GUARDIAN_IMAGE,
+                "restart": "unless-stopped",
+                "read_only": True,
+                "ports": [proof_port_binding],
+                "command": ["python", "-u", "-c", guardian_script],
+                "networks": ["candidate-parent"],
+                "volumes": [
+                    "mother-config:/config:ro",
+                    "mother-add-node-validator-admission-proof:/proof",
+                ],
+                "healthcheck": {
+                    "test": [
+                        "CMD",
+                        "python",
+                        "-c",
+                        f"import os,time; p='/proof/target-add-node-validator-admission-{proof_stem}-healthy'; assert os.path.isfile(p) and time.time()-os.path.getmtime(p) < 45",
+                    ],
+                    "interval": "10s",
+                    "timeout": "5s",
+                    "retries": 24,
+                    "start_period": "30s",
+                },
+                "labels": {
+                    "main_computer.mother.stage": "add-node-validator-admission",
+                    "main_computer.mother.node": target_name,
+                    "main_computer.mother.validator-activation": "guardian-proof-only",
+                    "main_computer.mother.candidate-parent-service-uuid": parent_uuid,
+                    "main_computer.mother.disposable-service-row": "true",
+                    "main_computer.mother.routing-publication": "blocked",
+                },
+            }
+        },
+        "networks": {
+            "candidate-parent": {
+                "external": True,
+                "name": parent_uuid,
+            }
+        },
+        "volumes": {
+            "mother-config": {
+                "external": True,
+                "name": f"{parent_uuid}_mother-config",
+            },
+            "mother-add-node-validator-admission-proof": None,
+        },
+    }
+    compose = yaml.safe_dump(document, sort_keys=False)
+    section = compose.split(f"  {name}:", 1)[1].split("\nnetworks:", 1)[0]
+    if "8545:8545" in section:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_RPC_EXPOSED", "candidate activation guardian must not publish JSON-RPC")
+    return compose, name
 
 
 def _compose_service_map(compose_text: str) -> dict[str, Mapping[str, Any]]:
@@ -1196,6 +1358,7 @@ def _is_cleanup2_retired_node_remove_voter(service_name: str, definition: Mappin
         and "main_computer.mother.cleanup_scope=helper-cleanup2-yagni" in labels_text
         and "qbft_proposeValidatorVote" not in text
     )
+
 
 
 def _find_conflicting_node_remove_voters(compose_text: str, *, candidate_validator: str) -> list[dict[str, str]]:
@@ -1554,17 +1717,20 @@ def build_node_add_validator_admission_release(
             "validator_activation_authorized": True,
             "qbft_transition_recovery_authorized": True,
             "replica_sync_authorized": False,
-            "service_creation_authorized": False,
+            "service_creation_authorized": True,
+            "transient_admission_guardian_service_creation_authorized": True,
+            "transient_admission_guardian_service_delete_authorized": True,
             "identity_install_authorized": False,
             "routing_or_topology_publication_authorized": False,
             "requested_use_limit": 1,
         },
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH", "POST"],
+            "allowed_http_methods": ["GET", "POST", "DELETE"],
             "compiler": "mother-native-add-node-validator-admission-v1",
             "coolify_control_plane_only": False,
             "all_existing_validator_votes_required": True,
             "qbft_transition_recovery_restart_authorized": True,
+            "candidate_parent_service_replacement_authorized": True,
             "manual_ssh_required": False,
             "public_http_endpoint_created": True,
             "public_candidate_activation_proof_endpoint_created": True,
@@ -1852,6 +2018,981 @@ def _safe_response(response: Mapping[str, Any]) -> dict[str, Any]:
         "byte_length": response.get("byte_length"),
         "response_sha256": response.get("response_sha256"),
     }
+
+
+def _service_row_body(
+    controller_config: Mapping[str, Any],
+    *,
+    network: str,
+    environment_uuid: str,
+    service_name: str,
+    compose: str,
+    description: str,
+) -> dict[str, Any]:
+    encoded_compose = base64.b64encode(compose.encode("utf-8")).decode("ascii")
+    return {
+        "project_uuid": controller_config["project_uuid"],
+        "server_uuid": controller_config["server_uuid"],
+        "environment_name": _identifier(network, "network"),
+        "environment_uuid": _identifier(environment_uuid, "environment_uuid"),
+        "docker_compose_raw": encoded_compose,
+        "name": _identifier(service_name, "service row name"),
+        "description": str(description or "").strip(),
+        "instant_deploy": False,
+    }
+
+
+def _disposable_service_row_body(
+    controller_config: Mapping[str, Any],
+    *,
+    network: str,
+    environment_uuid: str,
+    service_name: str,
+    compose: str,
+    description: str,
+) -> dict[str, Any]:
+    return _service_row_body(
+        controller_config,
+        network=network,
+        environment_uuid=environment_uuid,
+        service_name=service_name,
+        compose=compose,
+        description=description,
+    )
+
+
+def _create_start_disposable_service_row(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller: Mapping[str, Any],
+    controller_id: str,
+    service_name: str,
+    compose: str,
+    description: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    controller_name = _identifier(controller_id, "controller_id")
+    network_name = _identifier(network, "network")
+    row_name = _identifier(service_name, "disposable service row name")
+    observations: list[dict[str, Any]] = []
+
+    try:
+        controller_config = _controller_config(
+            private_state,
+            network=network_name,
+            controller_id=controller_name,
+        )
+    except MotherDeploymentCompletedHelperCleanupError as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_DISPOSABLE_SERVICE_ROW_INVALID",
+            str(exc),
+        ) from exc
+
+    try:
+        environment_uuid = _resolve_environment_uuid(
+            controller=controller,
+            controller_id=controller_name,
+            endpoint=f"/api/v1/projects/{urllib.parse.quote(str(controller_config['project_uuid']), safe='')}/environments",
+            expected_name=network_name,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            observations=observations,
+        )
+    except MotherDeploymentCompletedHelperCleanupError as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_DISPOSABLE_SERVICE_ROW_INVALID",
+            str(exc),
+        ) from exc
+
+    body = _disposable_service_row_body(
+        controller_config,
+        network=network_name,
+        environment_uuid=environment_uuid,
+        service_name=row_name,
+        compose=compose,
+        description=description,
+    )
+    body_sha256 = hashlib.sha256(canonical_json(body)).hexdigest()
+    create_response = _http(
+        controller,
+        "POST",
+        "/api/v1/services",
+        body=body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    create_receipt = {
+        "method": "POST",
+        "endpoint": "/api/v1/services",
+        "status": create_response["status"],
+        "ok": create_response["ok"],
+        "response_sha256": create_response["response_sha256"],
+        "byte_length": create_response["byte_length"],
+        "elapsed_ms": create_response["elapsed_ms"],
+        "controller_id": controller_name,
+        "service_name": row_name,
+        "request_body_sha256": body_sha256,
+        "lifecycle_scope": "disposable-service-row",
+    }
+    observations.append(
+        {
+            "method": create_receipt["method"],
+            "endpoint": create_receipt["endpoint"],
+            "status": create_receipt["status"],
+            "ok": create_receipt["ok"],
+            "response_sha256": create_receipt["response_sha256"],
+            "byte_length": create_receipt["byte_length"],
+            "elapsed_ms": create_receipt["elapsed_ms"],
+            "controller_id": create_receipt["controller_id"],
+            "phase": "disposable-service-row-create",
+        }
+    )
+    if create_response["ok"] is not True:
+        return {
+            "status": "failed",
+            "reason": "disposable-service-row-create-failed",
+            "controller_id": controller_name,
+            "network": network_name,
+            "service_name": row_name,
+            "service_uuid": None,
+            "create": create_receipt,
+            "start": None,
+            "delete": None,
+            "observations": observations,
+        }
+
+    try:
+        service_uuid = _application_uuid(create_response.get("payload"))
+    except MotherDeploymentCompletedHelperCleanupError as exc:
+        return {
+            "status": "failed",
+            "reason": "disposable-service-row-create-response-missing-service-uuid",
+            "controller_id": controller_name,
+            "network": network_name,
+            "service_name": row_name,
+            "service_uuid": None,
+            "create": create_receipt,
+            "start": None,
+            "delete": None,
+            "observations": observations,
+            "error": str(exc),
+        }
+
+    start_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start"
+    start_response = _http(
+        controller,
+        "POST",
+        start_endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    start_receipt = {
+        "method": "POST",
+        "endpoint": start_endpoint,
+        "status": start_response["status"],
+        "ok": start_response["ok"],
+        "response_sha256": start_response["response_sha256"],
+        "byte_length": start_response["byte_length"],
+        "elapsed_ms": start_response["elapsed_ms"],
+        "controller_id": controller_name,
+        "service_uuid": service_uuid,
+        "service_name": row_name,
+        "lifecycle_scope": "disposable-service-row",
+    }
+    observations.append(
+        {
+            "method": start_receipt["method"],
+            "endpoint": start_receipt["endpoint"],
+            "status": start_receipt["status"],
+            "ok": start_receipt["ok"],
+            "response_sha256": start_receipt["response_sha256"],
+            "byte_length": start_receipt["byte_length"],
+            "elapsed_ms": start_receipt["elapsed_ms"],
+            "controller_id": start_receipt["controller_id"],
+            "phase": "disposable-service-row-start",
+        }
+    )
+    start_ok = start_response["ok"] is True
+    return {
+        "status": "succeeded" if start_ok else "failed",
+        "reason": "disposable-service-row-started" if start_ok else "disposable-service-row-start-failed",
+        "controller_id": controller_name,
+        "network": network_name,
+        "service_name": row_name,
+        "service_uuid": service_uuid,
+        "create": create_receipt,
+        "start": start_receipt,
+        "delete": None,
+        "observations": observations,
+    }
+
+
+def _delete_disposable_service_row(
+    *,
+    controller: Mapping[str, Any],
+    controller_id: str,
+    service_uuid: str,
+    service_name: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    controller_name = _identifier(controller_id, "controller_id")
+    row_uuid = _identifier(service_uuid, "disposable service row UUID")
+    row_name = _identifier(service_name, "disposable service row name")
+    endpoint = f"/api/v1/services/{urllib.parse.quote(row_uuid, safe='')}"
+    response = _http(
+        controller,
+        "DELETE",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    ok = response["ok"] is True or response["status"] == 404
+    return {
+        "status": "succeeded" if ok else "failed",
+        "reason": "disposable-service-row-deleted" if response["ok"] is True else (
+            "disposable-service-row-already-absent" if response["status"] == 404 else "disposable-service-row-delete-failed"
+        ),
+        "method": "DELETE",
+        "endpoint": endpoint,
+        "controller_id": controller_name,
+        "service_uuid": row_uuid,
+        "service_name": row_name,
+        "ok": ok,
+        "http_ok": response["ok"],
+        "http_status": response["status"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "lifecycle_scope": "disposable-service-row",
+    }
+
+
+def _private_state_path_value(private_state: PrivateStateReadResult, dotted_path: str, label: str) -> Any:
+    document = _document(private_state)
+    current: Any = document
+    for part in _identifier(dotted_path, label).split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{label} is missing from private state")
+        current = current[part]
+    return current
+
+
+def _private_state_private_key(value: Any, label: str) -> str:
+    text = str(value or "").strip()
+    if _PRIVATE_KEY_RE.fullmatch(text) is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{label} is not a valid private key")
+    return text
+
+
+def _target_identity_env_values(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    node: str,
+) -> list[tuple[str, str, str]]:
+    network_name = _identifier(network, "network")
+    node_name = _identifier(node, "candidate node")
+    validator_ref = f"networks.{network_name}.validators.{node_name}.private_key"
+    validator_key = _validator_private_key(private_state, network=network_name, node=node_name)
+
+    document = _document(private_state)
+    try:
+        target = document["networks"][network_name]["deployment"]["targets"][node_name]
+    except (KeyError, TypeError) as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{node_name} deployment target is missing") from exc
+    if not isinstance(target, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{node_name} deployment target is invalid")
+    hub_ref = target.get("hub_admin_private_key_path")
+    if type(hub_ref) is not str or not hub_ref:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{node_name} hub administrator private key reference is missing")
+    hub_key = _private_state_private_key(_private_state_path_value(private_state, hub_ref, hub_ref), hub_ref)
+    return [
+        (_VALIDATOR_KEY, validator_ref, validator_key),
+        (_HUB_KEY, hub_ref, hub_key),
+    ]
+
+
+def _candidate_parent_activation_compose_without_transient_guardians(
+    activation_compose: str,
+    *,
+    candidate_node: str,
+) -> str:
+    try:
+        document = yaml.safe_load(activation_compose)
+    except yaml.YAMLError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "candidate activation Compose cannot be parsed") from exc
+    if not isinstance(document, dict) or not isinstance(document.get("services"), dict):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "candidate activation Compose does not contain services")
+    services = document["services"]
+    candidate_name = _identifier(candidate_node, "candidate node")
+    if candidate_name not in services:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "candidate activation Compose is missing target validator service")
+    services.pop("mother-add-node-validator-activation-guardian", None)
+    services.pop(_RETIRED_REPLICA_SYNC_GUARDIAN_NAME, None)
+    volumes = document.get("volumes")
+    if isinstance(volumes, dict):
+        volumes.pop("mother-add-node-validator-admission-proof", None)
+        if not volumes:
+            document.pop("volumes", None)
+    compose = yaml.safe_dump(document, sort_keys=False)
+    parsed = yaml.safe_load(compose)
+    parsed_services = parsed.get("services") if isinstance(parsed, Mapping) else None
+    if not isinstance(parsed_services, Mapping) or candidate_name not in parsed_services:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "candidate parent activation Compose lost target validator service")
+    if "mother-add-node-validator-activation-guardian" in parsed_services or _RETIRED_REPLICA_SYNC_GUARDIAN_NAME in parsed_services:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "candidate parent activation Compose still contains transient helper services")
+    return compose
+
+
+def _candidate_service_env_body(value: str) -> dict[str, Any]:
+    return {
+        "key": "",
+        "value": value,
+        "is_build_time": False,
+        "is_runtime": True,
+        "is_literal": True,
+        "is_multiline": False,
+    }
+
+
+def _service_env_item_key(item: Mapping[str, Any]) -> str:
+    for field in ("key", "name", "environment_key", "variable"):
+        value = item.get(field)
+        if type(value) is str and value.strip():
+            return value.strip()
+    return ""
+
+
+def _service_env_item_identifier(item: Mapping[str, Any]) -> str:
+    for field in ("uuid", "id"):
+        value = item.get(field)
+        if type(value) in {str, int}:
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
+
+
+def _service_env_visible_value(item: Mapping[str, Any]) -> str | None:
+    for field in ("value", "real_value", "literal_value"):
+        if field not in item:
+            continue
+        value = item.get(field)
+        if type(value) is not str:
+            continue
+        if value and (set(value) <= {"*", "•"} or value.lower() in {"<redacted>", "redacted", "masked"}):
+            continue
+        return value
+    return None
+
+
+def _service_env_value_summary(item: Mapping[str, Any], *, expected_value_sha256: str | None) -> dict[str, Any]:
+    env_identifier = _service_env_item_identifier(item)
+    visible = _service_env_visible_value(item)
+    summary: dict[str, Any] = {
+        "environment_variable_identifier": env_identifier or None,
+        "value_visible": visible is not None,
+        "value_sha256_matches": None,
+        "value_bytes": None,
+        "stripped_length": None,
+        "starts_with_0x": None,
+        "value_is_private_key_shape": None,
+    }
+    if visible is None:
+        return summary
+    stripped = visible[2:] if visible.lower().startswith("0x") else visible
+    value_sha256 = hashlib.sha256(visible.encode("utf-8")).hexdigest()
+    summary.update(
+        {
+            "value_bytes": len(visible.encode("utf-8")),
+            "stripped_length": len(stripped),
+            "starts_with_0x": visible.lower().startswith("0x"),
+            "value_is_private_key_shape": _PRIVATE_KEY_RE.fullmatch(visible) is not None,
+            "value_sha256_matches": value_sha256 == expected_value_sha256 if expected_value_sha256 else None,
+        }
+    )
+    return summary
+
+
+def _service_env_key_readback(
+    *,
+    controller: Mapping[str, Any],
+    controller_id: str,
+    service_uuid: str,
+    environment_key: str,
+    expected_value: str | None = None,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    lifecycle_scope: str,
+) -> dict[str, Any]:
+    controller_name = _identifier(controller_id, "controller_id")
+    row_uuid = _identifier(service_uuid, "service UUID")
+    key = _identifier(environment_key, "environment key")
+    expected_value_sha256 = hashlib.sha256(expected_value.encode("utf-8")).hexdigest() if expected_value is not None else None
+    endpoint = f"/api/v1/services/{urllib.parse.quote(row_uuid, safe='')}/envs"
+    response = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    matches = 0
+    observed_keys: list[str] = []
+    matched_summaries: list[dict[str, Any]] = []
+    for item in _records(response.get("payload")):
+        observed = _service_env_item_key(item)
+        if observed:
+            observed_keys.append(observed)
+        if observed == key:
+            matches += 1
+            matched_summaries.append(_service_env_value_summary(item, expected_value_sha256=expected_value_sha256))
+    matched_value = matched_summaries[0] if len(matched_summaries) == 1 else {}
+    value_verified = (
+        expected_value is None
+        or (
+            len(matched_summaries) == 1
+            and matched_summaries[0].get("value_visible") is True
+            and matched_summaries[0].get("value_sha256_matches") is True
+        )
+    )
+    verified = response["ok"] is True and matches == 1 and value_verified is True
+    if matches != 1:
+        reason = "exact-key-not-present-on-new-service-row" if matches == 0 else "exact-key-ambiguous-on-new-service-row"
+    elif expected_value is None:
+        reason = "exact-key-present-on-new-service-row"
+    elif matched_value.get("value_visible") is not True:
+        reason = "exact-key-value-not-visible-on-new-service-row"
+    elif matched_value.get("value_sha256_matches") is True:
+        reason = "exact-key-value-matched-on-new-service-row"
+    elif matched_value.get("value_bytes") == 0:
+        reason = "exact-key-value-empty-on-new-service-row"
+    else:
+        reason = "exact-key-value-mismatch-on-new-service-row"
+    return {
+        "method": "GET",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": verified,
+        "http_ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "controller_id": controller_name,
+        "service_uuid": row_uuid,
+        "environment_key": key,
+        "matches": matches,
+        "present": matches > 0,
+        "verified": verified,
+        "reason": reason,
+        "value_verification_required": expected_value is not None,
+        "matched_environment_variable_identifier": matched_value.get("environment_variable_identifier"),
+        "matched_value_visible": matched_value.get("value_visible"),
+        "matched_value_bytes": matched_value.get("value_bytes"),
+        "matched_value_stripped_length": matched_value.get("stripped_length"),
+        "matched_starts_with_0x": matched_value.get("starts_with_0x"),
+        "matched_value_is_private_key_shape": matched_value.get("value_is_private_key_shape"),
+        "matched_value_sha256_matches": matched_value.get("value_sha256_matches"),
+        "observed_key_count": len(observed_keys),
+        "observed_keys_sample": observed_keys[:10],
+        "lifecycle_scope": lifecycle_scope,
+    }
+
+
+def _service_env_update_attempts(
+    *,
+    controller: Mapping[str, Any],
+    controller_id: str,
+    service_uuid: str,
+    environment_key: str,
+    value: str,
+    env_body: Mapping[str, Any],
+    existing_identifier: str | None,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    lifecycle_scope: str,
+) -> list[dict[str, Any]]:
+    controller_name = _identifier(controller_id, "controller_id")
+    row_uuid = _identifier(service_uuid, "service UUID")
+    key = _identifier(environment_key, "environment key")
+    base_endpoint = f"/api/v1/services/{urllib.parse.quote(row_uuid, safe='')}/envs"
+    candidate_endpoints: list[str] = []
+    if existing_identifier:
+        candidate_endpoints.append(f"{base_endpoint}/{urllib.parse.quote(str(existing_identifier), safe='')}")
+    candidate_endpoints.append(f"{base_endpoint}/{urllib.parse.quote(key, safe='')}")
+    candidate_endpoints.append(base_endpoint)
+    attempts: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for endpoint in candidate_endpoints:
+        for method in ("PATCH", "PUT"):
+            marker = (method, endpoint)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            response = _http(
+                controller,
+                method,
+                endpoint,
+                body=env_body,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            attempt = {
+                "method": method,
+                "endpoint": endpoint,
+                "status": response["status"],
+                "ok": response["ok"],
+                "http_ok": response["ok"],
+                "response_sha256": response["response_sha256"],
+                "byte_length": response["byte_length"],
+                "elapsed_ms": response["elapsed_ms"],
+                "controller_id": controller_name,
+                "service_uuid": row_uuid,
+                "environment_key": key,
+                "value_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                "value_bytes": len(value.encode("utf-8")),
+                "request_body_sha256": hashlib.sha256(canonical_json(env_body)).hexdigest(),
+                "lifecycle_scope": lifecycle_scope,
+            }
+            attempts.append(attempt)
+            if response["ok"] is True:
+                return attempts
+            if response["status"] not in {400, 404, 405, 409, 422}:
+                return attempts
+    return attempts
+
+
+def _bind_candidate_parent_service_env_with_readback(
+    *,
+    controller: Mapping[str, Any],
+    controller_id: str,
+    service_uuid: str,
+    service_name: str,
+    environment_key: str,
+    source_ref: str,
+    value: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    controller_name = _identifier(controller_id, "controller_id")
+    row_uuid = _identifier(service_uuid, "candidate parent service UUID")
+    row_name = _identifier(service_name, "candidate parent service name")
+    key = _identifier(environment_key, "environment key")
+    source = _identifier(source_ref, f"{key} source reference")
+    env_body = _candidate_service_env_body(value)
+    env_body["key"] = key
+    endpoint = f"/api/v1/services/{urllib.parse.quote(row_uuid, safe='')}/envs"
+    response = _http(
+        controller,
+        "POST",
+        endpoint,
+        body=env_body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    receipt = {
+        "method": "POST",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": False,
+        "http_ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "controller_id": controller_name,
+        "service_uuid": row_uuid,
+        "service_name": row_name,
+        "environment_key": key,
+        "source_ref": source,
+        "value_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        "value_bytes": len(value.encode("utf-8")),
+        "request_body_sha256": hashlib.sha256(canonical_json(env_body)).hexdigest(),
+        "lifecycle_scope": "candidate-parent-service-row-replacement",
+        "env_bind_readback_performed": False,
+        "env_bind_readback_verified": False,
+        "env_bind_conflict_readback_performed": False,
+        "env_bind_conflict_readback_verified": False,
+        "env_bind_repair_performed": False,
+        "env_bind_repair_verified": False,
+        "env_bind_repair_attempts": [],
+    }
+
+    if response["ok"] is True:
+        readback = _service_env_key_readback(
+            controller=controller,
+            controller_id=controller_name,
+            service_uuid=row_uuid,
+            environment_key=key,
+            expected_value=value,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            lifecycle_scope="candidate-parent-service-row-replacement",
+        )
+        verified = readback["verified"] is True
+        receipt.update(
+            {
+                "ok": verified,
+                "reason": "candidate-parent-service-row-env-bound" if verified else "candidate-parent-service-row-env-bound-but-readback-mismatch",
+                "env_bind_readback_performed": True,
+                "env_bind_readback_verified": verified,
+                "env_bind_readback_reason": readback["reason"],
+                "env_bind_readback_matches": readback["matches"],
+                "env_bind_readback": readback,
+            }
+        )
+        return receipt
+
+    if response["status"] != 409:
+        receipt["reason"] = "candidate-parent-service-row-env-bind-failed"
+        return receipt
+
+    readback = _service_env_key_readback(
+        controller=controller,
+        controller_id=controller_name,
+        service_uuid=row_uuid,
+        environment_key=key,
+        expected_value=value,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        lifecycle_scope="candidate-parent-service-row-replacement",
+    )
+    conflict_verified = readback["verified"] is True
+    receipt.update(
+        {
+            "env_bind_conflict_readback_performed": True,
+            "env_bind_conflict_readback_verified": conflict_verified,
+            "env_bind_conflict_readback_reason": readback["reason"],
+            "env_bind_conflict_readback_matches": readback["matches"],
+            "env_bind_conflict_readback": readback,
+        }
+    )
+    if conflict_verified:
+        receipt.update(
+            {
+                "ok": True,
+                "reason": "env-key-already-present-with-matching-value-after-create",
+            }
+        )
+        return receipt
+
+    if readback["http_ok"] is not True or readback["matches"] != 1:
+        receipt.update(
+            {
+                "ok": False,
+                "reason": "env-key-conflict-but-readback-unverified",
+            }
+        )
+        return receipt
+
+    repair_attempts = _service_env_update_attempts(
+        controller=controller,
+        controller_id=controller_name,
+        service_uuid=row_uuid,
+        environment_key=key,
+        value=value,
+        env_body=env_body,
+        existing_identifier=readback.get("matched_environment_variable_identifier"),
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+        lifecycle_scope="candidate-parent-service-row-replacement",
+    )
+    repair_accepted = any(attempt.get("ok") is True for attempt in repair_attempts)
+    repair_readback = None
+    repair_verified = False
+    if repair_accepted:
+        repair_readback = _service_env_key_readback(
+            controller=controller,
+            controller_id=controller_name,
+            service_uuid=row_uuid,
+            environment_key=key,
+            expected_value=value,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            lifecycle_scope="candidate-parent-service-row-replacement",
+        )
+        repair_verified = repair_readback["verified"] is True
+    receipt.update(
+        {
+            "ok": repair_verified,
+            "reason": "env-key-conflict-repaired-after-readback-mismatch" if repair_verified else "env-key-conflict-repair-failed",
+            "env_bind_repair_performed": True,
+            "env_bind_repair_verified": repair_verified,
+            "env_bind_repair_attempts": repair_attempts,
+            "env_bind_repair_readback": repair_readback,
+        }
+    )
+    return receipt
+
+
+def _replace_candidate_parent_service_row(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller: Mapping[str, Any],
+    controller_id: str,
+    candidate_node: str,
+    previous_service_uuid: str,
+    compose: str,
+    description: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    controller_name = _identifier(controller_id, "controller_id")
+    network_name = _identifier(network, "network")
+    node_name = _identifier(candidate_node, "candidate node")
+    previous_uuid = _identifier(previous_service_uuid, "previous candidate parent service UUID")
+    observations: list[dict[str, Any]] = []
+
+    try:
+        controller_config = _controller_config(
+            private_state,
+            network=network_name,
+            controller_id=controller_name,
+        )
+    except MotherDeploymentCompletedHelperCleanupError as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_CANDIDATE_PARENT_REPLACE_INVALID",
+            str(exc),
+        ) from exc
+
+    try:
+        environment_uuid = _resolve_environment_uuid(
+            controller=controller,
+            controller_id=controller_name,
+            endpoint=f"/api/v1/projects/{urllib.parse.quote(str(controller_config['project_uuid']), safe='')}/environments",
+            expected_name=network_name,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            observations=observations,
+        )
+    except MotherDeploymentCompletedHelperCleanupError as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_CANDIDATE_PARENT_REPLACE_INVALID",
+            str(exc),
+        ) from exc
+
+    delete_endpoint = f"/api/v1/services/{urllib.parse.quote(previous_uuid, safe='')}"
+    delete_response = _http(
+        controller,
+        "DELETE",
+        delete_endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    delete_ok = delete_response["ok"] is True or delete_response["status"] == 404
+    delete_receipt = {
+        "method": "DELETE",
+        "endpoint": delete_endpoint,
+        "status": delete_response["status"],
+        "ok": delete_ok,
+        "http_ok": delete_response["ok"],
+        "response_sha256": delete_response["response_sha256"],
+        "byte_length": delete_response["byte_length"],
+        "elapsed_ms": delete_response["elapsed_ms"],
+        "controller_id": controller_name,
+        "previous_service_uuid": previous_uuid,
+        "service_name": node_name,
+        "lifecycle_scope": "candidate-parent-service-row-replacement",
+    }
+    observations.append({**delete_receipt, "phase": "candidate-parent-service-row-delete-previous"})
+    if not delete_ok:
+        return {
+            "status": "failed",
+            "reason": "candidate-parent-service-row-delete-previous-failed",
+            "controller_id": controller_name,
+            "network": network_name,
+            "service_name": node_name,
+            "previous_service_uuid": previous_uuid,
+            "service_uuid": None,
+            "delete_previous": delete_receipt,
+            "create": None,
+            "envs": [],
+            "start": None,
+            "observations": observations,
+            "live_mutation_performed": False,
+        }
+
+    body = _service_row_body(
+        controller_config,
+        network=network_name,
+        environment_uuid=environment_uuid,
+        service_name=node_name,
+        compose=compose,
+        description=description,
+    )
+    body_sha256 = hashlib.sha256(canonical_json(body)).hexdigest()
+    create_response = _http(
+        controller,
+        "POST",
+        "/api/v1/services",
+        body=body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    create_receipt = {
+        "method": "POST",
+        "endpoint": "/api/v1/services",
+        "status": create_response["status"],
+        "ok": create_response["ok"],
+        "response_sha256": create_response["response_sha256"],
+        "byte_length": create_response["byte_length"],
+        "elapsed_ms": create_response["elapsed_ms"],
+        "controller_id": controller_name,
+        "service_name": node_name,
+        "previous_service_uuid": previous_uuid,
+        "request_body_sha256": body_sha256,
+        "lifecycle_scope": "candidate-parent-service-row-replacement",
+    }
+    observations.append({**create_receipt, "phase": "candidate-parent-service-row-create"})
+    if create_response["ok"] is not True:
+        return {
+            "status": "failed",
+            "reason": "candidate-parent-service-row-create-failed",
+            "controller_id": controller_name,
+            "network": network_name,
+            "service_name": node_name,
+            "previous_service_uuid": previous_uuid,
+            "service_uuid": None,
+            "delete_previous": delete_receipt,
+            "create": create_receipt,
+            "envs": [],
+            "start": None,
+            "observations": observations,
+            "live_mutation_performed": delete_response["ok"] is True,
+        }
+
+    try:
+        service_uuid = _application_uuid(create_response.get("payload"))
+    except MotherDeploymentCompletedHelperCleanupError as exc:
+        return {
+            "status": "failed",
+            "reason": "candidate-parent-service-row-create-response-missing-service-uuid",
+            "controller_id": controller_name,
+            "network": network_name,
+            "service_name": node_name,
+            "previous_service_uuid": previous_uuid,
+            "service_uuid": None,
+            "delete_previous": delete_receipt,
+            "create": create_receipt,
+            "envs": [],
+            "start": None,
+            "observations": observations,
+            "live_mutation_performed": True,
+            "error": str(exc),
+        }
+
+    env_receipts: list[dict[str, Any]] = []
+    for key, source_ref, value in _target_identity_env_values(private_state, network=network_name, node=node_name):
+        env_receipt = _bind_candidate_parent_service_env_with_readback(
+            controller=controller,
+            controller_id=controller_name,
+            service_uuid=service_uuid,
+            service_name=node_name,
+            environment_key=key,
+            source_ref=source_ref,
+            value=value,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        env_receipts.append(env_receipt)
+        observations.append({**env_receipt, "phase": "candidate-parent-service-row-bind-env"})
+        bind_readback = env_receipt.get("env_bind_readback")
+        if isinstance(bind_readback, Mapping):
+            observations.append({**bind_readback, "phase": "candidate-parent-service-row-bind-env-readback"})
+        conflict_readback = env_receipt.get("env_bind_conflict_readback")
+        if isinstance(conflict_readback, Mapping):
+            observations.append({**conflict_readback, "phase": "candidate-parent-service-row-bind-env-conflict-readback"})
+        repair_readback = env_receipt.get("env_bind_repair_readback")
+        if isinstance(repair_readback, Mapping):
+            observations.append({**repair_readback, "phase": "candidate-parent-service-row-bind-env-repair-readback"})
+    failed_envs = [item for item in env_receipts if item.get("ok") is not True]
+    if failed_envs:
+        return {
+            "status": "failed",
+            "reason": "candidate-parent-service-row-env-bind-failed",
+            "controller_id": controller_name,
+            "network": network_name,
+            "service_name": node_name,
+            "previous_service_uuid": previous_uuid,
+            "service_uuid": service_uuid,
+            "partial_replacement_service_uuid": service_uuid,
+            "delete_previous": delete_receipt,
+            "create": create_receipt,
+            "envs": env_receipts,
+            "start": None,
+            "observations": observations,
+            "live_mutation_performed": True,
+        }
+
+    start_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start"
+    start_response = _http(
+        controller,
+        "POST",
+        start_endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    start_receipt = {
+        "method": "POST",
+        "endpoint": start_endpoint,
+        "status": start_response["status"],
+        "ok": start_response["ok"],
+        "response_sha256": start_response["response_sha256"],
+        "byte_length": start_response["byte_length"],
+        "elapsed_ms": start_response["elapsed_ms"],
+        "controller_id": controller_name,
+        "service_uuid": service_uuid,
+        "service_name": node_name,
+        "lifecycle_scope": "candidate-parent-service-row-replacement",
+    }
+    observations.append({**start_receipt, "phase": "candidate-parent-service-row-start"})
+    start_ok = start_response["ok"] is True
+    return {
+        "status": "succeeded" if start_ok else "failed",
+        "reason": "candidate-parent-service-row-replaced-and-started" if start_ok else "candidate-parent-service-row-start-failed",
+        "controller_id": controller_name,
+        "network": network_name,
+        "service_name": node_name,
+        "previous_service_uuid": previous_uuid,
+        "service_uuid": service_uuid,
+        "delete_previous": delete_receipt,
+        "create": create_receipt,
+        "envs": env_receipts,
+        "start": start_receipt,
+        "observations": observations,
+        "live_mutation_performed": True,
+    }
+
 
 
 def _fetch_candidate_activation_proof_payload(
@@ -2232,6 +3373,214 @@ def _terminal_completed_component_status(status: str) -> bool:
 def _component_proven(record: Mapping[str, Any], *, names: Iterable[str], allow_terminal_completed: bool = False) -> bool:
     status = _component_status(record, names=names)
     return status == "running:healthy" or (allow_terminal_completed and _terminal_completed_component_status(status))
+
+
+def _redact_diagnostic_text(value: Any, *, limit: int = 2048) -> dict[str, Any]:
+    text = str(value)
+    text = re.sub(
+        r"(?i)((?:private[_-]?key|api[_-]?token|authorization|bearer)[^:\n=]*[:=]\s*)([^\s,;]+)",
+        r"\1<redacted>",
+        text,
+    )
+    text = re.sub(r"(?i)0x[0-9a-f]{64}", "0x<redacted-64-hex>", text)
+    truncated = len(text) > limit
+    return {
+        "text": text[:limit],
+        "truncated": truncated,
+        "original_length": len(text),
+    }
+
+
+def _diagnostic_payload_excerpt(payload: Any, *, limit: int = 2048) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    if isinstance(payload, (Mapping, list)):
+        try:
+            return _redact_diagnostic_text(canonical_json(payload).decode("utf-8"), limit=limit)
+        except Exception:
+            return _redact_diagnostic_text(payload, limit=limit)
+    return _redact_diagnostic_text(payload, limit=limit)
+
+
+def _component_debug_records(record: Mapping[str, Any], *, names: Iterable[str]) -> list[dict[str, Any]]:
+    expected = {str(item) for item in names if str(item)}
+    found: list[dict[str, Any]] = []
+
+    def visit(candidate: Mapping[str, Any], path: str) -> None:
+        component_names = sorted(_component_names(candidate))
+        if component_names and set(component_names) & expected:
+            entry: dict[str, Any] = {
+                "path": path,
+                "component_names": component_names,
+                "matched_names": sorted(set(component_names) & expected),
+                "status": _service_status(candidate),
+                "raw_keys_sample": sorted(str(key) for key in candidate.keys())[:30],
+            }
+            for key in (
+                "uuid",
+                "id",
+                "name",
+                "display_name",
+                "fqdn",
+                "status",
+                "health",
+                "health_status",
+                "state",
+                "current_status",
+                "deployment_status",
+                "exit_code",
+                "last_exit_code",
+                "restart_count",
+                "image",
+                "container_name",
+                "docker_container_name",
+                "message",
+                "error",
+            ):
+                value = candidate.get(key)
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    entry[key] = value
+            found.append(entry)
+
+        for child_key in ("children", "containers", "services", "applications", "resources"):
+            value = candidate.get(child_key)
+            if isinstance(value, list):
+                for index, child in enumerate(value):
+                    if isinstance(child, Mapping):
+                        visit(child, f"{path}.{child_key}[{index}]")
+            elif isinstance(value, Mapping):
+                for child_name, child in value.items():
+                    if isinstance(child, Mapping):
+                        visit(child, f"{path}.{child_key}.{child_name}")
+
+    visit(record, "$")
+    return found
+
+
+def _diagnostic_http_probe(
+    controller: Mapping[str, Any],
+    method: str,
+    endpoint: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        response = _http(
+            controller,
+            method,
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+    except Exception as exc:
+        return {
+            "method": method,
+            "endpoint": endpoint,
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "message": str(exc)[:500],
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        }
+    summary = _safe_response(response)
+    summary.update({
+        "method": method,
+        "endpoint": endpoint,
+        "payload_excerpt": _diagnostic_payload_excerpt(response.get("payload")),
+    })
+    return summary
+
+
+def _guardian_failure_debug_snapshot(
+    *,
+    controller: Mapping[str, Any],
+    controller_id: str,
+    service_uuid: str | None,
+    service_endpoint: str,
+    service_response: Mapping[str, Any],
+    record: Mapping[str, Any],
+    proof_guardian_name: str,
+    guardian_role: str,
+    proof_payload_status: str,
+    proof_payload_transport: str,
+    proof_endpoint_response: Mapping[str, Any] | None,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    component_records = _component_debug_records(record, names=[proof_guardian_name])
+    snapshot: dict[str, Any] = {
+        "kind": "main_computer.mother.validator_admission_guardian_debug_snapshot.v1",
+        "controller_id": controller_id,
+        "service_uuid": service_uuid,
+        "service_endpoint": service_endpoint,
+        "service_response_sha256": service_response.get("response_sha256"),
+        "service_status": _service_status(record),
+        "proof_guardian_name": proof_guardian_name,
+        "guardian_role": guardian_role,
+        "proof_guardian_component_records": component_records,
+        "proof_guardian_component_record_count": len(component_records),
+        "proof_payload_status": proof_payload_status,
+        "proof_payload_transport": proof_payload_transport,
+        "proof_endpoint_response": dict(proof_endpoint_response) if isinstance(proof_endpoint_response, Mapping) else None,
+        "captured_at": _timestamp(),
+    }
+    if not service_uuid:
+        snapshot["log_probe_performed"] = False
+        snapshot["log_probe_reason"] = "service UUID unavailable"
+        return snapshot
+
+    encoded_uuid = urllib.parse.quote(service_uuid, safe="")
+    encoded_component = urllib.parse.quote(proof_guardian_name, safe="")
+    log_endpoints = [
+        f"/api/v1/services/{encoded_uuid}/logs?sub_service_name={encoded_component}",
+        f"/api/v1/services/{encoded_uuid}/logs",
+    ]
+    snapshot["log_probe_performed"] = True
+    snapshot["log_probes"] = [
+        _diagnostic_http_probe(
+            controller,
+            "GET",
+            log_endpoint,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        for log_endpoint in log_endpoints
+    ]
+    return snapshot
+
+
+def _guardian_debug_already_captured(
+    observations: Iterable[Mapping[str, Any]],
+    *,
+    node: str,
+    observation_phase: str,
+    service_uuid: str | None,
+    proof_guardian_name: str,
+    status: str,
+    proof_guardian_status: str,
+) -> bool:
+    for item in observations:
+        if not isinstance(item, Mapping):
+            continue
+        if "guardian_failure_debug_snapshot" not in item:
+            continue
+        if item.get("node") != node:
+            continue
+        if item.get("observation_phase") != observation_phase:
+            continue
+        if item.get("service_uuid") != service_uuid:
+            continue
+        if item.get("proof_guardian_name") != proof_guardian_name:
+            continue
+        if item.get("status") == status and item.get("proof_guardian_status") == proof_guardian_status:
+            return True
+    return False
 
 
 def _recover_target_start_rejection(
@@ -2776,6 +4125,35 @@ def _observe_admission_proof_guardians(
                 "durable_sample_index": durable_sample_index,
                 "durable_proof_sample": durable_sample_index is not None,
             }
+            if (
+                durable_proof_required
+                and not proof_guardian_healthy
+                and not _guardian_debug_already_captured(
+                    observations,
+                    node=node,
+                    observation_phase=observation_phase,
+                    service_uuid=service_uuid,
+                    proof_guardian_name=proof_guardian,
+                    status=status,
+                    proof_guardian_status=proof_guardian_status,
+                )
+            ):
+                observation["guardian_failure_debug_snapshot"] = _guardian_failure_debug_snapshot(
+                    controller=controller,
+                    controller_id=controller_id,
+                    service_uuid=service_uuid,
+                    service_endpoint=endpoint,
+                    service_response=service_response,
+                    record=record,
+                    proof_guardian_name=proof_guardian,
+                    guardian_role=guardian_role,
+                    proof_payload_status=proof_payload_status,
+                    proof_payload_transport=proof_payload_transport,
+                    proof_endpoint_response=proof_endpoint_response,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
             if proof_payload is not None:
                 observation[_CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD] = dict(proof_payload)
                 observation[_CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD] = proof_payload_sha
@@ -2893,49 +4271,57 @@ def _wait_for_admission_proof_guardians(
 
 def _restart_validator_services_for_qbft_transition(
     *,
+    private_state: PrivateStateReadResult,
+    runtime_state_root: str | Path,
+    network: str,
     nodes: Sequence[str],
     controllers: Mapping[str, Any],
     node_to_controller: Mapping[str, str],
     all_service_uuids: Mapping[str, str],
     timeout: float,
     max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
     opener: Any,
 ) -> list[dict[str, Any]]:
-    """Restart validator services once after a proven admission-transition stall.
+    """Restart exact validator service lines after a proven admission-transition stall.
 
     The live A1->A2 twiddle showed that a validator-set change can commit and
     then leave QBFT stuck in round changes until Besu is restarted/reobserved.
-    Mother cannot shell into hosts here, so the bounded control-plane equivalent
-    is Coolify's service restart endpoint followed by the same exact guardian
-    proof gate; this never publishes topology by itself.
+    This recovery must not restart the whole Coolify parent service; it delegates
+    to the existing Docker-backed helper for one Compose service line per node.
     """
 
     receipts: list[dict[str, Any]] = []
     for node in nodes:
         controller_id = node_to_controller[node]
-        controller = controllers[controller_id]
         service_uuid = _identifier(all_service_uuids[node], f"{node} service UUID")
-        endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/restart"
-        response = _http(
-            controller,
-            "POST",
-            endpoint,
-            body=None,
+        result = run_service_line_restart_helper(
+            private_state,
+            runtime_state_root=runtime_state_root,
+            network=network,
+            mode="execute",
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            service_line=node,
+            delete_helper_after_exit=True,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
             opener=opener,
         )
-        ok = response["status"] in {200, 201, 202}
+        ok = result.get("status") == "pass"
         receipts.append({
             "ordinal": len(receipts) + 1,
             "mutation_id": f"{node}.restart-validator-for-qbft-transition-recovery",
             "controller_id": controller_id,
             "node": node,
             "service_uuid": service_uuid,
-            "method": "POST",
-            "endpoint": endpoint,
-            "body_sha256": None,
-            "response": _safe_response(response),
+            "service_line": node,
+            "method": "SERVICE_LINE_RESTART_HELPER",
+            "restart_scope": "exact-compose-service-line",
+            "result": result,
             "live_write_acknowledged": ok,
             "status": "succeeded" if ok else "failed",
             "reason": "validator admission guardians did not prove a fresh advancing desired validator set before the transition-recovery restart",
@@ -3114,6 +4500,7 @@ def execute_node_add_validator_admission_release(
     candidate_node = _identifier(target["node"], "candidate node")
     target_controller_id = _identifier(target["controller_id"], "target controller")
     target_uuid = _identifier(target["service_uuid"], "target service UUID")
+    target_validator_node_id = _identifier(target["validator_node_id"], "target validator node ID")
     voter_nodes = list(plan["voter_nodes"])
     desired_set = [_address(item, "desired validator") for item in plan["desired_validator_set"]]
     current_set = [_address(item, "current validator") for item in plan["current_validator_set"]]
@@ -3128,7 +4515,11 @@ def execute_node_add_validator_admission_release(
         )
     voter_guardian_names = {node: _guardian_service_name(node) for node in voter_nodes}
     target_guardian_name = "mother-add-node-validator-activation-guardian"
-    all_service_uuids: dict[str, str] = {candidate_node: target_uuid}
+    validator_service_uuids: dict[str, str] = {candidate_node: target_uuid}
+    guardian_service_uuids: dict[str, str] = {}
+    target_activation_guardian_row: dict[str, Any] | None = None
+    target_parent_service_replacement: dict[str, Any] | None = None
+    voter_guardian_service_rows: dict[str, dict[str, Any]] = {}
     controllers: dict[str, Mapping[str, Any]] = {}
 
     try:
@@ -3210,7 +4601,7 @@ def execute_node_add_validator_admission_release(
             opener=opener,
         )
         preconditions.extend(voter_preconditions)
-        all_service_uuids.update(voter_service_uuids)
+        validator_service_uuids.update(voter_service_uuids)
         preconditions.extend(
             _assert_no_conflicting_node_remove_voters(
                 voter_compose_texts=voter_compose_texts,
@@ -3226,75 +4617,67 @@ def execute_node_add_validator_admission_release(
                 f"bootnode P2P endpoint is not reachable before validator vote: {bootnode_p2p_precondition['endpoint']}",
             )
 
-        activation_compose = plan["activation_compose"]["canonical_text"]
-        activation_body = {
-            "docker_compose_raw": base64.b64encode(activation_compose.encode("utf-8")).decode("ascii"),
-            "name": candidate_node,
-        }
-        activation_body_sha = hashlib.sha256(canonical_json(activation_body)).hexdigest()
-        if activation_body_sha != plan["activation_compose"]["body_sha256"]:
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_INVALID", "activation Compose body digest mismatch")
-        patch = _http(target_controller, "PATCH", target_endpoint, body=activation_body, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-        patch_ok = patch["status"] in {200, 201, 202}
-        receipts.append({
+        activation_plan = plan.get("activation_compose")
+        if not isinstance(activation_plan, Mapping) or not isinstance(activation_plan.get("canonical_text"), str):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_RELEASE_INVALID",
+                "candidate activation parent Compose is missing from release",
+            )
+        # The candidate activation guardian owns the public /proof endpoint.
+        # It must remain embedded in the fresh candidate parent row so the proof
+        # producer and proof consumer refer to the same lifecycle object.  Voter
+        # guardians stay disposable; the durable activation guardian does not.
+        activation_parent_compose = str(activation_plan["canonical_text"])
+        activation_body_sha = hashlib.sha256(activation_parent_compose.encode("utf-8")).hexdigest()
+        previous_target_uuid = target_uuid
+        target_parent_replacement_receipt = _replace_candidate_parent_service_row(
+            private_state,
+            network=inspected["network"],
+            controller=target_controller,
+            controller_id=target_controller_id,
+            candidate_node=candidate_node,
+            previous_service_uuid=previous_target_uuid,
+            compose=activation_parent_compose,
+            description="Mother add-node validator activation parent service row",
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        target_parent_replacement_receipt.update({
             "ordinal": len(receipts) + 1,
-            "mutation_id": f"{candidate_node}.install-validator-activation-compose",
-            "controller_id": target_controller_id,
+            "mutation_id": f"{candidate_node}.replace-candidate-parent-validator-service-row",
             "node": candidate_node,
-            "service_uuid": target_uuid,
-            "method": "PATCH",
-            "endpoint": target_endpoint,
+            "guardian_service": target_guardian_name,
+            "guardian_lifecycle_scope": "embedded-in-candidate-parent-service-row",
+            "method": "DELETE_AND_POST_CREATE_BIND_ENVS_START_SERVICE",
             "body_sha256": activation_body_sha,
-            "guardian_service": target_guardian_name,
-            "response": _safe_response(patch),
-            "live_write_acknowledged": patch_ok,
-            "status": "succeeded" if patch_ok else "failed",
+            "live_write_acknowledged": target_parent_replacement_receipt.get("live_mutation_performed") is True,
         })
-        if not patch_ok:
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected target activation Compose with HTTP {patch['status']}")
-        start_endpoint = f"/api/v1/services/{urllib.parse.quote(target_uuid, safe='')}/start"
-        start = _http(target_controller, "POST", start_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-        start_ok = start["status"] in {200, 201, 202}
-        target_start_rejected_nonfatal = False
-        target_start_recovery: dict[str, Any] | None = None
-        if not start_ok and start["status"] == 400:
-            target_start_recovery = _recover_target_start_rejection(
-                controller=target_controller,
-                target_endpoint=target_endpoint,
-                candidate_node=candidate_node,
-                target_uuid=target_uuid,
-                target_guardian_name=target_guardian_name,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
+        receipts.append(target_parent_replacement_receipt)
+        if target_parent_replacement_receipt.get("status") != "succeeded":
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED",
+                f"{candidate_node} candidate parent validator service row was not replaced/started",
             )
-            preconditions.append(target_start_recovery)
-            target_start_rejected_nonfatal = target_start_recovery.get("verified") is True
-        target_start_accepted = start_ok or target_start_rejected_nonfatal
-        start_receipt = {
-            "ordinal": len(receipts) + 1,
-            "mutation_id": f"{candidate_node}.start-validator-activation-compose",
+        target_uuid = _identifier(
+            target_parent_replacement_receipt["service_uuid"],
+            f"{candidate_node} replacement candidate parent service UUID",
+        )
+        validator_service_uuids[candidate_node] = target_uuid
+        target_parent_service_replacement = dict(target_parent_replacement_receipt)
+
+        guardian_service_uuids[candidate_node] = target_uuid
+        target_activation_guardian_row = {
+            "status": "succeeded",
+            "reason": "candidate-activation-guardian-owned-by-replaced-parent-service-row",
             "controller_id": target_controller_id,
-            "node": candidate_node,
             "service_uuid": target_uuid,
-            "method": "POST",
-            "endpoint": start_endpoint,
-            "body_sha256": None,
+            "service_name": candidate_node,
             "guardian_service": target_guardian_name,
-            "response": _safe_response(start),
-            "live_write_acknowledged": start_ok,
-            "status": "succeeded" if target_start_accepted else "failed",
+            "validator_parent_service_uuid": target_uuid,
+            "lifecycle_scope": "embedded-in-candidate-parent-service-row",
+            "proof_endpoint": dict(candidate_activation_proof_endpoint),
         }
-        if target_start_rejected_nonfatal:
-            start_receipt["coolify_target_start_rejected_nonfatal"] = True
-            start_receipt["recovery_precondition"] = target_start_recovery
-            start_receipt["nonfatal_reason"] = (
-                "Coolify rejected POST /start for an already-started candidate service after a successful "
-                "activation Compose PATCH; exact target activation guardian proof remains required before admission can pass"
-            )
-        receipts.append(start_receipt)
-        if not target_start_accepted:
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected target start with HTTP {start['status']}")
 
         for voter in voter_nodes:
             vote_request = request_by_voter.get(voter)
@@ -3302,13 +4685,9 @@ def execute_node_add_validator_admission_release(
                 raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_INVALID", f"{voter} vote request is missing")
             controller_id = _identifier(vote_request["controller_id"], f"{voter} controller")
             controller = controllers[controller_id]
-            uuid = _identifier(all_service_uuids[voter], f"{voter} service UUID")
-            detail_endpoint = f"/api/v1/services/{urllib.parse.quote(uuid, safe='')}"
+            uuid = _identifier(validator_service_uuids[voter], f"{voter} validator service UUID")
             if voter not in voter_detail_records:
                 raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_INVALID", f"{voter} voter service preflight record is missing")
-            original_compose = voter_compose_texts.get(voter)
-            if not isinstance(original_compose, str) or not original_compose.strip():
-                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_COMPOSE_MISSING", f"{voter} voter Compose text was not proven before candidate mutation")
             script = _voter_guardian_script(
                 voter=voter,
                 candidate=candidate,
@@ -3319,58 +4698,46 @@ def execute_node_add_validator_admission_release(
                 genesis_sha256=_sha256(plan["genesis_sha256"], "genesis SHA-256"),
                 request_sha256=_sha256(vote_request["rpc_request_sha256"], f"{voter} vote request SHA-256"),
             )
-            updated_compose, guardian_name = _install_voter_guardian(original_compose, voter=voter, script=script)
-            body = {
-                "docker_compose_raw": base64.b64encode(updated_compose.encode("utf-8")).decode("ascii"),
-                "name": voter,
-            }
-            body_sha = hashlib.sha256(canonical_json(body)).hexdigest()
-            patch = _http(controller, "PATCH", detail_endpoint, body=body, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-            patch_ok = patch["status"] in {200, 201, 202}
-            receipts.append({
+            voter_guardian_compose, guardian_name = _disposable_voter_guardian_compose(
+                voter=voter,
+                voter_service_uuid=uuid,
+                script=script,
+            )
+            voter_service_name = _disposable_guardian_service_row_name(guardian_name)
+            voter_row_receipt = _create_start_disposable_service_row(
+                private_state,
+                network=inspected["network"],
+                controller=controller,
+                controller_id=controller_id,
+                service_name=voter_service_name,
+                compose=voter_guardian_compose,
+                description="Ephemeral Mother add-node validator admission voter guardian",
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            voter_row_receipt.update({
                 "ordinal": len(receipts) + 1,
-                "mutation_id": f"{voter}.install-add-node-validator-admission-guardian",
-                "controller_id": controller_id,
+                "mutation_id": f"{voter}.create-disposable-add-node-validator-admission-voter",
                 "node": voter,
-                "service_uuid": uuid,
-                "method": "PATCH",
-                "endpoint": detail_endpoint,
-                "body_sha256": body_sha,
                 "guardian_service": guardian_name,
-                "response": _safe_response(patch),
-                "live_write_acknowledged": patch_ok,
-                "status": "succeeded" if patch_ok else "failed",
+                "validator_parent_service_uuid": uuid,
+                "method": "POST_CREATE_AND_START_DISPOSABLE_SERVICE",
+                "body_sha256": hashlib.sha256(voter_guardian_compose.encode("utf-8")).hexdigest(),
+                "live_write_acknowledged": voter_row_receipt.get("status") == "succeeded",
             })
-            if not patch_ok:
-                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected {voter} guardian patch with HTTP {patch['status']}")
-            start_endpoint = f"/api/v1/services/{urllib.parse.quote(uuid, safe='')}/start"
-            start = _http(controller, "POST", start_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-            start_ok = start["status"] in {200, 201, 202}
-            start_rejected_nonfatal = start["status"] == 400
-            start_accepted = start_ok or start_rejected_nonfatal
-            start_receipt = {
-                "ordinal": len(receipts) + 1,
-                "mutation_id": f"{voter}.start-add-node-validator-admission-guardian",
-                "controller_id": controller_id,
-                "node": voter,
-                "service_uuid": uuid,
-                "method": "POST",
-                "endpoint": start_endpoint,
-                "body_sha256": None,
-                "guardian_service": guardian_name,
-                "response": _safe_response(start),
-                "live_write_acknowledged": start_ok,
-                "status": "succeeded" if start_accepted else "failed",
-            }
-            if start_rejected_nonfatal:
-                start_receipt["coolify_start_rejected_nonfatal"] = True
-                start_receipt["nonfatal_reason"] = (
-                    "Coolify rejected POST /start for an existing validator service after a successful guardian "
-                    "Compose PATCH; exact voter guardian health proof remains required before admission can pass"
+            receipts.append(voter_row_receipt)
+            if voter_row_receipt.get("status") != "succeeded":
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED",
+                    f"{voter} disposable admission voter guardian service row was not created/started",
                 )
-            receipts.append(start_receipt)
-            if not start_accepted:
-                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED", f"Coolify rejected {voter} guardian start with HTTP {start['status']}")
+            voter_guardian_service_uuid = _identifier(
+                voter_row_receipt["service_uuid"],
+                f"{voter} disposable voter guardian service UUID",
+            )
+            guardian_service_uuids[voter] = voter_guardian_service_uuid
+            voter_guardian_service_rows[voter] = dict(voter_row_receipt)
 
         node_to_controller = {candidate_node: target_controller_id}
         for item in plan["rpc_requests"]:
@@ -3383,7 +4750,7 @@ def execute_node_add_validator_admission_release(
             desired_validator_set=desired_set,
             controllers=controllers,
             node_to_controller=node_to_controller,
-            all_service_uuids=all_service_uuids,
+            all_service_uuids=guardian_service_uuids,
             voter_guardian_names=voter_guardian_names,
             target_guardian_name=target_guardian_name,
             candidate_activation_proof_endpoint=candidate_activation_proof_endpoint,
@@ -3398,12 +4765,17 @@ def execute_node_add_validator_admission_release(
         )
         if not (durable_admission_nodes <= healthy):
             qbft_transition_recovery = _restart_validator_services_for_qbft_transition(
+                private_state=private_state,
+                runtime_state_root=paths.root.parent,
+                network=inspected["network"],
                 nodes=admission_nodes,
                 controllers=controllers,
                 node_to_controller=node_to_controller,
-                all_service_uuids=all_service_uuids,
+                all_service_uuids=validator_service_uuids,
                 timeout=timeout,
                 max_response_bytes=max_response_bytes,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
                 opener=opener,
             )
             if any(item.get("status") != "succeeded" for item in qbft_transition_recovery):
@@ -3417,7 +4789,7 @@ def execute_node_add_validator_admission_release(
                 desired_validator_set=desired_set,
                 controllers=controllers,
                 node_to_controller=node_to_controller,
-                all_service_uuids=all_service_uuids,
+                all_service_uuids=guardian_service_uuids,
                 voter_guardian_names=voter_guardian_names,
                 target_guardian_name=target_guardian_name,
                 candidate_activation_proof_endpoint=candidate_activation_proof_endpoint,
@@ -3442,73 +4814,38 @@ def execute_node_add_validator_admission_release(
                 }),
             )
 
-        for voter in voter_nodes:
-            vote_request = request_by_voter.get(voter)
-            if not isinstance(vote_request, Mapping):
-                continue
-            controller_id = _identifier(vote_request["controller_id"], f"{voter} controller")
-            uuid = _identifier(all_service_uuids[voter], f"{voter} service UUID")
-            try:
-                cleanup_result = execute_completed_mother_helper_cleanup(
-                    paths,
-                    private_state,
-                    network=inspected["network"],
-                    controller_id=controller_id,
-                    service_uuid=uuid,
-                    node=voter,
-                    acknowledged_service_uuid=uuid,
-                    required_component_names=(),
-                    max_wait_seconds=max_wait_seconds,
-                    poll_interval_seconds=poll_interval_seconds,
-                    allow_nested_application_delete=True,
-                    allow_compose_reconcile_refresh=True,
-                    instant_deploy_compose_reconcile_refresh=True,
-                    allow_service_redeploy_refresh=True,
-                    force_service_redeploy_refresh=True,
-                    allow_coolify_model_status_exclusion=True,
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
-                    opener=opener,
-                    operation=operation,
-                )
-                voter_guardian_cleanup.append({"node": voter, "controller_id": controller_id, "service_uuid": uuid, "cleanup": _cleanup_summary(cleanup_result, paths=paths)})
-            except MotherDeploymentCompletedHelperCleanupError as exc:
-                voter_guardian_cleanup.append({"node": voter, "controller_id": controller_id, "service_uuid": uuid, "warning": {"code": exc.code, "message": str(exc)[:700]}})
-
-        try:
-            cleanup_result = execute_completed_mother_helper_cleanup(
-                paths,
-                private_state,
-                network=inspected["network"],
-                controller_id=target_controller_id,
-                service_uuid=target_uuid,
-                node=candidate_node,
-                acknowledged_service_uuid=target_uuid,
-                required_component_names=(target_guardian_name, _RETIRED_REPLICA_SYNC_GUARDIAN_NAME),
-                max_wait_seconds=max_wait_seconds,
-                poll_interval_seconds=poll_interval_seconds,
-                allow_nested_application_delete=True,
-                allow_compose_reconcile_refresh=True,
-                instant_deploy_compose_reconcile_refresh=True,
-                allow_service_redeploy_refresh=True,
-                force_service_redeploy_refresh=True,
-                allow_coolify_model_status_exclusion=True,
+        for voter, row in voter_guardian_service_rows.items():
+            controller_id = _identifier(row["controller_id"], f"{voter} controller")
+            controller = controllers[controller_id]
+            service_uuid = _identifier(row["service_uuid"], f"{voter} disposable voter guardian service UUID")
+            service_name = _identifier(row["service_name"], f"{voter} disposable voter guardian service name")
+            cleanup_receipt = _delete_disposable_service_row(
+                controller=controller,
+                controller_id=controller_id,
+                service_uuid=service_uuid,
+                service_name=service_name,
                 timeout=timeout,
                 max_response_bytes=max_response_bytes,
                 opener=opener,
-                operation=operation,
             )
-            post_admission_cleanup = _cleanup_summary(cleanup_result, paths=paths)
-            if cleanup_result.get("status") != "pass" or not isinstance(cleanup_result.get("summary"), Mapping) or cleanup_result["summary"].get("clean") is not True:
-                post_admission_cleanup_warning = {
-                    "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN_NONFATAL",
-                    "message": "post-admission service health cleanup did not reach a clean top-level Coolify service state; validator-set proof remains authoritative",
-                }
-        except MotherDeploymentCompletedHelperCleanupError as exc:
-            post_admission_cleanup_warning = {
-                "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_HEALTH_UNCLEAN_NONFATAL",
-                "message": str(exc)[:700],
-            }
+            cleanup_receipt["node"] = voter
+            cleanup_receipt["guardian_service"] = row.get("guardian_service")
+            cleanup_receipt["validator_parent_service_uuid"] = row.get("validator_parent_service_uuid")
+            voter_guardian_cleanup.append(cleanup_receipt)
+
+        post_admission_cleanup = {
+            "status": "skipped",
+            "reason": "post-admission-candidate-parent-cleanup-skipped-no-patch",
+            "summary": {
+                "clean": False,
+                "no_patch_policy_enforced": True,
+                "validator_set_proof_is_authoritative": True,
+            },
+        }
+        post_admission_cleanup_warning = {
+            "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_CLEANUP_SKIPPED_NO_PATCH_NONFATAL",
+            "message": "post-admission candidate parent cleanup was skipped because validator admission does not allow Coolify patch; validator-set proof remains authoritative",
+        }
 
         # Dynamic voter helpers are one-shot and may be cleaned up after their
         # durable vote proof has already been sampled.  The terminal check after
@@ -3520,7 +4857,7 @@ def execute_node_add_validator_admission_release(
             desired_validator_set=desired_set,
             controllers=controllers,
             node_to_controller=node_to_controller,
-            all_service_uuids=all_service_uuids,
+            all_service_uuids=guardian_service_uuids,
             voter_guardian_names=voter_guardian_names,
             target_guardian_name=target_guardian_name,
             candidate_activation_proof_endpoint=candidate_activation_proof_endpoint,
@@ -3546,7 +4883,7 @@ def execute_node_add_validator_admission_release(
         failure = {"code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_UNEXPECTED_FAILURE", "message": str(exc)[:700]}
 
     completed = _timestamp()
-    initial_planned_mutations = 2 + 2 * len(voter_nodes)
+    initial_planned_mutations = 1 + len(voter_nodes)
     refresh_planned_mutations = 0
     planned_mutations = initial_planned_mutations + len(qbft_transition_recovery)
     succeeded = sum(item.get("status") == "succeeded" for item in receipts)
@@ -3637,9 +4974,37 @@ def execute_node_add_validator_admission_release(
         "service_routes": {str(node): dict(route) for node, route in (plan.get("service_routes") or {}).items() if isinstance(route, Mapping)},
         "target_host": target_controller_id,
         "created_service_uuid": target_uuid,
+        "previous_target_service_uuid": target.get("service_uuid"),
+        "target_parent_service_replacement": {
+            "previous_service_uuid": target_parent_service_replacement.get("previous_service_uuid"),
+            "service_uuid": target_parent_service_replacement.get("service_uuid"),
+            "service_name": target_parent_service_replacement.get("service_name"),
+            "controller_id": target_parent_service_replacement.get("controller_id"),
+            "status": target_parent_service_replacement.get("status"),
+            "reason": target_parent_service_replacement.get("reason"),
+        } if isinstance(target_parent_service_replacement, Mapping) else None,
         "voter_nodes": voter_nodes,
         "durable_admission_proof_nodes": sorted(required_healthy_nodes),
         "transient_voter_guardian_nodes": voter_nodes,
+        "validator_service_uuids": dict(validator_service_uuids),
+        "guardian_service_uuids": dict(guardian_service_uuids),
+        "target_activation_guardian_service_row": {
+            "service_uuid": target_activation_guardian_row.get("service_uuid"),
+            "service_name": target_activation_guardian_row.get("service_name"),
+            "controller_id": target_activation_guardian_row.get("controller_id"),
+            "guardian_service": target_activation_guardian_row.get("guardian_service"),
+            "validator_parent_service_uuid": target_activation_guardian_row.get("validator_parent_service_uuid"),
+        } if isinstance(target_activation_guardian_row, Mapping) else None,
+        "transient_voter_guardian_service_rows": {
+            voter: {
+                "service_uuid": row.get("service_uuid"),
+                "service_name": row.get("service_name"),
+                "controller_id": row.get("controller_id"),
+                "guardian_service": row.get("guardian_service"),
+                "validator_parent_service_uuid": row.get("validator_parent_service_uuid"),
+            }
+            for voter, row in voter_guardian_service_rows.items()
+        },
         "release": {"locator": _relative(paths, Path(inspected["release_path"]), label="add-node validator-admission release"), "sha256": digest},
         "execution_claim": {"locator": _relative(paths, claim_path, label="add-node validator-admission claim")},
         "source_replica_sync_evidence": dict(release["source_replica_sync_evidence"]),
@@ -3661,10 +5026,11 @@ def execute_node_add_validator_admission_release(
         "post_admission_cleanup_warning": post_admission_cleanup_warning,
         "failure": failure,
         "policy": {
-            "allowed_http_methods": ["GET", "PATCH", "POST"],
+            "allowed_http_methods": ["GET", "POST", "DELETE"],
             "coolify_control_plane_only": False,
             "all_existing_validator_votes_required": True,
             "qbft_transition_recovery_restart_authorized": True,
+            "candidate_parent_service_replacement_authorized": True,
             "manual_ssh_required": False,
             "public_http_endpoint_created": candidate_activation_proof_endpoint.get("public_http_endpoint_created") is True,
             "public_candidate_activation_proof_endpoint_created": candidate_activation_proof_endpoint.get("public_http_endpoint_created") is True,
@@ -3679,6 +5045,9 @@ def execute_node_add_validator_admission_release(
             "validator_vote_authorized": True,
             "validator_activation_authorized": True,
             "qbft_transition_recovery_authorized": True,
+            "candidate_parent_service_replacement_authorized": True,
+            "transient_admission_guardian_service_creation_authorized": True,
+            "transient_admission_guardian_service_delete_authorized": True,
             "validator_vote_proven": admission_proven and proof_guardians_verified,
             "validator_activation_proven": admission_proven and proof_guardians_verified,
             "routing_or_topology_publication_authorized": False,
@@ -3738,6 +5107,25 @@ def execute_node_add_validator_admission_release(
             "target_p2p_endpoint": (plan.get("candidate_validator_route") or {}).get("p2p_endpoint") if isinstance(plan.get("candidate_validator_route"), Mapping) else None,
             "durable_admission_proof_nodes": sorted(required_healthy_nodes),
             "transient_voter_guardian_nodes": voter_nodes,
+        "validator_service_uuids": dict(validator_service_uuids),
+        "guardian_service_uuids": dict(guardian_service_uuids),
+        "target_activation_guardian_service_row": {
+            "service_uuid": target_activation_guardian_row.get("service_uuid"),
+            "service_name": target_activation_guardian_row.get("service_name"),
+            "controller_id": target_activation_guardian_row.get("controller_id"),
+            "guardian_service": target_activation_guardian_row.get("guardian_service"),
+            "validator_parent_service_uuid": target_activation_guardian_row.get("validator_parent_service_uuid"),
+        } if isinstance(target_activation_guardian_row, Mapping) else None,
+        "transient_voter_guardian_service_rows": {
+            voter: {
+                "service_uuid": row.get("service_uuid"),
+                "service_name": row.get("service_name"),
+                "controller_id": row.get("controller_id"),
+                "guardian_service": row.get("guardian_service"),
+                "validator_parent_service_uuid": row.get("validator_parent_service_uuid"),
+            }
+            for voter, row in voter_guardian_service_rows.items()
+        },
             "transient_voter_guardians_nonblocking_after_activation": True,
             "next_phase": f"add-node-post-admission-observe-{inspected['network']}" if complete else "manual-review-required",
         },
@@ -3981,6 +5369,25 @@ def adopt_node_add_validator_admission_live_proof(
             "voter_nodes": voter_nodes,
             "durable_admission_proof_nodes": sorted(durable_admission_nodes),
             "transient_voter_guardian_nodes": voter_nodes,
+        "validator_service_uuids": dict(validator_service_uuids),
+        "guardian_service_uuids": dict(guardian_service_uuids),
+        "target_activation_guardian_service_row": {
+            "service_uuid": target_activation_guardian_row.get("service_uuid"),
+            "service_name": target_activation_guardian_row.get("service_name"),
+            "controller_id": target_activation_guardian_row.get("controller_id"),
+            "guardian_service": target_activation_guardian_row.get("guardian_service"),
+            "validator_parent_service_uuid": target_activation_guardian_row.get("validator_parent_service_uuid"),
+        } if isinstance(target_activation_guardian_row, Mapping) else None,
+        "transient_voter_guardian_service_rows": {
+            voter: {
+                "service_uuid": row.get("service_uuid"),
+                "service_name": row.get("service_name"),
+                "controller_id": row.get("controller_id"),
+                "guardian_service": row.get("guardian_service"),
+                "validator_parent_service_uuid": row.get("validator_parent_service_uuid"),
+            }
+            for voter, row in voter_guardian_service_rows.items()
+        },
             "release": dict(release_ref) if isinstance(release_ref, Mapping) else None,
             "source_failed_validator_admission_evidence": {
                 "locator": _relative(paths, resolved, label="failed validator-admission evidence"),
@@ -4117,9 +5524,37 @@ def adopt_node_add_validator_admission_live_proof(
         "service_routes": {str(node): dict(route) for node, route in (failed.get("service_routes") or {}).items() if isinstance(route, Mapping)},
         "target_host": target_controller_id,
         "created_service_uuid": target_uuid,
+        "previous_target_service_uuid": target.get("service_uuid"),
+        "target_parent_service_replacement": {
+            "previous_service_uuid": target_parent_service_replacement.get("previous_service_uuid"),
+            "service_uuid": target_parent_service_replacement.get("service_uuid"),
+            "service_name": target_parent_service_replacement.get("service_name"),
+            "controller_id": target_parent_service_replacement.get("controller_id"),
+            "status": target_parent_service_replacement.get("status"),
+            "reason": target_parent_service_replacement.get("reason"),
+        } if isinstance(target_parent_service_replacement, Mapping) else None,
         "voter_nodes": voter_nodes,
         "durable_admission_proof_nodes": sorted(durable_admission_nodes),
         "transient_voter_guardian_nodes": voter_nodes,
+        "validator_service_uuids": dict(validator_service_uuids),
+        "guardian_service_uuids": dict(guardian_service_uuids),
+        "target_activation_guardian_service_row": {
+            "service_uuid": target_activation_guardian_row.get("service_uuid"),
+            "service_name": target_activation_guardian_row.get("service_name"),
+            "controller_id": target_activation_guardian_row.get("controller_id"),
+            "guardian_service": target_activation_guardian_row.get("guardian_service"),
+            "validator_parent_service_uuid": target_activation_guardian_row.get("validator_parent_service_uuid"),
+        } if isinstance(target_activation_guardian_row, Mapping) else None,
+        "transient_voter_guardian_service_rows": {
+            voter: {
+                "service_uuid": row.get("service_uuid"),
+                "service_name": row.get("service_name"),
+                "controller_id": row.get("controller_id"),
+                "guardian_service": row.get("guardian_service"),
+                "validator_parent_service_uuid": row.get("validator_parent_service_uuid"),
+            }
+            for voter, row in voter_guardian_service_rows.items()
+        },
         "release": dict(release_ref) if isinstance(release_ref, Mapping) else None,
         "source_failed_validator_admission_evidence": {
             "locator": _relative(paths, resolved, label="failed validator-admission evidence"),

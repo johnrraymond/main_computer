@@ -49,6 +49,7 @@ _IDENTITY_RELEASE_DIRECTORY = ("actions", "deployment-node-add-identity-releases
 _RELEASE_DIRECTORY = ("actions", "deployment-node-add-single-node-bootstrap-releases")
 _CLAIM_DIRECTORY = ("actions", "deployment-node-add-single-node-bootstrap-claims")
 _EVIDENCE_DIRECTORY = ("evidence", "deployment-node-add-single-node-bootstrap")
+_BOUNDARY_DIAGNOSTIC_DIRECTORY = ("evidence", "deployment-node-add-single-node-bootstrap-boundary-debug")
 _FINALIZE_EVIDENCE_KIND = "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1"
 _FINALIZE_EVIDENCE_DIRECTORY = ("evidence", "deployment-node-add-single-node-chain-and-hub-proof")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -542,6 +543,424 @@ def _identity_envs_present(payload: Any) -> dict[str, Any]:
     return result
 
 
+
+
+_SAFE_SERVICE_RECORD_KEYS = (
+    "uuid",
+    "name",
+    "fqdn",
+    "status",
+    "human_status",
+    "humanized_status",
+    "application_status",
+    "health_status",
+    "image",
+    "docker_image",
+    "container_name",
+    "service_name",
+    "serviceName",
+    "service_uuid",
+)
+
+
+def _safe_payload_summary(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, Mapping):
+        summary: dict[str, Any] = {"type": "object", "keys": sorted(str(key) for key in payload.keys())}
+        for key in ("message", "uuid", "deployment_uuid", "status"):
+            value = payload.get(key)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                summary[key] = value
+        return summary
+    if isinstance(payload, list):
+        return {"type": "list", "length": len(payload)}
+    if isinstance(payload, str):
+        return {"type": "text", "byte_length": len(payload.encode("utf-8")), "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest()}
+    return {"type": type(payload).__name__}
+
+
+_DIAGNOSTIC_SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "bearer",
+    "token",
+    "secret",
+    "password",
+    "private_key",
+    "api_key",
+    "env",
+    "environment",
+    "value",
+)
+
+
+def _diagnostic_key_is_sensitive(key: Any) -> bool:
+    lowered = str(key).lower()
+    return any(part in lowered for part in _DIAGNOSTIC_SENSITIVE_KEY_PARTS)
+
+
+def _safe_payload_fragment(value: Any, *, depth: int = 0, max_depth: int = 5) -> Any:
+    """Return a bounded, secret-safe diagnostic projection of a response body.
+
+    This is intentionally more detailed than _safe_payload_summary, but it does
+    not preserve raw environment, token, password, key, secret, or large text
+    fields.  It is used for deploy responses where the exact response shape is
+    causal evidence, but evidence files must remain safe to paste.
+    """
+
+    if depth > max_depth:
+        return {"type": type(value).__name__, "truncated": "max-depth"}
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {"type": "object", "keys": sorted(str(key) for key in value.keys())}
+        included = 0
+        for key in sorted(value.keys(), key=lambda item: str(item)):
+            key_text = str(key)
+            if _diagnostic_key_is_sensitive(key_text):
+                result[key_text] = {"redacted": True, "reason": "sensitive-key"}
+            else:
+                result[key_text] = _safe_payload_fragment(value[key], depth=depth + 1, max_depth=max_depth)
+            included += 1
+            if included >= 80:
+                result["truncated"] = "max-keys"
+                break
+        return result
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "length": len(value),
+            "items": [_safe_payload_fragment(item, depth=depth + 1, max_depth=max_depth) for item in value[:40]],
+            **({"truncated": "max-items"} if len(value) > 40 else {}),
+        }
+    if isinstance(value, str):
+        encoded = value.encode("utf-8")
+        if re.fullmatch(r"0x[0-9a-fA-F]{64}", value) or len(encoded) > 512 or "\n" in value:
+            return {"type": "text", "byte_length": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest()}
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return {"type": type(value).__name__}
+
+
+def _child_application_records(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    records = snapshot.get("application_records")
+    if not isinstance(records, list):
+        return []
+    children: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        path = str(record.get("path") or "")
+        if not path.startswith("$.applications["):
+            continue
+        child = {
+            key: record.get(key)
+            for key in ("uuid", "name", "image", "status", "human_status", "humanized_status", "application_status", "health_status", "path")
+            if key in record
+        }
+        if child.get("uuid") or child.get("name"):
+            children.append(child)
+    return children
+
+
+def _child_application_uuid_index(snapshot: Mapping[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for child in _child_application_records(snapshot):
+        uuid = child.get("uuid")
+        name = child.get("name")
+        if isinstance(uuid, str) and uuid and isinstance(name, str) and name:
+            result[name] = uuid
+    return result
+
+
+def _find_first_text_by_key(value: Any, keys: set[str]) -> str:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if str(key) in keys and isinstance(item, str) and item:
+                return item
+        for item in value.values():
+            found = _find_first_text_by_key(item, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_first_text_by_key(item, keys)
+            if found:
+                return found
+    return ""
+
+
+def _append_application_records(value: Any, *, path: str, records: list[dict[str, Any]], limit: int = 40) -> None:
+    if len(records) >= limit:
+        return
+    if isinstance(value, Mapping):
+        record: dict[str, Any] = {}
+        for key in _SAFE_SERVICE_RECORD_KEYS:
+            item = value.get(key)
+            if isinstance(item, (str, int, float, bool)) or item is None:
+                record[key] = item
+        if record and any(key in record for key in ("uuid", "name", "status", "human_status", "humanized_status", "application_status", "health_status")):
+            record["path"] = path
+            records.append(record)
+            if len(records) >= limit:
+                return
+        for key, item in value.items():
+            if str(key).lower() in {"value", "api_token", "access_token", "bearer_token", "password", "private_key", "secret"}:
+                continue
+            _append_application_records(item, path=f"{path}.{key}" if path else str(key), records=records, limit=limit)
+            if len(records) >= limit:
+                return
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _append_application_records(item, path=f"{path}[{index}]", records=records, limit=limit)
+            if len(records) >= limit:
+                return
+
+
+def _compose_digest_summary(payload: Any, *, expected_semantic_sha256: str) -> dict[str, Any]:
+    compose = _find_first_text_by_key(payload, {"docker_compose_raw", "docker_compose", "compose"})
+    if not compose:
+        return {"present": False}
+    summary: dict[str, Any] = {
+        "present": True,
+        "byte_length": len(compose.encode("utf-8")),
+        "sha256": hashlib.sha256(compose.encode("utf-8")).hexdigest(),
+    }
+    try:
+        semantic = _compose_semantic_sha256(compose, "single-node bootstrap deployed Compose diagnostic")
+        summary["semantic_sha256"] = semantic
+        summary["matches_release_semantic_sha256"] = semantic == expected_semantic_sha256
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        summary["semantic_error"] = type(exc).__name__
+    return summary
+
+
+def _coolify_service_detail_snapshot(
+    label: str,
+    response: Mapping[str, Any],
+    *,
+    service_uuid: str,
+    service_name: str,
+    expected_semantic_sha256: str,
+) -> dict[str, Any]:
+    payload = response.get("payload")
+    records: list[dict[str, Any]] = []
+    _append_application_records(payload, path="$", records=records)
+    service_records = [
+        record for record in records
+        if str(record.get("uuid") or "") == service_uuid or str(record.get("name") or "") == service_name
+    ]
+    status_values = sorted(
+        {
+            str(record.get(key))
+            for record in records
+            for key in ("status", "human_status", "humanized_status", "application_status", "health_status")
+            if record.get(key) not in ("", None)
+        }
+    )
+    return {
+        "label": label,
+        "observed_at": _timestamp(),
+        "endpoint": f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}",
+        "http": {
+            key: response.get(key)
+            for key in ("status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+            if key in response
+        },
+        "payload_summary": _safe_payload_summary(payload),
+        "service_status": _service_status(payload) if isinstance(payload, Mapping) else "",
+        "status_values": status_values,
+        "application_records": records,
+        "matching_service_records": service_records,
+        "compose": _compose_digest_summary(payload, expected_semantic_sha256=expected_semantic_sha256),
+    }
+
+
+def _try_coolify_service_detail_snapshot(
+    controller: Any,
+    label: str,
+    *,
+    service_uuid: str,
+    service_name: str,
+    expected_semantic_sha256: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+    try:
+        response = _http(
+            controller,
+            "GET",
+            endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+    except MotherDeploymentNodeAddSingleNodeBootstrapError as exc:
+        return {
+            "label": label,
+            "observed_at": _timestamp(),
+            "endpoint": endpoint,
+            "http": {"ok": False},
+            "probe_error": {"code": exc.code, "message": str(exc)},
+        }
+    return _coolify_service_detail_snapshot(
+        label,
+        response,
+        service_uuid=service_uuid,
+        service_name=service_name,
+        expected_semantic_sha256=expected_semantic_sha256,
+    )
+
+
+def _manual_host_materialization_commands(*, service_uuid: str, service_name: str) -> dict[str, Any]:
+    services_dir = f"/data/coolify/services/{service_uuid}"
+    grep = f"{service_uuid}|{service_name}|mainneta-super1|mother-super-node-hub|mother-genesis|mother-super-node-fdb"
+    commands = [
+        f"SERVICE_UUID={service_uuid}",
+        f"SERVICE_NAME={service_name}",
+        'echo "--- service files ---"',
+        "ls -la /data/coolify/services/$SERVICE_UUID",
+        'test -f /data/coolify/services/$SERVICE_UUID/docker-compose.yml; echo "compose_file_rc=$?"',
+        'test -f /data/coolify/services/$SERVICE_UUID/.env; echo "env_file_rc=$?"',
+        'echo "--- compose config ---"',
+        "cd /data/coolify/services/$SERVICE_UUID",
+        'docker compose --env-file .env -f docker-compose.yml -p $SERVICE_UUID config --quiet; echo "compose_config_rc=$?"',
+        'echo "--- compose project ---"',
+        "docker compose --env-file .env -f docker-compose.yml -p $SERVICE_UUID ps -a",
+        'echo "--- docker containers by uuid/name ---"',
+        "docker ps -a --no-trunc --format '{{.ID}} {{.Names}} {{.Image}} {{.Status}} {{.Labels}}' | grep -Ei \"$SERVICE_UUID|$SERVICE_NAME|mainneta-super1|mother-super-node-hub|mother-genesis|mother-super-node-fdb\" || true",
+        'echo "--- network attachments ---"',
+        "docker network inspect $SERVICE_UUID --format '{{range $id, $c := .Containers}}{{println $id $c.Name $c.IPv4Address}}{{end}}' 2>/dev/null || true",
+        'echo "--- volumes ---"',
+        "docker volume ls | grep -Ei \"$SERVICE_UUID\" || true",
+        'echo "--- coolify service row ---"',
+        "docker exec -e SERVICE_UUID=\"$SERVICE_UUID\" coolify-db sh -lc 'psql -U \"${POSTGRES_USER:-coolify}\" -d \"${POSTGRES_DB:-coolify}\" -x -c \"select id, uuid, name, created_at, updated_at from services where uuid = '\\''$SERVICE_UUID'\\'';\"' 2>/dev/null || true",
+        'echo "--- coolify child service_applications rows ---"',
+        "docker exec -e SERVICE_UUID=\"$SERVICE_UUID\" coolify-db sh -lc 'psql -U \"${POSTGRES_USER:-coolify}\" -d \"${POSTGRES_DB:-coolify}\" -x -c \"select id, uuid, name, image, status, created_at, updated_at from service_applications where service_id = (select id from services where uuid = '\\''$SERVICE_UUID'\\'') order by id;\"' 2>/dev/null || true",
+        'echo "--- coolify deployment queues by child app UUIDs/names ---"',
+        "docker exec -e SERVICE_UUID=\"$SERVICE_UUID\" coolify-db sh -lc 'psql -U \"${POSTGRES_USER:-coolify}\" -d \"${POSTGRES_DB:-coolify}\" -x -c \"with child_apps as (select uuid, name from service_applications where service_id = (select id from services where uuid = '\\''$SERVICE_UUID'\\'')) select q.id, q.application_id, q.deployment_uuid, q.status, q.force_rebuild, q.restart_only, q.application_name, q.server_name, q.is_api, q.horizon_job_id, q.horizon_job_worker, q.created_at, q.updated_at, q.finished_at, length(q.logs) as logs_byte_length, md5(q.logs) as logs_md5 from application_deployment_queues q where q.application_id in (select uuid from child_apps) or q.application_name in (select name from child_apps) or q.configuration_snapshot::text like '\\''%'$SERVICE_UUID'%\\'' or q.configuration_diff::text like '\\''%'$SERVICE_UUID'%\\'' order by q.id desc limit 30;\"' 2>/dev/null || true",
+        'echo "--- proof volume ---"',
+        "docker run --rm -v ${SERVICE_UUID}_mother-proof:/proof:ro alpine:3.20 sh -c 'ls -la /proof; echo \"--- proof ---\"; cat /proof/proof.json 2>/dev/null || true; echo \"--- last error ---\"; cat /proof/last-error.json 2>/dev/null || true'",
+        'echo "--- focused logs ---"',
+        "docker compose --env-file .env -f docker-compose.yml -p $SERVICE_UUID logs --tail=200 mainneta-super1 mother-genesis-proof-guardian mother-super-node-hub mother-super-node-fdb 2>&1 || true",
+    ]
+    return {
+        "host_side_only": True,
+        "service_uuid": service_uuid,
+        "service_name": service_name,
+        "expected_service_directory": services_dir,
+        "commands": commands,
+        "compact_one_liner": (
+            f"SERVICE_UUID={service_uuid}; SERVICE_NAME={service_name}; "
+            "cd /data/coolify/services/$SERVICE_UUID && "
+            "docker compose --env-file .env -f docker-compose.yml -p $SERVICE_UUID ps -a && "
+            "docker ps -a --no-trunc --format '{{.Names}} {{.Image}} {{.Status}}' | "
+            "grep -Ei \"$SERVICE_UUID|$SERVICE_NAME|mainneta-super1|mother-super-node-hub|mother-genesis|mother-super-node-fdb\" || true"
+        ),
+        "safe_to_paste": True,
+        "secrets_printed": False,
+        "grep_pattern": grep,
+        "includes_coolify_db_queue_probe": True,
+        "queue_probe_prints_raw_logs": False,
+    }
+
+
+
+def _start_boundary_diagnostics_seed(
+    *,
+    controller_id: str,
+    service_uuid: str,
+    service_name: str,
+    deploy_mutation: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "kind": "main_computer.mother.single_node_bootstrap.deploy_boundary_diagnostics.v2",
+        "controller_id": controller_id,
+        "service_uuid": service_uuid,
+        "service_name": service_name,
+        "boundary": "Coolify service Compose PATCH/forced deploy acknowledgement to container materialization",
+        "deploy_mutation": {
+            "ordinal": deploy_mutation.get("ordinal") if isinstance(deploy_mutation, Mapping) else None,
+            "method": deploy_mutation.get("method") if isinstance(deploy_mutation, Mapping) else None,
+            "endpoint": deploy_mutation.get("endpoint") if isinstance(deploy_mutation, Mapping) else None,
+            "body_sha256": deploy_mutation.get("body_sha256") if isinstance(deploy_mutation, Mapping) else None,
+        },
+        "deploy_response": None,
+        "child_applications_after_patch": [],
+        "child_application_uuids_after_patch": {},
+        "child_applications_after_deploy": [],
+        "child_application_uuids_after_deploy": {},
+        "queue_correlation": {
+            "expected_coolify_table": "application_deployment_queues",
+            "expected_join": "application_deployment_queues.application_id should match child service_applications.uuid",
+            "captured_by_api": False,
+            "host_db_probe_emitted": True,
+            "prints_raw_logs": False,
+        },
+        "snapshots": [],
+        "manual_host_materialization": _manual_host_materialization_commands(service_uuid=service_uuid, service_name=service_name),
+    }
+
+
+
+def _safe_filename_piece(value: str) -> str:
+    piece = re.sub(r"[^a-zA-Z0-9_.-]+", "-", value).strip(".-")
+    return piece[:80] or "unnamed"
+
+
+def _boundary_debug_script(commands: list[str]) -> str:
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -u",
+        "# Generated by Main Computer single-node bootstrap deploy-boundary diagnostics.",
+        "# Run on the Coolify/Docker host. The script intentionally avoids printing .env values.",
+        "",
+    ]
+    lines.extend(commands)
+    return "\n".join(lines) + "\n"
+
+
+def _write_boundary_debug_artifacts(
+    paths: PrivateStatePaths,
+    diagnostics: Mapping[str, Any],
+    *,
+    operation: OperationIdentity,
+    completed_at: str,
+) -> dict[str, Any]:
+    _ensure_directory(paths, _BOUNDARY_DIAGNOSTIC_DIRECTORY, operation)
+    service_uuid = _identifier(diagnostics.get("service_uuid"), "diagnostic service UUID")
+    service_name = _safe_filename_piece(str(diagnostics.get("service_name") or "single-node-bootstrap"))
+    timestamp = _safe_filename_piece(completed_at.replace(":", "").replace("-", ""))
+    stem = f"{timestamp}-{service_name}-{service_uuid}"
+    root = _root(paths, _BOUNDARY_DIAGNOSTIC_DIRECTORY)
+    diagnostic_path = root / f"{stem}.json"
+    script_path = root / f"{stem}.host.sh"
+    diagnostic_doc = {
+        "kind": "main_computer.mother.single_node_bootstrap.deploy_boundary_debug_artifact.v1",
+        "created_at": completed_at,
+        "diagnostics": diagnostics,
+        "secrets_in_output": False,
+        "host_side_only": True,
+    }
+    diagnostic_bytes = canonical_json(diagnostic_doc)
+    script_text = _boundary_debug_script(list(diagnostics.get("manual_host_materialization", {}).get("commands", [])))
+    atomic_files.durable_create(diagnostic_path, diagnostic_bytes, operation=operation)
+    atomic_files.durable_create(script_path, script_text.encode("utf-8"), operation=operation)
+    _secure_private_path(diagnostic_path, is_directory=False, operation=operation)
+    _secure_private_path(script_path, is_directory=False, operation=operation)
+    return {
+        "diagnostic_json": {
+            "locator": _relative(paths, diagnostic_path, label="single-node bootstrap deploy-boundary diagnostic JSON"),
+            "sha256": hashlib.sha256(diagnostic_bytes).hexdigest(),
+        },
+        "host_script": {
+            "locator": _relative(paths, script_path, label="single-node bootstrap deploy-boundary host script"),
+            "sha256": hashlib.sha256(script_text.encode("utf-8")).hexdigest(),
+        },
+    }
+
+
+
 def _compose_commitment(compose: str, *, label: str) -> dict[str, Any]:
     return {
         "canonical_text": compose,
@@ -963,6 +1382,20 @@ def execute_node_add_single_node_bootstrap_release(
     preconditions: list[dict[str, Any]] = []
     receipts: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    deploy_mutation = next(
+        (
+            mutation
+            for mutation in plan.get("mutations", [])
+            if mutation.get("method") == "POST" and mutation.get("endpoint") in {"/api/v1/deploy", f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start"}
+        ),
+        None,
+    )
+    deploy_boundary_diagnostics = _start_boundary_diagnostics_seed(
+        controller_id=controller_id,
+        service_uuid=service_uuid,
+        service_name=node,
+        deploy_mutation=deploy_mutation,
+    )
     failure: dict[str, str] | None = None
     status = "failed"
     compose_proven = False
@@ -981,6 +1414,15 @@ def execute_node_add_single_node_bootstrap_release(
             "response_sha256": service_detail["response_sha256"],
             "verified": True,
         })
+        deploy_boundary_diagnostics["snapshots"].append(
+            _coolify_service_detail_snapshot(
+                "before-bootstrap-mutations",
+                service_detail,
+                service_uuid=service_uuid,
+                service_name=node,
+                expected_semantic_sha256=plan["compose"]["semantic_sha256"],
+            )
+        )
 
         env_endpoint = f"{service_endpoint}/envs"
         envs = _http(controller, "GET", env_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
@@ -1012,6 +1454,8 @@ def execute_node_add_single_node_bootstrap_release(
                 opener=opener,
             )
             accepted = response["status"] in mutation["success_statuses"]
+            response_payload_summary = _safe_payload_summary(response.get("payload"))
+            response_payload_safe = _safe_payload_fragment(response.get("payload"))
             receipt = {
                 "ordinal": mutation["ordinal"],
                 "method": mutation["method"],
@@ -1023,8 +1467,41 @@ def execute_node_add_single_node_bootstrap_release(
                     key: response[key]
                     for key in ("status", "response_sha256", "byte_length", "elapsed_ms")
                 },
+                "response_payload_summary": response_payload_summary,
+                "response_payload_safe": response_payload_safe,
             }
             receipts.append(receipt)
+            if mutation["method"] == "POST" and mutation["endpoint"] in {"/api/v1/deploy", f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start"}:
+                deploy_boundary_diagnostics["deploy_response"] = {
+                    "ordinal": mutation["ordinal"],
+                    "method": mutation["method"],
+                    "endpoint": mutation["endpoint"],
+                    "accepted": accepted,
+                    "http": {
+                        key: response[key]
+                        for key in ("status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+                        if key in response
+                    },
+                    "payload_summary": response_payload_summary,
+                    "payload_safe": response_payload_safe,
+                }
+            detail_snapshot = _try_coolify_service_detail_snapshot(
+                controller,
+                f"after-mutation-{mutation['ordinal']}-{mutation['method']}-{str(mutation['endpoint']).strip('/').replace('/', '-')}",
+                service_uuid=service_uuid,
+                service_name=node,
+                expected_semantic_sha256=plan["compose"]["semantic_sha256"],
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            deploy_boundary_diagnostics["snapshots"].append(detail_snapshot)
+            if mutation["method"] == "PATCH" and str(mutation["endpoint"]).startswith(f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"):
+                deploy_boundary_diagnostics["child_applications_after_patch"] = _child_application_records(detail_snapshot)
+                deploy_boundary_diagnostics["child_application_uuids_after_patch"] = _child_application_uuid_index(detail_snapshot)
+            if mutation["method"] == "POST" and mutation["endpoint"] in {"/api/v1/deploy", f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start"}:
+                deploy_boundary_diagnostics["child_applications_after_deploy"] = _child_application_records(detail_snapshot)
+                deploy_boundary_diagnostics["child_application_uuids_after_deploy"] = _child_application_uuid_index(detail_snapshot)
             if not accepted:
                 raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_MUTATION_FAILED", f"Coolify rejected single-node bootstrap mutation {mutation['ordinal']}")
 
@@ -1035,7 +1512,20 @@ def execute_node_add_single_node_bootstrap_release(
             if inventory["ok"]:
                 service = _service_item(inventory["payload"], service_uuid, node)
                 last_status = _service_status(service)
-                observations.append({"status": last_status, "response_sha256": inventory["response_sha256"], "observed_at": _timestamp()})
+                observation = {"status": last_status, "response_sha256": inventory["response_sha256"], "observed_at": _timestamp()}
+                detail_snapshot = _try_coolify_service_detail_snapshot(
+                    controller,
+                    "poll-service-detail",
+                    service_uuid=service_uuid,
+                    service_name=node,
+                    expected_semantic_sha256=plan["compose"]["semantic_sha256"],
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                observation["service_detail_snapshot"] = detail_snapshot
+                observations.append(observation)
+                deploy_boundary_diagnostics["snapshots"].append(detail_snapshot)
                 if last_status == "running:healthy":
                     healthy = True
                     break
@@ -1043,6 +1533,18 @@ def execute_node_add_single_node_bootstrap_release(
                 break
             time.sleep(max(0.0, poll_interval_seconds))
         if not healthy:
+            deploy_boundary_diagnostics["snapshots"].append(
+                _try_coolify_service_detail_snapshot(
+                    controller,
+                    "final-not-healthy-service-detail",
+                    service_uuid=service_uuid,
+                    service_name=node,
+                    expected_semantic_sha256=plan["compose"]["semantic_sha256"],
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+            )
             raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_NOT_HEALTHY", f"single-node chain+Hub service did not reach running:healthy (last status {last_status!r})")
 
         detail = _http(controller, "GET", service_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
@@ -1050,6 +1552,15 @@ def execute_node_add_single_node_bootstrap_release(
             raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_POSTCONDITION_FAILED", f"Coolify service detail failed with HTTP {detail['status']}")
         binding = _match_service_compose(detail["payload"], plan["compose"]["canonical_text"], "single-node bootstrap proof Compose")
         compose_proven = binding["semantic_sha256"] == plan["compose"]["semantic_sha256"]
+        deploy_boundary_diagnostics["snapshots"].append(
+            _coolify_service_detail_snapshot(
+                "final-healthy-compose-binding",
+                detail,
+                service_uuid=service_uuid,
+                service_name=node,
+                expected_semantic_sha256=plan["compose"]["semantic_sha256"],
+            )
+        )
         preconditions.append({
             "name": "single-node-bootstrap-compose-binding",
             "controller_id": controller_id,
@@ -1067,6 +1578,12 @@ def execute_node_add_single_node_bootstrap_release(
     except MotherDeploymentNodeAddSingleNodeBootstrapError as exc:
         failure = {"code": exc.code, "message": str(exc)}
     completed_at = _timestamp(now=now)
+    deploy_boundary_debug_artifacts = _write_boundary_debug_artifacts(
+        paths,
+        deploy_boundary_diagnostics,
+        operation=operation,
+        completed_at=completed_at,
+    )
     planned_mutation_count = len(plan.get("mutations", []))
     complete = (
         status == "pass"
@@ -1112,6 +1629,8 @@ def execute_node_add_single_node_bootstrap_release(
         "preconditions": preconditions,
         "mutation_receipts": receipts,
         "observations": observations,
+        "deploy_boundary_diagnostics": deploy_boundary_diagnostics,
+        "deploy_boundary_debug_artifacts": deploy_boundary_debug_artifacts,
         "single_node_bootstrap_performed": len(receipts) > 0,
         "single_node_bootstrap_proven": complete,
         "serves_chain": complete,
@@ -1169,6 +1688,8 @@ def execute_node_add_single_node_bootstrap_release(
             "coolify_c_required": False,
             "live_mutation_performed": len(receipts) > 0,
             "mutation_count": len(receipts),
+            "deploy_boundary_diagnostics_captured": True,
+            "host_manual_diagnostic_commands_available": True,
             "routing_or_topology_published": False,
             "public_endpoint_created": False,
             "next_phase": f"add-node-single-node-chain-and-hub-proof-{network}" if complete else "manual-review-required",

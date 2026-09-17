@@ -38,8 +38,18 @@ class _ForcedDeployBootstrapOpener(_SingleNodeBootstrapOpener):
             assert parsed.query == ""
             assert body == {"uuid": "svc-a1", "force": True}
             self.service["status"] = self.deploy_status
-            return _Response({"deployment_uuid": "deploy-single-node-bootstrap-v2"})
-        return super().open(request, timeout)
+            return _Response({"deployment_uuid": "deploy-single-node-bootstrap-v2", "message": "deployment queued"})
+
+        response = super().open(request, timeout)
+        if request.get_method() == "PATCH" and parsed.path == "/api/v1/services/svc-a1":
+            self.service["applications"] = [
+                {"uuid": "app-besu", "name": "mainneta-super1", "image": "hyperledger/besu:latest", "status": "exited"},
+                {"uuid": "app-init", "name": "mother-genesis-init", "image": "alpine:3.20", "status": "exited"},
+                {"uuid": "app-fdb", "name": "mother-super-node-fdb", "image": "foundationdb/foundationdb:7.4.6", "status": "exited"},
+                {"uuid": "app-hub", "name": "mother-super-node-hub", "image": "mainneta-super1-hub:test", "status": "exited"},
+                {"uuid": "app-proof", "name": "mother-genesis-proof-guardian", "image": "python:3.12-alpine", "status": "exited"},
+            ]
+        return response
 
 
 def _release(tmp_path: Path):
@@ -162,3 +172,63 @@ def test_single_node_bootstrap_v2_executes_forced_deploy_and_keeps_v1_evidence_c
         now=datetime(2026, 8, 12, 1, 11, 1, tzinfo=timezone.utc),
     )
     assert v1_verified["clean"] is True
+
+
+
+def test_single_node_bootstrap_v2_failed_deploy_writes_boundary_diagnostics(tmp_path: Path) -> None:
+    paths, private_state, release = _release(tmp_path)
+    release_path, release_sha = write_node_add_single_node_bootstrap_release(
+        paths,
+        release,
+        operation=_operation("write-single-node-bootstrap-v2-debug-release"),
+    )
+    opener = _ForcedDeployBootstrapOpener(deploy_status="exited")
+    result = execute_node_add_single_node_bootstrap_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900,
+        identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        timeout=1.0,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        opener=opener,
+        now=datetime(2026, 8, 12, 1, 11, 0, tzinfo=timezone.utc),
+        operation=_operation("execute-single-node-bootstrap-v2-debug-release"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_NOT_HEALTHY"
+    diagnostics = result["deploy_boundary_diagnostics"]
+    assert diagnostics["boundary"] == "Coolify service Compose PATCH/forced deploy acknowledgement to container materialization"
+    assert diagnostics["kind"] == "main_computer.mother.single_node_bootstrap.deploy_boundary_diagnostics.v2"
+    assert diagnostics["deploy_mutation"]["endpoint"] == "/api/v1/deploy"
+    assert diagnostics["deploy_response"]["endpoint"] == "/api/v1/deploy"
+    assert diagnostics["deploy_response"]["accepted"] is True
+    assert diagnostics["deploy_response"]["payload_summary"]["deployment_uuid"] == "deploy-single-node-bootstrap-v2"
+    assert diagnostics["deploy_response"]["payload_safe"]["deployment_uuid"] == "deploy-single-node-bootstrap-v2"
+    assert diagnostics["deploy_response"]["payload_safe"]["message"] == "deployment queued"
+    assert diagnostics["child_application_uuids_after_patch"]["mother-super-node-hub"] == "app-hub"
+    assert diagnostics["child_application_uuids_after_deploy"]["mainneta-super1"] == "app-besu"
+    assert diagnostics["queue_correlation"]["expected_coolify_table"] == "application_deployment_queues"
+    assert diagnostics["queue_correlation"]["host_db_probe_emitted"] is True
+    assert diagnostics["manual_host_materialization"]["expected_service_directory"] == "/data/coolify/services/svc-a1"
+    assert diagnostics["manual_host_materialization"]["secrets_printed"] is False
+    assert diagnostics["manual_host_materialization"]["includes_coolify_db_queue_probe"] is True
+    assert diagnostics["manual_host_materialization"]["queue_probe_prints_raw_logs"] is False
+    assert any("docker compose --env-file .env -f docker-compose.yml -p $SERVICE_UUID ps -a" in command for command in diagnostics["manual_host_materialization"]["commands"])
+    assert any("application_deployment_queues" in command for command in diagnostics["manual_host_materialization"]["commands"])
+    labels = [snapshot["label"] for snapshot in diagnostics["snapshots"]]
+    assert "before-bootstrap-mutations" in labels
+    assert "after-mutation-2-POST-api-v1-deploy" in labels
+    assert "final-not-healthy-service-detail" in labels
+    assert result["mutation_receipts"][1]["response_payload_summary"]["deployment_uuid"] == "deploy-single-node-bootstrap-v2"
+    assert result["observations"][0]["service_detail_snapshot"]["service_status"] == "exited"
+    assert result["summary"]["deploy_boundary_diagnostics_captured"] is True
+    assert result["summary"]["host_manual_diagnostic_commands_available"] is True

@@ -770,6 +770,155 @@ def _collect_helper_logs(
     }
 
 
+def _target_service_line_status_readback(
+    *,
+    controller: CoolifyController,
+    controller_id: str,
+    service_uuid: str,
+    service_line: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    parent_uuid = _uuid(service_uuid, "service_uuid")
+    line = _identifier(service_line, "service_line")
+    endpoint = f"/api/v1/services/{urllib.parse.quote(parent_uuid, safe='')}"
+    response = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+
+    candidates: list[dict[str, Any]] = []
+
+    def walk(item: Any, *, path: str) -> None:
+        if isinstance(item, Mapping):
+            name = item.get("name")
+            status = item.get("status")
+            uuid = item.get("uuid", item.get("id"))
+            if type(name) is str and name.strip() == line and type(status) is str:
+                candidates.append(
+                    {
+                        "path": path,
+                        "name": name,
+                        "uuid": uuid if type(uuid) in {str, int} else None,
+                        "status": status,
+                    }
+                )
+            for key, value in item.items():
+                if isinstance(value, (Mapping, list)):
+                    walk(value, path=f"{path}.{key}" if path else str(key))
+        elif isinstance(item, list):
+            for index, value in enumerate(item):
+                if isinstance(value, (Mapping, list)):
+                    walk(value, path=f"{path}[{index}]")
+
+    if response["ok"]:
+        walk(response.get("payload"), path="$")
+
+    statuses = [str(item.get("status") or "") for item in candidates]
+    selected = candidates[-1] if candidates else None
+    selected_status = str(selected.get("status") or "") if isinstance(selected, Mapping) else ""
+    return {
+        "method": "GET",
+        "endpoint": endpoint,
+        "status": response["status"],
+        "ok": response["ok"],
+        "response_sha256": response["response_sha256"],
+        "byte_length": response["byte_length"],
+        "elapsed_ms": response["elapsed_ms"],
+        "controller_id": controller_id,
+        "service_uuid": parent_uuid,
+        "service_line": line,
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "selected": selected,
+        "selected_status": selected_status,
+        "observed_statuses": statuses,
+        "running_healthy_observed": selected_status.startswith("running:healthy"),
+    }
+
+
+def _completion_from_target_readback(readback: Mapping[str, Any]) -> dict[str, str] | None:
+    if readback.get("running_healthy_observed") is not True:
+        return None
+    return {
+        "phase": "complete",
+        "status": "pass",
+        "reason": "helper-result-inferred-from-target-readback",
+        "action": "unknown",
+        "after_status": str(readback.get("selected_status") or ""),
+        "after_running": "true",
+        "after_health": "healthy",
+    }
+
+
+def _wait_for_target_service_line_status_readback(
+    *,
+    controller: CoolifyController,
+    controller_id: str,
+    service_uuid: str,
+    service_line: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+) -> dict[str, Any]:
+    wait_limit = _nonnegative(max_wait_seconds, "max_wait_seconds")
+    poll_interval = _nonnegative(poll_interval_seconds, "poll_interval_seconds")
+    started = time.monotonic()
+    observations: list[dict[str, Any]] = []
+    last_readback: dict[str, Any] | None = None
+
+    while True:
+        last_readback = _target_service_line_status_readback(
+            controller=controller,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            service_line=service_line,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        observations.append(last_readback)
+        if last_readback.get("running_healthy_observed") is True:
+            elapsed = time.monotonic() - started
+            return {
+                "completed": True,
+                "reason": "target-service-line-running-healthy",
+                "service_uuid": _uuid(service_uuid, "service_uuid"),
+                "service_line": _identifier(service_line, "service_line"),
+                "final_status": last_readback.get("selected_status"),
+                "running_healthy_observed": True,
+                "observation_count": len(observations),
+                "wait_milliseconds": int(elapsed * 1000),
+                "observations": observations,
+                "last_readback": last_readback,
+            }
+
+        elapsed = time.monotonic() - started
+        if elapsed >= wait_limit:
+            return {
+                "completed": False,
+                "reason": "target-service-line-readback-timeout",
+                "service_uuid": _uuid(service_uuid, "service_uuid"),
+                "service_line": _identifier(service_line, "service_line"),
+                "final_status": last_readback.get("selected_status") if isinstance(last_readback, Mapping) else None,
+                "running_healthy_observed": False,
+                "observation_count": len(observations),
+                "wait_milliseconds": int(elapsed * 1000),
+                "observations": observations,
+                "last_readback": last_readback,
+            }
+
+        time.sleep(min(poll_interval, max(0.0, wait_limit - elapsed)))
+
+
 def _delete_helper_service(
     *,
     controller: CoolifyController,
@@ -1046,6 +1195,45 @@ def run_service_line_restart_helper(
         observations.extend(log_result.get("probes", []))
 
         completion = log_result.get("completion") if isinstance(log_result, Mapping) else None
+        target_readback = None
+        target_readback_wait = None
+        result_source = "runtime-logs" if isinstance(completion, Mapping) else None
+        if exit_result.get("completed") is True and not isinstance(completion, Mapping):
+            target_readback_wait = _wait_for_target_service_line_status_readback(
+                controller=controller,
+                controller_id=controller_name,
+                service_uuid=parent_service_uuid,
+                service_line=resolved_service_line,
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                max_wait_seconds=wait_limit,
+                poll_interval_seconds=poll_interval,
+                opener=opener,
+            )
+            for readback in target_readback_wait.get("observations", []):
+                observations.append(
+                    {
+                        key: readback[key]
+                        for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms", "controller_id")
+                    }
+                    | {
+                        "phase": "restart-helper-target-service-line-readback",
+                        "service_uuid": parent_service_uuid,
+                        "service_line": resolved_service_line,
+                        "candidate_count": readback.get("candidate_count"),
+                        "selected_status": readback.get("selected_status"),
+                        "running_healthy_observed": readback.get("running_healthy_observed"),
+                    }
+                )
+
+            maybe_readback = target_readback_wait.get("last_readback")
+            target_readback = maybe_readback if isinstance(maybe_readback, Mapping) else None
+            if isinstance(target_readback, Mapping):
+                inferred_completion = _completion_from_target_readback(target_readback)
+                if inferred_completion is not None:
+                    completion = inferred_completion
+                    result_source = "target-service-line-readback"
+
         helper_passed = (
             exit_result.get("completed") is True
             and isinstance(completion, Mapping)
@@ -1054,6 +1242,8 @@ def run_service_line_restart_helper(
         reason = (
             str(completion.get("reason"))
             if isinstance(completion, Mapping) and completion.get("reason")
+            else str(target_readback_wait.get("reason"))
+            if isinstance(target_readback_wait, Mapping) and target_readback_wait.get("reason")
             else "helper-result-not-observed"
             if exit_result.get("completed") is True
             else str(exit_result.get("reason") or "helper-exit-failed")
@@ -1065,10 +1255,13 @@ def run_service_line_restart_helper(
                 "helper_service_uuid": helper_service_uuid,
                 "status": "pass" if helper_passed else "failed",
                 "reason": reason,
+                "result_source": result_source,
                 "create": create_receipt,
                 "start": start_receipt,
                 "completion": exit_result,
                 "logs": log_result,
+                "target_service_line_readback": target_readback,
+                "target_service_line_readback_wait": target_readback_wait,
                 "selected_container_id": completion.get("container_id") if isinstance(completion, Mapping) else None,
                 "selected_container_name": completion.get("container_name") if isinstance(completion, Mapping) else None,
                 "action": completion.get("action") if isinstance(completion, Mapping) else None,

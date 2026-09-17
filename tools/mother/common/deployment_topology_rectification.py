@@ -580,6 +580,21 @@ def _nodes_and_services(document: Mapping[str, Any]) -> tuple[list[str], list[st
 
 
 
+
+def _validator_admission_receipt_is_disposable_guardian(item: Mapping[str, Any]) -> bool:
+    lifecycle_scope = item.get("lifecycle_scope")
+    mutation_id = str(item.get("mutation_id") or "")
+    guardian_service = str(item.get("guardian_service") or "")
+    service_name = str(item.get("service_name") or "")
+    return (
+        lifecycle_scope == "disposable-service-row"
+        or ".create-disposable-add-node-validator-admission-voter" in mutation_id
+        or guardian_service.startswith("mother-add-node-validator-admission-voter")
+        or service_name.startswith("mother-add-node-validator-admission-voter")
+    )
+
+
+
 def _receipt_service_records_for_validator_admission(
     document: Mapping[str, Any],
     *,
@@ -635,6 +650,13 @@ def _receipt_service_records_for_validator_admission(
         node = item.get("node")
         controller_id = item.get("controller_id")
         service_uuid = item.get("service_uuid")
+        readiness_source = item.get("mutation_id") or "add-node-validator-admission-mutation"
+        if _validator_admission_receipt_is_disposable_guardian(item):
+            parent_uuid = item.get("validator_parent_service_uuid")
+            if not isinstance(parent_uuid, str) or not parent_uuid:
+                continue
+            service_uuid = parent_uuid
+            readiness_source = f"{readiness_source}.validator-parent-service"
         if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
             previous = services.get(node, {})
             service_record = {
@@ -642,7 +664,7 @@ def _receipt_service_records_for_validator_admission(
                 "controller_id": controller_id,
                 "service_uuid": service_uuid,
                 "service_status": previous.get("service_status"),
-                "readiness_source": item.get("mutation_id") or "add-node-validator-admission-mutation",
+                "readiness_source": readiness_source,
                 "last_observed_at": document.get("completed_at"),
             }
             route = previous.get("validator_route") if isinstance(previous, Mapping) and isinstance(previous.get("validator_route"), Mapping) else None
