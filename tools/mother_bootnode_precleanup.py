@@ -33,6 +33,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.mother.common.coolify_state import CoolifyController, CoolifyObservationError, resolve_coolify_controller
 from tools.mother.common.deployment_coolify_context import load_controller_config
+from tools.mother.common import deployment_coolify_service_lifecycle_probe as lifecycle
 from tools.mother.common.models import OperationIdentity
 from tools.mother.common.paths import MotherPaths
 from tools.mother.common.ethereum_identity import private_key_to_node_id
@@ -56,6 +57,7 @@ WRITER_HEALTH_PATH = "/proof/healthy"
 DEFAULT_MAX_RESPONSE_BYTES = 12 * 1024 * 1024
 DEFAULT_MAX_WAIT_SECONDS = 120.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+DEFAULT_WRITER_SERVICE_ATTEMPTS = 2
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 UUID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
@@ -446,12 +448,271 @@ def _service_detail_status(payload: Any, service_uuid: str, service_name: str) -
     return candidates[-1] if candidates else ""
 
 
+
+_SAFE_WRITER_RECORD_KEYS = (
+    "uuid",
+    "name",
+    "status",
+    "human_status",
+    "humanized_status",
+    "application_status",
+    "health_status",
+    "image",
+    "docker_image",
+    "container_name",
+    "service_name",
+    "serviceName",
+    "service_uuid",
+)
+
+
+def _safe_payload_summary(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, Mapping):
+        summary: dict[str, Any] = {"type": "object", "keys": sorted(str(key) for key in payload.keys())}
+        for key in ("message", "uuid", "service_uuid", "application_uuid", "deployment_uuid", "status", "name"):
+            value = payload.get(key)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                summary[key] = value
+        return summary
+    if isinstance(payload, list):
+        return {"type": "list", "length": len(payload)}
+    if isinstance(payload, str):
+        encoded = payload.encode("utf-8")
+        return {"type": "text", "byte_length": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest()}
+    if payload is None:
+        return {"type": "null"}
+    return {"type": type(payload).__name__}
+
+
+def _collect_writer_service_records(value: Any, *, path: str = "$", limit: int = 40) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    def walk(item: Any, item_path: str) -> None:
+        if len(records) >= limit:
+            return
+        if isinstance(item, Mapping):
+            record: dict[str, Any] = {}
+            for key in _SAFE_WRITER_RECORD_KEYS:
+                value = item.get(key)
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    record[key] = value
+            if record and any(
+                key in record
+                for key in ("uuid", "name", "status", "human_status", "humanized_status", "application_status", "health_status")
+            ):
+                record["path"] = item_path
+                records.append(record)
+                if len(records) >= limit:
+                    return
+            for key, value in item.items():
+                if str(key).lower() in {"value", "api_token", "access_token", "bearer_token", "password", "private_key", "secret"}:
+                    continue
+                if isinstance(value, (Mapping, list)):
+                    walk(value, f"{item_path}.{key}" if item_path else str(key))
+                    if len(records) >= limit:
+                        return
+        elif type(item) is list:
+            for index, value in enumerate(item):
+                walk(value, f"{item_path}[{index}]")
+                if len(records) >= limit:
+                    return
+
+    walk(value, path)
+    return records
+
+
+def _writer_service_detail_snapshot(
+    label: str,
+    response: Mapping[str, Any],
+    *,
+    service_uuid: str,
+    service_name: str,
+) -> dict[str, Any]:
+    payload = response.get("payload")
+    records = _collect_writer_service_records(payload)
+    matching_records = [
+        record
+        for record in records
+        if str(record.get("uuid") or "") == service_uuid or str(record.get("name") or "") == service_name
+    ]
+    status_values = sorted(
+        {
+            str(record.get(key))
+            for record in records
+            for key in ("status", "human_status", "humanized_status", "application_status", "health_status")
+            if record.get(key) not in ("", None)
+        }
+    )
+    return {
+        "label": label,
+        "observed_at": _utc_now(),
+        "endpoint": f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}",
+        "http": {
+            key: response.get(key)
+            for key in ("status", "ok", "response_sha256", "byte_length", "elapsed_ms")
+            if key in response
+        },
+        "payload_summary": _safe_payload_summary(payload),
+        "service_status": _service_detail_status(payload, service_uuid, service_name) if response.get("ok") else "",
+        "status_values": status_values,
+        "service_records": records,
+        "matching_service_records": matching_records,
+    }
+
+
+def _writer_materialization_host_commands(
+    *,
+    writer_service_uuid: str,
+    writer_service_name: str,
+    target_container: str,
+) -> dict[str, Any]:
+    services_dir = f"/data/coolify/services/{writer_service_uuid}"
+    grep = f"{writer_service_uuid}|{writer_service_name}|static-node-writer|{target_container}"
+    commands = [
+        f"WRITER_UUID={writer_service_uuid}",
+        f"WRITER_NAME={writer_service_name}",
+        f"TARGET={target_container}",
+        'echo "--- writer service files ---"',
+        'ls -la /data/coolify/services/$WRITER_UUID || true',
+        'test -f /data/coolify/services/$WRITER_UUID/docker-compose.yml; echo "compose_file_rc=$?"',
+        'test -f /data/coolify/services/$WRITER_UUID/.env; echo "env_file_rc=$?"',
+        'if cd /data/coolify/services/$WRITER_UUID 2>/dev/null; then',
+        '  echo "--- writer compose config ---"',
+        '  docker compose --env-file .env -f docker-compose.yml -p $WRITER_UUID config --quiet; echo "compose_config_rc=$?"',
+        '  echo "--- writer compose ps ---"',
+        '  docker compose --env-file .env -f docker-compose.yml -p $WRITER_UUID ps -a || true',
+        '  echo "--- writer compose relevant lines ---"',
+        "  grep -nEi 'static-node|docker.sock|/proof|static-nodes.json|healthcheck|container_name|image:' docker-compose.yml | head -300 || true",
+        'else',
+        '  echo "ERROR: missing writer service dir: /data/coolify/services/$WRITER_UUID"',
+        'fi',
+        'echo "--- writer containers ---"',
+        'docker ps -a --no-trunc --format \'{{.ID}} {{.Names}} {{.Image}} {{.Status}} {{.Labels}}\' | grep -Ei "$WRITER_UUID|$WRITER_NAME|static-node-writer" || true',
+        'echo "--- writer logs/proof if container exists ---"',
+        'for c in $(docker ps -a --format \'{{.Names}}\' | grep -Ei "$WRITER_UUID|$WRITER_NAME|static-node-writer"); do',
+        '  echo "===== $c state ====="',
+        "  docker inspect \"$c\" --format '{{json .State}}' | python3 -m json.tool || true",
+        '  echo "===== $c logs ====="',
+        '  docker logs --timestamps "$c" 2>&1 || true',
+        '  echo "===== $c /proof ====="',
+        '  rm -rf /tmp/mother-writer-proof-debug',
+        '  mkdir -p /tmp/mother-writer-proof-debug',
+        '  docker cp "$c:/proof/." /tmp/mother-writer-proof-debug 2>/dev/null || true',
+        "  find /tmp/mother-writer-proof-debug -maxdepth 1 -type f -print -exec sh -c 'echo \"===== $1 =====\"; cat \"$1\"; echo' sh {} \\;",
+        'done',
+        'echo "--- target static-nodes file ---"',
+        'docker inspect "$TARGET" --format \'{{json .State}}\' | python3 -m json.tool || true',
+        'docker exec "$TARGET" sh -lc \'ls -la /var/lib/besu/static-nodes.json 2>/dev/null || true; cat /var/lib/besu/static-nodes.json 2>/dev/null || true\' || true',
+    ]
+    return {
+        "host_side_only": True,
+        "expected_service_directory": services_dir,
+        "service_uuid": writer_service_uuid,
+        "service_name": writer_service_name,
+        "target_container": target_container,
+        "commands": commands,
+        "safe_to_paste": True,
+        "secrets_printed": False,
+        "grep_pattern": grep,
+    }
+
+
+def _writer_receipt_debug_summary(receipt: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(receipt, Mapping):
+        return None
+    keys = (
+        "method",
+        "endpoint",
+        "status",
+        "ok",
+        "response_sha256",
+        "byte_length",
+        "elapsed_ms",
+        "controller_id",
+        "service_uuid",
+        "service_name",
+        "target_node",
+        "target_container",
+        "request_body_sha256",
+        "compose_sha256",
+        "writer_script_sha256",
+        "response_payload_summary",
+    )
+    return {key: receipt.get(key) for key in keys if key in receipt}
+
+
+def _writer_materialization_boundary_debug(
+    *,
+    controller_id: str,
+    node: str,
+    target_container: str,
+    action: Mapping[str, Any],
+    service_uuid: str,
+    service_name: str,
+    attempt_index: int,
+    create_receipt: Mapping[str, Any] | None,
+    start_receipt: Mapping[str, Any] | None,
+    health: Mapping[str, Any] | None,
+    delete_receipt: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "kind": "main_computer.mother.bootnode_precleanup.writer_materialization_debug.v1",
+        "boundary": "Coolify temporary writer service start acknowledgement to Docker container/proof materialization",
+        "controller_id": controller_id,
+        "node": node,
+        "target_container": target_container,
+        "action": action.get("action"),
+        "path": action.get("path"),
+        "static_node_count": action.get("static_node_count"),
+        "static_nodes_sha256": action.get("static_nodes_sha256"),
+        "writer_service_uuid": service_uuid,
+        "writer_service_name": service_name,
+        "attempt": attempt_index,
+        "proof_required": [
+            "temporary writer container materializes",
+            "writer script touches /proof/healthy",
+            "writer proof/result.json is reflected as running:healthy",
+        ],
+        "create": _writer_receipt_debug_summary(create_receipt),
+        "start": _writer_receipt_debug_summary(start_receipt),
+        "health": {
+            key: health.get(key)
+            for key in (
+                "healthy",
+                "service_status",
+                "first_status",
+                "final_status",
+                "observed_statuses",
+                "service_uuid",
+                "service_name",
+                "observation_count",
+                "wait_seconds",
+                "wait_milliseconds",
+                "reason",
+            )
+            if isinstance(health, Mapping) and key in health
+        },
+        "delete": _writer_receipt_debug_summary(delete_receipt),
+        "proof_observed": _writer_health_observed_proof(health),
+        "failure_class_when_unhealthy_without_proof": (
+            "writer-service-not-materialized-or-not-proven"
+            if isinstance(health, Mapping) and health.get("healthy") is not True and _writer_health_observed_proof(health) is not True
+            else None
+        ),
+        "host_manual_diagnostic": _writer_materialization_host_commands(
+            writer_service_uuid=service_uuid,
+            writer_service_name=service_name,
+            target_container=target_container,
+        ),
+    }
+
 def _wait_for_writer_service_health(
     *,
     controller: CoolifyController,
     controller_id: str,
     service_uuid: str,
     service_name: str,
+    action: Mapping[str, Any],
     timeout: float,
     max_response_bytes: int,
     max_wait_seconds: float,
@@ -465,6 +726,20 @@ def _wait_for_writer_service_health(
     last_status = ""
     observed_statuses: list[str] = []
     observation_count = 0
+    node = _identifier(action.get("node"), "writer action node")
+    target_container = _identifier(action.get("container_name"), f"{node} container_name")
+    operation = _identifier(action.get("action"), f"{node} writer action")
+    path = str(action.get("path") or "").strip()
+    if not path:
+        raise MotherBootnodePrecleanupError(
+            "MOTHER_BOOTNODE_PRECLEANUP_WRITER_ACTION_INVALID",
+            f"{node} writer action path is missing",
+        )
+    expected_completion_marker = (
+        "MOTHER_BOOTNODE_PRECLEANUP_WRITER_DIAGNOSTIC "
+        f"phase=script_complete node={node} target_container={target_container} "
+        f"operation={operation} path={path}"
+    )
     endpoint = f"/api/v1/services/{urllib.parse.quote(_uuid(service_uuid, 'temporary writer service_uuid'), safe='')}"
     while True:
         response = _coolify_http(
@@ -499,6 +774,12 @@ def _wait_for_writer_service_health(
                 "service_name": service_name,
                 "service_status": status or None,
                 "healthy": _healthy_status(status),
+                "service_detail_snapshot": _writer_service_detail_snapshot(
+                    "writer-health-poll",
+                    response,
+                    service_uuid=service_uuid,
+                    service_name=service_name,
+                ),
             }
         )
         if _healthy_status(status):
@@ -514,6 +795,73 @@ def _wait_for_writer_service_health(
                 "wait_seconds": int(elapsed),
                 "wait_milliseconds": int(round(elapsed * 1000)),
             }
+
+        diagnostics = lifecycle._service_subresource_diagnostics(
+            response.get("payload"),
+            service_name,
+        )
+        application_uuid = diagnostics.get("selected_application_uuid")
+        if isinstance(application_uuid, str) and application_uuid:
+            logs_endpoint = (
+                f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+                f"/applications/{urllib.parse.quote(application_uuid, safe='')}"
+                "/logs?lines=300&show_timestamps=true"
+            )
+            try:
+                logs_response = _coolify_http(
+                    controller,
+                    "GET",
+                    logs_endpoint,
+                    body=None,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+            except MotherBootnodePrecleanupError:
+                logs_response = None
+
+            proof_observed = False
+            if isinstance(logs_response, Mapping):
+                logs_payload = logs_response.get("payload")
+                logs_text = logs_payload.get("logs") if isinstance(logs_payload, Mapping) else None
+                proof_observed = (
+                    logs_response.get("ok") is True
+                    and isinstance(logs_text, str)
+                    and expected_completion_marker in logs_text
+                )
+                observations.append(
+                    {
+                        "method": "GET",
+                        "endpoint": logs_endpoint,
+                        "status": logs_response["status"],
+                        "ok": logs_response["ok"],
+                        "response_sha256": logs_response["response_sha256"],
+                        "byte_length": logs_response["byte_length"],
+                        "elapsed_ms": logs_response["elapsed_ms"],
+                        "controller_id": controller_id,
+                        "phase": "bootnode-precleanup-writer-completion-proof-poll",
+                        "service_uuid": service_uuid,
+                        "service_name": service_name,
+                        "application_uuid": application_uuid,
+                        "proof_observed": proof_observed,
+                    }
+                )
+            if proof_observed:
+                return {
+                    "healthy": False,
+                    "proof_observed": True,
+                    "proof_source": "script-complete-log",
+                    "service_status": status or None,
+                    "first_status": first_status or None,
+                    "final_status": status or None,
+                    "observed_statuses": observed_statuses,
+                    "service_uuid": service_uuid,
+                    "service_name": service_name,
+                    "observation_count": observation_count,
+                    "wait_seconds": int(elapsed),
+                    "wait_milliseconds": int(round(elapsed * 1000)),
+                }
+
         if elapsed >= max_wait_seconds:
             return {
                 "healthy": False,
@@ -546,6 +894,16 @@ def _wait_for_writer_service_health(
         "reason": "health-timeout",
     }
 
+
+
+def _writer_health_observed_proof(health: Mapping[str, Any] | None) -> bool:
+    if not isinstance(health, Mapping):
+        return False
+    if health.get("healthy") is True:
+        return True
+    if health.get("proof_observed") is True:
+        return True
+    return False
 
 def _single_quote(text: str) -> str:
     return "'" + text.replace("'", "'\"'\"'") + "'"
@@ -1187,10 +1545,11 @@ def _delete_writer_service(
         "service_uuid": service_uuid,
         "service_name": service_name,
         "cleanup_scope": "bootnode-precleanup-writer-service",
+        "response_payload_summary": _safe_payload_summary(response.get("payload")),
     }
 
 
-def _run_writer_service(
+def _run_writer_service_once(
     private_state: PrivateStateReadResult,
     *,
     network: str,
@@ -1202,6 +1561,7 @@ def _run_writer_service(
     opener: Any,
     sleeper: Callable[[float], None],
     preserve_services: bool,
+    attempt_index: int = 1,
 ) -> dict[str, Any]:
     node = _identifier(action.get("node"), "writer action node")
     controller_id = _identifier(action.get("controller_id"), f"{node} controller_id")
@@ -1209,6 +1569,8 @@ def _run_writer_service(
     controller = _controller(private_state, network=network, controller_id=controller_id)
     controller_config = _controller_config(private_state, network=network, controller_id=controller_id)
     service_name = _writer_service_name(node)
+    if attempt_index > 1:
+        service_name = f"{service_name}-retry{attempt_index}"
     observations: list[dict[str, Any]] = []
     writer_service_uuid: str | None = None
     compose = _writer_service_compose(service_name, action)
@@ -1252,6 +1614,7 @@ def _run_writer_service(
         "request_body_sha256": hashlib.sha256(canonical_json(body)).hexdigest(),
         "compose_sha256": hashlib.sha256(compose.encode("utf-8")).hexdigest(),
         "writer_script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
+        "response_payload_summary": _safe_payload_summary(create_response.get("payload")),
     }
     observations.append(
         {key: create_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")}
@@ -1270,6 +1633,19 @@ def _run_writer_service(
             "health": None,
             "delete": None,
             "writer_service_preserved": False,
+            "writer_service_attempt": attempt_index,
+            "writer_service_proof_observed": False,
+            "writer_materialization_debug": {
+                "kind": "main_computer.mother.bootnode_precleanup.writer_materialization_debug.v1",
+                "boundary": "Coolify temporary writer service creation before Docker container/proof materialization",
+                "controller_id": controller_id,
+                "node": node,
+                "target_container": container_name,
+                "action": action.get("action"),
+                "path": action.get("path"),
+                "attempt": attempt_index,
+                "create": _writer_receipt_debug_summary(create_receipt),
+            },
             "observations": observations,
         }
 
@@ -1299,6 +1675,7 @@ def _run_writer_service(
         "cleanup_scope": "bootnode-precleanup-writer-service",
         "target_node": node,
         "target_container": container_name,
+        "response_payload_summary": _safe_payload_summary(start_response.get("payload")),
     }
     observations.append(
         {key: start_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")}
@@ -1333,6 +1710,21 @@ def _run_writer_service(
             "health": None,
             "delete": delete_receipt,
             "writer_service_preserved": bool(preserve_services),
+            "writer_service_attempt": attempt_index,
+            "writer_service_proof_observed": False,
+            "writer_materialization_debug": _writer_materialization_boundary_debug(
+                controller_id=controller_id,
+                node=node,
+                target_container=container_name,
+                action=action,
+                service_uuid=writer_service_uuid,
+                service_name=service_name,
+                attempt_index=attempt_index,
+                create_receipt=create_receipt,
+                start_receipt=start_receipt,
+                health=None,
+                delete_receipt=delete_receipt,
+            ),
             "observations": observations,
         }
 
@@ -1341,6 +1733,7 @@ def _run_writer_service(
         controller_id=controller_id,
         service_uuid=writer_service_uuid,
         service_name=service_name,
+        action=action,
         timeout=timeout,
         max_response_bytes=max_response_bytes,
         max_wait_seconds=max_wait_seconds,
@@ -1351,7 +1744,7 @@ def _run_writer_service(
     )
 
     delete_receipt = None
-    if health.get("healthy") is True and not preserve_services:
+    if not preserve_services:
         delete_receipt = _delete_writer_service(
             controller=controller,
             controller_id=controller_id,
@@ -1366,6 +1759,7 @@ def _run_writer_service(
         )
 
     healthy = health.get("healthy") is True
+    proven = _writer_health_observed_proof(health)
     delete_ok = preserve_services or (delete_receipt is not None and delete_receipt.get("ok") is True)
     return {
         "node": node,
@@ -1375,8 +1769,8 @@ def _run_writer_service(
         "path": action.get("path"),
         "static_node_count": action.get("static_node_count"),
         "static_nodes_sha256": action.get("static_nodes_sha256"),
-        "status": "pass" if healthy and delete_ok else "failed",
-        "reason": None if healthy and delete_ok else ("writer-service-not-healthy" if not healthy else "writer-service-delete-failed"),
+        "status": "pass" if proven and delete_ok else "failed",
+        "reason": None if proven and delete_ok else ("writer-service-not-healthy" if not proven else "writer-service-delete-failed"),
         "writer_service_created": True,
         "writer_service_uuid": writer_service_uuid,
         "writer_service_name": service_name,
@@ -1384,6 +1778,22 @@ def _run_writer_service(
         "writer_service_healthy": healthy,
         "writer_service_deleted": (delete_receipt is not None and delete_receipt.get("ok") is True),
         "writer_service_preserved": bool(preserve_services),
+        "writer_service_attempt": attempt_index,
+        "writer_service_proof_observed": proven,
+        "writer_service_proof_source": health.get("proof_source"),
+        "writer_materialization_debug": _writer_materialization_boundary_debug(
+            controller_id=controller_id,
+            node=node,
+            target_container=container_name,
+            action=action,
+            service_uuid=writer_service_uuid,
+            service_name=service_name,
+            attempt_index=attempt_index,
+            create_receipt=create_receipt,
+            start_receipt=start_receipt,
+            health=health,
+            delete_receipt=delete_receipt,
+        ),
         "create": create_receipt,
         "start": start_receipt,
         "health": health,
@@ -1396,6 +1806,70 @@ def _run_writer_service(
     }
 
 
+
+
+def _run_writer_service(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    action: Mapping[str, Any],
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    sleeper: Callable[[float], None],
+    preserve_services: bool,
+    writer_service_attempts: int = DEFAULT_WRITER_SERVICE_ATTEMPTS,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    max_attempts = max(1, int(writer_service_attempts))
+
+    for attempt_index in range(1, max_attempts + 1):
+        attempt = _run_writer_service_once(
+            private_state,
+            network=network,
+            action=action,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            sleeper=sleeper,
+            preserve_services=preserve_services,
+            attempt_index=attempt_index,
+        )
+        attempt["writer_service_attempt"] = attempt_index
+        attempts.append(attempt)
+
+        if attempt.get("status") == "pass":
+            result = dict(attempt)
+            result["writer_service_attempt_count"] = attempt_index
+            result["writer_service_attempts"] = attempts
+            return result
+
+        retryable = (
+            attempt.get("reason") == "writer-service-not-healthy"
+            and attempt.get("start", {}).get("ok") is True
+            and attempt.get("writer_service_proof_observed") is not True
+            and attempt_index < max_attempts
+        )
+        if not retryable:
+            break
+
+    final = dict(attempts[-1])
+    final["status"] = "failed"
+    final["reason"] = final.get("reason") or "writer-service-not-healthy"
+    if (
+        final.get("reason") == "writer-service-not-healthy"
+        and final.get("start", {}).get("ok") is True
+        and final.get("writer_service_proof_observed") is not True
+        and len(attempts) > 1
+    ):
+        final["reason"] = "writer-service-not-materialized-or-not-proven"
+    final["writer_service_attempt_count"] = len(attempts)
+    final["writer_service_attempts"] = attempts
+    return final
 
 def _seed_record(
     service: Mapping[str, Any],
@@ -1737,6 +2211,7 @@ def run_bootnode_precleanup(
     execute: bool = False,
     allow_mutation: bool = False,
     preserve_services: bool = False,
+    writer_service_attempts: int = DEFAULT_WRITER_SERVICE_ATTEMPTS,
     probe_node_info: bool = True,
     write_evidence: bool = True,
     runner: DockerRunner = subprocess.run,
@@ -1754,6 +2229,7 @@ def run_bootnode_precleanup(
     response_limit = _positive_int(max_response_bytes, "max_response_bytes")
     wait_limit = _nonnegative_float(max_wait_seconds, "max_wait_seconds")
     poll_interval = _nonnegative_float(poll_interval_seconds, "poll_interval_seconds")
+    writer_attempt_limit = _positive_int(writer_service_attempts, "writer_service_attempts")
     if execute and not allow_mutation:
         raise MotherBootnodePrecleanupError(
             "MOTHER_BOOTNODE_PRECLEANUP_MUTATION_NOT_ALLOWED",
@@ -1876,6 +2352,7 @@ def run_bootnode_precleanup(
                     opener=opener,
                     sleeper=sleeper,
                     preserve_services=preserve_services,
+                    writer_service_attempts=writer_attempt_limit,
                 )
                 mutation_results.append(result)
 
@@ -1911,6 +2388,7 @@ def run_bootnode_precleanup(
             "live_mutation_performed": mutation_performed,
             "static_nodes_path": STATIC_NODES_PATH,
             "preserve_services": bool(preserve_services),
+            "writer_service_attempts": writer_attempt_limit,
         },
         "private_state_node_info": {
             "read": private_state_read_observation,
@@ -1932,6 +2410,8 @@ def run_bootnode_precleanup(
             "writer_service_passed_count": sum(1 for result in mutation_results if result.get("status") == "pass"),
             "writer_service_deleted_count": sum(1 for result in mutation_results if result.get("writer_service_deleted") is True),
             "writer_service_preserved_count": sum(1 for result in mutation_results if result.get("writer_service_preserved") is True),
+            "writer_service_attempt_count": sum(int(result.get("writer_service_attempt_count") or 1) for result in mutation_results),
+            "writer_service_retry_performed": any(int(result.get("writer_service_attempt_count") or 1) > 1 for result in mutation_results),
             "local_docker_mutation_performed": False,
             "live_mutation_performed": mutation_performed,
         },
@@ -1959,7 +2439,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-static-nodes", type=int, default=5)
     parser.add_argument("--execute", action="store_true", help="write/delete static-nodes.json through temporary Coolify writer services")
     parser.add_argument("--allow-mutation", action="store_true", help="required together with --execute")
-    parser.add_argument("--preserve-services", action="store_true", help="do not delete temporary writer services after they reach running:healthy")
+    parser.add_argument("--preserve-services", action="store_true", help="do not delete temporary writer services")
+    parser.add_argument("--writer-service-attempts", type=int, default=DEFAULT_WRITER_SERVICE_ATTEMPTS, help="maximum temporary writer service create/start attempts per node")
     parser.add_argument("--no-live-node-info", action="store_true", help="do not query containers for admin_nodeInfo")
     parser.add_argument("--no-write-evidence", action="store_true")
     parser.add_argument("--timeout", type=float, default=15.0)
@@ -1983,6 +2464,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             execute=args.execute,
             allow_mutation=args.allow_mutation,
             preserve_services=args.preserve_services,
+            writer_service_attempts=args.writer_service_attempts,
             probe_node_info=not args.no_live_node_info,
             write_evidence=not args.no_write_evidence,
             timeout=args.timeout,

@@ -46,6 +46,112 @@ class _Runner:
         raise AssertionError(f"unexpected command: {args!r}")
 
 
+class _BytesResponse:
+    def __init__(self, payload: object, status: int = 200) -> None:
+        self.status = status
+        self._body = json.dumps(payload).encode("utf-8")
+        self.headers = {}
+
+    def getcode(self) -> int:
+        return self.status
+
+    def read(self, _size: int = -1) -> bytes:
+        return self._body
+
+    def close(self) -> None:
+        return None
+
+
+def _json_response(payload: object, status: int = 200) -> _BytesResponse:
+    return _BytesResponse(payload, status=status)
+
+
+class _WriterRetryOpener:
+    def __init__(
+        self,
+        *,
+        second_attempt_healthy: bool = True,
+        completion_marker: str | None = None,
+    ) -> None:
+        self.second_attempt_healthy = second_attempt_healthy
+        self.completion_marker = completion_marker
+        self.created: list[str] = []
+        self.started: list[str] = []
+        self.deleted: list[str] = []
+
+    def __call__(self, request, timeout=0):  # noqa: ANN001, ARG002
+        method = request.get_method()
+        url = request.full_url
+
+        if method == "GET" and url.endswith("/api/v1/projects/project-uuid/environments"):
+            return _json_response([{"uuid": "environment-uuid", "name": "mainnet"}])
+
+        if method == "POST" and url.endswith("/api/v1/services"):
+            service_uuid = "writer-attempt-1" if not self.created else "writer-attempt-2"
+            self.created.append(service_uuid)
+            return _json_response({"uuid": service_uuid}, status=201)
+
+        if method == "POST" and url.endswith("/start"):
+            service_uuid = url.rsplit("/", 2)[-2]
+            self.started.append(service_uuid)
+            return _json_response({"message": "started"}, status=200)
+
+        if method == "DELETE" and "/api/v1/services/" in url:
+            service_uuid = url.rsplit("/", 1)[-1]
+            self.deleted.append(service_uuid)
+            return _json_response({"message": "deleted"}, status=200)
+
+        if method == "GET" and "/applications/" in url and "/logs?" in url:
+            logs = self.completion_marker or ""
+            return _json_response({"logs": logs}, status=200)
+
+        if method == "GET" and "/api/v1/services/" in url:
+            service_uuid = url.rsplit("/", 1)[-1]
+            if service_uuid == "writer-attempt-2" and self.second_attempt_healthy:
+                status = "running:healthy"
+            else:
+                status = "exited"
+            return _json_response(
+                {
+                    "uuid": service_uuid,
+                    "name": "writer",
+                    "status": status,
+                    "applications": [
+                        {
+                            "uuid": f"{service_uuid}-app",
+                            "name": "writer",
+                            "status": status,
+                        }
+                    ],
+                },
+                status=200,
+            )
+
+        raise AssertionError(f"unexpected request: {method} {url!r}")
+
+
+
+def _patch_coolify_writer_controller(monkeypatch: pytest.MonkeyPatch) -> None:
+    controller = bootnode.CoolifyController(
+        network="mainnet",
+        controller_id="coolify-c",
+        base_url="http://coolify.example",
+        api_token="token",
+        enabled=True,
+        project_name_hint="my-first-project",
+        mutation_authority="observe-only",
+    )
+    monkeypatch.setattr(bootnode, "_load_private_state", lambda *args, **kwargs: object())
+    monkeypatch.setattr(bootnode, "_controller", lambda *args, **kwargs: controller)
+    monkeypatch.setattr(
+        bootnode,
+        "_controller_config",
+        lambda *args, **kwargs: {
+            "project_uuid": "project-uuid",
+            "server_uuid": "server-uuid",
+        },
+    )
+
 def _service(node: str, uuid: str, node_id: str, host: str, port: int) -> dict:
     return {
         "node": node,
@@ -211,6 +317,159 @@ def test_execute_writes_per_node_static_nodes_without_compose_patch_or_restart(
     assert writer_actions[1]["static_nodes"] == [f"enode://{NODE_ID_C1}@10.116.0.4:30303"]
     assert "docker_compose_raw" not in json.dumps(result)
 
+
+
+def test_writer_service_accepts_script_complete_proof_when_status_is_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_coolify_writer_controller(monkeypatch)
+    action = {
+        "node": "mainnetc-super1",
+        "controller_id": "coolify-c",
+        "container_name": f"mainnetc-super1-{SERVICE_C1}",
+        "action": "write-static-nodes",
+        "path": STATIC_NODES_PATH,
+        "static_nodes": [f"enode://{NODE_ID_C2}@10.116.0.5:30304"],
+        "static_node_count": 1,
+        "static_nodes_sha256": "d" * 64,
+    }
+    completion_marker = (
+        "MOTHER_BOOTNODE_PRECLEANUP_WRITER_DIAGNOSTIC "
+        "phase=script_complete "
+        f"node={action['node']} "
+        f"target_container={action['container_name']} "
+        f"operation={action['action']} "
+        f"path={action['path']}"
+    )
+    opener = _WriterRetryOpener(
+        second_attempt_healthy=False,
+        completion_marker=completion_marker,
+    )
+
+    result = bootnode._run_writer_service_once(
+        object(),
+        network="mainnet",
+        action=action,
+        timeout=1.0,
+        max_response_bytes=1024 * 1024,
+        max_wait_seconds=0,
+        poll_interval_seconds=0.01,
+        opener=opener,
+        sleeper=lambda _seconds: None,
+        preserve_services=False,
+    )
+
+    assert result["status"] == "pass"
+    assert result["reason"] is None
+    assert result["writer_service_healthy"] is False
+    assert result["writer_service_final_status"] == "exited"
+    assert result["writer_service_proof_observed"] is True
+    assert result["writer_service_proof_source"] == "script-complete-log"
+    assert result["writer_service_attempt"] == 1
+    assert opener.created == ["writer-attempt-1"]
+    assert opener.started == ["writer-attempt-1"]
+    assert opener.deleted == ["writer-attempt-1"]
+    proof_poll = next(
+        item
+        for item in result["observations"]
+        if item.get("phase") == "bootnode-precleanup-writer-completion-proof-poll"
+    )
+    assert proof_poll["proof_observed"] is True
+
+
+def test_writer_service_retries_when_started_but_no_proof_observed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _write_topology(
+        tmp_path,
+        nodes=["mainnetc-super1"],
+        services={
+            "mainnetc-super1": _service("mainnetc-super1", SERVICE_C1, NODE_ID_C1, "10.116.0.4", 30303),
+        },
+    )
+    _patch_coolify_writer_controller(monkeypatch)
+    opener = _WriterRetryOpener()
+
+    result = run_bootnode_precleanup(
+        network="mainnet",
+        runtime_state_root=runtime,
+        execute=True,
+        allow_mutation=True,
+        probe_node_info=False,
+        write_evidence=False,
+        runner=_Runner(),
+        opener=opener,
+        max_wait_seconds=0,
+        writer_service_attempts=2,
+    )
+
+    assert result["status"] == "pass"
+    writer = result["mutation_results"][0]
+    assert writer["writer_service_attempt_count"] == 2
+    assert [item["writer_service_uuid"] for item in writer["writer_service_attempts"]] == [
+        "writer-attempt-1",
+        "writer-attempt-2",
+    ]
+    assert writer["writer_service_attempts"][0]["status"] == "failed"
+    assert writer["writer_service_attempts"][0]["reason"] == "writer-service-not-healthy"
+    assert writer["writer_service_attempts"][0]["writer_service_proof_observed"] is False
+    first_debug = writer["writer_service_attempts"][0]["writer_materialization_debug"]
+    assert first_debug["boundary"] == "Coolify temporary writer service start acknowledgement to Docker container/proof materialization"
+    assert first_debug["failure_class_when_unhealthy_without_proof"] == "writer-service-not-materialized-or-not-proven"
+    assert first_debug["start"]["response_payload_summary"]["message"] == "started"
+    assert first_debug["host_manual_diagnostic"]["expected_service_directory"] == "/data/coolify/services/writer-attempt-1"
+    assert first_debug["host_manual_diagnostic"]["safe_to_paste"] is True
+    assert first_debug["host_manual_diagnostic"]["secrets_printed"] is False
+    assert any("docker compose --env-file .env -f docker-compose.yml -p $WRITER_UUID ps -a" in command for command in first_debug["host_manual_diagnostic"]["commands"])
+    poll_observation = next(
+        item for item in writer["writer_service_attempts"][0]["observations"]
+        if item.get("phase") == "bootnode-precleanup-writer-health-poll"
+    )
+    assert poll_observation["service_detail_snapshot"]["service_status"] == "exited"
+    assert poll_observation["service_detail_snapshot"]["matching_service_records"][0]["uuid"] == "writer-attempt-1"
+    assert writer["writer_service_attempts"][1]["status"] == "pass"
+    assert opener.deleted == ["writer-attempt-1", "writer-attempt-2"]
+    assert result["summary"]["writer_service_attempt_count"] == 2
+    assert result["summary"]["writer_service_retry_performed"] is True
+
+
+def test_writer_service_retry_is_bounded_when_no_attempt_proves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _write_topology(
+        tmp_path,
+        nodes=["mainnetc-super1"],
+        services={
+            "mainnetc-super1": _service("mainnetc-super1", SERVICE_C1, NODE_ID_C1, "10.116.0.4", 30303),
+        },
+    )
+    _patch_coolify_writer_controller(monkeypatch)
+    opener = _WriterRetryOpener(second_attempt_healthy=False)
+
+    result = run_bootnode_precleanup(
+        network="mainnet",
+        runtime_state_root=runtime,
+        execute=True,
+        allow_mutation=True,
+        probe_node_info=False,
+        write_evidence=False,
+        runner=_Runner(),
+        opener=opener,
+        max_wait_seconds=0,
+        writer_service_attempts=2,
+    )
+
+    assert result["status"] == "failed"
+    writer = result["mutation_results"][0]
+    assert writer["writer_service_attempt_count"] == 2
+    assert writer["reason"] == "writer-service-not-materialized-or-not-proven"
+    assert [item["writer_service_uuid"] for item in writer["writer_service_attempts"]] == [
+        "writer-attempt-1",
+        "writer-attempt-2",
+    ]
+    assert all(item["writer_service_proof_observed"] is False for item in writer["writer_service_attempts"])
+    assert opener.deleted == ["writer-attempt-1", "writer-attempt-2"]
+    assert result["summary"]["writer_service_retry_performed"] is True
 
 def test_live_node_info_supplies_node_id_when_topology_only_has_route(tmp_path: Path) -> None:
     service = {
