@@ -263,7 +263,7 @@ def test_cli_exposes_documented_remove_node_stage_surface() -> None:
             "actions/deployment-node-remove-do-releases/example.json",
             "--acknowledge-release-sha256",
             "0" * 64,
-            "--delete-static-node-precleanup-services",
+            "--preserve-static-node-precleanup-services",
             "--execute",
         ]
     )
@@ -1761,7 +1761,6 @@ def test_remove_node_do_v2_runs_static_node_precleanup_before_survivor_cleanup(
         acknowledged_release_sha256=release_sha,
         max_wait_seconds=0,
         poll_interval_seconds=0,
-        delete_static_node_precleanup_services=False,
         operation=_operation("execute-remove-do-static-precleanup-order"),
         opener=_NodeRemoveDoOpener(),
         now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
@@ -1776,12 +1775,53 @@ def test_remove_node_do_v2_runs_static_node_precleanup_before_survivor_cleanup(
     assert call["network"] == "mainnet"
     assert call["runtime_state_root"] == paths.root.parent
     assert call["exclude_nodes"] == ["mainneta-super1"]
-    assert call["preserve_services"] is True
+    assert call["preserve_services"] is False
     assert call["probe_node_info"] is False
     assert call["failure_code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_STATIC_NODE_PRECLEANUP_FAILED"
     assert call["context"] == "survivor cleanup"
     assert call["topology_evidence"]
     assert call["acknowledged_topology_evidence_sha256"]
+
+
+def test_remove_node_do_v2_can_explicitly_preserve_static_node_precleanup_services(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+    precleanup_calls: list[dict[str, Any]] = []
+
+    def fake_precleanup(**kwargs: Any) -> dict[str, Any]:
+        precleanup_calls.append(kwargs)
+        return _static_node_precleanup_pass(**kwargs)
+
+    monkeypatch.setattr(node_remove_do_v2_module, "run_static_node_precleanup_gate", fake_precleanup)
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "execute_completed_mother_helper_cleanup",
+        lambda *args, **kwargs: {"status": "pass", "summary": {"clean": True, "complete": True}},
+    )
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "execute_node_removal",
+        lambda *args, **kwargs: {"status": "pass", "already_absent": False},
+    )
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        preserve_static_node_precleanup_services=True,
+        operation=_operation("execute-remove-do-static-precleanup-preserve"),
+        opener=_NodeRemoveDoOpener(),
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "pass"
+    assert precleanup_calls[0]["preserve_services"] is True
+    assert result["policy"]["static_node_precleanup_preserve_services"] is True
 
 
 def test_remove_node_do_v2_static_node_precleanup_failure_after_proof_warns_and_continues(
@@ -2700,14 +2740,28 @@ def test_remove_node_do_cli_exposes_release_verify_do_and_evidence() -> None:
             "actions/deployment-node-remove-do-releases/example.json",
             "--acknowledge-release-sha256",
             "0" * 64,
-            "--delete-static-node-precleanup-services",
+            "--preserve-static-node-precleanup-services",
             "--execute",
         ]
     )
     assert do_args.command == "remove-node"
     assert do_args.remove_node_phase == "do"
-    assert do_args.delete_static_node_precleanup_services is True
+    assert do_args.preserve_static_node_precleanup_services is True
     assert do_args.execute is True
+
+    default_do_args = parser.parse_args(
+        [
+            "remove-node",
+            "do",
+            "mainnet",
+            "--release",
+            "actions/deployment-node-remove-do-releases/example.json",
+            "--acknowledge-release-sha256",
+            "0" * 64,
+            "--execute",
+        ]
+    )
+    assert default_do_args.preserve_static_node_precleanup_services is False
 
     finalize_args = parser.parse_args(
         [
