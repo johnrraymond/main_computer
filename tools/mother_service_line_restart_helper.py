@@ -3,8 +3,9 @@
 
 This tool creates one temporary docker:27-cli Coolify service on the selected
 controller.  The temporary service mounts /var/run/docker.sock and performs only
-a Docker-level start/restart of exactly one container whose Compose labels match
-the requested parent service UUID and service line.
+a Docker-level start/restart of exactly one container identified first by exact
+Compose labels and, only when those labels match zero containers, by the exact
+deterministic ``<service-line>-<parent-service-uuid>`` container name.
 
 Manual/operator runs preserve the temporary helper service by default for log
 inspection.  Mother automation may pass --delete-helper-after-exit to remove the
@@ -373,8 +374,8 @@ def _helper_shell_script(
     poll = max(1, int(round(_positive(poll_interval_seconds, "poll_interval_seconds"))))
 
     # The temporary helper intentionally never calls docker compose or Coolify.
-    # It uses exact Docker Compose labels to select one existing service-line
-    # container, then docker start/restart on that one container only.
+    # It prefers exact Docker Compose labels. If those labels select zero
+    # containers, it falls back to the exact deterministic container name.
     lines = [
         "#!/bin/sh",
         "set +e",
@@ -382,13 +383,30 @@ def _helper_shell_script(
         "emit() { echo \"$prefix $*\"; }",
         f"project={_single_quote(service)}",
         f"line={_single_quote(line)}",
+        'expected_name="$line-$project"',
         f"max_wait={wait_limit}",
         f"poll_interval={poll}",
-        "emit phase=script_start project=$project service_line=$line",
+        "emit phase=script_start project=$project service_line=$line expected_name=$expected_name",
         "ids=$(docker ps -a --filter \"label=com.docker.compose.project=$project\" --filter \"label=com.docker.compose.service=$line\" --format '{{.ID}}')",
         "candidate_count=$(printf '%s\n' \"$ids\" | sed '/^$/d' | wc -l | tr -d ' ')",
         "ids_compact=$(printf '%s' \"$ids\" | tr '\n' ',')",
-        "emit phase=candidates candidate_count=$candidate_count candidate_ids=$ids_compact",
+        "emit phase=candidates selector=compose-labels candidate_count=$candidate_count candidate_ids=$ids_compact expected_name=$expected_name",
+        "if [ \"$candidate_count\" = \"0\" ]; then",
+        "  fallback_id=$(docker inspect --format '{{.Id}}' \"$expected_name\" 2>/tmp/mslr-fallback-id.err)",
+        "  fallback_rc=$?",
+        "  fallback_name=",
+        "  if [ \"$fallback_rc\" = \"0\" ] && [ -n \"$fallback_id\" ]; then",
+        "    fallback_name=$(docker inspect --format '{{.Name}}' \"$fallback_id\" 2>/tmp/mslr-fallback-name.err | sed 's#^/##')",
+        "  fi",
+        "  if [ \"$fallback_rc\" = \"0\" ] && [ -n \"$fallback_id\" ] && [ \"$fallback_name\" = \"$expected_name\" ]; then",
+        "    ids=$fallback_id",
+        "    candidate_count=1",
+        "    ids_compact=$fallback_id",
+        "    emit phase=candidates selector=deterministic-name candidate_count=$candidate_count candidate_ids=$ids_compact expected_name=$expected_name",
+        "  else",
+        "    emit phase=candidate_fallback selector=deterministic-name matched=false inspect_rc=$fallback_rc candidate_name=$fallback_name expected_name=$expected_name",
+        "  fi",
+        "fi",
         "if [ \"$candidate_count\" != \"1\" ]; then",
         "  emit phase=complete status=failed reason=candidate-count-not-one candidate_count=$candidate_count",
         "  touch /tmp/mother-service-line-restart-done",

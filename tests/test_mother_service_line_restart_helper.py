@@ -178,10 +178,36 @@ def test_helper_shell_restarts_one_existing_compose_service_line_without_compose
     assert "docker ps -a" in shell
     assert "label=com.docker.compose.project=$project" in shell
     assert "label=com.docker.compose.service=$line" in shell
+    assert 'expected_name="$line-$project"' in shell
+    assert "selector=deterministic-name" in shell
     assert "docker restart \"$cid\"" in shell
     assert "docker start \"$cid\"" in shell
     assert "docker compose" not in shell.lower()
     assert "/api/v1/services" not in shell
+
+
+def test_helper_shell_falls_back_to_exact_deterministic_name_only_after_zero_label_candidates() -> None:
+    shell = _helper_shell_script(
+        parent_service_uuid=PARENT_SERVICE_UUID,
+        service_line=NODE,
+        max_wait_seconds=60,
+        poll_interval_seconds=5,
+    )
+
+    label_lookup = shell.index("label=com.docker.compose.project=$project")
+    zero_guard = shell.index('if [ "$candidate_count" = "0" ]; then')
+    exact_lookup = shell.index('docker inspect --format \'{{.Id}}\' "$expected_name"')
+    exact_name_guard = shell.index('[ "$fallback_name" = "$expected_name" ]')
+    final_count_guard = shell.index('if [ "$candidate_count" != "1" ]; then')
+
+    assert label_lookup < zero_guard < exact_lookup < exact_name_guard < final_count_guard
+    assert 'if [ "$candidate_count" = "0" ]; then' in shell
+    assert 'ids=$fallback_id' in shell
+    assert "candidate_count=1" in shell
+    assert "selector=deterministic-name" in shell
+    assert 'docker inspect --format \'{{.Id}}\' "$expected_name"' in shell
+    assert 'docker inspect --format \'{{.Name}}\' "$fallback_id"' in shell
+    assert "docker compose" not in shell.lower()
 
 
 def test_helper_compose_uses_docker_cli_socket_and_restart_scope_labels() -> None:

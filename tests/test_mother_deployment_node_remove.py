@@ -53,6 +53,25 @@ def _default_static_node_precleanup_for_remove_do_v2(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(node_remove_do_v2_module, "run_static_node_precleanup_gate", _static_node_precleanup_pass)
 
 
+def _service_line_restart_pass(
+    private_state: Any,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return {
+        "status": "pass",
+        "reason": "test-service-line-restart",
+        "controller_id": kwargs.get("controller_id"),
+        "service_uuid": kwargs.get("service_uuid"),
+        "service_line": kwargs.get("service_line"),
+    }
+
+
+@pytest.fixture(autouse=True)
+def _default_service_line_restart_for_remove_do(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(node_remove_do_module, "run_service_line_restart_helper", _service_line_restart_pass)
+    monkeypatch.setattr(node_remove_do_v2_module, "run_service_line_restart_helper", _service_line_restart_pass)
+
+
 class _NodeRemoveOpener:
     def __init__(
         self,
@@ -1736,6 +1755,7 @@ def test_remove_node_do_v2_runs_static_node_precleanup_before_survivor_cleanup(
     paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
     events: list[str] = []
     precleanup_calls: list[dict[str, Any]] = []
+    cleanup_calls: list[dict[str, Any]] = []
 
     def fake_precleanup(**kwargs: Any) -> dict[str, Any]:
         events.append("static-node-precleanup")
@@ -1744,6 +1764,7 @@ def test_remove_node_do_v2_runs_static_node_precleanup_before_survivor_cleanup(
 
     def fake_cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
         events.append(f"survivor-cleanup:{kwargs['node']}")
+        cleanup_calls.append(dict(kwargs))
         return {"status": "pass", "summary": {"clean": True, "complete": True}}
 
     def fake_remove(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -1781,6 +1802,12 @@ def test_remove_node_do_v2_runs_static_node_precleanup_before_survivor_cleanup(
     assert call["context"] == "survivor cleanup"
     assert call["topology_evidence"]
     assert call["acknowledged_topology_evidence_sha256"]
+
+    assert cleanup_calls
+    assert all(item["allow_compose_reconcile_refresh"] is True for item in cleanup_calls)
+    assert all(item["instant_deploy_compose_reconcile_refresh"] is False for item in cleanup_calls)
+    assert all(item["allow_service_redeploy_refresh"] is False for item in cleanup_calls)
+    assert all(item["force_service_redeploy_refresh"] is False for item in cleanup_calls)
 
 
 def test_remove_node_do_v2_can_explicitly_preserve_static_node_precleanup_services(
@@ -1928,7 +1955,7 @@ def test_remove_node_do_release_and_execution_deletes_after_survivor_vote_guardi
         prep_path,
         acknowledged_prep_transaction_sha256=prep_sha,
         created_at="2026-08-11T19:22:00Z",
-        expires_in_seconds=900,
+        expires_in_seconds=120,
         now=__import__("datetime").datetime(2026, 8, 11, 19, 22, 0, tzinfo=__import__("datetime").timezone.utc),
     )
     release_path, release_sha = write_node_remove_do_release(paths, release, operation=_operation("write-remove-do-release"))
@@ -1970,11 +1997,32 @@ def test_remove_node_do_release_and_execution_deletes_after_survivor_vote_guardi
     assert len(patch_indices) == 2
     assert max(patch_indices) < delete_index
 
+    verification_time = __import__("datetime").datetime(
+        2026, 8, 11, 19, 25, 0, tzinfo=__import__("datetime").timezone.utc
+    )
+    with pytest.raises(node_remove_do_module.MotherDeploymentNodeRemoveDoError) as expired_release:
+        verify_node_remove_do_release(
+            paths,
+            private_state,
+            release_path,
+            now=verification_time,
+        )
+    assert expired_release.value.code == "MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_EXPIRED"
+
+    with pytest.raises(node_remove_do_v2_module.MotherDeploymentNodeRemoveDoError) as expired_release_v2:
+        node_remove_do_v2_module.verify_node_remove_do_release(
+            paths,
+            private_state,
+            release_path,
+            now=verification_time,
+        )
+    assert expired_release_v2.value.code == "MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_EXPIRED"
+
     verified_evidence = verify_node_remove_do_evidence(
         paths,
         private_state,
         Path(result["evidence"]["path"]),
-        now=__import__("datetime").datetime(2026, 8, 11, 19, 24, 0, tzinfo=__import__("datetime").timezone.utc),
+        now=verification_time,
     )
     assert verified_evidence["clean"] is True
     assert verified_evidence["target_node"] == "mainneta-super1"
@@ -1986,6 +2034,15 @@ def test_remove_node_do_release_and_execution_deletes_after_survivor_vote_guardi
     assert verified_evidence["validator_removal_vote_proven_by_proof_payload"] is True
     assert verified_evidence["final_validator_set_verified_by_proof_payload"] is True
     assert set(verified_evidence["validator_removal_proof_sha256_by_voter"]) == {"mainnetc-super1", "mainnetc-super2"}
+    verified_evidence_v2 = node_remove_do_v2_module.verify_node_remove_do_evidence(
+        paths,
+        private_state,
+        Path(result["evidence"]["path"]),
+        now=verification_time,
+    )
+    assert verified_evidence_v2["clean"] is True
+    assert verified_evidence_v2["target_node"] == "mainneta-super1"
+
 
 
 
@@ -2314,8 +2371,18 @@ def test_remove_node_do_deployment_readiness_uses_verified_proof_payload_not_end
     assert borrowed_observation["proof_endpoint_reachable"] is True
 
 
-def test_remove_node_do_uses_service_start_after_patch_for_remove_guardians(tmp_path: Path) -> None:
+def test_remove_node_do_uses_service_line_restart_helper_after_guardian_patch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+    restart_calls: list[dict[str, Any]] = []
+
+    def fake_restart(private_state_arg: Any, **kwargs: Any) -> dict[str, Any]:
+        restart_calls.append(dict(kwargs))
+        return _service_line_restart_pass(private_state_arg, **kwargs)
+
+    monkeypatch.setattr(node_remove_do_module, "run_service_line_restart_helper", fake_restart)
 
     opener = _NodeRemoveDoOpener()
     result = execute_node_remove_do_release(
@@ -2325,7 +2392,7 @@ def test_remove_node_do_uses_service_start_after_patch_for_remove_guardians(tmp_
         acknowledged_release_sha256=release_sha,
         max_wait_seconds=0,
         poll_interval_seconds=0,
-        operation=_operation("execute-remove-do-start-after-patch"),
+        operation=_operation("execute-remove-do-service-line-restart-after-patch"),
         opener=opener,
         now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
     )
@@ -2334,23 +2401,64 @@ def test_remove_node_do_uses_service_start_after_patch_for_remove_guardians(tmp_
     assert result["summary"]["validator_removal_vote_performed"] is True
     assert result["summary"]["service_deletion_performed"] is True
     assert not any(item[2].startswith("/api/v1/deploy?") for item in opener.requests)
-    start_requests = [item for item in opener.requests if item[0] == "POST" and item[2].endswith("/start")]
-    assert {item[2] for item in start_requests} >= {
-        "/api/v1/services/svcc1xxxx/start",
-        "/api/v1/services/svcc2xxxx/start",
+    assert not any(
+        item[0] == "POST" and item[2] in {
+            "/api/v1/services/svcc1xxxx/start",
+            "/api/v1/services/svcc2xxxx/start",
+        }
+        for item in opener.requests
+    )
+    assert len(restart_calls) == 2
+    assert {item["service_uuid"] for item in restart_calls} == {"svcc1xxxx", "svcc2xxxx"}
+    assert {item["service_line"] for item in restart_calls} == {
+        "mother-node-remove-voter-mainnetc_super1",
+        "mother-node-remove-voter-mainnetc_super2",
     }
-    start_receipts = [
+    assert all(item["mode"] == "execute" for item in restart_calls)
+    assert all(item["delete_helper_after_exit"] is True for item in restart_calls)
+
+    restart_receipts = [
         item for item in result["mutation_receipts"]
-        if str(item.get("mutation_id", "")).endswith("start-node-removal-vote-guardian")
+        if str(item.get("mutation_id", "")).endswith("restart-node-removal-vote-guardian")
     ]
-    assert len(start_receipts) == 2
-    assert all(item["method"] == "POST" and item["status"] == "succeeded" for item in start_receipts)
+    assert len(restart_receipts) == 2
+    assert all(
+        item["method"] == "SERVICE_LINE_RESTART_HELPER"
+        and item["restart_scope"] == "exact-compose-service-line"
+        and item["status"] == "succeeded"
+        for item in restart_receipts
+    )
 
 
-def test_remove_node_do_materializes_helper_via_service_start_after_patch(tmp_path: Path) -> None:
+def test_remove_node_do_restart_helper_failure_does_not_parent_restart_and_allows_host_helper_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     paths, private_state, release_path, release_sha = _write_remove_do_release_for_test(tmp_path)
+    host_helper_calls: list[dict[str, Any]] = []
 
-    opener = _NodeRemoveDoOpener(materialize_guardian_on_start_nodes={"mainnetc-super2"})
+    def fake_restart(private_state_arg: Any, **kwargs: Any) -> dict[str, Any]:
+        if kwargs.get("service_line") == "mother-node-remove-voter-mainnetc_super2":
+            return {
+                "status": "failed",
+                "reason": "candidate-count-not-one",
+                "completion": {"candidate_count": 0},
+                "service_uuid": kwargs.get("service_uuid"),
+                "service_line": kwargs.get("service_line"),
+            }
+        return _service_line_restart_pass(private_state_arg, **kwargs)
+
+    def fake_host_helper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        host_helper_calls.append(dict(kwargs))
+        return _fake_host_docker_helper_setup(*args, **kwargs)
+
+    monkeypatch.setattr(node_remove_do_module, "run_service_line_restart_helper", fake_restart)
+    monkeypatch.setattr(node_remove_do_module, "setup_node_remove_helper", fake_host_helper)
+
+    opener = _NodeRemoveDoOpener(
+        sibling_guardian_never_materializes_nodes={"mainnetc-super2"},
+        existing_admission_voter_helper_nodes={"mainnetc-super2"},
+    )
     result = execute_node_remove_do_release(
         paths,
         private_state,
@@ -2358,25 +2466,28 @@ def test_remove_node_do_materializes_helper_via_service_start_after_patch(tmp_pa
         acknowledged_release_sha256=release_sha,
         max_wait_seconds=0,
         poll_interval_seconds=0,
-        operation=_operation("execute-remove-do-helper-start-materialize"),
+        operation=_operation("execute-remove-do-helper-restart-fallback"),
         opener=opener,
         now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
     )
 
     assert result["status"] == "pass", result
     assert result["summary"]["service_deletion_performed"] is True
-    start_requests = [item for item in opener.requests if item[0] == "POST" and item[2].endswith("/start")]
-    assert any("/api/v1/services/svcc2xxxx/start" == item[2] for item in start_requests)
+    assert not any(
+        item[0] == "POST" and item[2] in {
+            "/api/v1/services/svcc1xxxx/start",
+            "/api/v1/services/svcc2xxxx/start",
+        }
+        for item in opener.requests
+    )
+    assert not any(item[2].startswith("/api/v1/deploy?") for item in opener.requests)
+    assert any(call.get("node") == "mainnetc-super2" for call in host_helper_calls)
     assert any(
-        item.get("mutation_id") == "mainnetc-super2.start-node-removal-vote-guardian"
-        and item.get("status") == "succeeded"
+        item.get("mutation_id") == "mainnetc-super2.restart-node-removal-vote-guardian"
+        and item.get("status") == "failed"
         for item in result["mutation_receipts"]
     )
-    assert any(
-        item.get("guardian_deployment_verified") is True
-        for item in result["health_observations"]
-        if item.get("node") == "mainnetc-super2"
-    )
+    assert result["validator_removal_guardian_targets"]["mainnetc-super2"]["strategy"] == "host-docker-besu-network-helper"
 
 
 def test_remove_node_do_fails_before_proof_polling_when_helper_endpoint_unreachable_after_start(tmp_path: Path) -> None:

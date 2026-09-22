@@ -42,6 +42,10 @@ from .deployment_completed_helper_cleanup import (
 from .deployment_node_remove import MotherDeploymentNodeRemoveError, acknowledgement_for, execute_node_removal
 from .deployment_node_remove_prep import verify_node_remove_prep_transaction
 from .mother_node_remove_helper_setup import MotherNodeRemoveHelperSetupError, setup_node_remove_helper
+from tools.mother_service_line_restart_helper import (
+    MotherServiceLineRestartHelperError,
+    run_service_line_restart_helper,
+)
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
 
@@ -1950,6 +1954,7 @@ def verify_node_remove_do_release(
     transaction_max_age_seconds: int = 86400,
     baseline_max_age_seconds: int = 86400,
     now: datetime | None = None,
+    expires_at_reference: datetime | None = None,
 ) -> dict[str, Any]:
     document, _, _file_sha = _canonical_under(paths, Path(release_path), _RELEASE_DIRECTORY, "node-removal do release")
     digest = _digest_without(document, "node_remove_do_release_sha256")
@@ -1963,7 +1968,8 @@ def verify_node_remove_do_release(
     age = _age_seconds(document.get("created_at"), now=now)
     if age > max_age_seconds:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_STALE", "node-removal do release is outside the freshness window")
-    reference = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    reference_time = expires_at_reference if expires_at_reference is not None else now
+    reference = reference_time.astimezone(timezone.utc) if reference_time is not None else datetime.now(timezone.utc)
     if _parse_utc(document.get("expires_at"), "release.expires_at") <= reference:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_EXPIRED", "node-removal do release has expired")
     source = document.get("source_transaction")
@@ -2245,45 +2251,53 @@ def execute_node_remove_do_release(
             })
             if not patch_ok:
                 raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} guardian patch with HTTP {patch['status']}")
-            start_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start"
-            start = _http(
-                controller,
-                "POST",
-                start_endpoint,
-                body=None,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-            )
-            start_ok = start["status"] in {200, 201, 202}
-            start_rejected_nonfatal = start["status"] == 400
-            start_accepted = start_ok or start_rejected_nonfatal
-            start_receipt = {
+            try:
+                restart_result = run_service_line_restart_helper(
+                    private_state,
+                    runtime_state_root=paths.root.parent,
+                    network=release["network"],
+                    mode="execute",
+                    controller_id=controller_id,
+                    service_uuid=service_uuid,
+                    service_line=guardian,
+                    delete_helper_after_exit=True,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    max_wait_seconds=max_wait_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    opener=opener,
+                )
+            except MotherServiceLineRestartHelperError as exc:
+                restart_result = {
+                    "status": "failed",
+                    "reason": "service-line-restart-helper-error",
+                    "error_code": exc.code,
+                    "error": str(exc),
+                    "controller_id": controller_id,
+                    "service_uuid": service_uuid,
+                    "service_line": guardian,
+                }
+            restart_ok = restart_result.get("status") == "pass"
+            mutation_receipts.append({
                 "ordinal": len(mutation_receipts) + 1,
                 "phase": "remove-qbft-validator",
-                "mutation_id": f"{voter}.start-node-removal-vote-guardian",
+                "mutation_id": f"{voter}.restart-node-removal-vote-guardian",
                 "controller_id": controller_id,
                 "node": voter,
                 "service_uuid": service_uuid,
-                "method": "POST",
-                "endpoint": start_endpoint,
-                "body_sha256": None,
+                "service_line": guardian,
+                "method": "SERVICE_LINE_RESTART_HELPER",
+                "restart_scope": "exact-compose-service-line",
                 "guardian_service": guardian,
                 "proof_endpoint": dict(proof_endpoint),
-                "response": _safe_response(start),
-                "live_write_acknowledged": start_ok,
-                "status": "succeeded" if start_accepted else "failed",
-                "reason": "starting survivor service after remove guardian Compose PATCH to materialize the remove voter",
-            }
-            if start_rejected_nonfatal:
-                start_receipt["coolify_start_rejected_nonfatal"] = True
-                start_receipt["nonfatal_reason"] = (
-                    "Coolify rejected POST /start for an already-started survivor service after a successful "
-                    "remove guardian Compose PATCH; exact remove-helper proof endpoint readiness remains required"
-                )
-            mutation_receipts.append(start_receipt)
-            if not start_accepted:
-                raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} guardian start with HTTP {start['status']}")
+                "result": restart_result,
+                "live_write_acknowledged": restart_ok,
+                "status": "succeeded" if restart_ok else "failed",
+                "reason": (
+                    "restart exact remove-voter service line after guardian Compose PATCH; "
+                    "parent service restart forbidden"
+                ),
+            })
 
             readiness_deadline = (
                 time.monotonic()
@@ -2449,7 +2463,7 @@ def execute_node_remove_do_release(
                 else:
                     raise _fail(
                         "MOTHER_DEPLOY_NODE_REMOVE_DO_GUARDIAN_DEPLOYMENT_NOT_VERIFIED",
-                        f"{voter} removal guardian endpoint was not reachable after patch/start and host-Docker helper setup did not verify: {host_setup_result!r}; sibling readiness: {readiness!r}",
+                        f"{voter} removal guardian endpoint was not reachable after patch/service-line restart and host-Docker helper setup did not verify: {host_setup_result!r}; sibling readiness: {readiness!r}",
                     )
 
 
@@ -2626,9 +2640,9 @@ def execute_node_remove_do_release(
                     poll_interval_seconds=poll_interval_seconds,
                     allow_nested_application_delete=True,
                     allow_compose_reconcile_refresh=True,
-                    instant_deploy_compose_reconcile_refresh=True,
-                    allow_service_redeploy_refresh=True,
-                    force_service_redeploy_refresh=True,
+                    instant_deploy_compose_reconcile_refresh=False,
+                    allow_service_redeploy_refresh=False,
+                    force_service_redeploy_refresh=False,
                     allow_coolify_model_status_exclusion=True,
                     timeout=timeout,
                     max_response_bytes=max_response_bytes,
@@ -2830,6 +2844,7 @@ def verify_node_remove_do_evidence(
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "evidence release binding is missing")
     release_path = _resolve_under(paths, release.get("locator"), _RELEASE_DIRECTORY, label="node-removal do release")
     release_document, _, _ = _canonical_under(paths, release_path, _RELEASE_DIRECTORY, "node-removal do release")
+    execution_started_at = _parse_utc(document.get("started_at"), "evidence.started_at")
     verified_release = verify_node_remove_do_release(
         paths,
         private_state,
@@ -2838,6 +2853,7 @@ def verify_node_remove_do_evidence(
         transaction_max_age_seconds=transaction_max_age_seconds,
         baseline_max_age_seconds=baseline_max_age_seconds,
         now=now,
+        expires_at_reference=execution_started_at,
     )
     if verified_release["node_remove_do_release_sha256"] != release.get("sha256"):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "evidence release binding changed")
