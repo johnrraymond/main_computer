@@ -21,7 +21,7 @@ set "COMPOSE_PROJECT_NAME="
 
 set "MC_OPEN_BROWSER=0"
 set "MC_NO_DEV_HUB=0"
-set "MC_NANOJEV_MANAGED=0"
+set "MC_NANOJEV_MANAGED=1"
 set "MC_NANOJEV_IDLE_SECONDS=300"
 set "MC_UNKNOWN_ARG="
 
@@ -36,6 +36,9 @@ if /I "%~1"=="/NoDevHub" goto mc_disable_dev_hub
 if /I "%~1"=="--nanojev-managed" goto mc_enable_nanojev_managed
 if /I "%~1"=="-NanoJevManaged" goto mc_enable_nanojev_managed
 if /I "%~1"=="/NanoJevManaged" goto mc_enable_nanojev_managed
+if /I "%~1"=="--nanojev-direct" goto mc_disable_nanojev_managed
+if /I "%~1"=="-NanoJevDirect" goto mc_disable_nanojev_managed
+if /I "%~1"=="/NanoJevDirect" goto mc_disable_nanojev_managed
 if /I "%~1"=="--nanojev-idle-seconds" goto mc_set_nanojev_idle
 set "MC_UNKNOWN_ARG=%~1"
 goto mc_args_done
@@ -55,6 +58,11 @@ set "MC_NANOJEV_MANAGED=1"
 shift
 goto mc_parse_args
 
+:mc_disable_nanojev_managed
+set "MC_NANOJEV_MANAGED=0"
+shift
+goto mc_parse_args
+
 :mc_set_nanojev_idle
 shift
 if "%~1"=="" (
@@ -68,7 +76,7 @@ goto mc_parse_args
 :mc_args_done
 if defined MC_UNKNOWN_ARG (
   echo Unknown argument: %MC_UNKNOWN_ARG%
-  echo Usage: start_v2.bat [-OpenBrowser] [--no-dev-hub] [--nanojev-managed] [--nanojev-idle-seconds SECONDS]
+  echo Usage: start_v2.bat [-OpenBrowser] [--no-dev-hub] [--nanojev-managed^|--nanojev-direct] [--nanojev-idle-seconds SECONDS]
   exit /b 2
 )
 

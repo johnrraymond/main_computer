@@ -16,12 +16,15 @@ def _load_manager_module():
     return module
 
 
-def test_start_bat_accepts_lazy_managed_nanojev_flag_and_idle_timeout() -> None:
+def test_start_bat_defaults_to_lazy_managed_nanojev_and_keeps_direct_escape_hatch() -> None:
     start = (ROOT / "start.bat").read_text(encoding="utf-8")
     start_v2 = (ROOT / "start_v2.bat").read_text(encoding="utf-8")
 
     assert 'call "%~dp0start_v2.bat" %*' in start
+    assert 'set "MC_NANOJEV_MANAGED=1"' in start_v2
     assert '"--nanojev-managed"' in start_v2
+    assert '"--nanojev-direct"' in start_v2
+    assert ':mc_disable_nanojev_managed' in start_v2
     assert '"--nanojev-idle-seconds"' in start_v2
     assert "-NanoJevManaged" in start_v2
     assert "-NanoJevIdleSeconds" in start_v2
