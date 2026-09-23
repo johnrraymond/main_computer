@@ -21,6 +21,8 @@ set "COMPOSE_PROJECT_NAME="
 
 set "MC_OPEN_BROWSER=0"
 set "MC_NO_DEV_HUB=0"
+set "MC_NANOJEV_MANAGED=0"
+set "MC_NANOJEV_IDLE_SECONDS=300"
 set "MC_UNKNOWN_ARG="
 
 :mc_parse_args
@@ -31,6 +33,10 @@ if /I "%~1"=="/OpenBrowser" goto mc_enable_open_browser
 if /I "%~1"=="--no-dev-hub" goto mc_disable_dev_hub
 if /I "%~1"=="-NoDevHub" goto mc_disable_dev_hub
 if /I "%~1"=="/NoDevHub" goto mc_disable_dev_hub
+if /I "%~1"=="--nanojev-managed" goto mc_enable_nanojev_managed
+if /I "%~1"=="-NanoJevManaged" goto mc_enable_nanojev_managed
+if /I "%~1"=="/NanoJevManaged" goto mc_enable_nanojev_managed
+if /I "%~1"=="--nanojev-idle-seconds" goto mc_set_nanojev_idle
 set "MC_UNKNOWN_ARG=%~1"
 goto mc_args_done
 
@@ -44,10 +50,25 @@ set "MC_NO_DEV_HUB=1"
 shift
 goto mc_parse_args
 
+:mc_enable_nanojev_managed
+set "MC_NANOJEV_MANAGED=1"
+shift
+goto mc_parse_args
+
+:mc_set_nanojev_idle
+shift
+if "%~1"=="" (
+  echo Missing value for --nanojev-idle-seconds
+  exit /b 2
+)
+set "MC_NANOJEV_IDLE_SECONDS=%~1"
+shift
+goto mc_parse_args
+
 :mc_args_done
 if defined MC_UNKNOWN_ARG (
   echo Unknown argument: %MC_UNKNOWN_ARG%
-  echo Usage: start_v2.bat [-OpenBrowser] [--no-dev-hub]
+  echo Usage: start_v2.bat [-OpenBrowser] [--no-dev-hub] [--nanojev-managed] [--nanojev-idle-seconds SECONDS]
   exit /b 2
 )
 
@@ -57,11 +78,14 @@ if not exist "%MC_START_STOP%" (
   exit /b 1
 )
 
+set "MC_NANOJEV_ARGS="
+if "%MC_NANOJEV_MANAGED%"=="1" set "MC_NANOJEV_ARGS=-NanoJevManaged -NanoJevIdleSeconds %MC_NANOJEV_IDLE_SECONDS%"
+
 echo Force-stopping current Main Computer app processes before launch; Docker stacks are left alone...
 if "%MC_NO_DEV_HUB%"=="1" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat" -NoDevHub
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat" -NoDevHub %MC_NANOJEV_ARGS%
 ) else (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat"
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat" %MC_NANOJEV_ARGS%
 )
 if errorlevel 1 (
   echo Failed to launch Main Computer app control/supervisor.
@@ -69,7 +93,7 @@ if errorlevel 1 (
 )
 
 echo Waiting briefly for startup status...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action status -Root "%MC_ROOT%" -StartedBy "start_v2.bat"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%MC_START_STOP%" -Action status -Root "%MC_ROOT%" -StartedBy "start_v2.bat" %MC_NANOJEV_ARGS%
 if errorlevel 1 (
   echo Startup was requested, but status did not report cleanly.
   exit /b %ERRORLEVEL%

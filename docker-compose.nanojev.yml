@@ -1,0 +1,25 @@
+name: main-computer-nanojev
+
+services:
+  nanojev:
+    build:
+      context: ./docker/nanojev
+    image: main-computer/nanojev:unified-games-v1
+    container_name: main-computer-nanojev
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MAIN_COMPUTER_NANOJEV_BIND_PORT:-9765}:9765"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+    gpus: all
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:9765/api/health',timeout=2)); raise SystemExit(0 if d.get('ready') is True and d.get('model_loaded_once') is True and d.get('provider_calls') == 0 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 60s

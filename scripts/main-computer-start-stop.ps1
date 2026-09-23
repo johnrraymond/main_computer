@@ -10,7 +10,11 @@ param(
 
   [switch]$NoDocker,
 
-  [switch]$NoDevHub
+  [switch]$NoDevHub,
+
+  [switch]$NanoJevManaged,
+
+  [int]$NanoJevIdleSeconds = 300
 )
 
 $ErrorActionPreference = "Stop"
@@ -234,6 +238,16 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     OLLAMA_BASE_URL = "http://127.0.0.1:11434"
     MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:18545"
     MAIN_COMPUTER_ENERGY_CHAIN_ID = "42424242"
+    MAIN_COMPUTER_NANOJEV_ENABLED = "1"
+    MAIN_COMPUTER_NANOJEV_PORT = "9765"
+    MAIN_COMPUTER_NANOJEV_URL = "http://127.0.0.1:9765"
+    MAIN_COMPUTER_NANOJEV_MANAGED = "0"
+    MAIN_COMPUTER_NANOJEV_MANAGER_PORT = "9765"
+    MAIN_COMPUTER_NANOJEV_BACKEND_PORT = "9766"
+    MAIN_COMPUTER_NANOJEV_BIND_PORT = "9765"
+    MAIN_COMPUTER_NANOJEV_IDLE_SECONDS = "300"
+    MAIN_COMPUTER_NANOJEV_COMPOSE_PROJECT = "main-computer-nanojev"
+    MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS = "180"
   }
 }
 
@@ -870,6 +884,357 @@ function Assert-MainComputerExplicitContainerRuntimeAvailable([string]$RootPath,
   Write-Host ("Container runtime requested: {0}; direct={1}; compose={2}" -f [string]$runtime.runtime, (Get-MainComputerCommandDisplay $runtime.container_command), (Get-MainComputerCommandDisplay $runtime.compose_command))
 }
 
+
+function Test-MainComputerNanoJevEnabled([object]$LaunchContext) {
+  $value = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_ENABLED" "1").Trim().ToLowerInvariant()
+  return $value -notin @("0", "false", "no", "off", "disabled")
+}
+
+function Get-MainComputerNanoJevUrl([object]$LaunchContext) {
+  return Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_URL" "http://127.0.0.1:9765"
+}
+
+function Test-MainComputerNanoJevHealth([string]$BaseUrl) {
+  if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
+    return $false
+  }
+  try {
+    $healthUrl = $BaseUrl.TrimEnd("/") + "/api/health"
+    $response = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 3
+    return (
+      (Get-ObjectPropertyValue $response "ready" $false) -eq $true -and
+      (Get-ObjectPropertyValue $response "model_loaded_once" $false) -eq $true -and
+      [int](Get-ObjectPropertyValue $response "provider_calls" -1) -eq 0
+    )
+  } catch {
+    return $false
+  }
+}
+
+function Start-MainComputerNanoJev([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
+  $composePath = Join-Path $RootPath "docker-compose.nanojev.yml"
+  $projectName = Get-SafeDockerName `
+    (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_COMPOSE_PROJECT" "main-computer-nanojev") `
+    "main-computer-nanojev"
+  $baseUrl = Get-MainComputerNanoJevUrl $LaunchContext
+
+  if (-not (Test-MainComputerNanoJevEnabled $LaunchContext)) {
+    return [ordered]@{
+      ok = $true
+      requested = $false
+      state = "skipped-disabled"
+      compose_project = $projectName
+      compose_file = $composePath
+      url = $baseUrl
+    }
+  }
+
+  if ($NoDocker) {
+    return [ordered]@{
+      ok = $true
+      requested = $false
+      state = "skipped-no-docker"
+      compose_project = $projectName
+      compose_file = $composePath
+      url = $baseUrl
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $composePath -PathType Leaf)) {
+    return [ordered]@{
+      ok = $false
+      requested = $true
+      state = "missing-compose"
+      compose_project = $projectName
+      compose_file = $composePath
+      url = $baseUrl
+      message = "docker-compose.nanojev.yml is missing."
+    }
+  }
+
+  try {
+    $containerRuntime = Get-MainComputerContainerRuntime $RootPath $PythonCommand
+  } catch {
+    return [ordered]@{
+      ok = $false
+      requested = $true
+      state = "missing-container-runtime"
+      compose_project = $projectName
+      compose_file = $composePath
+      url = $baseUrl
+      message = $_.Exception.Message
+    }
+  }
+
+  $composeCommand = ConvertTo-MainComputerStringArray $containerRuntime.compose_command
+  Write-Host ("Starting NanoJev GPU service: {0}" -f $baseUrl)
+  $arguments = @(
+    "--project-name", $projectName,
+    "-f", $composePath,
+    "up", "-d", "--build", "nanojev"
+  )
+  Invoke-MainComputerRuntimeCommand -Command $composeCommand -Arguments $arguments
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    return [ordered]@{
+      ok = $false
+      requested = $true
+      state = "compose-up-failed"
+      compose_project = $projectName
+      compose_file = $composePath
+      url = $baseUrl
+      command = @($composeCommand) + $arguments
+      exit_code = $exitCode
+      message = "NanoJev Docker Compose startup failed. Stop any host process already using port 9765 and inspect Docker output."
+    }
+  }
+
+  $timeoutText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS" "180"
+  try { $timeoutSeconds = [Math]::Max(1, [int]$timeoutText) } catch { $timeoutSeconds = 180 }
+  $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-MainComputerNanoJevHealth $baseUrl) {
+      return [ordered]@{
+        ok = $true
+        requested = $true
+        state = "healthy"
+        compose_project = $projectName
+        compose_file = $composePath
+        url = $baseUrl
+        health_url = ($baseUrl.TrimEnd("/") + "/api/health")
+        evaluate_url = ($baseUrl.TrimEnd("/") + "/api/evaluate")
+        command = @($composeCommand) + $arguments
+        exit_code = 0
+      }
+    }
+    Start-Sleep -Seconds 2
+  }
+
+  $logs = @(
+    Invoke-MainComputerRuntimeCommand `
+      -Command $composeCommand `
+      -Arguments @("--project-name", $projectName, "-f", $composePath, "logs", "--tail", "80", "nanojev") `
+      -CaptureOutput `
+      -SuppressErrors
+  )
+  return [ordered]@{
+    ok = $false
+    requested = $true
+    state = "health-timeout"
+    compose_project = $projectName
+    compose_file = $composePath
+    url = $baseUrl
+    health_url = ($baseUrl.TrimEnd("/") + "/api/health")
+    exit_code = 124
+    message = ("NanoJev did not become healthy within {0} seconds." -f $timeoutSeconds)
+    logs = (($logs | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
+  }
+}
+
+
+function Test-MainComputerNanoJevManaged([object]$LaunchContext) {
+  $value = (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_MANAGED" "0").Trim().ToLowerInvariant()
+  return $value -in @("1", "true", "yes", "on", "managed", "lazy")
+}
+
+function Get-MainComputerNanoJevManagerUrl([object]$LaunchContext) {
+  $port = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_MANAGER_PORT" "9765"
+  return ("http://127.0.0.1:{0}" -f $port)
+}
+
+function Get-MainComputerNanoJevManagerStatus([string]$ManagerUrl) {
+  if ([string]::IsNullOrWhiteSpace($ManagerUrl)) {
+    return $null
+  }
+  try {
+    return Invoke-RestMethod -Uri ($ManagerUrl.TrimEnd("/") + "/control/status") -Method Get -TimeoutSec 2
+  } catch {
+    return $null
+  }
+}
+
+function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
+  $composePath = Join-Path $RootPath "docker-compose.nanojev.yml"
+  $managerScript = Join-Path $RootPath "tools\nanojev_lifecycle_service.py"
+  $projectName = Get-SafeDockerName `
+    (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_COMPOSE_PROJECT" "main-computer-nanojev") `
+    "main-computer-nanojev"
+  $managerUrl = Get-MainComputerNanoJevManagerUrl $LaunchContext
+  $managerPort = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_MANAGER_PORT" "9765"
+  $backendPort = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_BACKEND_PORT" "9766"
+  $idleSeconds = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_IDLE_SECONDS" "300"
+  $startTimeout = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS" "180"
+
+  if (-not (Test-MainComputerNanoJevEnabled $LaunchContext)) {
+    return [ordered]@{
+      ok = $true
+      requested = $false
+      mode = "lazy-managed"
+      state = "skipped-disabled"
+      url = $managerUrl
+      backend_url = ("http://127.0.0.1:{0}" -f $backendPort)
+    }
+  }
+
+  if ($NoDocker) {
+    return [ordered]@{
+      ok = $true
+      requested = $false
+      mode = "lazy-managed"
+      state = "skipped-no-docker"
+      url = $managerUrl
+      backend_url = ("http://127.0.0.1:{0}" -f $backendPort)
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $composePath -PathType Leaf)) {
+    return [ordered]@{ ok = $false; requested = $true; mode = "lazy-managed"; state = "missing-compose"; message = "docker-compose.nanojev.yml is missing." }
+  }
+  if (-not (Test-Path -LiteralPath $managerScript -PathType Leaf)) {
+    return [ordered]@{ ok = $false; requested = $true; mode = "lazy-managed"; state = "missing-manager"; message = "tools\\nanojev_lifecycle_service.py is missing." }
+  }
+
+  try {
+    $containerRuntime = Get-MainComputerContainerRuntime $RootPath $PythonCommand
+  } catch {
+    return [ordered]@{ ok = $false; requested = $true; mode = "lazy-managed"; state = "missing-container-runtime"; message = $_.Exception.Message }
+  }
+  if ([string]$containerRuntime.runtime -ne "docker") {
+    return [ordered]@{ ok = $false; requested = $true; mode = "lazy-managed"; state = "docker-required"; message = "Lazy NanoJev lifecycle manager currently requires Docker." }
+  }
+
+  $composeCommand = ConvertTo-MainComputerStringArray $containerRuntime.compose_command
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_NANOJEV_BIND_PORT", [string]$backendPort, "Process")
+
+  # Remove an older direct-mode container that may still own public port 9765.
+  Invoke-MainComputerRuntimeCommand `
+    -Command $composeCommand `
+    -Arguments @("--project-name", $projectName, "-f", $composePath, "down", "--remove-orphans") `
+    -SuppressErrors
+
+  Write-Host "Starting NanoJev lazy manager; image/container will be created only on first use."
+
+  $runtime = Get-StartStopRuntime $RootPath
+  Ensure-Directory $runtime
+  $pidPath = Join-Path $RootPath ".main_computer_nanojev_manager.pid"
+  $stdout = Join-Path $runtime "nanojev-manager.stdout.log"
+  $stderr = Join-Path $runtime "nanojev-manager.stderr.log"
+
+  $arguments = @(
+    $managerScript,
+    "--root", $RootPath,
+    "--compose-file", $composePath,
+    "--project-name", $projectName,
+    "--listen-host", "127.0.0.1",
+    "--listen-port", [string]$managerPort,
+    "--backend-port", [string]$backendPort,
+    "--idle-seconds", [string]$idleSeconds,
+    "--start-timeout-seconds", [string]$startTimeout,
+    "--docker-command", "docker",
+    "--image-name", "main-computer/nanojev:unified-games-v1"
+  )
+  $argString = Join-CommandLine $arguments
+  $process = Start-Process `
+    -FilePath $PythonCommand `
+    -ArgumentList $argString `
+    -WorkingDirectory $RootPath `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $stdout `
+    -RedirectStandardError $stderr `
+    -PassThru
+  Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII
+
+  $deadline = (Get-Date).AddSeconds(15)
+  $status = $null
+  while ((Get-Date) -lt $deadline) {
+    $status = Get-MainComputerNanoJevManagerStatus $managerUrl
+    if ($null -ne $status -and [bool](Get-ObjectPropertyValue $status "ok" $false)) {
+      return [ordered]@{
+        ok = $true
+        requested = $true
+        mode = "lazy-managed"
+        state = "manager-ready-container-idle"
+        url = $managerUrl
+        manager_url = $managerUrl
+        backend_url = ("http://127.0.0.1:{0}" -f $backendPort)
+        idle_seconds = [int]$idleSeconds
+        pid = $process.Id
+        pid_file = $pidPath
+        stdout = $stdout
+        stderr = $stderr
+        compose_project = $projectName
+        compose_file = $composePath
+      }
+    }
+    Start-Sleep -Milliseconds 250
+  }
+
+  try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+  return [ordered]@{
+    ok = $false
+    requested = $true
+    mode = "lazy-managed"
+    state = "manager-health-timeout"
+    url = $managerUrl
+    pid = $process.Id
+    stdout = $stdout
+    stderr = $stderr
+    message = "NanoJev lifecycle manager did not become ready within 15 seconds."
+  }
+}
+
+function Stop-MainComputerNanoJevManagerGracefully([object]$Session) {
+  if ($null -eq $Session) {
+    return $null
+  }
+  $nanoJev = Get-ObjectPropertyValue $Session "nanojev" $null
+  if ($null -eq $nanoJev) {
+    return $null
+  }
+  $mode = ConvertTo-StringValue (Get-ObjectPropertyValue $nanoJev "mode" "") ""
+  if ($mode -ne "lazy-managed") {
+    return $null
+  }
+  $managerUrl = ConvertTo-StringValue (Get-ObjectPropertyValue $nanoJev "manager_url" (Get-ObjectPropertyValue $nanoJev "url" "")) ""
+  if ([string]::IsNullOrWhiteSpace($managerUrl)) {
+    return $null
+  }
+  try {
+    $response = Invoke-RestMethod -Uri ($managerUrl.TrimEnd("/") + "/control/shutdown") -Method Post -TimeoutSec 30
+    return [ordered]@{ ok = $true; state = "shutdown-requested"; url = $managerUrl; response = $response }
+  } catch {
+    return [ordered]@{ ok = $false; state = "shutdown-request-failed"; url = $managerUrl; message = $_.Exception.Message }
+  }
+}
+
+function Show-MainComputerNanoJevStatus([object]$LaunchContext) {
+  if (-not (Test-MainComputerNanoJevEnabled $LaunchContext)) {
+    Write-Host "NanoJev:          disabled"
+    return
+  }
+
+  $managerUrl = Get-MainComputerNanoJevManagerUrl $LaunchContext
+  $managedStatus = Get-MainComputerNanoJevManagerStatus $managerUrl
+  if ($null -ne $managedStatus -and (ConvertTo-StringValue (Get-ObjectPropertyValue $managedStatus "mode" "") "") -eq "lazy-managed") {
+    $running = [bool](Get-ObjectPropertyValue $managedStatus "running" $false)
+    $pinned = [bool](Get-ObjectPropertyValue $managedStatus "pinned" $false)
+    $dirty = [bool](Get-ObjectPropertyValue $managedStatus "dirty" $false)
+    $remaining = Get-ObjectPropertyValue $managedStatus "idle_remaining_seconds" $null
+    if ($running) {
+      Write-Host ("NanoJev:          managed/running at {0}; pinned={1}; dirty={2}; idle_remaining={3}" -f $managerUrl, $pinned, $dirty, $remaining)
+    } else {
+      Write-Host ("NanoJev:          managed/idle at {0}; container unloaded" -f $managerUrl)
+    }
+    return
+  }
+
+  $baseUrl = Get-MainComputerNanoJevUrl $LaunchContext
+  if (Test-MainComputerNanoJevHealth $baseUrl) {
+    Write-Host ("NanoJev:          healthy at {0}" -f $baseUrl)
+  } else {
+    Write-Warning ("NanoJev is not healthy at {0}" -f $baseUrl)
+  }
+}
 
 function Get-MainComputerGiteaPort([object]$LaunchContext) {
   $rootUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_GITEA_ROOT_URL" "http://127.0.0.1:3000/"
@@ -2054,7 +2419,8 @@ function New-StartSession(
   [object]$GiteaStart,
   [object]$LocalPlatformStart,
   [object]$DevChainStart,
-  [object]$DevHubStart
+  [object]$DevHubStart,
+  [object]$NanoJevStart
 ) {
   $applicationsProject = Get-SafeDockerName `
     (Get-EnvFirstValue @("MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT") "main-computer-applications") `
@@ -2070,6 +2436,10 @@ function New-StartSession(
 
   $applicationsEnv = Join-Path $RootPath "runtime\applications_service\applications.env"
   $devCompose = Join-Path $RootPath "docker-compose.dev.yml"
+  $nanoJevCompose = Join-Path $RootPath "docker-compose.nanojev.yml"
+  $nanoJevProject = Get-SafeDockerName `
+    (Get-EnvFirstValue @("MAIN_COMPUTER_NANOJEV_COMPOSE_PROJECT") "main-computer-nanojev") `
+    "main-computer-nanojev"
   $applicationsCompose = Join-Path $RootPath "docker-compose.applications.yml"
   $localPlatformCompose = Get-EnvFirstValue @("MAIN_COMPUTER_LOCAL_PLATFORM_GENERATED_COMPOSE_PATH") ""
   $launcherName = $(if ([string]::IsNullOrWhiteSpace($StartedByName)) { "start_v2.bat" } else { $StartedByName })
@@ -2093,12 +2463,14 @@ function New-StartSession(
     }
     environment = $LaunchContext.environment
     gitea = $GiteaStart
+    nanojev = $NanoJevStart
     local_platform = $LocalPlatformStart
     dev_chain = $DevChainStart
     dev_hub = $DevHubStart
     managed_pid_files = @(
       (Join-Path $RootPath ".main_computer_service_supervisor.pid"),
       (Join-Path $RootPath ".main_computer_main_log_service.pid"),
+      (Join-Path $RootPath ".main_computer_nanojev_manager.pid"),
       (Get-DevHubPidPath $RootPath),
       (Join-Path $controlRoot ".main_computer_viewport.pid"),
       (Join-Path $controlRoot ".main_computer_heartbeat.pid"),
@@ -2127,6 +2499,12 @@ function New-StartSession(
         health_url = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767"
         follow_url = ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767") + "/v1/log/follow")
         surprise_url = ((Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_URL" "http://127.0.0.1:8767") + "/v1/log/surprise")
+      },
+      [ordered]@{
+        name = "nanojev-manager"
+        module = "tools/nanojev_lifecycle_service.py"
+        pid_file = Join-Path $RootPath ".main_computer_nanojev_manager.pid"
+        health_url = "http://127.0.0.1:9765/control/status"
       },
       [ordered]@{
         name = "viewport"
@@ -2163,6 +2541,18 @@ function New-StartSession(
       }
     )
     docker_stacks = @(
+      [ordered]@{
+        name = "nanojev"
+        docker_command = "docker"
+        compose_file = $nanoJevCompose
+        project_name = $nanoJevProject
+        env_file = $null
+        started_by = @("start_v2.bat")
+        start_commands = @(
+          @("docker", "compose", "--project-name", $nanoJevProject, "-f", $nanoJevCompose, "up", "-d", "--build", "nanojev")
+        )
+        stop_command = @("docker", "compose", "--project-name", $nanoJevProject, "-f", $nanoJevCompose, "down", "--remove-orphans")
+      },
       [ordered]@{
         name = "executor-unleashed"
         docker_command = "docker"
@@ -2284,13 +2674,20 @@ function Invoke-MainComputerOnlyOfficeControl {
   }
 }
 
-function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested) {
+function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested, [bool]$NanoJevManagedRequested, [int]$NanoJevIdleSecondsRequested) {
   $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
 
   Write-Host "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone..."
   Stop-MainComputer $RootPath $true | Out-Null
 
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
+  if ($NanoJevManagedRequested) {
+    $idleSeconds = [Math]::Max(0, $NanoJevIdleSecondsRequested)
+    Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_NANOJEV_MANAGED" "1"
+    Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_NANOJEV_IDLE_SECONDS" ([string]$idleSeconds)
+    Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_NANOJEV_BIND_PORT" (Get-LaunchEnvironmentValue $launchContext "MAIN_COMPUTER_NANOJEV_BACKEND_PORT" "9766")
+    Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_NANOJEV_URL" ("http://127.0.0.1:" + (Get-LaunchEnvironmentValue $launchContext "MAIN_COMPUTER_NANOJEV_MANAGER_PORT" "9765"))
+  }
   Set-MainComputerLaunchEnvironment $launchContext
   Restore-MainComputerCallerContainerRuntimeOverride $launchContext $callerContainerRuntimeOverride
   $controlRoot = Get-ControlRoot $RootPath $launchContext
@@ -2305,6 +2702,23 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   if (-not $devChainStart.ok) {
     $message = ConvertTo-StringValue (Get-ObjectPropertyValue $devChainStart "state" "unknown") "unknown"
     throw ("Dev chain startup failed: {0}" -f $message)
+  }
+
+  if (Test-MainComputerNanoJevManaged $launchContext) {
+    $nanoJevStart = Start-MainComputerNanoJevManager $RootPath $launchContext $pythonCommand
+  } else {
+    $nanoJevStart = Start-MainComputerNanoJev $RootPath $launchContext $pythonCommand
+  }
+  if ($null -eq $nanoJevStart) {
+    throw "NanoJev startup returned no status."
+  }
+  if (-not $nanoJevStart.ok) {
+    $state = ConvertTo-StringValue (Get-ObjectPropertyValue $nanoJevStart "state" "unknown") "unknown"
+    $detail = ConvertTo-StringValue (Get-ObjectPropertyValue $nanoJevStart "message" "") ""
+    if (-not [string]::IsNullOrWhiteSpace($detail)) {
+      throw ("NanoJev startup failed ({0}): {1}" -f $state, $detail)
+    }
+    throw ("NanoJev startup failed: {0}" -f $state)
   }
 
   $devHubStart = [ordered]@{
@@ -2421,7 +2835,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
     }
   }
 
-  $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart
+  $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart $nanoJevStart
   $sessionPath = Get-StartSessionPath $RootPath
   Write-JsonFile $sessionPath $session
 
@@ -2447,6 +2861,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   Write-Host ("Dev Hub PID:      " + (Get-DevHubPidPath $RootPath))
   Write-Host ("Dev Hub runtime:  " + (Join-Path $RootPath "runtime\hub\dev"))
   Write-Host ("Blockchain:       " + (Join-Path $RootPath "runtime\blockchain_service\state.json"))
+  Write-Host ("NanoJev API:      " + (Get-MainComputerNanoJevUrl $launchContext))
   Write-Host ("stdout:           " + $stdout)
   Write-Host ("stderr:           " + $stderr)
 }
@@ -2542,6 +2957,7 @@ function Show-MainComputerStatus([string]$RootPath) {
   & $pythonCommand @statusArgs
   $statusExitCode = $LASTEXITCODE
   Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "status"
+  Show-MainComputerNanoJevStatus $launchContext
   return $statusExitCode
 }
 
@@ -2633,6 +3049,9 @@ function Get-PidFileCandidateMetadata([string]$PidFile) {
     }
     ".main_computer_heartbeat.pid" {
       return [pscustomobject]@{ role = "heartbeat"; order = 20 }
+    }
+    ".main_computer_nanojev_manager.pid" {
+      return [pscustomobject]@{ role = "nanojev-manager"; order = 25 }
     }
     ".main_computer_dev_hub.pid" {
       return [pscustomobject]@{ role = "dev-hub"; order = 20 }
@@ -3059,6 +3478,7 @@ function Remove-ManagedRuntimeFiles([string]$RootPath, [object]$Session, [string
   foreach ($relative in @(
       ".main_computer_service_supervisor.pid",
       ".main_computer_main_log_service.pid",
+      ".main_computer_nanojev_manager.pid",
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
       ".main_computer_executor_service.pid",
@@ -3127,8 +3547,18 @@ function Get-DockerStacks([string]$RootPath, [object]$Session) {
     (Get-EnvFirstValue @("MAIN_COMPUTER_LOCAL_PLATFORM_COMPOSE_PROJECT") "main-computer-local-platform-unleashed") `
     "main-computer-local-platform-unleashed"
   $localPlatformCompose = Get-EnvFirstValue @("MAIN_COMPUTER_LOCAL_PLATFORM_GENERATED_COMPOSE_PATH") ""
+  $nanoJevProject = Get-SafeDockerName `
+    (Get-EnvFirstValue @("MAIN_COMPUTER_NANOJEV_COMPOSE_PROJECT") "main-computer-nanojev") `
+    "main-computer-nanojev"
 
   return @(
+    [pscustomobject]@{
+      name = "nanojev"
+      docker_command = "docker"
+      compose_file = Join-Path $RootPath "docker-compose.nanojev.yml"
+      project_name = $nanoJevProject
+      env_file = $null
+    },
     [pscustomobject]@{
       name = "executor-and-blockchain-unleashed"
       docker_command = "docker"
@@ -3310,6 +3740,7 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
 
   $sessionPath = Get-StartSessionPath $RootPath
   $session = Read-JsonFile $sessionPath
+  $nanoJevManagerStop = Stop-MainComputerNanoJevManagerGracefully $session
   $candidates = @{}
 
   if ($null -ne $session) {
@@ -3327,6 +3758,7 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   foreach ($relative in @(
       ".main_computer_service_supervisor.pid",
       ".main_computer_main_log_service.pid",
+      ".main_computer_nanojev_manager.pid",
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
       ".main_computer_executor_service.pid",
@@ -3383,6 +3815,7 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
     session_path = $sessionPath
     had_start_session = ($null -ne $session)
     process_results = $processResults
+    nanojev_manager_stop = $nanoJevManagerStop
     docker_results = $dockerResults
     removed_pid_files = $removedPidFiles
   }
@@ -3400,7 +3833,7 @@ $resolvedRoot = Resolve-MainComputerRoot $Root
 
 switch ($Action) {
   "start" {
-    Start-MainComputer $resolvedRoot $StartedBy ([bool]$NoDevHub)
+    Start-MainComputer $resolvedRoot $StartedBy ([bool]$NoDevHub) ([bool]$NanoJevManaged) $NanoJevIdleSeconds
   }
   "dev-hub-start" {
     Start-MainComputerDevHubOnly $resolvedRoot $StartedBy
