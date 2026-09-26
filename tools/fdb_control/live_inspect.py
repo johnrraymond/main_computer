@@ -127,11 +127,44 @@ def verify_add_service(
     client_factory=CoolifyClient,
     wait_timeout_s: float = 0.0,
 ) -> LiveAddServiceVerification:
-    """Verify one add-service through the new service observer's FDB proof."""
+    """Verify one add-service through the new service observer's FDB proof.
+
+    accepted-empty -> one-service add is a first-service rebirth.  That service
+    uses the birth descriptor/proof because there is no live source coordinator
+    set to join through.
+    """
 
     from .common.service_descriptors import add_service_proof_marker
 
     service = getattr(plan, "added_service")
+    source_coordinators = tuple(getattr(plan, "source_coordinators", getattr(plan, "coordinators")))
+    if not source_coordinators:
+        birth_plan = BirthPlan(
+            network=getattr(plan, "network"),
+            cluster=getattr(plan, "cluster"),
+            services=tuple(getattr(plan, "services")),
+            coordinators=tuple(getattr(plan, "coordinators")),
+            redundancy_mode=getattr(plan, "redundancy_mode"),
+            storage_engine=getattr(plan, "storage_engine"),
+            cluster_file_contents=str(getattr(plan, "cluster_file_contents")),
+        )
+        birth = verify_birth(
+            ctx,
+            birth_plan,
+            service_name=service_name,
+            service_uuid=service_uuid,
+            client_factory=client_factory,
+            wait_timeout_s=wait_timeout_s,
+        )
+        return LiveAddServiceVerification(
+            birth.verified,
+            birth.service_id,
+            birth.host_id,
+            birth.coolify_service_name,
+            birth.coolify_service_uuid,
+            birth.coolify_status,
+            "fdb-add-service-proof-satisfied" if birth.verified else f"fdb-add-service-rebirth:{birth.reason}",
+        )
     private_doc = load_private_infrastructure(ctx)
     binding = resolve_host_binding(private_doc, plan.network, service.host_id, base_dir=ctx.private_state_path.parent)
     client = client_factory(binding)
@@ -328,6 +361,49 @@ def verify_remove_service(
     private_doc = load_private_infrastructure(ctx)
     binding = resolve_host_binding(private_doc, plan.network, target.host_id, base_dir=ctx.private_state_path.parent)
     client = client_factory(binding)
+
+    if not tuple(getattr(plan, "services")):
+        from .common.service_descriptors import coordinator_guardian_service_name
+
+        deadline = time.monotonic() + max(0.0, wait_timeout_s)
+        last_target_status = "unknown"
+        while True:
+            target_detail = get_service(client, target_service_uuid)
+            last_target_status = service_health_status(target_detail)
+            guardian_uuid, _ = find_service(client, coordinator_guardian_service_name(plan.network))
+            if target_detail is None and not guardian_uuid:
+                return LiveRemoveServiceVerification(
+                    True,
+                    target.service_id,
+                    target.host_id,
+                    target_service_name,
+                    target_service_uuid,
+                    "missing",
+                    "",
+                    None,
+                    "not-required",
+                    "fdb-full-deletion-proof-satisfied",
+                )
+            reason = (
+                "target-coolify-service-still-present"
+                if target_detail is not None
+                else "coordinator-guardian-still-present"
+            )
+            if time.monotonic() >= deadline:
+                return LiveRemoveServiceVerification(
+                    False,
+                    target.service_id,
+                    target.host_id,
+                    target_service_name,
+                    target_service_uuid,
+                    last_target_status,
+                    "",
+                    None,
+                    "not-required",
+                    reason,
+                )
+            time.sleep(5.0)
+
     resolved_helper_uuid = str(helper_service_uuid or "").strip()
     if not resolved_helper_uuid:
         resolved_helper_uuid, _ = find_service(client, helper_service_name)

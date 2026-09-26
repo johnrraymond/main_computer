@@ -906,6 +906,40 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(command[command.index("--contracts-path") + 1], "/app/main_computer/config/testnet_contracts.json")
         self.assertIn("--require-multisession-auth", command)
 
+    def test_runtime_launcher_accepts_hub_control_topology_identity_from_env(self) -> None:
+        args = run_exp_fdb_hub.parse_args([])
+        command = run_exp_fdb_hub.build_exp_fdb_hub_command(
+            args,
+            environ={
+                "MAIN_COMPUTER_HUB_NETWORK": "mainnet",
+                "MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH": "/data/main-computer/hub/mainneta-hub1/hub-topology.json",
+                "MAIN_COMPUTER_HUB_CONTROL_HUB_ID": "mainneta-hub1",
+                "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER": "true",
+            },
+        )
+        self.assertEqual(command[command.index("--topology") + 1], "/data/main-computer/hub/mainneta-hub1/hub-topology.json")
+        self.assertEqual(command[command.index("--hub-id") + 1], "mainneta-hub1")
+
+    def test_runtime_launcher_materializes_hub_control_fdb_and_topology_projection(self) -> None:
+        import base64
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            cluster = root / "fdb.cluster"
+            topology = root / "hub-topology.json"
+            payload = b'{"kind":"main_computer.stable_hub_topology.v1"}'
+            args = run_exp_fdb_hub.parse_args([])
+            run_exp_fdb_hub.materialize_hub_control_projection(
+                args,
+                environ={
+                    "MAIN_COMPUTER_HUB_CONTROL_FDB_CLUSTER_CONTENTS": "main:abc@10.0.0.1:4550",
+                    "MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64": base64.b64encode(payload).decode("ascii"),
+                    "MAIN_COMPUTER_HUB_CONTROL_CLUSTER_FILE": str(cluster),
+                    "MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH": str(topology),
+                },
+            )
+            self.assertEqual(cluster.read_text(encoding="utf-8"), "main:abc@10.0.0.1:4550\n")
+            self.assertEqual(topology.read_bytes(), payload)
+
     def test_runtime_launcher_can_enable_unsigned_contract_startup_from_env(self) -> None:
         args = run_exp_fdb_hub.parse_args([])
         command = run_exp_fdb_hub.build_exp_fdb_hub_command(

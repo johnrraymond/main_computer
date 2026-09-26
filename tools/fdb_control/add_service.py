@@ -25,13 +25,14 @@ from .common.models import (
     AddServiceDeployment,
     AddServicePlan,
     AddServiceRequest,
+    BirthPlan,
     FdbContext,
     OperationCommandResult,
     ServicePlacement,
 )
 from .common.privates import load_private_infrastructure, public_binding_ref, resolve_host_binding
 from .common.service_placement import infer_service_placement
-from .common.service_descriptors import render_add_service_descriptor
+from .common.service_descriptors import render_add_service_descriptor, render_birth_service_descriptor
 from .common.state import (
     ADD_SERVICE_OP_SCHEMA,
     accepted_state_from_wire,
@@ -74,8 +75,23 @@ def build_add_service_plan(accepted: AcceptedClusterState, request: AddServiceRe
         )
 
     services = tuple(sorted(accepted.services + (service,), key=lambda item: item.service_id.encode("utf-8")))
+    if not accepted.services and accepted.coordinators:
+        raise FdbControlError(
+            code="FDB_ACCEPTED_EMPTY_COORDINATORS_INVALID",
+            message="accepted-empty FDB topology cannot retain coordinators",
+            module_id="FDB-OFM-APP-005",
+            retry_class="inspect-first",
+        )
     target_coordinators = derive_topology_coordinators(services, accepted.coordinators)
-    source_cluster_file = render_cluster_file(accepted.cluster, accepted.coordinators)
+    if accepted.coordinators:
+        source_cluster_file = render_cluster_file(accepted.cluster, accepted.coordinators)
+        cluster_file_contents = source_cluster_file
+    else:
+        # accepted-empty has no live source connection string.  The first
+        # add-service transparently re-births the accepted lineage using the
+        # new service as the sole coordinator.
+        cluster_file_contents = render_cluster_file(accepted.cluster, target_coordinators)
+        source_cluster_file = cluster_file_contents
     return AddServicePlan(
         network=accepted.network,
         cluster=accepted.cluster,
@@ -84,7 +100,7 @@ def build_add_service_plan(accepted: AcceptedClusterState, request: AddServiceRe
         source_coordinators=accepted.coordinators,
         redundancy_mode=accepted.redundancy_mode,
         storage_engine=accepted.storage_engine,
-        cluster_file_contents=source_cluster_file,
+        cluster_file_contents=cluster_file_contents,
         source_cluster_file_contents=source_cluster_file,
         added_service=service,
     )
@@ -155,7 +171,8 @@ def prep(
             retry_class="inspect-first",
         )
     plan = build_add_service_plan(accepted, request)
-    descriptor = render_add_service_descriptor(plan, plan.added_service, image=deployment.image, data_root=deployment.data_root)
+    rebirth = not accepted.services
+    descriptor = _render_add_descriptor(plan, deployment, rebirth=rebirth)
 
     private_doc = load_private_infrastructure(ctx)
     binding = resolve_host_binding(private_doc, plan.network, plan.added_service.host_id, base_dir=ctx.private_state_path.parent)
@@ -198,6 +215,7 @@ def prep(
         "source_coordinators": [item.service_id for item in accepted.coordinators],
         "target_coordinators": [item.service_id for item in plan.coordinators],
         "coordinators_changed": coordinator_set_changed(accepted.coordinators, plan.coordinators),
+        "rebirth": rebirth,
     }
     operation_id = f"fdb-add-{request.network}-{sha256_bytes(canonical_json(target)).digest[:16]}"
     write_operation(
@@ -230,6 +248,7 @@ def prep(
             "target_coordinators": [item.endpoint for item in plan.coordinators],
             "target_coordinator_services": [item.service_id for item in plan.coordinators],
             "coordinators_changed": coordinator_set_changed(accepted.coordinators, plan.coordinators),
+            "rebirth": rebirth,
         },
     )
 
@@ -265,7 +284,8 @@ def do(
         build_add_service_plan(accepted_prestate, request),
         _mapping(op.get("deployment_result") or {}),
     )
-    descriptor = render_add_service_descriptor(plan, plan.added_service, image=deployment.image, data_root=deployment.data_root)
+    rebirth = not accepted_prestate.services
+    descriptor = _render_add_descriptor(plan, deployment, rebirth=rebirth)
     if sha256_bytes(descriptor.compose.encode("utf-8")).digest != target.get("compose_sha256"):
         raise FdbControlError(
             code="FDB_PREPARED_DESCRIPTOR_DRIFT",
@@ -321,15 +341,25 @@ def do(
             retry_class="exact-retry",
         )
 
-    overlay = apply_coordinator_overlay(
-        ctx,
-        plan,
-        environment_name=str(target["deployment"].get("environment_name") or f"{network}-fdb"),
-        image=deployment.image,
-        force_deploy=deployment.force_deploy,
-        operation_id=operation_id,
-        client_factory=client_factory,
-    )
+    if rebirth:
+        overlay = {
+            "coordinators_changed": True,
+            "connection_string": plan.cluster_file_contents,
+            "guardian_host_id": None,
+            "guardian_service_name": None,
+            "guardian_service_uuid": None,
+            "guardian_action": "rebirth-not-required",
+        }
+    else:
+        overlay = apply_coordinator_overlay(
+            ctx,
+            plan,
+            environment_name=str(target["deployment"].get("environment_name") or f"{network}-fdb"),
+            image=deployment.image,
+            force_deploy=deployment.force_deploy,
+            operation_id=operation_id,
+            client_factory=client_factory,
+        )
     deployment_result.update(overlay)
     update_operation(ctx, network, operation_id, stage="deployed", deployment_result=deployment_result)
     return OperationCommandResult(
@@ -347,6 +377,7 @@ def do(
             "target_coordinators": [item.endpoint for item in plan.coordinators],
             "target_coordinator_services": [item.service_id for item in plan.coordinators],
             "guardian_service_uuid": overlay["guardian_service_uuid"],
+            "rebirth": rebirth,
         },
     )
 
@@ -435,6 +466,7 @@ def finalize(
             "coordinators_changed": coordinator_set_changed(accepted_prestate.coordinators, plan.coordinators),
             "consumer_contract_changed": coordinator_set_changed(accepted_prestate.coordinators, plan.coordinators),
             "hub_fdb_rectification_required": coordinator_set_changed(accepted_prestate.coordinators, plan.coordinators),
+            "rebirth": not accepted_prestate.services,
         },
     )
 
@@ -483,6 +515,42 @@ def _plan_with_runtime_connection(plan: AddServicePlan, deployment_result: Mappi
             retry_class="inspect-first",
         )
     return replace(plan, cluster=parsed.cluster, cluster_file_contents=connection)
+
+
+def _birth_plan_from_add(plan: AddServicePlan) -> BirthPlan:
+    if len(plan.services) != 1 or len(plan.coordinators) != 1:
+        raise ValueError("accepted-empty add-service rebirth requires exactly one service and one coordinator")
+    return BirthPlan(
+        network=plan.network,
+        cluster=plan.cluster,
+        services=plan.services,
+        coordinators=plan.coordinators,
+        redundancy_mode=plan.redundancy_mode,
+        storage_engine=plan.storage_engine,
+        cluster_file_contents=plan.cluster_file_contents,
+    )
+
+
+def _render_add_descriptor(
+    plan: AddServicePlan,
+    deployment: AddServiceDeployment,
+    *,
+    rebirth: bool,
+):
+    if rebirth:
+        birth = _birth_plan_from_add(plan)
+        return render_birth_service_descriptor(
+            birth,
+            plan.added_service,
+            image=deployment.image,
+            data_root=deployment.data_root,
+        )
+    return render_add_service_descriptor(
+        plan,
+        plan.added_service,
+        image=deployment.image,
+        data_root=deployment.data_root,
+    )
 
 def _request_to_wire(request: AddServiceRequest) -> dict[str, Any]:
     item = request.service

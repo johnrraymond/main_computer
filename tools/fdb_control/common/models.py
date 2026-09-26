@@ -215,10 +215,13 @@ class CreateClusterRequest:
 class RemoveServiceRequest:
     network: str
     service_id: str
+    allow_full_deletion: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "network", _text(self.network, "network"))
         object.__setattr__(self, "service_id", _text(self.service_id, "service_id"))
+        if not isinstance(self.allow_full_deletion, bool):
+            raise ValueError("allow_full_deletion must be boolean")
 
 
 @dataclass(frozen=True, slots=True)

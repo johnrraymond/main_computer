@@ -112,7 +112,18 @@ def advance_accepted_state(
         raise ValueError("accepted cluster description cannot change during a topology mutation")
     coordinator_changed = state.coordinators != expected_current.coordinators
     cluster_id_changed = state.cluster.cluster_id != expected_current.cluster.cluster_id
-    if coordinator_changed != cluster_id_changed:
+    rebirth_from_empty = not expected_current.services and bool(state.services)
+    if not state.services:
+        if state.coordinators:
+            raise ValueError("an empty accepted FDB topology cannot retain coordinators")
+        if cluster_id_changed:
+            raise ValueError("full FDB deletion preserves the historical cluster identity")
+    elif rebirth_from_empty:
+        if expected_current.coordinators:
+            raise ValueError("accepted-empty prestate cannot retain coordinators")
+        if cluster_id_changed:
+            raise ValueError("first-service rebirth preserves the accepted historical cluster identity")
+    elif coordinator_changed != cluster_id_changed:
         raise ValueError(
             "FDB cluster id must change exactly when coordinator topology changes"
         )

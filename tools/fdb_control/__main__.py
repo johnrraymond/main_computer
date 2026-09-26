@@ -76,6 +76,7 @@ def _parser() -> argparse.ArgumentParser:
     remove_prep_parser = remove_stages.add_parser("prep")
     remove_prep_parser.add_argument("network")
     remove_prep_parser.add_argument("--service", required=True)
+    remove_prep_parser.add_argument("--allow-full-deletion", action="store_true")
     _add_deployment_args(remove_prep_parser)
     for stage in ("do", "finalize"):
         p = remove_stages.add_parser(stage)
@@ -170,7 +171,11 @@ def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "add-service" and args.stage == "finalize":
         return _result_dict(add_finalize(ctx, args.network, args.operation_id))
     if args.command == "remove-service" and args.stage == "prep":
-        request = RemoveServiceRequest(network=args.network, service_id=args.service)
+        request = RemoveServiceRequest(
+            network=args.network,
+            service_id=args.service,
+            allow_full_deletion=bool(args.allow_full_deletion),
+        )
         deployment = RemoveServiceDeployment(
             project_uuid=args.project_uuid,
             project_name=args.project_name,
@@ -252,6 +257,23 @@ def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
         accepted = read_accepted_state(ctx, args.network)
         if accepted is None:
             return {"network": args.network, "accepted": None, "status": "unborn"}
+        if not accepted.services:
+            if accepted.coordinators:
+                raise ValueError("accepted empty FDB topology cannot retain coordinators")
+            return {
+                "network": args.network,
+                "accepted_generation": accepted.generation,
+                "status": "accepted-empty",
+                "cluster": {"description": accepted.cluster.description, "cluster_id": accepted.cluster.cluster_id},
+                "services": [],
+                "coordinators": [],
+                "redundancy_mode": accepted.redundancy_mode,
+                "storage_engine": accepted.storage_engine,
+                "empty_topology_verification": {
+                    "verified": True,
+                    "reason": "accepted-empty-topology",
+                },
+            }
         if len(accepted.services) == 1:
             from .common.models import BirthPlan
             from .common.cluster_file import render_cluster_file
@@ -265,8 +287,11 @@ def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
                 cluster_file_contents=render_cluster_file(accepted.cluster, accepted.coordinators),
             )
             service_name = f"main-computer-{accepted.services[0].service_id}"
-            verification = verify_birth(ctx, plan, service_name=service_name)
-            return {
+            cluster_verification = verify_accepted_cluster(ctx, plan)
+            birth_verification = None
+            if not cluster_verification.verified:
+                birth_verification = verify_birth(ctx, plan, service_name=service_name)
+            result = {
                 "network": args.network,
                 "accepted_generation": accepted.generation,
                 "status": "accepted",
@@ -278,8 +303,18 @@ def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
                 "coordinators": [item.endpoint for item in accepted.coordinators],
                 "redundancy_mode": accepted.redundancy_mode,
                 "storage_engine": accepted.storage_engine,
-                "birth_verification": _verification_dict(verification),
             }
+            if cluster_verification.verified:
+                result["cluster_verification"] = {
+                    "verified": cluster_verification.verified,
+                    "proof_service_id": cluster_verification.proof_service_id,
+                    "coolify_service_uuid": cluster_verification.coolify_service_uuid,
+                    "coolify_status": cluster_verification.coolify_status,
+                    "reason": cluster_verification.reason,
+                }
+            else:
+                result["birth_verification"] = _verification_dict(birth_verification)
+            return result
         plan = add_plan_from_accepted(accepted)
         verification = verify_accepted_cluster(ctx, plan)
         return {

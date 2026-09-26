@@ -23,6 +23,7 @@ def _args(
     *,
     service: str | None = None,
     execute: bool = False,
+    allow_full_deletion: bool = False,
 ) -> argparse.Namespace:
     if service is None and operation != "inspect":
         service = "mainnetc-fdb3" if operation == "add-service" else "mainnet-fdb2"
@@ -31,6 +32,7 @@ def _args(
         network="mainnet",
         service=service,
         repo_root=tmp_path,
+        allow_full_deletion=allow_full_deletion,
         execute_mutations=execute,
         yes_i_know_this_mutates_fdb=execute,
     )
@@ -41,6 +43,7 @@ def test_operator_parser_exposes_only_high_level_surface() -> None:
     assert "inspect" in help_text
     assert "add-service" in help_text
     assert "remove-service" in help_text
+    assert "--allow-full-deletion" in help_text
     assert "--resume" not in help_text
     assert "--run-dir" not in help_text
     assert "--repo-root" not in help_text
@@ -75,6 +78,37 @@ def test_remove_harness_passes_only_logical_service_identity_to_prep(tmp_path: P
     assert "--host" not in command
     assert "--address" not in command
     assert "--port" not in command
+
+
+def test_full_deletion_flag_is_forwarded_only_to_remove_prep(tmp_path: Path) -> None:
+    harness = Harness(
+        _args(tmp_path, "remove-service", service="mainnet-fdb1", allow_full_deletion=True)
+    )
+    command = harness.prep_cmd()
+    assert command[-6:] == [
+        "remove-service",
+        "prep",
+        "mainnet",
+        "--service",
+        "mainnet-fdb1",
+        "--allow-full-deletion",
+    ]
+
+
+def test_full_deletion_flag_is_rejected_for_add(tmp_path: Path) -> None:
+    with pytest.raises(MODULE.HarnessError, match="applies only to remove-service"):
+        Harness(_args(tmp_path, "add-service", allow_full_deletion=True))
+
+
+def test_full_deletion_resume_does_not_match_non_destructive_run(tmp_path: Path) -> None:
+    first = Harness(_args(tmp_path, "remove-service", service="mainnet-fdb1"))
+    first.state["last_completed_step"] = "prep"
+    first._write_state()
+
+    second = Harness(
+        _args(tmp_path, "remove-service", service="mainnet-fdb1", allow_full_deletion=True)
+    )
+    assert second.run_dir != first.run_dir
 
 
 def test_same_high_level_command_auto_resumes_unfinished_run(tmp_path: Path) -> None:
@@ -248,6 +282,37 @@ def test_harness_accepts_frozen_coordinator_transition_on_final_inspect(tmp_path
     assert harness.state["final_coordinators"] == ["10.116.0.3:4551"]
 
 
+def test_harness_accepts_verified_empty_topology_after_full_deletion(tmp_path: Path) -> None:
+    harness = Harness(
+        _args(tmp_path, "remove-service", service="mainnet-fdb1", allow_full_deletion=True)
+    )
+    harness.state.update(
+        {
+            "starting_generation": 9,
+            "starting_cluster": {"description": "main_computer_mainnet", "cluster_id": "old123"},
+            "target_generation": 10,
+            "target_coordinators": [],
+            "coordinators_changed": True,
+            "full_deletion": True,
+        }
+    )
+    harness._validate_step(
+        "final-inspect",
+        {
+            "status": "accepted-empty",
+            "accepted_generation": 10,
+            "cluster": {"description": "main_computer_mainnet", "cluster_id": "old123"},
+            "coordinators": [],
+            "services": [],
+            "empty_topology_verification": {
+                "verified": True,
+                "reason": "accepted-empty-topology",
+            },
+        },
+    )
+    assert harness.state["final_coordinators"] == []
+
+
 def test_harness_rejects_missing_cluster_id_change_when_coordinators_changed(tmp_path: Path) -> None:
     harness = Harness(_args(tmp_path, "remove-service", service="mainnet-fdb1"))
     harness.state.update(
@@ -273,3 +338,158 @@ def test_harness_rejects_missing_cluster_id_change_when_coordinators_changed(tmp
                 "cluster_verification": {"verified": True},
             },
         )
+
+
+def test_stage_summary_prints_preinspect_evidence(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = Harness(_args(tmp_path, "remove-service"))
+    harness._print_step_result(
+        "pre-inspect",
+        {
+            "status": "accepted",
+            "accepted_generation": 5,
+            "services": [
+                {"service_id": "mainnet-fdb1"},
+                {"service_id": "mainnet-fdb2"},
+            ],
+            "coordinators": ["10.116.0.3:4550"],
+            "cluster_verification": {"verified": True},
+        },
+    )
+    stdout = capsys.readouterr().out
+    assert "status:              accepted" in stdout
+    assert "accepted generation: 5" in stdout
+    assert "services:            2" in stdout
+    assert "coordinators:        10.116.0.3:4550" in stdout
+    assert "verification:        verified" in stdout
+
+
+def test_stage_summary_prints_full_deletion_effects(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = Harness(
+        _args(tmp_path, "remove-service", service="mainnet-fdb1", allow_full_deletion=True)
+    )
+    harness.state["full_deletion"] = True
+    harness._print_step_result(
+        "do",
+        {
+            "status": "removed",
+            "details": {
+                "full_deletion": True,
+                "coolify_service_deleted": True,
+                "endpoint_exclusion_cleared": False,
+                "coordinators_changed": True,
+            },
+        },
+    )
+    stdout = capsys.readouterr().out
+    assert "status:              removed" in stdout
+    assert "FDB drain:           skipped (explicit final-copy deletion)" in stdout
+    assert "Coolify deletion:    complete" in stdout
+    assert "coordinator change:  yes" in stdout
+    assert "endpoint exclusion:" not in stdout
+
+
+def test_stage_summary_prints_operation_proof(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = Harness(_args(tmp_path, "remove-service"))
+    harness._print_step_result(
+        "operation-inspect",
+        {
+            "remove_service_verification": {
+                "verified": True,
+                "reason": "fdb-remove-service-proof-satisfied",
+                "target_status": "missing",
+                "helper_status": "running:healthy",
+            }
+        },
+    )
+    stdout = capsys.readouterr().out
+    assert "mutation proof:       verified" in stdout
+    assert "proof reason:         fdb-remove-service-proof-satisfied" in stdout
+    assert "target status:        missing" in stdout
+    assert "helper status:        running:healthy" in stdout
+
+
+def test_stage_summary_prints_finalize_authority_transition(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = Harness(_args(tmp_path, "remove-service"))
+    harness._print_step_result(
+        "finalize",
+        {
+            "status": "finalized",
+            "details": {
+                "verified": True,
+                "accepted_generation": 6,
+                "consumer_contract_changed": True,
+                "hub_fdb_rectification_required": True,
+            },
+        },
+    )
+    stdout = capsys.readouterr().out
+    assert "status:              finalized" in stdout
+    assert "accepted generation: 6" in stdout
+    assert "accepted authority:  advanced" in stdout
+    assert "consumer contract:   changed" in stdout
+    assert "Hub rectification:   required" in stdout
+
+
+def test_add_harness_accepts_verified_accepted_empty_preinspect(tmp_path: Path) -> None:
+    harness = Harness(_args(tmp_path, "add-service", service="mainneta-fdb1"))
+    harness._validate_step(
+        "pre-inspect",
+        {
+            "status": "accepted-empty",
+            "accepted_generation": 6,
+            "cluster": {"description": "main_computer_mainnet", "cluster_id": "old123"},
+            "services": [],
+            "coordinators": [],
+            "empty_topology_verification": {
+                "verified": True,
+                "reason": "accepted-empty-topology",
+            },
+        },
+    )
+    assert harness.state["starting_generation"] == 6
+    assert harness.state["starting_status"] == "accepted-empty"
+    assert harness.state["starting_coordinators"] == []
+
+
+def test_add_harness_accepts_rebirth_with_preserved_historical_cluster_id(tmp_path: Path) -> None:
+    harness = Harness(_args(tmp_path, "add-service", service="mainneta-fdb1"))
+    harness.state.update(
+        {
+            "starting_generation": 6,
+            "starting_status": "accepted-empty",
+            "starting_cluster": {"description": "main_computer_mainnet", "cluster_id": "old123"},
+            "target_generation": 7,
+            "target_coordinators": ["10.116.0.3:4550"],
+            "coordinators_changed": True,
+            "rebirth": True,
+            "resolved_host": "coolify-a",
+            "resolved_endpoint": "10.116.0.3:4550",
+        }
+    )
+    harness._validate_step(
+        "final-inspect",
+        {
+            "status": "accepted",
+            "accepted_generation": 7,
+            "cluster": {"description": "main_computer_mainnet", "cluster_id": "old123"},
+            "coordinators": ["10.116.0.3:4550"],
+            "services": [
+                {"service_id": "mainneta-fdb1", "host_id": "coolify-a", "endpoint": "10.116.0.3:4550"},
+            ],
+            "birth_verification": {"verified": True},
+        },
+    )
+    assert harness.state["final_cluster"]["cluster_id"] == "old123"
+    assert harness.state["final_coordinators"] == ["10.116.0.3:4550"]

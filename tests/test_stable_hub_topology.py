@@ -150,3 +150,12 @@ def test_neutral_hub_topology_directory_contains_local_dev_smoke_qbft_test_and_p
         "https://testnet-hub2.greatlibrary.io",
         "https://testnet-hub3.greatlibrary.io",
     )
+
+
+def test_stable_hub_topology_allows_single_concrete_hub_for_first_birth() -> None:
+    document = _document()
+    first = dict(document["hubs"][0])
+    document["hubs"] = [first]
+    document["entry_urls"] = [first["hub_url"]]
+    topology = normalize_stable_hub_topology(document)
+    assert topology.hub_ids() == (first["hub_id"],)

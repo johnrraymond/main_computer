@@ -13,16 +13,16 @@ REMOVE_COMPLETE_PROOF_PREFIX = "FDB_REMOVE_SERVICE_PROOF_V1"
 def require_supported_removal(
     accepted: AcceptedClusterState,
     target: ServicePlacement,
+    *,
+    allow_full_deletion: bool = False,
 ) -> tuple[ServicePlacement, ...]:
-    """Return the surviving topology for a safe single-redundancy contraction.
+    """Return the surviving topology for one explicit service contraction.
 
-    `remove-service` may contract any accepted `single`-redundancy topology by
-    exactly one service.  If the target currently carries coordinator authority,
-    the operation must first move that derived overlay to a safe surviving set.
-    The operation never removes the final service; whole-cluster retirement
-    belongs to `retire-cluster`.  Live safety is still proved by coordinator
-    transition proof when needed, blocking FDB exclusion, and post-removal proof
-    before accepted authority advances.
+    Normal `remove-service` contracts an accepted `single`-redundancy topology by
+    exactly one service and preserves at least one live service.  The explicit
+    `allow_full_deletion` acknowledgement opens only the final 1 -> 0 transition.
+    That destructive path does not claim FDB evacuation safety because there is
+    no surviving process to receive the final copy.
     """
 
     if accepted.redundancy_mode != "single":
@@ -35,12 +35,12 @@ def require_supported_removal(
             module_id="FDB-OFM-FDB-007",
             retry_class="never",
         )
-    if len(accepted.services) < 2:
+    if len(accepted.services) == 1 and not allow_full_deletion:
         raise FdbControlError(
-            code="FDB_REMOVE_SERVICE_TOPOLOGY_UNSUPPORTED",
+            code="FDB_REMOVE_SERVICE_FULL_DELETION_REQUIRES_ACK",
             message=(
-                "remove-service must leave at least one accepted FDB service; "
-                "use retire-cluster to retire the final service"
+                "removing the final accepted FDB service requires explicit "
+                "--allow-full-deletion acknowledgement"
             ),
             module_id="FDB-OFM-FDB-007",
             retry_class="never",

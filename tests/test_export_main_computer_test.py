@@ -22,6 +22,24 @@ class ExportMainComputerTestTests(unittest.TestCase):
         self.assertIn('"mother_mutate_harness.py"', script)
         self.assertIn('"fdb_mutate_harness.py"', script)
         self.assertTrue((ROOT / "fdb_mutate_harness.py").exists())
+        self.assertIn('"hub_mutate_harness.py"', script)
+        self.assertTrue((ROOT / "hub_mutate_harness.py").exists())
+        for hub_doc in (
+            "hub.md",
+            "hub-o.md",
+            "hub-o-f.md",
+            "hub-o-f-m.md",
+            "hub-fdb.md",
+            "hub-fdb-o.md",
+            "hub-fdb-o-f.md",
+            "hub-fdb-o-f-m.md",
+            "hub-chain.md",
+            "hub-chain-o.md",
+            "hub-chain-o-f.md",
+            "hub-chain-o-f-m.md",
+        ):
+            self.assertIn(f'"{hub_doc}"', script)
+            self.assertTrue((ROOT / hub_doc).exists())
         self.assertIn('"prod-command.py"', script)
         self.assertIn('"docker-compose.onlyoffice.yml"', script)
         self.assertIn('"docker-compose.applications.yml"', script)

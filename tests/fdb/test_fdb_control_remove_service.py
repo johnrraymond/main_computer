@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from tools.fdb_control.__main__ import _dispatch
 from tools.fdb_control.add_service import plan_from_accepted
 from tools.fdb_control.common.coolify import CoolifyResponse
 from tools.fdb_control.common.errors import FdbControlError
@@ -23,6 +25,7 @@ from tools.fdb_control.common.models import (
     ServicePlacement,
 )
 from tools.fdb_control.common.service_descriptors import (
+    birth_proof_marker,
     cluster_state_proof_marker,
     render_remove_service_helper_descriptor,
 )
@@ -38,11 +41,17 @@ class FakeCoolifyClient:
         *,
         target_uuid: str = "svc-2",
         include_third: bool = False,
+        single_service: bool = False,
     ) -> None:
         self.services: dict[str, dict[str, object]] = {
             "svc-1": {"uuid": "svc-1", "name": "main-computer-mainnet-fdb1", "status": "running:healthy"},
-            "svc-2": {"uuid": "svc-2", "name": "main-computer-mainnet-fdb2", "status": "running:healthy"},
         }
+        if not single_service:
+            self.services["svc-2"] = {
+                "uuid": "svc-2",
+                "name": "main-computer-mainnet-fdb2",
+                "status": "running:healthy",
+            }
         if include_third:
             self.services["svc-3"] = {
                 "uuid": "svc-3",
@@ -217,6 +226,27 @@ def _accepted() -> AcceptedClusterState:
         generation=2,
         cluster=ClusterIdentity("main_computer_mainnet", "ac826580a04d022d"),
         services=(first, _service2()),
+        coordinators=(
+            CoordinatorEndpoint(
+                service_id=first.service_id,
+                host_id=first.host_id,
+                address=first.address,
+                port=first.port,
+            ),
+        ),
+        redundancy_mode="single",
+        storage_engine="ssd",
+        retired=False,
+    )
+
+
+def _accepted_one() -> AcceptedClusterState:
+    first = _service1()
+    return AcceptedClusterState(
+        network="mainnet",
+        generation=9,
+        cluster=ClusterIdentity("main_computer_mainnet", "ac826580a04d022d"),
+        services=(first,),
         coordinators=(
             CoordinatorEndpoint(
                 service_id=first.service_id,
@@ -480,18 +510,98 @@ def test_remove_current_coordinator_moves_overlay_before_deleting_service(tmp_pa
     assert [item.service_id for item in current.coordinators] == ["mainnet-fdb2"]
 
 
-def test_remove_refuses_to_retire_final_service() -> None:
-    first = _service1()
-    accepted = AcceptedClusterState(
-        network="mainnet",
-        generation=9,
-        cluster=ClusterIdentity("main_computer_mainnet", "ac826580a04d022d"),
-        services=(first,),
-        coordinators=(),
-        redundancy_mode="single",
-        storage_engine="ssd",
-        retired=False,
-    )
+def test_remove_final_service_requires_explicit_full_deletion_ack() -> None:
+    accepted = _accepted_one()
     with pytest.raises(FdbControlError) as exc:
-        build_remove_service_plan(accepted, RemoveServiceRequest("mainnet", first.service_id))
-    assert exc.value.code == "FDB_REMOVE_SERVICE_TOPOLOGY_UNSUPPORTED"
+        build_remove_service_plan(accepted, RemoveServiceRequest("mainnet", "mainnet-fdb1"))
+    assert exc.value.code == "FDB_REMOVE_SERVICE_FULL_DELETION_REQUIRES_ACK"
+
+
+def test_remove_final_service_plan_accepts_zero_services_and_zero_coordinators() -> None:
+    accepted = _accepted_one()
+    plan = build_remove_service_plan(
+        accepted,
+        RemoveServiceRequest("mainnet", "mainnet-fdb1", allow_full_deletion=True),
+    )
+    assert plan.services == ()
+    assert plan.coordinators == ()
+    assert [item.service_id for item in plan.source_coordinators] == ["mainnet-fdb1"]
+    assert plan.cluster_file_contents == "main_computer_mainnet:ac826580a04d022d@10.116.0.3:4550"
+
+
+def test_remove_final_service_round_trip_deletes_without_fake_drain_and_accepts_empty_topology(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    accepted = _accepted_one()
+    publish_accepted_state(ctx, accepted)
+    from tools.fdb_control.common.models import BirthPlan
+    from tools.fdb_control.common.cluster_file import render_cluster_file
+
+    birth_plan = BirthPlan(
+        network=accepted.network,
+        cluster=accepted.cluster,
+        services=accepted.services,
+        coordinators=accepted.coordinators,
+        redundancy_mode=accepted.redundancy_mode,
+        storage_engine=accepted.storage_engine,
+        cluster_file_contents=render_cluster_file(accepted.cluster, accepted.coordinators),
+    )
+    cluster_marker = birth_proof_marker(birth_plan, accepted.services[0])
+    client = FakeCoolifyClient(cluster_marker, target_uuid="svc-1", single_service=True)
+    factory = FakeFactory(client)
+
+    prepared = prep(
+        ctx,
+        RemoveServiceRequest("mainnet", "mainnet-fdb1", allow_full_deletion=True),
+        _deployment(),
+        client_factory=factory,
+    )
+    operation_id = str(prepared.details["operation_id"])
+    assert prepared.details["full_deletion"] is True
+    assert prepared.details["target_coordinators"] == []
+    assert prepared.details["safe_withdrawal"] == "explicit-full-deletion-no-drain"
+
+    removed = do(ctx, "mainnet", operation_id, client_factory=factory)
+    assert removed.status == "removed"
+    assert removed.details["full_deletion"] is True
+    assert removed.details["safe_withdrawal_verified"] is False
+    assert removed.details["endpoint_exclusion_cleared"] is False
+    assert client.deleted == ["svc-1"]
+    assert "helper-1" not in client.services
+
+    plan = build_remove_service_plan(
+        accepted,
+        RemoveServiceRequest("mainnet", "mainnet-fdb1", allow_full_deletion=True),
+    )
+    verification = verify_remove_service(
+        ctx,
+        plan,
+        target_service_name="main-computer-mainnet-fdb1",
+        target_service_uuid="svc-1",
+        helper_service_name="",
+        client_factory=factory,
+    )
+    assert verification.verified is True
+    assert verification.reason == "fdb-full-deletion-proof-satisfied"
+    assert verification.helper_status == "not-required"
+
+    finished = finalize(ctx, "mainnet", operation_id, client_factory=factory)
+    assert finished.status == "finalized"
+    assert finished.details["accepted_generation"] == 10
+    assert finished.details["full_deletion"] is True
+    assert finished.details["endpoint_exclusion_cleared"] is False
+
+    current = read_accepted_state(ctx, "mainnet")
+    assert current is not None
+    assert current.generation == 10
+    assert current.cluster == accepted.cluster
+    assert current.services == ()
+    assert current.coordinators == ()
+
+    inspected = _dispatch(ctx, SimpleNamespace(command="inspect", network="mainnet", operation_id=""))
+    assert inspected["status"] == "accepted-empty"
+    assert inspected["services"] == []
+    assert inspected["coordinators"] == []
+    assert inspected["empty_topology_verification"] == {
+        "verified": True,
+        "reason": "accepted-empty-topology",
+    }

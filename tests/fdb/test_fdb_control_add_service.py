@@ -12,6 +12,7 @@ from tools.fdb_control.add_service import (
     finalize,
     plan_from_accepted,
     prep,
+    prep_inferred,
 )
 from tools.fdb_control.common.coolify import CoolifyResponse
 from tools.fdb_control.common.errors import FdbControlError
@@ -55,7 +56,7 @@ class FakeCoolifyClient:
             item = {"uuid": "svc-2", "name": payload["name"], "status": "created"}
             self.services["svc-2"] = item
             compose = base64.b64decode(str(payload["docker_compose_raw"])).decode("utf-8")
-            markers = re.findall(r"FDB_(?:ADD_SERVICE_PROOF|CLUSTER_STATE_PROOF)_V1 [0-9a-f]{64}", compose)
+            markers = re.findall(r"FDB_(?:BIRTH_PROOF|ADD_SERVICE_PROOF|CLUSTER_STATE_PROOF)_V1 [0-9a-f]{64}", compose)
             self.logs["svc-2"] = "\n".join(markers) + ("\n" if markers else "")
             return self._ok(method, path, {"uuid": "svc-2"})
         if method in {"PATCH", "PUT"} and path.startswith("/api/v1/services/svc-2"):
@@ -321,3 +322,104 @@ def test_topology_derived_coordinators_expand_only_across_distinct_zones() -> No
 def test_second_service_in_same_zone_does_not_create_another_coordinator() -> None:
     plan = build_add_service_plan(_accepted(), _request())
     assert [item.service_id for item in plan.coordinators] == ["mainnet-fdb1"]
+
+
+def _accepted_empty() -> AcceptedClusterState:
+    return AcceptedClusterState(
+        network="mainnet",
+        generation=6,
+        cluster=ClusterIdentity("main_computer_mainnet", "ac826580a04d022d"),
+        services=(),
+        coordinators=(),
+        redundancy_mode="single",
+        storage_engine="ssd",
+        retired=False,
+    )
+
+
+def _rebirth_request() -> AddServiceRequest:
+    return AddServiceRequest(
+        network="mainnet",
+        service=ServicePlacement(
+            service_id="mainneta-fdb1",
+            host_id="coolify-a",
+            address="10.116.0.3",
+            port=4550,
+            machine_id="coolify-a",
+            zone_id="coolify-a",
+        ),
+    )
+
+
+def test_add_service_plan_rebirths_accepted_empty_with_new_service_as_coordinator() -> None:
+    plan = build_add_service_plan(_accepted_empty(), _rebirth_request())
+
+    assert [item.service_id for item in plan.services] == ["mainneta-fdb1"]
+    assert plan.source_coordinators == ()
+    assert [item.service_id for item in plan.coordinators] == ["mainneta-fdb1"]
+    assert plan.cluster_file_contents == "main_computer_mainnet:ac826580a04d022d@10.116.0.3:4550"
+    assert plan.source_cluster_file_contents == plan.cluster_file_contents
+
+
+def test_add_service_rebirth_round_trip_from_accepted_empty(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    publish_accepted_state(ctx, _accepted_empty())
+    client = FakeCoolifyClient()
+    factory = FakeFactory(client)
+
+    prepared = prep(ctx, _rebirth_request(), _deployment(), client_factory=factory)
+    operation_id = str(prepared.details["operation_id"])
+    assert prepared.status == "prepared"
+    assert prepared.details["accepted_generation"] == 6
+    assert prepared.details["target_generation"] == 7
+    assert prepared.details["rebirth"] is True
+    assert prepared.details["coordinators_changed"] is True
+    assert prepared.details["target_coordinators"] == ["10.116.0.3:4550"]
+
+    deployed = do(ctx, "mainnet", operation_id, client_factory=factory)
+    assert deployed.status == "deployed"
+    assert deployed.details["rebirth"] is True
+    assert deployed.details["coordinators_changed"] is True
+    assert deployed.details["guardian_service_uuid"] is None
+
+    assert client.created_payload is not None
+    compose = base64.b64decode(str(client.created_payload["docker_compose_raw"])).decode("utf-8")
+    assert "configure new single ssd" in compose
+    assert "FDB_BIRTH_PROOF_V1" in compose
+    assert "FDB_ADD_SERVICE_PROOF_V1" not in compose
+
+    finished = finalize(ctx, "mainnet", operation_id, client_factory=factory)
+    assert finished.status == "finalized"
+    assert finished.details["accepted_generation"] == 7
+    assert finished.details["rebirth"] is True
+    assert finished.details["consumer_contract_changed"] is True
+    assert finished.details["hub_fdb_rectification_required"] is True
+
+    accepted = read_accepted_state(ctx, "mainnet")
+    assert accepted is not None
+    assert accepted.generation == 7
+    assert accepted.cluster.cluster_id == "ac826580a04d022d"
+    assert [item.service_id for item in accepted.services] == ["mainneta-fdb1"]
+    assert [item.endpoint for item in accepted.coordinators] == ["10.116.0.3:4550"]
+
+
+def test_inferred_add_service_prepares_rebirth_from_accepted_empty(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    publish_accepted_state(ctx, _accepted_empty())
+    client = FakeCoolifyClient()
+    factory = FakeFactory(client)
+
+    prepared = prep_inferred(
+        ctx,
+        "mainnet",
+        "mainneta-fdb1",
+        _deployment(),
+        client_factory=factory,
+    )
+
+    assert prepared.status == "prepared"
+    assert prepared.details["rebirth"] is True
+    assert prepared.details["controller_id"] == "coolify-a"
+    assert prepared.details["host_id"] == "coolify-a"
+    assert prepared.details["endpoint"] == "10.116.0.3:4550"
+    assert prepared.details["target_coordinators"] == ["10.116.0.3:4550"]

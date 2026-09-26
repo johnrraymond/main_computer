@@ -34,6 +34,7 @@ from .common.evacuation import (
 from .common.hashing import sha256_bytes
 from .common.models import (
     AcceptedClusterState,
+    BirthPlan,
     FdbContext,
     OperationCommandResult,
     RemoveServiceDeployment,
@@ -42,6 +43,7 @@ from .common.models import (
 )
 from .common.privates import load_private_infrastructure, public_binding_ref, resolve_host_binding
 from .common.service_descriptors import (
+    coordinator_guardian_service_name,
     remove_helper_subservice_name,
     render_remove_service_helper_descriptor,
 )
@@ -55,7 +57,7 @@ from .common.state import (
     update_operation,
     write_operation,
 )
-from .live_inspect import verify_accepted_cluster, verify_remove_service
+from .live_inspect import verify_accepted_cluster, verify_birth, verify_remove_service
 
 
 def build_remove_service_plan(
@@ -79,8 +81,16 @@ def build_remove_service_plan(
             module_id="FDB-OFM-APP-006",
             retry_class="inspect-first",
         )
-    survivors = require_supported_removal(accepted, target)
-    target_coordinators = derive_topology_coordinators(survivors, accepted.coordinators)
+    survivors = require_supported_removal(
+        accepted,
+        target,
+        allow_full_deletion=request.allow_full_deletion,
+    )
+    target_coordinators = (
+        derive_topology_coordinators(survivors, accepted.coordinators)
+        if survivors
+        else ()
+    )
     source_cluster_file = render_cluster_file(accepted.cluster, accepted.coordinators)
     return RemoveServicePlan(
         network=accepted.network,
@@ -115,11 +125,34 @@ def prep(
 
     # Read-only preflight: the currently accepted topology must still have an
     # FDB observer proof before a destructive contraction can be prepared.
-    current_proof = verify_accepted_cluster(
-        ctx,
-        plan_from_accepted(accepted),
-        client_factory=client_factory,
-    )
+    if len(accepted.services) == 1:
+        birth_plan = BirthPlan(
+            network=accepted.network,
+            cluster=accepted.cluster,
+            services=accepted.services,
+            coordinators=accepted.coordinators,
+            redundancy_mode=accepted.redundancy_mode,
+            storage_engine=accepted.storage_engine,
+            cluster_file_contents=render_cluster_file(accepted.cluster, accepted.coordinators),
+        )
+        current_proof = verify_accepted_cluster(
+            ctx,
+            birth_plan,
+            client_factory=client_factory,
+        )
+        if not current_proof.verified:
+            current_proof = verify_birth(
+                ctx,
+                birth_plan,
+                service_name=f"main-computer-{accepted.services[0].service_id}",
+                client_factory=client_factory,
+            )
+    else:
+        current_proof = verify_accepted_cluster(
+            ctx,
+            plan_from_accepted(accepted),
+            client_factory=client_factory,
+        )
     if not current_proof.verified:
         raise FdbControlError(
             code="FDB_REMOVE_SERVICE_PRESTATE_NOT_VERIFIED",
@@ -187,22 +220,29 @@ def prep(
         "endpoint_exclusion_cleared": True,
     }
     operation_id = f"fdb-remove-{request.network}-{sha256_bytes(canonical_json(seed)).digest[:16]}"
-    helper_service_name = f"main-computer-{request.network}-remove-{request.service_id}-{operation_id.rsplit('-', 1)[-1][:8]}"
-    helper_uuid, _ = find_service(client, helper_service_name)
-    if helper_uuid:
-        raise FdbControlError(
-            code="FDB_REMOVE_SERVICE_HELPER_EXISTS",
-            message=(
-                f"removal helper {helper_service_name!r} already exists; inspect the prior removal "
-                "before preparing another operation"
-            ),
-            module_id="FDB-OFM-APP-006",
-            retry_class="inspect-first",
+    full_deletion = not plan.services
+    helper_service_name = ""
+    if not full_deletion:
+        helper_service_name = (
+            f"main-computer-{request.network}-remove-{request.service_id}-"
+            f"{operation_id.rsplit('-', 1)[-1][:8]}"
         )
+        helper_uuid, _ = find_service(client, helper_service_name)
+        if helper_uuid:
+            raise FdbControlError(
+                code="FDB_REMOVE_SERVICE_HELPER_EXISTS",
+                message=(
+                    f"removal helper {helper_service_name!r} already exists; inspect the prior removal "
+                    "before preparing another operation"
+                ),
+                module_id="FDB-OFM-APP-006",
+                retry_class="inspect-first",
+            )
     target = dict(seed)
+    target["full_deletion"] = full_deletion
     target["helper_service_name"] = helper_service_name
-    target["drain_proof"] = removal_drain_proof_marker(plan)
-    target["complete_proof"] = removal_complete_proof_marker(plan)
+    target["drain_proof"] = None if full_deletion else removal_drain_proof_marker(plan)
+    target["complete_proof"] = None if full_deletion else removal_complete_proof_marker(plan)
 
     write_operation(
         ctx,
@@ -232,7 +272,12 @@ def prep(
             "target_coordinators": [item.endpoint for item in plan.coordinators],
             "target_coordinator_services": [item.service_id for item in plan.coordinators],
             "coordinators_changed": coordinator_set_changed(accepted.coordinators, plan.coordinators),
-            "safe_withdrawal": "coordinator-first-then-fdbcli-exclude-blocking",
+            "full_deletion": full_deletion,
+            "safe_withdrawal": (
+                "explicit-full-deletion-no-drain"
+                if full_deletion
+                else "coordinator-first-then-fdbcli-exclude-blocking"
+            ),
         },
     )
 
@@ -294,6 +339,62 @@ def do(
             module_id="FDB-OFM-APP-006",
             operation_id=operation_id,
             retry_class="inspect-first",
+        )
+
+    if not plan.services:
+        if not request.allow_full_deletion:
+            raise FdbControlError(
+                code="FDB_REMOVE_SERVICE_FULL_DELETION_REQUIRES_ACK",
+                message="final-service deletion lost its explicit full-deletion acknowledgement",
+                module_id="FDB-OFM-APP-006",
+                operation_id=operation_id,
+                retry_class="never",
+            )
+
+        # There is nowhere to evacuate the final FDB copy.  The explicit
+        # acknowledgement authorizes destructive deletion of the exact frozen
+        # service instead of pretending a blocking exclude can make it safe.
+        deployment_result = {
+            "full_deletion": True,
+            "target_service_uuid": frozen_target_uuid,
+            "target_service_name": str(target["target_service_name"]),
+            "coolify_context": _context_to_wire(context),
+            "coordinators_changed": bool(accepted_prestate.coordinators),
+            "connection_string": "",
+            "guardian_service_uuid": None,
+            "guardian_service_name": None,
+        }
+        update_operation(ctx, network, operation_id, stage="removing", deployment_result=deployment_result)
+        if get_service(client, frozen_target_uuid) is not None:
+            delete_service(client, frozen_target_uuid)
+        wait_for_missing(client, frozen_target_uuid, timeout_s=300.0, poll_s=5.0)
+
+        guardian_name = coordinator_guardian_service_name(network)
+        guardian_uuid, _ = find_service(client, guardian_name)
+        if guardian_uuid:
+            delete_service(client, guardian_uuid)
+            wait_for_missing(client, guardian_uuid, timeout_s=300.0, poll_s=5.0)
+            deployment_result["guardian_service_uuid"] = guardian_uuid
+            deployment_result["guardian_service_name"] = guardian_name
+
+        update_operation(ctx, network, operation_id, stage="removed", deployment_result=deployment_result)
+        return OperationCommandResult(
+            operation="remove-service",
+            stage="do",
+            status="removed",
+            details={
+                "operation_id": operation_id,
+                "service_id": plan.removed_service.service_id,
+                "service_uuid": frozen_target_uuid,
+                "service_endpoint": plan.removed_service.endpoint,
+                "full_deletion": True,
+                "full_deletion_authorized": True,
+                "safe_withdrawal_verified": False,
+                "coolify_service_deleted": True,
+                "endpoint_exclusion_cleared": False,
+                "coordinators_changed": bool(accepted_prestate.coordinators),
+                "target_coordinators": [],
+            },
         )
 
     # Coordinator authority is a derived overlay.  If the retiring service is
@@ -456,8 +557,9 @@ def finalize(
     )
     accepted_file = advance_accepted_state(ctx, accepted_prestate, accepted_target)
 
-    # The helper is operational scaffolding, not an FDB member.  Once accepted
-    # authority advances, remove it and prove the helper itself is gone.
+    # The ordinary helper is operational scaffolding, not an FDB member.  A
+    # full deletion has no helper because there is no surviving FDB process to
+    # evacuate into or verify through.
     private_doc = load_private_infrastructure(ctx)
     binding = resolve_host_binding(private_doc, plan.network, plan.removed_service.host_id, base_dir=ctx.private_state_path.parent)
     client = client_factory(binding)
@@ -490,7 +592,8 @@ def finalize(
             "accepted_generation": accepted_target.generation,
             "removed_service_id": plan.removed_service.service_id,
             "removed_endpoint": plan.removed_service.endpoint,
-            "endpoint_exclusion_cleared": True,
+            "full_deletion": not plan.services,
+            "endpoint_exclusion_cleared": bool(plan.services),
             "coordinators_changed": coordinator_set_changed(accepted_prestate.coordinators, plan.coordinators),
             "consumer_contract_changed": coordinator_set_changed(accepted_prestate.coordinators, plan.coordinators),
             "hub_fdb_rectification_required": coordinator_set_changed(accepted_prestate.coordinators, plan.coordinators),
@@ -574,12 +677,20 @@ def _contains_exact_marker(logs: str, marker: str) -> bool:
 
 
 def _request_to_wire(value: RemoveServiceRequest) -> dict[str, Any]:
-    return {"network": value.network, "service_id": value.service_id}
+    return {
+        "network": value.network,
+        "service_id": value.service_id,
+        "allow_full_deletion": value.allow_full_deletion,
+    }
 
 
 def _request_from_wire(raw: object) -> RemoveServiceRequest:
     payload = _mapping(raw)
-    return RemoveServiceRequest(network=str(payload["network"]), service_id=str(payload["service_id"]))
+    return RemoveServiceRequest(
+        network=str(payload["network"]),
+        service_id=str(payload["service_id"]),
+        allow_full_deletion=bool(payload.get("allow_full_deletion", False)),
+    )
 
 
 def _deployment_to_wire(value: RemoveServiceDeployment, *, environment_name: str) -> dict[str, Any]:
