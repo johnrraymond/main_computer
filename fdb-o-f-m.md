@@ -5,9 +5,9 @@ Status: module-contract companion to `fdb-o-f.md`
 Sources reviewed:
 
 ```text
-fdb.md SHA-256: fe0dd9fcbe702c3d7b04bbb6a8ba2072f59e4a5f6de300d735d929561d39df1f
-fdb-o.md SHA-256: 0f45df125ce6ea6a8600c6830697094b77a0e5cc7a578f55b11b55df97bc551b
-fdb-o-f.md SHA-256: bc79d49cb1e5aa2e8dbbe57265f991fbc6c098551e3db1b3d0e52095f306df0a
+fdb.md SHA-256: 51f49cfa1006fc8f11818cf653c5893f3b9485578b5680886d829fe0e89e6453
+fdb-o.md SHA-256: b72a9fc6d6f9cff1f899808e629ce9f1d30c0f337519cbbdc41a26f69ef9c763
+fdb-o-f.md SHA-256: c1c9a18a217578cf0eeb0310ac7f2a9248e03e95846d70d6344668cb1d26b549
 ```
 
 Repository implementation evidence reviewed:
@@ -161,45 +161,57 @@ tools/fdb_control/
     reporting.py
 ```
 
-### 3.2 Canonical invocation
+### 3.2 Canonical internal entry point
 
-The implementation entry point is:
+The internal implementation entry point is:
 
 ```text
 python -m tools.fdb_control
 ```
 
-`fdb-control` remains documentation shorthand. This closes `FDB-OF-GAP-016` for the Python/module path and parser ownership. Normal add-service target spelling is now closed under `FDB-OF-GAP-017`; composite target syntax for other operations and final human/JSON presentation remain surface-open.
+This entry point exists for the harness, tests, implementation diagnostics, and
+exceptional recovery. It is not the normal operator interface. Operators should
+not need to invoke it, carry its operation IDs, or manually sequence its stages.
+This closes `FDB-OF-GAP-016` for internal Python/module path and parser ownership.
+Normal public add/remove target spelling is owned by the harness.
 
-The parser recognizes exactly the ten high-level operations from `fdb-o.md`:
+`fdb-o.md` defines ten high-level operation contracts. The current internal
+parser implements only the subset required by the code that exists now:
 
 ```text
 inspect
-consumer-contract
 create-cluster
 add-service
 remove-service
-replace-service
-set-coordinators
-configure-cluster
-reconcile
-retire-cluster
 ```
 
-Read-only operations are one-shot. Mutating operations use `prep`, `do`, and `finalize`. There is no `rollback` parser branch.
+`inspect`, `add-service`, and `remove-service` are surfaced normally through the
+harness. `create-cluster` remains internal-only for now. The other six
+contract-defined operations do not yet have internal parser branches or normal
+harness commands and MUST NOT be presented as available commands.
 
-### 3.3 Operator mutation harness
+Read-only internal operations are one-shot. Mutating internal operations use
+`prep`, `do`, and `finalize`. There is no `rollback` parser branch.
 
-The repository-level `fdb_mutate_harness.py` drives the canonical CLI for the
-implemented service mutations:
+### 3.3 Operator harness
 
-```text
-python fdb_mutate_harness.py add-service --network <network> --service <service-id>
-python fdb_mutate_harness.py remove-service --network <network> --service <service-id>
+The repository-level `fdb_mutate_harness.py` is the normal operator surface:
+
+```powershell
+python .\fdb_mutate_harness.py inspect
+python .\fdb_mutate_harness.py add-service --service <service-id>
+python .\fdb_mutate_harness.py remove-service --service <service-id>
+python .\fdb_mutate_harness.py remove-service --service <final-service-id> --allow-full-deletion
 ```
 
-It is not imported by `tools.fdb_control` and owns no direct deployment or FDB
-mutation seam.
+`mainnet` is the default network. The harness owns internal command construction,
+operation IDs, run directories, automatic resume, mutation gating, evidence
+capture, and final verification. It is not imported by `tools.fdb_control` and
+owns no direct deployment or FDB mutation seam. `--allow-full-deletion` is part
+of the public harness safety boundary only for the destructive final `1 -> 0`
+removal; the harness freezes that acknowledgement into the internal prepared
+operation and refuses to auto-resume a run prepared under different deletion
+authority.
 
 
 ## 4. Shared type and error contract
@@ -299,7 +311,7 @@ Every module ID below maps to exactly one source file. Public API names are norm
 | `FDB-OFM-APP-009` | `tools/fdb_control/configure_cluster.py` | `orchestrator` | `prep`, `do`, `finalize`; FDB-native configuration mutation |
 | `FDB-OFM-APP-010` | `tools/fdb_control/reconcile.py` | `orchestrator` | `prep`, `do`, `finalize`; restore live state to unchanged accepted intent |
 | `FDB-OFM-APP-011` | `tools/fdb_control/retire_cluster.py` | `orchestrator` | `prep`, `do`, `finalize`; explicit lineage retirement |
-| `FDB-OFM-HARNESS-001` | `fdb_mutate_harness.py` | `operator-driver` | drive public add/remove mutation lifecycle, mutation gate, per-step run capture, resume, and final topology/generation assertions; no direct infrastructure authority |
+| `FDB-OFM-HARNESS-001` | `fdb_mutate_harness.py` | `operator-driver` | normal operator surface for inspect/add/remove; owns internal command construction, mutation gate, per-step run capture, automatic matching-run resume, and final topology/generation assertions; no direct infrastructure authority |
 | `FDB-OFM-CORE-001` | `tools/fdb_control/common/models.py` | `core-pure` | immutable typed values crossing all public seams |
 | `FDB-OFM-CORE-002` | `tools/fdb_control/common/errors.py` | `core-pure` | `FdbControlError` envelope and stable error namespaces |
 | `FDB-OFM-CORE-003` | `tools/fdb_control/common/canonical.py` | `core-pure` | canonical JSON/text encoding and deterministic ordering |
@@ -655,30 +667,45 @@ address, and the allocator chooses the first unused accepted port beginning at
 `do` and `finalize` consume the frozen placement. They do not call the allocator
 again.
 
+When accepted state is `accepted-empty`, `FDB-OFM-APP-005` keeps the same operator command but switches the internal execution path from join-existing-cluster to first-service birth: it renders the birth descriptor, makes the inferred service the sole coordinator, verifies birth, and advances the existing accepted generation. `create-cluster` remains reserved for an unborn lineage with no accepted state.
+
 ### 10.2 Mutation harness
 
-`FDB-OFM-HARNESS-001` is an operator-driver, not an orchestrator authority. Its
-fixed current step sequence is:
+`FDB-OFM-HARNESS-001` is the normal operator-driver, not an orchestrator
+authority. Its current public commands are `inspect`, `add-service`, and
+`remove-service`; `mainnet` is the default network. The operator does not provide
+operation IDs or run-directory paths.
+
+For service mutations its fixed internal step sequence is:
 
 ```text
 pre-inspect -> prep -> do -> operation-inspect -> finalize -> final-inspect
 ```
 
-Only `do` and `finalize` are mutating harness steps. Both
+Only `do` and `finalize` are mutating internal steps. Both
 `--execute-mutations` and `--yes-i-know-this-mutates-fdb` are required to cross
 the mutation boundary. Without both, the harness stops after prep and prints the
-resolved host/endpoint returned by FDB Control.
+resolved host/endpoint and frozen coordinator target.
 
 The harness state schema is `main-computer.fdb-mutate-harness.v1`. Run state is
-stored beneath `runtime/state/fdb/harness-runs/`. `--resume` loads that state and
-continues after `last_completed_step`; it does not recreate or reinterpret the
-prepared operation.
+stored beneath `runtime/state/fdb/harness-runs/`. On each mutation invocation,
+the harness searches that directory for the newest unfinished state whose
+operation, network, and service match the requested high-level intent. If found,
+it reloads that state and continues after `last_completed_step`; otherwise it
+creates a new run. The operator does not select or type the run directory.
 
 For add/remove service mutations, final inspection must prove accepted generation
 `start + 1`, unchanged cluster description, the exact frozen target coordinator
-set, cluster-ID change exactly when that set changed, and the exact requested
-service presence/absence. The harness prints that proof summary before declaring
-completion.
+set, and the exact requested service presence/absence. Normal live coordinator
+transitions require cluster-ID change exactly when the coordinator set changed.
+The two empty-topology boundaries are explicit exceptions: full deletion preserves
+the historical cluster identity while reaching zero coordinators, and
+`accepted-empty -> one-service` add-service rebirth also preserves that historical
+identity while restoring one live coordinator. The harness prints that proof
+summary before declaring completion.
+
+Internal `tools.fdb_control` command lines are written into run evidence for
+diagnosis but are intentionally hidden from normal operator output.
 
 The repository export surface MUST include `fdb_mutate_harness.py` as an explicit
 root export item in `export-main-computer-test.ps1`; the export contract test
@@ -787,8 +814,8 @@ These gaps remain open. The module layer names one owner and one fail-closed cod
 
 ### 15.1 Surface-open items
 
-- `FDB-OF-GAP-016` is closed here: canonical module entry is `python -m tools.fdb_control`.
-- `FDB-OF-GAP-017` is closed for normal `add-service`: `python -m tools.fdb_control add-service prep <network> --service <service-id>` infers and freezes host/address/port. Composite target syntax for other operations remains surface-open.
+- `FDB-OF-GAP-016` is closed here: the canonical internal module entry is `python -m tools.fdb_control`, while the normal operator entry is `fdb_mutate_harness.py`.
+- `FDB-OF-GAP-017` is closed for normal public `add-service` and `remove-service`: the harness accepts `--service <service-id>` and owns internal prep/inference. Final `remove-service` deletion additionally accepts the explicit `--allow-full-deletion` acknowledgement for `1 -> 0`. Composite target syntax for future harness operations remains surface-open.
 - `FDB-OF-GAP-018` remains open: exact final JSON schema names and human presentation are owned by reporting work; no presentation choice may change typed semantics.
 
 ### 15.2 Fail-before-effect rule
@@ -938,7 +965,7 @@ A later step may not ship a private implementation of an unfinished lower-level 
 - shared private configuration is read-only and ordinary evidence is secret-free;
 - service identity is independent from host identity and multiple services per host are accepted;
 - normal add-service placement is inferred only during prep and frozen; do/finalize never reallocate host/address/port;
-- the mutation harness invokes only the public CLI and never becomes an alternate topology or infrastructure authority;
+- the mutation harness is the public operator surface, invokes only the internal typed CLI beneath that boundary, and never becomes an alternate topology or infrastructure authority;
 - coordinator membership is independent from service membership and is derived for normal membership mutations from distinct `zone_id` failure domains;
 - the coordinator overlay preserves valid current coordinators first, chooses at most one per failure domain, and uses the largest supported odd cardinality (minimum one);
 - no fixed topology cardinality is hard-coded;

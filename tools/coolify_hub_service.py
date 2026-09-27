@@ -2447,7 +2447,6 @@ def sync_application_env_var(
             break
 
     base_payloads = [
-        {"key": clean_key, "value": value},
         {
             "key": clean_key,
             "value": value,
@@ -2464,6 +2463,8 @@ def sync_application_env_var(
             "is_literal": True,
             "is_multiline": False,
         },
+        # Compatibility fallback for older Coolify API revisions.
+        {"key": clean_key, "value": value},
     ]
     value_hash = hashlib.sha256(value.encode("utf-8")).hexdigest()
     value_bytes = len(value.encode("utf-8"))

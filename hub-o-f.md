@@ -9,7 +9,7 @@ hub.md
 SHA-256: dc1def412907396cc63b5456a284d298284c3176e7559a80a70c2724ce8a6be7
 
 hub-o.md
-SHA-256: a47ed7f246be3fa2888b0372a94b3c60c383af59fed240660794e1d3f605df17
+SHA-256: 171f0c5bdfdb431ef2549d8478e8bf9f956081ea3217e9fe227d76b9762e42cd
 ```
 
 ## 1. Purpose
@@ -119,9 +119,9 @@ If no accepted Hub state exists, normalize the lifecycle prestate to generation 
 
 The add plan must resolve the current usable FDB contract and Chain contract, validate the chain RPC/chain ID plus Hub-required deployed-contract identities, classify optional/advertised contract probes as non-blocking evidence, and freeze both hashes/generations into the operation before Coolify mutation.
 
-### HUB-OF-RUN-000 — Materialize runtime projection inside the Hub image
+### HUB-OF-RUN-000 — Materialize the frozen runtime projection before Hub startup
 
-The deployment passes the frozen FDB cluster connection, FDB namespace, stable one-Hub topology, chain ID, RPC URL, and contract references as runtime projection. `run-exp-fdb-hub.py` materializes `fdb.cluster` and the topology file before launching the normal Hub runtime.
+The deployment passes the frozen FDB cluster connection, FDB namespace, stable one-Hub topology, chain ID, RPC URL, and contract references as runtime projection. Hub Control owns a compatibility bootstrap in the Coolify start command that writes `fdb.cluster` and the topology file into the mounted Hub runtime directory before handing off to `run-exp-fdb-hub.py`. The launcher may repeat that materialization when it supports the same projection contract, but first birth must not depend on the remote Git revision already containing the newest Hub Control launcher code.
 
 ### HUB-OF-VER-000 — Prove both dependency edges
 
@@ -160,13 +160,19 @@ Ordered functionality:
 HUB-OF-OPS-002
 render exact frozen deployment
 create/update exact deployment
+trigger exact Coolify deployment
+wait for returned deployment UUID to finish
 HUB-OF-VER-001
 HUB-OF-VER-002
 HUB-OF-VER-003
-persist deployment result
+persist deployment + runtime proof
 ```
 
-The live deployer must consume the frozen runtime projection. It may not reread newer dependency contracts during `do`.
+The live deployer must consume the frozen runtime projection. It may not reread newer dependency contracts during `do`. Projection environment variables must be created/updated as runtime variables, not merely build-time values, and the start command must materialize the frozen FDB/topology artifacts before the Hub process starts. A successful deploy-trigger HTTP response proves only that Coolify accepted/queued the request; it is not Hub runtime proof. When Coolify returns a deployment UUID, `do` waits for that exact deployment to reach a successful terminal state before starting the Hub observer. Failed/timeout deployment evidence includes the UUID, terminal/last status, and available log tail.
+
+Runtime proof probes health, Hub identity, and status separately. A timeout preserves endpoint-specific transport errors, the last returned payloads, and the exact failed checks. The operation remains at `prepared` when `do` does not verify, so the same frozen operator intent can be retried without advancing accepted authority.
+
+For Hub-Control deployments, Coolify's application-level rolling health gate is deliberately disabled during this birth path. Coolify proves only that the requested deployment reached a successful terminal materialization state. Hub Control then performs the authoritative readiness proof against the public Hub endpoints and both dependency projections. This prevents Coolify from rolling back a newborn container before Hub Control can distinguish slow startup, FDB failure, Chain failure, and Hub runtime failure. The temporary Dockerfile healthcheck remains a transport keepalive, not acceptance evidence.
 
 ## 7. `add-hub operation-inspect`
 
@@ -240,20 +246,8 @@ Retries must continue the frozen operation rather than create duplicate deployme
 
 Each stage keeps command, stdout, stderr, normalized JSON result, and harness state beneath the harness run directory. Operator console output remains compact and human-readable.
 
-## 15. Open implementation boundary in this patch
+## 15. Remaining implementation boundary
 
-The public harness and internal command seam are implemented and tested. The following live functionalities remain deliberately open for the next patch:
+The first-Hub `add-hub` vertical slice is live: placement, accepted-state writer, FDB/Chain readers, runtime projection, Coolify deployment adapter, queued-deployment wait, Hub observer, operation store, and add/finalize protocol are implemented and tested.
 
-```text
-placement implementation
-accepted Hub state writer
-Coolify Hub lifecycle adapter
-runtime projection builder
-Hub observer
-FDB consumer-contract reader
-Chain consumer-contract reader
-operation store
-live add/remove protocols
-```
-
-The internal CLI must fail explicitly rather than falling back to the legacy mixed deployers until those functionalities exist.
+The remaining lifecycle gap is `remove-hub`, including ordinary contraction and guarded `1 -> 0` deletion. Until that protocol is implemented, its internal CLI stages must fail explicitly rather than delegating to the legacy mixed deployers.

@@ -285,6 +285,7 @@ def _shared_rpc_route_targets(private_state: PrivateStateReadResult) -> dict[str
             "target_url": f"http://{node}:8545",
             "expected_chain_id": chain_id,
             "dynamic_file": f"mother-mainnet-rpc-route-{controller_id}.yml",
+            "legacy_dynamic_file": f"main-computer-mainnet-rpc-public-entry-{key}.yml",
         }
     return result
 
@@ -1103,11 +1104,13 @@ import json
 import socket
 import urllib.parse
 
+ROUTE_HOST = __ROUTE_HOST__
 TARGET_HOST = __TARGET_HOST__
 TARGET_PORT = __TARGET_PORT__
 EXPECTED_CHAIN_ID_HEX = __EXPECTED_CHAIN_ID_HEX__
 DYNAMIC_CONFIG_B64 = __DYNAMIC_CONFIG_B64__
 TARGET_PATH = __TARGET_PATH__
+LEGACY_TARGET_PATH = __LEGACY_TARGET_PATH__
 
 class UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, socket_path: str):
@@ -1199,6 +1202,13 @@ script = (
     f"mv '{TARGET_PATH}.tmp' '{TARGET_PATH}'\n"
     f"chmod 0644 '{TARGET_PATH}'\n"
     f"test -s '{TARGET_PATH}'\n"
+    f"rm -f '{LEGACY_TARGET_PATH}'\n"
+    f"test ! -e '{LEGACY_TARGET_PATH}'\n"
+    "sleep 1\n"
+    f"route_out=$(wget -q -T 8 -O- --header='Host: {ROUTE_HOST}' --header='Content-Type: application/json' --post-data='{rpc_payload}' 'http://127.0.0.1/' 2>/dev/null || true)\n"
+    "printf '%s' \"$route_out\" | grep -q '\"result\"[[:space:]]*:[[:space:]]*\""
+    + EXPECTED_CHAIN_ID_HEX
+    + "\"'\n"
 )
 code = docker_exec(proxy_id, script)
 if code != 0:
@@ -1211,13 +1221,16 @@ def _route_writer_script(target: Mapping[str, Any]) -> str:
     dynamic_config = _render_shared_rpc_traefik_dynamic_config(target)
     dynamic_config_b64 = base64.b64encode(dynamic_config.encode("utf-8")).decode("ascii")
     target_path = f"/traefik/dynamic/{target['dynamic_file']}"
+    legacy_target_path = f"/traefik/dynamic/{target['legacy_dynamic_file']}"
     return (
         _ROUTE_WRITER_PY
+        .replace("__ROUTE_HOST__", repr(str(target["route_host"])))
         .replace("__TARGET_HOST__", repr(str(target["target_host"])))
         .replace("__TARGET_PORT__", repr(int(target["target_port"])))
         .replace("__EXPECTED_CHAIN_ID_HEX__", repr(hex(int(target["expected_chain_id"]))))
         .replace("__DYNAMIC_CONFIG_B64__", repr(dynamic_config_b64))
         .replace("__TARGET_PATH__", repr(target_path))
+        .replace("__LEGACY_TARGET_PATH__", repr(legacy_target_path))
     )
 
 
@@ -1291,6 +1304,184 @@ def _route_writer_application_body(controller: Mapping[str, Any], name: str, com
         "name": name,
         "description": "Ephemeral Mother shared validator-RPC Traefik route writer",
         "instant_deploy": False,
+    }
+
+
+def execute_shared_rpc_route_rewire(
+    private_state: PrivateStateReadResult,
+    *,
+    controller_id: str,
+    target_node: str,
+    timeout: float = 30.0,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    max_wait_seconds: float = 300.0,
+    poll_interval_seconds: float = 5.0,
+    opener: Any = _DEFAULT_OPENER,
+) -> dict[str, Any]:
+    """Repoint one controller's Mother-owned mainnet RPC route and prove it locally."""
+    if controller_id not in {_A_CONTROLLER, _C_CONTROLLER}:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            f"unsupported shared RPC controller {controller_id!r}",
+        )
+    mainnet = _network_state(private_state)
+    resolved_controller_id = _target_controller_id(mainnet, target_node)
+    if resolved_controller_id != controller_id:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            f"RPC replacement node {target_node!r} resolves to {resolved_controller_id!r}, not {controller_id!r}",
+        )
+    chain_id = mainnet.get("chain_id")
+    if chain_id != 42424240:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            "Mother private state does not bind mainnet chain_id 42424240",
+        )
+    route_key = "a" if controller_id == _A_CONTROLLER else "c"
+    target = {
+        "key": route_key,
+        "node": target_node,
+        "controller_id": controller_id,
+        "route_host": _shared_rpc_route_host(mainnet),
+        "target_host": target_node,
+        "target_port": 8545,
+        "target_url": f"http://{target_node}:8545",
+        "expected_chain_id": chain_id,
+        "dynamic_file": f"mother-mainnet-rpc-route-{controller_id}.yml",
+        "legacy_dynamic_file": f"main-computer-mainnet-rpc-public-entry-{route_key}.yml",
+    }
+    controller = resolve_coolify_controller(private_state, "mainnet", controller_id)
+    controller_config = _controller(private_state, controller_id)
+    receipts: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
+    service_name = f"mother-mainnet-rpc-route-{route_key}"
+    service_uuid: str | None = None
+    proof: dict[str, Any] | None = None
+    cleanup_deleted = False
+    try:
+        environment_uuid = _resolve_environment_uuid(
+            controller=controller,
+            controller_id=controller_id,
+            endpoint=f"/api/v1/projects/{controller_config['project_uuid']}/environments",
+            expected_name="mainnet",
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            observations=observations,
+            phase=f"{route_key}_shared_rpc_route_writer-mainnet-environment-resolution",
+        )
+        compose = _route_writer_compose(service_name, target)
+        create_body = _route_writer_application_body(controller_config, service_name, compose)
+        create_body["environment_uuid"] = environment_uuid
+        create_response = _request_mutation(
+            controller=controller,
+            mutation_id=f"{service_name}.create-service",
+            controller_id=controller_id,
+            method="POST",
+            endpoint="/api/v1/services",
+            body=create_body,
+            success_statuses=(200, 201, 202),
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            receipts=receipts,
+        )
+        service_uuid = _application_uuid(create_response["payload"])
+        receipts[-1].update({
+            "application_uuid": service_uuid,
+            "service_name": service_name,
+            "request_body_sha256": hashlib.sha256(canonical_json(create_body)).hexdigest(),
+        })
+        _request_mutation(
+            controller=controller,
+            mutation_id=f"{service_name}.start",
+            controller_id=controller_id,
+            method="POST",
+            endpoint=f"/api/v1/services/{service_uuid}/start",
+            body=None,
+            success_statuses=(200, 201, 202),
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            receipts=receipts,
+            application_uuid=service_uuid,
+        )
+        receipts[-1]["service_name"] = service_name
+        health = _wait_for_service_health(
+            controller=controller,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            service_name=service_name,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            observations=observations,
+            phase=f"{route_key}_shared_rpc_route_writer-status-health-result",
+        )
+        proof = {
+            **dict(health),
+            "controller_id": controller_id,
+            "route_host": target["route_host"],
+            "target_node": target_node,
+            "target_host": target["target_host"],
+            "target_port": target["target_port"],
+            "dynamic_file": target["dynamic_file"],
+            "legacy_dynamic_file": target["legacy_dynamic_file"],
+            "result_channel": "coolify-service-detail-health",
+            "proof": "coolify-proxy wrote the Mother-owned route, retired the legacy QBFT route, and proved eth_chainId through the local Traefik hostname route",
+        }
+        if proof.get("healthy") is not True:
+            raise _error(
+                "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_WIRING_FAILED",
+                f"{controller_id} did not prove shared RPC route wiring for {target_node}:8545",
+            )
+    finally:
+        if service_uuid is not None:
+            response = _http(
+                controller,
+                "DELETE",
+                f"/api/v1/services/{service_uuid}",
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            cleanup_deleted = int(response.get("status", 0)) in {200, 204, 404}
+            receipt = _receipt(
+                mutation_id=f"{service_name}.delete",
+                controller_id=controller_id,
+                method="DELETE",
+                endpoint=f"/api/v1/services/{service_uuid}",
+                response=response,
+                succeeded=cleanup_deleted,
+                application_uuid=service_uuid,
+            )
+            receipt["service_name"] = service_name
+            receipt["cleanup_absent"] = response.get("status") == 404
+            receipts.append(receipt)
+            if not cleanup_deleted:
+                raise _error(
+                    "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CLEANUP_FAILED",
+                    f"temporary service cleanup failed for {service_name}",
+                )
+    if proof is None:
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_WIRING_FAILED",
+            f"{controller_id} did not produce shared RPC route proof for {target_node}:8545",
+        )
+    return {
+        "status": "pass",
+        "controller_id": controller_id,
+        "target_node": target_node,
+        "route_host": target["route_host"],
+        "service_name": service_name,
+        "service_uuid": service_uuid,
+        "proof": proof,
+        "receipts": receipts,
+        "observations": observations,
+        "cleanup": {"deleted": cleanup_deleted},
     }
 
 
@@ -3753,126 +3944,26 @@ def execute_validator_rpc_canary_funding_release(
                     )
 
     def run_route_writer(route_key: str, target: Mapping[str, Any]) -> Mapping[str, Any]:
-        controller_id = str(target["controller_id"])
-        controller = controllers[controller_id]
-        service_name = f"mother-mainnet-rpc-route-{route_key}"
-        service_uuid: str | None = None
-        service_controller_ids[service_name] = controller_id
-        compose = _route_writer_compose(service_name, target)
-        proof: Mapping[str, Any] | None = None
-        try:
-            if controller_id not in environment_uuids:
-                environment_uuids[controller_id] = _resolve_environment_uuid(
-                    controller=controller,
-                    controller_id=controller_id,
-                    endpoint=f"/api/v1/projects/{_controller(private_state, controller_id)['project_uuid']}/environments",
-                    expected_name="mainnet",
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
-                    opener=opener,
-                    observations=observations,
-                    phase=f"{route_key}_shared_rpc_route_writer-mainnet-environment-resolution",
-                )
-            create_body = _route_writer_application_body(
-                _controller(private_state, controller_id),
-                service_name,
-                compose,
-            )
-            create_body["environment_uuid"] = environment_uuids[controller_id]
-            create_response = _request_mutation(
-                controller=controller,
-                mutation_id=f"{service_name}.create-service",
-                controller_id=controller_id,
-                method="POST",
-                endpoint="/api/v1/services",
-                body=create_body,
-                success_statuses=(200, 201, 202),
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                receipts=receipts,
-            )
-            service_uuid = _application_uuid(create_response["payload"])
-            created_services[service_name] = service_uuid
-            receipts[-1].update({
-                "application_uuid": service_uuid,
-                "service_name": service_name,
-                "request_body_sha256": hashlib.sha256(canonical_json(create_body)).hexdigest(),
-            })
-            _request_mutation(
-                controller=controller,
-                mutation_id=f"{service_name}.start",
-                controller_id=controller_id,
-                method="POST",
-                endpoint=f"/api/v1/services/{service_uuid}/start",
-                body=None,
-                success_statuses=(200, 201, 202),
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-                receipts=receipts,
-                application_uuid=service_uuid,
-            )
-            receipts[-1]["service_name"] = service_name
-            proof = _wait_for_service_health(
-                controller=controller,
-                controller_id=controller_id,
-                service_uuid=service_uuid,
-                service_name=service_name,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                max_wait_seconds=max_wait_seconds,
-                poll_interval_seconds=poll_interval_seconds,
-                opener=opener,
-                observations=observations,
-                phase=f"{route_key}_shared_rpc_route_writer-status-health-result",
-            )
-            proof = {
-                **dict(proof),
-                "route_host": target.get("route_host"),
-                "target_host": target.get("target_host"),
-                "target_port": target.get("target_port"),
-                "dynamic_file": target.get("dynamic_file"),
-                "result_channel": "coolify-service-detail-health",
-                "proof": "coolify-proxy wrote Mother-owned shared RPC dynamic route after proving local Besu eth_chainId",
-            }
-            proofs[f"{route_key}_shared_rpc_route_writer"] = proof
-            if proof.get("healthy") is not True:
-                raise _error(
-                    "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_WIRING_FAILED",
-                    f"{controller_id} did not prove shared RPC route wiring for {target.get('target_host')}:{target.get('target_port')}",
-                )
-            return proof
-        finally:
-            if service_uuid is not None:
-                response = _http(
-                    controller,
-                    "DELETE",
-                    f"/api/v1/services/{service_uuid}",
-                    body=None,
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
-                    opener=opener,
-                )
-                deleted = int(response.get("status", 0)) in {200, 204, 404}
-                receipt = _receipt(
-                    mutation_id=f"{service_name}.delete",
-                    controller_id=controller_id,
-                    method="DELETE",
-                    endpoint=f"/api/v1/services/{service_uuid}",
-                    response=response,
-                    succeeded=deleted,
-                    application_uuid=service_uuid,
-                )
-                receipt["service_name"] = service_name
-                receipt["cleanup_absent"] = response.get("status") == 404
-                receipts.append(receipt)
-                deleted_services[service_name] = deleted
-                if not deleted:
-                    raise _error(
-                        "MOTHER_DEPLOY_VALIDATOR_RPC_CANARY_FUNDING_CLEANUP_FAILED",
-                        f"temporary service cleanup failed for {service_name}",
-                    )
+        result = execute_shared_rpc_route_rewire(
+            private_state,
+            controller_id=str(target["controller_id"]),
+            target_node=str(target["target_host"]),
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+        )
+        service_name = str(result["service_name"])
+        service_uuid = str(result["service_uuid"])
+        service_controller_ids[service_name] = str(result["controller_id"])
+        created_services[service_name] = service_uuid
+        deleted_services[service_name] = bool(result.get("cleanup", {}).get("deleted"))
+        receipts.extend(dict(item) for item in result.get("receipts", []))
+        observations.extend(dict(item) for item in result.get("observations", []))
+        proof = dict(_mapping(result.get("proof"), f"{route_key}_shared_rpc_route_writer.proof"))
+        proofs[f"{route_key}_shared_rpc_route_writer"] = proof
+        return proof
 
     try:
         route_targets = _mapping(

@@ -783,7 +783,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(coolify_hub_service.hub_health_check_mode(profile, args), "skip")
 
 
-    def test_exp_fdb_dockerfile_has_safe_defaults_and_healthcheck_client(self) -> None:
+    def test_exp_fdb_dockerfile_has_safe_defaults_and_diagnostic_keepalive_healthcheck(self) -> None:
         self.assertFalse((REPO_ROOT / "Dockerfile.hub").exists())
         self.assertFalse((REPO_ROOT / "Dockerfile.hub.mainnet").exists())
         self.assertFalse((REPO_ROOT / "Dockerfile.hub.testnet").exists())
@@ -799,8 +799,9 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertNotIn('ENTRYPOINT ["python", "/app/exp-fdb-hub.py"]', exp_fdb_dockerfile)
         self.assertIn("EXPOSE 8790 8785", exp_fdb_dockerfile)
         self.assertNotIn("/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", exp_fdb_dockerfile)
-        self.assertIn("${HUB_HEALTH_PORT:-${PORT:-8790}}", exp_fdb_dockerfile)
-        self.assertIn("/api/hub/v1/health", exp_fdb_dockerfile)
+        self.assertIn("Hub-Control birth keeps image health transport-only", exp_fdb_dockerfile)
+        self.assertIn('CMD /bin/sh -c "exit 0"', exp_fdb_dockerfile)
+        self.assertIn("/api/hub/v1 health/identity/status proof", exp_fdb_dockerfile)
 
 
     def test_json_rpc_uses_operator_headers_for_https_edges(self) -> None:
@@ -1372,7 +1373,12 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES", result["keys"])
         self.assertIn("MAIN_COMPUTER_HUB_CHAIN_RPC_URL", result["keys"])
         post_payloads = [request[2] for request in client.requests if request[0] == "POST"]
-        self.assertEqual(set(post_payloads[0]), {"key", "value"})
+        self.assertEqual(
+            set(post_payloads[0]),
+            {"key", "value", "is_build_time", "is_runtime", "is_literal", "is_multiline"},
+        )
+        self.assertFalse(post_payloads[0]["is_build_time"])
+        self.assertTrue(post_payloads[0]["is_runtime"])
         self.assertNotIn("https://mainnet-rpc.greatlibrary.io", json.dumps(tried))
 
 
@@ -1395,6 +1401,9 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["action"], "created")
+        create_payload = next(payload for method, _path, payload in client.requests if method == "POST")
+        self.assertTrue(create_payload["is_runtime"])
+        self.assertFalse(create_payload["is_build_time"])
         self.assertNotIn("secret-value", json.dumps(tried))
 
 

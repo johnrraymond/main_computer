@@ -51,6 +51,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("operation", choices=("inspect", "add-service", "remove-service"))
     parser.add_argument("--network", default="mainnet")
     parser.add_argument("--service")
+    parser.add_argument("--allow-full-deletion", action="store_true")
     parser.add_argument(
         "--repo-root",
         type=Path,
@@ -73,18 +74,23 @@ class Harness:
         self.operation = str(args.operation)
         self.network = str(args.network)
         self.service = str(args.service or "").strip()
+        self.allow_full_deletion = bool(args.allow_full_deletion)
         self._prepared_boundary_printed = False
         self._resumed_existing_run = False
 
         if self.operation == "inspect":
             if self.service:
                 raise HarnessError("inspect does not take --service")
+            if self.allow_full_deletion:
+                raise HarnessError("--allow-full-deletion applies only to remove-service")
             self.run_dir: Path | None = None
             self.state: dict[str, Any] = {}
             return
 
         if not self.service:
             raise HarnessError(f"{self.operation} requires --service")
+        if self.allow_full_deletion and self.operation != "remove-service":
+            raise HarnessError("--allow-full-deletion applies only to remove-service")
 
         existing = self._find_unfinished_run()
         if existing is not None:
@@ -107,8 +113,12 @@ class Harness:
             "operation": self.operation,
             "network": self.network,
             "service": self.service,
+            "allow_full_deletion": self.allow_full_deletion,
+            "full_deletion": False,
             "operation_id": None,
             "starting_generation": None,
+            "starting_status": None,
+            "rebirth": False,
             "target_generation": None,
             "resolved_controller": None,
             "resolved_host": None,
@@ -144,6 +154,8 @@ class Harness:
                 continue
             if payload.get("service") != self.service:
                 continue
+            if bool(payload.get("allow_full_deletion", False)) != self.allow_full_deletion:
+                continue
             if payload.get("last_completed_step") == "final-inspect":
                 continue
             try:
@@ -169,7 +181,10 @@ class Harness:
         ]
 
     def prep_cmd(self) -> list[str]:
-        return self.control_cmd(self.operation, "prep", self.network, "--service", self.service)
+        command = self.control_cmd(self.operation, "prep", self.network, "--service", self.service)
+        if self.operation == "remove-service" and self.allow_full_deletion:
+            command.append("--allow-full-deletion")
+        return command
 
     def do_cmd(self) -> list[str]:
         return self.control_cmd(
@@ -224,6 +239,7 @@ class Harness:
                 return 0
             result = self._run_step(step, self._command_for(step))
             self._validate_step(step, result)
+            self._print_step_result(step, result)
             self.state["last_completed_step"] = step
             self._write_state()
 
@@ -272,10 +288,14 @@ class Harness:
         coordinator_set = set(coordinators) if isinstance(coordinators, list) else set()
         if coordinator_set:
             print(f"coordinators:        {', '.join(str(item) for item in coordinators)}")
+        elif result.get("status") == "accepted-empty":
+            print("coordinators:        none")
 
         services = result.get("services")
         if isinstance(services, list):
             print("services:")
+            if not services:
+                print("  none")
             for item in services:
                 if not isinstance(item, dict):
                     continue
@@ -285,9 +305,16 @@ class Harness:
                 role = " coordinator" if endpoint in coordinator_set else ""
                 print(f"  {service_id}  {host_id}  {endpoint}{role}")
 
-        verification = result.get("cluster_verification") or result.get("birth_verification")
+        verification = (
+            result.get("cluster_verification")
+            or result.get("birth_verification")
+            or result.get("empty_topology_verification")
+        )
         if isinstance(verification, dict):
-            print(f"verification:        {'verified' if verification.get('verified') is True else 'not verified'}")
+            if verification.get("reason") == "accepted-empty-topology" and verification.get("verified") is True:
+                print("verification:        accepted empty topology")
+            else:
+                print(f"verification:        {'verified' if verification.get('verified') is True else 'not verified'}")
 
     def _command_for(self, step: str) -> list[str]:
         if step in {"pre-inspect", "final-inspect"}:
@@ -336,13 +363,159 @@ class Harness:
             raise HarnessError(f"{step} did not return a result object")
         return result
 
+    def _print_step_result(self, step: str, result: dict[str, Any]) -> None:
+        """Print the validated control-boundary result without dumping raw JSON."""
+
+        if step in {"pre-inspect", "final-inspect"}:
+            self._print_inspect_stage_result(result)
+            return
+
+        if step == "prep":
+            # _validate_step("prep") already prints the frozen operator boundary.
+            return
+
+        if step == "do":
+            details = result.get("details")
+            details = details if isinstance(details, dict) else {}
+            print(f"status:              {result.get('status')}")
+
+            if self.operation == "add-service":
+                if details.get("rebirth"):
+                    print("first-service rebirth: yes")
+                if details.get("action"):
+                    print(f"deployment action:   {details.get('action')}")
+                if details.get("waited_for_running") is True:
+                    print("service running:     verified")
+                if "coordinators_changed" in details:
+                    print(
+                        "coordinator change:  "
+                        f"{'yes' if details.get('coordinators_changed') else 'no'}"
+                    )
+                coordinators = details.get("target_coordinators")
+                if isinstance(coordinators, list):
+                    print(
+                        "target coordinators: "
+                        f"{', '.join(str(item) for item in coordinators) if coordinators else 'none'}"
+                    )
+                return
+
+            full_deletion = bool(details.get("full_deletion") or self.state.get("full_deletion"))
+            if full_deletion:
+                print("FDB drain:           skipped (explicit final-copy deletion)")
+            elif details.get("safe_withdrawal_verified") is True:
+                print("FDB drain:           verified")
+            if "coolify_service_deleted" in details:
+                print(
+                    "Coolify deletion:    "
+                    f"{'complete' if details.get('coolify_service_deleted') else 'not complete'}"
+                )
+            if "endpoint_exclusion_cleared" in details and not full_deletion:
+                print(
+                    "endpoint exclusion:  "
+                    f"{'cleared' if details.get('endpoint_exclusion_cleared') else 'not cleared'}"
+                )
+            if "coordinators_changed" in details:
+                print(
+                    "coordinator change:  "
+                    f"{'yes' if details.get('coordinators_changed') else 'no'}"
+                )
+            return
+
+        if step == "operation-inspect":
+            key = (
+                "add_service_verification"
+                if self.operation == "add-service"
+                else "remove_service_verification"
+            )
+            verification = result.get(key)
+            verification = verification if isinstance(verification, dict) else {}
+            print(
+                "mutation proof:       "
+                f"{'verified' if verification.get('verified') is True else 'not verified'}"
+            )
+            reason = verification.get("reason")
+            if reason not in (None, ""):
+                print(f"proof reason:         {reason}")
+            if self.operation == "add-service":
+                status = verification.get("coolify_status") or verification.get("status")
+                if status not in (None, ""):
+                    print(f"service status:       {status}")
+            else:
+                target_status = verification.get("target_status")
+                if target_status not in (None, ""):
+                    print(f"target status:        {target_status}")
+                helper_status = verification.get("helper_status")
+                if helper_status not in (None, ""):
+                    print(f"helper status:        {helper_status}")
+            return
+
+        if step == "finalize":
+            details = result.get("details")
+            details = details if isinstance(details, dict) else {}
+            print(f"status:              {result.get('status')}")
+            if details.get("accepted_generation") is not None:
+                print(f"accepted generation: {details.get('accepted_generation')}")
+            print(
+                "accepted authority:  "
+                f"{'advanced' if details.get('verified') is True else 'not advanced'}"
+            )
+            if "consumer_contract_changed" in details:
+                print(
+                    "consumer contract:   "
+                    f"{'changed' if details.get('consumer_contract_changed') else 'unchanged'}"
+                )
+            if "hub_fdb_rectification_required" in details:
+                print(
+                    "Hub rectification:   "
+                    f"{'required' if details.get('hub_fdb_rectification_required') else 'not required'}"
+                )
+            return
+
+    def _print_inspect_stage_result(self, result: dict[str, Any]) -> None:
+        print(f"status:              {result.get('status')}")
+        if result.get("accepted_generation") is not None:
+            print(f"accepted generation: {result.get('accepted_generation')}")
+
+        services = result.get("services")
+        if isinstance(services, list):
+            print(f"services:            {len(services)}")
+
+        coordinators = result.get("coordinators")
+        if isinstance(coordinators, list):
+            print(
+                "coordinators:        "
+                f"{', '.join(str(item) for item in coordinators) if coordinators else 'none'}"
+            )
+
+        verification = (
+            result.get("cluster_verification")
+            or result.get("birth_verification")
+            or result.get("empty_topology_verification")
+        )
+        if isinstance(verification, dict):
+            print(
+                "verification:        "
+                f"{'verified' if verification.get('verified') is True else 'not verified'}"
+            )
+
     def _validate_step(self, step: str, result: dict[str, Any]) -> None:
         if step == "pre-inspect":
-            self._require_accepted_verified(result, label="pre-inspect")
+            status = result.get("status")
+            if self.operation == "add-service" and status == "accepted-empty":
+                verification = result.get("empty_topology_verification")
+                if not isinstance(verification, dict) or verification.get("verified") is not True:
+                    raise HarnessError(
+                        f"pre-inspect could not verify accepted empty FDB state: {verification}"
+                    )
+                if result.get("services") != [] or result.get("coordinators") != []:
+                    raise HarnessError("accepted-empty pre-inspect exposed non-empty services or coordinators")
+            else:
+                self._require_accepted_verified(result, label="pre-inspect")
             generation = result.get("accepted_generation")
             if not isinstance(generation, int) or isinstance(generation, bool):
                 raise HarnessError("pre-inspect did not report an accepted generation")
             self.state["starting_generation"] = generation
+            self.state["starting_status"] = status
             self.state["starting_cluster"] = result.get("cluster")
             self.state["starting_coordinators"] = result.get("coordinators")
             return
@@ -355,8 +528,15 @@ class Harness:
             self.state["operation_id"] = operation_id
             self.state["target_generation"] = details.get("target_generation")
             target_coordinators = details.get("target_coordinators")
-            if not isinstance(target_coordinators, list) or not target_coordinators:
-                raise HarnessError("prep did not freeze a non-empty target coordinator set")
+            full_deletion = bool(details.get("full_deletion"))
+            if not isinstance(target_coordinators, list):
+                raise HarnessError("prep did not freeze a target coordinator set")
+            if not target_coordinators and not (self.operation == "remove-service" and full_deletion):
+                raise HarnessError("prep froze an empty coordinator set without full deletion")
+            if full_deletion and not self.allow_full_deletion:
+                raise HarnessError("prep opened full deletion without operator acknowledgement")
+            self.state["full_deletion"] = full_deletion
+            self.state["rebirth"] = bool(details.get("rebirth"))
             self.state["target_coordinators"] = target_coordinators
             self.state["coordinators_changed"] = bool(details.get("coordinators_changed"))
             if self.operation == "add-service":
@@ -390,7 +570,11 @@ class Harness:
             expected_reason = (
                 "fdb-add-service-proof-satisfied"
                 if self.operation == "add-service"
-                else "fdb-remove-service-proof-satisfied"
+                else (
+                    "fdb-full-deletion-proof-satisfied"
+                    if self.state.get("full_deletion")
+                    else "fdb-remove-service-proof-satisfied"
+                )
             )
             if verification.get("reason") != expected_reason:
                 raise HarnessError(f"unexpected FDB proof reason: {verification.get('reason')!r}")
@@ -410,7 +594,17 @@ class Harness:
             return
 
         if step == "final-inspect":
-            self._require_accepted_verified(result, label="final-inspect")
+            full_deletion = bool(self.state.get("full_deletion"))
+            if full_deletion:
+                if result.get("status") != "accepted-empty":
+                    raise HarnessError(
+                        f"final-inspect expected accepted-empty after full deletion; observed {result.get('status')!r}"
+                    )
+                verification = result.get("empty_topology_verification")
+                if not isinstance(verification, dict) or verification.get("verified") is not True:
+                    raise HarnessError(f"final-inspect did not verify accepted empty topology: {verification}")
+            else:
+                self._require_accepted_verified(result, label="final-inspect")
             expected_generation = int(self._required_state("starting_generation")) + 1
             if result.get("accepted_generation") != expected_generation:
                 raise HarnessError(
@@ -430,7 +624,15 @@ class Harness:
                 raise HarnessError("cluster description changed during service mutation")
             coordinator_changed = bool(self.state.get("coordinators_changed"))
             cluster_id_changed = final_cluster.get("cluster_id") != start_cluster.get("cluster_id")
-            if cluster_id_changed != coordinator_changed:
+            if full_deletion:
+                if cluster_id_changed:
+                    raise HarnessError("full deletion must preserve historical cluster identity")
+            elif self.state.get("rebirth"):
+                if self.state.get("starting_status") != "accepted-empty":
+                    raise HarnessError("rebirth was prepared without an accepted-empty prestate")
+                if cluster_id_changed:
+                    raise HarnessError("first-service rebirth must preserve historical cluster identity")
+            elif cluster_id_changed != coordinator_changed:
                 raise HarnessError(
                     "cluster id must change exactly when the frozen coordinator topology changes"
                 )
@@ -476,14 +678,20 @@ class Harness:
         if self.state.get("starting_generation") is not None:
             print(f"accepted generation: {self.state['starting_generation']}")
         if self.state.get("target_coordinators") is not None:
-            print(f"target coordinators:  {', '.join(self.state['target_coordinators'])}")
+            coordinators = self.state["target_coordinators"]
+            print(f"target coordinators:  {', '.join(coordinators) if coordinators else 'none'}")
             print(f"coordinator change:   {'yes' if self.state.get('coordinators_changed') else 'no'}")
+        if self.state.get("full_deletion"):
+            print("full deletion:        yes")
+        if self.state.get("rebirth"):
+            print("first-service rebirth: yes")
         if not self._mutation_authorized():
             print("\nStopping before live mutation.")
             print("Rerun the same operation with mutation authorization:")
             print(
                 "python .\\fdb_mutate_harness.py "
                 f"{self.operation} --network {self.network} --service {self.service} "
+                f"{'--allow-full-deletion ' if self.allow_full_deletion else ''}"
                 "--execute-mutations --yes-i-know-this-mutates-fdb"
             )
 
@@ -491,8 +699,13 @@ class Harness:
         print("\n=== final FDB verification ===")
         print(f"accepted generation: {self.state.get('target_generation')}")
         print(f"service:             {self.service}")
-        print(f"coordinators:        {', '.join(self.state.get('final_coordinators') or [])}")
+        final_coordinators = self.state.get("final_coordinators") or []
+        print(f"coordinators:        {', '.join(final_coordinators) if final_coordinators else 'none'}")
         print(f"coordinator change:  {'yes' if self.state.get('coordinators_changed') else 'no'}")
+        if self.state.get("full_deletion"):
+            print("full deletion:       yes")
+        if self.state.get("rebirth"):
+            print("first-service rebirth: yes")
         cluster = self.state.get("final_cluster")
         if isinstance(cluster, dict):
             print(f"cluster id:           {cluster.get('cluster_id')}")

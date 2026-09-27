@@ -3,31 +3,32 @@
 Status: operator-facing companion to `fdb.md`
 
 Source reviewed: `fdb.md` SHA-256
-`fe0dd9fcbe702c3d7b04bbb6a8ba2072f59e4a5f6de300d735d929561d39df1f`
+`51f49cfa1006fc8f11818cf653c5893f3b9485578b5680886d829fe0e89e6453`
 
 ## 1. Purpose and authority
 
 This document is the top-level operator contract for FDB Control. It defines
-which operation to choose, what each operation is allowed to change, the stages
-an operator drives, the safety boundary, and what proves that the requested
-FoundationDB state has actually been reached.
+which operation to choose, what each operation is allowed to change, the safety
+boundary, and what proves that the requested FoundationDB state has actually
+been reached. The repository-level `fdb_mutate_harness.py` is the normal
+operator surface. Internal stage commands, operation IDs, and run directories
+are harness-owned implementation and recovery details rather than routine
+operator inputs.
 
 `fdb.md` remains the authority for the FDB architectural boundary and high-level
 system invariants. If this document conflicts with `fdb.md`, `fdb.md` governs.
 
-The command examples use:
+The normal command examples use the repository-level harness:
 
-```text
-fdb-control
+```powershell
+python .\fdb_mutate_harness.py <operation> ...
 ```
 
-as shorthand for the eventual FDB Control entry point. The final Python module
-path is intentionally not frozen by this document.
-
 The operator surface is designed so that implementation can change without
-changing operator meaning. Container layout, Coolify API adapters, SSH helpers,
-FDB CLI wrappers, Python classes, and module boundaries belong to later
-functionality and module documents.
+changing operator meaning. Container layout, Coolify API adapters, internal
+Python module entry points, operation IDs, run directories, FDB CLI wrappers,
+and `prep` / `do` / `finalize` orchestration belong beneath the harness and to
+later functionality/module documents.
 
 
 ## 2. External dependencies and operational independence
@@ -201,7 +202,7 @@ rectification is required.
 
 ## 5. Common mutation lifecycle
 
-Every mutating FDB operation uses the same operator-driven lifecycle:
+Every mutating FDB operation uses the same internal lifecycle:
 
 ```text
 prep
@@ -213,19 +214,25 @@ do
 finalize
 ```
 
-There is no rollback stage.
+There is no rollback stage. The behavioral separation between `prep`, `do`, and
+`finalize` is normative, but the operator does not manually drive those stages.
+The harness owns them.
 
-The generic form is:
+The normal operator flow is:
 
 ```text
-fdb-control <operation> prep <network> ...
-fdb-control <operation> do <network> [--operation-id <id>]
-fdb-control <operation> finalize <network> [--operation-id <id>]
+run one high-level harness command
+  -> harness inspects and prepares
+  -> harness prints the frozen mutation and stops before live effects
+
+rerun the same high-level command with both mutation acknowledgements
+  -> harness automatically finds the matching unfinished run
+  -> harness resumes the frozen operation
+  -> harness drives do, proof, finalize, and final inspection
 ```
 
-The exact option spelling for operation-specific inputs can be refined before
-implementation freeze, but the behavioral separation between `prep`, `do`, and
-`finalize` is normative.
+Operators do not normally provide an operation ID or run-directory path. The
+harness creates, stores, selects, and reuses those identities itself.
 
 ### 5.1 Prep
 
@@ -318,24 +325,24 @@ The normal interruption flow is:
 
 ```text
 interrupted or failed operation
-    -> inspect
-    -> determine actual current state
-    -> retry exact do, retry exact finalize, reconcile accepted topology,
-       or prepare a new explicit forward transition when the old target is no
-       longer the intended target
+    -> rerun the same high-level harness intent
+    -> harness reloads the matching unfinished operation
+    -> harness inspects actual current state
+    -> harness resumes the exact frozen stage that is still required
 ```
 
 The following rules apply:
 
-1. Retry `do` with the same operation ID when the frozen target remains valid and
-   execution is incomplete.
-2. Retry `finalize` with the same operation ID when live state appears to have
-   reached the frozen target but terminal verification or acceptance was
-   interrupted.
-3. Use `reconcile` only when the already accepted topology is still the desired
+1. The operator does not reconstruct an operation ID or choose a run directory.
+2. When the frozen target remains valid and execution is incomplete, the harness
+   resumes the same internal execution stage.
+3. When live state already reached the frozen target but terminal verification
+   or acceptance was interrupted, the harness resumes the same internal
+   finalization stage.
+4. Use `reconcile` only when the already accepted topology is still the desired
    topology and runtime/deployment state has drifted away from it.
-4. Use a new explicit mutation when the intended topology itself has changed.
-5. Never use a generic rollback or repair operation to guess what state should
+5. Use a new explicit mutation when the intended topology itself has changed.
+6. Never use a generic rollback or repair operation to guess what state should
    exist.
 
 Before mutating implementation ships, the operation-record contract MUST define
@@ -348,7 +355,7 @@ high-level FDB operation.
 
 ### 7.1 Summary
 
-| Operation ID | Operation | Operator intent | Class | Stages |
+| Operation ID | Operation | Operator intent | Class | Internal stages |
 |---|---|---|---|---|
 | `FDB-OP-INSPECT` | `inspect` | Establish and verify the current FDB state | Read-only | One shot |
 | `FDB-OP-CREATE-CLUSTER` | `create-cluster` | Establish a new logical FDB cluster lineage | Authoritative mutation | `prep` / `do` / `finalize` |
@@ -362,7 +369,17 @@ high-level FDB operation.
 | `FDB-OP-RETIRE-CLUSTER` | `retire-cluster` | Deliberately decommission the entire FDB lineage | Authoritative mutation | `prep` / `do` / `finalize` |
 
 No operation implies a hard-coded number of hosts, services, coordinators, or
-Hubs.
+Hubs. The stage column describes harness-managed internals, not commands the
+operator normally types.
+
+Current public harness status:
+
+```text
+implemented for operators: inspect, add-service, remove-service
+implemented internally only: create-cluster
+contract-defined, not yet implemented: replace-service, set-coordinators,
+  configure-cluster, reconcile, consumer-contract, retire-cluster
+```
 
 
 ## 8. `FDB-OP-INSPECT` -- `inspect`
@@ -371,11 +388,14 @@ Hubs.
 
 Use `inspect` to establish what is actually true now.
 
-Conceptual command:
+Canonical normal command:
 
-```text
-fdb-control inspect <network>
+```powershell
+python .\fdb_mutate_harness.py inspect
 ```
+
+`mainnet` is the default network; use `--network <network>` only when
+intentionally targeting another network.
 
 ### 8.2 Required observations
 
@@ -443,13 +463,10 @@ Use `create-cluster` to establish a new logical FoundationDB cluster lineage.
 
 It is not a generic deployment command.
 
-Conceptual commands:
-
-```text
-fdb-control create-cluster prep <network> ...
-fdb-control create-cluster do <network> [--operation-id <id>]
-fdb-control create-cluster finalize <network> [--operation-id <id>]
-```
+`create-cluster` is a defined high-level intent but is not yet exposed through
+the current normal harness surface. When it is exposed, the operator will issue
+one `create-cluster` harness command; the harness will own its internal
+`prep` / `do` / `finalize` lifecycle and operation identity.
 
 ### 9.2 Prep contract
 
@@ -510,20 +527,20 @@ services happen to be reachable.
 
 ### 10.1 Intent
 
-Use `add-service` to add exactly one FDB service to an existing logical cluster.
+Use `add-service` to add exactly one FDB service to an accepted logical cluster lineage. If that accepted lineage is `accepted-empty`, the same operator intent performs first-service rebirth; the operator does not switch to `create-cluster`.
 
-Canonical normal commands:
+Canonical normal command:
 
-```text
-fdb-control add-service prep <network> --service <service-id>
-fdb-control add-service do <network> --operation-id <id>
-fdb-control add-service finalize <network> --operation-id <id>
+```powershell
+python .\fdb_mutate_harness.py add-service --service <service-id>
 ```
 
 The normal `add-service` surface accepts the logical service identity only. It
-does not require the operator to supply a Coolify host, FDB address, or FDB
-port. Those placement details are resolved during `prep` and become part of the
-frozen target.
+does not require the operator to supply a Coolify host, FDB address, FDB port,
+operation ID, or run directory. Those details are resolved or created by the
+harness during preparation and become part of the frozen target.
+
+If pre-inspection proves `accepted-empty`, `prep` freezes a one-service/one-coordinator rebirth target using the accepted historical cluster identity, redundancy mode, and storage engine. `do` uses the birth descriptor (`configure new`) rather than the ordinary join-existing-cluster descriptor, and `finalize` advances the existing accepted lineage by one generation after birth proof. An `unborn` network still requires `create-cluster`; `accepted-empty` does not.
 
 ### 10.2 Required topology semantics
 
@@ -614,13 +631,11 @@ placement inference or port allocation.
 `prep` MUST prove that adding this service cannot accidentally create or join the
 wrong logical cluster.
 
+For `accepted-empty`, that proof means the accepted state itself supplies the lineage/configuration to re-birth. The resulting target contains exactly the requested service and that service as the sole coordinator; there is no source live coordinator set.
+
 ### 10.4 Do contract
 
-`do` creates only the frozen service on the frozen host and connects it to the
-existing intended FDB cluster. It first proves the new service participates
-through the source coordinator set. If prep froze a changed coordinator overlay,
-it then applies and proves that exact coordinator set and resulting cluster
-connection information.
+`do` creates only the frozen service on the frozen host. For an ordinary live cluster it connects the service through the source coordinator set, proves participation, and then applies/proves any changed frozen coordinator overlay. For `accepted-empty`, there is no live source cluster to join: `do` performs the one-service FoundationDB birth using the frozen historical lineage/configuration and the new service as sole coordinator, then proves database availability through the birth observer.
 
 A container becoming `running` is not sufficient success.
 
@@ -644,7 +659,7 @@ A container becoming `running` is not sufficient success.
 
 `add-service` MUST NOT:
 
-- create a new logical cluster;
+- create a new unrelated logical cluster; `accepted-empty` first-service rebirth of the already accepted lineage is permitted;
 - add every unused host;
 - make every added service a coordinator merely because it was added;
 - choose a coordinator target after `prep`;
@@ -660,13 +675,23 @@ A container becoming `running` is not sufficient success.
 Use `remove-service` to intentionally retire exactly one FDB service from the
 accepted topology.
 
-Conceptual commands:
+Canonical normal command:
 
-```text
-fdb-control remove-service prep <network> --service <service-id> ...
-fdb-control remove-service do <network> [--operation-id <id>]
-fdb-control remove-service finalize <network> [--operation-id <id>]
+```powershell
+python .\fdb_mutate_harness.py remove-service --service <service-id>
 ```
+
+Removing the final accepted service is the same operation with one additional
+destructive acknowledgement:
+
+```powershell
+python .\fdb_mutate_harness.py remove-service --service <final-service-id> --allow-full-deletion
+```
+
+The operator supplies only the logical service intent. The harness owns the
+accepted-topology lookup, internal operation identity, coordinator transition
+when required, run capture, and stage sequencing. `--allow-full-deletion` opens
+only the final `1 -> 0` transition; it is not required for ordinary contraction.
 
 ### 11.2 Prep contract
 
@@ -691,14 +716,27 @@ resulting set MUST be frozen as part of this same prepared operation; it is not
 a separate prerequisite command. The derived policy preserves valid surviving
 coordinators first, selects at most one coordinator per failure domain, and uses
 the largest odd cardinality supported by the surviving distinct failure domains
-(minimum one).
+(minimum one while any service survives).
+
+If the target is the sole accepted service, `prep` MUST refuse unless the same
+operator command contains `--allow-full-deletion`. With that acknowledgement,
+the frozen poststate is exactly zero services and zero coordinators. Prep MUST
+record that no safe evacuation proof is possible because no surviving FDB copy
+exists.
 
 ### 11.3 Do contract
 
 `do` performs only the frozen service retirement sequence. If the frozen
-coordinator overlay changes, it first moves and proves coordinator authority and
-records the actual rewritten cluster connection information. Only then may it
-exclude/drain and delete the target service.
+coordinator overlay changes and at least one service survives, it first moves
+and proves coordinator authority and records the actual rewritten cluster
+connection information. Only then may it exclude/drain and delete the target
+service.
+
+For an explicitly acknowledged final `1 -> 0` deletion, `do` MUST NOT pretend
+that FoundationDB exclusion can make the final copy safe: there is nowhere to
+drain it. It deletes the exact frozen deployment, removes stale coordinator
+guardian scaffolding if present, proves those deployment resources are absent,
+and proceeds forward to an empty accepted topology.
 
 It MUST NOT remove sibling services that happen to share the same host.
 
@@ -712,6 +750,7 @@ contacted.
 - the target service no longer participates in the intended active FDB topology;
 - sibling services remain as accepted;
 - coordinator state equals the exact frozen target overlay;
+- an acknowledged final deletion accepts exactly zero services and zero coordinators;
 - the database remains usable when continued availability is required by the
   frozen plan;
 - the resulting redundancy and failure-domain state matches the frozen accepted
@@ -727,7 +766,7 @@ contacted.
 - remove sibling services implicitly;
 - choose or change coordinator targets after `prep`;
 - convert temporary unreachability into intentional retirement;
-- retire the entire cluster.
+- perform the final `1 -> 0` deletion without `--allow-full-deletion`.
 
 
 ## 12. `FDB-OP-REPLACE-SERVICE` -- `replace-service`
@@ -738,17 +777,10 @@ Use `replace-service` when one accepted service is being replaced by another and
 the operator intends one continuous replacement transition rather than two
 unrelated membership decisions.
 
-Conceptual commands:
-
-```text
-fdb-control replace-service prep <network> \
-  --old-service <service-id> \
-  --new-service <service-id> \
-  --new-host <host-id> ...
-
-fdb-control replace-service do <network> [--operation-id <id>]
-fdb-control replace-service finalize <network> [--operation-id <id>]
-```
+`replace-service` is a defined high-level intent but is not yet exposed through
+the current normal harness surface. Its eventual harness command will accept the
+replacement intent while the harness owns internal staging, operation identity,
+placement resolution, coordinator transition, and final verification.
 
 ### 12.2 Prep contract
 
@@ -812,13 +844,10 @@ reached its safe participation threshold and before the old service is retired.
 Use `set-coordinators` as an advanced override to establish one explicit desired
 coordinator set without changing service membership.
 
-Conceptual commands:
-
-```text
-fdb-control set-coordinators prep <network> --coordinator <service-or-endpoint> ...
-fdb-control set-coordinators do <network> [--operation-id <id>]
-fdb-control set-coordinators finalize <network> [--operation-id <id>]
-```
+`set-coordinators` is an advanced explicit override intent and is not yet
+exposed through the current normal harness surface. Normal add/remove operations
+derive coordinator topology automatically; this operation remains available as
+a future explicit override without requiring operators to drive internal stages.
 
 For this override operation the desired resulting set is operator intent. FDB
 Control MUST NOT reinterpret it as the normal topology-derived policy or infer it
@@ -873,13 +902,9 @@ coordinator prestate to the explicit desired set.
 Use `configure-cluster` to change FoundationDB's own logical database
 configuration.
 
-Conceptual commands:
-
-```text
-fdb-control configure-cluster prep <network> ...
-fdb-control configure-cluster do <network> [--operation-id <id>]
-fdb-control configure-cluster finalize <network> [--operation-id <id>]
-```
+`configure-cluster` is a defined high-level intent but is not yet exposed
+through the current normal harness surface. Its eventual harness command will
+own the internal staged lifecycle.
 
 ### 14.2 Scope
 
@@ -935,13 +960,9 @@ FDB's response/convergence.
 Use `reconcile` when accepted FDB topology remains correct but live deployment
 or runtime state has drifted away from it.
 
-Conceptual commands:
-
-```text
-fdb-control reconcile prep <network> [--service <service-id> ...]
-fdb-control reconcile do <network> [--operation-id <id>]
-fdb-control reconcile finalize <network> [--operation-id <id>]
-```
+`reconcile` is a defined high-level intent but is not yet exposed through the
+current normal harness surface. Its eventual harness command will own internal
+staging and resume state.
 
 ### 15.2 Defining invariant
 
@@ -1028,11 +1049,9 @@ state conform to accepted topology.
 Use `consumer-contract` to derive the authoritative FDB information required by
 the separate Hub-FDB rectification layer.
 
-Conceptual command:
-
-```text
-fdb-control consumer-contract <network>
-```
+`consumer-contract` is a defined read-only intent but is not yet exposed
+through the current normal harness surface. When exposed, it will be a one-shot
+harness operation rather than a direct internal-module invocation.
 
 ### 16.2 Required contract content
 
@@ -1113,13 +1132,9 @@ lineage.
 
 It is not equivalent to removing the final observed container.
 
-Conceptual commands:
-
-```text
-fdb-control retire-cluster prep <network> ...
-fdb-control retire-cluster do <network> [--operation-id <id>]
-fdb-control retire-cluster finalize <network> [--operation-id <id>]
-```
+`retire-cluster` is a defined high-level intent but is not yet exposed through
+the current normal harness surface. Its eventual harness command will own the
+internal staged lifecycle and terminal proof.
 
 ### 17.2 Prep contract
 
@@ -1215,15 +1230,15 @@ the operator semantics are:
 
 | State | Allowed operator action |
 |---|---|
-| No active mutation | `inspect`, `consumer-contract`, or prepare one valid mutation |
-| `prepared` | Exact operation `do`; `inspect` |
-| `doing` / interrupted do | Retry exact operation `do`; `inspect` |
-| `do-incomplete` | `inspect`; retry exact `do` if frozen target remains valid; otherwise follow the explicit forward-supersession contract once defined |
-| `do-complete-pending-finalize` | Exact `finalize`; `inspect` |
-| `finalizing` / interrupted finalize | Retry exact `finalize`; `inspect` |
-| `finalize-failed` | `inspect`; retry exact `finalize` when the target is reached; retry exact `do` only when inspection proves execution remains incomplete |
-| `finalized` | `inspect`, `consumer-contract`, or prepare a new valid operation |
-| Drift with no intentional topology change | `inspect`, then `reconcile prep` when accepted topology remains desired |
+| No active mutation | `inspect`, a read-only intent, or start one valid high-level mutation |
+| `prepared` | Rerun the same high-level mutation with authorization; or `inspect` |
+| `doing` / interrupted do | Rerun the same high-level mutation; or `inspect` |
+| `do-incomplete` | `inspect`; rerun the same high-level mutation if the frozen target remains valid; otherwise choose a new explicit forward intent once supersession is defined |
+| `do-complete-pending-finalize` | Rerun the same high-level mutation; or `inspect` |
+| `finalizing` / interrupted finalize | Rerun the same high-level mutation; or `inspect` |
+| `finalize-failed` | `inspect`; rerun the same high-level mutation and let the harness decide whether internal execution or finalization remains incomplete |
+| `finalized` | `inspect`, another read-only intent, or begin a new valid operation |
+| Drift with no intentional topology change | `inspect`, then use the high-level `reconcile` intent once it is exposed by the harness |
 
 There is no rollback action in any state.
 
@@ -1237,7 +1252,8 @@ There is no rollback action in any state.
 | Understand current FDB state, health, topology, degradation, or why a mutation is blocked | `inspect` |
 | Create a brand-new logical FDB database lineage | `create-cluster` |
 | Put another FDB service on any host, including a host already running FDB | `add-service` |
-| Intentionally retire one service while retaining the cluster | `remove-service` |
+| Intentionally retire one service while retaining at least one service | `remove-service` |
+| Intentionally destroy the final FDB service/copy | `remove-service --allow-full-deletion` |
 | Substitute one service for another on the same or a different host | `replace-service` |
 | Change exactly which endpoints are FDB coordinators | `set-coordinators` |
 | Change FDB-native redundancy/storage/database policy | `configure-cluster` |
@@ -1254,21 +1270,15 @@ service IDs, hosts, counts, or operation order.
 ### 22.1 Create a three-service cluster on three hosts
 
 ```text
-fdb-control inspect mainnet
-
-fdb-control create-cluster prep mainnet \
-  --service fdb-a1@host-a \
-  --service fdb-b1@host-b \
-  --service fdb-c1@host-c \
-  --coordinator fdb-a1 \
-  --coordinator fdb-b1 \
-  --coordinator fdb-c1 \
-  ...
-
-fdb-control create-cluster do mainnet
-fdb-control create-cluster finalize mainnet
-fdb-control inspect mainnet
+inspect current FDB state
+prepare one create-cluster intent
+authorize that same prepared intent
+verify the born cluster
 ```
+
+The current harness does not yet expose `create-cluster`; this example defines
+the required operator meaning, not a command the operator should manually
+construct from internal stages.
 
 The exact composite service-option syntax is not frozen. The example establishes
 operator intent only.
@@ -1277,11 +1287,12 @@ operator intent only.
 
 If placement token `a` resolves to `coolify-a`, the normal operator request is:
 
-```text
-fdb-control add-service prep mainnet --service mainneta-fdb2
-fdb-control add-service do mainnet --operation-id <prepared-id>
-fdb-control add-service finalize mainnet --operation-id <prepared-id>
+```powershell
+python .\fdb_mutate_harness.py add-service --service mainneta-fdb2
 ```
+
+After reviewing the frozen plan, authorize by rerunning that same command with
+`--execute-mutations --yes-i-know-this-mutates-fdb`.
 
 `prep` derives `coolify-a`, the host's configured FDB-routable address, and the
 first unused accepted FDB port. For example, if `:4550` is already occupied on
@@ -1329,17 +1340,12 @@ Result:
 ### 22.4 Replace a failed service onto another host
 
 ```text
-fdb-control inspect mainnet
-
-fdb-control replace-service prep mainnet \
-  --old-service fdb-b1 \
-  --new-service fdb-d1 \
-  --new-host host-d \
-  ...
-
-fdb-control replace-service do mainnet
-fdb-control replace-service finalize mainnet
+replace-service old=fdb-b1 new=fdb-d1
 ```
+
+The current harness does not yet expose this intent. When implemented, the
+operator supplies the replacement intent once; the harness owns placement,
+staging, resume, coordinator transition, and final proof.
 
 If `fdb-b1` was a coordinator, prep derives and freezes the coordinator overlay
 for the replacement post-topology. The do stage may move to that exact target,
@@ -1355,25 +1361,24 @@ host-a
 
 The operator may run:
 
-```text
-fdb-control remove-service prep mainnet --service fdb-a2
-fdb-control remove-service do mainnet
-fdb-control remove-service finalize mainnet
+```powershell
+python .\fdb_mutate_harness.py remove-service --service fdb-a2
 ```
+
+After reviewing the frozen plan, authorize by rerunning that same command with
+`--execute-mutations --yes-i-know-this-mutates-fdb`.
 
 Success does not remove `fdb-a1` or retire `host-a`.
 
 ### 22.6 Change coordinators without changing service membership
 
 ```text
-fdb-control set-coordinators prep mainnet \
-  --coordinator fdb-a1 \
-  --coordinator fdb-c1 \
-  --coordinator fdb-d1
-
-fdb-control set-coordinators do mainnet
-fdb-control set-coordinators finalize mainnet
+set-coordinators target={fdb-a1,fdb-c1,fdb-d1}
 ```
+
+This is an advanced override intent and is not yet exposed by the current
+harness. Normal service topology mutations derive coordinator changes
+automatically.
 
 Service membership can remain unchanged while cluster connection information and
 the consumer contract change.
@@ -1392,31 +1397,24 @@ observed:
   fdb-c1 deployment missing
 ```
 
-Use:
-
-```text
-fdb-control reconcile prep mainnet --service fdb-c1
-fdb-control reconcile do mainnet
-fdb-control reconcile finalize mainnet
-```
+Use the `reconcile` intent once it is exposed by the harness; do not manually
+reconstruct its internal stages.
 
 Do not use `add-service`, because membership is not changing.
 
 ### 22.8 Interrupted add-service resumes forward
 
-```text
-fdb-control inspect mainnet
-fdb-control add-service do mainnet --operation-id <same-id>
+The operator reruns the same high-level command:
+
+```powershell
+python .\fdb_mutate_harness.py add-service --service <same-service> \
+  --execute-mutations --yes-i-know-this-mutates-fdb
 ```
 
-If inspection instead proves the service reached the frozen target and only
-acceptance was interrupted:
-
-```text
-fdb-control add-service finalize mainnet --operation-id <same-id>
-```
-
-There is no rollback command.
+The harness locates the newest unfinished run matching operation, network, and
+service, reloads its operation ID and frozen target, and continues after the
+last completed step. The operator does not select a run directory or operation
+ID. There is no rollback command.
 
 ### 22.9 Topology changes but Hub contract does not
 
@@ -1444,65 +1442,71 @@ another FDB mutation merely to update Hubs.
 
 ## 23. FDB mutation harness
 
-`fdb_mutate_harness.py` is the standard operator driver for the mutation
-lifecycle currently implemented for `add-service` and `remove-service`. The
-harness is not an FDB authority and does not infer deployment coordinates on
-its own. It drives the public `tools.fdb_control` CLI and verifies every stage.
+`fdb_mutate_harness.py` is the normal FDB operator surface. Operators name the
+intent and, for service mutations, the logical service. The harness owns all
+internal FDB Control commands, run directories, operation IDs, automatic resume,
+stage ordering, evidence capture, mutation gating, and final verification.
 
-Normal add invocation:
+The currently implemented public commands are:
 
-```text
-python fdb_mutate_harness.py add-service --network mainnet --service mainnetc-fdb3
+```powershell
+python .\fdb_mutate_harness.py inspect
+python .\fdb_mutate_harness.py add-service --service <service-id>
+python .\fdb_mutate_harness.py remove-service --service <service-id>
 ```
 
-Normal remove invocation:
+`mainnet` is the default network. `--network <network>` is available when the
+operator intentionally targets another network. Operators do not normally use
+internal module commands, operation-ID arguments, resume selectors, or
+run-directory variables.
+
+For a mutation, the first invocation drives the read-only boundary:
 
 ```text
-python fdb_mutate_harness.py remove-service --network mainnet --service mainneta-fdb2
+pre-inspect
+  -> prep
+  -> print frozen service/placement/coordinator target
+  -> stop before live mutation
 ```
 
-Without both mutation acknowledgements, the harness stops after `prep` and
-prints the resolved host and endpoint:
+To authorize the prepared mutation, the operator reruns the same high-level
+command with both acknowledgements:
 
 ```text
 --execute-mutations
 --yes-i-know-this-mutates-fdb
 ```
 
-With both acknowledgements, the harness drives:
+The harness automatically selects the newest unfinished run whose operation,
+network, and service match the command, reloads its frozen state, and continues
+with:
 
 ```text
-pre-inspect
-  -> prep
-  -> do
+do
   -> operation-scoped inspect/proof
   -> finalize
   -> final inspect
 ```
 
-The harness requires the pre-inspection to describe an accepted and independently
-verified cluster. It captures the operation ID returned by `prep`, including the
-exact frozen target coordinator set and whether that overlay changes, verifies
-the operation-specific FDB proof after `do`, and requires the final accepted
-generation to advance by exactly one. Final inspection proves the cluster
-description is unchanged, the coordinator set equals the frozen target, and the
-cluster ID changes exactly when FoundationDB rewrote it for a coordinator change.
+The harness requires pre-inspection to describe an accepted and independently
+verified cluster. It captures the operation ID returned by internal preparation,
+including the exact frozen target coordinator set and whether that overlay
+changes, verifies the operation-specific FDB proof after execution, and requires
+the final accepted generation to advance by exactly one. Final inspection proves
+the cluster description is unchanged, the coordinator set equals the frozen
+target, and the cluster ID changes exactly when FoundationDB rewrote it for a
+coordinator change.
 
-For `add-service`, the harness passes only the network and logical service ID to
-`prep`; host, address, port, Coolify target, and endpoint are whatever FDB Control
-resolved and froze. For `remove-service`, the target host and endpoint are read
-from accepted topology.
+For `add-service`, the operator supplies only the logical service ID; host,
+address, port, Coolify target, endpoint, run identity, and operation identity are
+resolved or created internally. For `remove-service`, the operator likewise
+supplies only the logical service ID; accepted topology and the derived
+coordinator overlay determine the bounded removal plan.
 
-Every run is recorded under:
-
-```text
-runtime/state/fdb/harness-runs/<timestamp>-<pid>/
-```
-
-The run directory contains per-step command/stdout/stderr/JSON files and
-`harness-state.json`. `--resume <run-dir>` resumes from the last completed step
-and reuses the stored operation ID and frozen operator request rather than asking
-the operator to reconstruct them.
+Every mutation run is recorded internally under
+`runtime/state/fdb/harness-runs/` with per-step command/stdout/stderr/JSON files
+and `harness-state.json`. These files are retained for evidence and exceptional
+debug/recovery; their paths are not normal operator inputs.
 
 The harness MUST NOT reconcile drift, choose a replacement operation, invent a
 coordinator target, or alter the frozen placement merely to make a mutation

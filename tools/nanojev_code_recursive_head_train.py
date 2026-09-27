@@ -1,27 +1,15 @@
 #!/usr/bin/env python3
-"""Five-mode continual trainer with relation-balanced pairwise geometry.
+"""Phase-1 recursive NanoJev head trainer.
 
-A fresh default run forks from the latest committed head of the established
-consensus experiment and starts a new optimizer/experiment lineage. The parent is
-resolved from that run's training_state.json -> latest_generation at initialization;
-after initialization, this experiment resumes only its own frozen parent/checkpoints.
+Qwen remains frozen and read-only.  The existing NanoJev attention head is
+reused as a weight-shared recurrent core for multiple virtual depth passes.
+Depth 1 exactly inherits the established parent head; deeper passes begin as
+ReZero no-ops, receive tiny pass identities plus previous-answer feedback, and
+are deep-supervised.  This experiment intentionally does not use the latent
+walker.
 
-Default optimizer-unit curriculum:
-  * static balanced-pairwise: 5% legacy / 10% mutation / 5% AST / 30% direct consensus / 50% triad
-  * --latent-walk:            5% legacy / 10% mutation / 34% AST /  1% direct consensus / 50% triad
-
-The latent-walk default keeps direct consensus present only as a low-rate hard-case
-rehearsal/probe while preserving the easier stepping stones, especially AST and the
-50% relation-balanced pairwise SAME/DIFFERENT objective. A displacement penalty also
-makes the exact-identity/no-op walk cheaper unless task loss justifies moving the prior. AB/AC/BC exposure remains
-balanced independently inside each relation label so majority-label and pair-position
-shortcuts cannot improve the optimizer objective.
-
-Topology is evaluation-only for this stage. A topology-balanced dev probe still asks
-AB, AC, and BC separately and the host deterministically composes those judgments
-into A/B/C/NONE/AMBIGUOUS. Anti-collapse telemetry reports per-label accuracy,
-balanced relation accuracy, prediction rates, per-label margins, all-three-correct
-rate, and non-ambiguous topology accuracy.
+Default optimizer-unit curriculum: 5% legacy / 10% mutation / 34% AST /
+1% direct consensus / 50% relation-balanced pairwise.
 """
 from __future__ import annotations
 
@@ -42,12 +30,12 @@ import tempfile
 import time
 from typing import Sequence
 
-EXPERIMENT_SCHEMA = "main-computer-nanojev-code-balanced-pairwise-experiment-v2"
-STATE_SCHEMA = "main-computer-nanojev-code-balanced-pairwise-training-state-v2"
-CONFIG_SCHEMA = "main-computer-nanojev-code-balanced-pairwise-training-config-v2"
-TASK = "lexeme_mutation_ast_plus_direct_consensus_plus_relation_balanced_pairwise"
-PHASE = "frozen_head_lexeme_plus_mutation_plus_ast_plus_direct_consensus_plus_balanced_pairwise"
-OBJECTIVE = "three_binary_rehearsals_plus_direct_consensus_plus_relation_balanced_pairwise"
+EXPERIMENT_SCHEMA = "main-computer-nanojev-code-recursive-head-experiment-v1"
+STATE_SCHEMA = "main-computer-nanojev-code-recursive-head-training-state-v1"
+CONFIG_SCHEMA = "main-computer-nanojev-code-recursive-head-training-config-v1"
+TASK = "lexeme_mutation_ast_plus_direct_consensus_plus_relation_balanced_pairwise_recursive_head"
+PHASE = "frozen_qwen_recursive_head_lexeme_plus_mutation_plus_ast_plus_direct_consensus_plus_balanced_pairwise"
+OBJECTIVE = "recursive_head_three_binary_rehearsals_plus_direct_consensus_plus_relation_balanced_pairwise"
 DIRECT_CONSENSUS_OBJECTIVE = "three_binary_rehearsals_plus_four_way_consensus_margin_plus_orbit_consistency"
 ORBIT_CONSISTENCY_WEIGHT = 0.25
 ORBIT_SUPERVISION_BLEND = 0.5
@@ -57,8 +45,8 @@ CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD = 6
 DEFAULT_LEGACY_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_lexeme_v1"
 DEFAULT_MUTATION_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_mutation_v1"
 DEFAULT_THREE_MODE_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_three_mode_v1"
-DEFAULT_SOURCE_CONSENSUS_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_consensus_v1"
-DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_consensus_balanced_pairwise_v2"
+DEFAULT_SOURCE_CONSENSUS_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_consensus_balanced_pairwise_v2"
+DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_recursive_head_v1"
 DEFAULT_LATENT_WALK_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_latent_walk_v1"
 DEFAULT_SOURCE_BALANCED_EXPERIMENT = DEFAULT_EXPERIMENT
 
@@ -68,6 +56,13 @@ DEFAULT_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 5.0, "consensus": 
 LATENT_WALK_DEFAULT_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 34.0, "consensus": 1.0, "triad": 50.0}
 DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT = 100.0
 LATENT_WALK_DISPLACEMENT_PENALTY = "active_token_mean_squared_final_displacement_from_frozen_qwen_prior"
+RECURSIVE_HEAD_DEFAULT_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 34.0, "consensus": 1.0, "triad": 50.0}
+DEFAULT_RECURSIVE_HEAD_DEPTH = 4
+DEFAULT_RECURSIVE_HEAD_GATE_INIT = 0.0
+DEFAULT_RECURSIVE_HEAD_BOOLEAN_GATE_INIT = 0.0
+DEFAULT_RECURSIVE_HEAD_EVAL_EVERY = 5
+RECURSIVE_HEAD_TRANSITION = "shared_existing_set_attention_residual_with_answer_feedback_v1"
+RECURSIVE_HEAD_DEEP_SUPERVISION = "linearly_increasing_normalized_depth_weights"
 CURRICULUM_CONFIG_KEYS = {
     "legacy": "legacy_training_percent",
     "mutation": "mutation_training_percent",
@@ -1515,6 +1510,194 @@ def install_latent_walk_hook(model, latent_walk):
     return model.backbone.register_forward_hook(hook, with_kwargs=True)
 
 
+
+def recursive_depth_loss_weights(depth: int) -> tuple[float, ...]:
+    """Linear deep-supervision weights; depth=4 -> (0.1, 0.2, 0.3, 0.4)."""
+    if depth <= 0:
+        raise ValueError("recursive head depth must be positive")
+    denom = depth * (depth + 1) / 2.0
+    return tuple((i + 1) / denom for i in range(depth))
+
+
+def module_parameter_sha256(module) -> str:
+    """Stable digest over a module's trainable parameter values for change checks."""
+    digest = hashlib.sha256()
+    for name, param in module.named_parameters():
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        tensor = param.detach().float().cpu().contiguous()
+        digest.update(tensor.numpy().tobytes())
+    return digest.hexdigest()
+
+
+def build_recursive_decision_model_class(
+    BaseDecisionModel, *, depth: int, gate_init: float, boolean_gate_init: float
+):
+    """Wrap NanoJev's existing attention head as a tiny weight-shared recurrent core.
+
+    Depth 1 is exactly the upstream attention-head computation for choice questions
+    and exactly the upstream scalar computation for Boolean questions.  All deeper
+    passes begin as no-ops because their ReZero gates start at ``gate_init`` (zero by
+    default).  The frozen backbone is evaluated exactly once per forward.
+    """
+    import torch
+    from torch import nn
+
+    if depth <= 0:
+        raise ValueError("recursive head depth must be positive")
+    if not math.isfinite(gate_init) or not math.isfinite(boolean_gate_init):
+        raise ValueError("recursive gate initializers must be finite")
+
+    class RecursiveHeadControl(nn.Module):
+        def __init__(self, width: int):
+            super().__init__()
+            self.depth = int(depth)
+            self.active_depth = int(depth)
+            recurrent_passes = max(0, self.depth - 1)
+            self.state_norm = nn.LayerNorm(width)
+            self.depth_embeddings = nn.Parameter(torch.zeros(recurrent_passes, width))
+            if recurrent_passes:
+                nn.init.normal_(self.depth_embeddings, mean=0.0, std=0.02)
+            self.answer_feedback = nn.Linear(1, width, bias=False)
+            nn.init.zeros_(self.answer_feedback.weight)
+            self.recurrence_gates = nn.Parameter(torch.full((recurrent_passes,), float(gate_init)))
+            self.boolean_residual_gate = nn.Parameter(torch.tensor(float(boolean_gate_init)))
+            self.last_stats: dict = {}
+
+        def set_active_depth(self, value: int) -> None:
+            value = int(value)
+            if value < 1 or value > self.depth:
+                raise ValueError(f"active recursive depth must be in [1,{self.depth}], got {value}")
+            self.active_depth = value
+
+    class RecursiveDecisionModel(BaseDecisionModel):
+        def __init__(self, backbone, set_head):
+            super().__init__(backbone, set_head)
+            if set_head != "attention":
+                raise RuntimeError("recursive-head phase 1 requires NanoJev set_head='attention'")
+            for attr in ("norm", "scalar", "set_project", "set_attention", "set_output"):
+                if not hasattr(self, attr):
+                    raise RuntimeError(f"NanoJev DecisionModel missing required head component: {attr}")
+            set_width = int(self.set_project.out_features)
+            self.recursive_head = RecursiveHeadControl(set_width)
+            self.last_recursive_depth_logits: tuple = ()
+
+        def set_recursive_depth(self, value: int) -> None:
+            self.recursive_head.set_active_depth(value)
+
+        @staticmethod
+        def _belief_from_logits(logits, examples, path_valid):
+            belief = logits.new_zeros(path_valid.shape, dtype=logits.dtype)
+            for i, ex in enumerate(examples):
+                path_n = int(path_valid[i].sum().item())
+                if ex["type"] == "boolean":
+                    belief[i, 0] = logits[i, 1] - logits[i, 0]
+                elif path_n:
+                    values = logits[i, :path_n]
+                    belief[i, :path_n] = values - values.mean()
+            return belief * path_valid.to(dtype=belief.dtype)
+
+        def _readout(self, h, candidate_valid, examples, recurrent_state):
+            import torch
+            import torch.nn.functional as F
+
+            z = self.scalar(h).squeeze(-1).float()
+            residual = self.set_output(torch.tanh(recurrent_state)).squeeze(-1).float()
+            choice = torch.tensor(
+                [i for i, ex in enumerate(examples) if ex["type"] == "choice"],
+                device=h.device,
+                dtype=torch.long,
+            )
+            if len(choice):
+                z = z.index_add(0, choice, residual.index_select(0, choice))
+
+            kmax = candidate_valid.shape[1]
+            out = []
+            boolean_gate = self.recursive_head.boolean_residual_gate.float()
+            for i, ex in enumerate(examples):
+                if ex["type"] == "boolean":
+                    true_logit = z[i, 0] + boolean_gate * residual[i, 0]
+                    out.append(F.pad(torch.stack([true_logit * 0, true_logit]), (0, kmax - 2)))
+                else:
+                    out.append(z[i])
+            return torch.stack(out).masked_fill(~candidate_valid, -1e9)
+
+        def forward(self, examples, pad_token):
+            import torch
+
+            paths = [ids for ex in examples for ids in ex["leaf_tokens"]]
+            device = self.scalar.weight.device
+            lengths = torch.tensor([len(ids) for ids in paths], device=device)
+            width = int(lengths.max())
+            tokens = torch.full((len(paths), width), pad_token, dtype=torch.long, device=device)
+            for i, ids in enumerate(paths):
+                tokens[i, :len(ids)] = torch.tensor(ids, device=device)
+            attention = torch.arange(width, device=device)[None, :] < lengths[:, None]
+            hidden = self.backbone(
+                input_ids=tokens, attention_mask=attention, use_cache=False
+            ).last_hidden_state
+            leaves = hidden[torch.arange(len(paths), device=device), lengths - 1]
+
+            kmax = max(len(ex["candidate_ids"]) for ex in examples)
+            h = leaves.new_zeros((len(examples), kmax, leaves.shape[-1]))
+            candidate_valid = torch.zeros((len(examples), kmax), dtype=torch.bool, device=device)
+            path_valid = torch.zeros((len(examples), kmax), dtype=torch.bool, device=device)
+            offset = 0
+            for i, ex in enumerate(examples):
+                path_n = len(ex["leaf_tokens"])
+                h[i, :path_n] = leaves[offset:offset + path_n]
+                path_valid[i, :path_n] = True
+                candidate_valid[i, :len(ex["candidate_ids"])] = True
+                offset += path_n
+
+            h = self.norm(h)
+            # Reuse the existing projection/attention/output as the recurrent workspace.
+            log_k = path_valid.sum(-1).clamp_min(1).float().log()[:, None, None].expand(-1, kmax, 1)
+            projected = self.set_project(torch.cat([h, log_k.to(h.dtype)], dim=-1))
+            mixed, _ = self.set_attention(
+                projected, projected, projected,
+                key_padding_mask=~path_valid, need_weights=False,
+            )
+            recurrent_state = projected + mixed
+            recurrent_state = recurrent_state * path_valid.unsqueeze(-1).to(recurrent_state.dtype)
+
+            depth_logits = [self._readout(h, candidate_valid, examples, recurrent_state)]
+            belief = self._belief_from_logits(depth_logits[-1], examples, path_valid)
+            active_depth = int(self.recursive_head.active_depth)
+            for pass_index in range(1, active_depth):
+                normalized = self.recursive_head.state_norm(recurrent_state)
+                mixed, _ = self.set_attention(
+                    normalized, normalized, normalized,
+                    key_padding_mask=~path_valid, need_weights=False,
+                )
+                feedback = self.recursive_head.answer_feedback(
+                    belief.unsqueeze(-1).to(dtype=normalized.dtype)
+                )
+                depth_identity = self.recursive_head.depth_embeddings[pass_index - 1].view(1, 1, -1)
+                update = torch.tanh(mixed + feedback + depth_identity.to(dtype=normalized.dtype))
+                update = update * path_valid.unsqueeze(-1).to(update.dtype)
+                gate = self.recursive_head.recurrence_gates[pass_index - 1].to(dtype=update.dtype)
+                recurrent_state = recurrent_state + gate * update
+                logits = self._readout(h, candidate_valid, examples, recurrent_state)
+                depth_logits.append(logits)
+                belief = self._belief_from_logits(logits, examples, path_valid)
+
+            self.last_recursive_depth_logits = tuple(depth_logits)
+            with torch.no_grad():
+                gates = [float(x) for x in self.recursive_head.recurrence_gates.detach().float().cpu().tolist()]
+                self.recursive_head.last_stats = {
+                    "configured_depth": int(self.recursive_head.depth),
+                    "active_depth": active_depth,
+                    "recurrence_gates": gates,
+                    "boolean_residual_gate": float(self.recursive_head.boolean_residual_gate.detach().float().item()),
+                    "state_rms": float(torch.sqrt(torch.mean(recurrent_state.detach().float().square()) + 1e-30).item()),
+                }
+            return depth_logits[-1], candidate_valid
+
+    RecursiveDecisionModel.__name__ = "RecursiveDecisionModel"
+    return RecursiveDecisionModel
+
+
 def validate_records(records: Sequence[dict], pipeline) -> None:
     for record in records:
         pipeline.validate_training_row(record)
@@ -1573,6 +1756,18 @@ def save_generation(*, exp: Path, model, optimizer, cycle: int, global_step: int
         "main_computer_cycle": cycle,
         "main_computer_global_step": global_step,
         "parent_head_sha256": experiment["parent_head_sha256"],
+        "recursive_head": {
+            "enabled": True,
+            "depth": training_config["recursive_head_depth"],
+            "transition": training_config["recursive_head_transition"],
+            "deep_supervision": training_config["recursive_head_deep_supervision"],
+            "depth_loss_weights": training_config["recursive_head_depth_loss_weights"],
+            "gate_init": training_config["recursive_head_gate_init"],
+            "boolean_gate_init": training_config["recursive_head_boolean_gate_init"],
+            "previous_answer_feedback": True,
+            "workspace": "existing_128d_set_attention_state",
+            "backbone_reads_per_forward": 1,
+        },
     }
     if training_config.get("latent_walk_enabled"):
         checkpoint_config["latent_walk"] = {
@@ -2272,6 +2467,111 @@ def self_test() -> None:
     (moved_output.square().mean() + DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT * moved_penalty).backward()
     assert tiny_walk.up.weight.grad is not None
 
+    # Recursive-head phase-1 invariants: depth 1 inherits the parent head exactly,
+    # deeper zero-gated passes begin as exact no-ops, and deep supervision can open
+    # the recurrent/Boolean gates without touching a backbone state.
+    from torch import nn
+    import torch.nn.functional as F
+
+    class TinyConfig:
+        hidden_size = 8
+
+    class TinyBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = TinyConfig()
+
+        def forward(self, *, input_ids, attention_mask, use_cache=False):
+            class Output:
+                pass
+            out = Output()
+            out.last_hidden_state = F.one_hot(input_ids.remainder(8), num_classes=8).float()
+            return out
+
+    class TinyDecisionModel(nn.Module):
+        def __init__(self, backbone, set_head):
+            super().__init__()
+            self.backbone = backbone
+            hidden = backbone.config.hidden_size
+            self.norm = nn.LayerNorm(hidden)
+            self.scalar = nn.Linear(hidden, 1)
+            self.set_head = set_head
+            self.set_project = nn.Linear(hidden + 1, 128)
+            self.set_attention = nn.MultiheadAttention(128, 4, dropout=0.0, batch_first=True)
+            self.set_output = nn.Linear(128, 1)
+
+        def forward(self, examples, pad_token):
+            paths = [ids for ex in examples for ids in ex["leaf_tokens"]]
+            device = self.scalar.weight.device
+            lengths = torch.tensor([len(ids) for ids in paths], device=device)
+            width = int(lengths.max())
+            tokens = torch.full((len(paths), width), pad_token, dtype=torch.long, device=device)
+            for i, ids in enumerate(paths):
+                tokens[i, :len(ids)] = torch.tensor(ids, device=device)
+            attention = torch.arange(width, device=device)[None, :] < lengths[:, None]
+            hidden = self.backbone(input_ids=tokens, attention_mask=attention, use_cache=False).last_hidden_state
+            leaves = hidden[torch.arange(len(paths), device=device), lengths - 1]
+            kmax = max(len(ex["candidate_ids"]) for ex in examples)
+            h = leaves.new_zeros((len(examples), kmax, leaves.shape[-1]))
+            valid = torch.zeros((len(examples), kmax), dtype=torch.bool, device=device)
+            offset = 0
+            for i, ex in enumerate(examples):
+                n = len(ex["leaf_tokens"])
+                h[i, :n] = leaves[offset:offset + n]
+                valid[i, :len(ex["candidate_ids"])] = True
+                offset += n
+            h = self.norm(h)
+            z = self.scalar(h).squeeze(-1).float()
+            choice = torch.tensor([i for i, ex in enumerate(examples) if ex["type"] == "choice"], device=device)
+            if self.set_head == "attention" and len(choice):
+                log_k = valid[choice].sum(-1).float().log()[:, None, None].expand(-1, kmax, 1)
+                u = self.set_project(torch.cat([h[choice], log_k.to(h.dtype)], dim=-1))
+                mixed, _ = self.set_attention(u, u, u, key_padding_mask=~valid[choice], need_weights=False)
+                delta = self.set_output(torch.tanh(u + mixed)).squeeze(-1).float()
+                z = z.index_add(0, choice, delta)
+            out = []
+            for i, ex in enumerate(examples):
+                if ex["type"] == "boolean":
+                    out.append(F.pad(torch.stack([z[i, 0] * 0, z[i, 0]]), (0, kmax - 2)))
+                else:
+                    out.append(z[i])
+            return torch.stack(out).masked_fill(~valid, -1e9), valid
+
+    torch.manual_seed(991)
+    tiny_base = TinyDecisionModel(TinyBackbone(), "attention")
+    RecursiveTiny = build_recursive_decision_model_class(
+        TinyDecisionModel, depth=4, gate_init=0.0, boolean_gate_init=0.0
+    )
+    tiny_recursive = RecursiveTiny(TinyBackbone(), "attention")
+    incompatible = tiny_recursive.load_state_dict(tiny_base.state_dict(), strict=False)
+    assert not incompatible.unexpected_keys
+    assert incompatible.missing_keys and all(key.startswith("recursive_head.") for key in incompatible.missing_keys)
+    recursive_examples = [
+        {"type": "boolean", "candidate_ids": ["false", "true"], "leaf_tokens": [[1, 2, 3]], "gold_index": 1},
+        {"type": "choice", "candidate_ids": ["a", "b", "c"], "leaf_tokens": [[1, 4], [2, 5], [3, 6]], "gold_index": 2},
+    ]
+    base_logits, _ = tiny_base(recursive_examples, 0)
+    tiny_recursive.set_recursive_depth(1)
+    depth1_logits, _ = tiny_recursive(recursive_examples, 0)
+    assert torch.allclose(depth1_logits, base_logits, atol=1e-6, rtol=0.0), "depth 1 must inherit parent head exactly"
+    tiny_recursive.set_recursive_depth(4)
+    depth4_logits, _ = tiny_recursive(recursive_examples, 0)
+    assert torch.allclose(depth4_logits, depth1_logits, atol=1e-6, rtol=0.0), "zero-gated deeper passes must begin as no-ops"
+    assert len(tiny_recursive.last_recursive_depth_logits) == 4
+    depth_weights = recursive_depth_loss_weights(4)
+    recursive_loss = depth4_logits.new_zeros(())
+    for weight, logits_at_depth in zip(depth_weights, tiny_recursive.last_recursive_depth_logits):
+        for ex, row in zip(recursive_examples, logits_at_depth):
+            k = len(ex["candidate_ids"])
+            recursive_loss = recursive_loss + weight * (-row[:k].log_softmax(-1)[int(ex["gold_index"])])
+    recursive_loss.backward()
+    assert tiny_recursive.recursive_head.recurrence_gates.grad is not None
+    assert float(tiny_recursive.recursive_head.recurrence_gates.grad.abs().sum().item()) > 0.0
+    assert tiny_recursive.recursive_head.boolean_residual_gate.grad is not None
+    assert float(tiny_recursive.recursive_head.boolean_residual_gate.grad.abs().item()) > 0.0
+    recursive_added_params = sum(param.numel() for param in tiny_recursive.recursive_head.parameters())
+    assert recursive_added_params < 2048, recursive_added_params
+
     print(json.dumps({
         "ok": True,
         "self_test": "passed",
@@ -2321,6 +2621,12 @@ def self_test() -> None:
         "latent_walk_zero_init_gradient_verified": True,
         "latent_walk_identity_penalty_verified": True,
         "latent_walk_default_displacement_penalty_weight": DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT,
+        "recursive_head_default_curriculum_100_units": RECURSIVE_HEAD_DEFAULT_CURRICULUM,
+        "recursive_head_depth_loss_weights": list(recursive_depth_loss_weights(4)),
+        "recursive_head_depth1_parent_identity_verified": True,
+        "recursive_head_zero_gate_noop_verified": True,
+        "recursive_head_gate_gradient_verified": True,
+        "recursive_head_added_params_in_tiny_test": recursive_added_params,
     }))
 
 
@@ -2348,6 +2654,14 @@ def main() -> None:
             "0 disables the identity/no-op preference"
         ),
     )
+    p.add_argument("--recursive-head-depth", type=int, default=DEFAULT_RECURSIVE_HEAD_DEPTH,
+                   help="Number of virtual passes through the shared NanoJev attention head")
+    p.add_argument("--recursive-head-gate-init", type=float, default=DEFAULT_RECURSIVE_HEAD_GATE_INIT,
+                   help="Initial ReZero gate for passes after depth 1; 0 makes deeper passes exact no-ops initially")
+    p.add_argument("--recursive-head-boolean-gate-init", type=float, default=DEFAULT_RECURSIVE_HEAD_BOOLEAN_GATE_INIT,
+                   help="Initial Boolean residual gate; 0 exactly inherits the parent Boolean scalar head")
+    p.add_argument("--recursive-depth-eval-every", type=int, default=DEFAULT_RECURSIVE_HEAD_EVAL_EVERY,
+                   help="Run the same checkpoint at depths 1..N every this many cycles (cycle 1 always sweeps)")
     p.add_argument("--parent-cycle", type=int, default=None,
                    help="Optional source-consensus cycle override; default is training_state.json latest_generation")
     p.add_argument("--parent-checkpoint",
@@ -2382,7 +2696,9 @@ def main() -> None:
     if args.self_test:
         self_test()
         return
-    curriculum_defaults = LATENT_WALK_DEFAULT_CURRICULUM if args.latent_walk else DEFAULT_CURRICULUM
+    if args.latent_walk:
+        p.error("recursive-head phase 1 intentionally disables --latent-walk; Qwen must remain read-only")
+    curriculum_defaults = RECURSIVE_HEAD_DEFAULT_CURRICULUM
     for task, config_key in CURRICULUM_CONFIG_KEYS.items():
         if getattr(args, config_key) is None:
             setattr(args, config_key, curriculum_defaults[task])
@@ -2408,6 +2724,10 @@ def main() -> None:
         p.error("invalid checkpoint/token limits or parent cycle")
     if not math.isfinite(args.head_lr) or args.head_lr <= 0:
         p.error("--head-lr must be finite and positive")
+    if args.recursive_head_depth <= 0 or args.recursive_depth_eval_every <= 0:
+        p.error("--recursive-head-depth and --recursive-depth-eval-every must be positive")
+    if not math.isfinite(args.recursive_head_gate_init) or not math.isfinite(args.recursive_head_boolean_gate_init):
+        p.error("recursive-head gate initializers must be finite")
     if args.latent_walk and (args.latent_walk_steps <= 0 or args.latent_walk_rank <= 0):
         p.error("--latent-walk-steps and --latent-walk-rank must be positive")
     if args.latent_walk and (not math.isfinite(args.latent_walk_lr) or args.latent_walk_lr <= 0):
@@ -2505,7 +2825,13 @@ def main() -> None:
 
     repo_root = Path(legacy_experiment["repo_root"]).resolve(strict=True)
     nanojev_root = Path(legacy_experiment["nanojev_root"]).resolve(strict=True)
-    pipeline, DecisionModel = legacy.import_nanojev(nanojev_root)
+    pipeline, BaseDecisionModel = legacy.import_nanojev(nanojev_root)
+    DecisionModel = build_recursive_decision_model_class(
+        BaseDecisionModel,
+        depth=args.recursive_head_depth,
+        gate_init=args.recursive_head_gate_init,
+        boolean_gate_init=args.recursive_head_boolean_gate_init,
+    )
 
     import torch
     from transformers import AutoModel, AutoTokenizer
@@ -2530,6 +2856,7 @@ def main() -> None:
     )
     model = DecisionModel(backbone, legacy_experiment["set_head"])
     model.backbone.config.use_cache = False
+    recursive_head = model.recursive_head
     latent_walk = None
     latent_walk_hook = None
     if args.latent_walk:
@@ -2543,6 +2870,7 @@ def main() -> None:
     for param in body:
         param.requires_grad_(False)
     walk = list(latent_walk.parameters()) if latent_walk is not None else []
+    recursive_params = list(recursive_head.parameters())
     head = [
         param for name, param in model.named_parameters()
         if not name.startswith("backbone.") and not name.startswith("latent_walk.")
@@ -2597,6 +2925,16 @@ def main() -> None:
         "pairwise_topology_training": False,
         "pairwise_topology_evaluation": True,
         "disable_native_triton": args.disable_native_triton,
+        "recursive_head_enabled": True,
+        "recursive_head_depth": args.recursive_head_depth,
+        "recursive_head_gate_init": args.recursive_head_gate_init,
+        "recursive_head_boolean_gate_init": args.recursive_head_boolean_gate_init,
+        "recursive_head_transition": RECURSIVE_HEAD_TRANSITION,
+        "recursive_head_deep_supervision": RECURSIVE_HEAD_DEEP_SUPERVISION,
+        "recursive_head_depth_loss_weights": list(recursive_depth_loss_weights(args.recursive_head_depth)),
+        "recursive_head_previous_answer_feedback": True,
+        "recursive_head_qwen_prior": "frozen_read_only_last_hidden_state",
+        "recursive_depth_eval_every": args.recursive_depth_eval_every,
     }
     if args.latent_walk:
         training_config.update({
@@ -2641,8 +2979,9 @@ def main() -> None:
             "mutation_dev_probe": str(mutation_dev_probe),
             "ast_dev_probe": str(ast_dev_probe),
             "initialization": (
-                f"consensus-v1 cycle-{parent_cycle:06d} head; fresh optimizer; "
-                "5/10/20/15/50 with relation-balanced pairwise training"
+                f"balanced-pairwise cycle-{parent_cycle:06d} head; fresh optimizer; Qwen frozen; "
+                f"shared NanoJev attention head recurred {args.recursive_head_depth} virtual depths; "
+                "deeper passes zero-init as exact no-ops"
             ),
             "consensus_labels": list(CONSENSUS_LABELS),
             "consensus_original_exposed_to_model": False,
@@ -2655,9 +2994,20 @@ def main() -> None:
             "pairwise_topology_training": False,
             "pairwise_triad_composition": "evaluation only: AB/AC/BC SAME/DIFFERENT -> deterministic A/B/C/NONE/AMBIGUOUS",
             "diagnostic_parent_reason": (
-                "latest committed consensus-v1 head at balanced-pairwise initialization; "
-                "new lineage changes only pairwise sampling/telemetry"
+                "latest committed balanced-pairwise head; depth 1 exactly inherits the parent head while "
+                "depths 2+ start as ReZero no-ops, isolating compute-through-shared-head recurrence"
             ),
+            "recursive_head_enabled": True,
+            "recursive_head_depth": args.recursive_head_depth,
+            "recursive_head_transition": RECURSIVE_HEAD_TRANSITION,
+            "recursive_head_deep_supervision": RECURSIVE_HEAD_DEEP_SUPERVISION,
+            "recursive_head_depth_loss_weights": list(recursive_depth_loss_weights(args.recursive_head_depth)),
+            "recursive_head_gate_init": args.recursive_head_gate_init,
+            "recursive_head_boolean_gate_init": args.recursive_head_boolean_gate_init,
+            "recursive_head_previous_answer_feedback": True,
+            "recursive_head_workspace": "existing_128d_set_attention_state",
+            "recursive_head_backbone_reads_per_forward": 1,
+            "latent_walk_enabled": False,
         }
         if args.latent_walk:
             experiment.update({
@@ -2935,7 +3285,7 @@ def main() -> None:
     emit("head_load_start", source=str(head_source), inherited_parent=resume_generation is None)
     load_head_into_model(
         model, head_source,
-        allow_missing_prefixes=("latent_walk.",) if args.latent_walk and resume_generation is None else (),
+        allow_missing_prefixes=("recursive_head.",) if resume_generation is None else (),
     )
     model.cuda()
     model.backbone.eval()
@@ -2961,9 +3311,10 @@ def main() -> None:
         torch.cuda.manual_seed_all(seed)
     emit("trainer_load_done", gpu=torch.cuda.get_device_name(0),
          body_params=sum(x.numel() for x in body), head_params=sum(x.numel() for x in head),
-         latent_walk_enabled=args.latent_walk, latent_walk_params=sum(x.numel() for x in walk),
-         latent_walk_steps=args.latent_walk_steps if args.latent_walk else 0,
-         latent_walk_rank=args.latent_walk_rank if args.latent_walk else 0)
+         recursive_head_enabled=True, recursive_head_params=sum(x.numel() for x in recursive_params),
+         recursive_head_depth=args.recursive_head_depth,
+         recursive_head_depth_loss_weights=list(recursive_depth_loss_weights(args.recursive_head_depth)),
+         latent_walk_enabled=False, latent_walk_params=0, latent_walk_steps=0, latent_walk_rank=0)
 
     if resume_generation is not None:
         latest_config = read_json(resume_generation / "config.json")
@@ -3042,10 +3393,6 @@ def main() -> None:
     backbone_probe_name = legacy_experiment["parameter_probes"]["backbone"]["name"]
     head_probe_name = legacy_experiment["parameter_probes"]["head"]["name"]
     walk_probe_name = None
-    if args.latent_walk:
-        walk_probe_name = next(
-            name for name, _param in model.named_parameters() if name.startswith("latent_walk.up.weight")
-        )
     history_path = exp / "history.jsonl"
     unit_budgets = largest_remainder_budgets(args.train_units_per_cycle, weights)
 
@@ -3204,10 +3551,12 @@ def main() -> None:
 
         backbone_before = legacy.named_probe_digest(model, backbone_probe_name)
         head_before = legacy.named_probe_digest(model, head_probe_name)
-        walk_before = legacy.named_probe_digest(model, walk_probe_name) if walk_probe_name else None
+        walk_before = None
+        recursive_before = module_parameter_sha256(recursive_head)
         training_started = time.perf_counter()
         cycle_steps = 0
         last_head_grad_norm = 0.0
+        last_recursive_head_grad_norm = 0.0
         last_walk_grad_norm = 0.0
         last_walk_displacement_penalty_mse = 0.0
         last_walk_displacement_penalty_loss = 0.0
@@ -3285,11 +3634,34 @@ def main() -> None:
             triad_margins = {}
             triad_predictions: dict[str, dict[str, str]] = {}
             step_correct = step_q = 0
+            depth_weights = recursive_depth_loss_weights(args.recursive_head_depth)
+            recursive_depth_loss_sum = [0.0 for _ in range(args.recursive_head_depth)]
+            recursive_depth_correct = [0 for _ in range(args.recursive_head_depth)]
+            recursive_depth_questions = 0
 
             for group in groups:
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.precision == "bf16"):
                     logits, _ = model(group, tokenizer.pad_token_id)
-                    losses = pipeline.grouped_target_loss(logits, group, "gold_distribution")
+                    depth_logits = tuple(model.last_recursive_depth_logits)
+                    if len(depth_logits) != args.recursive_head_depth:
+                        raise RuntimeError(
+                            f"recursive head produced {len(depth_logits)} depths; expected {args.recursive_head_depth}"
+                        )
+                    depth_loss_vectors = [
+                        pipeline.grouped_target_loss(depth_logit, group, "gold_distribution")
+                        for depth_logit in depth_logits
+                    ]
+                    losses = sum(
+                        weight * depth_loss_vector
+                        for weight, depth_loss_vector in zip(depth_weights, depth_loss_vectors)
+                    )
+                for depth_index, (depth_logit, depth_loss_vector) in enumerate(zip(depth_logits, depth_loss_vectors)):
+                    recursive_depth_loss_sum[depth_index] += float(depth_loss_vector.detach().float().sum().item())
+                    for ex, depth_z in zip(group, depth_logit):
+                        recursive_depth_correct[depth_index] += int(
+                            int(torch.argmax(depth_z[:len(ex["candidate_ids"])]).item()) == int(ex["gold_index"])
+                        )
+                recursive_depth_questions += len(group)
                 for ex, z, item_loss in zip(group, logits, losses):
                     ex_id = ex["id"]
                     task = task_for_example[ex_id]
@@ -3487,7 +3859,8 @@ def main() -> None:
 
             body_norm = legacy.grad_norm(body)
             last_head_grad_norm = legacy.grad_norm(head)
-            last_walk_grad_norm = legacy.grad_norm(walk) if walk else 0.0
+            last_recursive_head_grad_norm = legacy.grad_norm(recursive_params)
+            last_walk_grad_norm = 0.0
             last_walk_displacement_penalty_mse = float(latent_walk_displacement_penalty_mse.detach().item())
             last_walk_displacement_penalty_loss = float(latent_walk_displacement_penalty_loss.detach().item())
             if body_norm != 0.0:
@@ -3506,6 +3879,14 @@ def main() -> None:
                 consensus_units_this_step=task_slots.count("consensus"),
                 triad_units_this_step=task_slots.count("triad"),
                 mean_unit_nll=float(base_loss.detach().item()),
+                recursive_depth_mean_nll=[
+                    value / max(recursive_depth_questions, 1) for value in recursive_depth_loss_sum
+                ],
+                recursive_depth_accuracy=[
+                    value / max(recursive_depth_questions, 1) for value in recursive_depth_correct
+                ],
+                recursive_head_grad_norm=last_recursive_head_grad_norm,
+                recursive_head=dict(recursive_head.last_stats),
                 top1_error=1.0 - step_correct / max(step_q, 1),
                 unit_margin_loss=float(rank_loss.detach().item()),
                 mean_unit_margin=float(margin_tensor.detach().mean().item()),
@@ -3567,15 +3948,71 @@ def main() -> None:
             margin=args.ranking_margin,
         )
 
+        recursive_depth_sweep = None
+        if cycle == 1 or cycle % args.recursive_depth_eval_every == 0:
+            recursive_depth_sweep = {}
+            full_depth = int(args.recursive_head_depth)
+            for depth in range(1, full_depth + 1):
+                if depth == full_depth:
+                    depth_legacy = legacy_dev
+                    depth_mutation = mutation_dev
+                    depth_ast = ast_dev
+                    depth_triad = triad_dev
+                else:
+                    model.set_recursive_depth(depth)
+                    depth_legacy = legacy.evaluate(
+                        model, legacy_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"recursive_depth_{depth}_legacy_dev_cycle_{cycle}",
+                        pair_margin=args.ranking_margin,
+                    )
+                    depth_mutation = legacy.evaluate(
+                        model, mutation_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"recursive_depth_{depth}_mutation_dev_cycle_{cycle}",
+                        pair_margin=args.ranking_margin,
+                    )
+                    depth_ast = legacy.evaluate(
+                        model, ast_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"recursive_depth_{depth}_ast_dev_cycle_{cycle}",
+                        pair_margin=args.ranking_margin,
+                    )
+                    depth_triad = evaluate_pairwise_triads(
+                        model, triad_dev_examples, triad_dev_records, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"recursive_depth_{depth}_pairwise_triad_dev_cycle_{cycle}",
+                        margin=args.ranking_margin,
+                    )
+                recursive_depth_sweep[str(depth)] = {
+                    "legacy_pair_win_rate": depth_legacy["pair_win_rate"],
+                    "mutation_pair_win_rate": depth_mutation["pair_win_rate"],
+                    "ast_pair_win_rate": depth_ast["pair_win_rate"],
+                    "triad_relation_accuracy": depth_triad["accuracy"],
+                    "triad_balanced_relation_accuracy": depth_triad["balanced_relation_accuracy"],
+                    "triad_topology_accuracy": depth_triad["topology_accuracy"],
+                    "triad_non_ambiguous_topology_accuracy": depth_triad["non_ambiguous_topology_accuracy"],
+                }
+            model.set_recursive_depth(full_depth)
+            emit(
+                "recursive_depth_sweep", cycle=cycle, configured_depth=full_depth,
+                depths=recursive_depth_sweep,
+            )
+
         backbone_after = legacy.named_probe_digest(model, backbone_probe_name)
         head_after = legacy.named_probe_digest(model, head_probe_name)
-        walk_after = legacy.named_probe_digest(model, walk_probe_name) if walk_probe_name else None
+        walk_after = None
+        recursive_after = module_parameter_sha256(recursive_head)
         if backbone_after != backbone_before:
-            raise RuntimeError("frozen backbone changed during consensus training cycle")
+            raise RuntimeError("frozen backbone changed during recursive-head training cycle")
         if head_after == head_before:
-            raise RuntimeError("decision head did not change during consensus training cycle")
-        if args.latent_walk and walk_after == walk_before:
-            raise RuntimeError("latent walk did not change during recurrent training cycle")
+            raise RuntimeError("decision head did not change during recursive-head training cycle")
+        if recursive_after == recursive_before:
+            raise RuntimeError("recursive head parameters did not change during recursive-head training cycle")
 
         previous = {
             "legacy_sep": state.get("last_legacy_probability_separation"),
@@ -3739,6 +4176,19 @@ def main() -> None:
             "ranking_margin": args.ranking_margin,
             "body_grad_norm_last_step": 0.0,
             "head_grad_norm_last_step": last_head_grad_norm,
+            "recursive_head_grad_norm_last_step": last_recursive_head_grad_norm,
+            "recursive_head_enabled": True,
+            "recursive_head_depth": args.recursive_head_depth,
+            "recursive_head_depth_loss_weights": list(recursive_depth_loss_weights(args.recursive_head_depth)),
+            "recursive_head_recurrence_gates": [
+                float(x) for x in recursive_head.recurrence_gates.detach().float().cpu().tolist()
+            ],
+            "recursive_head_boolean_residual_gate": float(
+                recursive_head.boolean_residual_gate.detach().float().item()
+            ),
+            "recursive_head_last_forward": dict(recursive_head.last_stats),
+            "recursive_depth_sweep": recursive_depth_sweep,
+            "recursive_head_probe_changed": True,
             "latent_walk_grad_norm_last_step": last_walk_grad_norm,
             "latent_walk_displacement_penalty_weight": (
                 args.latent_walk_displacement_penalty_weight if args.latent_walk else 0.0

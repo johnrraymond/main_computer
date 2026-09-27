@@ -6,8 +6,8 @@ Sources reviewed:
 
 ```text
 hub.md SHA-256: dc1def412907396cc63b5456a284d298284c3176e7559a80a70c2724ce8a6be7
-hub-o.md SHA-256: a47ed7f246be3fa2888b0372a94b3c60c383af59fed240660794e1d3f605df17
-hub-o-f.md SHA-256: f2e35cd9329f339775f204c485a144dc9387b6419ea9d058e086046f8c237a9d
+hub-o.md SHA-256: 171f0c5bdfdb431ef2549d8478e8bf9f956081ea3217e9fe227d76b9762e42cd
+hub-o-f.md SHA-256: 2f6370469bed58e4ef719b0509f31e84a3a2d61ed70cb92e68208b194edcf7bc
 ```
 
 Repository implementation evidence reviewed:
@@ -108,7 +108,7 @@ tools/hub_control/
         chain_contract.py
 ```
 
-This surface patch creates only the package boundary and internal CLI contract. The live modules are introduced in later patches as their functional contracts are implemented.
+The first-Hub add path now implements these responsibilities in the existing bounded modules. Some originally planned file splits remain logical responsibilities inside `common/deployment.py` and `common/state.py`; they do not expand the operator surface. `remove_hub.py` remains future work.
 
 ## 4. Module authority classes
 
@@ -124,11 +124,11 @@ This surface patch creates only the package boundary and internal CLI contract. 
 | `common.privates` | reader | narrow shared private infrastructure reader |
 | `common.placement` | core-pure/reader | logical Hub ID to physical placement resolution |
 | `common.coolify` | live-adapter | Coolify API transport and exact deployment identity |
-| `common.deployment` | protocol/renderer | Hub deployment payload generation |
-| `common.observer` | reader | Hub runtime/deployment/dependency observations |
-| `common.operation_store` | state-writer | frozen operation records |
-| `common.runtime_projection` | core-pure | combine Hub + FDB + Chain inputs into runtime config |
-| `common.verification` | reader/core-pure | operation and topology proof evaluation |
+| `common.deployment` | live-adapter/protocol/observer | Hub deployment payload generation, runtime-projection bootstrap, exact Coolify deployment wait, and public Hub runtime proof |
+| `common.observer` | logical responsibility | Hub runtime/dependency observation; currently implemented within `common.deployment` |
+| `common.operation_store` | logical responsibility | frozen operation records; currently implemented within `common.state` |
+| `common.runtime_projection` | logical responsibility | combine Hub + FDB + Chain inputs into runtime config; currently implemented within `common.deployment` |
+| `common.verification` | logical responsibility | operation and topology proof evaluation; currently implemented by add/inspect plus deployment observer |
 | `common.fdb_contract` | reader | canonical FDB consumer contract |
 | `common.chain_contract` | reader/verifier | canonical Chain consumer contract; required-vs-optional contract preflight |
 
@@ -201,7 +201,7 @@ Operators do not type these commands.
 
 ## 9. Legacy code migration
 
-`tools/coolify_hub_service.py` is a source for transport, payload, health, runtime configuration, bridge-material, and deployment-wait behavior.
+`tools/coolify_hub_service.py` supplies low-level Coolify transport/helpers only, including runtime-env synchronization. Hub Control owns projection bootstrap and the lifecycle protocol: it writes the frozen FDB/topology projection at container start, then after triggering deployment extracts the returned deployment UUID and polls that exact Coolify deployment to a terminal result before public Hub verification. Hub-Control applications explicitly disable Coolify's application-level rolling health gate; the Hub observer, not Coolify readiness, is the acceptance authority for Hub/FDB/Chain startup. The image-level temporary healthcheck exists only to keep the candidate container alive long enough to inspect.
 
 `tools/coolify_hub_cluster.py` is a source for multi-Hub iteration and public-entry behavior.
 
@@ -211,28 +211,26 @@ They are not imported as lifecycle authority by the new package. Useful behavior
 
 The Hub application code under `main_computer/hub.py`, `stable_hub.py`, credit/indexer/bridge modules, and associated runtime components remains application code. Hub Control deploys and observes it; lifecycle control does not rewrite application semantics merely to establish the new authority boundary.
 
-## 11. Contract tests in this patch
+## 11. Contract and runtime-control tests
 
-This patch adds tests that freeze:
+Tests freeze:
 
-- exact public operation names;
-- default `mainnet` network;
-- required/forbidden `--hub` usage;
-- paired mutation authorization;
-- final-deletion acknowledgement scope;
-- absence of low-level public flags;
-- automatic resume matching;
-- accepted-empty add/rebirth semantics at the harness boundary;
-- exact final membership checks;
-- internal CLI structured gap instead of legacy delegation;
-- accepted-state read schema for read-only inspection.
+- exact public operation names and mutation authorization;
+- automatic resume matching and `unborn -> 1` semantics;
+- FDB/Chain dependency discovery and accepted generation-1 finalization;
+- exact Coolify deployment-UUID extraction across supported response shapes;
+- queued/in-progress deployment wait through successful terminal completion;
+- failed deployment log-tail propagation;
+- partial Hub runtime proof, including separate Hub/FDB/Chain truth;
+- persistence of failed `do` deployment and observer evidence;
+- accepted-state read schema for inspection.
 
-## 12. Explicit implementation gap
+## 12. Explicit remaining implementation gap
 
-Until the next implementation patches land, internal mutation stages return:
+`add-hub` is live. `remove-hub` continues to return the explicit structured code:
 
 ```text
-HUB_CONTROL_MUTATION_IMPLEMENTATION_PENDING
+HUB_CONTROL_REMOVE_IMPLEMENTATION_PENDING
 ```
 
-This is deliberate. The new surface must not route a clean operator command into the old mixed Hub/FDB deployment authority merely to appear complete.
+This remains deliberate until contraction/full-deletion functionality is implemented behind the same authority boundary.

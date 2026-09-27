@@ -31,9 +31,9 @@ Produce `current`, `stale`, `unverifiable`, or `blocked` for each accepted Hub.
 
 Freeze the exact canonical contract and exact Hub set that requires mutation. Do not reread a newer target during execution.
 
-### HUB-FDB-OF-RUN-001 — Render FDB-facing Hub projection
+### HUB-FDB-OF-RUN-001 — Render and materialize FDB-facing Hub projection
 
-Derive `fdb.cluster`, namespace, compatibility/runtime values, and any transport configuration strictly from the frozen FDB contract.
+Derive `fdb.cluster`, namespace, compatibility/runtime values, and any transport configuration strictly from the frozen FDB contract. For Coolify Hub birth/update, the connection string is synchronized as an explicit runtime environment value and a control-plane-owned start bootstrap writes the exact frozen `fdb.cluster` into the mounted Hub runtime directory before the application launcher runs. This prevents a remote image revision from starting without the FDB artifact it was configured to consume.
 
 ### HUB-FDB-OF-DEP-001 — Apply Hub runtime update
 

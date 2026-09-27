@@ -41,8 +41,10 @@ EXPOSE 8790 8785
 
 CMD ["python", "/app/run-exp-fdb-hub.py"]
 
-# Temporary diagnostic healthcheck: keep Coolify rolling deploys from deleting
-# the container before the hub listener can be inspected. Re-enable a real
-# /api/hub/v1/health healthcheck after the startup accept-timeout issue is fixed.
+# Hub-Control birth keeps image health transport-only so a newborn container
+# remains inspectable while Hub Control performs the authoritative public
+# /api/hub/v1 health/identity/status proof, including FDB and Chain adoption.
+# Re-enable an endpoint-backed image healthcheck once startup is no longer under
+# lifecycle diagnosis.
 HEALTHCHECK --interval=2s --timeout=2s --start-period=0s --retries=30 \
     CMD /bin/sh -c "exit 0"

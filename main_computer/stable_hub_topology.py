@@ -153,8 +153,8 @@ def normalize_stable_hub_topology(document: Mapping[str, Any]) -> StableHubTopol
     raw_hubs = document.get("hubs")
     if not isinstance(raw_hubs, Sequence) or isinstance(raw_hubs, (str, bytes, bytearray)):
         raise StableHubTopologyError("hubs must be a list of hub objects")
-    if len(raw_hubs) < 2:
-        raise StableHubTopologyError("hubs must contain at least two concrete Hub nodes")
+    if len(raw_hubs) < 1:
+        raise StableHubTopologyError("hubs must contain at least one concrete Hub node")
 
     hubs: list[StableHubNode] = []
     for index, raw_hub in enumerate(raw_hubs):

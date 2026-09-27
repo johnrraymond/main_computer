@@ -74,9 +74,9 @@ The harness infers placement, controller, Coolify context, current FDB consumer 
 
 ### First-Hub birth proof
 
-For `unborn -> 1`, `prep` must show the inferred controller/host plus the frozen FDB and Chain contract generation/hash. `do` must not report success merely because Coolify accepted a deployment request. It must prove the public Hub identity, an FDB-backed Hub status read, and exact chain ID/RPC projection before finalization.
+For `unborn -> 1`, `prep` must show the inferred controller/host plus the frozen FDB and Chain contract generation/hash. `do` must not report success merely because Coolify accepted a deployment request. Coolify deployment submission is asynchronous: Hub Control freezes the returned deployment UUID, waits for that exact deployment to reach a successful terminal state, and only then begins public runtime proof. It must prove Hub health and identity, the FDB projection, and the exact chain ID/RPC projection before finalization.
 
-The accepted state advances `0 -> 1` only after those proofs.
+A failed or timed-out Coolify deployment blocks the operation before runtime observation and must preserve the deployment UUID/status plus an available log tail as evidence. A runtime-proof failure must preserve the last successful/failed endpoint observations and the exact failed checks. The accepted state advances `0 -> 1` only after all proofs succeed.
 
 ## 5. Remove Hub
 
@@ -175,7 +175,7 @@ Internal `prep`, `do`, `operation-inspect`, and `finalize` stages are harness-ow
 
 ## 10. Dependency contracts at add time
 
-`add-hub` freezes the currently accepted FDB and Chain consumer contracts during `prep`. Chain preflight blocks only on RPC/chain-ID failure or a Hub-required contract failure; stale optional/advertised contract addresses are reported but do not block birth. The new Hub must adopt and prove both frozen dependency contracts before finalization.
+`add-hub` freezes the currently accepted FDB and Chain consumer contracts during `prep`. Core Chain preflight blocks on RPC or chain-ID failure. Advertised feature-contract addresses are probed and reported as current/stale/unverifiable evidence but do not block Hub birth. The new Hub must adopt and prove the frozen FDB and core Chain projections before finalization.
 
 Existing stale Hubs are not silently rectified by Hub lifecycle operations. That is the job of the dependency rectifiers.
 
@@ -207,13 +207,16 @@ Chain contract:       generation 12
 Chain preflight:
   RPC:                 verified
   chain ID:            42424240
-  required contracts:  verified
-  optional stale:      alpha-beta-lockout
+  core requirements:   verified
+  advertised stale:    alpha-beta-lockout
 FDB preflight:         contract verified
 
 === do ===
 status:               deployed
 deployment action:    created
+deployment UUID:      <coolify-deployment-uuid>
+deployment status:    finished
+deployment commit:    <git-commit-sha>
 Hub running:          verified
 FDB adoption:         verified
 Chain adoption:       verified
@@ -233,6 +236,8 @@ hubs:                 3
 verification:         verified
 ```
 
-## 12. Current implementation status of this patch
+## 12. Current implementation status
 
-This patch freezes and tests the public lifecycle surface and the internal CLI seam. It intentionally does not delegate mutations to the legacy mixed Hub/FDB deployers. The internal mutation implementation remains an explicit structured gap until accepted Hub state, placement, runtime projection, observer, and dependency-contract modules are implemented behind this surface.
+The first-Hub `add-hub` path is implemented behind this surface: accepted-state birth, placement resolution, FDB/Chain contract discovery, runtime projection, Coolify application mutation, exact queued-deployment wait, public runtime observation, dependency proof, and generation-1 finalization. Failed `do` attempts remain resumable at the frozen operation and retain deployment/runtime diagnostics.
+
+`remove-hub` remains a deliberately explicit structured gap. It must not fall back to the legacy mixed Hub/FDB deployers.

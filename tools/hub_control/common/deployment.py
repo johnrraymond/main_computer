@@ -21,7 +21,8 @@ FDB_CLUSTER_ENV = "MAIN_COMPUTER_HUB_CONTROL_FDB_CLUSTER_CONTENTS"
 TOPOLOGY_B64_ENV = "MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64"
 FDB_CONTRACT_ENV = "MAIN_COMPUTER_HUB_CONTROL_FDB_CONTRACT_SHA256"
 CHAIN_CONTRACT_ENV = "MAIN_COMPUTER_HUB_CONTROL_CHAIN_CONTRACT_SHA256"
-BOOTSTRAP_COMMAND = "python /app/run-exp-fdb-hub.py"
+BOOTSTRAP_FDB_ENV = "MCF"
+BOOTSTRAP_TOPOLOGY_ENV = "MCT"
 
 
 def render_runtime_topology(
@@ -164,6 +165,25 @@ def _domain(public_url: str, port: int) -> str:
     return urllib.parse.urlunsplit((parsed.scheme, f"{host}:{port}", parsed.path, parsed.query, parsed.fragment))
 
 
+def _bootstrap_command(target: Mapping[str, Any]) -> str:
+    runtime_dir = str(target["runtime_dir"]).rstrip("/")
+    cluster_file = str(target["cluster_file_path"])
+    topology_file = str(target["topology_path"])
+    command = (
+        "sh -lc '"
+        f"mkdir -p {runtime_dir};"
+        f"printf \"%s\\n\" \"${BOOTSTRAP_FDB_ENV}\">{cluster_file};"
+        f"printf %s \"${BOOTSTRAP_TOPOLOGY_ENV}\"|base64 -d>{topology_file};"
+        "exec python /app/run-exp-fdb-hub.py'"
+    )
+    if len(command) > 255:
+        raise HubControlError(
+            "HUB_BOOTSTRAP_COMMAND_TOO_LONG",
+            f"Hub bootstrap command exceeds Coolify start-command limit: {len(command)} bytes",
+        )
+    return command
+
+
 def _application_payload(target: Mapping[str, Any]) -> dict[str, Any]:
     coolify = target["coolify"]
     return {
@@ -179,8 +199,13 @@ def _application_payload(target: Mapping[str, Any]) -> dict[str, Any]:
         "dockerfile_location": str(target["dockerfile_location"]),
         "ports_exposes": str(target["hub_bind_port"]),
         "domains": _domain(str(target["public_url"]), int(target["hub_bind_port"])),
-        "start_command": BOOTSTRAP_COMMAND,
-        "health_check_enabled": True,
+        "start_command": _bootstrap_command(target),
+        # Hub Control performs the authoritative post-deploy readiness proof.
+        # Keep Coolify's application-level rolling health gate disabled here so
+        # a slow or failing newborn Hub remains alive long enough for the Hub
+        # observer to report the actual FDB/Chain/runtime failure. The image's
+        # temporary Docker HEALTHCHECK remains the transport-level keepalive.
+        "health_check_enabled": False,
         "health_check_path": "/api/hub/v1/health",
         "instant_deploy": False,
     }
@@ -202,7 +227,110 @@ def _ensure_storage(client: Any, target: Mapping[str, Any], application_uuid: st
         raise HubControlError("HUB_COOLIFY_STORAGE_FAILED", f"persistent Hub storage create failed: HTTP {response.status}: {response.body}")
 
 
-def apply_deployment(target: Mapping[str, Any], *, client_factory=legacy.CoolifyClient) -> dict[str, Any]:
+
+def _deployment_uuid_from_trigger(payload: object) -> str:
+    def from_value(value: object) -> str:
+        if isinstance(value, Mapping):
+            direct = str(value.get("deployment_uuid") or "").strip()
+            if direct:
+                return direct
+            deployments = value.get("deployments")
+            if isinstance(deployments, list):
+                for item in deployments:
+                    found = from_value(item)
+                    if found:
+                        return found
+            body = value.get("body")
+            if body is not None and body is not value:
+                return from_value(body)
+            return ""
+        if isinstance(value, list):
+            for item in value:
+                found = from_value(item)
+                if found:
+                    return found
+        return ""
+
+    return from_value(payload)
+
+def _clean_status(value: object) -> str:
+    return str(value or "").strip().lower().replace(" ", "_")
+
+
+def _deployment_state(payload: Mapping[str, Any]) -> str:
+    return _clean_status(payload.get("status"))
+
+
+def _deployment_log_tail(payload: Mapping[str, Any], *, limit: int = 2400) -> str:
+    text = str(payload.get("logs") or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def _wait_for_coolify_deployment(
+    client: Any,
+    deployment_uuid: str,
+    *,
+    timeout_s: float = 900.0,
+    poll_s: float = 5.0,
+) -> dict[str, Any]:
+    """Wait for the exact queued Coolify deployment to reach a terminal state.
+
+    Hub runtime observation is intentionally a second proof. This wait only proves
+    that Coolify finished materializing the requested application revision, so a
+    slow image build is not misreported as a Hub/FDB/Chain verification failure.
+    """
+
+    clean_uuid = str(deployment_uuid or "").strip()
+    if not clean_uuid:
+        return {"waited": False, "status": "unknown", "reason": "deployment-uuid-unavailable"}
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    last_payload: dict[str, Any] = {}
+    success_states = {"finished", "success", "succeeded", "completed", "complete"}
+    failure_states = {"failed", "failure", "error", "cancelled", "canceled"}
+    while True:
+        path = f"/api/v1/deployments/{urllib.parse.quote(clean_uuid)}"
+        response = client.request("GET", path)
+        if response.ok and isinstance(response.body, Mapping):
+            last_payload = dict(response.body)
+            status = _deployment_state(last_payload)
+            if status in success_states:
+                return {
+                    "waited": True,
+                    "deployment_uuid": clean_uuid,
+                    "status": status,
+                    "commit": str(last_payload.get("commit") or "").strip(),
+                    "updated_at": last_payload.get("updated_at"),
+                }
+            if status in failure_states:
+                tail = _deployment_log_tail(last_payload)
+                detail = f"Coolify deployment {clean_uuid} ended with status {status!r}"
+                if tail:
+                    detail += f"; log tail: {tail}"
+                raise HubControlError("HUB_COOLIFY_DEPLOYMENT_FAILED", detail)
+        elif response.status not in {404}:
+            raise HubControlError(
+                "HUB_COOLIFY_DEPLOYMENT_INSPECT_FAILED",
+                f"could not inspect Coolify deployment {clean_uuid}: HTTP {response.status}: {response.body}",
+            )
+        if time.monotonic() >= deadline:
+            status = _deployment_state(last_payload) or "unknown"
+            tail = _deployment_log_tail(last_payload)
+            detail = f"Coolify deployment {clean_uuid} did not complete within {int(timeout_s)} seconds; last status={status!r}"
+            if tail:
+                detail += f"; log tail: {tail}"
+            raise HubControlError("HUB_COOLIFY_DEPLOYMENT_TIMEOUT", detail)
+        time.sleep(max(0.0, float(poll_s)))
+
+
+def apply_deployment(
+    target: Mapping[str, Any],
+    *,
+    client_factory=legacy.CoolifyClient,
+    deployment_wait_timeout_s: float = 900.0,
+    deployment_poll_s: float = 5.0,
+) -> dict[str, Any]:
     target = dict(target)
     target.setdefault("network", str(target.get("chain_contract", {}).get("network") or "mainnet"))
     client = _client(target, client_factory)
@@ -243,8 +371,14 @@ def apply_deployment(target: Mapping[str, Any], *, client_factory=legacy.Coolify
         _ensure_storage(client, target, app_uuid, tried)
         topology_b64 = base64.b64encode(canonical_bytes(target["topology"])).decode("ascii")
         env_values = {
+            # Long-form projection values remain the canonical launcher contract.
             FDB_CLUSTER_ENV: str(target["fdb_contract"]["connection_string"]),
             TOPOLOGY_B64_ENV: topology_b64,
+            # Short aliases exist only for the Coolify start-command bootstrap.
+            # They let Hub Control materialize the frozen artifacts even when
+            # the remote Git revision predates launcher-side projection support.
+            BOOTSTRAP_FDB_ENV: str(target["fdb_contract"]["connection_string"]),
+            BOOTSTRAP_TOPOLOGY_ENV: topology_b64,
             "MAIN_COMPUTER_HUB_NETWORK": str(target["network"]),
             "MAIN_COMPUTER_HUB_PORT": str(target["hub_bind_port"]),
             "MAIN_COMPUTER_HUB_URL": str(target["public_url"]),
@@ -273,8 +407,23 @@ def apply_deployment(target: Mapping[str, Any], *, client_factory=legacy.Coolify
         }
         for key, value in env_values.items():
             legacy.sync_application_env_var(client, application_uuid=app_uuid, key=key, value=value, tried=tried)
-        legacy.trigger_deploy(client, application_uuid=app_uuid, force=True, tried=tried)
-        return {"application_uuid": app_uuid, "action": action, "environment_variables": sorted(env_values)}
+        deploy_trigger = legacy.trigger_deploy(client, application_uuid=app_uuid, force=True, tried=tried)
+        deployment_uuid = _deployment_uuid_from_trigger(deploy_trigger)
+        deployment_wait = _wait_for_coolify_deployment(
+            client,
+            deployment_uuid,
+            timeout_s=deployment_wait_timeout_s,
+            poll_s=deployment_poll_s,
+        )
+        return {
+            "application_uuid": app_uuid,
+            "action": action,
+            "environment_variables": sorted(env_values),
+            "deployment_uuid": deployment_uuid or None,
+            "deployment_status": deployment_wait.get("status"),
+            "deployment_commit": deployment_wait.get("commit") or None,
+            "deployment_waited": bool(deployment_wait.get("waited")),
+        }
     except HubControlError:
         raise
     except Exception as exc:
@@ -294,46 +443,84 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
     base = str(target["public_url"]).rstrip("/")
     deadline = time.monotonic() + max(0.0, wait_timeout_s)
     last_error: object = None
+    last_observation: dict[str, Any] = {}
     while True:
-        try:
-            identity = _get_json(base + "/api/hub/v1/hub-identity", timeout_s=request_timeout_s)
-            status = _get_json(base + "/api/hub/v1/status", timeout_s=request_timeout_s)
-            expected_fdb = target["fdb_contract"]
-            expected_chain = target["chain_contract"]
-            network = identity.get("network") if isinstance(identity.get("network"), Mapping) else {}
-            storage = identity.get("storage") if isinstance(identity.get("storage"), Mapping) else {}
-            status_network = status.get("network") if isinstance(status.get("network"), Mapping) else {}
-            checks = {
-                "hub_identity": identity.get("hub_id") == target["hub_id"],
-                "fdb_backend": storage.get("backend") == "foundationdb",
-                "fdb_cluster_file": str(storage.get("cluster_file") or "") == str(target["cluster_file_path"]),
-                "fdb_namespace": str(storage.get("namespace") or "") == str(expected_fdb["namespace"]),
-                "chain_id": int(network.get("chain_id")) == int(expected_chain["chain_id"]),
-                "chain_rpc": str(network.get("chain_rpc_url") or "").rstrip("/") == str(expected_chain["rpc_url"]).rstrip("/"),
-                "status_chain_id": int(status_network.get("chain_id")) == int(expected_chain["chain_id"]),
-                "status_rpc": str(status_network.get("chain_rpc_url") or "").rstrip("/") == str(expected_chain["rpc_url"]).rstrip("/"),
+        health: dict[str, Any] | None = None
+        identity: dict[str, Any] | None = None
+        status: dict[str, Any] | None = None
+        endpoint_errors: dict[str, str] = {}
+        for label, path in (
+            ("health", "/api/hub/v1/health"),
+            ("identity", "/api/hub/v1/hub-identity"),
+            ("status", "/api/hub/v1/status"),
+        ):
+            try:
+                payload = _get_json(base + path, timeout_s=request_timeout_s)
+                if label == "health":
+                    health = payload
+                elif label == "identity":
+                    identity = payload
+                else:
+                    status = payload
+            except Exception as exc:  # noqa: BLE001
+                endpoint_errors[label] = f"{type(exc).__name__}: {exc}"
+
+        expected_fdb = target["fdb_contract"]
+        expected_chain = target["chain_contract"]
+        network = identity.get("network") if isinstance(identity, Mapping) and isinstance(identity.get("network"), Mapping) else {}
+        storage = identity.get("storage") if isinstance(identity, Mapping) and isinstance(identity.get("storage"), Mapping) else {}
+        status_network = status.get("network") if isinstance(status, Mapping) and isinstance(status.get("network"), Mapping) else {}
+
+        def int_matches(raw: object, expected: object) -> bool:
+            try:
+                return int(raw) == int(expected)
+            except (TypeError, ValueError):
+                return False
+
+        hub_running = isinstance(health, Mapping) and health.get("ok") is True
+        checks = {
+            "health": hub_running,
+            "hub_identity": isinstance(identity, Mapping) and identity.get("hub_id") == target["hub_id"],
+            "fdb_backend": storage.get("backend") == "foundationdb",
+            "fdb_cluster_file": str(storage.get("cluster_file") or "") == str(target["cluster_file_path"]),
+            "fdb_namespace": str(storage.get("namespace") or "") == str(expected_fdb["namespace"]),
+            "chain_id": int_matches(network.get("chain_id"), expected_chain["chain_id"]),
+            "chain_rpc": str(network.get("chain_rpc_url") or "").rstrip("/") == str(expected_chain["rpc_url"]).rstrip("/"),
+            "status_chain_id": int_matches(status_network.get("chain_id"), expected_chain["chain_id"]),
+            "status_rpc": str(status_network.get("chain_rpc_url") or "").rstrip("/") == str(expected_chain["rpc_url"]).rstrip("/"),
+        }
+        fdb_verified = all(checks[key] for key in ("hub_identity", "fdb_backend", "fdb_cluster_file", "fdb_namespace"))
+        chain_verified = all(checks[key] for key in ("hub_identity", "chain_id", "chain_rpc", "status_chain_id", "status_rpc"))
+        last_observation = {
+            "checks": checks,
+            "endpoint_errors": endpoint_errors,
+            "health": health,
+            "identity": identity,
+            "status": status,
+        }
+        if all(checks.values()):
+            return {
+                "verified": True,
+                "reason": "hub-fdb-and-chain-consumption-verified",
+                "hub_running": True,
+                "fdb_adoption_verified": True,
+                "chain_adoption_verified": True,
+                **last_observation,
             }
-            if all(checks.values()):
-                return {
-                    "verified": True,
-                    "reason": "hub-fdb-and-chain-consumption-verified",
-                    "hub_running": True,
-                    "fdb_adoption_verified": True,
-                    "chain_adoption_verified": True,
-                    "checks": checks,
-                    "identity": identity,
-                    "status": status,
-                }
-            last_error = checks
-        except Exception as exc:  # noqa: BLE001
-            last_error = f"{type(exc).__name__}: {exc}"
+        failed_checks = [key for key, value in checks.items() if not value]
+        last_error = {
+            "failed_checks": failed_checks,
+            "endpoint_errors": endpoint_errors,
+        }
         if time.monotonic() >= deadline:
             return {
                 "verified": False,
                 "reason": "hub-runtime-verification-timeout",
-                "hub_running": False,
-                "fdb_adoption_verified": False,
-                "chain_adoption_verified": False,
+                "hub_running": hub_running,
+                "fdb_adoption_verified": fdb_verified,
+                "chain_adoption_verified": chain_verified,
                 "last_error": last_error,
+                **last_observation,
             }
         time.sleep(5.0)
+

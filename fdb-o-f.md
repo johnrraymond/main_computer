@@ -6,10 +6,10 @@ Sources:
 
 ```text
 fdb.md
-SHA-256: fe0dd9fcbe702c3d7b04bbb6a8ba2072f59e4a5f6de300d735d929561d39df1f
+SHA-256: 51f49cfa1006fc8f11818cf653c5893f3b9485578b5680886d829fe0e89e6453
 
 fdb-o.md
-SHA-256: 0f45df125ce6ea6a8600c6830697094b77a0e5cc7a578f55b11b55df97bc551b
+SHA-256: b72a9fc6d6f9cff1f899808e629ce9f1d30c0f337519cbbdc41a26f69ef9c763
 ```
 
 ## 1. Purpose and authority
@@ -542,7 +542,7 @@ Class: authoritative service membership expansion
 |---:|---|---|
 | 1 | `FDB-OF-CTL-001`, `FDB-OF-SVC-001` | Parse the logical service identity, validate its network prefix, and extract its placement token/ordinal |
 | 2 | `FDB-OF-PRIV-001` through `FDB-OF-PRIV-003` | Resolve the placement token to exactly one configured Coolify host, its deployment binding, and its FDB-routable private/VPN address |
-| 3 | `FDB-OF-OBS-001` through `FDB-OF-OBS-012` | Establish accepted/live cluster state and current failure domains |
+| 3 | `FDB-OF-OBS-001` through `FDB-OF-OBS-012` | Establish accepted/live cluster state and current failure domains; independently verified `accepted-empty` is a valid add-service prestate |
 | 4 | `FDB-OF-NET-001` | Allocate the first unused accepted FDB port on the resolved host, beginning at 4550, and reject endpoint collisions |
 | 5 | `FDB-OF-COORD-006`, `FDB-OF-CTL-002` | Derive and freeze one new service plus the source/target coordinator overlay for the resulting failure-domain topology |
 | 6 | `FDB-OF-NET-002`, `FDB-OF-NET-003` | Validate routability/reachability without accepting container-local addressing |
@@ -551,6 +551,7 @@ Class: authoritative service membership expansion
 | 9 | `FDB-OF-EV-001`, `FDB-OF-EV-002` | Record exact prestate and target |
 
 Adding a service MUST NOT make that service a coordinator merely because it was added. Any coordinator change is a separately frozen sub-transition derived from the resulting distinct failure domains.
+For `accepted-empty -> one service`, the target necessarily has that first service as the sole coordinator because there is no live source coordinator set.
 
 ### 8.2 `do` functionalities
 
@@ -559,9 +560,9 @@ Adding a service MUST NOT make that service a coordinator merely because it was 
 | 1 | `FDB-OF-CTL-006`, `FDB-OF-CTL-008` | Resume exact frozen add |
 | 2 | `FDB-OF-SVC-003` through `FDB-OF-SVC-006` | Create/deploy exact service on selected host without touching siblings |
 | 3 | `FDB-OF-NET-003` | Verify cluster-network reachability |
-| 4 | `FDB-OF-FDB-004`, `FDB-OF-FDB-005` | Join/identify service in existing logical cluster |
-| 5 | `FDB-OF-FDB-006` | Prove new-service participation/convergence through the source coordinator set |
-| 6 | `FDB-OF-COORD-003`, `FDB-OF-COORD-004` | Conditional: apply and prove the exact frozen derived coordinator overlay, capturing actual rewritten connection information |
+| 4 | `FDB-OF-FDB-004`, `FDB-OF-FDB-005` | Normal path: join/identify service in existing live cluster. Accepted-empty path: bootstrap the first service with the accepted lineage/configuration and `configure new`. |
+| 5 | `FDB-OF-FDB-006` | Normal path: prove participation/convergence through the source coordinator set. Accepted-empty path: prove one-service birth/database availability through the birth observer. |
+| 6 | `FDB-OF-COORD-003`, `FDB-OF-COORD-004` | Normal path: conditionally apply/prove the exact frozen derived coordinator overlay. Accepted-empty path: no separate coordinator transition is run because the birth connection already names the new service as sole coordinator. |
 | 7 | `FDB-OF-CTL-007`, `FDB-OF-EV-003` | Persist verified progress |
 
 ### 8.3 `finalize` functionalities
@@ -571,7 +572,7 @@ Adding a service MUST NOT make that service a coordinator merely because it was 
 | 1 | `FDB-OF-OBS-003` through `FDB-OF-OBS-010` | Freshly prove service deployment, participation, cluster usability, and exact frozen coordinator overlay |
 | 2 | `FDB-OF-FDB-005`, `FDB-OF-FDB-006`, `FDB-OF-FDB-008` | Prove service belongs to correct cluster and final convergence/redundancy requirements |
 | 3 | `FDB-OF-CON-001` through `FDB-OF-CON-006` | Determine whether topology expansion changed Hub contract |
-| 4 | `FDB-OF-AUTH-001`, `FDB-OF-AUTH-002`, `FDB-OF-AUTH-004` | Advance accepted topology, preserving cluster description and accepting the actual FDB-rewritten cluster ID exactly when coordinators changed |
+| 4 | `FDB-OF-AUTH-001`, `FDB-OF-AUTH-002`, `FDB-OF-AUTH-004` | Advance accepted topology. Normal live coordinator transitions preserve description and accept the actual FDB-rewritten cluster ID; accepted-empty first-service rebirth preserves the historical accepted cluster identity while restoring one live coordinator. |
 | 5 | `FDB-OF-EV-004`, `FDB-OF-EV-005`, `FDB-OF-CTL-010` | Record terminal proof and close |
 
 
@@ -587,9 +588,9 @@ Class: authoritative service membership contraction
 |---:|---|---|
 | 1 | `FDB-OF-CTL-001` | Parse exact service to remove |
 | 2 | `FDB-OF-OBS-001` through `FDB-OF-OBS-012` | Establish accepted/live state, placement, redundancy, coordinator role, and failure domains |
-| 3 | `FDB-OF-COORD-006` | Derive source/target coordinator overlay from the surviving services and failure domains |
-| 4 | `FDB-OF-FDB-010` | Prove intended removal can satisfy frozen availability/redundancy safety contract |
-| 5 | `FDB-OF-CTL-002` | Freeze exact post-removal service topology and exact derived coordinator target |
+| 3 | `FDB-OF-COORD-006` | Derive source/target coordinator overlay from the surviving services and failure domains; an explicitly acknowledged final `1 -> 0` removal freezes an empty target coordinator set |
+| 4 | `FDB-OF-FDB-010` | Prove intended removal can satisfy frozen availability/redundancy safety contract, or record that `--allow-full-deletion` explicitly authorizes destruction of the final copy where evacuation is impossible |
+| 5 | `FDB-OF-CTL-002` | Freeze exact post-removal service topology, exact derived coordinator target, and full-deletion acknowledgement when applicable |
 | 6 | `FDB-OF-CTL-003` through `FDB-OF-CTL-005` | Freeze dependencies/scope/prepared record |
 | 7 | `FDB-OF-EV-001`, `FDB-OF-EV-002` | Record removal prestate and target |
 
@@ -598,21 +599,21 @@ Class: authoritative service membership contraction
 | Order | Functionality | Operation-specific use |
 |---:|---|---|
 | 1 | `FDB-OF-CTL-006`, `FDB-OF-CTL-008` | Resume exact frozen removal |
-| 2 | `FDB-OF-COORD-003`, `FDB-OF-COORD-004` | Conditional: move and prove the exact frozen coordinator overlay before any destructive withdrawal |
-| 3 | `FDB-OF-FDB-009` | Prepare/evacuate selected service for safe withdrawal as required by FDB policy |
-| 4 | `FDB-OF-FDB-010` | Recheck safety after evacuation/convergence |
-| 5 | `FDB-OF-SVC-007` | Stop/withdraw selected service only after FDB safety proof |
-| 6 | `FDB-OF-FDB-011` | Complete any required exclusion/removal from live participation |
-| 7 | `FDB-OF-SVC-008` | Remove/archive selected deployment resource without touching siblings/host |
-| 8 | `FDB-OF-FDB-006` | Observe cluster convergence after withdrawal |
+| 2 | `FDB-OF-COORD-003`, `FDB-OF-COORD-004` | Conditional: when services survive, move and prove the exact frozen coordinator overlay before destructive withdrawal |
+| 3 | `FDB-OF-FDB-009` | Normal contraction: prepare/evacuate selected service for safe withdrawal. Final `1 -> 0`: skip fake evacuation because no survivor can receive the final copy |
+| 4 | `FDB-OF-FDB-010` | Normal contraction: recheck safety after evacuation/convergence. Final `1 -> 0`: verify the destructive acknowledgement is frozen |
+| 5 | `FDB-OF-SVC-007` | Stop/withdraw the exact selected service after the applicable normal-safety or full-deletion authorization gate |
+| 6 | `FDB-OF-FDB-011` | Normal contraction: complete required exclusion/removal from live participation; not applicable to final-copy destruction |
+| 7 | `FDB-OF-SVC-008` | Remove/archive selected deployment resource without touching siblings/host; final deletion also removes stale coordinator guardian scaffolding |
+| 8 | `FDB-OF-FDB-006` | Normal contraction: observe cluster convergence. Final deletion: prove the exact deployment is absent and accept zero live FDB services/coordinators |
 | 9 | `FDB-OF-CTL-007`, `FDB-OF-EV-003` | Persist verified progress |
 
 ### 9.3 `finalize` functionalities
 
 | Order | Functionality | Operation-specific use |
 |---:|---|---|
-| 1 | `FDB-OF-OBS-003` through `FDB-OF-OBS-010` | Prove target service absent, siblings preserved, cluster available, and resulting coordinator state exact |
-| 2 | `FDB-OF-FDB-008`, `FDB-OF-COORD-004` | Prove required redundancy and coordinator state |
+| 1 | `FDB-OF-OBS-003` through `FDB-OF-OBS-010` | Normal contraction: prove target absent, siblings preserved, cluster available, and coordinator state exact. Final deletion: prove target deployment absent and accepted poststate empty |
+| 2 | `FDB-OF-FDB-008`, `FDB-OF-COORD-004` | Normal contraction: prove required redundancy and coordinator state. Final deletion: prove zero accepted coordinators and preserve historical cluster identity |
 | 3 | `FDB-OF-CON-001` through `FDB-OF-CON-006` | Derive post-removal consumer contract and rectification requirement |
 | 4 | `FDB-OF-AUTH-001`, `FDB-OF-AUTH-002`, `FDB-OF-AUTH-004` | Commit accepted membership contraction |
 | 5 | `FDB-OF-EV-004`, `FDB-OF-EV-005`, `FDB-OF-CTL-010` | Record terminal proof and close |
@@ -924,11 +925,21 @@ C = conditional
 
 ## 17. Mutation harness composition
 
-`fdb_mutate_harness.py` is an operator driver over existing operation
+`fdb_mutate_harness.py` is the normal operator driver over existing operation
 functionalities; it is not a new authority class and owns no direct FDB,
 Coolify, accepted-state, or coordinator mutation capability.
 
-For `add-service` and `remove-service` it composes the public control surface as:
+Its current public surface is intentionally small:
+
+```text
+inspect
+add-service --service <service-id>
+remove-service --service <service-id>
+remove-service --service <final-service-id> --allow-full-deletion
+```
+
+`mainnet` is the default network. For `add-service` and `remove-service` the
+harness composes the internal control surface as:
 
 ```text
 inspect accepted/live baseline
@@ -940,17 +951,22 @@ inspect accepted/live baseline
   -> final inspect
 ```
 
-The harness persists only run-local commands, stdout/stderr, decoded JSON, and
-resume state under `runtime/state/fdb/harness-runs/`. Its resume state may store
-the operation ID and the host/endpoint already returned by prep, but it MUST NOT
-become an alternate topology authority.
+The operator does not provide an operation ID or run directory. The harness
+creates run-local evidence state under `runtime/state/fdb/harness-runs/` and, on
+a later invocation of the same operation/network/service, automatically selects
+the newest unfinished matching run and continues after its last completed step.
+That resume state may store the operation ID and frozen host/endpoint returned by
+prep, but it MUST NOT become an alternate topology authority.
 
-For `add-service`, the harness passes only the network and service ID to prep and
-accepts the placement frozen by the automatic-placement contract in section 2.7.
-For `remove-service`, it accepts the placement resolved from accepted topology.
-The harness then proves the accepted generation increments by one and that the
-cluster description remains unchanged and the final coordinator set equals the
-frozen topology-derived target for these service mutations.
+For `add-service`, the harness passes only the network and service ID to internal
+prep and accepts the placement frozen by the automatic-placement contract in
+section 2.7. For `remove-service`, it accepts the placement resolved from
+accepted topology. The harness then proves the accepted generation increments by
+one and that the cluster description remains unchanged and the final coordinator
+set equals the frozen topology-derived target for these service mutations.
+
+Internal command lines are retained in run evidence for diagnosis, but are not
+printed as the normal operator interface.
 
 
 ## 18. Relationship to the existing experimental FDB deployer

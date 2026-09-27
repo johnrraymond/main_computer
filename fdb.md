@@ -1,6 +1,6 @@
 # FDB control surface
 
-Status: high-level design baseline for the FoundationDB control surface. This document defines the operator-visible system boundary and the high-level operations that FDB Control needs before lower-level command contracts are implemented.
+Status: high-level design baseline for the FoundationDB control surface. This document defines the operator-visible system boundary and the high-level intents that the FDB harness exposes or will expose without requiring operators to invoke internal FDB Control modules directly.
 
 ## Purpose
 
@@ -100,26 +100,33 @@ A generic `repair` operation is not part of the high-level surface. If a future 
 
 ## High-level operations
 
-FDB Control has ten high-level operations:
+FDB Control has ten high-level operation intents:
 
 ```text
-fdb-control inspect
-
-fdb-control create-cluster
-fdb-control add-service
-fdb-control remove-service
-fdb-control replace-service
-
-fdb-control set-coordinators
-fdb-control configure-cluster
-
-fdb-control reconcile
-fdb-control consumer-contract
-
-fdb-control retire-cluster
+inspect
+create-cluster
+add-service
+remove-service
+replace-service
+set-coordinators
+configure-cluster
+reconcile
+consumer-contract
+retire-cluster
 ```
 
-These names describe operator intent. Lower-level stages such as discovery, preflight, execution, convergence checks, verification, and evidence writing are implementation phases beneath these operations rather than additional high-level commands.
+The normal operator entry point is the repository-level harness:
+
+```powershell
+python .\fdb_mutate_harness.py inspect
+python .\fdb_mutate_harness.py add-service --service <service-id>
+python .\fdb_mutate_harness.py remove-service --service <service-id>
+python .\fdb_mutate_harness.py remove-service --service <final-service-id> --allow-full-deletion
+```
+
+`mainnet` is the current default network. The implemented harness surface currently exposes `inspect`, `add-service`, and `remove-service`; the remaining operation intents stay defined here so they can be added to the same harness surface without changing their meaning.
+
+Operators do not normally invoke internal FDB Control modules, carry operation IDs, select run directories, or manually drive `prep` / `do` / `finalize`. Those are implementation and recovery details owned beneath the harness. Lower-level stages such as discovery, preflight, execution, convergence checks, verification, evidence writing, operation IDs, and run capture are not additional operator commands.
 
 ### `inspect`
 
@@ -159,7 +166,7 @@ It creates the initial cluster identity, initial service placement, initial coor
 
 ### `add-service`
 
-`add-service` adds one FDB service to an existing cluster at an explicitly selected host placement.
+`add-service` adds one FDB service to an existing accepted cluster lineage. If the accepted topology is `accepted-empty`, the same operation transparently performs first-service rebirth for that lineage; the operator does not switch to `create-cluster`.
 
 It must support adding a service to a host that already runs another FDB service. For example, both of these are valid topology changes:
 
@@ -175,6 +182,8 @@ host D: no FDB service -> D1
 
 The operation verifies that the new service joined the intended cluster and converged sufficiently for the operation to be accepted.
 
+When the accepted topology has zero services and zero coordinators, `add-service` treats the requested service as the first service of a rebirth. It reuses the accepted historical cluster lineage/configuration, makes the new service the sole coordinator, performs the FoundationDB `configure new` bootstrap required by an empty live topology, proves the new database is available, and advances accepted generation. This is distinct from `create-cluster`, which is only for an unborn lineage with no accepted state.
+
 During `prep`, `add-service` derives and freezes the safe coordinator overlay for the resulting failure-domain topology. If the derived set differs, `do` first proves the new service participates through the source coordinator set, then moves coordinator authority to the frozen target, proves the rewritten connection information, and finalizes both changes as one service-topology operation. Adding another service in an already represented failure domain does not by itself create another coordinator.
 
 ### `remove-service`
@@ -184,6 +193,8 @@ During `prep`, `add-service` derives and freezes the safe coordinator overlay fo
 Before mutation, it evaluates the effect of removing that service on database availability, configured redundancy, coordinator state, and physical failure-domain tolerance. A service on a host containing other FDB services can be removed without implying removal of those sibling services or the host itself.
 
 If the target service is a coordinator, `remove-service` derives and freezes the coordinator overlay for the surviving failure-domain topology during `prep`. `do` moves and proves coordinator authority before exclusion, drain, or deletion of the target. The operator does not need to run a separate coordinator command merely to retire a coordinator service safely.
+
+The normal operation may contract `N -> N-1` down to one remaining service. The final `1 -> 0` transition is also a `remove-service` intent, but it requires the explicit operator acknowledgement `--allow-full-deletion`. That flag means the final FDB copy is being intentionally destroyed: there is no surviving process to drain into, the resulting accepted topology contains zero services and zero coordinators, and the historical cluster identity is retained only as lineage evidence. A separate `retire-cluster` operation is not required merely to delete the final service.
 
 ### `replace-service`
 
@@ -256,7 +267,7 @@ When an FDB topology change does not change the consumer contract, Hub-FDB recti
 
 ### `retire-cluster`
 
-`retire-cluster` deliberately decommissions an entire logical FDB cluster lineage.
+`retire-cluster` deliberately decommissions an entire logical FDB cluster lineage beyond service membership itself. It is not required merely to remove the final FDB service; `remove-service --allow-full-deletion` owns that explicit `1 -> 0` topology transition.
 
 It is distinct from removing an individual service. The cluster must never be considered retired merely because its services are temporarily unavailable, missing from deployment state, or reduced to an empty observed runtime.
 

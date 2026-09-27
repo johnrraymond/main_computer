@@ -41,6 +41,10 @@ from .deployment_completed_helper_cleanup import (
 )
 from .deployment_node_remove import MotherDeploymentNodeRemoveError, acknowledgement_for, execute_node_removal
 from .deployment_node_remove_prep import verify_node_remove_prep_transaction
+from .deployment_validator_rpc_canary_funding import (
+    MotherDeploymentValidatorRpcCanaryFundingError,
+    execute_shared_rpc_route_rewire,
+)
 from .static_node_precleanup_gate import (
     StaticNodePrecleanupGateError,
     run_static_node_precleanup_gate,
@@ -2250,14 +2254,6 @@ def execute_node_remove_do_release(
             "verified_before_service_deletion": True,
             "source": "source_baseline_evidence",
         },
-        {
-            "ordinal": 2,
-            "phase": "withdraw-rpc-routing",
-            "status": "already-unpublished",
-            "live_mutation_performed": False,
-            "verified_before_service_deletion": True,
-            "source": "source_baseline_evidence",
-        },
     ]
     mutation_receipts: list[dict[str, Any]] = []
     health_observations: list[dict[str, Any]] = []
@@ -2266,6 +2262,8 @@ def execute_node_remove_do_release(
     validator_removal_proof_sha256_by_voter: dict[str, str] = {}
     static_node_precleanup: dict[str, Any] | None = None
     static_node_precleanup_warning: dict[str, Any] | None = None
+    rpc_route_rewire: dict[str, Any] | None = None
+    rpc_route_survivor: Mapping[str, Any] | None = None
     service_removal: dict[str, Any] | None = None
     failure: dict[str, str] | None = None
 
@@ -2275,6 +2273,18 @@ def execute_node_remove_do_release(
             controller_id: resolve_coolify_controller(private_state, release["network"], controller_id)
             for controller_id in sorted(controller_ids)
         }
+        if release["network"] == "mainnet":
+            target_controller_id = str(release["target"]["controller_id"])
+            local_rpc_survivors = sorted(
+                (item for item in release["survivors"] if str(item.get("controller_id")) == target_controller_id),
+                key=lambda item: str(item.get("node") or ""),
+            )
+            if not local_rpc_survivors:
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ROUTE_SURVIVOR_REQUIRED",
+                    f"refusing to remove {release['target']['node']!r}: no surviving mainnet RPC node remains on {target_controller_id!r}",
+                )
+            rpc_route_survivor = local_rpc_survivors[0]
         guardians: dict[str, str] = {}
         proof_endpoints: dict[str, dict[str, Any]] = {}
         guardian_targets: dict[str, dict[str, Any]] = {}
@@ -2799,6 +2809,49 @@ def execute_node_remove_do_release(
             except MotherDeploymentCompletedHelperCleanupError as exc:
                 survivor_guardian_cleanup.append({"node": voter, "controller_id": controller_id, "service_uuid": service_uuid, "warning": {"code": exc.code, "message": str(exc)[:512]}})
 
+        if release["network"] == "mainnet":
+            if not isinstance(rpc_route_survivor, Mapping):
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ROUTE_SURVIVOR_REQUIRED",
+                    "mainnet RPC route survivor was not resolved before service deletion",
+                )
+            try:
+                rpc_route_rewire = execute_shared_rpc_route_rewire(
+                    private_state,
+                    controller_id=str(release["target"]["controller_id"]),
+                    target_node=str(rpc_route_survivor["node"]),
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    max_wait_seconds=max_wait_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    opener=opener,
+                )
+            except MotherDeploymentValidatorRpcCanaryFundingError as exc:
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ROUTE_REWIRE_FAILED",
+                    f"{exc.code}: {str(exc)[:400]}",
+                ) from exc
+            routing_receipts.append({
+                "ordinal": 2,
+                "phase": "withdraw-rpc-routing",
+                "status": "repointed-to-survivor",
+                "removed_node": release["target"]["node"],
+                "replacement_node": rpc_route_survivor["node"],
+                "controller_id": release["target"]["controller_id"],
+                "live_mutation_performed": True,
+                "verified_before_service_deletion": True,
+                "source": "mother-owned-shared-rpc-route-rewire",
+            })
+        else:
+            routing_receipts.append({
+                "ordinal": 2,
+                "phase": "withdraw-rpc-routing",
+                "status": "already-unpublished",
+                "live_mutation_performed": False,
+                "verified_before_service_deletion": True,
+                "source": "source_baseline_evidence",
+            })
+
         service_removal = execute_node_removal(
             private_state,
             network=release["network"],
@@ -2879,8 +2932,15 @@ def execute_node_remove_do_release(
         if isinstance(static_node_precleanup, Mapping)
         else {}
     )
+    rpc_route_rewire_mutated = bool(
+        isinstance(rpc_route_rewire, Mapping) and rpc_route_rewire.get("status") == "pass"
+    )
+    routing_withdrawal_verified = bool(routing_receipts) and all(
+        item.get("verified_before_service_deletion") is True for item in routing_receipts
+    )
     live_mutation = (
         static_node_precleanup_mutated
+        or rpc_route_rewire_mutated
         or any(item.get("live_write_acknowledged") is True for item in mutation_receipts)
         or service_deleted
     )
@@ -2916,6 +2976,7 @@ def execute_node_remove_do_release(
         "static_node_precleanup": static_node_precleanup,
         "static_node_precleanup_warning": static_node_precleanup_warning,
         "survivor_guardian_cleanup": survivor_guardian_cleanup,
+        "rpc_route_rewire": rpc_route_rewire,
         "service_removal": service_removal,
         "authority": {
             "release_consumed": True,
@@ -2960,7 +3021,7 @@ def execute_node_remove_do_release(
             "survivor_nodes": [item["node"] for item in release["survivors"]],
             "current_validator_count": len(release["current_topology"]["validator_set"]),
             "post_removal_validator_count": len(release["post_removal_topology"]["validator_set"]),
-            "routing_topology_withdrawal_verified_before_service_deletion": bool(release.get("routing_topology_withdrawal", {}).get("authorized")),
+            "routing_topology_withdrawal_verified_before_service_deletion": routing_withdrawal_verified,
             "service_deletion_is_first": bool(release.get("policy", {}).get("service_deletion_is_first")),
             "single_node_decommission": bool(release.get("policy", {}).get("single_node_decommission")),
             "validator_removal_vote_required": vote_required,
@@ -2985,7 +3046,7 @@ def execute_node_remove_do_release(
                 if isinstance(static_node_precleanup_warning, Mapping)
                 else None
             ),
-            "network_access_performed": bool(static_node_precleanup or mutation_receipts or health_observations or service_removal),
+            "network_access_performed": bool(static_node_precleanup or rpc_route_rewire or mutation_receipts or health_observations or service_removal),
             "live_mutation_performed": live_mutation,
             "routing_or_topology_published": False,
             "public_endpoint_created": bool(proof_endpoints) if 'proof_endpoints' in locals() else False,

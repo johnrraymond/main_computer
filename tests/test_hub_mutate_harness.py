@@ -362,3 +362,31 @@ def test_prepared_boundary_reports_core_and_advertised_chain_preflight(
     assert "core requirements:   verified" in stdout
     assert "advertised stale:    hub_credit_bridge_escrow, alpha-beta-lockout" in stdout
     assert "FDB preflight:         contract verified" in stdout
+
+
+def test_do_summary_reports_exact_coolify_deployment_identity(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = Harness(_args(tmp_path, "add-hub", hub="mainneta-hub1", execute=True))
+    harness._print_step_result(
+        "do",
+        {
+            "status": "deployed",
+            "details": {
+                "deployment_action": "created",
+                "deployment_uuid": "dep-123",
+                "deployment_status": "finished",
+                "deployment_commit": "abc123",
+                "hub_running": True,
+                "fdb_adoption_verified": True,
+                "chain_adoption_verified": True,
+            },
+        },
+    )
+    stdout = capsys.readouterr().out
+    assert "deployment UUID:      dep-123" in stdout
+    assert "deployment status:    finished" in stdout
+    assert "deployment commit:    abc123" in stdout
+    assert "FDB adoption:         verified" in stdout
+    assert "Chain adoption:       verified" in stdout

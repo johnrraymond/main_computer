@@ -1,27 +1,22 @@
 #!/usr/bin/env python3
-"""Five-mode continual trainer with relation-balanced pairwise geometry.
+"""Self-organizing sparse-register soft-feedback NanoJev trainer.
 
-A fresh default run forks from the latest committed head of the established
-consensus experiment and starts a new optimizer/experiment lineage. The parent is
-resolved from that run's training_state.json -> latest_generation at initialization;
-after initialization, this experiment resumes only its own frozen parent/checkpoints.
+Qwen, the inherited NanoJev decision head, and the learned static soft token S
+remain frozen.  One learned router sees only the frozen first-pass model state
+and produces sparse coefficients over a deliberately overcomplete shared
+control dictionary.  No task identity is provided to the router.  Legacy,
+mutation, AST, direct-consensus, and pairwise labels are used only for sampling,
+loss accounting, and post-hoc occupancy telemetry.
 
-Default optimizer-unit curriculum:
-  * static balanced-pairwise: 5% legacy / 10% mutation / 5% AST / 30% direct consensus / 50% triad
-  * --latent-walk:            5% legacy / 10% mutation / 34% AST /  1% direct consensus / 50% triad
+The dictionary is intentionally wider than the expected control manifold.  L1
+coefficient pressure crowds unnecessary coordinates toward zero, an L2 residual
+penalty prefers small corrections, and an orthogonality penalty discourages
+redundant control directions.  Tasks may therefore discover the same axes,
+partly overlapping subspaces, distinct subspaces, or additional dimensions as
+needed without any hard-coded task-to-register assignment.
 
-The latent-walk default keeps direct consensus present only as a low-rate hard-case
-rehearsal/probe while preserving the easier stepping stones, especially AST and the
-50% relation-balanced pairwise SAME/DIFFERENT objective. A displacement penalty also
-makes the exact-identity/no-op walk cheaper unless task loss justifies moving the prior. AB/AC/BC exposure remains
-balanced independently inside each relation label so majority-label and pair-position
-shortcuts cannot improve the optimizer objective.
-
-Topology is evaluation-only for this stage. A topology-balanced dev probe still asks
-AB, AC, and BC separately and the host deterministically composes those judgments
-into A/B/C/NONE/AMBIGUOUS. Anti-collapse telemetry reports per-label accuracy,
-balanced relation accuracy, prediction rates, per-label margins, all-three-correct
-rate, and non-ambiguous topology accuracy.
+Default optimizer-unit curriculum: 5% legacy / 10% mutation / 34% AST /
+1% direct consensus / 50% relation-balanced pairwise.
 """
 from __future__ import annotations
 
@@ -42,12 +37,12 @@ import tempfile
 import time
 from typing import Sequence
 
-EXPERIMENT_SCHEMA = "main-computer-nanojev-code-balanced-pairwise-experiment-v2"
-STATE_SCHEMA = "main-computer-nanojev-code-balanced-pairwise-training-state-v2"
-CONFIG_SCHEMA = "main-computer-nanojev-code-balanced-pairwise-training-config-v2"
-TASK = "lexeme_mutation_ast_plus_direct_consensus_plus_relation_balanced_pairwise"
-PHASE = "frozen_head_lexeme_plus_mutation_plus_ast_plus_direct_consensus_plus_balanced_pairwise"
-OBJECTIVE = "three_binary_rehearsals_plus_direct_consensus_plus_relation_balanced_pairwise"
+EXPERIMENT_SCHEMA = "main-computer-nanojev-code-self-organizing-register-experiment-v1"
+STATE_SCHEMA = "main-computer-nanojev-code-self-organizing-register-training-state-v1"
+CONFIG_SCHEMA = "main-computer-nanojev-code-self-organizing-register-training-config-v1"
+TASK = "lexeme_mutation_ast_plus_direct_consensus_plus_relation_balanced_pairwise_self_organizing_sparse_register_feedback"
+PHASE = "frozen_qwen_frozen_head_frozen_static_token_self_organizing_sparse_registers_plus_balanced_pairwise"
+OBJECTIVE = "zero_init_self_routing_sparse_registers_over_frozen_static_token_three_binary_rehearsals_plus_direct_consensus_plus_relation_balanced_pairwise"
 DIRECT_CONSENSUS_OBJECTIVE = "three_binary_rehearsals_plus_four_way_consensus_margin_plus_orbit_consistency"
 ORBIT_CONSISTENCY_WEIGHT = 0.25
 ORBIT_SUPERVISION_BLEND = 0.5
@@ -57,10 +52,10 @@ CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD = 6
 DEFAULT_LEGACY_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_lexeme_v1"
 DEFAULT_MUTATION_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_mutation_v1"
 DEFAULT_THREE_MODE_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_three_mode_v1"
-DEFAULT_SOURCE_CONSENSUS_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_consensus_v1"
-DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_consensus_balanced_pairwise_v2"
+DEFAULT_SOURCE_SOFT_FEEDBACK_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_soft_feedback_v1"
+DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_self_organizing_register_v1"
 DEFAULT_LATENT_WALK_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_latent_walk_v1"
-DEFAULT_SOURCE_BALANCED_EXPERIMENT = DEFAULT_EXPERIMENT
+DEFAULT_SOURCE_BALANCED_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_soft_feedback_residual_v1"
 
 TASK_ORDER = ("legacy", "mutation", "ast", "consensus", "triad")
 PREVIOUS_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 20.0, "consensus": 15.0, "triad": 50.0}
@@ -68,6 +63,23 @@ DEFAULT_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 5.0, "consensus": 
 LATENT_WALK_DEFAULT_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 34.0, "consensus": 1.0, "triad": 50.0}
 DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT = 100.0
 LATENT_WALK_DISPLACEMENT_PENALTY = "active_token_mean_squared_final_displacement_from_frozen_qwen_prior"
+SOFT_FEEDBACK_DEFAULT_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 34.0, "consensus": 1.0, "triad": 50.0}
+DEFAULT_SOFT_FEEDBACK_RANK = 8
+DEFAULT_SOFT_FEEDBACK_LR = 2e-4
+DEFAULT_SOFT_FEEDBACK_STRENGTH = 0.25
+DEFAULT_SOFT_FEEDBACK_CONTROL_EVAL_EVERY = 5
+SOFT_FEEDBACK_TOKEN_COUNT = 1
+SOFT_FEEDBACK_GENERATOR = "frozen_static_token_plus_self_routing_sparse_overcomplete_shared_control_dictionary_v1"
+SOFT_FEEDBACK_CONTROL_MODES = ("none", "static", "dynamic")
+# Task names remain available to the trainer for curriculum accounting and
+# post-hoc telemetry only.  They are never inputs to the control router.
+REGISTER_REPORTING_TASKS = TASK_ORDER
+DEFAULT_CONTROL_SPACE_SIZE = 32
+DEFAULT_REGISTER_RANK = 32
+DEFAULT_REGISTER_SPARSITY_WEIGHT = 0.01
+DEFAULT_REGISTER_RESIDUAL_WEIGHT = 0.10
+DEFAULT_REGISTER_ORTHOGONALITY_WEIGHT = 0.01
+DEFAULT_REGISTER_ACTIVE_EPSILON = 0.01
 CURRICULUM_CONFIG_KEYS = {
     "legacy": "legacy_training_percent",
     "mutation": "mutation_training_percent",
@@ -188,8 +200,8 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def resolve_balanced_parent(
-    source_consensus_exp: Path, explicit: str | None, parent_cycle: int | None = None
+def resolve_soft_feedback_parent(
+    source_soft_feedback_exp: Path, explicit: str | None, parent_cycle: int | None = None
 ) -> tuple[Path, str]:
     expected_cycle = None
     if explicit:
@@ -197,20 +209,20 @@ def resolve_balanced_parent(
         source = "explicit_parent_checkpoint"
     elif parent_cycle is not None:
         checkpoint = (
-            source_consensus_exp / "checkpoints" / "generations" / f"cycle-{parent_cycle:06d}"
+            source_soft_feedback_exp / "checkpoints" / "generations" / f"cycle-{parent_cycle:06d}"
         ).resolve(strict=True)
-        source = f"source_consensus_cycle_{parent_cycle}"
+        source = f"source_soft_feedback_cycle_{parent_cycle}"
         expected_cycle = int(parent_cycle)
     else:
-        source_state_path = source_consensus_exp / "training_state.json"
+        source_state_path = source_soft_feedback_exp / "training_state.json"
         source_state = read_json(source_state_path)
         latest = source_state.get("latest_generation")
         if not latest:
             raise RuntimeError(
-                f"source consensus experiment has no committed latest_generation: {source_state_path}"
+                f"source soft-feedback experiment has no committed latest_generation: {source_state_path}"
             )
         checkpoint = Path(latest).expanduser().resolve(strict=True)
-        source = "source_consensus_training_state_latest_generation"
+        source = "source_soft_feedback_training_state_latest_generation"
         expected_cycle = int(source_state.get("cycle", -1))
 
     for required in ("head.safetensors", "config.json", "meta.json"):
@@ -223,12 +235,12 @@ def resolve_balanced_parent(
     meta_cycle = int(metadata.get("cycle", checkpoint_cycle))
     if checkpoint_cycle != meta_cycle:
         raise RuntimeError(
-            "balanced-pairwise parent config/meta cycle mismatch: "
+            "soft-feedback parent config/meta cycle mismatch: "
             f"config={checkpoint_cycle} meta={meta_cycle} path={checkpoint}"
         )
     if expected_cycle is not None and checkpoint_cycle != expected_cycle:
         raise RuntimeError(
-            "balanced-pairwise parent does not match requested/committed source cycle: "
+            "soft-feedback parent does not match requested/committed source cycle: "
             f"expected={expected_cycle} checkpoint={checkpoint_cycle} path={checkpoint}"
         )
     return checkpoint, source
@@ -1515,6 +1527,379 @@ def install_latent_walk_hook(model, latent_walk):
     return model.backbone.register_forward_hook(hook, with_kwargs=True)
 
 
+def module_parameter_sha256(module) -> str:
+    """Stable digest over one module's parameter values."""
+    digest = hashlib.sha256()
+    for name, param in module.named_parameters():
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(param.detach().float().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def sparse_register_dynamic_parameter_count(hidden_size: int, control_space_size: int, register_rank: int) -> int:
+    """Trainable params: one shared bank plus one task-blind routing network."""
+    bank = int(hidden_size) * int(control_space_size)
+    router = (
+        int(hidden_size) * int(register_rank)
+        + 2 * int(register_rank)
+        + int(register_rank) * int(control_space_size)
+    )
+    return bank + router
+
+
+def soft_feedback_static_parameter_count(hidden_size: int) -> int:
+    """Frozen static parameters: one H-wide token plus strength scalar."""
+    return int(hidden_size) + 1
+
+
+def build_soft_feedback_decision_model_class(
+    BaseDecisionModel,
+    *,
+    control_space_size: int,
+    register_rank: int,
+    strength_init: float,
+    active_epsilon: float,
+):
+    """Wrap NanoJev with task-blind sparse residual control over a shared bank.
+
+    Dynamic mode performs:
+      frozen Qwen -> frozen head read -> shared router -> sparse bank coefficients ->
+      [S + residual, original embeddings] -> same frozen Qwen -> frozen head -> logits.
+
+    The helper token is shared by every candidate path belonging to one question.
+    S and its strength remain frozen.  The router receives no task identifier.
+    Its coefficient head starts at exact zero, so dynamic == static at initialization.
+    """
+    import torch
+    from torch import nn
+    import torch.nn.functional as F
+
+    if control_space_size <= 0:
+        raise ValueError("control-space size must be positive")
+    if register_rank <= 0:
+        raise ValueError("register rank must be positive")
+    if not math.isfinite(strength_init) or not 0.0 < strength_init < 1.0:
+        raise ValueError("soft-feedback strength init must be strictly between 0 and 1")
+    if not math.isfinite(active_epsilon) or active_epsilon <= 0.0:
+        raise ValueError("register active epsilon must be finite and positive")
+
+    class SparseRegisterController(nn.Module):
+        def __init__(self, hidden_size: int, embedding_rms: float):
+            super().__init__()
+            self.hidden_size = int(hidden_size)
+            self.control_space_size = int(control_space_size)
+            self.register_rank = int(register_rank)
+            self.active_epsilon = float(active_epsilon)
+            self.base = nn.Parameter(torch.zeros(self.hidden_size))
+            self.control_bank = nn.Parameter(torch.empty(self.control_space_size, self.hidden_size))
+            self.router_down = nn.Linear(self.hidden_size, self.register_rank, bias=False)
+            self.router_score = nn.Linear(2, self.register_rank, bias=False)
+            self.router_coeff = nn.Linear(self.register_rank, self.control_space_size, bias=False)
+            init_logit = math.log(float(strength_init) / (1.0 - float(strength_init)))
+            self.strength_logit = nn.Parameter(torch.tensor(init_logit))
+            self.register_buffer("embedding_rms", torch.tensor(float(embedding_rms)), persistent=True)
+            self.mode = "dynamic"
+            self.last_stats: dict[str, object] = {}
+            self.last_regularization: dict[str, object] = {}
+            self.last_usage: dict[str, object] = {}
+            self.last_coefficients = None
+            self.reset_dynamic_registers()
+
+        def set_mode(self, mode: str) -> None:
+            if mode not in SOFT_FEEDBACK_CONTROL_MODES:
+                raise ValueError(f"soft-feedback mode must be one of {SOFT_FEEDBACK_CONTROL_MODES}, got {mode!r}")
+            self.mode = mode
+
+        def _reset_control_bank_orthonormal(self) -> None:
+            # K <= H in the intended configuration.  Fail closed rather than
+            # pretending an orthonormal row basis exists when K > H.
+            if self.control_space_size > self.hidden_size:
+                raise RuntimeError(
+                    f"control-space size {self.control_space_size} exceeds hidden size {self.hidden_size}; "
+                    "orthonormal row initialization requires K <= H"
+                )
+            with torch.no_grad():
+                q, _ = torch.linalg.qr(
+                    torch.randn(
+                        self.hidden_size,
+                        self.control_space_size,
+                        device=self.control_bank.device,
+                        dtype=self.control_bank.dtype,
+                    ),
+                    mode="reduced",
+                )
+                self.control_bank.copy_(q.transpose(0, 1).contiguous())
+
+        def reset_dynamic_registers(self) -> None:
+            """Fresh self-organizing control is an exact no-op over inherited S."""
+            self._reset_control_bank_orthonormal()
+            self.router_down.reset_parameters()
+            self.router_score.reset_parameters()
+            nn.init.zeros_(self.router_coeff.weight)
+
+        def static_parameters(self):
+            return (self.base, self.strength_logit)
+
+        def dynamic_parameters(self):
+            return tuple(
+                [self.control_bank]
+                + list(self.router_down.parameters())
+                + list(self.router_score.parameters())
+                + list(self.router_coeff.parameters())
+            )
+
+        def normalized_bank(self):
+            return F.normalize(self.control_bank.float(), p=2.0, dim=1).to(self.control_bank.dtype)
+
+        def orthogonality_penalty(self):
+            bank = F.normalize(self.control_bank.float(), p=2.0, dim=1)
+            gram = bank @ bank.transpose(0, 1)
+            eye = torch.eye(self.control_space_size, device=gram.device, dtype=gram.dtype)
+            off = gram - eye
+            denom = max(self.control_space_size * (self.control_space_size - 1), 1)
+            return off.square().sum() / denom
+
+        def helper(self, summary, score_stats):
+            if self.mode == "none":
+                raise RuntimeError("none mode has no helper token")
+            base = self.base.view(1, -1).expand(summary.shape[0], -1)
+            dynamic_raw = summary.new_zeros(base.shape)
+            coefficients = summary.new_zeros((summary.shape[0], self.control_space_size))
+
+            if self.mode == "dynamic":
+                code = torch.tanh(
+                    self.router_down(summary)
+                    + self.router_score(score_stats.to(summary.dtype))
+                )
+                coefficients = torch.tanh(self.router_coeff(code))
+                dynamic_raw = coefficients.to(self.control_bank.dtype) @ self.normalized_bank()
+
+            raw = base + dynamic_raw
+            direction = torch.tanh(raw)
+            direction_rms = torch.sqrt(direction.float().square().mean(dim=-1, keepdim=True) + 1e-8).to(direction.dtype)
+            normalized = direction / direction_rms
+            strength = torch.sigmoid(self.strength_logit).to(direction.dtype)
+            helper = normalized * self.embedding_rms.to(direction.dtype) * strength
+            zero_rows = (raw.detach().abs().amax(dim=-1, keepdim=True) == 0)
+            helper = torch.where(zero_rows, torch.zeros_like(helper), helper)
+
+            sparsity = coefficients.float().abs().mean()
+            residual_mse = dynamic_raw.float().square().mean()
+            orthogonality = self.orthogonality_penalty()
+            self.last_regularization = {
+                "sparsity": sparsity,
+                "residual_mse": residual_mse,
+                "orthogonality": orthogonality,
+            }
+            detached = coefficients.detach().float()
+            mean_abs = detached.abs().mean(dim=0) if detached.numel() else detached.new_zeros(self.control_space_size)
+            active = mean_abs >= self.active_epsilon
+            self.last_usage = {
+                "questions": int(summary.shape[0]),
+                "mean_abs_coefficients": [float(v) for v in mean_abs.cpu().tolist()],
+                "active_slots": [int(i) for i in torch.nonzero(active, as_tuple=False).flatten().cpu().tolist()],
+                "active_slot_count": int(active.sum().item()),
+            }
+            # Detached, row-aligned coefficients are exposed only for trainer telemetry.
+            # Task labels are joined to these rows after the forward pass and never enter
+            # this controller.
+            self.last_coefficients = detached
+            return helper, dynamic_raw, strength, coefficients
+
+    class SoftFeedbackDecisionModel(BaseDecisionModel):
+        def __init__(self, backbone, set_head):
+            super().__init__(backbone, set_head)
+            if set_head != "attention":
+                raise RuntimeError("sparse-register soft feedback requires NanoJev set_head='attention'")
+            for attr in ("norm", "scalar", "set_project", "set_attention", "set_output"):
+                if not hasattr(self, attr):
+                    raise RuntimeError(f"NanoJev DecisionModel missing required head component: {attr}")
+            hidden = int(backbone.config.hidden_size)
+            with torch.no_grad():
+                sample = backbone.get_input_embeddings().weight[: min(4096, backbone.get_input_embeddings().weight.shape[0])]
+                embedding_rms = float(torch.sqrt(sample.detach().float().square().mean() + 1e-30).item())
+            if not math.isfinite(embedding_rms) or embedding_rms <= 0.0:
+                raise RuntimeError(f"invalid backbone embedding RMS: {embedding_rms}")
+            self.soft_feedback = SparseRegisterController(hidden, embedding_rms)
+            self.last_first_pass_logits = None
+
+        def set_soft_feedback_mode(self, mode: str) -> None:
+            self.soft_feedback.set_mode(mode)
+
+        def _assemble_paths(self, examples, pad_token):
+            paths = [ids for ex in examples for ids in ex["leaf_tokens"]]
+            if not paths:
+                raise RuntimeError("soft-feedback forward received no candidate paths")
+            device = self.scalar.weight.device
+            lengths = torch.tensor([len(ids) for ids in paths], device=device)
+            width = int(lengths.max())
+            tokens = torch.full((len(paths), width), pad_token, dtype=torch.long, device=device)
+            path_owner = []
+            for question_index, ex in enumerate(examples):
+                for ids in ex["leaf_tokens"]:
+                    path_owner.append(question_index)
+            for i, ids in enumerate(paths):
+                tokens[i, :len(ids)] = torch.tensor(ids, device=device)
+            attention = torch.arange(width, device=device)[None, :] < lengths[:, None]
+            return paths, lengths, tokens, attention, torch.tensor(path_owner, dtype=torch.long, device=device)
+
+        def _score_leaves(self, leaves, examples):
+            kmax = max(len(ex["candidate_ids"]) for ex in examples)
+            h = leaves.new_zeros((len(examples), kmax, leaves.shape[-1]))
+            candidate_valid = torch.zeros((len(examples), kmax), dtype=torch.bool, device=leaves.device)
+            path_valid = torch.zeros((len(examples), kmax), dtype=torch.bool, device=leaves.device)
+            offset = 0
+            for i, ex in enumerate(examples):
+                path_n = len(ex["leaf_tokens"])
+                h[i, :path_n] = leaves[offset:offset + path_n]
+                path_valid[i, :path_n] = True
+                candidate_valid[i, :len(ex["candidate_ids"])] = True
+                offset += path_n
+            h = self.norm(h)
+            z = self.scalar(h).squeeze(-1).float()
+            choice = torch.tensor(
+                [i for i, ex in enumerate(examples) if ex["type"] == "choice"],
+                device=leaves.device,
+                dtype=torch.long,
+            )
+            if self.set_head == "attention" and len(choice):
+                log_k = candidate_valid[choice].sum(-1).float().log()[:, None, None].expand(-1, kmax, 1)
+                u = self.set_project(torch.cat([h[choice], log_k.to(h.dtype)], dim=-1))
+                mixed, _ = self.set_attention(u, u, u, key_padding_mask=~candidate_valid[choice], need_weights=False)
+                delta = self.set_output(torch.tanh(u + mixed)).squeeze(-1).float()
+                z = z.index_add(0, choice, delta)
+            out = []
+            for i, ex in enumerate(examples):
+                if ex["type"] == "boolean":
+                    out.append(F.pad(torch.stack([z[i, 0] * 0, z[i, 0]]), (0, kmax - 2)))
+                else:
+                    out.append(z[i])
+            logits = torch.stack(out).masked_fill(~candidate_valid, -1e9)
+            return logits, candidate_valid, h, path_valid
+
+        @staticmethod
+        def _question_summary(h, path_valid, logits, examples):
+            path_weight = path_valid.to(h.dtype)
+            mean_h = (h * path_weight.unsqueeze(-1)).sum(dim=1) / path_weight.sum(dim=1, keepdim=True).clamp_min(1.0)
+            summary = mean_h.clone()
+            stats = logits.new_zeros((len(examples), 2))
+            for i, ex in enumerate(examples):
+                candidate_n = len(ex["candidate_ids"])
+                values = logits[i, :candidate_n].float()
+                probs = values.softmax(-1)
+                centered = values - values.mean()
+                stats[i, 0] = torch.sqrt(centered.square().mean() + 1e-8)
+                stats[i, 1] = -(probs * probs.clamp_min(1e-8).log()).sum()
+                path_n = len(ex["leaf_tokens"])
+                if ex["type"] != "boolean" and path_n == candidate_n and path_n > 1:
+                    weighted = (h[i, :path_n] * probs[:path_n].to(h.dtype).unsqueeze(-1)).sum(dim=0)
+                    summary[i] = 0.5 * mean_h[i] + 0.5 * weighted
+            return summary, stats
+
+        def _single_pass(self, examples, pad_token):
+            paths, lengths, tokens, attention, _path_owner = self._assemble_paths(examples, pad_token)
+            hidden = self.backbone(input_ids=tokens, attention_mask=attention, use_cache=False).last_hidden_state
+            leaves = hidden[torch.arange(len(paths), device=tokens.device), lengths - 1]
+            logits, valid, _h, _path_valid = self._score_leaves(leaves, examples)
+            self.soft_feedback.last_stats = {
+                "mode": "none",
+                "backbone_reads": 1,
+                "helper_tokens_per_question": 0,
+                "embedding_rms": float(self.soft_feedback.embedding_rms.detach().float().item()),
+            }
+            return logits, valid
+
+        def forward(self, examples, pad_token):
+            import torch
+
+            mode = self.soft_feedback.mode
+            if mode == "none":
+                return self._single_pass(examples, pad_token)
+
+            paths, lengths, tokens, attention, path_owner = self._assemble_paths(examples, pad_token)
+            first_leaves = None
+            first_logits = None
+            summary = None
+            score_stats = None
+            if mode == "dynamic":
+                with torch.no_grad():
+                    first_hidden = self.backbone(
+                        input_ids=tokens, attention_mask=attention, use_cache=False
+                    ).last_hidden_state
+                    first_leaves = first_hidden[torch.arange(len(paths), device=tokens.device), lengths - 1]
+                    first_logits, _first_valid, first_h, first_path_valid = self._score_leaves(first_leaves, examples)
+                    summary, score_stats = self._question_summary(first_h, first_path_valid, first_logits, examples)
+                self.last_first_pass_logits = first_logits
+            else:
+                hidden_size = int(self.backbone.config.hidden_size)
+                summary = self.soft_feedback.base.new_zeros((len(examples), hidden_size))
+                score_stats = self.soft_feedback.base.new_zeros((len(examples), 2))
+                self.last_first_pass_logits = None
+
+            helper_by_question, dynamic_raw, strength, coefficients = self.soft_feedback.helper(
+                summary, score_stats
+            )
+            helper_by_path = helper_by_question.index_select(0, path_owner).unsqueeze(1)
+            with torch.no_grad():
+                token_embeds = self.backbone.get_input_embeddings()(tokens)
+            helper_by_path = helper_by_path.to(dtype=token_embeds.dtype)
+            second_inputs = torch.cat([helper_by_path, token_embeds], dim=1)
+            second_attention = torch.cat(
+                [torch.ones((attention.shape[0], 1), dtype=attention.dtype, device=attention.device), attention], dim=1
+            )
+            max_positions = int(getattr(self.backbone.config, "max_position_embeddings", second_inputs.shape[1]))
+            if second_inputs.shape[1] > max_positions:
+                raise RuntimeError(
+                    f"soft-feedback prefix exceeds backbone max positions: {second_inputs.shape[1]} > {max_positions}"
+                )
+            second_hidden = self.backbone(
+                inputs_embeds=second_inputs, attention_mask=second_attention, use_cache=False
+            ).last_hidden_state
+            second_leaves = second_hidden[torch.arange(len(paths), device=tokens.device), lengths]
+            logits, valid, _second_h, _second_path_valid = self._score_leaves(second_leaves, examples)
+
+            with torch.no_grad():
+                helper_rms = torch.sqrt(helper_by_question.detach().float().square().mean() + 1e-30)
+                base_rms = torch.sqrt(self.soft_feedback.base.detach().float().square().mean() + 1e-30)
+                dynamic_rms = torch.sqrt(dynamic_raw.detach().float().square().mean() + 1e-30)
+                coeff_abs = coefficients.detach().float().abs()
+                aggregate_mean_abs = coeff_abs.mean(dim=0) if coeff_abs.numel() else coeff_abs.new_zeros(self.soft_feedback.control_space_size)
+                aggregate_active = aggregate_mean_abs >= self.soft_feedback.active_epsilon
+                stats = {
+                    "mode": mode,
+                    "backbone_reads": 2 if mode == "dynamic" else 1,
+                    "helper_tokens_per_question": 1,
+                    "questions": len(examples),
+                    "candidate_paths": len(paths),
+                    "embedding_rms": float(self.soft_feedback.embedding_rms.detach().float().item()),
+                    "helper_rms": float(helper_rms.item()),
+                    "base_raw_rms": float(base_rms.item()),
+                    "dynamic_raw_rms": float(dynamic_rms.item()),
+                    "strength": float(strength.detach().float().item()),
+                    "control_space_size": self.soft_feedback.control_space_size,
+                    "register_rank": self.soft_feedback.register_rank,
+                    "aggregate_active_slots": [int(i) for i in torch.nonzero(aggregate_active, as_tuple=False).flatten().cpu().tolist()],
+                    "aggregate_active_slot_count": int(aggregate_active.sum().item()),
+                    "self_routed_usage": self.soft_feedback.last_usage,
+                    "orthogonality_penalty": float(self.soft_feedback.last_regularization["orthogonality"].detach().item()),
+                }
+                if first_leaves is not None:
+                    displacement = second_leaves.detach().float() - first_leaves.detach().float()
+                    first_rms = torch.sqrt(first_leaves.detach().float().square().mean() + 1e-30)
+                    displacement_rms = torch.sqrt(displacement.square().mean() + 1e-30)
+                    stats.update({
+                        "first_leaf_rms": float(first_rms.item()),
+                        "first_to_second_leaf_displacement_rms": float(displacement_rms.item()),
+                        "relative_leaf_displacement_rms": float((displacement_rms / (first_rms + 1e-30)).item()),
+                        "first_pass_score_stat_rms": float(torch.sqrt(score_stats.detach().float().square().mean() + 1e-30).item()),
+                    })
+                self.soft_feedback.last_stats = stats
+            return logits, valid
+
+    SoftFeedbackDecisionModel.__name__ = "SelfOrganizingSparseRegisterDecisionModel"
+    return SoftFeedbackDecisionModel
+
 def validate_records(records: Sequence[dict], pipeline) -> None:
     for record in records:
         pipeline.validate_training_row(record)
@@ -1531,6 +1916,37 @@ def load_head_into_model(model, head_path: Path, *, allow_missing_prefixes: tupl
     if incompatible.unexpected_keys or bad_missing:
         raise RuntimeError(
             f"decision-head load mismatch: unexpected={incompatible.unexpected_keys} bad_missing={bad_missing}"
+        )
+
+
+def load_parent_static_and_head_into_model(model, head_path: Path) -> None:
+    """Load the inherited head plus S/strength, discarding the parent's old dynamic controller."""
+    from safetensors.torch import load_file
+    weights = load_file(str(head_path), device="cpu")
+    keep = {}
+    for key, value in weights.items():
+        if not key.startswith("soft_feedback."):
+            keep[key] = value
+        elif key in {
+            "soft_feedback.base",
+            "soft_feedback.strength_logit",
+            "soft_feedback.embedding_rms",
+        }:
+            keep[key] = value
+    incompatible = model.load_state_dict(keep, strict=False)
+    allowed_missing = (
+        "soft_feedback.control_bank",
+        "soft_feedback.router_down.",
+        "soft_feedback.router_score.",
+        "soft_feedback.router_coeff.",
+    )
+    bad_missing = [
+        key for key in incompatible.missing_keys
+        if not key.startswith("backbone.") and not any(key.startswith(prefix) for prefix in allowed_missing)
+    ]
+    if incompatible.unexpected_keys or bad_missing:
+        raise RuntimeError(
+            f"sparse-register parent load mismatch: unexpected={incompatible.unexpected_keys} bad_missing={bad_missing}"
         )
 
 
@@ -1573,6 +1989,32 @@ def save_generation(*, exp: Path, model, optimizer, cycle: int, global_step: int
         "main_computer_cycle": cycle,
         "main_computer_global_step": global_step,
         "parent_head_sha256": experiment["parent_head_sha256"],
+        "decision_head_frozen": True,
+        "soft_feedback": {
+            "enabled": True,
+            "token_count": SOFT_FEEDBACK_TOKEN_COUNT,
+            "lr": training_config["soft_feedback_lr"],
+            "strength_init": training_config["soft_feedback_strength_init"],
+            "generator": SOFT_FEEDBACK_GENERATOR,
+            "control_modes": list(SOFT_FEEDBACK_CONTROL_MODES),
+            "backbone_reads_dynamic": 2,
+            "backbone_reads_static": 1,
+            "backbone_reads_none": 1,
+            "static_base_frozen": True,
+            "static_strength_frozen": True,
+            "sparse_registers_trainable": True,
+            "sparse_registers_zero_initialized_from_parent": True,
+            "router_task_identity_input": False,
+            "task_labels_reporting_only": True,
+            "register_semantics": "emergent_shared_control_slots",
+            "control_space_size": training_config["control_space_size"],
+            "register_rank": training_config["register_rank"],
+            "register_sparsity_weight": training_config["register_sparsity_weight"],
+            "register_residual_weight": training_config["register_residual_weight"],
+            "register_orthogonality_weight": training_config["register_orthogonality_weight"],
+            "register_active_epsilon": training_config["register_active_epsilon"],
+            "frozen_strength": float(torch.sigmoid(model.soft_feedback.strength_logit.detach()).item()),
+        },
     }
     if training_config.get("latent_walk_enabled"):
         checkpoint_config["latent_walk"] = {
@@ -1598,6 +2040,84 @@ def garbage_collect(exp: Path, keep: int) -> None:
     for old in dirs[:-keep]:
         shutil.rmtree(old)
         emit("checkpoint_generation_deleted", directory=str(old))
+
+
+def new_register_usage_accumulator(control_space_size: int) -> dict:
+    """Post-hoc task telemetry; reporting labels never enter the router."""
+    return {
+        name: {"questions": 0, "weighted_abs_sum": [0.0] * int(control_space_size)}
+        for name in REGISTER_REPORTING_TASKS
+    }
+
+
+def accumulate_register_usage(accumulator: dict, reporting_tasks: Sequence[str], coefficients) -> None:
+    """Join known task labels to already-computed router coefficients after forward."""
+    if coefficients is None:
+        raise RuntimeError("self-organizing router did not expose detached coefficients")
+    if len(reporting_tasks) != int(coefficients.shape[0]):
+        raise RuntimeError(
+            f"reporting-task/coefficient row mismatch: {len(reporting_tasks)} != {int(coefficients.shape[0])}"
+        )
+    detached = coefficients.detach().float().abs().cpu()
+    width = int(detached.shape[1])
+    for row, task in zip(detached, reporting_tasks):
+        if task not in accumulator:
+            raise RuntimeError(f"unexpected reporting task: {task}")
+        if len(accumulator[task]["weighted_abs_sum"]) != width:
+            raise RuntimeError(f"self-organizing register usage width mismatch for {task}")
+        accumulator[task]["questions"] += 1
+        for i, value in enumerate(row.tolist()):
+            accumulator[task]["weighted_abs_sum"][i] += float(value)
+
+
+def finalize_register_usage(accumulator: dict, *, active_epsilon: float) -> dict:
+    per_task = {}
+    aggregate_weighted = None
+    aggregate_questions = 0
+    for name in REGISTER_REPORTING_TASKS:
+        questions = int(accumulator[name]["questions"])
+        weighted = accumulator[name]["weighted_abs_sum"]
+        mean_abs = [value / questions if questions else 0.0 for value in weighted]
+        active_slots = [i for i, value in enumerate(mean_abs) if value >= active_epsilon]
+        per_task[name] = {
+            "questions": questions,
+            "mean_abs_coefficients": mean_abs,
+            "active_slots": active_slots,
+            "active_slot_count": len(active_slots),
+        }
+        if aggregate_weighted is None:
+            aggregate_weighted = [0.0] * len(weighted)
+        for i, value in enumerate(weighted):
+            aggregate_weighted[i] += value
+        aggregate_questions += questions
+    aggregate_mean_abs = [
+        value / aggregate_questions if aggregate_questions else 0.0
+        for value in (aggregate_weighted or [])
+    ]
+    occupied_slots = [i for i, value in enumerate(aggregate_mean_abs) if value >= active_epsilon]
+    dormant_slots = [i for i, value in enumerate(aggregate_mean_abs) if value < active_epsilon]
+    slot_task_affinities = {
+        str(i): [name for name in REGISTER_REPORTING_TASKS if i in per_task[name]["active_slots"]]
+        for i in occupied_slots
+    }
+    shared_slots = [int(i) for i, tasks in slot_task_affinities.items() if len(tasks) > 1]
+    single_task_slots = [int(i) for i, tasks in slot_task_affinities.items() if len(tasks) == 1]
+    return {
+        "active_epsilon": float(active_epsilon),
+        "aggregate_questions": aggregate_questions,
+        "aggregate_mean_abs_coefficients": aggregate_mean_abs,
+        "occupied_slots": occupied_slots,
+        "occupied_slot_count": len(occupied_slots),
+        "dormant_slots": dormant_slots,
+        "dormant_slot_count": len(dormant_slots),
+        "slot_task_affinities": slot_task_affinities,
+        "shared_slots": shared_slots,
+        "shared_slot_count": len(shared_slots),
+        "single_task_slots": single_task_slots,
+        "single_task_slot_count": len(single_task_slots),
+        "per_reporting_task": per_task,
+        "routing_note": "task labels joined after forward for telemetry only; router receives no task identity",
+    }
 
 
 def metric_prefix(metrics: dict, prefix: str) -> dict:
@@ -2222,12 +2742,12 @@ def self_test() -> None:
         resolved, source = resolve_committed_parent(parent, state, None)
         assert resolved == cp.resolve()
         assert source == "three_mode_training_state_latest_generation"
-        balanced_resolved, balanced_source = resolve_balanced_parent(parent, None, None)
+        balanced_resolved, balanced_source = resolve_soft_feedback_parent(parent, None, None)
         assert balanced_resolved == cp.resolve()
-        assert balanced_source == "source_consensus_training_state_latest_generation"
-        fixed_resolved, fixed_source = resolve_balanced_parent(parent, None, 12)
+        assert balanced_source == "source_soft_feedback_training_state_latest_generation"
+        fixed_resolved, fixed_source = resolve_soft_feedback_parent(parent, None, 12)
         assert fixed_resolved == cp.resolve()
-        assert fixed_source == "source_consensus_cycle_12"
+        assert fixed_source == "source_soft_feedback_cycle_12"
 
     old_cfg = {
         "schema_version": CONFIG_SCHEMA,
@@ -2272,6 +2792,175 @@ def self_test() -> None:
     (moved_output.square().mean() + DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT * moved_penalty).backward()
     assert tiny_walk.up.weight.grad is not None
 
+    # Self-organizing sparse-register invariants: inherit a nonzero learned static
+    # token, freeze it, zero-init one shared coefficient head so dynamic == static
+    # at step zero, and prove that task metadata cannot affect routing.
+    from types import SimpleNamespace
+    from torch import nn
+
+    class TinyFeedbackConfig:
+        hidden_size = 8
+        max_position_embeddings = 64
+
+    class TinyFeedbackBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = TinyFeedbackConfig()
+            self.embedding = nn.Embedding(32, 8)
+            self.mix = nn.Linear(8, 8, bias=False)
+            self.input_id_calls = 0
+            self.input_embed_calls = 0
+            self.gc_enabled = False
+
+        def get_input_embeddings(self):
+            return self.embedding
+
+        def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+            self.gc_enabled = True
+
+        def forward(self, *, input_ids=None, inputs_embeds=None, attention_mask=None, use_cache=False):
+            if (input_ids is None) == (inputs_embeds is None):
+                raise RuntimeError("tiny backbone expects exactly one of input_ids/inputs_embeds")
+            if input_ids is not None:
+                self.input_id_calls += 1
+                x = self.embedding(input_ids)
+            else:
+                self.input_embed_calls += 1
+                x = inputs_embeds
+            cumulative = x.cumsum(dim=1)
+            denom = torch.arange(1, x.shape[1] + 1, device=x.device, dtype=x.dtype).view(1, -1, 1)
+            hidden = self.mix(cumulative / denom)
+            return SimpleNamespace(last_hidden_state=hidden)
+
+    class TinyFeedbackDecisionModel(nn.Module):
+        def __init__(self, backbone, set_head):
+            super().__init__()
+            self.backbone = backbone
+            hidden = backbone.config.hidden_size
+            self.norm = nn.LayerNorm(hidden)
+            self.scalar = nn.Linear(hidden, 1)
+            self.set_head = set_head
+            self.set_project = nn.Linear(hidden + 1, 128)
+            self.set_attention = nn.MultiheadAttention(128, 4, dropout=0.0, batch_first=True)
+            self.set_output = nn.Linear(128, 1)
+
+    torch.manual_seed(1771)
+    SoftTiny = build_soft_feedback_decision_model_class(
+        TinyFeedbackDecisionModel,
+        control_space_size=6,
+        register_rank=3,
+        strength_init=0.25,
+        active_epsilon=1e-3,
+    )
+    tiny_feedback_model = SoftTiny(TinyFeedbackBackbone(), "attention")
+    feedback_examples = [
+        {
+            "id": "tiny-legacy",
+            "type": "boolean",
+            "candidate_ids": ["false", "true"],
+            "leaf_tokens": [[1, 2, 3]],
+            "gold_index": 1,
+        },
+        {
+            "id": "tiny-consensus",
+            "type": "choice",
+            "candidate_ids": ["a", "b"],
+            "leaf_tokens": [[4, 5], [6, 7]],
+            "gold_index": 0,
+        },
+    ]
+    with torch.no_grad():
+        tiny_feedback_model.soft_feedback.base.copy_(torch.linspace(-0.04, 0.04, 8))
+    inherited_base = tiny_feedback_model.soft_feedback.base.detach().clone()
+    inherited_strength = tiny_feedback_model.soft_feedback.strength_logit.detach().clone()
+    tiny_feedback_model.soft_feedback.reset_dynamic_registers()
+    assert int(torch.count_nonzero(tiny_feedback_model.soft_feedback.router_coeff.weight.detach()).item()) == 0
+    bank = tiny_feedback_model.soft_feedback.normalized_bank().detach().float()
+    gram = bank @ bank.transpose(0, 1)
+    assert float((gram - torch.eye(6)).abs().max().item()) < 1e-5
+    assert torch.equal(tiny_feedback_model.soft_feedback.base.detach(), inherited_base)
+    assert torch.equal(tiny_feedback_model.soft_feedback.strength_logit.detach(), inherited_strength)
+
+    for param in tiny_feedback_model.parameters():
+        param.requires_grad_(False)
+    for param in tiny_feedback_model.soft_feedback.dynamic_parameters():
+        param.requires_grad_(True)
+
+    tiny_feedback_model.set_soft_feedback_mode("static")
+    static_logits, static_valid = tiny_feedback_model(feedback_examples, 0)
+    tiny_feedback_model.set_soft_feedback_mode("dynamic")
+    tiny_feedback_model.backbone.input_id_calls = 0
+    tiny_feedback_model.backbone.input_embed_calls = 0
+    dynamic_logits, dynamic_valid = tiny_feedback_model(feedback_examples, 0)
+    assert torch.equal(dynamic_valid, static_valid)
+    assert torch.allclose(dynamic_logits, static_logits, atol=0.0, rtol=0.0)
+    assert tiny_feedback_model.backbone.input_id_calls == 1
+    assert tiny_feedback_model.backbone.input_embed_calls == 1
+    assert float(tiny_feedback_model.soft_feedback.last_stats["dynamic_raw_rms"]) < 1e-12
+
+    static_before = torch.cat([
+        tiny_feedback_model.soft_feedback.base.detach().reshape(-1),
+        tiny_feedback_model.soft_feedback.strength_logit.detach().reshape(-1),
+    ]).clone()
+    coeff_before = tiny_feedback_model.soft_feedback.router_coeff.weight.detach().clone()
+    feedback_loss = -dynamic_logits[0, :2].log_softmax(-1)[1]
+    feedback_loss = (
+        feedback_loss
+        + DEFAULT_REGISTER_SPARSITY_WEIGHT * tiny_feedback_model.soft_feedback.last_regularization["sparsity"]
+        + DEFAULT_REGISTER_RESIDUAL_WEIGHT * tiny_feedback_model.soft_feedback.last_regularization["residual_mse"]
+        + DEFAULT_REGISTER_ORTHOGONALITY_WEIGHT * tiny_feedback_model.soft_feedback.last_regularization["orthogonality"]
+    )
+    feedback_loss.backward()
+    assert tiny_feedback_model.soft_feedback.base.grad is None
+    assert tiny_feedback_model.soft_feedback.strength_logit.grad is None
+    assert tiny_feedback_model.soft_feedback.router_coeff.weight.grad is not None
+    assert float(tiny_feedback_model.soft_feedback.router_coeff.weight.grad.detach().abs().sum().item()) > 0.0
+    assert all(
+        param.grad is None
+        for name, param in tiny_feedback_model.named_parameters()
+        if not name.startswith("soft_feedback.")
+    )
+    opt = torch.optim.SGD(tiny_feedback_model.soft_feedback.dynamic_parameters(), lr=0.01)
+    opt.step()
+    static_after = torch.cat([
+        tiny_feedback_model.soft_feedback.base.detach().reshape(-1),
+        tiny_feedback_model.soft_feedback.strength_logit.detach().reshape(-1),
+    ])
+    assert torch.equal(static_before, static_after)
+    assert not torch.equal(coeff_before, tiny_feedback_model.soft_feedback.router_coeff.weight.detach())
+    assert tiny_feedback_model.soft_feedback.last_stats["helper_tokens_per_question"] == 1
+    assert tiny_feedback_model.soft_feedback.last_stats["backbone_reads"] == 2
+
+    # Adding or changing explicit task metadata must have no effect: the router never
+    # consumes it.  This catches accidental reintroduction of hard-coded task routing.
+    tagged_examples = [dict(ex, soft_feedback_register="deliberately-ignored") for ex in feedback_examples]
+    tiny_feedback_model.zero_grad(set_to_none=True)
+    tiny_feedback_model.set_soft_feedback_mode("dynamic")
+    routed_logits, routed_valid = tiny_feedback_model(feedback_examples, 0)
+    tagged_logits, tagged_valid = tiny_feedback_model(tagged_examples, 0)
+    assert torch.equal(routed_valid, tagged_valid)
+    assert torch.allclose(routed_logits, tagged_logits, atol=0.0, rtol=0.0)
+
+    usage_acc = new_register_usage_accumulator(6)
+    telemetry_coeff = torch.tensor([
+        [0.20, 0.00, 0.00, 0.00, 0.00, 0.00],
+        [0.18, 0.00, 0.00, 0.00, 0.00, 0.00],
+        [0.10, 0.08, 0.00, 0.00, 0.00, 0.00],
+        [0.12, 0.09, 0.00, 0.00, 0.00, 0.00],
+    ])
+    accumulate_register_usage(
+        usage_acc, ["legacy", "legacy", "consensus", "consensus"], telemetry_coeff
+    )
+    usage_summary = finalize_register_usage(usage_acc, active_epsilon=0.03)
+    assert usage_summary["occupied_slots"] == [0, 1]
+    assert usage_summary["dormant_slots"] == [2, 3, 4, 5]
+    assert usage_summary["per_reporting_task"]["legacy"]["active_slot_count"] == 1
+    assert usage_summary["per_reporting_task"]["consensus"]["active_slot_count"] == 2
+    assert usage_summary["shared_slots"] == [0]
+
+    expected_dynamic_1024_k32_rank32 = sparse_register_dynamic_parameter_count(1024, 32, 32)
+    expected_static_1024 = soft_feedback_static_parameter_count(1024)
+    assert expected_dynamic_1024_k32_rank32 == 66624
     print(json.dumps({
         "ok": True,
         "self_test": "passed",
@@ -2309,11 +2998,12 @@ def self_test() -> None:
         "none_class_verified": True,
         "empty_scaffold_recovery_verified": True,
         "current_three_mode_parent_resolution_verified": True,
-        "latest_committed_parent_resolution_verified": True,
-        "optional_fixed_cycle_parent_resolution_verified": True,
-        "default_balanced_parent_selection": "source_consensus_training_state_latest_generation",
+        "latest_committed_soft_feedback_parent_resolution_verified": True,
+        "optional_fixed_soft_feedback_cycle_parent_resolution_verified": True,
+        "default_soft_feedback_parent_selection": "source_soft_feedback_training_state_latest_generation",
         "curriculum_100_units": {"legacy": 5, "mutation": 10, "ast": 5, "consensus": 30, "triad": 50},
         "latent_walk_default_curriculum_100_units": {"legacy": 5, "mutation": 10, "ast": 34, "consensus": 1, "triad": 50},
+        "sparse_register_default_curriculum_100_units": {"legacy": 5, "mutation": 10, "ast": 34, "consensus": 1, "triad": 50},
         "curriculum_migration_5_10_20_15_50_to_5_10_5_30_50_verified": True,
         "latent_walk_curriculum_migration_5_10_5_30_50_to_5_10_34_1_50_verified": True,
         "latent_walk_diagonal_snake_verified": True,
@@ -2321,6 +3011,17 @@ def self_test() -> None:
         "latent_walk_zero_init_gradient_verified": True,
         "latent_walk_identity_penalty_verified": True,
         "latent_walk_default_displacement_penalty_weight": DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT,
+        "soft_feedback_one_token_verified": True,
+        "soft_feedback_dynamic_two_backbone_reads_verified": True,
+        "sparse_register_dynamic_equals_static_at_init_verified": True,
+        "sparse_register_static_frozen_verified": True,
+        "sparse_register_task_identity_absent_from_routing_verified": True,
+        "sparse_register_orthonormal_bank_init_verified": True,
+        "sparse_register_dormant_slot_telemetry_verified": True,
+        "sparse_register_control_space_size": 32,
+        "sparse_register_rank": 32,
+        "sparse_register_trainable_params_qwen3_0_6b_k32_rank32": expected_dynamic_1024_k32_rank32,
+        "soft_feedback_frozen_static_params_qwen3_0_6b": expected_static_1024,
     }))
 
 
@@ -2329,8 +3030,8 @@ def main() -> None:
     p.add_argument("--legacy-experiment-dir", default=DEFAULT_LEGACY_EXPERIMENT)
     p.add_argument("--mutation-experiment-dir", default=DEFAULT_MUTATION_EXPERIMENT)
     p.add_argument("--three-mode-experiment-dir", default=DEFAULT_THREE_MODE_EXPERIMENT)
-    p.add_argument("--source-consensus-experiment-dir", default=DEFAULT_SOURCE_CONSENSUS_EXPERIMENT,
-                   help="Established consensus-v1 run whose latest committed checkpoint seeds a fresh balanced-pairwise run")
+    p.add_argument("--source-soft-feedback-experiment-dir", default=DEFAULT_SOURCE_SOFT_FEEDBACK_EXPERIMENT,
+                   help="Phase-1 soft-feedback run whose latest committed checkpoint supplies the frozen learned static token")
     p.add_argument("--experiment-dir", default=None)
     p.add_argument("--source-balanced-experiment-dir", default=DEFAULT_SOURCE_BALANCED_EXPERIMENT,
                    help="Balanced-pairwise run whose latest committed head seeds --latent-walk")
@@ -2348,10 +3049,30 @@ def main() -> None:
             "0 disables the identity/no-op preference"
         ),
     )
+    p.add_argument("--control-space-size", type=int, default=DEFAULT_CONTROL_SPACE_SIZE,
+                   help="Overcomplete shared control-bank width; deliberately larger than expected occupied dimensionality")
+    p.add_argument("--register-rank", type=int, default=DEFAULT_REGISTER_RANK,
+                   help="Task-register sensor width; default equals the 32-slot control space so no extra rank bottleneck is imposed")
+    p.add_argument("--register-lr", type=float, default=DEFAULT_SOFT_FEEDBACK_LR,
+                   help="Learning rate for the shared control bank and task-blind router only")
+    p.add_argument("--register-sparsity-weight", type=float, default=DEFAULT_REGISTER_SPARSITY_WEIGHT,
+                   help="L1 pressure on per-question control-bank coefficients")
+    p.add_argument("--register-residual-weight", type=float, default=DEFAULT_REGISTER_RESIDUAL_WEIGHT,
+                   help="L2 pressure on the task-conditioned residual before it is added to S")
+    p.add_argument("--register-orthogonality-weight", type=float, default=DEFAULT_REGISTER_ORTHOGONALITY_WEIGHT,
+                   help="Penalty on pairwise cosine overlap between shared control-bank directions")
+    p.add_argument("--register-active-epsilon", type=float, default=DEFAULT_REGISTER_ACTIVE_EPSILON,
+                   help="Mean absolute coefficient threshold used only for occupancy telemetry")
+    p.add_argument("--soft-feedback-strength-init", type=float, default=DEFAULT_SOFT_FEEDBACK_STRENGTH,
+                   help="Constructor fallback only; fresh sparse-register initialization inherits frozen strength from the phase-1 parent")
+    p.add_argument("--soft-feedback-control-eval-every", type=int, default=DEFAULT_SOFT_FEEDBACK_CONTROL_EVAL_EVERY,
+                   help="Compare none/static/dynamic feedback on held-out binary, consensus, orbit, and pairwise rulers every N cycles; cycle 1 always compares")
+    p.add_argument("--disable-soft-feedback-gradient-checkpointing", action="store_true",
+                   help="Disable second-pass Qwen gradient checkpointing; normally keep it enabled for VRAM")
     p.add_argument("--parent-cycle", type=int, default=None,
-                   help="Optional source-consensus cycle override; default is training_state.json latest_generation")
+                   help="Optional phase-1 soft-feedback cycle override; default is training_state.json latest_generation")
     p.add_argument("--parent-checkpoint",
-                   help="Override source-consensus parent checkpoint for first initialization only")
+                   help="Override phase-1 soft-feedback parent checkpoint for first initialization only")
     p.add_argument("--legacy-training-percent", type=float, default=None)
     p.add_argument("--mutation-training-percent", type=float, default=None)
     p.add_argument("--ast-training-percent", type=float, default=None)
@@ -2361,13 +3082,13 @@ def main() -> None:
     p.add_argument("--cycle-seconds", type=float, default=75.0)
     p.add_argument("--train-files-per-cycle", type=int, default=40)
     p.add_argument("--train-units-per-cycle", type=int, default=128,
-                   help="Unique training-unit budget apportioned 5/10/5/30/50 normally or 5/10/34/1/50 with --latent-walk")
+                   help="Unique training-unit budget apportioned 5/10/34/1/50 for sparse-register training")
     p.add_argument("--consensus-dev-files", type=int, default=40)
     p.add_argument("--consensus-dev-records", type=int, default=64)
     p.add_argument("--mutation-max-code-tokens", type=int, default=96)
     p.add_argument("--consensus-max-code-tokens", type=int, default=72)
     p.add_argument("--batch-units", type=int, default=4)
-    p.add_argument("--microbatch-questions", type=int, default=4)
+    p.add_argument("--microbatch-questions", type=int, default=1)
     p.add_argument("--max-microbatch-tokens", type=int, default=8192)
     p.add_argument("--head-lr", type=float, default=2e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
@@ -2382,12 +3103,14 @@ def main() -> None:
     if args.self_test:
         self_test()
         return
-    curriculum_defaults = LATENT_WALK_DEFAULT_CURRICULUM if args.latent_walk else DEFAULT_CURRICULUM
+    if args.latent_walk:
+        p.error("soft-feedback residual phase 2 intentionally disables --latent-walk")
+    curriculum_defaults = SOFT_FEEDBACK_DEFAULT_CURRICULUM
     for task, config_key in CURRICULUM_CONFIG_KEYS.items():
         if getattr(args, config_key) is None:
             setattr(args, config_key, curriculum_defaults[task])
     if args.experiment_dir is None:
-        args.experiment_dir = DEFAULT_LATENT_WALK_EXPERIMENT if args.latent_walk else DEFAULT_EXPERIMENT
+        args.experiment_dir = DEFAULT_EXPERIMENT
 
     weights = {
         "legacy": args.legacy_training_percent,
@@ -2408,6 +3131,18 @@ def main() -> None:
         p.error("invalid checkpoint/token limits or parent cycle")
     if not math.isfinite(args.head_lr) or args.head_lr <= 0:
         p.error("--head-lr must be finite and positive")
+    if args.control_space_size <= 0 or args.register_rank <= 0 or args.soft_feedback_control_eval_every <= 0:
+        p.error("--control-space-size, --register-rank, and --soft-feedback-control-eval-every must be positive")
+    if not math.isfinite(args.register_lr) or args.register_lr <= 0:
+        p.error("--register-lr must be finite and positive")
+    for name in ("register_sparsity_weight", "register_residual_weight", "register_orthogonality_weight"):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value < 0.0:
+            p.error(f"--{name.replace('_', '-')} must be finite and nonnegative")
+    if not math.isfinite(args.register_active_epsilon) or args.register_active_epsilon <= 0.0:
+        p.error("--register-active-epsilon must be finite and positive")
+    if not math.isfinite(args.soft_feedback_strength_init) or not 0.0 < args.soft_feedback_strength_init < 1.0:
+        p.error("--soft-feedback-strength-init must be strictly between 0 and 1")
     if args.latent_walk and (args.latent_walk_steps <= 0 or args.latent_walk_rank <= 0):
         p.error("--latent-walk-steps and --latent-walk-rank must be positive")
     if args.latent_walk and (not math.isfinite(args.latent_walk_lr) or args.latent_walk_lr <= 0):
@@ -2471,20 +3206,23 @@ def main() -> None:
                 )
             parent_checkpoint = Path(partial_experiment["parent_checkpoint"]).resolve(strict=True)
             parent_source = "partial_experiment_recorded_parent"
-            source_consensus_exp = Path(partial_experiment["source_consensus_experiment"]).resolve(strict=True)
+            source_soft_feedback_exp = Path(partial_experiment["source_soft_feedback_experiment"]).resolve(strict=True)
         else:
-            source_parent_dir = (
-                args.source_balanced_experiment_dir if args.latent_walk else args.source_consensus_experiment_dir
-            )
-            source_consensus_exp = Path(source_parent_dir).expanduser().resolve(strict=True)
-            parent_checkpoint, parent_source = resolve_balanced_parent(
-                source_consensus_exp, args.parent_checkpoint, args.parent_cycle
+            source_parent_dir = args.source_soft_feedback_experiment_dir
+            source_soft_feedback_exp = Path(source_parent_dir).expanduser().resolve(strict=True)
+            parent_checkpoint, parent_source = resolve_soft_feedback_parent(
+                source_soft_feedback_exp, args.parent_checkpoint, args.parent_cycle
             )
         parent_config = read_json(parent_checkpoint / "config.json")
         parent_meta = read_json(parent_checkpoint / "meta.json")
+        parent_feedback = parent_config.get("soft_feedback")
+        if not isinstance(parent_feedback, dict) or parent_feedback.get("enabled") is not True:
+            raise RuntimeError("sparse-register parent checkpoint is not a soft-feedback checkpoint")
+        if parent_config.get("decision_head_frozen") is not True:
+            raise RuntimeError("sparse-register parent must have a frozen inherited NanoJev decision head")
         emit(
-            "balanced_pairwise_parent_resolved",
-            source_consensus_experiment=str(source_consensus_exp),
+            "sparse_register_parent_resolved",
+            source_soft_feedback_experiment=str(source_soft_feedback_exp),
             requested_parent_cycle=args.parent_cycle,
             checkpoint=str(parent_checkpoint), source=parent_source,
             head_sha256=file_sha256(parent_checkpoint / "head.safetensors"),
@@ -2497,15 +3235,18 @@ def main() -> None:
             raise RuntimeError("--parent-checkpoint is only valid when initializing a new balanced-pairwise experiment")
         existing = read_json(exp / "experiment.json")
         if existing.get("schema_version") != EXPERIMENT_SCHEMA:
-            raise RuntimeError(f"existing experiment is not a balanced-pairwise curriculum run: {exp}")
+            raise RuntimeError(f"existing experiment is not a soft-feedback run: {exp}")
         parent_checkpoint = Path(existing["parent_checkpoint"]).resolve(strict=True)
-        source_consensus_exp = Path(existing["source_consensus_experiment"]).resolve(strict=True)
+        source_soft_feedback_exp = Path(existing["source_soft_feedback_experiment"]).resolve(strict=True)
         parent_config = read_json(parent_checkpoint / "config.json")
         parent_meta = read_json(parent_checkpoint / "meta.json")
+        parent_feedback = parent_config.get("soft_feedback")
+        if not isinstance(parent_feedback, dict) or parent_feedback.get("enabled") is not True:
+            raise RuntimeError("recorded sparse-register parent checkpoint is not a soft-feedback checkpoint")
 
     repo_root = Path(legacy_experiment["repo_root"]).resolve(strict=True)
     nanojev_root = Path(legacy_experiment["nanojev_root"]).resolve(strict=True)
-    pipeline, DecisionModel = legacy.import_nanojev(nanojev_root)
+    pipeline, BaseDecisionModel = legacy.import_nanojev(nanojev_root)
 
     import torch
     from transformers import AutoModel, AutoTokenizer
@@ -2528,8 +3269,29 @@ def main() -> None:
         legacy_experiment["model"], revision=legacy_experiment["resolved_model_revision"], dtype=torch.float32,
         attn_implementation="sdpa", trust_remote_code=False, local_files_only=args.local_files_only,
     )
-    model = DecisionModel(backbone, legacy_experiment["set_head"])
+    DecisionModel = build_soft_feedback_decision_model_class(
+        BaseDecisionModel,
+        control_space_size=args.control_space_size,
+        register_rank=args.register_rank,
+        strength_init=args.soft_feedback_strength_init,
+        active_epsilon=args.register_active_epsilon,
+    )
+    # Fresh sparse-register initialization inherits only the frozen static token/strength from phase 1.
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(int(legacy_experiment["seed"]) + 74000)
+        model = DecisionModel(backbone, legacy_experiment["set_head"])
     model.backbone.config.use_cache = False
+    if not args.disable_soft_feedback_gradient_checkpointing:
+        if not hasattr(model.backbone, "gradient_checkpointing_enable"):
+            raise RuntimeError("frozen Qwen backbone does not expose gradient_checkpointing_enable")
+        model.backbone.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    active_dropouts = [
+        module for module in model.backbone.modules()
+        if isinstance(module, torch.nn.Dropout) and float(module.p) != 0.0
+    ]
+    if active_dropouts and not args.disable_soft_feedback_gradient_checkpointing:
+        raise RuntimeError("soft-feedback gradient checkpointing requires a deterministic zero-dropout frozen backbone")
+    soft_feedback = model.soft_feedback
     latent_walk = None
     latent_walk_hook = None
     if args.latent_walk:
@@ -2542,14 +3304,22 @@ def main() -> None:
     body = list(model.backbone.parameters())
     for param in body:
         param.requires_grad_(False)
-    walk = list(latent_walk.parameters()) if latent_walk is not None else []
+    walk = []
+    static_feedback = list(soft_feedback.static_parameters())
+    feedback = list(soft_feedback.dynamic_parameters())
     head = [
         param for name, param in model.named_parameters()
-        if not name.startswith("backbone.") and not name.startswith("latent_walk.")
+        if not name.startswith("backbone.")
+        and not name.startswith("latent_walk.")
+        and not name.startswith("soft_feedback.")
     ]
-    if not head:
-        raise RuntimeError("NanoJev decision head has no trainable parameters")
-    for param in head + walk:
+    if not head or not feedback:
+        raise RuntimeError("sparse-register training requires an inherited decision head and trainable sparse-register parameters")
+    for param in head:
+        param.requires_grad_(False)
+    for param in static_feedback:
+        param.requires_grad_(False)
+    for param in feedback:
         param.requires_grad_(True)
 
     train_manifest = read_json(Path(legacy_experiment["manifests"]["train"]))
@@ -2597,6 +3367,29 @@ def main() -> None:
         "pairwise_topology_training": False,
         "pairwise_topology_evaluation": True,
         "disable_native_triton": args.disable_native_triton,
+        "decision_head_frozen": True,
+        "soft_feedback_enabled": True,
+        "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
+        "soft_feedback_lr": args.register_lr,
+        "soft_feedback_strength_init": args.soft_feedback_strength_init,
+        "soft_feedback_generator": SOFT_FEEDBACK_GENERATOR,
+        "soft_feedback_control_modes": list(SOFT_FEEDBACK_CONTROL_MODES),
+        "soft_feedback_control_eval_every": args.soft_feedback_control_eval_every,
+        "soft_feedback_gradient_checkpointing": not args.disable_soft_feedback_gradient_checkpointing,
+        "soft_feedback_parent_role": "latest_committed_phase1_soft_feedback_static_token",
+        "soft_feedback_static_base_frozen": True,
+        "soft_feedback_static_strength_frozen": True,
+        "control_space_size": args.control_space_size,
+        "register_rank": args.register_rank,
+        "router_task_identity_input": False,
+        "task_labels_reporting_only": True,
+        "register_semantics": "emergent_shared_control_slots",
+        "register_sparsity_weight": args.register_sparsity_weight,
+        "register_residual_weight": args.register_residual_weight,
+        "register_orthogonality_weight": args.register_orthogonality_weight,
+        "register_active_epsilon": args.register_active_epsilon,
+        "sparse_registers_trainable": True,
+        "sparse_registers_zero_initialized": True,
     }
     if args.latent_walk:
         training_config.update({
@@ -2608,7 +3401,7 @@ def main() -> None:
             "latent_walk_displacement_penalty": LATENT_WALK_DISPLACEMENT_PENALTY,
             "latent_walk_layout": "upper_right_to_lower_left_diagonal_snake_v1",
             "latent_walk_transition": "weight_shared_residual_2d_field_walk",
-            "latent_walk_parent_role": "latest_committed_balanced_pairwise_head",
+            "latent_walk_parent_role": "latest_committed_phase1_soft_feedback_checkpoint",
         })
 
     if fresh:
@@ -2624,7 +3417,7 @@ def main() -> None:
             "requested_revision": legacy_experiment["requested_revision"],
             "resolved_model_revision": legacy_experiment["resolved_model_revision"],
             "set_head": legacy_experiment["set_head"],
-            "seed": int(legacy_experiment["seed"]) + 73000,
+            "seed": int(legacy_experiment["seed"]) + 74000,
             "backbone_frozen": True,
             "max_length": legacy_experiment["max_length"],
             "max_prefix_tokens": legacy_experiment["max_prefix_tokens"],
@@ -2632,7 +3425,7 @@ def main() -> None:
             "legacy_experiment": str(legacy_exp),
             "mutation_experiment": str(mutation_exp),
             "three_mode_experiment": str(three_mode_exp),
-            "source_consensus_experiment": str(source_consensus_exp),
+            "source_soft_feedback_experiment": str(source_soft_feedback_exp),
             "parent_checkpoint": str(parent_checkpoint),
             "parent_cycle": parent_cycle,
             "parent_global_step": parent_global_step,
@@ -2641,8 +3434,8 @@ def main() -> None:
             "mutation_dev_probe": str(mutation_dev_probe),
             "ast_dev_probe": str(ast_dev_probe),
             "initialization": (
-                f"consensus-v1 cycle-{parent_cycle:06d} head; fresh optimizer; "
-                "5/10/20/15/50 with relation-balanced pairwise training"
+                f"phase-1 soft-feedback cycle-{parent_cycle:06d}; Qwen, inherited NanoJev head, static soft token, "
+                "and static strength frozen; fresh zero-output task-blind router over an orthonormal shared control bank"
             ),
             "consensus_labels": list(CONSENSUS_LABELS),
             "consensus_original_exposed_to_model": False,
@@ -2655,13 +3448,40 @@ def main() -> None:
             "pairwise_topology_training": False,
             "pairwise_triad_composition": "evaluation only: AB/AC/BC SAME/DIFFERENT -> deterministic A/B/C/NONE/AMBIGUOUS",
             "diagnostic_parent_reason": (
-                "latest committed consensus-v1 head at balanced-pairwise initialization; "
-                "new lineage changes only pairwise sampling/telemetry"
+                "latest committed phase-1 soft-feedback checkpoint; freezing its learned static token and strength "
+                "while zero-initializing one task-blind sparse router tests whether first-pass state can self-organize "
+                "shared, overlapping, distinct, and dormant control coordinates without assigned registers"
             ),
+            "decision_head_frozen": True,
+            "soft_feedback_enabled": True,
+            "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
+            "soft_feedback_generator": SOFT_FEEDBACK_GENERATOR,
+            "soft_feedback_strength_init": args.soft_feedback_strength_init,
+            "soft_feedback_control_modes": list(SOFT_FEEDBACK_CONTROL_MODES),
+            "soft_feedback_first_pass": "frozen_qwen_plus_frozen_head_sensor",
+            "soft_feedback_second_pass": "one_continuous_helper_embedding_prepended_to_original_path_embeddings",
+            "soft_feedback_helper_sharing": "one_helper_per_question_shared_by_all_candidate_paths",
+            "soft_feedback_backbone_reads_dynamic": 2,
+            "soft_feedback_gradient_path": "final_loss_through_frozen_head_and_second_frozen_qwen_to_task_blind_router_and_shared_control_bank_only",
+            "soft_feedback_static_base_frozen": True,
+            "soft_feedback_static_strength_frozen": True,
+            "control_space_size": args.control_space_size,
+            "register_rank": args.register_rank,
+            "router_task_identity_input": False,
+            "task_labels_reporting_only": True,
+            "register_semantics": "emergent_shared_control_slots",
+            "register_sparsity_weight": args.register_sparsity_weight,
+            "register_residual_weight": args.register_residual_weight,
+            "register_orthogonality_weight": args.register_orthogonality_weight,
+            "register_active_epsilon": args.register_active_epsilon,
+            "sparse_registers_trainable": True,
+            "sparse_registers_zero_initialized": True,
+            "sparse_register_invariant": "dynamic_equals_static_at_initialization; shared router coefficient head starts exactly zero; no task identity enters routing",
+            "latent_walk_enabled": False,
         }
         if args.latent_walk:
             experiment.update({
-                "source_balanced_experiment": str(source_consensus_exp),
+                "source_balanced_experiment": str(source_soft_feedback_exp),
                 "latent_walk_enabled": True,
                 "latent_walk_steps": args.latent_walk_steps,
                 "latent_walk_rank": args.latent_walk_rank,
@@ -2742,7 +3562,7 @@ def main() -> None:
         atomic_json(exp / "training_state.json", state)
         (exp / "history.jsonl").write_text("", encoding="utf-8")
         emit(
-            "balanced_pairwise_experiment_initialized", experiment_dir=str(exp), parent_checkpoint=str(parent_checkpoint),
+            "sparse_register_experiment_initialized", experiment_dir=str(exp), parent_checkpoint=str(parent_checkpoint),
             parent_cycle=parent_cycle, parent_global_step=parent_global_step, parent_head_sha256=parent_head_sha,
             legacy_training_percent=args.legacy_training_percent,
             mutation_training_percent=args.mutation_training_percent,
@@ -2755,9 +3575,9 @@ def main() -> None:
         experiment = read_json(exp / "experiment.json")
         state = read_json(exp / "training_state.json")
         if experiment.get("schema_version") != EXPERIMENT_SCHEMA or state.get("schema_version") != STATE_SCHEMA:
-            raise RuntimeError("balanced-pairwise experiment/state schema mismatch")
+            raise RuntimeError("sparse-register experiment/state schema mismatch")
         if state.get("experiment_sha256") != experiment.get("experiment_sha256"):
-            raise RuntimeError("balanced-pairwise training state does not belong to experiment")
+            raise RuntimeError("sparse-register training state does not belong to experiment")
         established_config = read_json(exp / "training_config.json")
         if established_config != training_config:
             if curriculum_only_migration_allowed(established_config, training_config):
@@ -2803,7 +3623,7 @@ def main() -> None:
                     optimizer_preserved=True,
                 )
             else:
-                raise RuntimeError("training configuration differs from established balanced-pairwise run")
+                raise RuntimeError("training configuration differs from established sparse-register run")
         consensus_dev_examples, _ = pipeline.load_training_examples(
             experiment["consensus_dev_probe"], tokenizer, experiment["max_length"]
         )
@@ -2933,22 +3753,40 @@ def main() -> None:
     resume_generation = Path(state["latest_generation"]).resolve(strict=True) if state.get("latest_generation") else None
     head_source = resume_generation / "head.safetensors" if resume_generation else Path(experiment["parent_checkpoint"]) / "head.safetensors"
     emit("head_load_start", source=str(head_source), inherited_parent=resume_generation is None)
-    load_head_into_model(
-        model, head_source,
-        allow_missing_prefixes=("latent_walk.",) if args.latent_walk and resume_generation is None else (),
-    )
+    if resume_generation is not None:
+        load_head_into_model(model, head_source, allow_missing_prefixes=())
+    else:
+        load_parent_static_and_head_into_model(model, head_source)
+        inherited_base = soft_feedback.base.detach().clone()
+        inherited_strength = soft_feedback.strength_logit.detach().clone()
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(int(experiment["seed"]) + 76000)
+            soft_feedback.reset_dynamic_registers()
+        if not torch.equal(soft_feedback.base.detach(), inherited_base):
+            raise RuntimeError("sparse-register initialization changed inherited static soft token")
+        if not torch.equal(soft_feedback.strength_logit.detach(), inherited_strength):
+            raise RuntimeError("sparse-register initialization changed inherited static feedback strength")
+        nonzero_outputs = int(torch.count_nonzero(soft_feedback.router_coeff.weight.detach()).item())
+        if nonzero_outputs != 0:
+            raise RuntimeError("self-organizing sparse-register coefficient head did not initialize to exact zero")
+        with torch.no_grad():
+            gram = soft_feedback.normalized_bank().float() @ soft_feedback.normalized_bank().float().transpose(0, 1)
+            eye = torch.eye(args.control_space_size, dtype=gram.dtype, device=gram.device)
+            max_orth_error = float((gram - eye).abs().max().item())
+        if max_orth_error > 1e-4:
+            raise RuntimeError(f"sparse-register control bank did not initialize orthonormally: max_error={max_orth_error}")
+        emit(
+            "sparse_registers_zero_initialized",
+            parent_checkpoint=str(head_source),
+            control_space_size=args.control_space_size,
+            register_rank=args.register_rank,
+            coefficient_head_nonzero=nonzero_outputs,
+            control_bank_max_orthogonality_error=max_orth_error,
+            frozen_static_strength=float(torch.sigmoid(soft_feedback.strength_logit.detach()).item()),
+        )
     model.cuda()
     model.backbone.eval()
-    if args.latent_walk:
-        optimizer = torch.optim.AdamW(
-            [
-                {"params": head, "lr": args.head_lr},
-                {"params": walk, "lr": args.latent_walk_lr},
-            ],
-            weight_decay=args.weight_decay,
-        )
-    else:
-        optimizer = torch.optim.AdamW(head, lr=args.head_lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(feedback, lr=args.register_lr, weight_decay=args.weight_decay)
     if resume_generation is not None:
         optimizer.load_state_dict(torch.load(resume_generation / "optimizer.pt", map_location="cpu", weights_only=False))
         legacy.move_optimizer_state_to_cuda(optimizer)
@@ -2960,10 +3798,13 @@ def main() -> None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
     emit("trainer_load_done", gpu=torch.cuda.get_device_name(0),
-         body_params=sum(x.numel() for x in body), head_params=sum(x.numel() for x in head),
-         latent_walk_enabled=args.latent_walk, latent_walk_params=sum(x.numel() for x in walk),
-         latent_walk_steps=args.latent_walk_steps if args.latent_walk else 0,
-         latent_walk_rank=args.latent_walk_rank if args.latent_walk else 0)
+         body_params=sum(x.numel() for x in body), frozen_head_params=sum(x.numel() for x in head),
+         frozen_static_feedback_params=sum(x.numel() for x in static_feedback),
+         trainable_sparse_register_params=sum(x.numel() for x in feedback),
+         control_space_size=args.control_space_size, register_rank=args.register_rank,
+         soft_feedback_token_count=SOFT_FEEDBACK_TOKEN_COUNT,
+         soft_feedback_gradient_checkpointing=not args.disable_soft_feedback_gradient_checkpointing,
+         latent_walk_enabled=False, latent_walk_params=0, latent_walk_steps=0, latent_walk_rank=0)
 
     if resume_generation is not None:
         latest_config = read_json(resume_generation / "config.json")
@@ -2975,7 +3816,7 @@ def main() -> None:
                 f"checkpoint={latest_cycle} state={state_cycle}"
             )
         emit(
-            "current_consensus_checkpoint_resolved",
+            "current_sparse_register_checkpoint_resolved",
             consensus_state_cycle=state_cycle,
             checkpoint=str(resume_generation),
             source="consensus_training_state_latest_generation",
@@ -2996,6 +3837,7 @@ def main() -> None:
         })
 
     if int(state["cycle"]) == 0 and state.get("last_consensus_accuracy") is None:
+        model.set_soft_feedback_mode("none")
         baseline_sets = {
             "legacy": legacy_dev_examples,
             "mutation": mutation_dev_examples,
@@ -3039,13 +3881,11 @@ def main() -> None:
         state["last_triad_non_ambiguous_topology_accuracy"] = triad_baseline["non_ambiguous_topology_accuracy"]
         atomic_json(exp / "training_state.json", state)
 
+    model.set_soft_feedback_mode("dynamic")
+
     backbone_probe_name = legacy_experiment["parameter_probes"]["backbone"]["name"]
     head_probe_name = legacy_experiment["parameter_probes"]["head"]["name"]
     walk_probe_name = None
-    if args.latent_walk:
-        walk_probe_name = next(
-            name for name, _param in model.named_parameters() if name.startswith("latent_walk.up.weight")
-        )
     history_path = exp / "history.jsonl"
     unit_budgets = largest_remainder_budgets(args.train_units_per_cycle, weights)
 
@@ -3204,10 +4044,16 @@ def main() -> None:
 
         backbone_before = legacy.named_probe_digest(model, backbone_probe_name)
         head_before = legacy.named_probe_digest(model, head_probe_name)
-        walk_before = legacy.named_probe_digest(model, walk_probe_name) if walk_probe_name else None
+        walk_before = None
+        feedback_before = module_parameter_sha256(soft_feedback)
+        static_feedback_before = hashlib.sha256(
+            soft_feedback.base.detach().float().cpu().contiguous().numpy().tobytes()
+            + soft_feedback.strength_logit.detach().float().cpu().contiguous().numpy().tobytes()
+        ).hexdigest()
         training_started = time.perf_counter()
         cycle_steps = 0
         last_head_grad_norm = 0.0
+        last_feedback_grad_norm = 0.0
         last_walk_grad_norm = 0.0
         last_walk_displacement_penalty_mse = 0.0
         last_walk_displacement_penalty_loss = 0.0
@@ -3216,6 +4062,7 @@ def main() -> None:
         binary_buckets = {t: binary_training_bucket() for t in ("legacy", "mutation", "ast")}
         consensus_bucket = consensus_training_bucket()
         triad_bucket = triad_training_bucket()
+        cycle_register_usage = new_register_usage_accumulator(args.control_space_size)
         consensus_orbit_pools = build_consensus_orbit_kind_pools(pools["consensus"]) if unit_budgets["consensus"] else {}
         consensus_orbit_kind_cursor = int(state.get("consensus_orbit_kind_cursor", 0)) % len(CONSENSUS_ORBIT_KIND_SCHEDULE)
 
@@ -3274,10 +4121,12 @@ def main() -> None:
 
             groups = pipeline.pack_complete_questions(batch, args.microbatch_questions, args.max_microbatch_tokens)
             model.train()
-            model.backbone.eval()
+            model.set_soft_feedback_mode("dynamic")
+            if args.disable_soft_feedback_gradient_checkpointing:
+                model.backbone.eval()
+            else:
+                model.backbone.train()
             optimizer.zero_grad(set_to_none=True)
-            if latent_walk is not None:
-                latent_walk.begin_penalty_window()
             item_losses = {}
             binary_scores: dict[str, dict[int, object]] = {}
             consensus_margins = {}
@@ -3285,11 +4134,20 @@ def main() -> None:
             triad_margins = {}
             triad_predictions: dict[str, dict[str, str]] = {}
             step_correct = step_q = 0
+            step_register_sparsity_terms = []
+            step_register_residual_terms = []
 
             for group in groups:
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.precision == "bf16"):
                     logits, _ = model(group, tokenizer.pad_token_id)
                     losses = pipeline.grouped_target_loss(logits, group, "gold_distribution")
+                step_register_sparsity_terms.append(soft_feedback.last_regularization["sparsity"])
+                step_register_residual_terms.append(soft_feedback.last_regularization["residual_mse"])
+                accumulate_register_usage(
+                    cycle_register_usage,
+                    [task_for_example[ex["id"]] for ex in group],
+                    soft_feedback.last_coefficients,
+                )
                 for ex, z, item_loss in zip(group, logits, losses):
                     ex_id = ex["id"]
                     task = task_for_example[ex_id]
@@ -3466,20 +4324,23 @@ def main() -> None:
                 if orbit_semantic_margins else base_loss.new_zeros(())
             )
             latent_walk_displacement_penalty_mse = base_loss.new_zeros(())
-            if latent_walk is not None:
-                penalty = latent_walk.consume_displacement_penalty_mse()
-                if penalty is None:
-                    raise RuntimeError("latent walk training step produced no displacement penalty sample")
-                latent_walk_displacement_penalty_mse = penalty
-            latent_walk_displacement_penalty_loss = (
-                args.latent_walk_displacement_penalty_weight * latent_walk_displacement_penalty_mse
-                if latent_walk is not None else base_loss.new_zeros(())
+            latent_walk_displacement_penalty_loss = base_loss.new_zeros(())
+            register_sparsity_loss = (
+                torch.stack(step_register_sparsity_terms).mean()
+                if step_register_sparsity_terms else base_loss.new_zeros(())
             )
+            register_residual_loss = (
+                torch.stack(step_register_residual_terms).mean()
+                if step_register_residual_terms else base_loss.new_zeros(())
+            )
+            register_orthogonality_loss = soft_feedback.orthogonality_penalty()
             loss = (
                 base_loss
                 + args.ranking_weight * rank_loss
                 + ORBIT_CONSISTENCY_WEIGHT * orbit_consistency_loss
-                + latent_walk_displacement_penalty_loss
+                + args.register_sparsity_weight * register_sparsity_loss
+                + args.register_residual_weight * register_residual_loss
+                + args.register_orthogonality_weight * register_orthogonality_loss
             )
             if not torch.isfinite(loss):
                 raise RuntimeError(f"cycle {cycle}: nonfinite five-mode training loss")
@@ -3487,12 +4348,17 @@ def main() -> None:
 
             body_norm = legacy.grad_norm(body)
             last_head_grad_norm = legacy.grad_norm(head)
-            last_walk_grad_norm = legacy.grad_norm(walk) if walk else 0.0
-            last_walk_displacement_penalty_mse = float(latent_walk_displacement_penalty_mse.detach().item())
-            last_walk_displacement_penalty_loss = float(latent_walk_displacement_penalty_loss.detach().item())
+            last_feedback_grad_norm = legacy.grad_norm(feedback)
+            last_walk_grad_norm = 0.0
+            last_walk_displacement_penalty_mse = 0.0
+            last_walk_displacement_penalty_loss = 0.0
             if body_norm != 0.0:
-                raise RuntimeError("frozen backbone produced gradients")
-            torch.nn.utils.clip_grad_norm_(head + walk, 1.0, error_if_nonfinite=True)
+                raise RuntimeError("frozen backbone produced parameter gradients")
+            if last_head_grad_norm != 0.0:
+                raise RuntimeError("frozen inherited NanoJev head produced parameter gradients")
+            if last_feedback_grad_norm == 0.0:
+                raise RuntimeError("soft-feedback controller received zero gradient")
+            torch.nn.utils.clip_grad_norm_(feedback, 1.0, error_if_nonfinite=True)
             optimizer.step()
             cycle_steps += 1
             state["global_step"] = int(state["global_step"]) + 1
@@ -3516,18 +4382,30 @@ def main() -> None:
                 orbit_supervised_nll=float(orbit_supervised_nll.detach().item()),
                 orbit_mean_gold_probability=float(orbit_mean_gold_probability.detach().item()),
                 orbit_semantic_margin=float(orbit_semantic_margin.detach().item()),
+                register_sparsity_loss=float(register_sparsity_loss.detach().item()),
+                register_sparsity_weight=args.register_sparsity_weight,
+                register_residual_mse=float(register_residual_loss.detach().item()),
+                register_residual_weight=args.register_residual_weight,
+                register_orthogonality_loss=float(register_orthogonality_loss.detach().item()),
+                register_orthogonality_weight=args.register_orthogonality_weight,
                 body_grad_norm=body_norm, head_grad_norm=last_head_grad_norm,
+                soft_feedback_grad_norm=last_feedback_grad_norm,
+                soft_feedback=dict(soft_feedback.last_stats),
                 latent_walk_grad_norm=last_walk_grad_norm,
                 latent_walk_displacement_penalty_weight=(
                     args.latent_walk_displacement_penalty_weight if latent_walk is not None else 0.0
                 ),
                 latent_walk_displacement_penalty_mse=last_walk_displacement_penalty_mse,
                 latent_walk_displacement_penalty_loss=last_walk_displacement_penalty_loss,
-                latent_walk=(dict(latent_walk.last_stats) if latent_walk is not None else None),
+                latent_walk=None,
                 elapsed_training_seconds=time.perf_counter() - training_started,
             )
 
         state["consensus_orbit_kind_cursor"] = consensus_orbit_kind_cursor
+        register_usage_summary = finalize_register_usage(
+            cycle_register_usage, active_epsilon=args.register_active_epsilon
+        )
+        emit("sparse_register_usage", cycle=cycle, **register_usage_summary)
 
         legacy_dev = legacy.evaluate(
             model, legacy_dev_examples, tokenizer.pad_token_id, pipeline,
@@ -3567,15 +4445,87 @@ def main() -> None:
             margin=args.ranking_margin,
         )
 
+        soft_feedback_control_sweep = None
+        if cycle == 1 or cycle % args.soft_feedback_control_eval_every == 0:
+            soft_feedback_control_sweep = {}
+            for mode in SOFT_FEEDBACK_CONTROL_MODES:
+                if mode == "dynamic":
+                    mode_legacy, mode_mutation, mode_ast = legacy_dev, mutation_dev, ast_dev
+                    mode_consensus, mode_consensus_orbit, mode_triad = consensus_dev, consensus_orbit_dev, triad_dev
+                else:
+                    model.set_soft_feedback_mode(mode)
+                    mode_legacy = legacy.evaluate(
+                        model, legacy_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_legacy_dev_cycle_{cycle}", pair_margin=args.ranking_margin,
+                    )
+                    mode_mutation = legacy.evaluate(
+                        model, mutation_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_mutation_dev_cycle_{cycle}", pair_margin=args.ranking_margin,
+                    )
+                    mode_ast = legacy.evaluate(
+                        model, ast_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_ast_dev_cycle_{cycle}", pair_margin=args.ranking_margin,
+                    )
+                    mode_consensus = evaluate_consensus(
+                        model, consensus_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_consensus_dev_cycle_{cycle}", margin=args.ranking_margin,
+                    )
+                    mode_consensus_orbit = evaluate_consensus_orbits(
+                        model, consensus_orbit_dev_examples, consensus_orbit_dev_records,
+                        tokenizer.pad_token_id, pipeline, precision=args.precision,
+                        microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_consensus_orbit_dev_cycle_{cycle}",
+                    )
+                    mode_triad = evaluate_pairwise_triads(
+                        model, triad_dev_examples, triad_dev_records, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_pairwise_triad_dev_cycle_{cycle}", margin=args.ranking_margin,
+                    )
+                soft_feedback_control_sweep[mode] = {
+                    "legacy_pair_win_rate": mode_legacy["pair_win_rate"],
+                    "mutation_pair_win_rate": mode_mutation["pair_win_rate"],
+                    "ast_pair_win_rate": mode_ast["pair_win_rate"],
+                    "consensus_accuracy": mode_consensus["accuracy"],
+                    "consensus_mean_gold_margin": mode_consensus["mean_gold_margin"],
+                    "consensus_orbit_accuracy": mode_consensus_orbit["accuracy"],
+                    "consensus_orbit_semantic_consistency_rate": mode_consensus_orbit["semantic_consistency_rate"],
+                    "triad_relation_accuracy": mode_triad["accuracy"],
+                    "triad_balanced_relation_accuracy": mode_triad["balanced_relation_accuracy"],
+                    "triad_topology_accuracy": mode_triad["topology_accuracy"],
+                    "triad_non_ambiguous_topology_accuracy": mode_triad["non_ambiguous_topology_accuracy"],
+                }
+            model.set_soft_feedback_mode("dynamic")
+            emit(
+                "soft_feedback_control_sweep", cycle=cycle,
+                modes=soft_feedback_control_sweep,
+            )
+
         backbone_after = legacy.named_probe_digest(model, backbone_probe_name)
         head_after = legacy.named_probe_digest(model, head_probe_name)
-        walk_after = legacy.named_probe_digest(model, walk_probe_name) if walk_probe_name else None
+        walk_after = None
+        feedback_after = module_parameter_sha256(soft_feedback)
+        static_feedback_after = hashlib.sha256(
+            soft_feedback.base.detach().float().cpu().contiguous().numpy().tobytes()
+            + soft_feedback.strength_logit.detach().float().cpu().contiguous().numpy().tobytes()
+        ).hexdigest()
         if backbone_after != backbone_before:
-            raise RuntimeError("frozen backbone changed during consensus training cycle")
-        if head_after == head_before:
-            raise RuntimeError("decision head did not change during consensus training cycle")
-        if args.latent_walk and walk_after == walk_before:
-            raise RuntimeError("latent walk did not change during recurrent training cycle")
+            raise RuntimeError("frozen backbone changed during soft-feedback training cycle")
+        if head_after != head_before:
+            raise RuntimeError("frozen inherited NanoJev head changed during sparse-register training cycle")
+        if static_feedback_after != static_feedback_before:
+            raise RuntimeError("frozen learned static soft token or strength changed during sparse-register training cycle")
+        if feedback_after == feedback_before:
+            raise RuntimeError("sparse-register control parameters did not change during training cycle")
 
         previous = {
             "legacy_sep": state.get("last_legacy_probability_separation"),
@@ -3739,19 +4689,35 @@ def main() -> None:
             "ranking_margin": args.ranking_margin,
             "body_grad_norm_last_step": 0.0,
             "head_grad_norm_last_step": last_head_grad_norm,
+            "soft_feedback_grad_norm_last_step": last_feedback_grad_norm,
+            "soft_feedback_enabled": True,
+            "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
+            "register_lr": args.register_lr,
+            "control_space_size": args.control_space_size,
+            "register_rank": args.register_rank,
+            "register_sparsity_weight": args.register_sparsity_weight,
+            "register_residual_weight": args.register_residual_weight,
+            "register_orthogonality_weight": args.register_orthogonality_weight,
+            "register_active_epsilon": args.register_active_epsilon,
+            "register_usage": register_usage_summary,
+            "soft_feedback_last_forward": dict(soft_feedback.last_stats),
+            "soft_feedback_control_sweep": soft_feedback_control_sweep,
+            "soft_feedback_probe_changed": True,
+            "soft_feedback_static_probe_changed": False,
+            "sparse_register_probe_changed": True,
             "latent_walk_grad_norm_last_step": last_walk_grad_norm,
             "latent_walk_displacement_penalty_weight": (
-                args.latent_walk_displacement_penalty_weight if args.latent_walk else 0.0
+                0.0
             ),
             "latent_walk_displacement_penalty_mse_last_step": last_walk_displacement_penalty_mse,
             "latent_walk_displacement_penalty_loss_last_step": last_walk_displacement_penalty_loss,
             "latent_walk_enabled": args.latent_walk,
-            "latent_walk_steps": args.latent_walk_steps if args.latent_walk else 0,
-            "latent_walk_rank": args.latent_walk_rank if args.latent_walk else 0,
-            "latent_walk_last_forward": (dict(latent_walk.last_stats) if latent_walk is not None else None),
+            "latent_walk_steps": 0,
+            "latent_walk_rank": 0,
+            "latent_walk_last_forward": None,
             "backbone_probe_changed": False,
-            "head_probe_changed": True,
-            "latent_walk_probe_changed": bool(args.latent_walk),
+            "head_probe_changed": False,
+            "latent_walk_probe_changed": False,
             "training_seconds": time.perf_counter() - training_started,
             "legacy_shard": str(shard_paths["legacy"]) if shard_paths["legacy"] else None,
             "mutation_shard": str(shard_paths["mutation"]) if shard_paths["mutation"] else None,

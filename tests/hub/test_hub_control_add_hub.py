@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tools.hub_control import add_hub
+from tools.hub_control.common.errors import HubControlError
 from tools.hub_control.common.models import HubContext
-from tools.hub_control.common.state import read_accepted
+from tools.hub_control.common.state import read_accepted, require_operation
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -207,3 +210,49 @@ def test_network_inspect_after_first_birth_proves_both_edges(tmp_path: Path) -> 
     assert result["topology_verification"]["verified"] is True
     assert result["hubs"][0]["fdb_status"] == "current"
     assert result["hubs"][0]["chain_status"] == "current"
+
+
+def test_add_hub_do_persists_actionable_runtime_failure_evidence(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    prepared = add_hub.prep(
+        ctx,
+        "mainnet",
+        "mainneta-hub1",
+        chain_verifier=lambda _contract: {"verified": True, "reason": "test-chain-proof"},
+        deployment_inspector=lambda _target: {"present": False},
+    )
+    operation_id = prepared["details"]["operation_id"]
+    deployment_result = {
+        "application_uuid": "app-1",
+        "action": "created",
+        "deployment_uuid": "dep-1",
+        "deployment_status": "finished",
+        "deployment_commit": "abc123",
+        "deployment_waited": True,
+    }
+    verification = {
+        "verified": False,
+        "reason": "hub-runtime-verification-timeout",
+        "hub_running": True,
+        "fdb_adoption_verified": False,
+        "chain_adoption_verified": True,
+        "last_error": {"failed_checks": ["fdb_namespace"], "endpoint_errors": {}},
+    }
+
+    with pytest.raises(HubControlError) as exc_info:
+        add_hub.do(
+            ctx,
+            "mainnet",
+            operation_id,
+            deployer=lambda _target: deployment_result,
+            observer=lambda _target: verification,
+        )
+
+    assert exc_info.value.code == "HUB_ADD_NOT_VERIFIED"
+    assert "fdb_namespace" in exc_info.value.message
+    operation = require_operation(ctx, "mainnet", operation_id)
+    assert operation["stage"] == "prepared"
+    assert operation["last_deployment_result"]["deployment_uuid"] == "dep-1"
+    assert operation["last_verification"]["hub_running"] is True
+    assert operation["last_verification"]["chain_adoption_verified"] is True

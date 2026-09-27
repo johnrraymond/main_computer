@@ -287,6 +287,13 @@ def build_exp_fdb_hub_command(
     if chain_rpc_url:
         command.extend(["--chain-rpc-url", chain_rpc_url])
 
+    topology_path = first_env(env, "MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH")
+    hub_id = first_env(env, "MAIN_COMPUTER_HUB_CONTROL_HUB_ID")
+    if topology_path:
+        command.extend(["--topology", topology_path])
+    if hub_id:
+        command.extend(["--hub-id", hub_id])
+
     return command
 
 
@@ -327,8 +334,32 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def materialize_hub_control_projection(args: argparse.Namespace, environ: Mapping[str, str] | None = None) -> None:
+    env = environ_with_runtime_env_file(args, os.environ if environ is None else environ)
+    cluster_contents = first_env(env, "MAIN_COMPUTER_HUB_CONTROL_FDB_CLUSTER_CONTENTS")
+    topology_b64 = first_env(env, "MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64")
+    if not cluster_contents and not topology_b64:
+        return
+    cluster_path = first_env(env, "MAIN_COMPUTER_HUB_CONTROL_CLUSTER_FILE", "MAIN_COMPUTER_HUB_FDB_CLUSTER_FILE")
+    topology_path = first_env(env, "MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH")
+    if cluster_contents:
+        if not cluster_path:
+            raise SystemExit("Hub Control FDB projection is missing cluster-file path")
+        path = Path(cluster_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(cluster_contents + "\n", encoding="utf-8")
+    if topology_b64:
+        if not topology_path:
+            raise SystemExit("Hub Control topology projection is missing topology path")
+        import base64
+        path = Path(topology_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(base64.b64decode(topology_b64))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    materialize_hub_control_projection(args)
     command = build_exp_fdb_hub_command(args)
     if args.print_command:
         print(shlex.join(command))

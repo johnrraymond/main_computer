@@ -134,12 +134,29 @@ def do(
         raise HubControlError("HUB_ACCEPTED_STATE_CHANGED", "accepted Hub topology changed after prep; inspect before retrying")
     target = dict(op["target"])
     deployment = deployer(target)
+    if deployment.get("application_uuid"):
+        target["application_uuid"] = str(deployment.get("application_uuid"))
     verification = observer(target)
     if verification.get("verified") is not True:
-        raise HubControlError("HUB_ADD_NOT_VERIFIED", f"new Hub did not verify both dependencies: {verification.get('reason')}")
+        update_operation(
+            ctx,
+            network,
+            operation_id,
+            last_deployment_result=dict(deployment),
+            last_verification=dict(verification),
+        )
+        detail = verification.get("last_error")
+        message = f"new Hub did not verify both dependencies: {verification.get('reason')}"
+        if detail not in (None, "", {}):
+            message += f"; last observation={detail}"
+        raise HubControlError("HUB_ADD_NOT_VERIFIED", message)
     result = {
         "application_uuid": deployment.get("application_uuid"),
         "deployment_action": deployment.get("action"),
+        "deployment_uuid": deployment.get("deployment_uuid"),
+        "deployment_status": deployment.get("deployment_status"),
+        "deployment_commit": deployment.get("deployment_commit"),
+        "deployment_waited": bool(deployment.get("deployment_waited")),
         "rebirth": op.get("accepted_prestate") is None or not list((op.get("accepted_prestate") or {}).get("hubs") or []),
         "hub_running": bool(verification.get("hub_running")),
         "fdb_adoption_verified": bool(verification.get("fdb_adoption_verified")),

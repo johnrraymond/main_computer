@@ -7,7 +7,7 @@ Sources reviewed:
 ```text
 hub-fdb.md SHA-256: 7dc80ff74aaff04ef3e955799e9e326242ac48a56d1f562212bcd924f48f6a09
 hub-fdb-o.md SHA-256: 07264e046906b35819a843aeb994a2ec04515b2eab6f2d897608799a7ec91a72
-hub-fdb-o-f.md SHA-256: 33710051dc7ce20ddd95e2f7037410339a83b0fa7d8da4b5226b17e9ee06c1d8
+hub-fdb-o-f.md SHA-256: 0f964d3c22742b5cee15e6344db41444ff30efcecc61899b0ad4b4ae80ebbda9
 ```
 
 ## Target implementation
@@ -22,7 +22,7 @@ tools/hub_control/
         fdb_contract.py
         state.py
         runtime_projection.py
-        deployment.py
+        deployment.py   # renders + bootstraps frozen fdb.cluster into Hub runtime
         observer.py
         verification.py
         operation_store.py

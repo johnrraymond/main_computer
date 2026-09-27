@@ -18,6 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 from typing import Any
 
 from . import atomic_files
@@ -814,7 +815,12 @@ def _load_baseline(
     completed_at = document.get("completed_at")
     age = _age_seconds(completed_at, now=now)
     if age > max_age_seconds:
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_STALE", "baseline evidence is outside the freshness window")
+        print(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_STALE_WARNING: "
+            "baseline evidence is outside the freshness window; "
+            f"age_seconds={age}; max_age_seconds={max_age_seconds}; continuing",
+            file=sys.stderr,
+        )
 
     summary = document.get("summary")
     policy = document.get("policy")

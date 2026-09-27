@@ -433,6 +433,12 @@ class Harness:
                 print("first-Hub rebirth:    yes")
             if details.get("deployment_action"):
                 print(f"deployment action:    {details.get('deployment_action')}")
+            if details.get("deployment_uuid"):
+                print(f"deployment UUID:      {details.get('deployment_uuid')}")
+            if details.get("deployment_status"):
+                print(f"deployment status:    {details.get('deployment_status')}")
+            if details.get("deployment_commit"):
+                print(f"deployment commit:    {details.get('deployment_commit')}")
             if "hub_running" in details:
                 print(f"Hub running:          {'verified' if details.get('hub_running') else 'not verified'}")
             if "fdb_adoption_verified" in details:
