@@ -25,6 +25,7 @@ from . import atomic_files
 from .canonical import canonical_json
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
+from .deployment_validator_routes import validator_route_from_record
 
 
 _TRANSACTION_KIND = "main_computer.mother.deployment_node_remove_prep_transaction.v1"
@@ -238,6 +239,62 @@ def _latest_service_records(document: Mapping[str, Any]) -> dict[str, dict[str, 
 
 
 
+def _copy_validator_route_fields(target: dict[str, Any], source: Mapping[str, Any]) -> dict[str, Any]:
+    route = validator_route_from_record(source)
+    if route is None:
+        return target
+    target["validator_route"] = dict(route)
+    target["vpn_ip"] = route["vpn_ip"]
+    target["p2p_port"] = route["p2p_port"]
+    target["p2p_endpoint"] = route["p2p_endpoint"]
+    return target
+
+
+def _merge_validator_route_binding(
+    bindings: dict[str, dict[str, Any]],
+    *,
+    node: str,
+    record: Mapping[str, Any],
+) -> None:
+    route = validator_route_from_record(record)
+    if route is None:
+        return
+    if not route.get("controller_id"):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_INVALID", f"{node} validator route controller id is missing")
+    previous = bindings.get(node)
+    if previous is not None and canonical_json(previous) != canonical_json(route):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_MISMATCH", f"{node} validator route binding changed")
+    bindings[node] = dict(route)
+
+
+def _validator_route_bindings(document: Mapping[str, Any], services: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
+    for topology_key in ("current_topology", "final_topology", "post_add_topology", "post_removal_topology", "pre_removal_topology"):
+        topology = document.get(topology_key)
+        if not isinstance(topology, Mapping):
+            continue
+        raw = topology.get("validator_route_bindings")
+        if not isinstance(raw, Mapping):
+            continue
+        for node, route in raw.items():
+            if isinstance(node, str) and isinstance(route, Mapping):
+                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
+    raw = document.get("validator_route_bindings")
+    if isinstance(raw, Mapping):
+        for node, route in raw.items():
+            if isinstance(node, str) and isinstance(route, Mapping):
+                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
+    service_routes = document.get("service_routes")
+    if isinstance(service_routes, Mapping):
+        for node, route in service_routes.items():
+            if isinstance(node, str) and isinstance(route, Mapping):
+                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
+    for node, record in services.items():
+        if isinstance(record, Mapping):
+            _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=record)
+    return bindings
+
+
 def _receipt_service_records(
     document: Mapping[str, Any],
     *,
@@ -245,16 +302,21 @@ def _receipt_service_records(
     candidate_controller_id: str,
     candidate_service_uuid: str,
 ) -> dict[str, dict[str, Any]]:
-    services: dict[str, dict[str, Any]] = {
-        candidate_node: {
-            "node": candidate_node,
-            "controller_id": candidate_controller_id,
-            "service_uuid": candidate_service_uuid,
-            "service_status": None,
-            "readiness_source": "add-node-validator-admission-target",
-            "observed_at": document.get("completed_at"),
-        }
+    service_routes = document.get("service_routes")
+    if not isinstance(service_routes, Mapping):
+        service_routes = {}
+    candidate_record = {
+        "node": candidate_node,
+        "controller_id": candidate_controller_id,
+        "service_uuid": candidate_service_uuid,
+        "service_status": None,
+        "readiness_source": "add-node-validator-admission-target",
+        "observed_at": document.get("completed_at"),
     }
+    candidate_route = service_routes.get(candidate_node)
+    if isinstance(candidate_route, Mapping):
+        _copy_validator_route_fields(candidate_record, candidate_route)
+    services: dict[str, dict[str, Any]] = {candidate_node: candidate_record}
 
     for item in document.get("precondition_receipts") or []:
         if not isinstance(item, Mapping):
@@ -263,7 +325,7 @@ def _receipt_service_records(
         controller_id = item.get("controller_id")
         service_uuid = item.get("service_uuid")
         if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
-            services[node] = {
+            service_record = {
                 "node": node,
                 "controller_id": controller_id,
                 "service_uuid": service_uuid,
@@ -271,6 +333,10 @@ def _receipt_service_records(
                 "readiness_source": item.get("name") or "add-node-validator-admission-precondition",
                 "observed_at": document.get("completed_at"),
             }
+            route = service_routes.get(node)
+            if isinstance(route, Mapping):
+                _copy_validator_route_fields(service_record, route)
+            services[node] = service_record
 
     for item in document.get("mutation_receipts") or []:
         if not isinstance(item, Mapping):
@@ -279,14 +345,21 @@ def _receipt_service_records(
         controller_id = item.get("controller_id")
         service_uuid = item.get("service_uuid")
         if isinstance(node, str) and isinstance(controller_id, str) and isinstance(service_uuid, str) and service_uuid:
-            services[node] = {
+            previous = services.get(node, {})
+            service_record = {
                 "node": node,
                 "controller_id": controller_id,
                 "service_uuid": service_uuid,
-                "service_status": services.get(node, {}).get("service_status"),
+                "service_status": previous.get("service_status"),
                 "readiness_source": item.get("mutation_id") or "add-node-validator-admission-mutation",
                 "observed_at": document.get("completed_at"),
             }
+            route = service_routes.get(node)
+            if isinstance(route, Mapping):
+                _copy_validator_route_fields(service_record, route)
+            elif isinstance(previous, Mapping):
+                _copy_validator_route_fields(service_record, previous)
+            services[node] = service_record
 
     for item in document.get("health_observations") or []:
         if not isinstance(item, Mapping):
@@ -713,6 +786,12 @@ def _normalize_remove_finalize_baseline(
         )
 
     survivor_records: dict[str, dict[str, Any]] = {}
+    final_services = final_topology.get("services")
+    if isinstance(final_services, Mapping):
+        for node in nodes:
+            record = final_services.get(node)
+            if isinstance(record, Mapping):
+                survivor_records[node] = dict(record)
     survivors = document.get("survivors")
     if not isinstance(survivors, list):
         raise _fail(
@@ -725,7 +804,8 @@ def _normalize_remove_finalize_baseline(
         node = item.get("node")
         if not isinstance(node, str) or node not in nodes:
             continue
-        survivor_records[node] = dict(item)
+        record = survivor_records.setdefault(node, {})
+        record.update(dict(item))
 
     for item in document.get("survivor_service_observations") or []:
         if not isinstance(item, Mapping):
@@ -942,14 +1022,14 @@ def _service_record(node: str, record: Mapping[str, Any]) -> dict[str, Any]:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", f"{node} service UUID is missing")
     if not isinstance(controller_id, str) or not controller_id:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE", f"{node} controller id is missing")
-    return {
+    return _copy_validator_route_fields({
         "node": node,
         "controller_id": controller_id,
         "service_uuid": service_uuid,
         "service_status": record.get("service_status"),
         "readiness_source": record.get("proof_source") or record.get("readiness_source"),
         "last_observed_at": record.get("observed_at") or record.get("last_observed_at"),
-    }
+    }, record)
 
 
 def build_node_remove_prep_transaction(
@@ -992,6 +1072,7 @@ def build_node_remove_prep_transaction(
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_TARGET_INVALID", "node removal would leave an inconsistent survivor topology")
 
     service_topology = {node: _service_record(node, services[node]) for node in nodes}
+    route_bindings = _validator_route_bindings(baseline, service_topology)
     created_text = _timestamp(created_at)
     service_deletion_is_first = bool(single_node_decommission)
     validator_removal_vote_required = not single_node_decommission
@@ -1008,6 +1089,12 @@ def build_node_remove_prep_transaction(
             "validator_address": target_validator,
             "controller_id": service_topology[target]["controller_id"],
             "service_uuid": service_topology[target]["service_uuid"],
+            **({
+                "validator_route": dict(route_bindings[target]),
+                "vpn_ip": route_bindings[target]["vpn_ip"],
+                "p2p_port": route_bindings[target]["p2p_port"],
+                "p2p_endpoint": route_bindings[target]["p2p_endpoint"],
+            } if target in route_bindings else {}),
         },
         "survivors": [
             {
@@ -1015,6 +1102,12 @@ def build_node_remove_prep_transaction(
                 "validator_address": post_validators[index],
                 "controller_id": service_topology[node]["controller_id"],
                 "service_uuid": service_topology[node]["service_uuid"],
+                **({
+                    "validator_route": dict(route_bindings[node]),
+                    "vpn_ip": route_bindings[node]["vpn_ip"],
+                    "p2p_port": route_bindings[node]["p2p_port"],
+                    "p2p_endpoint": route_bindings[node]["p2p_endpoint"],
+                } if node in route_bindings else {}),
             }
             for index, node in enumerate(survivors)
         ],
@@ -1031,6 +1124,7 @@ def build_node_remove_prep_transaction(
             "validator_set": validators,
             "validator_count": len(validators),
             "services": service_topology,
+            "validator_route_bindings": {node: dict(route) for node, route in route_bindings.items()},
             "chain_id": baseline.get("chain_id"),
             "genesis_sha256": baseline.get("genesis_sha256"),
         },
@@ -1040,6 +1134,7 @@ def build_node_remove_prep_transaction(
             "validator_count": len(post_validators),
             "removed_node": target,
             "removed_validator_address": target_validator,
+            "validator_route_bindings": {node: dict(route) for node, route in route_bindings.items()},
         },
         "ordered_removal_plan": (
             [

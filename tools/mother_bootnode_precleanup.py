@@ -1681,20 +1681,10 @@ def _run_writer_service_once(
         {key: start_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")}
     )
     if not start_response["ok"]:
+        # Preserve failed writer services automatically. A failed start has no
+        # completion proof, so deleting the service here would destroy the
+        # container/service evidence needed to diagnose the failure.
         delete_receipt = None
-        if not preserve_services:
-            delete_receipt = _delete_writer_service(
-                controller=controller,
-                controller_id=controller_id,
-                service_uuid=writer_service_uuid,
-                service_name=service_name,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-            )
-            observations.append(
-                {key: delete_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")}
-            )
         return {
             "node": node,
             "controller_id": controller_id,
@@ -1709,7 +1699,7 @@ def _run_writer_service_once(
             "start": start_receipt,
             "health": None,
             "delete": delete_receipt,
-            "writer_service_preserved": bool(preserve_services),
+            "writer_service_preserved": True,
             "writer_service_attempt": attempt_index,
             "writer_service_proof_observed": False,
             "writer_materialization_debug": _writer_materialization_boundary_debug(
@@ -1743,8 +1733,16 @@ def _run_writer_service_once(
         observations=observations,
     )
 
+    healthy = health.get("healthy") is True
+    proven = _writer_health_observed_proof(health)
+
+    # A writer that finishes without observable completion proof is the exact
+    # object needed to diagnose the failure. Preserve it automatically instead
+    # of deleting the evidence. Successful/proven writers keep the existing
+    # cleanup behavior unless --preserve-services was requested.
+    preserve_writer = bool(preserve_services or not proven)
     delete_receipt = None
-    if not preserve_services:
+    if not preserve_writer:
         delete_receipt = _delete_writer_service(
             controller=controller,
             controller_id=controller_id,
@@ -1758,9 +1756,7 @@ def _run_writer_service_once(
             {key: delete_receipt[key] for key in ("method", "endpoint", "status", "ok", "response_sha256", "byte_length", "elapsed_ms")}
         )
 
-    healthy = health.get("healthy") is True
-    proven = _writer_health_observed_proof(health)
-    delete_ok = preserve_services or (delete_receipt is not None and delete_receipt.get("ok") is True)
+    delete_ok = preserve_writer or (delete_receipt is not None and delete_receipt.get("ok") is True)
     return {
         "node": node,
         "controller_id": controller_id,
@@ -1777,7 +1773,7 @@ def _run_writer_service_once(
         "writer_service_final_status": health.get("final_status"),
         "writer_service_healthy": healthy,
         "writer_service_deleted": (delete_receipt is not None and delete_receipt.get("ok") is True),
-        "writer_service_preserved": bool(preserve_services),
+        "writer_service_preserved": preserve_writer,
         "writer_service_attempt": attempt_index,
         "writer_service_proof_observed": proven,
         "writer_service_proof_source": health.get("proof_source"),

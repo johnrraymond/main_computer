@@ -1465,11 +1465,22 @@ def _load_sync_context(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "replica-sync release digest mismatch")
 
     current_topology = evidence.get("current_topology")
+    prepared_post_add_topology = evidence.get("prepared_post_add_topology")
     target = evidence.get("target")
     proof_summary = evidence.get("proof_plan_summary")
     proof = evidence.get("proof")
     if not isinstance(current_topology, Mapping) or not isinstance(target, Mapping) or not isinstance(proof_summary, Mapping) or not isinstance(proof, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "replica-sync evidence lacks admission context")
+    route_bindings_raw = None
+    if isinstance(prepared_post_add_topology, Mapping):
+        route_bindings_raw = prepared_post_add_topology.get("validator_route_bindings")
+    if not isinstance(route_bindings_raw, Mapping):
+        route_bindings_raw = current_topology.get("validator_route_bindings")
+    validator_route_bindings = {
+        str(node): dict(route)
+        for node, route in (route_bindings_raw.items() if isinstance(route_bindings_raw, Mapping) else [])
+        if isinstance(node, str) and isinstance(route, Mapping)
+    }
     voter_nodes = tuple(_identifier(item, "voter node") for item in current_topology.get("nodes", []))
     if len(voter_nodes) < 1:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "no existing validators are available to vote")
@@ -1528,6 +1539,25 @@ def _load_sync_context(
                 services=services,
             )
     service_routes[target_node] = dict(candidate_route)
+    normalized_candidate_route = validator_route_from_record(candidate_route)
+    if normalized_candidate_route is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route binding is invalid")
+    bound_candidate_route = validator_route_bindings.get(target_node)
+    if bound_candidate_route is not None:
+        normalized_bound_candidate_route = validator_route_from_record(bound_candidate_route)
+        if normalized_bound_candidate_route is None or canonical_json(normalized_bound_candidate_route) != canonical_json(normalized_candidate_route):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route changed from the prepared permanent route binding")
+    validator_route_bindings[target_node] = dict(normalized_candidate_route)
+    for voter_node, route in service_routes.items():
+        normalized_route = validator_route_from_record(route)
+        if normalized_route is None:
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", f"{voter_node} validator route binding is invalid")
+        bound_route = validator_route_bindings.get(voter_node)
+        if bound_route is not None:
+            normalized_bound_route = validator_route_from_record(bound_route)
+            if normalized_bound_route is None or canonical_json(normalized_bound_route) != canonical_json(normalized_route):
+                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", f"{voter_node} validator route changed from the prepared permanent route binding")
+        validator_route_bindings[voter_node] = dict(normalized_route)
     target_node_id = _public_node_id(_validator_private_key(private_state, network=network, node=target_node))
     candidate_validator_enode = _candidate_validator_enode(target_node_id, candidate_route)
     target_controller = resolve_coolify_controller(private_state, network, target_host)
@@ -1583,6 +1613,7 @@ def _load_sync_context(
         "candidate_p2p_port": candidate_p2p_port,
         "candidate_activation_proof_endpoint": dict(candidate_activation_proof_endpoint),
         "service_routes": service_routes,
+        "validator_route_bindings": validator_route_bindings,
         "voter_nodes": list(voter_nodes),
         "voters": vote_requests,
         "current_validator_set": current_set,
@@ -1689,6 +1720,7 @@ def build_node_add_validator_admission_release(
             "candidate_p2p_port": context["candidate_p2p_port"],
             "candidate_activation_proof_endpoint": dict(context["candidate_activation_proof_endpoint"]),
             "service_routes": {node: dict(route) for node, route in context["service_routes"].items()},
+            "validator_route_bindings": {node: dict(route) for node, route in context["validator_route_bindings"].items()},
             "rpc_requests": list(context["voters"]),
             "activation_compose": {
                 "sha256": context["activation_compose_sha256"],
@@ -4972,6 +5004,7 @@ def execute_node_add_validator_admission_release(
         "candidate_p2p_endpoint": (plan.get("candidate_validator_route") or {}).get("p2p_endpoint") if isinstance(plan.get("candidate_validator_route"), Mapping) else None,
         "candidate_activation_proof_endpoint": dict(candidate_activation_proof_endpoint),
         "service_routes": {str(node): dict(route) for node, route in (plan.get("service_routes") or {}).items() if isinstance(route, Mapping)},
+        "validator_route_bindings": {str(node): dict(route) for node, route in (plan.get("validator_route_bindings") or {}).items() if isinstance(route, Mapping)},
         "target_host": target_controller_id,
         "created_service_uuid": target_uuid,
         "previous_target_service_uuid": target.get("service_uuid"),

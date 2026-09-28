@@ -90,6 +90,8 @@ REPLICA_ADMISSION_STEPS = [
 REMOVE_STEPS = [
     "detect-topology",
     "preflight-paranoia",
+    "preflight-paranoia2",
+    "preflight-rpc-paranoia",
     "remove-prep",
     "verify-remove-prep",
     "release-remove-do",
@@ -200,6 +202,58 @@ def _service_cleanup_targets(document: dict[str, Any]) -> list[dict[str, str]]:
     return targets
 
 
+def _stale_topology_writer_cleanup_candidates(detection: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return exact stale static-writer rows that explain unexpected live node hints."""
+
+    unexpected = {
+        str(node).strip()
+        for node in (detection.get("unexpected_live_nodes") or pick(detection, "summary.unexpected_live_nodes") or [])
+        if str(node).strip()
+    }
+    expected = {
+        str(node).strip()
+        for node in (detection.get("expected_nodes") or [])
+        if str(node).strip()
+    }
+    if not unexpected:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for raw in detection.get("observed_service_hints") or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or "")
+        description = str(raw.get("description") or "")
+        controller_id = str(raw.get("controller_id") or "")
+        service_uuid = str(raw.get("uuid") or "")
+        node_hints = {
+            str(node).strip()
+            for node in (raw.get("node_hints") or [])
+            if str(node).strip()
+        }
+        stale_hints = sorted(node_hints & unexpected)
+        if not stale_hints:
+            continue
+        if node_hints & expected:
+            continue
+        if not name.startswith("mother-static-node-writer-"):
+            continue
+        if description != "Ephemeral Mother bootnode precleanup static-nodes writer":
+            continue
+        if not controller_id or not service_uuid:
+            continue
+        candidates.append(
+            {
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "service_name": name,
+                "unexpected_nodes": stale_hints,
+                "status": raw.get("status"),
+            }
+        )
+    return candidates
+
+
 def quote_command(argv: list[str]) -> str:
     if os.name == "nt":
         return " ".join(subprocess.list2cmdline([arg]) for arg in argv)
@@ -279,6 +333,14 @@ def short_summary(step: str, obj: dict[str, Any]) -> dict[str, Any]:
         "topology_stale",
         "rectification_required",
         "manual_review_required",
+        "acknowledgement_required",
+        "controller_removed_from_topology",
+        "rpc_will_work_post_remove_acknowledged",
+        "post_remove_rpc_probe_required",
+        "current_topology_poison_present",
+        "post_remove_topology_poison_risk",
+        "conflicting_service_row_count",
+        "already_unexpected_node_service_row_count",
         "live_mutation_performed",
         "network_access_performed",
     ]
@@ -927,6 +989,29 @@ class Harness:
     def cleanup2_cmd(self, *parts: Any) -> list[str]:
         return [sys.executable, str(self.repo_root / "tools" / "mother_helper_cleanup2_yagni.py"), *[str(part) for part in parts]]
 
+    def stale_topology_cleanup_cmd(self, candidate: dict[str, Any]) -> list[str]:
+        argv = [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_stale_topology_cleanup.py"),
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--network", self.args.network,
+            "--topology-evidence", require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256", require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+            "--controller-id", str(candidate["controller_id"]),
+            "--service-uuid", str(candidate["service_uuid"]),
+        ]
+        for node in candidate.get("unexpected_nodes") or []:
+            argv.extend(["--unexpected-node", str(node)])
+        argv.extend([
+            "--timeout", str(self.args.timeout),
+            "--max-response-bytes", str(self.args.preflight_paranoia_max_response_bytes),
+            "--max-wait-seconds", str(self.args.preflight_paranoia_cleanup_max_wait_seconds),
+            "--poll-interval-seconds", str(self.args.poll_interval_seconds),
+            "--execute",
+            "--allow-mutation",
+        ])
+        return argv
+
     def preflight_paranoia_cmd(self) -> list[str]:
         return [
             sys.executable,
@@ -951,6 +1036,41 @@ class Harness:
             "--poll-interval-seconds",
             str(self.args.poll_interval_seconds),
         ]
+
+    def preflight_paranoia2_cmd(self) -> list[str]:
+        return [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_preflight_paranoia2.py"),
+            "--runtime-state-root",
+            self.args.runtime_state_root,
+            "--network",
+            self.args.network,
+            "--node",
+            self.args.node,
+            "--topology-evidence",
+            require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256",
+            require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+        ]
+
+    def preflight_rpc_paranoia_cmd(self) -> list[str]:
+        argv = [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_preflight_rpc_paranoia.py"),
+            "--runtime-state-root",
+            self.args.runtime_state_root,
+            "--network",
+            self.args.network,
+            "--node",
+            self.args.node,
+            "--topology-evidence",
+            require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256",
+            require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+        ]
+        if self.args.rpc_will_work_post_remove:
+            argv.append("--rpc-will-work-post-remove")
+        return argv
 
     def fresh_empty_topology_refresh_cmd(self) -> list[str]:
         refresh_max_age = max(
@@ -1129,6 +1249,59 @@ class Harness:
         )
         unexpected_live_nodes = obj.get("unexpected_live_nodes") or pick(obj, "summary.unexpected_live_nodes") or []
         if unexpected_live_nodes:
+            stale_writer_candidates = _stale_topology_writer_cleanup_candidates(obj)
+            explained_unexpected_nodes = {
+                str(node)
+                for candidate in stale_writer_candidates
+                for node in (candidate.get("unexpected_nodes") or [])
+            }
+            requested_unexpected_nodes = {str(node) for node in unexpected_live_nodes}
+            safe_stale_service_uuids = {
+                str(candidate.get("service_uuid") or "")
+                for candidate in stale_writer_candidates
+            }
+            unexplained_live_sources: list[dict[str, Any]] = []
+            for hint in obj.get("observed_service_hints") or []:
+                if not isinstance(hint, dict):
+                    continue
+                status = str(hint.get("status") or "").strip().lower()
+                terminal = (
+                    status == "exited"
+                    or status.startswith("exited:")
+                    or status == "stopped"
+                    or status.startswith("stopped:")
+                )
+                if terminal:
+                    continue
+                hinted_unexpected = {
+                    str(node).strip()
+                    for node in (hint.get("node_hints") or [])
+                    if str(node).strip() in requested_unexpected_nodes
+                }
+                if not hinted_unexpected:
+                    continue
+                if str(hint.get("uuid") or "") not in safe_stale_service_uuids:
+                    unexplained_live_sources.append(hint)
+
+            if (
+                stale_writer_candidates
+                and requested_unexpected_nodes <= explained_unexpected_nodes
+                and not unexplained_live_sources
+            ):
+                print("\nMOTHER_MUTATE_HARNESS_STALE_TOPOLOGY_HELPER_CLEANUP_REQUIRED: excluded ephemeral helper rows are advertising node(s) outside the supplied Mother topology evidence.")
+                print(json.dumps(short_summary("detect-topology", obj), indent=2, sort_keys=True))
+                print("These rows are safe to inspect as stale bootnode-precleanup writers, but the harness will not delete them automatically.")
+                for candidate in stale_writer_candidates:
+                    print()
+                    print(
+                        "stale_helper="
+                        f"{candidate['service_name']} controller={candidate['controller_id']} "
+                        f"uuid={candidate['service_uuid']} unexpected_nodes={','.join(candidate['unexpected_nodes'])}"
+                    )
+                    print("Run this exact stale-topology cleanup command, then rerun the harness:")
+                    print(quote_command(self.stale_topology_cleanup_cmd(candidate)))
+                raise SystemExit(3)
+
             print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_SPLIT_LIVE: live Coolify inventory contains nodes outside the supplied Mother topology evidence.")
             print(json.dumps(short_summary("detect-topology", obj), indent=2, sort_keys=True))
             raise SystemExit(3)
@@ -1185,6 +1358,35 @@ class Harness:
             print()
             print("Run this cleanup command before the mutation:")
             print(quote_command(cleanup2_argv))
+        raise SystemExit(3)
+
+    def step_preflight_paranoia2(self) -> None:
+        obj = self.run("preflight-paranoia2", self.preflight_paranoia2_cmd(), allow_failure=True)
+        self.state["preflight_paranoia2_status"] = obj.get("status")
+        self.state["preflight_paranoia2_summary"] = obj.get("summary")
+
+        if obj.get("status") == "pass" and pick(obj, "summary.clean") is True:
+            return
+
+        print("\nMOTHER_MUTATE_HARNESS_PREFLIGHT_PARANOIA2_BLOCKED: service-row contamination preflight did not return clean/pass.")
+        print(json.dumps(short_summary("preflight-paranoia2", obj), indent=2, sort_keys=True))
+        print("No live mutation was performed by preflight. Clean the reported service-row conflict, then rerun the harness.")
+        raise SystemExit(3)
+
+    def step_preflight_rpc_paranoia(self) -> None:
+        obj = self.run("preflight-rpc-paranoia", self.preflight_rpc_paranoia_cmd(), allow_failure=True)
+        self.state["preflight_rpc_paranoia_status"] = obj.get("status")
+        self.state["preflight_rpc_paranoia_summary"] = obj.get("summary")
+
+        if obj.get("status") == "pass" and pick(obj, "summary.clean") is True:
+            return
+
+        print("\nMOTHER_MUTATE_HARNESS_PREFLIGHT_RPC_PARANOIA_BLOCKED: RPC continuity preflight did not return clean/pass.")
+        print(json.dumps(short_summary("preflight-rpc-paranoia", obj), indent=2, sort_keys=True))
+        if pick(obj, "summary.acknowledgement_required") is True:
+            print("After DNS/upstream routing is ready, rerun with --rpc-will-work-post-remove.")
+        else:
+            print("No live mutation was performed by preflight. Fix the reported RPC continuity condition, then rerun the harness.")
         raise SystemExit(3)
 
 
@@ -1882,6 +2084,8 @@ class Harness:
         return {
             "detect-topology": self.step_detect_topology,
             "preflight-paranoia": self.step_preflight_paranoia,
+            "preflight-paranoia2": self.step_preflight_paranoia2,
+            "preflight-rpc-paranoia": self.step_preflight_rpc_paranoia,
             "prep": self.step_prep,
             "verify-prep": self.step_verify_prep,
             "release-do": self.step_release_do,
@@ -1971,6 +2175,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-at", choices=STEP_ORDER, default="detect-topology")
     parser.add_argument("--skip-staleness-detection", action="store_true")
     parser.add_argument("--skip-preflight-paranoia", action="store_true")
+    parser.add_argument(
+        "--rpc-will-work-post-remove",
+        action="store_true",
+        help=(
+            "remove-node only: operator assertion forwarded to RPC paranoia that DNS/upstream "
+            "routing is already adjusted so canonical RPC will remain reachable after removal"
+        ),
+    )
     parser.add_argument("--execute-mutations", action="store_true")
     parser.add_argument("--yes-i-know-this-mutates-target-host", action="store_true")
     parser.add_argument("--yes-i-know-this-mutates-coolify-a", action="store_true", help="legacy alias for the target-host mutation acknowledgement")

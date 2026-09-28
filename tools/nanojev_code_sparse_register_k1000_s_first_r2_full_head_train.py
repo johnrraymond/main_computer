@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Self-organizing sparse-register soft-feedback NanoJev trainer.
+"""Joint-train the complete evolved NanoJev head over frozen Qwen.
 
-Qwen, the inherited NanoJev decision head, and the learned static soft token S
-remain frozen.  One learned router sees only the frozen first-pass model state
-and produces sparse coefficients over a deliberately overcomplete shared
-control dictionary.  No task identity is provided to the router.  Legacy,
-mutation, AST, direct-consensus, and pairwise labels are used only for sampling,
-loss accounting, and post-hoc occupancy telemetry.
+This lane resumes the full-head cut-over created directly from a mature K=1000
+pre-R2 S-first checkpoint.  The cut-over clones the learned R1 router into a
+dormant R2 router and creates g2 at exact zero.  Qwen remains frozen.  By
+default g2 is frozen, so the third Qwen pass is bypassed and the active learned
+system is the full NanoJev head around R1: decision/readout head, S and its
+strength, shared control bank, and R1 router.  The R2 router remains available
+for an explicit later recurrence release.
 
-The dictionary is intentionally wider than the expected control manifold.  L1
-coefficient pressure crowds unnecessary coordinates toward zero, an L2 residual
-penalty prefers small corrections, and an orthogonality penalty discourages
-redundant control directions.  Tasks may therefore discover the same axes,
-partly overlapping subspaces, distinct subspaces, or additional dimensions as
-needed without any hard-coded task-to-register assignment.
+    Qwen([S,prompt]) -> R1
+    Qwen([S+R1,prompt]) -> trainable decision head
 
-Default optimizer-unit curriculum: 5% legacy / 10% mutation / 34% AST /
-1% direct consensus / 50% relation-balanced pairwise.
+If later evidence shows pressure on the R1-only solution, --train-r2-gain
+releases the inherited recurrent gate and restores the third pass:
+
+    Qwen([S+R1,prompt]) -> R2
+    Qwen([S+R1+R2,prompt]) -> trainable decision head
+
+No new model parameters are introduced.  R2 gain starts from zero with cleared
+AdamW moments, so an optional later release starts cleanly rather than inheriting
+pre-cut-over gate momentum.
 """
 from __future__ import annotations
 
@@ -41,8 +45,8 @@ EXPERIMENT_SCHEMA = "main-computer-nanojev-code-self-organizing-register-experim
 STATE_SCHEMA = "main-computer-nanojev-code-self-organizing-register-training-state-v1"
 CONFIG_SCHEMA = "main-computer-nanojev-code-self-organizing-register-training-config-v1"
 TASK = "lexeme_mutation_ast_plus_direct_consensus_plus_relation_balanced_pairwise_self_organizing_sparse_register_feedback"
-PHASE = "frozen_qwen_frozen_head_frozen_static_token_self_organizing_sparse_registers_plus_balanced_pairwise"
-OBJECTIVE = "zero_init_self_routing_sparse_registers_over_frozen_static_token_three_binary_rehearsals_plus_direct_consensus_plus_relation_balanced_pairwise"
+PHASE = "frozen_qwen_full_nanojev_head_trainable_s_first_recurrent_r2_shared_sparse_registers_plus_balanced_pairwise"
+OBJECTIVE = "joint_full_nanojev_head_training_s_first_r1_plus_recurrent_r2_shared_sparse_register_bank_three_binary_rehearsals_plus_direct_consensus_plus_relation_balanced_pairwise"
 DIRECT_CONSENSUS_OBJECTIVE = "three_binary_rehearsals_plus_four_way_consensus_margin_plus_orbit_consistency"
 ORBIT_CONSISTENCY_WEIGHT = 0.25
 ORBIT_SUPERVISION_BLEND = 0.5
@@ -53,7 +57,7 @@ DEFAULT_LEGACY_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_lex
 DEFAULT_MUTATION_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_mutation_v1"
 DEFAULT_THREE_MODE_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_three_mode_v1"
 DEFAULT_SOURCE_SOFT_FEEDBACK_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_soft_feedback_v1"
-DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_self_organizing_register_v1"
+DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_self_organizing_register_k1000_s_first_r2_full_head_v1"
 DEFAULT_LATENT_WALK_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_latent_walk_v1"
 DEFAULT_SOURCE_BALANCED_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_soft_feedback_residual_v1"
 
@@ -69,7 +73,7 @@ DEFAULT_SOFT_FEEDBACK_LR = 2e-4
 DEFAULT_SOFT_FEEDBACK_STRENGTH = 0.25
 DEFAULT_SOFT_FEEDBACK_CONTROL_EVAL_EVERY = 5
 SOFT_FEEDBACK_TOKEN_COUNT = 1
-SOFT_FEEDBACK_GENERATOR = "frozen_static_token_plus_self_routing_sparse_overcomplete_shared_control_dictionary_v1"
+SOFT_FEEDBACK_GENERATOR = "s_first_recurrent_r2_full_nanojev_head_joint_train_v1"
 SOFT_FEEDBACK_CONTROL_MODES = ("none", "static", "dynamic")
 # Task names remain available to the trainer for curriculum accounting and
 # post-hoc telemetry only.  They are never inputs to the control router.
@@ -103,8 +107,67 @@ class ConsensusSource:
     changing: tuple[tuple[str, str], ...]
 
 
+FULL_HEAD_COMPACT_LOG_NAME = "s_first_r2_full_head_trainer_compact.log"
+FULL_HEAD_HEARTBEAT_EVENT = "s_first_r2_full_head_heartbeat"
+_COMPACT_LOG_PATH = None
+_COMPACT_HEARTBEAT_SECONDS = 30.0
+_COMPACT_STATE = {"cycle": None, "requested": None, "next_heartbeat": 30.0}
+
+
+def configure_compact_emit(experiment_dir: Path, heartbeat_seconds: float) -> None:
+    global _COMPACT_LOG_PATH, _COMPACT_HEARTBEAT_SECONDS, _COMPACT_STATE
+    _COMPACT_LOG_PATH = experiment_dir / FULL_HEAD_COMPACT_LOG_NAME
+    _COMPACT_HEARTBEAT_SECONDS = float(heartbeat_seconds)
+    _COMPACT_STATE = {"cycle": None, "requested": None, "next_heartbeat": float(heartbeat_seconds)}
+
+
+def _emit_write(payload: dict) -> None:
+    encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    if _COMPACT_LOG_PATH is not None:
+        with _COMPACT_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(encoded + "\n")
+    print(encoded, flush=True)
+
+
 def emit(event: str, **fields) -> None:
-    print(json.dumps({"event": event, **fields}, ensure_ascii=False, allow_nan=False), flush=True)
+    if _COMPACT_LOG_PATH is None:
+        print(json.dumps({"event": event, **fields}, ensure_ascii=False, allow_nan=False), flush=True)
+        return
+    if event == "cycle_start":
+        _COMPACT_STATE["cycle"] = fields.get("cycle")
+        _COMPACT_STATE["requested"] = fields.get("requested_training_seconds")
+        _COMPACT_STATE["next_heartbeat"] = _COMPACT_HEARTBEAT_SECONDS
+        _emit_write({"event": event, **fields})
+        return
+    if event == "cycle_train_step":
+        elapsed = float(fields.get("elapsed_training_seconds", 0.0) or 0.0)
+        if elapsed < float(_COMPACT_STATE["next_heartbeat"]):
+            return
+        soft = fields.get("soft_feedback") if isinstance(fields.get("soft_feedback"), dict) else {}
+        _emit_write({
+            "event": FULL_HEAD_HEARTBEAT_EVENT,
+            "cycle": fields.get("cycle", _COMPACT_STATE["cycle"]),
+            "elapsed_training_seconds": elapsed,
+            "requested_training_seconds": _COMPACT_STATE["requested"],
+            "cycle_step": fields.get("cycle_step"),
+            "global_step": fields.get("global_step"),
+            "mean_unit_nll": fields.get("mean_unit_nll"),
+            "head_grad_norm": fields.get("head_grad_norm"),
+            "soft_feedback_grad_norm": fields.get("soft_feedback_grad_norm"),
+            "active_above_threshold": soft.get("aggregate_active_slot_count"),
+            "r1_active_above_threshold": soft.get("r1_active_slot_count"),
+            "r2_candidate_active_above_threshold": soft.get("r2_candidate_active_slot_count"),
+            "r2_effective_active_above_threshold": soft.get("r2_effective_active_slot_count"),
+            "dynamic_raw_rms": soft.get("dynamic_raw_rms"),
+            "r1_dynamic_raw_rms": soft.get("r1_dynamic_raw_rms"),
+            "r2_dynamic_raw_rms": soft.get("r2_dynamic_raw_rms"),
+            "r2_gain": soft.get("r2_gain"),
+            "r1_r2_candidate_coefficient_cosine": soft.get("r1_r2_candidate_coefficient_cosine"),
+        })
+        while float(_COMPACT_STATE["next_heartbeat"]) <= elapsed:
+            _COMPACT_STATE["next_heartbeat"] = float(_COMPACT_STATE["next_heartbeat"]) + _COMPACT_HEARTBEAT_SECONDS
+        return
+    _emit_write({"event": event, **fields})
 
 
 def read_json(path: Path):
@@ -315,6 +378,19 @@ def latent_walk_penalty_migration_allowed(established: dict, requested: dict) ->
     normalized["latent_walk_displacement_penalty_weight"] = DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT
     normalized["latent_walk_displacement_penalty"] = LATENT_WALK_DISPLACEMENT_PENALTY
     return normalized == requested
+
+
+def r2_gain_mode_migration_allowed(established: dict, requested: dict) -> bool:
+    """Allow only the explicit frozen-zero <-> trainable R2-gain operating-mode switch."""
+    mode_keys = {
+        "r2_gain_trainable",
+        "entire_nanojev_head_trainable",
+        "nanojev_head_trainable_except_r2_gain",
+        "r2_third_pass_bypassed_when_gain_frozen",
+    }
+    normalized_established = {k: v for k, v in established.items() if k not in mode_keys}
+    normalized_requested = {k: v for k, v in requested.items() if k not in mode_keys}
+    return normalized_established == normalized_requested
 
 def next_task_mix(*, weights: dict[str, float], credits: dict[str, float], slots: int) -> tuple[list[str], dict[str, float]]:
     """Persistent smooth weighted round robin over optimizer training units."""
@@ -1986,7 +2062,10 @@ def save_generation(*, exp: Path, model, optimizer, cycle: int, global_step: int
         "main_computer_cycle": cycle,
         "main_computer_global_step": global_step,
         "parent_head_sha256": experiment["parent_head_sha256"],
-        "decision_head_frozen": True,
+        "decision_head_frozen": False,
+        "entire_nanojev_head_trainable": bool(training_config.get("r2_gain_trainable", False)),
+        "nanojev_head_trainable_except_r2_gain": not bool(training_config.get("r2_gain_trainable", False)),
+        "r2_gain_trainable": bool(training_config.get("r2_gain_trainable", False)),
         "soft_feedback": {
             "enabled": True,
             "token_count": SOFT_FEEDBACK_TOKEN_COUNT,
@@ -1994,11 +2073,11 @@ def save_generation(*, exp: Path, model, optimizer, cycle: int, global_step: int
             "strength_init": training_config["soft_feedback_strength_init"],
             "generator": SOFT_FEEDBACK_GENERATOR,
             "control_modes": list(SOFT_FEEDBACK_CONTROL_MODES),
-            "backbone_reads_dynamic": 2,
+            "backbone_reads_dynamic": 3 if training_config.get("r2_gain_trainable", False) else 2,
             "backbone_reads_static": 1,
             "backbone_reads_none": 1,
-            "static_base_frozen": True,
-            "static_strength_frozen": True,
+            "static_base_frozen": False,
+            "static_strength_frozen": False,
             "sparse_registers_trainable": True,
             "sparse_registers_zero_initialized_from_parent": True,
             "router_task_identity_input": False,
@@ -2010,7 +2089,14 @@ def save_generation(*, exp: Path, model, optimizer, cycle: int, global_step: int
             "register_residual_weight": training_config["register_residual_weight"],
             "register_orthogonality_weight": training_config["register_orthogonality_weight"],
             "register_active_epsilon": training_config["register_active_epsilon"],
-            "frozen_strength": float(torch.sigmoid(model.soft_feedback.strength_logit.detach()).item()),
+            "current_strength": float(torch.sigmoid(model.soft_feedback.strength_logit.detach()).item()),
+            "recurrent_r2_enabled": True,
+            "recurrent_r2_shared_control_bank": True,
+            "recurrent_r2_gain_parameterization": "tanh_scalar_rezeroed_at_full_head_cutover",
+            "r2_gain_trainable": bool(training_config.get("r2_gain_trainable", False)),
+            "r2_third_pass_bypassed": not bool(training_config.get("r2_gain_trainable", False)),
+            "entire_nanojev_head_trainable": bool(training_config.get("r2_gain_trainable", False)),
+            "nanojev_head_trainable_except_r2_gain": not bool(training_config.get("r2_gain_trainable", False)),
         },
     }
     if training_config.get("latent_walk_enabled"):
@@ -3056,20 +3142,76 @@ def main() -> None:
     p.add_argument("--microbatch-questions", type=int, default=1)
     p.add_argument("--max-microbatch-tokens", type=int, default=8192)
     p.add_argument("--head-lr", type=float, default=2e-4)
+    p.add_argument(
+        "--train-r2-gain",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Release recurrent R2 gain and restore pass 3; default follows lane config (frozen at zero after cut-over)",
+    )
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--ranking-weight", type=float, default=0.25)
     p.add_argument("--ranking-margin", type=float, default=0.10)
     p.add_argument("--precision", choices=["bf16", "fp32"], default="bf16")
     p.add_argument("--keep-generations", type=int, default=2)
+    p.add_argument("--heartbeat-seconds", type=float, default=30.0,
+                   help="Compact training heartbeat cadence in seconds")
     p.add_argument("--local-files-only", action="store_true")
     p.add_argument("--disable-native-triton", action="store_true")
     p.add_argument("--self-test", action="store_true")
+    p.add_argument("--dry-run", action="store_true", help="Validate the branched lane and resolved training contract without loading Qwen")
     args = p.parse_args()
     if args.self_test:
         self_test()
         return
     if args.latent_walk:
         p.error("soft-feedback residual phase 2 intentionally disables --latent-walk")
+    if args.experiment_dir is None:
+        args.experiment_dir = DEFAULT_EXPERIMENT
+    established_path = Path(args.experiment_dir).expanduser() / "training_config.json"
+    if established_path.is_file():
+        established = read_json(established_path)
+        scalar_keys = {
+            "cycle_seconds": "cycle_seconds",
+            "train_files_per_cycle": "train_files_per_cycle",
+            "train_units_per_cycle": "train_units_per_cycle",
+            "consensus_dev_files": "consensus_dev_files",
+            "consensus_dev_records": "consensus_dev_records",
+            "mutation_max_code_tokens": "mutation_max_code_tokens",
+            "consensus_max_code_tokens": "consensus_max_code_tokens",
+            "batch_units": "batch_units",
+            "microbatch_questions": "microbatch_questions",
+            "max_microbatch_tokens": "max_microbatch_tokens",
+            "head_lr": "head_lr",
+            "weight_decay": "weight_decay",
+            "ranking_weight": "ranking_weight",
+            "ranking_margin": "ranking_margin",
+            "precision": "precision",
+            "control_space_size": "control_space_size",
+            "register_rank": "register_rank",
+            "register_sparsity_weight": "register_sparsity_weight",
+            "register_residual_weight": "register_residual_weight",
+            "register_orthogonality_weight": "register_orthogonality_weight",
+            "register_active_epsilon": "register_active_epsilon",
+            "soft_feedback_strength_init": "soft_feedback_strength_init",
+            "soft_feedback_control_eval_every": "soft_feedback_control_eval_every",
+        }
+        for arg_name, config_name in scalar_keys.items():
+            if config_name in established:
+                setattr(args, arg_name, established[config_name])
+        if "soft_feedback_lr" in established:
+            args.register_lr = established["soft_feedback_lr"]
+        for task in ("legacy", "mutation", "ast", "consensus", "triad"):
+            key = f"{task}_training_percent"
+            if key in established:
+                setattr(args, key, established[key])
+        args.disable_native_triton = bool(established.get("disable_native_triton", args.disable_native_triton))
+        args.disable_soft_feedback_gradient_checkpointing = not bool(
+            established.get("soft_feedback_gradient_checkpointing", not args.disable_soft_feedback_gradient_checkpointing)
+        )
+        if args.train_r2_gain is None:
+            args.train_r2_gain = bool(established.get("r2_gain_trainable", False))
+    if args.train_r2_gain is None:
+        args.train_r2_gain = False
     curriculum_defaults = SOFT_FEEDBACK_DEFAULT_CURRICULUM
     for task, config_key in CURRICULUM_CONFIG_KEYS.items():
         if getattr(args, config_key) is None:
@@ -3094,6 +3236,8 @@ def main() -> None:
         p.error("cycle/data/batch settings must be positive")
     if args.keep_generations < 1 or args.max_microbatch_tokens < 0 or (args.parent_cycle is not None and args.parent_cycle < 0):
         p.error("invalid checkpoint/token limits or parent cycle")
+    if not math.isfinite(args.heartbeat_seconds) or args.heartbeat_seconds <= 0.0:
+        p.error("--heartbeat-seconds must be finite and positive")
     if not math.isfinite(args.head_lr) or args.head_lr <= 0:
         p.error("--head-lr must be finite and positive")
     if args.control_space_size <= 0 or args.register_rank <= 0 or args.soft_feedback_control_eval_every <= 0:
@@ -3122,7 +3266,101 @@ def main() -> None:
     if not math.isfinite(args.ranking_margin) or args.ranking_margin <= 0:
         p.error("--ranking-margin must be finite and positive")
 
+    if args.dry_run:
+        exp = Path(args.experiment_dir).expanduser().resolve(strict=True)
+        branch_path = exp / "s_first_r2_full_head_branch.json"
+        if not branch_path.is_file():
+            raise RuntimeError(f"full-head lane missing branch record: {branch_path}")
+        branch = read_json(branch_path)
+        if branch.get("schema_version") != "main-computer-nanojev-k1000-s-first-r2-full-head-branch-v1":
+            raise RuntimeError("full-head branch schema mismatch")
+        config = read_json(exp / "training_config.json")
+        state = read_json(exp / "training_state.json")
+        if config.get("soft_feedback_generator") != SOFT_FEEDBACK_GENERATOR:
+            raise RuntimeError("full-head training_config generator mismatch")
+        if config.get("decision_head_frozen") is not False:
+            raise RuntimeError("full-head training_config must unfreeze the inherited decision head")
+        if bool(config.get("r2_gain_trainable", False)) != bool(args.train_r2_gain):
+            raise RuntimeError("resolved --train-r2-gain mode disagrees with training_config")
+        latest = Path(str(state.get("latest_generation"))).expanduser().resolve(strict=True)
+        import torch
+        opt = torch.load(latest / "optimizer.pt", map_location="cpu", weights_only=False)
+        groups = opt.get("param_groups", []) if isinstance(opt, dict) else []
+        if len(groups) != 2:
+            raise RuntimeError(f"full-head optimizer must have two groups, found {len(groups)}")
+        print(json.dumps({
+            "event": "full_head_trainer_dry_run",
+            "experiment_dir": str(exp),
+            "fork_cycle": branch.get("fork_cycle"),
+            "latest_cycle": state.get("cycle"),
+            "latest_checkpoint": str(latest),
+            "backbone_frozen": True,
+            "nanojev_head_trainable_except_r2_gain": not bool(args.train_r2_gain),
+            "r2_gain_trainable": bool(args.train_r2_gain),
+            "r2_third_pass_bypassed": not bool(args.train_r2_gain),
+            "soft_feedback_group_parameter_tensors": len(groups[0].get("params", [])),
+            "decision_head_group_parameter_tensors": len(groups[1].get("params", [])),
+            "control_space_size": config.get("control_space_size"),
+            "register_rank": config.get("register_rank"),
+            "cycle_seconds": config.get("cycle_seconds"),
+            "head_lr": config.get("head_lr"),
+            "register_lr": config.get("soft_feedback_lr"),
+        }, ensure_ascii=False, allow_nan=False), flush=True)
+        return
+
     tools_dir = Path(__file__).resolve().parent
+    # Reuse the already-tested S-first recurrent-R2 model implementation.
+    s_first_arch = load_local_module(
+        "nanojev_s_first_arch_for_full_head",
+        tools_dir / "nanojev_code_sparse_register_k1000_s_first_train.py",
+    )
+    r2_arch = load_local_module(
+        "nanojev_s_first_r2_arch_for_full_head",
+        tools_dir / "nanojev_code_sparse_register_k1000_s_first_r2_train.py",
+    )
+    inherited_r2_factory = r2_arch.build_r2_factory(sys.modules[__name__], s_first_arch)
+
+    def full_head_factory(BaseDecisionModel, *, control_space_size, register_rank, strength_init, active_epsilon):
+        BaseR2 = inherited_r2_factory(
+            BaseDecisionModel,
+            control_space_size=control_space_size,
+            register_rank=register_rank,
+            strength_init=strength_init,
+            active_epsilon=active_epsilon,
+        )
+
+        class FullHeadDecisionModel(BaseR2):
+            r2_gain_training_enabled = False
+
+            def forward(self, examples, pad_token):
+                if self.soft_feedback.mode == "dynamic" and not self.r2_gain_training_enabled:
+                    # Exact frozen-g2 fast path: call the inherited S-first forward
+                    # directly, skipping C2 and the third frozen-Qwen read entirely.
+                    logits, valid = super(BaseR2, self).forward(examples, pad_token)
+                    stats = dict(self.soft_feedback.last_stats)
+                    stats.update({
+                        "backbone_reads": 2,
+                        "r2_bypassed_frozen_zero_gain": True,
+                        "r2_candidate_active_slot_count": 0,
+                        "r2_effective_active_slot_count": 0,
+                        "r2_candidate_raw_rms": 0.0,
+                        "r2_dynamic_raw_rms": 0.0,
+                        "r2_gain_parameter": 0.0,
+                        "r2_gain": 0.0,
+                        "r1_r2_candidate_coefficient_cosine": 0.0,
+                        "r1_r2_candidate_residual_cosine": 0.0,
+                        "third_pass_prefix": "bypassed_frozen_zero_r2_gain",
+                        "third_pass_answer": "pass2_answer_reused",
+                        "second_to_third_leaf_displacement_rms": 0.0,
+                        "relative_second_to_third_leaf_displacement_rms": 0.0,
+                    })
+                    self.soft_feedback.last_stats = stats
+                    return logits, valid
+                return super().forward(examples, pad_token)
+
+        return FullHeadDecisionModel
+
+    globals()["build_soft_feedback_decision_model_class"] = full_head_factory
     legacy = load_local_module("nanojev_code_train_for_consensus", tools_dir / "nanojev_code_train.py")
     data = load_local_module("nanojev_code_lexeme_data_for_consensus", tools_dir / "nanojev_code_lexeme_data.py")
     mutation = load_local_module("nanojev_code_mutation_for_consensus", tools_dir / "nanojev_code_mutation_train.py")
@@ -3141,6 +3379,24 @@ def main() -> None:
         raise RuntimeError("legacy training state schema mismatch")
 
     exp = Path(args.experiment_dir).expanduser().resolve()
+    branch_record_path = exp / "s_first_r2_full_head_branch.json"
+    if not branch_record_path.is_file():
+        raise RuntimeError(
+            "full-head trainer only resumes a cut-over lane; missing " + str(branch_record_path)
+        )
+    branch_record = read_json(branch_record_path)
+    if branch_record.get("schema_version") != "main-computer-nanojev-k1000-s-first-r2-full-head-branch-v1":
+        raise RuntimeError("full-head branch schema mismatch")
+    configure_compact_emit(exp, args.heartbeat_seconds)
+    emit(
+        "full_head_training_mode",
+        experiment_dir=str(exp),
+        backbone_frozen=True,
+        nanojev_head_trainable_except_r2_gain=not bool(args.train_r2_gain),
+        r2_gain_trainable=bool(args.train_r2_gain),
+        r2_third_pass_bypassed=not bool(args.train_r2_gain),
+        heartbeat_seconds=args.heartbeat_seconds,
+    )
     recovering_partial = False
     recovering_scaffold = False
     partial_experiment = None
@@ -3270,8 +3526,11 @@ def main() -> None:
     for param in body:
         param.requires_grad_(False)
     walk = []
+    # Preserve the old dynamic-parameter order first so inherited AdamW moments
+    # continue to attach to the same tensors.  S and strength are appended.
+    dynamic_feedback = list(soft_feedback.dynamic_parameters())
     static_feedback = list(soft_feedback.static_parameters())
-    feedback = list(soft_feedback.dynamic_parameters())
+    feedback = dynamic_feedback + static_feedback
     head = [
         param for name, param in model.named_parameters()
         if not name.startswith("backbone.")
@@ -3279,13 +3538,12 @@ def main() -> None:
         and not name.startswith("soft_feedback.")
     ]
     if not head or not feedback:
-        raise RuntimeError("sparse-register training requires an inherited decision head and trainable sparse-register parameters")
-    for param in head:
-        param.requires_grad_(False)
-    for param in static_feedback:
-        param.requires_grad_(False)
-    for param in feedback:
+        raise RuntimeError("full-head training requires the inherited decision head and soft-feedback head")
+    for param in feedback + head:
         param.requires_grad_(True)
+    soft_feedback.r2_gain.requires_grad_(bool(args.train_r2_gain))
+    model.r2_gain_training_enabled = bool(args.train_r2_gain)
+    trainable_head = [param for param in feedback + head if param.requires_grad]
 
     train_manifest = read_json(Path(legacy_experiment["manifests"]["train"]))
     dev_manifest = read_json(Path(legacy_experiment["manifests"]["dev"]))
@@ -3332,7 +3590,12 @@ def main() -> None:
         "pairwise_topology_training": False,
         "pairwise_topology_evaluation": True,
         "disable_native_triton": args.disable_native_triton,
-        "decision_head_frozen": True,
+        "decision_head_frozen": False,
+        "entire_nanojev_head_trainable": bool(args.train_r2_gain),
+        "nanojev_head_trainable_except_r2_gain": not bool(args.train_r2_gain),
+        "r2_gain_trainable": bool(args.train_r2_gain),
+        "r2_gain_rezeroed_at_cutover": True,
+        "r2_third_pass_bypassed_when_gain_frozen": not bool(args.train_r2_gain),
         "soft_feedback_enabled": True,
         "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
         "soft_feedback_lr": args.register_lr,
@@ -3342,8 +3605,8 @@ def main() -> None:
         "soft_feedback_control_eval_every": args.soft_feedback_control_eval_every,
         "soft_feedback_gradient_checkpointing": not args.disable_soft_feedback_gradient_checkpointing,
         "soft_feedback_parent_role": "latest_committed_phase1_soft_feedback_static_token",
-        "soft_feedback_static_base_frozen": True,
-        "soft_feedback_static_strength_frozen": True,
+        "soft_feedback_static_base_frozen": False,
+        "soft_feedback_static_strength_frozen": False,
         "control_space_size": args.control_space_size,
         "register_rank": args.register_rank,
         "router_task_identity_input": False,
@@ -3417,7 +3680,11 @@ def main() -> None:
                 "while zero-initializing one task-blind sparse router tests whether first-pass state can self-organize "
                 "shared, overlapping, distinct, and dormant control coordinates without assigned registers"
             ),
-            "decision_head_frozen": True,
+            "decision_head_frozen": False,
+            "entire_nanojev_head_trainable": bool(args.train_r2_gain),
+            "nanojev_head_trainable_except_r2_gain": not bool(args.train_r2_gain),
+            "r2_gain_trainable": bool(args.train_r2_gain),
+            "r2_third_pass_bypassed_when_gain_frozen": not bool(args.train_r2_gain),
             "soft_feedback_enabled": True,
             "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
             "soft_feedback_generator": SOFT_FEEDBACK_GENERATOR,
@@ -3426,10 +3693,14 @@ def main() -> None:
             "soft_feedback_first_pass": "frozen_qwen_plus_frozen_head_sensor",
             "soft_feedback_second_pass": "one_continuous_helper_embedding_prepended_to_original_path_embeddings",
             "soft_feedback_helper_sharing": "one_helper_per_question_shared_by_all_candidate_paths",
-            "soft_feedback_backbone_reads_dynamic": 2,
-            "soft_feedback_gradient_path": "final_loss_through_frozen_head_and_second_frozen_qwen_to_task_blind_router_and_shared_control_bank_only",
-            "soft_feedback_static_base_frozen": True,
-            "soft_feedback_static_strength_frozen": True,
+            "soft_feedback_backbone_reads_dynamic": 3 if args.train_r2_gain else 2,
+            "soft_feedback_gradient_path": (
+                "final_loss_jointly_updates_head_S_R1_bank_and_released_R2_through_frozen_qwen"
+                if args.train_r2_gain else
+                "final_loss_jointly_updates_head_S_R1_bank_through_frozen_qwen_with_R2_gain_frozen_zero"
+            ),
+            "soft_feedback_static_base_frozen": False,
+            "soft_feedback_static_strength_frozen": False,
             "control_space_size": args.control_space_size,
             "register_rank": args.register_rank,
             "router_task_identity_input": False,
@@ -3568,6 +3839,16 @@ def main() -> None:
                     optimizer_preserved=True,
                     mix_credits_reset=True,
                 )
+            elif r2_gain_mode_migration_allowed(established_config, training_config):
+                from_mode = bool(established_config.get("r2_gain_trainable", False))
+                to_mode = bool(training_config.get("r2_gain_trainable", False))
+                emit(
+                    "r2_gain_training_mode_changed",
+                    from_trainable=from_mode,
+                    to_trainable=to_mode,
+                    third_pass_bypassed=not to_mode,
+                )
+                atomic_json(exp / "training_config.json", training_config)
             elif latent_walk_penalty_migration_allowed(established_config, training_config):
                 migrations = list(state.get("latent_walk_penalty_migrations", []))
                 migrations.append({
@@ -3720,6 +4001,8 @@ def main() -> None:
     emit("head_load_start", source=str(head_source), inherited_parent=resume_generation is None)
     if resume_generation is not None:
         load_head_into_model(model, head_source, allow_missing_prefixes=())
+        if not args.train_r2_gain and int(torch.count_nonzero(soft_feedback.r2_gain.detach()).item()) != 0:
+            raise RuntimeError("frozen R2 gain must remain exact zero; rerun cut-over or explicitly use --train-r2-gain")
     else:
         load_parent_static_and_head_into_model(model, head_source)
         inherited_base = soft_feedback.base.detach().clone()
@@ -3751,7 +4034,13 @@ def main() -> None:
         )
     model.cuda()
     model.backbone.eval()
-    optimizer = torch.optim.AdamW(feedback, lr=args.register_lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": feedback, "lr": args.register_lr},
+            {"params": head, "lr": args.head_lr},
+        ],
+        weight_decay=args.weight_decay,
+    )
     if resume_generation is not None:
         optimizer.load_state_dict(torch.load(resume_generation / "optimizer.pt", map_location="cpu", weights_only=False))
         legacy.move_optimizer_state_to_cuda(optimizer)
@@ -3763,9 +4052,12 @@ def main() -> None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
     emit("trainer_load_done", gpu=torch.cuda.get_device_name(0),
-         body_params=sum(x.numel() for x in body), frozen_head_params=sum(x.numel() for x in head),
-         frozen_static_feedback_params=sum(x.numel() for x in static_feedback),
-         trainable_sparse_register_params=sum(x.numel() for x in feedback),
+         body_params=sum(x.numel() for x in body), trainable_decision_head_params=sum(x.numel() for x in head),
+         trainable_static_feedback_params=sum(x.numel() for x in static_feedback),
+         trainable_soft_feedback_params=sum(x.numel() for x in feedback),
+         trainable_full_head_params=sum(x.numel() for x in trainable_head),
+         r2_gain_trainable=bool(args.train_r2_gain),
+         r2_third_pass_bypassed=not bool(args.train_r2_gain),
          control_space_size=args.control_space_size, register_rank=args.register_rank,
          soft_feedback_token_count=SOFT_FEEDBACK_TOKEN_COUNT,
          soft_feedback_gradient_checkpointing=not args.disable_soft_feedback_gradient_checkpointing,
@@ -4319,11 +4611,9 @@ def main() -> None:
             last_walk_displacement_penalty_loss = 0.0
             if body_norm != 0.0:
                 raise RuntimeError("frozen backbone produced parameter gradients")
-            if last_head_grad_norm != 0.0:
-                raise RuntimeError("frozen inherited NanoJev head produced parameter gradients")
-            if last_feedback_grad_norm == 0.0:
-                raise RuntimeError("soft-feedback controller received zero gradient")
-            torch.nn.utils.clip_grad_norm_(feedback, 1.0, error_if_nonfinite=True)
+            if last_head_grad_norm == 0.0 and last_feedback_grad_norm == 0.0:
+                raise RuntimeError("fully trainable NanoJev head received zero gradient")
+            torch.nn.utils.clip_grad_norm_(trainable_head, 1.0, error_if_nonfinite=True)
             optimizer.step()
             cycle_steps += 1
             state["global_step"] = int(state["global_step"]) + 1
@@ -4484,13 +4774,12 @@ def main() -> None:
             + soft_feedback.strength_logit.detach().float().cpu().contiguous().numpy().tobytes()
         ).hexdigest()
         if backbone_after != backbone_before:
-            raise RuntimeError("frozen backbone changed during soft-feedback training cycle")
-        if head_after != head_before:
-            raise RuntimeError("frozen inherited NanoJev head changed during sparse-register training cycle")
-        if static_feedback_after != static_feedback_before:
-            raise RuntimeError("frozen learned static soft token or strength changed during sparse-register training cycle")
-        if feedback_after == feedback_before:
-            raise RuntimeError("sparse-register control parameters did not change during training cycle")
+            raise RuntimeError("frozen backbone changed during full-head training cycle")
+        decision_head_changed = head_after != head_before
+        static_feedback_changed = static_feedback_after != static_feedback_before
+        soft_feedback_changed = feedback_after != feedback_before
+        if not (decision_head_changed or soft_feedback_changed):
+            raise RuntimeError("fully trainable NanoJev head did not change during training cycle")
 
         previous = {
             "legacy_sep": state.get("last_legacy_probability_separation"),
@@ -4658,6 +4947,10 @@ def main() -> None:
             "soft_feedback_enabled": True,
             "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
             "register_lr": args.register_lr,
+            "head_lr": args.head_lr,
+            "decision_head_frozen": False,
+            "soft_feedback_static_base_frozen": False,
+            "soft_feedback_static_strength_frozen": False,
             "control_space_size": args.control_space_size,
             "register_rank": args.register_rank,
             "register_sparsity_weight": args.register_sparsity_weight,
@@ -4667,9 +4960,14 @@ def main() -> None:
             "register_usage": register_usage_summary,
             "soft_feedback_last_forward": dict(soft_feedback.last_stats),
             "soft_feedback_control_sweep": soft_feedback_control_sweep,
-            "soft_feedback_probe_changed": True,
-            "soft_feedback_static_probe_changed": False,
-            "sparse_register_probe_changed": True,
+            "soft_feedback_probe_changed": soft_feedback_changed,
+            "soft_feedback_static_probe_changed": static_feedback_changed,
+            "decision_head_probe_changed": decision_head_changed,
+            "entire_nanojev_head_trainable": bool(args.train_r2_gain),
+            "nanojev_head_trainable_except_r2_gain": not bool(args.train_r2_gain),
+            "r2_gain_trainable": bool(args.train_r2_gain),
+            "r2_third_pass_bypassed": not bool(args.train_r2_gain),
+            "sparse_register_probe_changed": soft_feedback_changed,
             "latent_walk_grad_norm_last_step": last_walk_grad_norm,
             "latent_walk_displacement_penalty_weight": (
                 0.0

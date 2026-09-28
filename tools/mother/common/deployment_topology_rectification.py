@@ -33,6 +33,7 @@ from .coolify_state import (
 )
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult
+from .deployment_validator_routes import validator_route_from_record
 
 
 _STALENESS_EVIDENCE_KIND = "main_computer.mother.live_topology_staleness_observation.v1"
@@ -477,6 +478,44 @@ def _topology_service_record(node: str, record: Mapping[str, Any], *, source: st
     return result
 
 
+def _validator_route_bindings_for_topology(
+    topology: Mapping[str, Any],
+    services: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
+    raw = topology.get("validator_route_bindings")
+    if isinstance(raw, Mapping):
+        for node, raw_route in raw.items():
+            if not isinstance(node, str) or not isinstance(raw_route, Mapping):
+                continue
+            node_id = _identifier(node, "validator route binding node")
+            route = validator_route_from_record(raw_route)
+            if route is not None:
+                bindings[node_id] = dict(route)
+    for node, service in services.items():
+        if not isinstance(service, Mapping):
+            continue
+        route = validator_route_from_record(service)
+        if route is None:
+            continue
+        node_id = _identifier(node, "validator route binding node")
+        previous = bindings.get(node_id)
+        if previous is not None and canonical_json(previous) != canonical_json(route):
+            raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"{node_id} validator route binding disagrees with active service route")
+        bindings[node_id] = dict(route)
+    return bindings
+
+
+def _preserve_validator_route_fields(previous: Mapping[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(previous, Mapping):
+        return current
+    for key in ("validator_route", "p2p_route", "vpn_ip", "p2p_port", "p2p_endpoint"):
+        if key in previous and key not in current:
+            value = previous[key]
+            current[key] = dict(value) if isinstance(value, Mapping) else value
+    return current
+
+
 def _observation_service_record(item: Mapping[str, Any], *, completed_at: Any) -> dict[str, Any] | None:
     node = item.get("node")
     controller_id = item.get("controller_id")
@@ -525,12 +564,13 @@ def _document_service_records(document: Mapping[str, Any], nodes: list[str], top
             node = item.get("node")
             if not isinstance(node, str) or node not in nodes:
                 continue
-            services[node] = _topology_service_record(
+            survivor_record = _topology_service_record(
                 _identifier(node, "survivor node"),
                 item,
                 source=source,
                 completed_at=completed_at,
             )
+            services[node] = _preserve_validator_route_fields(services.get(node), survivor_record)
 
     for key, source in (("service_observations", "service-observation"), ("survivor_service_observations", "survivor-service-observation")):
         raw = document.get(key)
@@ -545,7 +585,7 @@ def _document_service_records(document: Mapping[str, Any], nodes: list[str], top
             record["readiness_source"] = record.get("readiness_source") or source
             previous = services.get(record["node"])
             if previous is None or str(record.get("last_observed_at") or "") >= str(previous.get("last_observed_at") or ""):
-                services[record["node"]] = record
+                services[record["node"]] = _preserve_validator_route_fields(previous, record)
 
     target = document.get("target")
     if isinstance(target, Mapping):
@@ -798,6 +838,11 @@ def _topology_detection_document(document: Mapping[str, Any]) -> Mapping[str, An
             "genesis_sha256": _sha256(document.get("genesis_sha256"), "validator-admission genesis SHA-256"),
             "nodes": nodes,
             "services": services,
+            "validator_route_bindings": {
+                str(node): dict(route)
+                for node, route in (document.get("validator_route_bindings") or {}).items()
+                if isinstance(node, str) and isinstance(route, Mapping)
+            },
             "validator_count": len(validators),
             "validator_set": validators,
             "validator_admission_performed": True,
@@ -1248,6 +1293,8 @@ def detect_topology_staleness(
     age = _age_seconds(document.get("completed_at"), now=now)
 
     nodes, validators, chain_id, genesis_sha, services = _nodes_and_services(detection_document)
+    topology = _topology(detection_document)
+    validator_route_bindings = _validator_route_bindings_for_topology(topology, services)
     target = _latest_known_target(detection_document, nodes, validators, services)
 
     service_results: list[dict[str, Any]] = []
@@ -1366,6 +1413,7 @@ def detect_topology_staleness(
         "expected_nodes": nodes,
         "expected_validator_set": validators,
         "expected_services": services,
+        "validator_route_bindings": validator_route_bindings,
         "expected_service_observations": service_results,
         "observed_live_node_hints": live_node_hints,
         "unexpected_live_nodes": unexpected_live_nodes,
@@ -1471,6 +1519,7 @@ def build_empty_topology_rectification_evidence(
         "genesis_sha256": detection["genesis_sha256"],
         "nodes": [],
         "services": {},
+        "validator_route_bindings": {node: dict(route) for node, route in (detection.get("validator_route_bindings") or {}).items() if isinstance(route, Mapping)},
         "validator_count": 0,
         "validator_set": [],
         "baseline_topology_used_as_live": False,
@@ -1630,6 +1679,7 @@ def build_fresh_empty_topology_rectification_evidence(
         "fresh_genesis_required": True,
         "nodes": [],
         "services": {},
+        "validator_route_bindings": {node: dict(route) for node, route in (detection.get("validator_route_bindings") or {}).items() if isinstance(route, Mapping)},
         "validator_count": 0,
         "validator_set": [],
         "baseline_topology_used_as_live": False,
@@ -2018,6 +2068,7 @@ def build_live_current_topology_evidence(
         "genesis_sha256": detection.get("genesis_sha256"),
         "nodes": nodes,
         "services": services,
+        "validator_route_bindings": {node: dict(route) for node, route in (detection.get("validator_route_bindings") or {}).items() if isinstance(route, Mapping)},
         "validator_count": len(validators),
         "validator_set": validators,
         "baseline_topology_used_as_live": False,
@@ -2341,6 +2392,7 @@ def build_add_node_post_admission_topology_evidence(
         "genesis_sha256": _sha256(detection.get("genesis_sha256"), "observed genesis SHA-256"),
         "nodes": nodes,
         "services": services,
+        "validator_route_bindings": {node: dict(route) for node, route in (detection.get("validator_route_bindings") or {}).items() if isinstance(route, Mapping)},
         "validator_count": len(validators),
         "validator_set": validators,
         "validator_admission_previously_performed": True,

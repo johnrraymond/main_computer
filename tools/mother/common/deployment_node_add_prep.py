@@ -26,7 +26,7 @@ from . import atomic_files
 from .canonical import canonical_json
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
-from .deployment_validator_routes import allocate_candidate_validator_route
+from .deployment_validator_routes import allocate_candidate_validator_route, validator_route_from_record
 
 
 _TRANSACTION_KIND = "main_computer.mother.deployment_node_add_prep_transaction.v1"
@@ -260,6 +260,62 @@ def _chain_identity(document: Mapping[str, Any]) -> tuple[Any, Any]:
     return chain_id, genesis_sha256
 
 
+def _copy_validator_route_fields(target: dict[str, Any], source: Mapping[str, Any]) -> dict[str, Any]:
+    route = validator_route_from_record(source)
+    if route is None:
+        return target
+    target["validator_route"] = dict(route)
+    target["vpn_ip"] = route["vpn_ip"]
+    target["p2p_port"] = route["p2p_port"]
+    target["p2p_endpoint"] = route["p2p_endpoint"]
+    return target
+
+
+def _merge_validator_route_binding(
+    bindings: dict[str, dict[str, Any]],
+    *,
+    node: str,
+    record: Mapping[str, Any],
+) -> None:
+    route = validator_route_from_record(record)
+    if route is None:
+        return
+    if not route.get("controller_id"):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID", f"{node} validator route controller id is missing")
+    previous = bindings.get(node)
+    if previous is not None and canonical_json(previous) != canonical_json(route):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_MISMATCH", f"{node} validator route binding changed")
+    bindings[node] = dict(route)
+
+
+def _validator_route_bindings(document: Mapping[str, Any], services: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
+    for topology_key in ("rollback_baseline_topology", "current_topology", "final_topology", "post_add_topology", "post_removal_topology", "pre_removal_topology"):
+        topology = document.get(topology_key)
+        if not isinstance(topology, Mapping):
+            continue
+        raw = topology.get("validator_route_bindings")
+        if not isinstance(raw, Mapping):
+            continue
+        for node, route in raw.items():
+            if isinstance(node, str) and isinstance(route, Mapping):
+                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
+    raw = document.get("validator_route_bindings")
+    if isinstance(raw, Mapping):
+        for node, route in raw.items():
+            if isinstance(node, str) and isinstance(route, Mapping):
+                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
+    service_routes = document.get("service_routes")
+    if isinstance(service_routes, Mapping):
+        for node, route in service_routes.items():
+            if isinstance(node, str) and isinstance(route, Mapping):
+                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
+    for node, record in services.items():
+        if isinstance(record, Mapping):
+            _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=record)
+    return bindings
+
+
 def _service_record_from_observation(item: Mapping[str, Any]) -> dict[str, Any] | None:
     node = item.get("node")
     service_uuid = item.get("service_uuid")
@@ -291,14 +347,14 @@ def _service_records(document: Mapping[str, Any], nodes: list[str]) -> dict[str,
             if isinstance(node, str) and isinstance(service_uuid, str) and service_uuid and isinstance(controller_id, str) and controller_id:
                 node_id = _identifier(node, "service topology node")
                 previous = services.get(node_id)
-                candidate = {
+                candidate = _copy_validator_route_fields({
                     "node": node_id,
                     "controller_id": _identifier(controller_id, "service topology controller id"),
                     "service_uuid": service_uuid,
                     "service_status": record.get("service_status"),
                     "readiness_source": record.get("readiness_source"),
                     "last_observed_at": record.get("last_observed_at"),
-                }
+                }, record)
                 if previous is None or topology_key == "final_topology":
                     services[node_id] = candidate
 
@@ -312,14 +368,15 @@ def _service_records(document: Mapping[str, Any], nodes: list[str]) -> dict[str,
                 service_uuid = item.get("service_uuid")
                 controller_id = item.get("controller_id")
                 if isinstance(node, str) and isinstance(service_uuid, str) and service_uuid and isinstance(controller_id, str) and controller_id:
-                    services[_identifier(node, "survivor node")] = {
-                        "node": _identifier(node, "survivor node"),
+                    node_id = _identifier(node, "survivor node")
+                    services[node_id] = _copy_validator_route_fields({
+                        "node": node_id,
                         "controller_id": _identifier(controller_id, "survivor controller id"),
                         "service_uuid": service_uuid,
                         "service_status": item.get("service_status"),
                         "readiness_source": item.get("readiness_source"),
                         "last_observed_at": item.get("last_observed_at"),
-                    }
+                    }, item)
 
     for key in ("service_observations", "survivor_service_observations"):
         raw = document.get(key)
@@ -330,8 +387,12 @@ def _service_records(document: Mapping[str, Any], nodes: list[str]) -> dict[str,
                 record = _service_record_from_observation(item)
                 if record is not None:
                     previous = services.get(record["node"])
-                    if previous is None or str(record.get("last_observed_at") or "") >= str(previous.get("last_observed_at") or ""):
+                    if previous is None:
                         services[record["node"]] = record
+                    elif str(record.get("last_observed_at") or "") >= str(previous.get("last_observed_at") or ""):
+                        merged = dict(previous)
+                        merged.update(record)
+                        services[record["node"]] = merged
 
     missing = [node for node in nodes if node not in services]
     if missing:
@@ -557,8 +618,24 @@ def _controller_exists(network_doc: Mapping[str, Any], host: str) -> bool:
 
 
 def _removed_target_from_baseline(document: Mapping[str, Any], target_node: str) -> dict[str, Any] | None:
+    route: dict[str, Any] | None = None
+    final = document.get("final_topology")
+    if isinstance(final, Mapping):
+        bindings = final.get("validator_route_bindings")
+        if isinstance(bindings, Mapping) and isinstance(bindings.get(target_node), Mapping):
+            route = validator_route_from_record(bindings[target_node])
+    pre = document.get("pre_removal_topology")
+    if route is None and isinstance(pre, Mapping):
+        services = pre.get("services")
+        if isinstance(services, Mapping) and isinstance(services.get(target_node), Mapping):
+            route = validator_route_from_record(services[target_node])
+        bindings = pre.get("validator_route_bindings")
+        if route is None and isinstance(bindings, Mapping) and isinstance(bindings.get(target_node), Mapping):
+            route = validator_route_from_record(bindings[target_node])
     target = document.get("target")
     if isinstance(target, Mapping) and target.get("node") == target_node:
+        if route is None:
+            route = validator_route_from_record(target)
         validator = target.get("validator_address")
         controller = target.get("controller_id")
         service_uuid = target.get("service_uuid")
@@ -567,14 +644,15 @@ def _removed_target_from_baseline(document: Mapping[str, Any], target_node: str)
             "validator_address": _address(validator, "removed target validator address"),
             "previous_controller_id": _identifier(controller, "removed target controller id") if isinstance(controller, str) and controller else None,
             "previous_service_uuid": service_uuid if isinstance(service_uuid, str) and service_uuid else None,
+            "validator_route": dict(route) if route is not None else None,
         }
-    final = document.get("final_topology")
     if isinstance(final, Mapping) and final.get("removed_node") == target_node:
         return {
             "node": target_node,
             "validator_address": _address(final.get("removed_validator_address"), "removed target validator address"),
-            "previous_controller_id": None,
+            "previous_controller_id": route.get("controller_id") if isinstance(route, Mapping) else None,
             "previous_service_uuid": None,
+            "validator_route": dict(route) if route is not None else None,
         }
     return None
 
@@ -657,18 +735,53 @@ def build_node_add_prep_transaction(
     post_validators = [validators_by_node[node] for node in post_nodes]
 
     current_services = {node: dict(services[node]) for node in nodes}
-    target_validator_route = allocate_candidate_validator_route(
-        private_state,
-        network=network,
-        controller_id=host,
-        existing_services=current_services,
-    )
+    route_bindings = _validator_route_bindings(baseline, current_services)
+    removed_target = _removed_target_from_baseline(baseline, target)
+    recorded_target_route = route_bindings.get(target)
+    if recorded_target_route is None and isinstance(removed_target, Mapping) and isinstance(removed_target.get("validator_route"), Mapping):
+        recorded_target_route = dict(removed_target["validator_route"])
+
+    if recorded_target_route is not None:
+        recorded_controller = recorded_target_route.get("controller_id")
+        if recorded_controller != host:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_PREP_REACTIVATION_ROUTE_MISMATCH",
+                f"{target} is permanently bound to controller {recorded_controller}, not {host}",
+            )
+        target_validator_route = dict(recorded_target_route)
+        route_source = "recorded-validator-route-binding"
+    else:
+        allocation_services = {node: dict(record) for node, record in current_services.items()}
+        for bound_node, bound_route in route_bindings.items():
+            if bound_node not in allocation_services:
+                allocation_services[bound_node] = {
+                    "node": bound_node,
+                    "controller_id": bound_route.get("controller_id"),
+                    "validator_route": dict(bound_route),
+                }
+        target_validator_route = allocate_candidate_validator_route(
+            private_state,
+            network=network,
+            controller_id=host,
+            existing_services=allocation_services,
+        )
+        route_source = "legacy-reactivation-route-fallback" if mode == "reactivate" else "new-validator-route-allocation"
+
+    target_route_binding = validator_route_from_record(target_validator_route)
+    if target_route_binding is None:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID", f"{target} validator route binding is invalid")
+    post_route_bindings = {node: dict(route) for node, route in route_bindings.items()}
+    previous_target_binding = post_route_bindings.get(target)
+    if previous_target_binding is not None and canonical_json(previous_target_binding) != canonical_json(target_route_binding):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_MISMATCH", f"{target} validator route binding changed")
+    post_route_bindings[target] = dict(target_route_binding)
     target_service_record = {
         "node": target,
         "controller_id": host,
         "service_uuid": None,
         "service_status": "pending-add-node-do",
         "readiness_source": "add-node-prep-route-allocation",
+        "validator_route_source": route_source,
         "validator_route": dict(target_validator_route),
         "vpn_ip": target_validator_route["vpn_ip"],
         "p2p_port": target_validator_route["p2p_port"],
@@ -709,6 +822,7 @@ def build_node_add_prep_transaction(
             "vpn_ip": target_validator_route["vpn_ip"],
             "p2p_port": target_validator_route["p2p_port"],
             "p2p_endpoint": target_validator_route["p2p_endpoint"],
+            "validator_route_source": route_source,
         },
         "current_topology": {
             "source": (
@@ -721,6 +835,7 @@ def build_node_add_prep_transaction(
             "validator_set": validators,
             "validator_count": len(validators),
             "services": current_services,
+            "validator_route_bindings": {node: dict(route) for node, route in route_bindings.items()},
             "chain_id": chain_id,
             "genesis_sha256": genesis_sha256,
             "fresh_genesis_required": genesis_sha256 is None,
@@ -734,6 +849,7 @@ def build_node_add_prep_transaction(
             "added_validator_address": target_validator,
             "target_host": host,
             "target_validator_route": dict(target_validator_route),
+            "validator_route_bindings": {node: dict(route) for node, route in post_route_bindings.items()},
             "services": {
                 **current_services,
                 target: target_service_record,

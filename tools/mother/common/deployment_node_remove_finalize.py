@@ -30,6 +30,7 @@ from .coolify_state import (
 )
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
+from .deployment_validator_routes import validator_route_from_record
 
 
 _DO_EVIDENCE_KIND = "main_computer.mother.deployment_node_remove_do_evidence.v1"
@@ -534,7 +535,7 @@ def build_node_remove_finalize_evidence(
         observation = survivor_observations_by_node.get(node)
         if not isinstance(observation, Mapping):
             observation = {}
-        final_topology["services"][node] = {
+        service_record = {
             "node": node,
             "controller_id": survivor["controller_id"],
             "service_uuid": survivor["service_uuid"],
@@ -542,6 +543,42 @@ def build_node_remove_finalize_evidence(
             "last_observed_at": observation.get("observed_at") or previous_service.get("last_observed_at"),
             "readiness_source": "node-remove-finalize-survivor-observation",
         }
+        route = previous_service.get("validator_route")
+        if isinstance(route, Mapping):
+            service_record["validator_route"] = dict(route)
+        for key in ("vpn_ip", "p2p_port", "p2p_endpoint"):
+            if previous_service.get(key) is not None:
+                service_record[key] = previous_service.get(key)
+        final_topology["services"][node] = service_record
+
+    route_bindings_raw = final_topology.get("validator_route_bindings")
+    route_bindings: dict[str, dict[str, Any]] = {}
+    if isinstance(route_bindings_raw, Mapping):
+        for node, raw_route in route_bindings_raw.items():
+            if not isinstance(node, str) or not isinstance(raw_route, Mapping):
+                continue
+            route = validator_route_from_record(raw_route)
+            if route is not None:
+                route_bindings[node] = dict(route)
+    for node, service in final_topology["services"].items():
+        if not isinstance(service, Mapping):
+            continue
+        route = validator_route_from_record(service)
+        if route is None:
+            continue
+        previous = route_bindings.get(node)
+        if previous is not None and canonical_json(previous) != canonical_json(route):
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_MISMATCH", f"{node} validator route binding changed during finalize")
+        route_bindings[node] = dict(route)
+    if isinstance(target, Mapping):
+        target_route = validator_route_from_record(target)
+        target_node = target.get("node")
+        if target_route is not None and isinstance(target_node, str):
+            previous = route_bindings.get(target_node)
+            if previous is not None and canonical_json(previous) != canonical_json(target_route):
+                raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_MISMATCH", f"{target_node} validator route binding changed during finalize")
+            route_bindings[target_node] = dict(target_route)
+    final_topology["validator_route_bindings"] = route_bindings
     # The node-removal voter guardians are transient execution helpers. The do
     # evidence must prove that they became healthy and completed the validator
     # removal vote before target service deletion. Finalize is a later read-only
