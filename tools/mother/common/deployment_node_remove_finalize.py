@@ -30,7 +30,13 @@ from .coolify_state import (
 )
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
-from .deployment_validator_routes import validator_route_from_record
+from .deployment_validator_routes import (
+    MotherDeploymentValidatorRouteError,
+    normalize_validator_route_bindings,
+    require_validator_route_binding,
+    validator_route_from_record,
+    validator_routes_same,
+)
 
 
 _DO_EVIDENCE_KIND = "main_computer.mother.deployment_node_remove_do_evidence.v1"
@@ -552,14 +558,12 @@ def build_node_remove_finalize_evidence(
         final_topology["services"][node] = service_record
 
     route_bindings_raw = final_topology.get("validator_route_bindings")
-    route_bindings: dict[str, dict[str, Any]] = {}
-    if isinstance(route_bindings_raw, Mapping):
-        for node, raw_route in route_bindings_raw.items():
-            if not isinstance(node, str) or not isinstance(raw_route, Mapping):
-                continue
-            route = validator_route_from_record(raw_route)
-            if route is not None:
-                route_bindings[node] = dict(route)
+    if route_bindings_raw is not None and not isinstance(route_bindings_raw, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_INVALID", "validator_route_bindings is not a mapping")
+    try:
+        route_bindings = normalize_validator_route_bindings(route_bindings_raw) if isinstance(route_bindings_raw, Mapping) else {}
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_INVALID", str(exc)) from exc
     for node, service in final_topology["services"].items():
         if not isinstance(service, Mapping):
             continue
@@ -567,18 +571,33 @@ def build_node_remove_finalize_evidence(
         if route is None:
             continue
         previous = route_bindings.get(node)
-        if previous is not None and canonical_json(previous) != canonical_json(route):
+        if previous is not None and not validator_routes_same(previous, route):
             raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_MISMATCH", f"{node} validator route binding changed during finalize")
-        route_bindings[node] = dict(route)
+        if previous is None:
+            route_bindings[node] = dict(route)
     if isinstance(target, Mapping):
-        target_route = validator_route_from_record(target)
         target_node = target.get("node")
-        if target_route is not None and isinstance(target_node, str):
-            previous = route_bindings.get(target_node)
-            if previous is not None and canonical_json(previous) != canonical_json(target_route):
-                raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_MISMATCH", f"{target_node} validator route binding changed during finalize")
-            route_bindings[target_node] = dict(target_route)
-    final_topology["validator_route_bindings"] = route_bindings
+        if isinstance(target_node, str):
+            target_has_route = any(
+                key in target
+                for key in ("validator_route", "p2p_route", "vpn_ip", "p2p_port", "p2p_endpoint", "enode")
+            )
+            target_route = None
+            if target_has_route:
+                try:
+                    target_route = require_validator_route_binding(target, label=f"{target_node} removed validator route")
+                except MotherDeploymentValidatorRouteError as exc:
+                    raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_INVALID", str(exc)) from exc
+            if target_route is not None:
+                previous = route_bindings.get(target_node)
+                if previous is not None and not validator_routes_same(previous, target_route):
+                    raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_MISMATCH", f"{target_node} validator route binding changed during finalize")
+                if previous is None:
+                    route_bindings[target_node] = dict(target_route)
+    try:
+        final_topology["validator_route_bindings"] = normalize_validator_route_bindings(route_bindings)
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_ROUTE_IDENTITY_INVALID", str(exc)) from exc
     # The node-removal voter guardians are transient execution helpers. The do
     # evidence must prove that they became healthy and completed the validator
     # removal vote before target service deletion. Finalize is a later read-only

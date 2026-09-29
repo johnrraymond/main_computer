@@ -32,6 +32,13 @@ from .coolify_state import (
 )
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
+from .deployment_validator_routes import (
+    MotherDeploymentValidatorRouteError,
+    normalize_validator_route_bindings,
+    require_validator_route_binding,
+    validator_route_from_record,
+    validator_routes_same,
+)
 
 
 _RELEASE_KIND = "main_computer.mother.deployment_node_add_rollback_release.v1"
@@ -468,6 +475,55 @@ def _rollback_target_from_failed_add_evidence(document: Mapping[str, Any]) -> di
     }
 
 
+def _target_validator_route_from_failed_add_evidence(document: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str, Any] | None:
+    node = target.get("node")
+    if not isinstance(node, str) or not node:
+        return None
+
+    candidates: list[tuple[str, Mapping[str, Any], bool]] = []
+    target_route = target.get("validator_route")
+    if isinstance(target_route, Mapping):
+        candidates.append(("target validator route", target_route, True))
+
+    bindings = document.get("validator_route_bindings")
+    if bindings is not None and not isinstance(bindings, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_INVALID", "validator_route_bindings is not a mapping")
+    if isinstance(bindings, Mapping) and node in bindings:
+        raw = bindings.get(node)
+        if not isinstance(raw, Mapping):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_INVALID", f"{node} permanent validator route binding is invalid")
+        candidates.append(("permanent validator route binding", raw, True))
+
+    candidate_route = document.get("candidate_validator_route")
+    if isinstance(candidate_route, Mapping):
+        candidates.append(("candidate validator route", candidate_route, True))
+
+    prepared = document.get("prepared_post_add_topology")
+    if isinstance(prepared, Mapping):
+        prepared_bindings = prepared.get("validator_route_bindings")
+        if prepared_bindings is not None and not isinstance(prepared_bindings, Mapping):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_INVALID", "prepared validator_route_bindings is not a mapping")
+        if isinstance(prepared_bindings, Mapping) and node in prepared_bindings:
+            raw = prepared_bindings.get(node)
+            if not isinstance(raw, Mapping):
+                raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_INVALID", f"{node} prepared validator route binding is invalid")
+            candidates.append(("prepared validator route binding", raw, True))
+
+    selected: dict[str, Any] | None = None
+    for label, raw, required in candidates:
+        try:
+            route = require_validator_route_binding(raw, label=f"{node} {label}") if required else validator_route_from_record(raw)
+        except MotherDeploymentValidatorRouteError as exc:
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_INVALID", str(exc)) from exc
+        if route is None:
+            continue
+        if selected is not None and not validator_routes_same(selected, route):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_MISMATCH", f"{node} failed-add evidence contains conflicting validator routes")
+        if selected is None:
+            selected = dict(route)
+    return selected
+
+
 def _current_topology_from_failed_add_evidence(
     paths: PrivateStatePaths,
     document: Mapping[str, Any],
@@ -648,6 +704,28 @@ def build_node_add_rollback_release(
     created = _timestamp(created_at, now=now)
     expires = (_parse_utc(created, "created_at") + timedelta(seconds=int(expires_in_seconds))).isoformat(timespec="seconds").replace("+00:00", "Z")
     current_topology = dict(source["current_topology"])
+    target_validator_route = _target_validator_route_from_failed_add_evidence(source, target)
+    raw_bindings = current_topology.get("validator_route_bindings")
+    if raw_bindings is not None and not isinstance(raw_bindings, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_INVALID", "rollback baseline validator_route_bindings is not a mapping")
+    try:
+        route_bindings = normalize_validator_route_bindings(raw_bindings) if isinstance(raw_bindings, Mapping) else {}
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_INVALID", str(exc)) from exc
+    if target_validator_route is None:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_MISSING",
+            f"{node} failed add has no permanent validator route to preserve across rollback",
+        )
+    previous_target_route = route_bindings.get(node)
+    if previous_target_route is not None and not validator_routes_same(previous_target_route, target_validator_route):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_MISMATCH", f"{node} rollback route disagrees with existing permanent binding")
+    if previous_target_route is None:
+        route_bindings[node] = dict(target_validator_route)
+    try:
+        current_topology["validator_route_bindings"] = normalize_validator_route_bindings(route_bindings)
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_ROLLBACK_ROUTE_IDENTITY_INVALID", str(exc)) from exc
     release: dict[str, Any] = {
         "kind": _RELEASE_KIND,
         "schema_version": 1,
@@ -669,6 +747,10 @@ def build_node_add_rollback_release(
             "controller_id": controller_id,
             "created_service_uuid": service_uuid,
             "validator_address": target.get("validator_address"),
+            "validator_route": dict(target_validator_route),
+            "vpn_ip": target_validator_route["vpn_ip"],
+            "p2p_port": target_validator_route["p2p_port"],
+            "p2p_endpoint": target_validator_route["p2p_endpoint"],
         },
         "current_topology": current_topology,
         "rollback_baseline_topology": current_topology,

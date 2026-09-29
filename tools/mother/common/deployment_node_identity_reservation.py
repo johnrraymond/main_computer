@@ -78,6 +78,13 @@ def _mapping(value: Any, path: str) -> dict[str, Any]:
     return value
 
 
+def _sha256(value: Any, label: str) -> str:
+    digest = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise _fail("MOTHER_DEPLOY_NODE_IDENTITY_RESERVATION_TOPOLOGY_INVALID", f"{label} is not a SHA-256 digest")
+    return digest
+
+
 def _utc(value: str | None, path: str) -> str:
     if value is None:
         return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -397,6 +404,7 @@ def _write_refreshed_topology_evidence(
         "services": expected_services,
         "validator_count": len(expected_validator_set),
         "validator_set": expected_validator_set,
+        "validator_route_bindings": deepcopy(detection.get("validator_route_bindings") or {}),
         "identity_catalog_refreshed": True,
         "routing_or_topology_published": False,
         "public_endpoint_created": False,

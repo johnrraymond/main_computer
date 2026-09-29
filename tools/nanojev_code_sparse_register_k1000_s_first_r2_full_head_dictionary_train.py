@@ -1,0 +1,5582 @@
+#!/usr/bin/env python3
+"""Joint-train the complete evolved NanoJev head over frozen Qwen.
+
+This lane resumes the full-head cut-over created directly from a mature K=1000
+pre-R2 S-first checkpoint.  The cut-over clones the learned R1 router into a
+dormant R2 router and creates g2 at exact zero.  Qwen remains frozen.  By
+default g2 is frozen, so the third Qwen pass is bypassed and the active learned
+system is the full NanoJev head around R1: decision/readout head, S and its
+strength, shared control bank, and R1 router.  The R2 router remains available
+for an explicit later recurrence release.
+
+    Qwen([S,prompt]) -> R1
+    Qwen([S+R1,prompt]) -> trainable decision head
+
+If later evidence shows pressure on the R1-only solution, --train-r2-gain
+releases the inherited recurrent gate and restores the third pass:
+
+    Qwen([S+R1,prompt]) -> R2
+    Qwen([S+R1+R2,prompt]) -> trainable decision head
+
+No new model parameters are introduced.  This dictionary lane keeps the exact
+one-token S1 architecture and K=1000 control surface, while changing only the
+training curriculum to 20/5/5/15/20/35 for legacy/mutation/AST/direct-consensus/
+triad/dictionary.  R2 gain remains frozen at zero unless explicitly released.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+from dataclasses import dataclass
+import hashlib
+import importlib.util
+import itertools
+import json
+import math
+import os
+from pathlib import Path
+import random
+import shutil
+import sys
+import tempfile
+import time
+from typing import Sequence
+
+EXPERIMENT_SCHEMA = "main-computer-nanojev-code-self-organizing-register-experiment-v1"
+STATE_SCHEMA = "main-computer-nanojev-code-self-organizing-register-training-state-v1"
+CONFIG_SCHEMA = "main-computer-nanojev-code-self-organizing-register-training-config-v1"
+TASK = "lexeme_mutation_ast_plus_direct_consensus_plus_relation_balanced_pairwise_self_organizing_sparse_register_feedback"
+PHASE = "frozen_qwen_full_nanojev_head_trainable_s_first_recurrent_r2_shared_sparse_registers_plus_balanced_pairwise"
+OBJECTIVE = "joint_full_nanojev_head_training_s_first_r1_plus_recurrent_r2_shared_sparse_register_bank_three_binary_rehearsals_plus_direct_consensus_plus_relation_balanced_pairwise"
+DIRECT_CONSENSUS_OBJECTIVE = "three_binary_rehearsals_plus_four_way_consensus_margin_plus_orbit_consistency"
+ORBIT_CONSISTENCY_WEIGHT = 0.25
+ORBIT_SUPERVISION_BLEND = 0.5
+CONSENSUS_ORBIT_KIND_SCHEDULE = ("singleton", "singleton", "none", "singleton")
+CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD = 6
+
+DEFAULT_LEGACY_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_lexeme_v1"
+DEFAULT_MUTATION_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_mutation_v1"
+DEFAULT_THREE_MODE_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_three_mode_v1"
+DEFAULT_SOURCE_SOFT_FEEDBACK_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_soft_feedback_v1"
+DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_self_organizing_register_k1000_s_first_r2_full_head_dictionary_v1"
+DEFAULT_LATENT_WALK_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_latent_walk_v1"
+DEFAULT_SOURCE_BALANCED_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_code_soft_feedback_residual_v1"
+
+TASK_ORDER = ("legacy", "mutation", "ast", "consensus", "triad", "dictionary")
+PREVIOUS_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 20.0, "consensus": 15.0, "triad": 50.0}
+DEFAULT_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 5.0, "consensus": 30.0, "triad": 50.0}
+LATENT_WALK_DEFAULT_CURRICULUM = {"legacy": 5.0, "mutation": 10.0, "ast": 34.0, "consensus": 1.0, "triad": 50.0}
+DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT = 100.0
+LATENT_WALK_DISPLACEMENT_PENALTY = "active_token_mean_squared_final_displacement_from_frozen_qwen_prior"
+SOURCE_S1_CURRICULUM = {
+    "legacy": 5.0, "mutation": 10.0, "ast": 34.0, "consensus": 1.0, "triad": 50.0, "dictionary": 0.0,
+}
+DICTIONARY_V1_CURRICULUM = {
+    "legacy": 5.0, "mutation": 5.0, "ast": 10.0, "consensus": 15.0, "triad": 25.0, "dictionary": 40.0,
+}
+SOFT_FEEDBACK_DEFAULT_CURRICULUM = {
+    "legacy": 20.0, "mutation": 5.0, "ast": 5.0, "consensus": 15.0, "triad": 20.0, "dictionary": 35.0,
+}
+DEFAULT_DICTIONARY_CACHE = r"C:\Users\subsi\NanoJev\cache\english-wordnet-2025.zip"
+DEFAULT_DICTIONARY_URL = "https://en-word.net/static/english-wordnet-2025.zip"
+DEFAULT_DICTIONARY_HOLDOUT_PAIRS = 32
+DEFAULT_DICTIONARY_HOLDOUT_SEED = 20260927
+DICTIONARY_NEGATIVE_STRATEGY_V1 = "same-part-of-speech lexical-overlap hard negative"
+DICTIONARY_NEGATIVE_STRATEGY_V2 = "zero-content-overlap overt negative; same-part-of-speech and different lexical file preferred"
+ORDERED_LEGACY_DEV_PAIRS = 64
+ORDERED_LEGACY_DEV_SEED_OFFSET = 78500
+ORDERED_LEGACY_DEV_METRICS_DIR = "ordered_legacy_dev_metrics"
+DEFAULT_SOFT_FEEDBACK_RANK = 8
+DEFAULT_SOFT_FEEDBACK_LR = 2e-4
+DEFAULT_SOFT_FEEDBACK_STRENGTH = 0.25
+DEFAULT_SOFT_FEEDBACK_CONTROL_EVAL_EVERY = 5
+SOFT_FEEDBACK_TOKEN_COUNT = 1
+SOFT_FEEDBACK_GENERATOR = "s_first_recurrent_r2_full_nanojev_head_joint_train_v1"
+DICTIONARY_BRANCH_FILE = "s_first_r2_full_head_dictionary_branch.json"
+DICTIONARY_BRANCH_SCHEMA = "main-computer-nanojev-k1000-s-first-r2-full-head-dictionary-branch-v1"
+SOFT_FEEDBACK_CONTROL_MODES = ("none", "static", "dynamic")
+# Task names remain available to the trainer for curriculum accounting and
+# post-hoc telemetry only.  They are never inputs to the control router.
+REGISTER_REPORTING_TASKS = TASK_ORDER
+DEFAULT_CONTROL_SPACE_SIZE = 32
+DEFAULT_REGISTER_RANK = 32
+DEFAULT_REGISTER_SPARSITY_WEIGHT = 0.01
+DEFAULT_REGISTER_RESIDUAL_WEIGHT = 0.10
+DEFAULT_REGISTER_ORTHOGONALITY_WEIGHT = 0.01
+DEFAULT_REGISTER_ACTIVE_EPSILON = 0.01
+CURRICULUM_CONFIG_KEYS = {
+    "legacy": "legacy_training_percent",
+    "mutation": "mutation_training_percent",
+    "ast": "ast_training_percent",
+    "consensus": "consensus_training_percent",
+    "triad": "triad_training_percent",
+    "dictionary": "dictionary_training_percent",
+}
+CONSENSUS_LABELS = ("a", "b", "c", "none")
+CONSENSUS_ORBIT_DEV_RECORDS = 96
+TRIAD_RELATION_LABELS = ("same", "different")
+TRIAD_TOPOLOGY_LABELS = ("a", "b", "c", "none", "ambiguous")
+TRIAD_PAIR_ORDER = (("ab", "a", "b"), ("ac", "a", "c"), ("bc", "b", "c"))
+TRIAD_DEV_UNITS = 100
+
+
+@dataclass(frozen=True)
+class ConsensusSource:
+    source_path: str
+    source_line: int
+    preserving: tuple[tuple[str, str], ...]
+    changing: tuple[tuple[str, str], ...]
+
+
+FULL_HEAD_COMPACT_LOG_NAME = "s_first_r2_full_head_trainer_compact.log"
+FULL_HEAD_HEARTBEAT_EVENT = "s_first_r2_full_head_heartbeat"
+_COMPACT_LOG_PATH = None
+_COMPACT_HEARTBEAT_SECONDS = 30.0
+_COMPACT_STATE = {"cycle": None, "requested": None, "next_heartbeat": 30.0}
+
+
+def configure_compact_emit(experiment_dir: Path, heartbeat_seconds: float) -> None:
+    global _COMPACT_LOG_PATH, _COMPACT_HEARTBEAT_SECONDS, _COMPACT_STATE
+    _COMPACT_LOG_PATH = experiment_dir / FULL_HEAD_COMPACT_LOG_NAME
+    _COMPACT_HEARTBEAT_SECONDS = float(heartbeat_seconds)
+    _COMPACT_STATE = {"cycle": None, "requested": None, "next_heartbeat": float(heartbeat_seconds)}
+
+
+def _emit_write(payload: dict) -> None:
+    encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    if _COMPACT_LOG_PATH is not None:
+        with _COMPACT_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(encoded + "\n")
+    print(encoded, flush=True)
+
+
+def emit(event: str, **fields) -> None:
+    if _COMPACT_LOG_PATH is None:
+        print(json.dumps({"event": event, **fields}, ensure_ascii=False, allow_nan=False), flush=True)
+        return
+    if event == "cycle_start":
+        _COMPACT_STATE["cycle"] = fields.get("cycle")
+        _COMPACT_STATE["requested"] = fields.get("requested_training_seconds")
+        _COMPACT_STATE["next_heartbeat"] = _COMPACT_HEARTBEAT_SECONDS
+        _emit_write({"event": event, **fields})
+        return
+    if event == "cycle_train_step":
+        elapsed = float(fields.get("elapsed_training_seconds", 0.0) or 0.0)
+        if elapsed < float(_COMPACT_STATE["next_heartbeat"]):
+            return
+        soft = fields.get("soft_feedback") if isinstance(fields.get("soft_feedback"), dict) else {}
+        _emit_write({
+            "event": FULL_HEAD_HEARTBEAT_EVENT,
+            "cycle": fields.get("cycle", _COMPACT_STATE["cycle"]),
+            "elapsed_training_seconds": elapsed,
+            "requested_training_seconds": _COMPACT_STATE["requested"],
+            "cycle_step": fields.get("cycle_step"),
+            "global_step": fields.get("global_step"),
+            "mean_unit_nll": fields.get("mean_unit_nll"),
+            "head_grad_norm": fields.get("head_grad_norm"),
+            "soft_feedback_grad_norm": fields.get("soft_feedback_grad_norm"),
+            "active_above_threshold": soft.get("aggregate_active_slot_count"),
+            "r1_active_above_threshold": soft.get("r1_active_slot_count"),
+            "r2_candidate_active_above_threshold": soft.get("r2_candidate_active_slot_count"),
+            "r2_effective_active_above_threshold": soft.get("r2_effective_active_slot_count"),
+            "dynamic_raw_rms": soft.get("dynamic_raw_rms"),
+            "r1_dynamic_raw_rms": soft.get("r1_dynamic_raw_rms"),
+            "r2_dynamic_raw_rms": soft.get("r2_dynamic_raw_rms"),
+            "r2_gain": soft.get("r2_gain"),
+            "r1_r2_candidate_coefficient_cosine": soft.get("r1_r2_candidate_coefficient_cosine"),
+        })
+        while float(_COMPACT_STATE["next_heartbeat"]) <= elapsed:
+            _COMPACT_STATE["next_heartbeat"] = float(_COMPACT_STATE["next_heartbeat"]) + _COMPACT_HEARTBEAT_SECONDS
+        return
+    _emit_write({"event": event, **fields})
+
+
+def read_json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def atomic_json(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def sha256_json(value) -> str:
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def load_local_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot import {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def ast_signature(source: str) -> str | None:
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError):
+        return None
+    return ast.dump(tree, annotate_fields=True, include_attributes=False)
+
+
+def is_empty_scaffold_experiment_dir(exp: Path) -> bool:
+    """Recognize only the empty directory scaffold this trainer itself may create."""
+    if not exp.exists() or not exp.is_dir():
+        return False
+    expected_dirs = {
+        "probes",
+        "shards",
+        "shards/legacy",
+        "shards/mutation",
+        "shards/ast",
+        "shards/consensus",
+        "shards/triad",
+        "checkpoints",
+        "checkpoints/generations",
+    }
+    seen = set()
+    for path in exp.rglob("*"):
+        relative = path.relative_to(exp).as_posix()
+        if path.is_file():
+            return False
+        if not path.is_dir() or relative not in expected_dirs:
+            return False
+        seen.add(relative)
+    return bool(seen)
+
+
+def resolve_committed_parent(parent_exp: Path, parent_state: dict, explicit: str | None) -> tuple[Path, str]:
+    if explicit:
+        checkpoint = Path(explicit).expanduser().resolve(strict=True)
+        source = "explicit_parent_checkpoint"
+    else:
+        latest = parent_state.get("latest_generation")
+        if not latest:
+            raise RuntimeError("three-mode experiment has no committed latest_generation")
+        checkpoint = Path(latest).expanduser().resolve(strict=True)
+        source = "three_mode_training_state_latest_generation"
+    for required in ("head.safetensors", "config.json", "meta.json"):
+        if not (checkpoint / required).is_file():
+            raise RuntimeError(f"parent checkpoint missing {required}: {checkpoint}")
+    if explicit is None:
+        configured = read_json(checkpoint / "config.json")
+        checkpoint_cycle = int(configured.get("main_computer_cycle", -1))
+        state_cycle = int(parent_state.get("cycle", -2))
+        if checkpoint_cycle != state_cycle:
+            raise RuntimeError(
+                "three-mode latest_generation does not match committed training_state cycle: "
+                f"checkpoint={checkpoint_cycle} state={state_cycle}"
+            )
+    return checkpoint, source
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_soft_feedback_parent(
+    source_soft_feedback_exp: Path, explicit: str | None, parent_cycle: int | None = None
+) -> tuple[Path, str]:
+    expected_cycle = None
+    if explicit:
+        checkpoint = Path(explicit).expanduser().resolve(strict=True)
+        source = "explicit_parent_checkpoint"
+    elif parent_cycle is not None:
+        checkpoint = (
+            source_soft_feedback_exp / "checkpoints" / "generations" / f"cycle-{parent_cycle:06d}"
+        ).resolve(strict=True)
+        source = f"source_soft_feedback_cycle_{parent_cycle}"
+        expected_cycle = int(parent_cycle)
+    else:
+        source_state_path = source_soft_feedback_exp / "training_state.json"
+        source_state = read_json(source_state_path)
+        latest = source_state.get("latest_generation")
+        if not latest:
+            raise RuntimeError(
+                f"source soft-feedback experiment has no committed latest_generation: {source_state_path}"
+            )
+        checkpoint = Path(latest).expanduser().resolve(strict=True)
+        source = "source_soft_feedback_training_state_latest_generation"
+        expected_cycle = int(source_state.get("cycle", -1))
+
+    for required in ("head.safetensors", "config.json", "meta.json"):
+        if not (checkpoint / required).is_file():
+            raise RuntimeError(f"parent checkpoint missing {required}: {checkpoint}")
+
+    configured = read_json(checkpoint / "config.json")
+    metadata = read_json(checkpoint / "meta.json")
+    checkpoint_cycle = int(configured.get("main_computer_cycle", metadata.get("cycle", -1)))
+    meta_cycle = int(metadata.get("cycle", checkpoint_cycle))
+    if checkpoint_cycle != meta_cycle:
+        raise RuntimeError(
+            "soft-feedback parent config/meta cycle mismatch: "
+            f"config={checkpoint_cycle} meta={meta_cycle} path={checkpoint}"
+        )
+    if expected_cycle is not None and checkpoint_cycle != expected_cycle:
+        raise RuntimeError(
+            "soft-feedback parent does not match requested/committed source cycle: "
+            f"expected={expected_cycle} checkpoint={checkpoint_cycle} path={checkpoint}"
+        )
+    return checkpoint, source
+
+
+def largest_remainder_budgets(total: int, weights: dict[str, float]) -> dict[str, int]:
+    if total <= 0:
+        raise ValueError("total must be positive")
+    if set(weights) != set(TASK_ORDER):
+        raise ValueError(f"weights must contain exactly {TASK_ORDER}")
+    if any((not math.isfinite(float(v)) or float(v) < 0.0) for v in weights.values()):
+        raise ValueError("weights must be finite and nonnegative")
+    weight_sum = sum(float(weights[t]) for t in TASK_ORDER)
+    if abs(weight_sum - 100.0) > 1e-9:
+        raise ValueError(f"weights must sum to 100, got {weight_sum}")
+    exact = {t: total * float(weights[t]) / 100.0 for t in TASK_ORDER}
+    out = {t: int(math.floor(exact[t])) for t in TASK_ORDER}
+    remaining = total - sum(out.values())
+    # Largest remainder; break exact ties toward the larger curriculum share, then stable order.
+    priority = sorted(
+        TASK_ORDER,
+        key=lambda t: (exact[t] - out[t], float(weights[t]), -TASK_ORDER.index(t)),
+        reverse=True,
+    )
+    for task in priority[:remaining]:
+        out[task] += 1
+    if sum(out.values()) != total:
+        raise RuntimeError("largest-remainder allocation failed to conserve total")
+    return out
+
+
+
+def config_curriculum(config: dict) -> dict[str, float]:
+    return {
+        task: float(config.get(CURRICULUM_CONFIG_KEYS[task], 0.0))
+        for task in TASK_ORDER
+    }
+
+
+DICTIONARY_MIGRATION_CONFIG_KEYS = {
+    "dictionary_training_percent",
+    "dictionary_cache",
+    "dictionary_url",
+    "dictionary_sha256",
+    "dictionary_parsed_synsets",
+    "dictionary_training_synsets",
+    "dictionary_holdout_pairs",
+    "dictionary_holdout_seed",
+    "dictionary_holdout_synset_ids",
+    "dictionary_holdout_lemma_count",
+    "dictionary_negative_strategy",
+    "dictionary_partition",
+}
+
+
+def curriculum_only_migration_allowed(established: dict, requested: dict) -> bool:
+    """Allow only the planned S1/dictionary -> ordered-bootstrap curriculum migrations."""
+    established_curriculum = config_curriculum(established)
+    requested_curriculum = config_curriculum(requested)
+    if established_curriculum not in (SOURCE_S1_CURRICULUM, DICTIONARY_V1_CURRICULUM):
+        return False
+    if requested_curriculum != SOFT_FEEDBACK_DEFAULT_CURRICULUM:
+        return False
+    curriculum_keys = set(CURRICULUM_CONFIG_KEYS.values())
+    allowed_changes = curriculum_keys | DICTIONARY_MIGRATION_CONFIG_KEYS
+    non_curriculum_keys = (set(established) | set(requested)) - allowed_changes
+    return all(established.get(key) == requested.get(key) for key in non_curriculum_keys)
+
+def dictionary_negative_strategy_migration_allowed(established: dict, requested: dict) -> bool:
+    """Allow only the hard-negative -> overt-negative dictionary data cut-over."""
+    if established.get("dictionary_negative_strategy") != DICTIONARY_NEGATIVE_STRATEGY_V1:
+        return False
+    if requested.get("dictionary_negative_strategy") != DICTIONARY_NEGATIVE_STRATEGY_V2:
+        return False
+    normalized = dict(established)
+    normalized["dictionary_negative_strategy"] = DICTIONARY_NEGATIVE_STRATEGY_V2
+    return normalized == requested
+
+
+def latent_walk_penalty_migration_allowed(established: dict, requested: dict) -> bool:
+    """Allow adding the default latent-walk identity penalty to an established latent run."""
+    if established.get("latent_walk_enabled") is not True or requested.get("latent_walk_enabled") is not True:
+        return False
+    if (
+        "latent_walk_displacement_penalty_weight" in established
+        or "latent_walk_displacement_penalty" in established
+    ):
+        return False
+    if requested.get("latent_walk_displacement_penalty_weight") != DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT:
+        return False
+    if requested.get("latent_walk_displacement_penalty") != LATENT_WALK_DISPLACEMENT_PENALTY:
+        return False
+    normalized = dict(established)
+    normalized["latent_walk_displacement_penalty_weight"] = DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT
+    normalized["latent_walk_displacement_penalty"] = LATENT_WALK_DISPLACEMENT_PENALTY
+    return normalized == requested
+
+
+def r2_gain_mode_migration_allowed(established: dict, requested: dict) -> bool:
+    """Allow only the explicit frozen-zero <-> trainable R2-gain operating-mode switch."""
+    mode_keys = {
+        "r2_gain_trainable",
+        "entire_nanojev_head_trainable",
+        "nanojev_head_trainable_except_r2_gain",
+        "r2_third_pass_bypassed_when_gain_frozen",
+    }
+    normalized_established = {k: v for k, v in established.items() if k not in mode_keys}
+    normalized_requested = {k: v for k, v in requested.items() if k not in mode_keys}
+    return normalized_established == normalized_requested
+
+def next_task_mix(*, weights: dict[str, float], credits: dict[str, float], slots: int) -> tuple[list[str], dict[str, float]]:
+    """Persistent smooth weighted round robin over optimizer training units."""
+    if slots <= 0:
+        raise ValueError("slots must be positive")
+    if abs(sum(float(weights[t]) for t in TASK_ORDER) - 100.0) > 1e-9:
+        raise ValueError("curriculum percentages must sum to 100")
+    acc = {t: float(credits.get(t, 0.0)) for t in TASK_ORDER}
+    tasks: list[str] = []
+    for _ in range(slots):
+        for task in TASK_ORDER:
+            acc[task] += float(weights[task])
+        chosen = max(TASK_ORDER, key=lambda t: (acc[t], float(weights[t]), -TASK_ORDER.index(t)))
+        acc[chosen] -= 100.0
+        tasks.append(chosen)
+    return tasks, acc
+
+
+def _state_for_ast(reference: str, candidate: str) -> str:
+    return (
+        "Language: python\n"
+        "Reference code:\n```python\n" + reference.rstrip() + "\n```\n"
+        "Candidate code:\n```python\n" + candidate.rstrip() + "\n```"
+    )
+
+
+def make_ast_record(*, triplet, candidate: str, truth: bool, pair_id: str,
+                    record_id: str, split: str, mutation_id: str) -> dict:
+    return {
+        "id": record_id,
+        "state_id": record_id,
+        "family_id": pair_id,
+        "split": split,
+        "state": _state_for_ast(triplet.reference, candidate),
+        "questions": {
+            "ast_identical": {
+                "type": "boolean",
+                "instructions": (
+                    "Are the normalized Python abstract syntax trees of the reference and candidate exactly identical? "
+                    "Ignore source formatting and comments; judge ast.dump(..., annotate_fields=True, include_attributes=False)."
+                ),
+                "criteria": {
+                    "false": "No. Both parse, but their normalized Python ASTs differ.",
+                    "true": "Yes. Their normalized Python ASTs are exactly identical.",
+                },
+            }
+        },
+        "gold": {"ast_identical": truth},
+        "gold_label_kind": {"ast_identical": "deterministic_truth"},
+        "metadata": {
+            "source_group_id": triplet.source_path,
+            "source_path": triplet.source_path,
+            "source_line": triplet.source_line,
+            "language": "python",
+            "task_kind": "python_ast_equivalence",
+            "mutation_id": mutation_id,
+            "mutation_class": "ast_identical" if truth else "ast_different",
+            "oracle": "normalized_python_ast_identity",
+        },
+    }
+
+
+def sample_ast_records(*, docs: Sequence, mutation, data, tokenizer, split: str,
+                       pair_count: int, max_code_tokens: int, max_length: int, seed: int) -> list[dict]:
+    if pair_count <= 0:
+        return []
+    triplets = mutation.build_mutation_triplets(
+        docs=docs, data=data, tokenizer=tokenizer, max_code_tokens=max_code_tokens, seed=seed
+    )
+    if not triplets:
+        raise RuntimeError(f"no usable Python AST triplets for {split}")
+    rng = random.Random(seed + 193)
+    records: list[dict] = []
+    attempts = 0
+    while len(records) // 2 < pair_count and attempts < pair_count * 40:
+        attempts += 1
+        triplet = rng.choice(triplets)
+        pair_index = len(records) // 2
+        digest = hashlib.sha256(
+            f"ast:{seed}:{triplet.source_path}:{triplet.source_line}:{triplet.preserving_mutation}:"
+            f"{triplet.changing_mutation}:{pair_index}".encode("utf-8")
+        ).hexdigest()[:16]
+        pair_id = f"{split}-ast-{digest}"
+        positive = make_ast_record(
+            triplet=triplet, candidate=triplet.preserved, truth=True,
+            pair_id=pair_id, record_id=f"{pair_id}-true", split=split,
+            mutation_id=triplet.preserving_mutation,
+        )
+        negative = make_ast_record(
+            triplet=triplet, candidate=triplet.changed, truth=False,
+            pair_id=pair_id, record_id=f"{pair_id}-false", split=split,
+            mutation_id=triplet.changing_mutation,
+        )
+        budget = max_length - 48
+        if budget > 0:
+            if len(tokenizer.encode(positive["state"], add_special_tokens=False)) > budget:
+                continue
+            if len(tokenizer.encode(negative["state"], add_special_tokens=False)) > budget:
+                continue
+        records.extend((positive, negative))
+    if len(records) // 2 < pair_count:
+        raise RuntimeError(f"only built {len(records)//2} usable AST pairs for {split}; requested {pair_count}")
+    rng.shuffle(records)
+    return records
+
+
+def build_consensus_sources(*, docs: Sequence, mutation, data, tokenizer,
+                            max_code_tokens: int, seed: int) -> list[ConsensusSource]:
+    rng = random.Random(seed)
+    out: list[ConsensusSource] = []
+    for doc in docs:
+        if getattr(doc, "language", None) != "python":
+            continue
+        for source_line, unit in mutation.extract_python_units(doc.text):
+            if len(tokenizer.encode(unit, add_special_tokens=False)) > max_code_tokens:
+                continue
+            reference_sig = ast_signature(unit)
+            if reference_sig is None:
+                continue
+            preserving = mutation.preserving_candidates(unit, data)
+            changing = mutation.changing_candidates(unit, data)
+            # Consensus controls need three distinct preserving renderings; singleton cases need two.
+            preserving = [(text, mid) for text, mid in preserving if text != unit and ast_signature(text) == reference_sig]
+            changing = [
+                (text, mid) for text, mid in changing
+                if text != unit and ast_signature(text) not in {None, reference_sig}
+            ]
+            if len({text for text, _ in preserving}) < 3 or not changing:
+                continue
+            rng.shuffle(preserving)
+            rng.shuffle(changing)
+            out.append(ConsensusSource(
+                source_path=doc.relative,
+                source_line=source_line,
+                preserving=tuple(preserving),
+                changing=tuple(changing),
+            ))
+    rng.shuffle(out)
+    return out
+
+
+def _state_for_consensus(candidates: dict[str, str]) -> str:
+    return (
+        "Language: python\n"
+        "Candidate A:\n```python\n" + candidates["a"].rstrip() + "\n```\n"
+        "Candidate B:\n```python\n" + candidates["b"].rstrip() + "\n```\n"
+        "Candidate C:\n```python\n" + candidates["c"].rstrip() + "\n```"
+    )
+
+
+def make_consensus_record(*, source: ConsensusSource, candidates: dict[str, str],
+                          mutation_ids: dict[str, str], gold: str, split: str,
+                          record_id: str) -> dict:
+    if gold not in CONSENSUS_LABELS:
+        raise ValueError(f"invalid consensus gold label: {gold}")
+    signatures = {label: ast_signature(candidates[label]) for label in ("a", "b", "c")}
+    if any(sig is None for sig in signatures.values()):
+        raise RuntimeError("consensus candidate failed Python parse")
+    counts = {sig: list(signatures.values()).count(sig) for sig in set(signatures.values())}
+    singleton_labels = [label for label, sig in signatures.items() if counts[sig] == 1]
+    if gold == "none":
+        if len(set(signatures.values())) != 1:
+            raise RuntimeError("NONE consensus record is not AST-unanimous")
+        geometry = "all_equivalent"
+    else:
+        if singleton_labels != [gold] or len(set(signatures.values())) != 2:
+            raise RuntimeError(
+                f"singleton consensus oracle mismatch: expected={gold} actual={singleton_labels} signatures={signatures}"
+            )
+        geometry = "two_plus_one"
+    return {
+        "id": record_id,
+        "state_id": record_id,
+        "family_id": record_id,
+        "split": split,
+        "state": _state_for_consensus(candidates),
+        "questions": {
+            "consensus_geometry": {
+                "type": "choice",
+                "instructions": (
+                    "Compare the three candidates only to one another. There is no privileged original or reference. "
+                    "Which candidate is the unique structural singleton under normalized Python AST equivalence? "
+                    "Choose NONE when all three are structurally equivalent."
+                ),
+                "criteria": {
+                    "a": "Candidate A is the unique singleton; B and C are structurally equivalent.",
+                    "b": "Candidate B is the unique singleton; A and C are structurally equivalent.",
+                    "c": "Candidate C is the unique singleton; A and B are structurally equivalent.",
+                    "none": "NONE: all three candidates are structurally equivalent; there is no singleton.",
+                },
+            }
+        },
+        "gold": {"consensus_geometry": gold},
+        "gold_label_kind": {"consensus_geometry": "deterministic_truth"},
+        "metadata": {
+            "source_group_id": source.source_path,
+            "source_path": source.source_path,
+            "source_line": source.source_line,
+            "language": "python",
+            "task_kind": "reference_free_ast_consensus_geometry",
+            "consensus_geometry": geometry,
+            "gold_singleton": None if gold == "none" else gold,
+            "candidate_mutation_ids": mutation_ids,
+            "oracle": "normalized_python_ast_equivalence_topology",
+            "original_exposed_to_model": False,
+        },
+    }
+
+
+def sample_consensus_records(*, docs: Sequence, mutation, data, tokenizer, split: str,
+                             record_count: int, max_code_tokens: int, max_length: int,
+                             seed: int) -> list[dict]:
+    if record_count <= 0:
+        return []
+    sources = build_consensus_sources(
+        docs=docs, mutation=mutation, data=data, tokenizer=tokenizer,
+        max_code_tokens=max_code_tokens, seed=seed,
+    )
+    if not sources:
+        raise RuntimeError(f"no usable Python consensus sources for {split}")
+    rng = random.Random(seed + 389)
+    # Exact class balance whenever divisible by four; otherwise deterministic near-balance.
+    label_plan = [CONSENSUS_LABELS[i % len(CONSENSUS_LABELS)] for i in range(record_count)]
+    rng.shuffle(label_plan)
+    records: list[dict] = []
+    seen_cases: set[str] = set()
+    attempts = 0
+    max_attempts = max(record_count * 100, 400)
+    while len(records) < record_count and attempts < max_attempts:
+        attempts += 1
+        gold = label_plan[len(records)]
+        source = rng.choice(sources)
+        preserving = list(source.preserving)
+        changing = list(source.changing)
+        rng.shuffle(preserving)
+        rng.shuffle(changing)
+        if gold == "none":
+            chosen_p = preserving[:3]
+            if len({text for text, _ in chosen_p}) < 3:
+                continue
+            candidates = {label: chosen_p[i][0] for i, label in enumerate(("a", "b", "c"))}
+            mutation_ids = {label: chosen_p[i][1] for i, label in enumerate(("a", "b", "c"))}
+        else:
+            chosen_p = preserving[:2]
+            if len({text for text, _ in chosen_p}) < 2 or not changing:
+                continue
+            changed_text, changed_id = changing[0]
+            other_labels = [label for label in ("a", "b", "c") if label != gold]
+            candidates = {
+                gold: changed_text,
+                other_labels[0]: chosen_p[0][0],
+                other_labels[1]: chosen_p[1][0],
+            }
+            mutation_ids = {
+                gold: changed_id,
+                other_labels[0]: chosen_p[0][1],
+                other_labels[1]: chosen_p[1][1],
+            }
+        case_fingerprint = hashlib.sha256(
+            (gold + "\0" + "\0".join(candidates[label] for label in ("a", "b", "c"))).encode("utf-8")
+        ).hexdigest()
+        if case_fingerprint in seen_cases:
+            continue
+        digest = hashlib.sha256(
+            f"consensus:{seed}:{source.source_path}:{source.source_line}:{len(records)}:{case_fingerprint}".encode("utf-8")
+        ).hexdigest()[:16]
+        record = make_consensus_record(
+            source=source, candidates=candidates, mutation_ids=mutation_ids, gold=gold,
+            split=split, record_id=f"{split}-consensus-{digest}",
+        )
+        budget = max_length - 64
+        if budget > 0 and len(tokenizer.encode(record["state"], add_special_tokens=False)) > budget:
+            continue
+        seen_cases.add(case_fingerprint)
+        records.append(record)
+    if len(records) < record_count:
+        raise RuntimeError(f"only built {len(records)} usable consensus records for {split}; requested {record_count}")
+    rng.shuffle(records)
+    return records
+
+
+
+def sample_consensus_orbit_records(*, docs: Sequence, mutation, data, tokenizer, split: str,
+                                   record_count: int, max_code_tokens: int, max_length: int,
+                                   seed: int) -> list[dict]:
+    """Build full permutation orbits for training while keeping A/B/C/NONE exactly balanced.
+
+    One 24-record block contains three singleton orbits (six permutations each) plus
+    one NONE orbit (six permutations). Each singleton label therefore appears six
+    times and NONE appears six times. The requested count is rounded up to a full
+    24-record block so no semantic orbit is truncated.
+    """
+    if record_count <= 0:
+        return []
+    sources = build_consensus_sources(
+        docs=docs, mutation=mutation, data=data, tokenizer=tokenizer,
+        max_code_tokens=max_code_tokens, seed=seed,
+    )
+    if not sources:
+        raise RuntimeError(f"no usable Python consensus sources for {split}")
+    target_count = max(24, int(math.ceil(record_count / 24.0)) * 24)
+    rng = random.Random(seed + 911)
+    records: list[dict] = []
+    seen_cases: set[str] = set()
+    attempts = 0
+    max_attempts = max(target_count * 50, 1200)
+
+    while len(records) < target_count and attempts < max_attempts:
+        attempts += 1
+        source = rng.choice(sources)
+        preserving = list(source.preserving)
+        changing = list(source.changing)
+        rng.shuffle(preserving)
+        rng.shuffle(changing)
+        if len(preserving) < 3 or not changing:
+            continue
+        p = preserving[:3]
+        changed = changing[0]
+        block_specs = [
+            ("singleton-01", (p[0], p[1], changed), "changed"),
+            ("singleton-02", (p[0], p[2], changed), "changed"),
+            ("singleton-12", (p[1], p[2], changed), "changed"),
+            ("none", (p[0], p[1], p[2]), None),
+        ]
+        block: list[dict] = []
+        block_fingerprints: set[str] = set()
+        block_id = hashlib.sha256(
+            f"orbit:{seed}:{source.source_path}:{source.source_line}:".encode("utf-8")
+            + "\0".join(text for text, _ in (*p, changed)).encode("utf-8")
+        ).hexdigest()[:16]
+
+        for orbit_kind, items, singleton_role in block_specs:
+            # Tag the changed member before permutation; preserving members are intentionally symmetric.
+            tagged = []
+            for index, item in enumerate(items):
+                role = "changed" if singleton_role is not None and index == 2 else f"preserving-{index}"
+                tagged.append((role, item[0], item[1]))
+            orbit_id = f"{block_id}-{orbit_kind}"
+            for perm_index, perm in enumerate(itertools.permutations(tagged, 3)):
+                candidates = {label: perm[i][1] for i, label in enumerate(("a", "b", "c"))}
+                mutation_ids = {label: perm[i][2] for i, label in enumerate(("a", "b", "c"))}
+                if singleton_role is None:
+                    gold = "none"
+                else:
+                    changed_positions = [
+                        label for i, label in enumerate(("a", "b", "c")) if perm[i][0] == "changed"
+                    ]
+                    if len(changed_positions) != 1:
+                        raise RuntimeError("consensus singleton orbit lost its changed member")
+                    gold = changed_positions[0]
+                case_fingerprint = hashlib.sha256(
+                    (gold + "\0" + "\0".join(candidates[label] for label in ("a", "b", "c"))).encode("utf-8")
+                ).hexdigest()
+                if case_fingerprint in seen_cases or case_fingerprint in block_fingerprints:
+                    block = []
+                    break
+                digest = hashlib.sha256(
+                    f"consensus-orbit:{seed}:{orbit_id}:{perm_index}:{case_fingerprint}".encode("utf-8")
+                ).hexdigest()[:16]
+                record = make_consensus_record(
+                    source=source, candidates=candidates, mutation_ids=mutation_ids, gold=gold,
+                    split=split, record_id=f"{split}-consensus-{digest}",
+                )
+                record["metadata"]["permutation_orbit_id"] = orbit_id
+                record["metadata"]["permutation_orbit_kind"] = orbit_kind
+                record["metadata"]["permutation_index"] = perm_index
+                record["metadata"]["candidate_orbit_roles"] = {
+                    label: perm[i][0] for i, label in enumerate(("a", "b", "c"))
+                }
+                budget = max_length - 64
+                if budget > 0 and len(tokenizer.encode(record["state"], add_special_tokens=False)) > budget:
+                    block = []
+                    break
+                block_fingerprints.add(case_fingerprint)
+                block.append(record)
+            if not block:
+                break
+        if len(block) != 24:
+            continue
+        seen_cases.update(block_fingerprints)
+        records.extend(block)
+
+    if len(records) < target_count:
+        raise RuntimeError(
+            f"only built {len(records)} permutation-balanced consensus records for {split}; "
+            f"requested at least {record_count} (rounded target {target_count})"
+        )
+    records = records[:target_count]
+    rng.shuffle(records)
+    label_counts = {label: 0 for label in CONSENSUS_LABELS}
+    for row in records:
+        label_counts[row["gold"]["consensus_geometry"]] += 1
+    if len(set(label_counts.values())) != 1:
+        raise RuntimeError(f"consensus permutation-orbit generation lost class balance: {label_counts}")
+    return records
+
+
+def consensus_gold_label(example: dict) -> str:
+    ids = list(example["candidate_ids"])
+    if ids != list(CONSENSUS_LABELS):
+        raise RuntimeError(f"noncanonical consensus candidate order: {example.get('id')}: {ids}")
+    gold = int(example["gold_index"])
+    if gold < 0 or gold >= len(ids):
+        raise RuntimeError(f"invalid consensus gold index: {example.get('id')}: {gold}")
+    return ids[gold]
+
+
+def consensus_exposure_spread(label_n: dict[str, int]) -> int:
+    values = [int(label_n[label]) for label in CONSENSUS_LABELS]
+    return max(values) - min(values) if values else 0
+
+
+def consensus_orbit_canonical_roles(record: dict) -> tuple[str, str, str, str]:
+    metadata = record.get("metadata") or {}
+    kind = str(metadata.get("permutation_orbit_kind", ""))
+    if kind == "none":
+        return ("preserving-0", "preserving-1", "preserving-2", "none")
+    if kind.startswith("singleton-"):
+        return ("preserving-0", "preserving-1", "changed", "none")
+    raise RuntimeError(f"unknown consensus permutation orbit kind: {kind!r}")
+
+
+def consensus_orbit_canonical_probabilities(scores, record: dict):
+    """Map displayed A/B/C/NONE probabilities into stable semantic-role coordinates."""
+    import torch
+    metadata = record.get("metadata") or {}
+    role_by_label = metadata.get("candidate_orbit_roles") or {}
+    if set(role_by_label) != {"a", "b", "c"}:
+        raise RuntimeError(f"consensus orbit record lacks candidate_orbit_roles: {record.get('id')}")
+    canonical_roles = consensus_orbit_canonical_roles(record)
+    expected_candidate_roles = set(canonical_roles[:3])
+    if set(role_by_label.values()) != expected_candidate_roles:
+        raise RuntimeError(
+            f"consensus orbit role mismatch for {record.get('id')}: "
+            f"expected={sorted(expected_candidate_roles)} actual={sorted(role_by_label.values())}"
+        )
+    probabilities = torch.softmax(scores[:4].float(), dim=-1)
+    label_index = {label: i for i, label in enumerate(CONSENSUS_LABELS)}
+    role_index = {role: label_index[label] for label, role in role_by_label.items()}
+    return torch.stack([probabilities[role_index[role]] for role in canonical_roles[:3]] + [probabilities[3]])
+
+
+def consensus_orbit_consistency_js(canonical_probabilities):
+    """Jensen-Shannon divergence across six canonicalized views; zero is perfect invariance."""
+    import torch
+    if canonical_probabilities.ndim != 2 or canonical_probabilities.shape[1] != 4:
+        raise RuntimeError(f"invalid canonical consensus probability shape: {tuple(canonical_probabilities.shape)}")
+    mean_probability = canonical_probabilities.mean(dim=0)
+    p = canonical_probabilities.clamp_min(1e-8)
+    m = mean_probability.clamp_min(1e-8)
+    js = (p * (torch.log(p) - torch.log(m))).sum(dim=1).mean()
+    return torch.clamp(js, min=0.0)
+
+
+def consensus_orbit_supervised_terms(canonical_probabilities, canonical_roles, expected_semantic: str):
+    """Supervise the canonical orbit mean so invariance cannot collapse to uniform uncertainty."""
+    import torch
+    if canonical_probabilities.ndim != 2 or canonical_probabilities.shape[1] != 4:
+        raise RuntimeError(f"invalid canonical consensus probability shape: {tuple(canonical_probabilities.shape)}")
+    if tuple(canonical_roles) not in (
+        ("preserving-0", "preserving-1", "changed", "none"),
+        ("preserving-0", "preserving-1", "preserving-2", "none"),
+    ):
+        raise RuntimeError(f"invalid canonical consensus roles: {canonical_roles}")
+    if expected_semantic not in canonical_roles:
+        raise RuntimeError(
+            f"expected semantic target {expected_semantic!r} is absent from canonical roles {canonical_roles}"
+        )
+    mean_probability = canonical_probabilities.mean(dim=0)
+    gold_index = list(canonical_roles).index(expected_semantic)
+    safe = mean_probability.clamp_min(1e-8)
+    log_probabilities = torch.log(safe)
+    gold_probability = mean_probability[gold_index]
+    supervised_nll = -log_probabilities[gold_index]
+    other = torch.cat((log_probabilities[:gold_index], log_probabilities[gold_index + 1:]))
+    semantic_margin = log_probabilities[gold_index] - torch.max(other)
+    return mean_probability, gold_probability, supervised_nll, semantic_margin
+
+
+def build_consensus_orbit_units(examples: Sequence[dict], records: Sequence[dict]) -> list[dict]:
+    """Group loaded NanoJev examples back into complete six-view semantic orbit units."""
+    record_by_id = consensus_orbit_record_lookup(records)
+    groups: dict[str, dict] = {}
+    for ex in examples:
+        ex_id = str(ex["id"])
+        record = record_by_id.get(ex_id)
+        if record is None:
+            raise RuntimeError(f"consensus training example missing raw orbit record: {ex_id}")
+        metadata = record.get("metadata") or {}
+        orbit_id = str(metadata.get("permutation_orbit_id") or "")
+        orbit_kind = str(metadata.get("permutation_orbit_kind") or "")
+        if not orbit_id or not orbit_kind:
+            raise RuntimeError(f"consensus training record lacks orbit metadata: {ex_id}")
+        consensus_orbit_canonical_roles(record)
+        unit = groups.setdefault(orbit_id, {"orbit_id": orbit_id, "orbit_kind": orbit_kind, "members": []})
+        if unit["orbit_kind"] != orbit_kind:
+            raise RuntimeError(f"consensus training orbit mixes kinds: {orbit_id}")
+        unit["members"].append((ex, record))
+
+    units = []
+    for orbit_id in sorted(groups):
+        unit = groups[orbit_id]
+        members = unit["members"]
+        if len(members) != 6:
+            raise RuntimeError(f"consensus training orbit {orbit_id} has {len(members)} views; expected 6")
+        permutation_indexes = sorted(int((record.get("metadata") or {})["permutation_index"]) for _, record in members)
+        if permutation_indexes != list(range(6)):
+            raise RuntimeError(
+                f"consensus training orbit {orbit_id} has invalid permutation indexes: {permutation_indexes}"
+            )
+        members.sort(key=lambda pair: int((pair[1].get("metadata") or {})["permutation_index"]))
+        units.append(unit)
+    if not units:
+        raise RuntimeError("consensus training shard produced no complete permutation orbits")
+    return units
+
+
+def build_consensus_orbit_kind_pools(units: Sequence[dict]) -> dict[str, list[dict]]:
+    pools = {"singleton": [], "none": []}
+    for unit in units:
+        key = "none" if unit["orbit_kind"] == "none" else "singleton"
+        pools[key].append(unit)
+    missing = [kind for kind, rows in pools.items() if not rows]
+    if missing:
+        raise RuntimeError(f"consensus orbit shard is missing orbit kinds: {missing}")
+    return pools
+
+
+def select_consensus_orbits(*, orbit_pools: dict[str, list[dict]], count: int,
+                            cursor: int, rng: random.Random) -> tuple[list[dict], int, list[str]]:
+    """Select complete orbits with a persistent 3-singleton:1-NONE schedule."""
+    if count <= 0:
+        return [], cursor % len(CONSENSUS_ORBIT_KIND_SCHEDULE), []
+    cursor = int(cursor) % len(CONSENSUS_ORBIT_KIND_SCHEDULE)
+    plan = [
+        CONSENSUS_ORBIT_KIND_SCHEDULE[(cursor + i) % len(CONSENSUS_ORBIT_KIND_SCHEDULE)]
+        for i in range(count)
+    ]
+    need = {kind: plan.count(kind) for kind in ("singleton", "none")}
+    picked: dict[str, list[dict]] = {}
+    for kind, n in need.items():
+        if n == 0:
+            picked[kind] = []
+            continue
+        pool = orbit_pools[kind]
+        if len(pool) < n:
+            raise RuntimeError(
+                f"consensus orbit scheduler needs {n} distinct {kind} orbits in one optimizer step "
+                f"but pool has only {len(pool)}"
+            )
+        picked[kind] = rng.sample(pool, n)
+    offsets = {"singleton": 0, "none": 0}
+    selected = []
+    for kind in plan:
+        selected.append(picked[kind][offsets[kind]])
+        offsets[kind] += 1
+    return selected, (cursor + count) % len(CONSENSUS_ORBIT_KIND_SCHEDULE), plan
+
+
+def consensus_orbit_schedule_label_exposure(plan: Sequence[str]) -> dict[str, int]:
+    """Expected A/B/C/NONE question exposure from a complete-orbit kind schedule."""
+    singleton_n = sum(kind == "singleton" for kind in plan)
+    none_n = sum(kind == "none" for kind in plan)
+    return {"a": 2 * singleton_n, "b": 2 * singleton_n, "c": 2 * singleton_n, "none": 6 * none_n}
+
+
+
+def compose_triad_relations(ab: str, ac: str, bc: str) -> str:
+    relations = {"ab": ab, "ac": ac, "bc": bc}
+    if any(value not in TRIAD_RELATION_LABELS for value in relations.values()):
+        raise ValueError(f"invalid triad relation set: {relations}")
+    same = {pair for pair, value in relations.items() if value == "same"}
+    if same == {"ab"}:
+        return "c"
+    if same == {"ac"}:
+        return "b"
+    if same == {"bc"}:
+        return "a"
+    if same == {"ab", "ac", "bc"}:
+        return "none"
+    if not same:
+        return "ambiguous"
+    # SAME is transitive under AST identity, so these partial patterns are impossible
+    # for gold data and indicate inconsistent model judgments at inference time.
+    return "ambiguous"
+
+
+def _state_for_pairwise_triad(left_label: str, left: str, right_label: str, right: str) -> str:
+    return (
+        "Language: python\n"
+        f"Candidate {left_label.upper()}:\n```python\n" + left.rstrip() + "\n```\n"
+        f"Candidate {right_label.upper()}:\n```python\n" + right.rstrip() + "\n```"
+    )
+
+
+def make_pairwise_triad_record(*, source: ConsensusSource, triad_id: str, topology: str,
+                                pair_name: str, left_label: str, right_label: str,
+                                candidates: dict[str, str], mutation_ids: dict[str, str], split: str) -> dict:
+    left_sig = ast_signature(candidates[left_label])
+    right_sig = ast_signature(candidates[right_label])
+    if left_sig is None or right_sig is None:
+        raise RuntimeError("pairwise triad candidate failed Python parse")
+    gold = "same" if left_sig == right_sig else "different"
+    record_id = f"{triad_id}-{pair_name}"
+    return {
+        "id": record_id,
+        "state_id": record_id,
+        "family_id": triad_id,
+        "split": split,
+        "state": _state_for_pairwise_triad(left_label, candidates[left_label], right_label, candidates[right_label]),
+        "questions": {
+            "pairwise_equivalence": {
+                "type": "choice",
+                "instructions": (
+                    "Compare only these two candidates under normalized Python AST equivalence. "
+                    "Choose SAME if their normalized ASTs are exactly identical; otherwise choose DIFFERENT."
+                ),
+                "criteria": {
+                    "same": "The two candidates have exactly the same normalized Python AST.",
+                    "different": "The two candidates have different normalized Python ASTs.",
+                },
+            }
+        },
+        "gold": {"pairwise_equivalence": gold},
+        "gold_label_kind": {"pairwise_equivalence": "deterministic_truth"},
+        "metadata": {
+            "source_group_id": source.source_path,
+            "source_path": source.source_path,
+            "source_line": source.source_line,
+            "language": "python",
+            "task_kind": "pairwise_triad_ast_equivalence",
+            "triad_id": triad_id,
+            "triad_topology": topology,
+            "triad_pair": pair_name,
+            "left_label": left_label,
+            "right_label": right_label,
+            "candidate_mutation_ids": mutation_ids,
+            "oracle": "normalized_python_ast_equivalence",
+            "original_exposed_to_model": False,
+        },
+    }
+
+
+def sample_pairwise_triad_records(*, docs: Sequence, mutation, data, tokenizer, split: str,
+                                   triad_count: int, max_code_tokens: int, max_length: int,
+                                   seed: int) -> list[dict]:
+    if triad_count <= 0:
+        return []
+    sources = build_consensus_sources(
+        docs=docs, mutation=mutation, data=data, tokenizer=tokenizer,
+        max_code_tokens=max_code_tokens, seed=seed,
+    )
+    if not sources:
+        raise RuntimeError(f"no usable Python pairwise-triad sources for {split}")
+    rng = random.Random(seed + 977)
+    topology_plan = [TRIAD_TOPOLOGY_LABELS[i % len(TRIAD_TOPOLOGY_LABELS)] for i in range(triad_count)]
+    rng.shuffle(topology_plan)
+    records: list[dict] = []
+    built = 0
+    attempts = 0
+    max_attempts = max(1000, triad_count * 200)
+    while built < triad_count and attempts < max_attempts:
+        attempts += 1
+        topology = topology_plan[built]
+        source = rng.choice(sources)
+        preserving = list(source.preserving)
+        changing = list(source.changing)
+        rng.shuffle(preserving)
+        rng.shuffle(changing)
+        candidates: dict[str, str]
+        mutation_ids: dict[str, str]
+        if topology == "none":
+            chosen = preserving[:3]
+            if len(chosen) < 3 or len({text for text, _ in chosen}) < 3:
+                continue
+            candidates = {label: chosen[i][0] for i, label in enumerate(("a", "b", "c"))}
+            mutation_ids = {label: chosen[i][1] for i, label in enumerate(("a", "b", "c"))}
+        elif topology in ("a", "b", "c"):
+            if len(preserving) < 2 or not changing:
+                continue
+            singleton = topology
+            peers = [label for label in ("a", "b", "c") if label != singleton]
+            candidates = {singleton: changing[0][0], peers[0]: preserving[0][0], peers[1]: preserving[1][0]}
+            mutation_ids = {singleton: changing[0][1], peers[0]: preserving[0][1], peers[1]: preserving[1][1]}
+        else:
+            if not preserving or len(changing) < 2:
+                continue
+            base = preserving[0]
+            distinct_changed = []
+            seen_sigs = {ast_signature(base[0])}
+            for item in changing:
+                sig = ast_signature(item[0])
+                if sig is not None and sig not in seen_sigs:
+                    distinct_changed.append(item)
+                    seen_sigs.add(sig)
+                if len(distinct_changed) == 2:
+                    break
+            if len(distinct_changed) < 2:
+                continue
+            chosen = [base, *distinct_changed]
+            rng.shuffle(chosen)
+            candidates = {label: chosen[i][0] for i, label in enumerate(("a", "b", "c"))}
+            mutation_ids = {label: chosen[i][1] for i, label in enumerate(("a", "b", "c"))}
+        sigs = {label: ast_signature(text) for label, text in candidates.items()}
+        relations = {
+            "ab": "same" if sigs["a"] == sigs["b"] else "different",
+            "ac": "same" if sigs["a"] == sigs["c"] else "different",
+            "bc": "same" if sigs["b"] == sigs["c"] else "different",
+        }
+        if compose_triad_relations(relations["ab"], relations["ac"], relations["bc"]) != topology:
+            continue
+        digest = hashlib.sha256(
+            (f"triad:{seed}:{source.source_path}:{source.source_line}:{built}:{topology}:" +
+             "\0".join(candidates[label] for label in ("a", "b", "c"))).encode("utf-8")
+        ).hexdigest()[:16]
+        triad_id = f"{split}-triad-{digest}"
+        triad_records = [
+            make_pairwise_triad_record(
+                source=source, triad_id=triad_id, topology=topology, pair_name=pair_name,
+                left_label=left, right_label=right, candidates=candidates,
+                mutation_ids=mutation_ids, split=split,
+            )
+            for pair_name, left, right in TRIAD_PAIR_ORDER
+        ]
+        budget = max_length - 48
+        if budget > 0 and any(len(tokenizer.encode(row["state"], add_special_tokens=False)) > budget for row in triad_records):
+            continue
+        records.extend(triad_records)
+        built += 1
+    if built < triad_count:
+        raise RuntimeError(f"only built {built} usable pairwise triads for {split}; requested {triad_count}")
+    return records
+
+
+def pairwise_triad_record_lookup(records: Sequence[dict]) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    for row in records:
+        raw_id = str(row["id"])
+        for example_id in (raw_id, f"{raw_id}:pairwise_equivalence"):
+            if example_id in lookup:
+                raise RuntimeError(f"pairwise triad contains duplicate example id: {example_id}")
+            lookup[example_id] = row
+    return lookup
+
+
+def sample_relation_balanced_pairwise_records(*, docs: Sequence, mutation, data, tokenizer, split: str,
+                                                   unit_count: int, max_code_tokens: int, max_length: int,
+                                                   seed: int) -> list[dict]:
+    """Build optimizer records with exact 50/50 SAME/DIFFERENT exposure.
+
+    Source triads remain topology-balanced only as a record generator. Training units
+    contain one SAME and one DIFFERENT question. Within each gold label, AB/AC/BC
+    exposure differs by at most one.
+    """
+    if unit_count <= 0:
+        return []
+    source_records = sample_pairwise_triad_records(
+        docs=docs, mutation=mutation, data=data, tokenizer=tokenizer, split=split,
+        triad_count=max(5, unit_count), max_code_tokens=max_code_tokens,
+        max_length=max_length, seed=seed,
+    )
+    pair_names = [name for name, _left, _right in TRIAD_PAIR_ORDER]
+    buckets: dict[tuple[str, str], list[dict]] = {
+        (label, pair_name): [] for label in TRIAD_RELATION_LABELS for pair_name in pair_names
+    }
+    for row in source_records:
+        gold = str(row["gold"]["pairwise_equivalence"])
+        pair_name = str((row.get("metadata") or {}).get("triad_pair"))
+        if (gold, pair_name) not in buckets:
+            raise RuntimeError(f"invalid pairwise source record: gold={gold} pair={pair_name}")
+        buckets[(gold, pair_name)].append(row)
+
+    rng = random.Random(seed + 1877)
+    for pool in buckets.values():
+        rng.shuffle(pool)
+
+    same_plan = [pair_names[i % len(pair_names)] for i in range(unit_count)]
+    different_plan = [pair_names[(i + 1) % len(pair_names)] for i in range(unit_count)]
+    rng.shuffle(same_plan)
+    rng.shuffle(different_plan)
+
+    required: dict[tuple[str, str], int] = {}
+    for pair_name in same_plan:
+        required[("same", pair_name)] = required.get(("same", pair_name), 0) + 1
+    for pair_name in different_plan:
+        required[("different", pair_name)] = required.get(("different", pair_name), 0) + 1
+    for key, need in required.items():
+        have = len(buckets[key])
+        if have < need:
+            raise RuntimeError(
+                "relation-balanced pairwise sampler lacks source records: "
+                f"label={key[0]} pair={key[1]} need={need} have={have}"
+            )
+
+    selected: list[dict] = []
+    for i, (same_pair, different_pair) in enumerate(zip(same_plan, different_plan)):
+        members = [
+            ("same", same_pair, buckets[("same", same_pair)].pop()),
+            ("different", different_pair, buckets[("different", different_pair)].pop()),
+        ]
+        digest = hashlib.sha256(
+            (f"balanced-pair:{seed}:{i}:" + ":".join(str(row[2]["id"]) for row in members)).encode("utf-8")
+        ).hexdigest()[:16]
+        unit_id = f"{split}-balanced-pair-{digest}"
+        for role, pair_name, row in members:
+            cloned = dict(row)
+            metadata = dict(row.get("metadata") or {})
+            metadata.update({
+                "training_sampling": "relation_balanced_50_50",
+                "balanced_pair_unit_id": unit_id,
+                "balanced_pair_gold": role,
+                "balanced_pair_position": pair_name,
+            })
+            cloned["metadata"] = metadata
+            cloned["family_id"] = unit_id
+            selected.append(cloned)
+    return selected
+
+
+def build_balanced_pairwise_training_units(examples: Sequence[dict], records: Sequence[dict]) -> list[dict]:
+    record_by_id = pairwise_triad_record_lookup(records)
+    groups: dict[str, dict] = {}
+    for ex in examples:
+        ex_id = str(ex["id"])
+        record = record_by_id.get(ex_id)
+        if record is None:
+            raise RuntimeError(f"balanced pairwise example missing raw record: {ex_id}")
+        metadata = record.get("metadata") or {}
+        unit_id = str(metadata.get("balanced_pair_unit_id") or "")
+        if not unit_id:
+            raise RuntimeError(f"balanced pairwise record lacks unit id: {ex_id}")
+        groups.setdefault(unit_id, {"unit_id": unit_id, "members": []})["members"].append((ex, record))
+
+    units: list[dict] = []
+    for unit_id in sorted(groups):
+        unit = groups[unit_id]
+        if len(unit["members"]) != 2:
+            raise RuntimeError(f"balanced pairwise unit {unit_id} has {len(unit['members'])} questions; expected 2")
+        golds = []
+        for ex, record in unit["members"]:
+            ids = list(ex["candidate_ids"])
+            if ids != list(TRIAD_RELATION_LABELS):
+                raise RuntimeError(f"balanced pairwise candidate order mismatch for {ex['id']}: {ids}")
+            golds.append(ids[int(ex["gold_index"])])
+        if sorted(golds) != ["different", "same"]:
+            raise RuntimeError(f"balanced pairwise unit {unit_id} is not one SAME + one DIFFERENT: {golds}")
+        units.append(unit)
+    if not units:
+        raise RuntimeError("balanced pairwise shard produced no complete training units")
+    return units
+
+
+def summarize_relation_balanced_records(records: Sequence[dict]) -> dict:
+    label_n = {label: 0 for label in TRIAD_RELATION_LABELS}
+    position_n = {label: {pair: 0 for pair, _left, _right in TRIAD_PAIR_ORDER} for label in TRIAD_RELATION_LABELS}
+    for row in records:
+        gold = str(row["gold"]["pairwise_equivalence"])
+        pair_name = str((row.get("metadata") or {}).get("triad_pair"))
+        label_n[gold] += 1
+        position_n[gold][pair_name] += 1
+    return {"label_n": label_n, "position_n": position_n}
+
+
+def build_pairwise_triad_units(examples: Sequence[dict], records: Sequence[dict]) -> list[dict]:
+    record_by_id = pairwise_triad_record_lookup(records)
+    groups: dict[str, dict] = {}
+    for ex in examples:
+        ex_id = str(ex["id"])
+        record = record_by_id.get(ex_id)
+        if record is None:
+            raise RuntimeError(f"pairwise triad example missing raw record: {ex_id}")
+        metadata = record.get("metadata") or {}
+        triad_id = str(metadata.get("triad_id") or "")
+        topology = str(metadata.get("triad_topology") or "")
+        pair_name = str(metadata.get("triad_pair") or "")
+        if not triad_id or topology not in TRIAD_TOPOLOGY_LABELS or pair_name not in {x[0] for x in TRIAD_PAIR_ORDER}:
+            raise RuntimeError(f"invalid pairwise triad metadata: {ex_id}")
+        unit = groups.setdefault(triad_id, {"triad_id": triad_id, "topology": topology, "members": []})
+        if unit["topology"] != topology:
+            raise RuntimeError(f"pairwise triad mixes topology labels: {triad_id}")
+        unit["members"].append((ex, record))
+    units = []
+    pair_rank = {name: i for i, (name, _left, _right) in enumerate(TRIAD_PAIR_ORDER)}
+    for triad_id in sorted(groups):
+        unit = groups[triad_id]
+        if len(unit["members"]) != 3:
+            raise RuntimeError(f"pairwise triad {triad_id} has {len(unit['members'])} questions; expected 3")
+        names = [str((record.get("metadata") or {})["triad_pair"]) for _ex, record in unit["members"]]
+        if set(names) != set(pair_rank):
+            raise RuntimeError(f"pairwise triad {triad_id} does not contain AB/AC/BC exactly once: {names}")
+        unit["members"].sort(key=lambda pair: pair_rank[str((pair[1].get("metadata") or {})["triad_pair"])])
+        units.append(unit)
+    if not units:
+        raise RuntimeError("pairwise triad shard produced no complete units")
+    return units
+
+
+def triad_training_bucket() -> dict:
+    return {
+        "questions": 0,
+        "correct": 0,
+        "nll_sum": 0.0,
+        "unit_n": 0,
+        "margin_sum": 0.0,
+        "margin_satisfied": 0,
+        "label_n": {label: 0 for label in TRIAD_RELATION_LABELS},
+        "label_correct": {label: 0 for label in TRIAD_RELATION_LABELS},
+        "label_margin_sum": {label: 0.0 for label in TRIAD_RELATION_LABELS},
+        "label_margin_satisfied": {label: 0 for label in TRIAD_RELATION_LABELS},
+        "predicted_n": {label: 0 for label in TRIAD_RELATION_LABELS},
+        "topology_unit_n": 0,
+        "topology_correct": 0,
+        "all_three_relations_correct": 0,
+        "topology_n": {label: 0 for label in TRIAD_TOPOLOGY_LABELS},
+        "topology_correct_n": {label: 0 for label in TRIAD_TOPOLOGY_LABELS},
+    }
+
+
+def record_triad_relation(bucket: dict, *, gold_label: str, pred_label: str, nll: float, gap: float,
+                           margin: float) -> None:
+    if gold_label not in TRIAD_RELATION_LABELS or pred_label not in TRIAD_RELATION_LABELS:
+        raise RuntimeError(f"invalid pairwise telemetry labels: gold={gold_label} pred={pred_label}")
+    bucket["questions"] += 1
+    bucket["correct"] += int(pred_label == gold_label)
+    bucket["nll_sum"] += float(nll)
+    bucket["margin_sum"] += float(gap)
+    bucket["margin_satisfied"] += int(gap >= margin)
+    bucket["label_n"][gold_label] += 1
+    bucket["label_correct"][gold_label] += int(pred_label == gold_label)
+    bucket["label_margin_sum"][gold_label] += float(gap)
+    bucket["label_margin_satisfied"][gold_label] += int(gap >= margin)
+    bucket["predicted_n"][pred_label] += 1
+
+
+def finalize_triad_bucket(bucket: dict) -> dict:
+    same_n = bucket["label_n"]["same"]
+    different_n = bucket["label_n"]["different"]
+    same_accuracy = bucket["label_correct"]["same"] / same_n if same_n else None
+    different_accuracy = bucket["label_correct"]["different"] / different_n if different_n else None
+    balanced_accuracy = (
+        (same_accuracy + different_accuracy) / 2.0
+        if same_accuracy is not None and different_accuracy is not None else None
+    )
+    topology_unit_n = bucket["topology_unit_n"]
+    non_ambiguous_n = sum(bucket["topology_n"][label] for label in ("a", "b", "c", "none"))
+    non_ambiguous_correct = sum(bucket["topology_correct_n"][label] for label in ("a", "b", "c", "none"))
+    out = {
+        "questions": bucket["questions"],
+        "accuracy": bucket["correct"] / bucket["questions"] if bucket["questions"] else None,
+        "balanced_relation_accuracy": balanced_accuracy,
+        "same_accuracy": same_accuracy,
+        "different_accuracy": different_accuracy,
+        "relation_label_n": dict(bucket["label_n"]),
+        "predicted_relation_n": dict(bucket["predicted_n"]),
+        "predicted_same_rate": bucket["predicted_n"]["same"] / bucket["questions"] if bucket["questions"] else None,
+        "predicted_different_rate": bucket["predicted_n"]["different"] / bucket["questions"] if bucket["questions"] else None,
+        "mean_nll": bucket["nll_sum"] / bucket["questions"] if bucket["questions"] else None,
+        "unit_count": bucket["unit_n"],
+        "mean_gold_margin": bucket["margin_sum"] / bucket["questions"] if bucket["questions"] else None,
+        "margin_satisfied_rate": bucket["margin_satisfied"] / bucket["questions"] if bucket["questions"] else None,
+        "same_mean_gold_margin": bucket["label_margin_sum"]["same"] / same_n if same_n else None,
+        "different_mean_gold_margin": bucket["label_margin_sum"]["different"] / different_n if different_n else None,
+        "same_margin_satisfied_rate": bucket["label_margin_satisfied"]["same"] / same_n if same_n else None,
+        "different_margin_satisfied_rate": bucket["label_margin_satisfied"]["different"] / different_n if different_n else None,
+        "topology_unit_count": topology_unit_n,
+        "all_three_relations_correct_rate": (
+            bucket["all_three_relations_correct"] / topology_unit_n if topology_unit_n else None
+        ),
+        "topology_accuracy": bucket["topology_correct"] / topology_unit_n if topology_unit_n else None,
+        "non_ambiguous_topology_accuracy": non_ambiguous_correct / non_ambiguous_n if non_ambiguous_n else None,
+        "topology_n": dict(bucket["topology_n"]),
+    }
+    for label in TRIAD_TOPOLOGY_LABELS:
+        n = bucket["topology_n"][label]
+        out[f"{label}_topology_accuracy"] = bucket["topology_correct_n"][label] / n if n else None
+    return out
+
+
+def evaluate_pairwise_triads(model, examples, records: Sequence[dict], pad_token_id, pipeline, *,
+                              precision: str, microbatch_questions: int, max_microbatch_tokens: int,
+                              label: str, margin: float) -> dict:
+    import torch
+    units = build_pairwise_triad_units(examples, records)
+    ex_to_unit = {}
+    for unit in units:
+        for ex, record in unit["members"]:
+            ex_to_unit[str(ex["id"])] = (unit, record)
+    groups = pipeline.pack_complete_questions(examples, microbatch_questions, max_microbatch_tokens)
+    relation_predictions: dict[str, dict[str, str]] = {unit["triad_id"]: {} for unit in units}
+    relation_correct: dict[str, dict[str, bool]] = {unit["triad_id"]: {} for unit in units}
+    bucket = triad_training_bucket()
+    started = time.perf_counter()
+    model.eval()
+    with torch.inference_mode():
+        for group in groups:
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=precision == "bf16"):
+                logits, _ = model(group, pad_token_id)
+            for ex, z in zip(group, logits):
+                ex_id = str(ex["id"])
+                unit, record = ex_to_unit[ex_id]
+                ids = list(ex["candidate_ids"])
+                if ids != list(TRIAD_RELATION_LABELS):
+                    raise RuntimeError(f"pairwise triad candidate order mismatch for {ex_id}: {ids}")
+                gold = int(ex["gold_index"])
+                scores = z[:2].float()
+                probs = scores.softmax(-1)
+                pred = int(torch.argmax(scores).item())
+                other = 1 - gold
+                gap = float((scores[gold] - scores[other]).item())
+                pair_name = str((record.get("metadata") or {})["triad_pair"])
+                gold_label = ids[gold]
+                pred_label = ids[pred]
+                relation_predictions[unit["triad_id"]][pair_name] = pred_label
+                relation_correct[unit["triad_id"]][pair_name] = pred == gold
+                record_triad_relation(
+                    bucket,
+                    gold_label=gold_label,
+                    pred_label=pred_label,
+                    nll=-math.log(max(float(probs[gold].item()), 1e-30)),
+                    gap=gap,
+                    margin=margin,
+                )
+    for unit in units:
+        pred_rel = relation_predictions[unit["triad_id"]]
+        correct_rel = relation_correct[unit["triad_id"]]
+        if set(pred_rel) != {"ab", "ac", "bc"} or set(correct_rel) != {"ab", "ac", "bc"}:
+            raise RuntimeError(f"pairwise triad evaluation lost relation: {unit['triad_id']}: {pred_rel}")
+        pred_topology = compose_triad_relations(pred_rel["ab"], pred_rel["ac"], pred_rel["bc"])
+        gold_topology = unit["topology"]
+        bucket["unit_n"] += 1
+        bucket["topology_unit_n"] += 1
+        bucket["all_three_relations_correct"] += int(all(correct_rel.values()))
+        bucket["topology_n"][gold_topology] += 1
+        bucket["topology_correct"] += int(pred_topology == gold_topology)
+        bucket["topology_correct_n"][gold_topology] += int(pred_topology == gold_topology)
+    metrics = finalize_triad_bucket(bucket)
+    metrics["margin"] = margin
+    metrics["elapsed_seconds"] = time.perf_counter() - started
+    emit("evaluation_done", label=label, **metrics)
+    return metrics
+
+
+def diagonal_snake_layout(length: int) -> tuple[int, int, tuple[int, ...]]:
+    """Map a linear buffer onto a near-square upper-right -> lower-left diagonal snake.
+
+    Every source position is preserved exactly once.  When the rectangle has spare cells,
+    the active positions are spread across the complete snake so source index 0 lands at
+    the upper-right endpoint and source index length-1 lands at the lower-left endpoint.
+    """
+    if length <= 0:
+        raise ValueError("diagonal snake length must be positive")
+    height = int(math.ceil(math.sqrt(length)))
+    width = int(math.ceil(length / height))
+    coords: list[tuple[int, int]] = []
+    for diagonal in range(height + width - 1):
+        row_min = max(0, diagonal - (width - 1))
+        row_max = min(height - 1, diagonal)
+        current = [(row, diagonal - row) for row in range(row_min, row_max + 1)]
+        if diagonal % 2 == 0:
+            current.reverse()
+        coords.extend((row, width - 1 - col) for row, col in current)
+    if len(coords) != height * width or len(set(coords)) != len(coords):
+        raise RuntimeError("diagonal snake construction is not a bijection")
+    if length == 1:
+        selected = [coords[0]]
+    else:
+        full_last = len(coords) - 1
+        selected = [coords[(index * full_last) // (length - 1)] for index in range(length)]
+    flat = tuple(row * width + col for row, col in selected)
+    if len(set(flat)) != length:
+        raise RuntimeError("diagonal snake active-cell projection contains duplicates")
+    if flat[0] != width - 1 or flat[-1] != (height - 1) * width:
+        raise RuntimeError("diagonal snake endpoints are not upper-right/lower-left")
+    return height, width, flat
+
+
+def build_latent_walk_module(*, hidden_size: int, rank: int, steps: int):
+    """Build the trainable recurrent latent-space walker without importing torch at module load."""
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class LatentWalk(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.hidden_size = int(hidden_size)
+            self.rank = int(rank)
+            self.steps = int(steps)
+            self.norm = nn.LayerNorm(self.hidden_size)
+            self.down = nn.Linear(self.hidden_size, self.rank, bias=False)
+            self.local = nn.Conv2d(self.rank, self.rank, kernel_size=3, padding=1, groups=self.rank, bias=False)
+            self.mix = nn.Conv2d(self.rank, self.rank, kernel_size=1, bias=True)
+            self.up = nn.Linear(self.rank, self.hidden_size, bias=False)
+            self.progress_vector = nn.Parameter(torch.zeros(self.rank))
+            self.recurrence_vector = nn.Parameter(torch.zeros(self.rank))
+            self.step_logit = nn.Parameter(torch.tensor(-2.9444389791664403))  # sigmoid ~= 0.05
+            nn.init.zeros_(self.up.weight)  # exact identity at migration before the first optimizer step
+            self.last_stats: dict[str, float | int] = {}
+            self._layout_cache: dict[int, tuple[int, int, tuple[int, ...]]] = {}
+            self._penalty_terms: list[tuple[object, object]] = []
+
+        def begin_penalty_window(self):
+            self._penalty_terms = []
+
+        def consume_displacement_penalty_mse(self):
+            if not self._penalty_terms:
+                return None
+            numerators = [numerator for numerator, _denominator in self._penalty_terms]
+            denominators = [denominator for _numerator, denominator in self._penalty_terms]
+            penalty = torch.stack(numerators).sum() / torch.stack(denominators).sum().clamp_min(1.0)
+            self._penalty_terms = []
+            return penalty
+
+        def _layout(self, length: int):
+            layout = self._layout_cache.get(length)
+            if layout is None:
+                layout = diagonal_snake_layout(length)
+                self._layout_cache[length] = layout
+            return layout
+
+        def forward(self, hidden, attention_mask=None):
+            if hidden.ndim != 3 or hidden.shape[-1] != self.hidden_size:
+                raise RuntimeError(
+                    f"latent walk expected [batch, sequence, {self.hidden_size}], got {tuple(hidden.shape)}"
+                )
+            batch, length, dim = hidden.shape
+            height, width, flat_positions = self._layout(int(length))
+            cells = height * width
+            positions = torch.tensor(flat_positions, dtype=torch.long, device=hidden.device)
+            state = hidden.new_zeros((batch, cells, dim))
+            state.index_copy_(1, positions, hidden)
+            origin = state
+
+            active = hidden.new_ones((batch, length, 1))
+            if attention_mask is not None:
+                if attention_mask.ndim != 2 or tuple(attention_mask.shape) != (batch, length):
+                    raise RuntimeError(
+                        f"latent walk attention mask shape mismatch: hidden={tuple(hidden.shape)} mask={tuple(attention_mask.shape)}"
+                    )
+                active = attention_mask.to(device=hidden.device, dtype=hidden.dtype).unsqueeze(-1)
+            cell_active = hidden.new_zeros((batch, cells, 1))
+            cell_active.index_copy_(1, positions, active)
+
+            progress = hidden.new_zeros((1, cells, 1))
+            if length == 1:
+                progress_values = hidden.new_zeros((1, 1, 1))
+            else:
+                progress_values = torch.linspace(0.0, 1.0, length, device=hidden.device, dtype=hidden.dtype).view(1, length, 1)
+            progress.index_copy_(1, positions, progress_values)
+
+            step_rms = []
+            max_step = hidden.new_tensor(0.25)
+            for recurrence in range(self.steps):
+                normalized = self.norm(state)
+                compressed = self.down(normalized)
+                compressed = compressed + progress * self.progress_vector.view(1, 1, -1)
+                recurrence_fraction = 0.0 if self.steps <= 1 else recurrence / (self.steps - 1)
+                compressed = compressed + hidden.new_tensor(recurrence_fraction) * self.recurrence_vector.view(1, 1, -1)
+                compressed = compressed * cell_active
+                field = compressed.view(batch, height, width, self.rank).permute(0, 3, 1, 2).contiguous()
+                field = F.gelu(self.local(field))
+                field = F.gelu(self.mix(field))
+                compressed = field.permute(0, 2, 3, 1).reshape(batch, cells, self.rank)
+                delta = self.up(compressed) * cell_active
+                scale = torch.sigmoid(self.step_logit) * max_step
+                update = scale * delta
+                state = state + update
+                step_rms.append(torch.sqrt(torch.mean(update.detach().float().square()) + 1e-30))
+
+            walked = state.index_select(1, positions)
+            displacement_live = (walked - hidden) * active
+            if self.training and torch.is_grad_enabled():
+                penalty_numerator = displacement_live.float().square().sum()
+                penalty_denominator = active.float().sum() * float(dim)
+                self._penalty_terms.append((penalty_numerator, penalty_denominator))
+            displacement = displacement_live.detach().float()
+            input_rms = torch.sqrt(torch.mean(hidden.detach().float().square()) + 1e-30)
+            displacement_rms = torch.sqrt(torch.mean(displacement.square()) + 1e-30)
+            self.last_stats = {
+                "steps": self.steps,
+                "sequence_length": int(length),
+                "grid_height": height,
+                "grid_width": width,
+                "input_rms": float(input_rms.item()),
+                "displacement_rms": float(displacement_rms.item()),
+                "displacement_mse": float(displacement_rms.square().item()),
+                "relative_displacement_rms": float((displacement_rms / (input_rms + 1e-30)).item()),
+                "mean_step_rms": float(torch.stack(step_rms).mean().item()) if step_rms else 0.0,
+                "step_scale": float((torch.sigmoid(self.step_logit.detach().float()) * 0.25).item()),
+            }
+            return walked
+
+    return LatentWalk()
+
+
+def install_latent_walk_hook(model, latent_walk):
+    """Insert the walker exactly between the frozen backbone output and the existing head."""
+    def hook(_module, _args, kwargs, output):
+        if hasattr(output, "last_hidden_state"):
+            hidden = output.last_hidden_state
+            walked = latent_walk(hidden, kwargs.get("attention_mask"))
+            values = dict(output.items())
+            values["last_hidden_state"] = walked
+            return output.__class__(**values)
+        if isinstance(output, tuple) and output:
+            walked = latent_walk(output[0], kwargs.get("attention_mask"))
+            return (walked, *output[1:])
+        raise RuntimeError(f"unsupported backbone output for latent walk: {type(output)!r}")
+
+    return model.backbone.register_forward_hook(hook, with_kwargs=True)
+
+
+def module_parameter_sha256(module) -> str:
+    """Stable digest over one module's parameter values."""
+    digest = hashlib.sha256()
+    for name, param in module.named_parameters():
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(param.detach().float().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def sparse_register_dynamic_parameter_count(hidden_size: int, control_space_size: int, register_rank: int) -> int:
+    """Trainable params: one shared bank plus one task-blind routing network."""
+    bank = int(hidden_size) * int(control_space_size)
+    router = (
+        int(hidden_size) * int(register_rank)
+        + 2 * int(register_rank)
+        + int(register_rank) * int(control_space_size)
+    )
+    return bank + router
+
+
+def soft_feedback_static_parameter_count(hidden_size: int) -> int:
+    """Frozen static parameters: one H-wide token plus strength scalar."""
+    return int(hidden_size) + 1
+
+
+def build_soft_feedback_decision_model_class(
+    BaseDecisionModel,
+    *,
+    control_space_size: int,
+    register_rank: int,
+    strength_init: float,
+    active_epsilon: float,
+):
+    """Wrap NanoJev with task-blind sparse residual control over a shared bank.
+
+    Dynamic mode performs:
+      frozen Qwen -> frozen head read -> shared router -> sparse bank coefficients ->
+      [S + residual, original embeddings] -> same frozen Qwen -> frozen head -> logits.
+
+    The helper token is shared by every candidate path belonging to one question.
+    S and its strength remain frozen.  The router receives no task identifier.
+    Its coefficient head starts at exact zero, so dynamic == static at initialization.
+    """
+    import torch
+    from torch import nn
+    import torch.nn.functional as F
+
+    if control_space_size <= 0:
+        raise ValueError("control-space size must be positive")
+    if register_rank <= 0:
+        raise ValueError("register rank must be positive")
+    if not math.isfinite(strength_init) or not 0.0 < strength_init < 1.0:
+        raise ValueError("soft-feedback strength init must be strictly between 0 and 1")
+    if not math.isfinite(active_epsilon) or active_epsilon <= 0.0:
+        raise ValueError("register active epsilon must be finite and positive")
+
+    class SparseRegisterController(nn.Module):
+        def __init__(self, hidden_size: int, embedding_rms: float):
+            super().__init__()
+            self.hidden_size = int(hidden_size)
+            self.control_space_size = int(control_space_size)
+            self.register_rank = int(register_rank)
+            self.active_epsilon = float(active_epsilon)
+            self.base = nn.Parameter(torch.zeros(self.hidden_size))
+            self.control_bank = nn.Parameter(torch.empty(self.control_space_size, self.hidden_size))
+            self.router_down = nn.Linear(self.hidden_size, self.register_rank, bias=False)
+            self.router_score = nn.Linear(2, self.register_rank, bias=False)
+            self.router_coeff = nn.Linear(self.register_rank, self.control_space_size, bias=False)
+            init_logit = math.log(float(strength_init) / (1.0 - float(strength_init)))
+            self.strength_logit = nn.Parameter(torch.tensor(init_logit))
+            self.register_buffer("embedding_rms", torch.tensor(float(embedding_rms)), persistent=True)
+            self.mode = "dynamic"
+            self.last_stats: dict[str, object] = {}
+            self.last_regularization: dict[str, object] = {}
+            self.last_usage: dict[str, object] = {}
+            self.last_coefficients = None
+            self.reset_dynamic_registers()
+
+        def set_mode(self, mode: str) -> None:
+            if mode not in SOFT_FEEDBACK_CONTROL_MODES:
+                raise ValueError(f"soft-feedback mode must be one of {SOFT_FEEDBACK_CONTROL_MODES}, got {mode!r}")
+            self.mode = mode
+
+        def _reset_control_bank_orthonormal(self) -> None:
+            # K <= H in the intended configuration.  Fail closed rather than
+            # pretending an orthonormal row basis exists when K > H.
+            if self.control_space_size > self.hidden_size:
+                raise RuntimeError(
+                    f"control-space size {self.control_space_size} exceeds hidden size {self.hidden_size}; "
+                    "orthonormal row initialization requires K <= H"
+                )
+            with torch.no_grad():
+                q, _ = torch.linalg.qr(
+                    torch.randn(
+                        self.hidden_size,
+                        self.control_space_size,
+                        device=self.control_bank.device,
+                        dtype=self.control_bank.dtype,
+                    ),
+                    mode="reduced",
+                )
+                self.control_bank.copy_(q.transpose(0, 1).contiguous())
+
+        def reset_dynamic_registers(self) -> None:
+            """Fresh self-organizing control is an exact no-op over inherited S."""
+            self._reset_control_bank_orthonormal()
+            self.router_down.reset_parameters()
+            self.router_score.reset_parameters()
+            nn.init.zeros_(self.router_coeff.weight)
+
+        def static_parameters(self):
+            return (self.base, self.strength_logit)
+
+        def dynamic_parameters(self):
+            return tuple(
+                [self.control_bank]
+                + list(self.router_down.parameters())
+                + list(self.router_score.parameters())
+                + list(self.router_coeff.parameters())
+            )
+
+        def normalized_bank(self):
+            return F.normalize(self.control_bank.float(), p=2.0, dim=1).to(self.control_bank.dtype)
+
+        def orthogonality_penalty(self):
+            bank = F.normalize(self.control_bank.float(), p=2.0, dim=1)
+            gram = bank @ bank.transpose(0, 1)
+            eye = torch.eye(self.control_space_size, device=gram.device, dtype=gram.dtype)
+            off = gram - eye
+            denom = max(self.control_space_size * (self.control_space_size - 1), 1)
+            return off.square().sum() / denom
+
+        def helper(self, summary, score_stats):
+            if self.mode == "none":
+                raise RuntimeError("none mode has no helper token")
+            base = self.base.view(1, -1).expand(summary.shape[0], -1)
+            dynamic_raw = summary.new_zeros(base.shape)
+            coefficients = summary.new_zeros((summary.shape[0], self.control_space_size))
+
+            if self.mode == "dynamic":
+                code = torch.tanh(
+                    self.router_down(summary)
+                    + self.router_score(score_stats.to(summary.dtype))
+                )
+                coefficients = torch.tanh(self.router_coeff(code))
+                dynamic_raw = coefficients.to(self.control_bank.dtype) @ self.normalized_bank()
+
+            raw = base + dynamic_raw
+            direction = torch.tanh(raw)
+            direction_rms = torch.sqrt(direction.float().square().mean(dim=-1, keepdim=True) + 1e-8).to(direction.dtype)
+            normalized = direction / direction_rms
+            strength = torch.sigmoid(self.strength_logit).to(direction.dtype)
+            helper = normalized * self.embedding_rms.to(direction.dtype) * strength
+            zero_rows = (raw.detach().abs().amax(dim=-1, keepdim=True) == 0)
+            helper = torch.where(zero_rows, torch.zeros_like(helper), helper)
+
+            sparsity = coefficients.float().abs().mean()
+            residual_mse = dynamic_raw.float().square().mean()
+            orthogonality = self.orthogonality_penalty()
+            self.last_regularization = {
+                "sparsity": sparsity,
+                "residual_mse": residual_mse,
+                "orthogonality": orthogonality,
+            }
+            detached = coefficients.detach().float()
+            mean_abs = detached.abs().mean(dim=0) if detached.numel() else detached.new_zeros(self.control_space_size)
+            active = mean_abs >= self.active_epsilon
+            self.last_usage = {
+                "questions": int(summary.shape[0]),
+                "active_slot_count": int(active.sum().item()),
+            }
+            # Detached, row-aligned coefficients are exposed only for trainer telemetry.
+            # Task labels are joined to these rows after the forward pass and never enter
+            # this controller.
+            self.last_coefficients = detached
+            return helper, dynamic_raw, strength, coefficients
+
+    class SoftFeedbackDecisionModel(BaseDecisionModel):
+        def __init__(self, backbone, set_head):
+            super().__init__(backbone, set_head)
+            if set_head != "attention":
+                raise RuntimeError("sparse-register soft feedback requires NanoJev set_head='attention'")
+            for attr in ("norm", "scalar", "set_project", "set_attention", "set_output"):
+                if not hasattr(self, attr):
+                    raise RuntimeError(f"NanoJev DecisionModel missing required head component: {attr}")
+            hidden = int(backbone.config.hidden_size)
+            with torch.no_grad():
+                sample = backbone.get_input_embeddings().weight[: min(4096, backbone.get_input_embeddings().weight.shape[0])]
+                embedding_rms = float(torch.sqrt(sample.detach().float().square().mean() + 1e-30).item())
+            if not math.isfinite(embedding_rms) or embedding_rms <= 0.0:
+                raise RuntimeError(f"invalid backbone embedding RMS: {embedding_rms}")
+            self.soft_feedback = SparseRegisterController(hidden, embedding_rms)
+            self.last_first_pass_logits = None
+
+        def set_soft_feedback_mode(self, mode: str) -> None:
+            self.soft_feedback.set_mode(mode)
+
+        def _assemble_paths(self, examples, pad_token):
+            paths = [ids for ex in examples for ids in ex["leaf_tokens"]]
+            if not paths:
+                raise RuntimeError("soft-feedback forward received no candidate paths")
+            device = self.scalar.weight.device
+            lengths = torch.tensor([len(ids) for ids in paths], device=device)
+            width = int(lengths.max())
+            tokens = torch.full((len(paths), width), pad_token, dtype=torch.long, device=device)
+            path_owner = []
+            for question_index, ex in enumerate(examples):
+                for ids in ex["leaf_tokens"]:
+                    path_owner.append(question_index)
+            for i, ids in enumerate(paths):
+                tokens[i, :len(ids)] = torch.tensor(ids, device=device)
+            attention = torch.arange(width, device=device)[None, :] < lengths[:, None]
+            return paths, lengths, tokens, attention, torch.tensor(path_owner, dtype=torch.long, device=device)
+
+        def _score_leaves(self, leaves, examples):
+            kmax = max(len(ex["candidate_ids"]) for ex in examples)
+            h = leaves.new_zeros((len(examples), kmax, leaves.shape[-1]))
+            candidate_valid = torch.zeros((len(examples), kmax), dtype=torch.bool, device=leaves.device)
+            path_valid = torch.zeros((len(examples), kmax), dtype=torch.bool, device=leaves.device)
+            offset = 0
+            for i, ex in enumerate(examples):
+                path_n = len(ex["leaf_tokens"])
+                h[i, :path_n] = leaves[offset:offset + path_n]
+                path_valid[i, :path_n] = True
+                candidate_valid[i, :len(ex["candidate_ids"])] = True
+                offset += path_n
+            h = self.norm(h)
+            z = self.scalar(h).squeeze(-1).float()
+            choice = torch.tensor(
+                [i for i, ex in enumerate(examples) if ex["type"] == "choice"],
+                device=leaves.device,
+                dtype=torch.long,
+            )
+            if self.set_head == "attention" and len(choice):
+                log_k = candidate_valid[choice].sum(-1).float().log()[:, None, None].expand(-1, kmax, 1)
+                u = self.set_project(torch.cat([h[choice], log_k.to(h.dtype)], dim=-1))
+                mixed, _ = self.set_attention(u, u, u, key_padding_mask=~candidate_valid[choice], need_weights=False)
+                delta = self.set_output(torch.tanh(u + mixed)).squeeze(-1).float()
+                z = z.index_add(0, choice, delta)
+            out = []
+            for i, ex in enumerate(examples):
+                if ex["type"] == "boolean":
+                    out.append(F.pad(torch.stack([z[i, 0] * 0, z[i, 0]]), (0, kmax - 2)))
+                else:
+                    out.append(z[i])
+            logits = torch.stack(out).masked_fill(~candidate_valid, -1e9)
+            return logits, candidate_valid, h, path_valid
+
+        @staticmethod
+        def _question_summary(h, path_valid, logits, examples):
+            path_weight = path_valid.to(h.dtype)
+            mean_h = (h * path_weight.unsqueeze(-1)).sum(dim=1) / path_weight.sum(dim=1, keepdim=True).clamp_min(1.0)
+            summary = mean_h.clone()
+            stats = logits.new_zeros((len(examples), 2))
+            for i, ex in enumerate(examples):
+                candidate_n = len(ex["candidate_ids"])
+                values = logits[i, :candidate_n].float()
+                probs = values.softmax(-1)
+                centered = values - values.mean()
+                stats[i, 0] = torch.sqrt(centered.square().mean() + 1e-8)
+                stats[i, 1] = -(probs * probs.clamp_min(1e-8).log()).sum()
+                path_n = len(ex["leaf_tokens"])
+                if ex["type"] != "boolean" and path_n == candidate_n and path_n > 1:
+                    weighted = (h[i, :path_n] * probs[:path_n].to(h.dtype).unsqueeze(-1)).sum(dim=0)
+                    summary[i] = 0.5 * mean_h[i] + 0.5 * weighted
+            return summary, stats
+
+        def _single_pass(self, examples, pad_token):
+            paths, lengths, tokens, attention, _path_owner = self._assemble_paths(examples, pad_token)
+            hidden = self.backbone(input_ids=tokens, attention_mask=attention, use_cache=False).last_hidden_state
+            leaves = hidden[torch.arange(len(paths), device=tokens.device), lengths - 1]
+            logits, valid, _h, _path_valid = self._score_leaves(leaves, examples)
+            self.soft_feedback.last_stats = {
+                "mode": "none",
+                "backbone_reads": 1,
+                "helper_tokens_per_question": 0,
+                "embedding_rms": float(self.soft_feedback.embedding_rms.detach().float().item()),
+            }
+            return logits, valid
+
+        def forward(self, examples, pad_token):
+            import torch
+
+            mode = self.soft_feedback.mode
+            if mode == "none":
+                return self._single_pass(examples, pad_token)
+
+            paths, lengths, tokens, attention, path_owner = self._assemble_paths(examples, pad_token)
+            first_leaves = None
+            first_logits = None
+            summary = None
+            score_stats = None
+            if mode == "dynamic":
+                with torch.no_grad():
+                    first_hidden = self.backbone(
+                        input_ids=tokens, attention_mask=attention, use_cache=False
+                    ).last_hidden_state
+                    first_leaves = first_hidden[torch.arange(len(paths), device=tokens.device), lengths - 1]
+                    first_logits, _first_valid, first_h, first_path_valid = self._score_leaves(first_leaves, examples)
+                    summary, score_stats = self._question_summary(first_h, first_path_valid, first_logits, examples)
+                self.last_first_pass_logits = first_logits
+            else:
+                hidden_size = int(self.backbone.config.hidden_size)
+                summary = self.soft_feedback.base.new_zeros((len(examples), hidden_size))
+                score_stats = self.soft_feedback.base.new_zeros((len(examples), 2))
+                self.last_first_pass_logits = None
+
+            helper_by_question, dynamic_raw, strength, coefficients = self.soft_feedback.helper(
+                summary, score_stats
+            )
+            helper_by_path = helper_by_question.index_select(0, path_owner).unsqueeze(1)
+            with torch.no_grad():
+                token_embeds = self.backbone.get_input_embeddings()(tokens)
+            helper_by_path = helper_by_path.to(dtype=token_embeds.dtype)
+            second_inputs = torch.cat([helper_by_path, token_embeds], dim=1)
+            second_attention = torch.cat(
+                [torch.ones((attention.shape[0], 1), dtype=attention.dtype, device=attention.device), attention], dim=1
+            )
+            max_positions = int(getattr(self.backbone.config, "max_position_embeddings", second_inputs.shape[1]))
+            if second_inputs.shape[1] > max_positions:
+                raise RuntimeError(
+                    f"soft-feedback prefix exceeds backbone max positions: {second_inputs.shape[1]} > {max_positions}"
+                )
+            second_hidden = self.backbone(
+                inputs_embeds=second_inputs, attention_mask=second_attention, use_cache=False
+            ).last_hidden_state
+            second_leaves = second_hidden[torch.arange(len(paths), device=tokens.device), lengths]
+            logits, valid, _second_h, _second_path_valid = self._score_leaves(second_leaves, examples)
+
+            with torch.no_grad():
+                helper_rms = torch.sqrt(helper_by_question.detach().float().square().mean() + 1e-30)
+                base_rms = torch.sqrt(self.soft_feedback.base.detach().float().square().mean() + 1e-30)
+                dynamic_rms = torch.sqrt(dynamic_raw.detach().float().square().mean() + 1e-30)
+                coeff_abs = coefficients.detach().float().abs()
+                aggregate_mean_abs = coeff_abs.mean(dim=0) if coeff_abs.numel() else coeff_abs.new_zeros(self.soft_feedback.control_space_size)
+                aggregate_active = aggregate_mean_abs >= self.soft_feedback.active_epsilon
+                stats = {
+                    "mode": mode,
+                    "backbone_reads": 2 if mode == "dynamic" else 1,
+                    "helper_tokens_per_question": 1,
+                    "questions": len(examples),
+                    "candidate_paths": len(paths),
+                    "embedding_rms": float(self.soft_feedback.embedding_rms.detach().float().item()),
+                    "helper_rms": float(helper_rms.item()),
+                    "base_raw_rms": float(base_rms.item()),
+                    "dynamic_raw_rms": float(dynamic_rms.item()),
+                    "strength": float(strength.detach().float().item()),
+                    "control_space_size": self.soft_feedback.control_space_size,
+                    "register_rank": self.soft_feedback.register_rank,
+                    "aggregate_active_slot_count": int(aggregate_active.sum().item()),
+                    "self_routed_usage": self.soft_feedback.last_usage,
+                    "orthogonality_penalty": float(self.soft_feedback.last_regularization["orthogonality"].detach().item()),
+                }
+                if first_leaves is not None:
+                    displacement = second_leaves.detach().float() - first_leaves.detach().float()
+                    first_rms = torch.sqrt(first_leaves.detach().float().square().mean() + 1e-30)
+                    displacement_rms = torch.sqrt(displacement.square().mean() + 1e-30)
+                    stats.update({
+                        "first_leaf_rms": float(first_rms.item()),
+                        "first_to_second_leaf_displacement_rms": float(displacement_rms.item()),
+                        "relative_leaf_displacement_rms": float((displacement_rms / (first_rms + 1e-30)).item()),
+                        "first_pass_score_stat_rms": float(torch.sqrt(score_stats.detach().float().square().mean() + 1e-30).item()),
+                    })
+                self.soft_feedback.last_stats = stats
+            return logits, valid
+
+    SoftFeedbackDecisionModel.__name__ = "SelfOrganizingSparseRegisterDecisionModel"
+    return SoftFeedbackDecisionModel
+
+def validate_records(records: Sequence[dict], pipeline) -> None:
+    for record in records:
+        pipeline.validate_training_row(record)
+
+
+def load_head_into_model(model, head_path: Path, *, allow_missing_prefixes: tuple[str, ...] = ()) -> None:
+    from safetensors.torch import load_file
+    weights = load_file(str(head_path), device="cpu")
+    incompatible = model.load_state_dict(weights, strict=False)
+    bad_missing = [
+        key for key in incompatible.missing_keys
+        if not key.startswith("backbone.") and not any(key.startswith(prefix) for prefix in allow_missing_prefixes)
+    ]
+    if incompatible.unexpected_keys or bad_missing:
+        raise RuntimeError(
+            f"decision-head load mismatch: unexpected={incompatible.unexpected_keys} bad_missing={bad_missing}"
+        )
+
+
+def load_parent_static_and_head_into_model(model, head_path: Path) -> None:
+    """Load the inherited head plus S/strength, discarding the parent's old dynamic controller."""
+    from safetensors.torch import load_file
+    weights = load_file(str(head_path), device="cpu")
+    keep = {}
+    for key, value in weights.items():
+        if not key.startswith("soft_feedback."):
+            keep[key] = value
+        elif key in {
+            "soft_feedback.base",
+            "soft_feedback.strength_logit",
+            "soft_feedback.embedding_rms",
+        }:
+            keep[key] = value
+    incompatible = model.load_state_dict(keep, strict=False)
+    allowed_missing = (
+        "soft_feedback.control_bank",
+        "soft_feedback.router_down.",
+        "soft_feedback.router_score.",
+        "soft_feedback.router_coeff.",
+    )
+    bad_missing = [
+        key for key in incompatible.missing_keys
+        if not key.startswith("backbone.") and not any(key.startswith(prefix) for prefix in allowed_missing)
+    ]
+    if incompatible.unexpected_keys or bad_missing:
+        raise RuntimeError(
+            f"sparse-register parent load mismatch: unexpected={incompatible.unexpected_keys} bad_missing={bad_missing}"
+        )
+
+
+def save_generation(*, exp: Path, model, optimizer, cycle: int, global_step: int,
+                    experiment: dict, training_config: dict, meta: dict, legacy) -> Path:
+    import torch
+    from safetensors.torch import save_file
+    generations = exp / "checkpoints" / "generations"
+    final = generations / f"cycle-{cycle:06d}"
+    temp = generations / f".cycle-{cycle:06d}.tmp"
+    if final.exists() or temp.exists():
+        raise RuntimeError(f"checkpoint generation already exists: {final}")
+    temp.mkdir(parents=True)
+    emit("checkpoint_write_start", cycle=cycle, directory=str(final))
+    save_file(legacy.head_state(model), temp / "head.safetensors")
+    torch.save(optimizer.state_dict(), temp / "optimizer.pt")
+    legacy.save_rng(temp / "rng_state.pt")
+    checkpoint_config = {
+        "schema_version": "openjev-decision-pipeline-v1",
+        "model": experiment["model"],
+        "revision": experiment["requested_revision"],
+        "resolved_model_revision": experiment["resolved_model_revision"],
+        "set_head": experiment["set_head"],
+        "max_length": experiment["max_length"],
+        "initialization": experiment["initialization"],
+        "task": TASK,
+        "backbone_frozen": True,
+        "head_lr": training_config["head_lr"],
+        "training_objective": OBJECTIVE,
+        "consensus_optimizer_unit": "complete_six_view_permutation_orbit",
+        "orbit_consistency_weight": ORBIT_CONSISTENCY_WEIGHT,
+        "orbit_supervision_blend": ORBIT_SUPERVISION_BLEND,
+        "orbit_supervision_target": "canonical_mean_probability",
+        "legacy_training_percent": meta["legacy_training_percent"],
+        "mutation_training_percent": meta["mutation_training_percent"],
+        "ast_training_percent": meta["ast_training_percent"],
+        "consensus_training_percent": meta["consensus_training_percent"],
+        "triad_training_percent": meta["triad_training_percent"],
+        "main_computer_experiment_sha256": experiment["experiment_sha256"],
+        "main_computer_cycle": cycle,
+        "main_computer_global_step": global_step,
+        "parent_head_sha256": experiment["parent_head_sha256"],
+        "decision_head_frozen": False,
+        "entire_nanojev_head_trainable": bool(training_config.get("r2_gain_trainable", False)),
+        "nanojev_head_trainable_except_r2_gain": not bool(training_config.get("r2_gain_trainable", False)),
+        "r2_gain_trainable": bool(training_config.get("r2_gain_trainable", False)),
+        "soft_feedback": {
+            "enabled": True,
+            "token_count": SOFT_FEEDBACK_TOKEN_COUNT,
+            "lr": training_config["soft_feedback_lr"],
+            "strength_init": training_config["soft_feedback_strength_init"],
+            "generator": SOFT_FEEDBACK_GENERATOR,
+            "control_modes": list(SOFT_FEEDBACK_CONTROL_MODES),
+            "backbone_reads_dynamic": 3 if training_config.get("r2_gain_trainable", False) else 2,
+            "backbone_reads_static": 1,
+            "backbone_reads_none": 1,
+            "static_base_frozen": False,
+            "static_strength_frozen": False,
+            "sparse_registers_trainable": True,
+            "sparse_registers_zero_initialized_from_parent": True,
+            "router_task_identity_input": False,
+            "task_labels_reporting_only": True,
+            "register_semantics": "emergent_shared_control_slots",
+            "control_space_size": training_config["control_space_size"],
+            "register_rank": training_config["register_rank"],
+            "register_sparsity_weight": training_config["register_sparsity_weight"],
+            "register_residual_weight": training_config["register_residual_weight"],
+            "register_orthogonality_weight": training_config["register_orthogonality_weight"],
+            "register_active_epsilon": training_config["register_active_epsilon"],
+            "current_strength": float(torch.sigmoid(model.soft_feedback.strength_logit.detach()).item()),
+            "recurrent_r2_enabled": True,
+            "recurrent_r2_shared_control_bank": True,
+            "recurrent_r2_gain_parameterization": "tanh_scalar_rezeroed_at_full_head_cutover",
+            "r2_gain_trainable": bool(training_config.get("r2_gain_trainable", False)),
+            "r2_third_pass_bypassed": not bool(training_config.get("r2_gain_trainable", False)),
+            "entire_nanojev_head_trainable": bool(training_config.get("r2_gain_trainable", False)),
+            "nanojev_head_trainable_except_r2_gain": not bool(training_config.get("r2_gain_trainable", False)),
+        },
+    }
+    if training_config.get("latent_walk_enabled"):
+        checkpoint_config["latent_walk"] = {
+            "enabled": True,
+            "steps": training_config["latent_walk_steps"],
+            "rank": training_config["latent_walk_rank"],
+            "lr": training_config["latent_walk_lr"],
+            "displacement_penalty_weight": training_config["latent_walk_displacement_penalty_weight"],
+            "displacement_penalty": training_config["latent_walk_displacement_penalty"],
+            "layout": "upper_right_to_lower_left_diagonal_snake_v1",
+            "transition": "weight_shared_residual_2d_field_walk",
+        }
+    atomic_json(temp / "config.json", checkpoint_config)
+    atomic_json(temp / "meta.json", meta)
+    os.replace(temp, final)
+    emit("checkpoint_write_done", cycle=cycle, directory=str(final),
+         head_sha256=legacy.sha256_file(final / "head.safetensors"))
+    return final
+
+
+def garbage_collect(exp: Path, keep: int) -> None:
+    dirs = sorted(p for p in (exp / "checkpoints" / "generations").glob("cycle-*") if p.is_dir())
+    for old in dirs[:-keep]:
+        shutil.rmtree(old)
+        emit("checkpoint_generation_deleted", directory=str(old))
+
+
+def new_register_usage_accumulator(control_space_size: int) -> dict:
+    """Aggregate count-only register telemetry without retaining slot identities."""
+    return {
+        "questions": 0,
+        "weighted_abs_sum": [0.0] * int(control_space_size),
+    }
+
+
+def accumulate_register_usage(accumulator: dict, reporting_tasks: Sequence[str], coefficients) -> None:
+    """Accumulate aggregate coefficient magnitudes; task labels remain routing-inert."""
+    if coefficients is None:
+        raise RuntimeError("self-organizing router did not expose detached coefficients")
+    if len(reporting_tasks) != int(coefficients.shape[0]):
+        raise RuntimeError(
+            f"reporting-task/coefficient row mismatch: {len(reporting_tasks)} != {int(coefficients.shape[0])}"
+        )
+    detached = coefficients.detach().float().abs().cpu()
+    width = int(detached.shape[1])
+    weighted = accumulator["weighted_abs_sum"]
+    if len(weighted) != width:
+        raise RuntimeError("self-organizing register usage width mismatch")
+    accumulator["questions"] += int(detached.shape[0])
+    if detached.numel():
+        for i, value in enumerate(detached.sum(dim=0).tolist()):
+            weighted[i] += float(value)
+
+
+def finalize_register_usage(accumulator: dict, *, active_epsilon: float) -> dict:
+    questions = int(accumulator["questions"])
+    weighted = accumulator["weighted_abs_sum"]
+    occupied_slot_count = sum(
+        1
+        for value in weighted
+        if (value / questions if questions else 0.0) >= active_epsilon
+    )
+    control_space_size = len(weighted)
+    return {
+        "active_epsilon": float(active_epsilon),
+        "control_space_size": control_space_size,
+        "aggregate_questions": questions,
+        "occupied_slot_count": occupied_slot_count,
+        "dormant_slot_count": control_space_size - occupied_slot_count,
+        "routing_note": "aggregate occupancy count only; no slot identities or coefficient vectors logged",
+    }
+
+
+def metric_prefix(metrics: dict, prefix: str) -> dict:
+    return {
+        f"{prefix}_mean_nll": metrics["mean_nll"],
+        f"{prefix}_accuracy": metrics["accuracy"],
+        f"{prefix}_balanced_accuracy": metrics["balanced_accuracy"],
+        f"{prefix}_auc": metrics["auc"],
+        f"{prefix}_probability_separation": metrics["probability_separation"],
+        f"{prefix}_pair_count": metrics["pair_count"],
+        f"{prefix}_pair_win_rate": metrics["pair_win_rate"],
+        f"{prefix}_mean_pair_logodds_gap": metrics["mean_pair_logodds_gap"],
+        f"{prefix}_pair_margin_satisfied_rate": metrics["pair_margin_satisfied_rate"],
+    }
+
+
+def binary_training_bucket() -> dict:
+    return {
+        "questions": 0, "correct": 0, "nll_sum": 0.0,
+        "unit_n": 0, "margin_sum": 0.0, "margin_satisfied": 0,
+    }
+
+
+def consensus_training_bucket() -> dict:
+    return {
+        "questions": 0, "correct": 0, "nll_sum": 0.0,
+        "unit_n": 0, "margin_sum": 0.0, "margin_view_n": 0, "margin_satisfied": 0,
+        "all_six_margin_satisfied": 0,
+        "orbit_consistency_sum": 0.0,
+        "orbit_supervised_nll_sum": 0.0,
+        "orbit_mean_gold_probability_sum": 0.0,
+        "orbit_semantic_margin_sum": 0.0,
+        "orbit_semantic_margin_satisfied": 0,
+        "orbit_prediction_consistent": 0,
+        "orbit_prediction_consistent_correct": 0,
+        "orbit_kind_n": {"singleton": 0, "none": 0},
+        "label_n": {label: 0 for label in CONSENSUS_LABELS},
+        "label_correct": {label: 0 for label in CONSENSUS_LABELS},
+    }
+
+
+def finalize_binary_bucket(bucket: dict) -> dict:
+    return {
+        "questions": bucket["questions"],
+        "accuracy": bucket["correct"] / bucket["questions"] if bucket["questions"] else None,
+        "mean_nll": bucket["nll_sum"] / bucket["questions"] if bucket["questions"] else None,
+        "pair_count": bucket["unit_n"],
+        "mean_pair_logodds_gap": bucket["margin_sum"] / bucket["unit_n"] if bucket["unit_n"] else None,
+        "pair_margin_satisfied_rate": bucket["margin_satisfied"] / bucket["unit_n"] if bucket["unit_n"] else None,
+    }
+
+
+def finalize_consensus_bucket(bucket: dict) -> dict:
+    out = {
+        "questions": bucket["questions"],
+        "accuracy": bucket["correct"] / bucket["questions"] if bucket["questions"] else None,
+        "mean_nll": bucket["nll_sum"] / bucket["questions"] if bucket["questions"] else None,
+        "unit_count": bucket["unit_n"],
+        "mean_gold_margin": bucket["margin_sum"] / bucket["margin_view_n"] if bucket["margin_view_n"] else None,
+        "margin_satisfied_rate": bucket["margin_satisfied"] / bucket["margin_view_n"] if bucket["margin_view_n"] else None,
+        "all_six_margin_satisfied_rate": (
+            bucket["all_six_margin_satisfied"] / bucket["unit_n"] if bucket["unit_n"] else None
+        ),
+        "mean_orbit_consistency_js": (
+            bucket["orbit_consistency_sum"] / bucket["unit_n"] if bucket["unit_n"] else None
+        ),
+        "mean_orbit_supervised_nll": (
+            bucket["orbit_supervised_nll_sum"] / bucket["unit_n"] if bucket["unit_n"] else None
+        ),
+        "mean_orbit_gold_probability": (
+            bucket["orbit_mean_gold_probability_sum"] / bucket["unit_n"] if bucket["unit_n"] else None
+        ),
+        "mean_orbit_semantic_margin": (
+            bucket["orbit_semantic_margin_sum"] / bucket["unit_n"] if bucket["unit_n"] else None
+        ),
+        "orbit_semantic_margin_satisfied_rate": (
+            bucket["orbit_semantic_margin_satisfied"] / bucket["unit_n"] if bucket["unit_n"] else None
+        ),
+        "orbit_prediction_consistency_rate": (
+            bucket["orbit_prediction_consistent"] / bucket["unit_n"] if bucket["unit_n"] else None
+        ),
+        "orbit_semantic_consistent_correct_rate": (
+            bucket["orbit_prediction_consistent_correct"] / bucket["unit_n"] if bucket["unit_n"] else None
+        ),
+        "orbit_kind_n": {kind: int(bucket["orbit_kind_n"][kind]) for kind in ("singleton", "none")},
+        "label_n": {label: int(bucket["label_n"][label]) for label in CONSENSUS_LABELS},
+    }
+    for label in CONSENSUS_LABELS:
+        n = bucket["label_n"][label]
+        out[f"{label}_accuracy"] = bucket["label_correct"][label] / n if n else None
+        out[f"{label}_n"] = n
+    return out
+
+
+def evaluate_consensus(model, examples, pad_token_id, pipeline, *, precision: str,
+                       microbatch_questions: int, max_microbatch_tokens: int,
+                       label: str, margin: float) -> dict:
+    import torch
+    model.eval()
+    groups = pipeline.pack_complete_questions(examples, microbatch_questions, max_microbatch_tokens)
+    nll_sum = 0.0
+    correct = 0
+    q = 0
+    margin_sum = 0.0
+    margin_satisfied = 0
+    label_n = {x: 0 for x in CONSENSUS_LABELS}
+    label_correct = {x: 0 for x in CONSENSUS_LABELS}
+    confusion = {x: {y: 0 for y in CONSENSUS_LABELS} for x in CONSENSUS_LABELS}
+    started = time.perf_counter()
+    with torch.inference_mode():
+        for group in groups:
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=precision == "bf16"):
+                logits, _ = model(group, pad_token_id)
+            for ex, z in zip(group, logits):
+                ids = list(ex["candidate_ids"])
+                if ids != list(CONSENSUS_LABELS):
+                    raise RuntimeError(f"consensus candidate order mismatch for {ex['id']}: {ids}")
+                gold = int(ex["gold_index"])
+                if not (0 <= gold < 4):
+                    raise RuntimeError(f"invalid consensus gold index for {ex['id']}: {gold}")
+                scores = z[:4].float()
+                probs = scores.softmax(-1)
+                pred = int(torch.argmax(scores).item())
+                gold_label = ids[gold]
+                pred_label = ids[pred]
+                nll_sum += -math.log(max(float(probs[gold].item()), 1e-30))
+                correct += int(pred == gold)
+                label_n[gold_label] += 1
+                label_correct[gold_label] += int(pred == gold)
+                confusion[gold_label][pred_label] += 1
+                other = torch.cat((scores[:gold], scores[gold + 1:]))
+                gold_margin = float((scores[gold] - torch.max(other)).item())
+                margin_sum += gold_margin
+                margin_satisfied += int(gold_margin >= margin)
+                q += 1
+    if q == 0:
+        raise RuntimeError("consensus evaluation set is empty")
+    singleton_n = sum(label_n[x] for x in ("a", "b", "c"))
+    singleton_correct = sum(label_correct[x] for x in ("a", "b", "c"))
+    position_accs = [label_correct[x] / label_n[x] for x in ("a", "b", "c") if label_n[x]]
+    metrics = {
+        "questions": q,
+        "accuracy": correct / q,
+        "top1_error": 1.0 - correct / q,
+        "mean_nll": nll_sum / q,
+        "singleton_accuracy": singleton_correct / singleton_n if singleton_n else None,
+        "none_accuracy": label_correct["none"] / label_n["none"] if label_n["none"] else None,
+        "a_accuracy": label_correct["a"] / label_n["a"] if label_n["a"] else None,
+        "b_accuracy": label_correct["b"] / label_n["b"] if label_n["b"] else None,
+        "c_accuracy": label_correct["c"] / label_n["c"] if label_n["c"] else None,
+        "a_n": label_n["a"], "b_n": label_n["b"], "c_n": label_n["c"], "none_n": label_n["none"],
+        "position_accuracy_spread": max(position_accs) - min(position_accs) if position_accs else None,
+        "mean_gold_margin": margin_sum / q,
+        "margin_satisfied_rate": margin_satisfied / q,
+        "margin": margin,
+        "confusion": confusion,
+        "elapsed_seconds": time.perf_counter() - started,
+    }
+    emit("evaluation_done", label=label, **metrics)
+    return metrics
+
+
+def read_jsonl_records(path: Path) -> list[dict]:
+    rows = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"invalid JSONL in {path}:{line_number}: {exc}") from exc
+        if not isinstance(row, dict):
+            raise RuntimeError(f"expected JSON object in {path}:{line_number}")
+        rows.append(row)
+    return rows
+
+
+def summarize_consensus_orbit_predictions(predictions: Sequence[dict]) -> dict:
+    if not predictions:
+        raise RuntimeError("consensus orbit evaluation produced no predictions")
+    groups: dict[str, list[dict]] = {}
+    slot_correct = {label: 0 for label in ("a", "b", "c")}
+    slot_n = {label: 0 for label in ("a", "b", "c")}
+    predicted_label_n = {label: 0 for label in CONSENSUS_LABELS}
+    question_correct = 0
+    for row in predictions:
+        orbit_id = str(row["orbit_id"])
+        groups.setdefault(orbit_id, []).append(row)
+        gold_label = str(row["gold_label"])
+        pred_label = str(row["pred_label"])
+        predicted_label_n[pred_label] += 1
+        correct = pred_label == gold_label
+        question_correct += int(correct)
+        if gold_label in slot_n:
+            slot_n[gold_label] += 1
+            slot_correct[gold_label] += int(correct)
+
+    orbit_count = 0
+    singleton_orbits = 0
+    none_orbits = 0
+    all_six_correct = 0
+    singleton_all_six_correct = 0
+    none_all_six_correct = 0
+    semantic_consistent = 0
+    singleton_semantic_consistent = 0
+    none_semantic_consistent = 0
+    semantic_consistent_correct = 0
+    per_orbit_accuracy = []
+    for orbit_id, rows in groups.items():
+        if len(rows) != 6:
+            raise RuntimeError(f"consensus orbit {orbit_id} has {len(rows)} views; expected 6")
+        kinds = {str(row["orbit_kind"]) for row in rows}
+        if len(kinds) != 1:
+            raise RuntimeError(f"consensus orbit {orbit_id} mixes kinds: {sorted(kinds)}")
+        kind = next(iter(kinds))
+        is_none = kind == "none"
+        if is_none:
+            none_orbits += 1
+        else:
+            singleton_orbits += 1
+        orbit_count += 1
+        correct_n = sum(int(row["pred_label"] == row["gold_label"]) for row in rows)
+        per_orbit_accuracy.append(correct_n / 6.0)
+        all_correct = correct_n == 6
+        all_six_correct += int(all_correct)
+        if is_none:
+            none_all_six_correct += int(all_correct)
+        else:
+            singleton_all_six_correct += int(all_correct)
+        semantic_predictions = {str(row["pred_semantic"]) for row in rows}
+        semantic_golds = {str(row["gold_semantic"]) for row in rows}
+        if len(semantic_golds) != 1:
+            raise RuntimeError(f"consensus orbit {orbit_id} has inconsistent semantic gold identities")
+        consistent = len(semantic_predictions) == 1
+        semantic_consistent += int(consistent)
+        if is_none:
+            none_semantic_consistent += int(consistent)
+        else:
+            singleton_semantic_consistent += int(consistent)
+        semantic_consistent_correct += int(consistent and next(iter(semantic_predictions)) == next(iter(semantic_golds)))
+
+    slot_acc = {
+        label: (slot_correct[label] / slot_n[label] if slot_n[label] else None)
+        for label in ("a", "b", "c")
+    }
+    present_slot_acc = [value for value in slot_acc.values() if value is not None]
+    return {
+        "questions": len(predictions),
+        "orbit_count": orbit_count,
+        "singleton_orbit_count": singleton_orbits,
+        "none_orbit_count": none_orbits,
+        "accuracy": question_correct / len(predictions),
+        "mean_orbit_accuracy": sum(per_orbit_accuracy) / orbit_count,
+        "all_six_correct_rate": all_six_correct / orbit_count,
+        "singleton_all_six_correct_rate": singleton_all_six_correct / singleton_orbits if singleton_orbits else None,
+        "none_all_six_correct_rate": none_all_six_correct / none_orbits if none_orbits else None,
+        "semantic_consistency_rate": semantic_consistent / orbit_count,
+        "singleton_semantic_consistency_rate": singleton_semantic_consistent / singleton_orbits if singleton_orbits else None,
+        "none_semantic_consistency_rate": none_semantic_consistent / none_orbits if none_orbits else None,
+        "semantic_consistent_correct_rate": semantic_consistent_correct / orbit_count,
+        "a_accuracy": slot_acc["a"],
+        "b_accuracy": slot_acc["b"],
+        "c_accuracy": slot_acc["c"],
+        "position_accuracy_spread": max(present_slot_acc) - min(present_slot_acc) if present_slot_acc else None,
+        "predicted_label_n": predicted_label_n,
+    }
+
+
+def consensus_orbit_record_lookup(records: Sequence[dict]) -> dict[str, dict]:
+    """Map both raw row ids and NanoJev question-expanded ids to the same probe row."""
+    lookup: dict[str, dict] = {}
+    for row in records:
+        raw_id = str(row["id"])
+        for example_id in (raw_id, f"{raw_id}:consensus_geometry"):
+            if example_id in lookup:
+                raise RuntimeError(f"consensus orbit probe contains duplicate example id: {example_id}")
+            lookup[example_id] = row
+    return lookup
+
+
+def evaluate_consensus_orbits(model, examples, records: Sequence[dict], pad_token_id, pipeline, *,
+                              precision: str, microbatch_questions: int, max_microbatch_tokens: int,
+                              label: str) -> dict:
+    import torch
+    record_by_id = consensus_orbit_record_lookup(records)
+    model.eval()
+    groups = pipeline.pack_complete_questions(examples, microbatch_questions, max_microbatch_tokens)
+    predictions = []
+    started = time.perf_counter()
+    with torch.inference_mode():
+        for group in groups:
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=precision == "bf16"):
+                logits, _ = model(group, pad_token_id)
+            for ex, z in zip(group, logits):
+                ex_id = str(ex["id"])
+                if ex_id not in record_by_id:
+                    raise RuntimeError(f"orbit evaluation example missing raw record: {ex_id}")
+                record = record_by_id[ex_id]
+                metadata = record.get("metadata") or {}
+                orbit_id = metadata.get("permutation_orbit_id")
+                orbit_kind = metadata.get("permutation_orbit_kind")
+                if not orbit_id or not orbit_kind:
+                    raise RuntimeError(f"orbit probe record lacks permutation metadata: {ex_id}")
+                ids = list(ex["candidate_ids"])
+                if ids != list(CONSENSUS_LABELS):
+                    raise RuntimeError(f"consensus candidate order mismatch for {ex_id}: {ids}")
+                gold_index = int(ex["gold_index"])
+                scores = z[:4].float()
+                pred_index = int(torch.argmax(scores).item())
+                gold_label = ids[gold_index]
+                pred_label = ids[pred_index]
+                mutation_ids = metadata.get("candidate_mutation_ids") or {}
+                if set(mutation_ids) != {"a", "b", "c"}:
+                    raise RuntimeError(f"orbit probe record has invalid candidate mutation ids: {ex_id}")
+                gold_semantic = "none" if gold_label == "none" else str(mutation_ids[gold_label])
+                pred_semantic = "none" if pred_label == "none" else str(mutation_ids[pred_label])
+                predictions.append({
+                    "id": ex_id,
+                    "orbit_id": str(orbit_id),
+                    "orbit_kind": str(orbit_kind),
+                    "gold_label": gold_label,
+                    "pred_label": pred_label,
+                    "gold_semantic": gold_semantic,
+                    "pred_semantic": pred_semantic,
+                })
+    metrics = summarize_consensus_orbit_predictions(predictions)
+    metrics["elapsed_seconds"] = time.perf_counter() - started
+    emit("evaluation_done", label=label, **metrics)
+    return metrics
+
+
+def _resolve_probe(parent_experiment: dict, parent_exp: Path, key: str, fallback: Path | None = None) -> Path:
+    raw = parent_experiment.get(key)
+    if raw:
+        path = Path(raw).expanduser().resolve(strict=True)
+        return path
+    conventional = parent_exp / "probes" / f"{key.removesuffix('_probe')}.jsonl"
+    if conventional.is_file():
+        return conventional.resolve()
+    if fallback is not None and fallback.is_file():
+        return fallback.resolve()
+    raise RuntimeError(f"cannot resolve required inherited dev probe: {key}")
+
+
+def self_test() -> None:
+    tools_dir = Path(__file__).resolve().parent
+    data = load_local_module("nanojev_code_lexeme_data_for_consensus_self_test", tools_dir / "nanojev_code_lexeme_data.py")
+    mutation = load_local_module("nanojev_code_mutation_for_consensus_self_test", tools_dir / "nanojev_code_mutation_train.py")
+
+    class FakeTokenizer:
+        def encode(self, text, add_special_tokens=False):
+            return list(text.encode("utf-8"))
+
+    class FakeDoc:
+        language = "python"
+        relative = "sample.py"
+        text = """def f(x):\n    if x < 10 and x != 3:\n        return x + 1\n    return 0\n"""
+
+    weights = dict(DEFAULT_CURRICULUM)
+    tasks, credits = next_task_mix(weights=weights, credits={t: 0.0 for t in TASK_ORDER}, slots=100)
+    assert {t: tasks.count(t) for t in TASK_ORDER} == {"legacy": 5, "mutation": 10, "ast": 5, "consensus": 30, "triad": 50}
+    assert all(abs(credits[t]) < 1e-9 for t in TASK_ORDER)
+    budgets = largest_remainder_budgets(128, weights)
+    assert budgets == {"legacy": 7, "mutation": 13, "ast": 6, "consensus": 38, "triad": 64}, budgets
+
+    latent_weights = dict(LATENT_WALK_DEFAULT_CURRICULUM)
+    latent_tasks, latent_credits = next_task_mix(
+        weights=latent_weights, credits={t: 0.0 for t in TASK_ORDER}, slots=100
+    )
+    assert {t: latent_tasks.count(t) for t in TASK_ORDER} == {
+        "legacy": 5, "mutation": 10, "ast": 34, "consensus": 1, "triad": 50
+    }
+    assert all(abs(latent_credits[t]) < 1e-9 for t in TASK_ORDER)
+    latent_budgets = largest_remainder_budgets(128, latent_weights)
+    assert latent_budgets == {"legacy": 6, "mutation": 13, "ast": 44, "consensus": 1, "triad": 64}, latent_budgets
+
+    static_config = {CURRICULUM_CONFIG_KEYS[t]: DEFAULT_CURRICULUM[t] for t in TASK_ORDER}
+    static_config["latent_walk_enabled"] = True
+    latent_config = {CURRICULUM_CONFIG_KEYS[t]: LATENT_WALK_DEFAULT_CURRICULUM[t] for t in TASK_ORDER}
+    latent_config["latent_walk_enabled"] = True
+    assert curriculum_only_migration_allowed(static_config, latent_config)
+    latent_without_penalty = dict(latent_config)
+    latent_with_penalty = dict(latent_config)
+    latent_with_penalty["latent_walk_displacement_penalty_weight"] = DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT
+    latent_with_penalty["latent_walk_displacement_penalty"] = LATENT_WALK_DISPLACEMENT_PENALTY
+    assert latent_walk_penalty_migration_allowed(latent_without_penalty, latent_with_penalty)
+    bad_penalty_migration = dict(latent_with_penalty)
+    bad_penalty_migration["latent_walk_displacement_penalty_weight"] = 17.0
+    assert not latent_walk_penalty_migration_allowed(latent_without_penalty, bad_penalty_migration)
+
+    consensus = sample_consensus_records(
+        docs=[FakeDoc()], mutation=mutation, data=data, tokenizer=FakeTokenizer(), split="dev",
+        record_count=8, max_code_tokens=1000, max_length=10000, seed=777,
+    )
+    assert len(consensus) == 8
+    golds = [row["gold"]["consensus_geometry"] for row in consensus]
+    assert {label: golds.count(label) for label in CONSENSUS_LABELS} == {label: 2 for label in CONSENSUS_LABELS}
+    assert all("Reference code:" not in row["state"] for row in consensus)
+    assert all(row["metadata"]["original_exposed_to_model"] is False for row in consensus)
+
+    triad_records = sample_pairwise_triad_records(
+        docs=[FakeDoc()], mutation=mutation, data=data, tokenizer=FakeTokenizer(), split="dev",
+        triad_count=10, max_code_tokens=1000, max_length=10000, seed=776,
+    )
+    assert len(triad_records) == 30
+    fake_triad_examples = []
+    for row in triad_records:
+        gold_label = row["gold"]["pairwise_equivalence"]
+        fake_triad_examples.append({
+            "id": f"{row['id']}:pairwise_equivalence",
+            "candidate_ids": list(TRIAD_RELATION_LABELS),
+            "gold_index": TRIAD_RELATION_LABELS.index(gold_label),
+        })
+    triad_units = build_pairwise_triad_units(fake_triad_examples, triad_records)
+    assert len(triad_units) == 10
+    assert {label: sum(unit["topology"] == label for unit in triad_units) for label in TRIAD_TOPOLOGY_LABELS} == {
+        label: 2 for label in TRIAD_TOPOLOGY_LABELS
+    }
+    for unit in triad_units:
+        rel = {}
+        for ex, record in unit["members"]:
+            rel[record["metadata"]["triad_pair"]] = ex["candidate_ids"][ex["gold_index"]]
+        assert compose_triad_relations(rel["ab"], rel["ac"], rel["bc"]) == unit["topology"]
+    assert compose_triad_relations("same", "different", "different") == "c"
+    assert compose_triad_relations("different", "same", "different") == "b"
+    assert compose_triad_relations("different", "different", "same") == "a"
+    assert compose_triad_relations("same", "same", "same") == "none"
+    assert compose_triad_relations("different", "different", "different") == "ambiguous"
+
+    balanced_pair_records = sample_relation_balanced_pairwise_records(
+        docs=[FakeDoc()], mutation=mutation, data=data, tokenizer=FakeTokenizer(), split="train",
+        unit_count=12, max_code_tokens=1000, max_length=10000, seed=780,
+    )
+    assert len(balanced_pair_records) == 24
+    balanced_exposure = summarize_relation_balanced_records(balanced_pair_records)
+    assert balanced_exposure["label_n"] == {"same": 12, "different": 12}
+    for relation in TRIAD_RELATION_LABELS:
+        counts = list(balanced_exposure["position_n"][relation].values())
+        assert max(counts) - min(counts) <= 1
+    fake_balanced_examples = []
+    for row in balanced_pair_records:
+        gold_label = row["gold"]["pairwise_equivalence"]
+        fake_balanced_examples.append({
+            "id": f"{row['id']}:pairwise_equivalence",
+            "candidate_ids": list(TRIAD_RELATION_LABELS),
+            "gold_index": TRIAD_RELATION_LABELS.index(gold_label),
+        })
+    balanced_units = build_balanced_pairwise_training_units(fake_balanced_examples, balanced_pair_records)
+    assert len(balanced_units) == 12
+    for unit in balanced_units:
+        labels = sorted(
+            ex["candidate_ids"][ex["gold_index"]] for ex, _record in unit["members"]
+        )
+        assert labels == ["different", "same"]
+
+    collapse_bucket = triad_training_bucket()
+    for _ in range(4):
+        record_triad_relation(
+            collapse_bucket, gold_label="same", pred_label="different", nll=1.0, gap=-1.0, margin=0.1
+        )
+    for _ in range(6):
+        record_triad_relation(
+            collapse_bucket, gold_label="different", pred_label="different", nll=0.1, gap=1.0, margin=0.1
+        )
+    collapse_metrics = finalize_triad_bucket(collapse_bucket)
+    assert abs(collapse_metrics["accuracy"] - 0.6) < 1e-12
+    assert abs(collapse_metrics["balanced_relation_accuracy"] - 0.5) < 1e-12
+    assert collapse_metrics["same_accuracy"] == 0.0
+    assert collapse_metrics["different_accuracy"] == 1.0
+    assert collapse_metrics["predicted_different_rate"] == 1.0
+
+    orbit_records = sample_consensus_orbit_records(
+        docs=[FakeDoc()], mutation=mutation, data=data, tokenizer=FakeTokenizer(), split="train",
+        record_count=24, max_code_tokens=1000, max_length=10000, seed=778,
+    )
+    orbit_lookup = consensus_orbit_record_lookup(orbit_records)
+    for row in orbit_records:
+        raw_id = str(row["id"])
+        assert orbit_lookup[raw_id] is row
+        assert orbit_lookup[f"{raw_id}:consensus_geometry"] is row
+    assert len(orbit_lookup) == 2 * len(orbit_records)
+    orbit_golds = [row["gold"]["consensus_geometry"] for row in orbit_records]
+    assert {label: orbit_golds.count(label) for label in CONSENSUS_LABELS} == {label: 6 for label in CONSENSUS_LABELS}
+    orbit_groups: dict[str, list[dict]] = {}
+    for row in orbit_records:
+        orbit_groups.setdefault(row["metadata"]["permutation_orbit_id"], []).append(row)
+    assert sorted(len(rows) for rows in orbit_groups.values()) == [6, 6, 6, 6]
+    for rows in orbit_groups.values():
+        assert all(set(row["metadata"]["candidate_orbit_roles"]) == {"a", "b", "c"} for row in rows)
+        kinds = {row["metadata"]["permutation_orbit_kind"] for row in rows}
+        assert len(kinds) == 1
+        kind = next(iter(kinds))
+        labels = [row["gold"]["consensus_geometry"] for row in rows]
+        if kind == "none":
+            assert labels == ["none"] * 6
+        else:
+            assert {label: labels.count(label) for label in ("a", "b", "c")} == {"a": 2, "b": 2, "c": 2}
+
+    fake_orbit_examples = []
+    for row in orbit_records:
+        gold_label = row["gold"]["consensus_geometry"]
+        fake_orbit_examples.append({
+            "id": f"{row['id']}:consensus_geometry",
+            "candidate_ids": list(CONSENSUS_LABELS),
+            "gold_index": CONSENSUS_LABELS.index(gold_label),
+        })
+    orbit_units = build_consensus_orbit_units(fake_orbit_examples, orbit_records)
+    assert len(orbit_units) == 4
+    orbit_pools = build_consensus_orbit_kind_pools(orbit_units)
+    assert len(orbit_pools["singleton"]) == 3
+    assert len(orbit_pools["none"]) == 1
+    orbit_rng = random.Random(779)
+    selected_orbits, orbit_cursor, orbit_plan = select_consensus_orbits(
+        orbit_pools=orbit_pools, count=4, cursor=0, rng=orbit_rng,
+    )
+    assert len(selected_orbits) == 4
+    assert orbit_cursor == 0
+    assert orbit_plan == list(CONSENSUS_ORBIT_KIND_SCHEDULE)
+    four_orbit_exposure = consensus_orbit_schedule_label_exposure(orbit_plan)
+    assert four_orbit_exposure == {label: 6 for label in CONSENSUS_LABELS}
+
+    long_orbit_plan = [
+        CONSENSUS_ORBIT_KIND_SCHEDULE[i % len(CONSENSUS_ORBIT_KIND_SCHEDULE)] for i in range(445)
+    ]
+    orbit_445_exposure = consensus_orbit_schedule_label_exposure(long_orbit_plan)
+    assert consensus_exposure_spread(orbit_445_exposure) <= CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD
+    for start_cursor in range(len(CONSENSUS_ORBIT_KIND_SCHEDULE)):
+        for orbit_count in range(1, 257):
+            plan = [
+                CONSENSUS_ORBIT_KIND_SCHEDULE[(start_cursor + i) % len(CONSENSUS_ORBIT_KIND_SCHEDULE)]
+                for i in range(orbit_count)
+            ]
+            exposure = consensus_orbit_schedule_label_exposure(plan)
+            assert consensus_exposure_spread(exposure) <= CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD
+
+    telemetry_bucket = consensus_training_bucket()
+    telemetry_bucket["label_n"].update(four_orbit_exposure)
+    telemetry_summary = finalize_consensus_bucket(telemetry_bucket)
+    assert telemetry_summary["label_n"] == four_orbit_exposure
+
+    import torch
+    singleton_unit = orbit_pools["singleton"][0]
+    invariant_probabilities = []
+    slot_locked_probabilities = []
+    for ex, record in singleton_unit["members"]:
+        roles = record["metadata"]["candidate_orbit_roles"]
+        changed_label = next(label for label, role in roles.items() if role == "changed")
+        invariant_scores = torch.zeros(4, dtype=torch.float32)
+        invariant_scores[CONSENSUS_LABELS.index(changed_label)] = 4.0
+        invariant_probabilities.append(consensus_orbit_canonical_probabilities(invariant_scores, record))
+        locked_scores = torch.zeros(4, dtype=torch.float32)
+        locked_scores[CONSENSUS_LABELS.index("b")] = 4.0
+        slot_locked_probabilities.append(consensus_orbit_canonical_probabilities(locked_scores, record))
+    invariant_js = float(consensus_orbit_consistency_js(torch.stack(invariant_probabilities)).item())
+    slot_locked_js = float(consensus_orbit_consistency_js(torch.stack(slot_locked_probabilities)).item())
+    assert invariant_js < 1e-7
+    assert slot_locked_js > 0.01
+    invariant_stack = torch.stack(invariant_probabilities)
+    canonical_roles = consensus_orbit_canonical_roles(singleton_unit["members"][0][1])
+    _mean_p, invariant_gold_p, invariant_orbit_nll, invariant_orbit_margin = consensus_orbit_supervised_terms(
+        invariant_stack, canonical_roles, "changed"
+    )
+    uniform_stack = torch.full((6, 4), 0.25, dtype=torch.float32)
+    _uniform_mean, uniform_gold_p, uniform_orbit_nll, uniform_orbit_margin = consensus_orbit_supervised_terms(
+        uniform_stack, canonical_roles, "changed"
+    )
+    assert float(invariant_gold_p.item()) > float(uniform_gold_p.item())
+    assert float(invariant_orbit_nll.item()) < float(uniform_orbit_nll.item())
+    assert float(invariant_orbit_margin.item()) > 0.1
+    assert abs(float(uniform_orbit_margin.item())) < 1e-7
+
+    perfect_predictions = []
+    slot_locked_predictions = []
+    for row in orbit_records:
+        metadata = row["metadata"]
+        gold = row["gold"]["consensus_geometry"]
+        mutation_ids = metadata["candidate_mutation_ids"]
+        gold_semantic = "none" if gold == "none" else mutation_ids[gold]
+        perfect_predictions.append({
+            "orbit_id": metadata["permutation_orbit_id"],
+            "orbit_kind": metadata["permutation_orbit_kind"],
+            "gold_label": gold,
+            "pred_label": gold,
+            "gold_semantic": gold_semantic,
+            "pred_semantic": gold_semantic,
+        })
+        locked = "b"
+        slot_locked_predictions.append({
+            "orbit_id": metadata["permutation_orbit_id"],
+            "orbit_kind": metadata["permutation_orbit_kind"],
+            "gold_label": gold,
+            "pred_label": locked,
+            "gold_semantic": gold_semantic,
+            "pred_semantic": mutation_ids[locked],
+        })
+    perfect_orbit = summarize_consensus_orbit_predictions(perfect_predictions)
+    assert perfect_orbit["all_six_correct_rate"] == 1.0
+    assert perfect_orbit["semantic_consistency_rate"] == 1.0
+    assert perfect_orbit["semantic_consistent_correct_rate"] == 1.0
+    slot_locked_orbit = summarize_consensus_orbit_predictions(slot_locked_predictions)
+    assert slot_locked_orbit["semantic_consistency_rate"] == 0.0
+    assert slot_locked_orbit["predicted_label_n"]["b"] == len(slot_locked_predictions)
+
+    with tempfile.TemporaryDirectory(prefix="nanojev-consensus-scaffold-") as tmp:
+        scaffold = Path(tmp) / "consensus"
+        for rel in ("probes", "shards/legacy", "shards/mutation", "shards/ast", "shards/consensus", "shards/triad", "shards/dictionary", "checkpoints/generations"):
+            (scaffold / rel).mkdir(parents=True, exist_ok=True)
+        assert is_empty_scaffold_experiment_dir(scaffold)
+        (scaffold / "unexpected.txt").write_text("fail closed\n", encoding="utf-8")
+        assert not is_empty_scaffold_experiment_dir(scaffold)
+
+    with tempfile.TemporaryDirectory(prefix="nanojev-consensus-parent-") as tmp:
+        parent = Path(tmp)
+        generations = parent / "checkpoints" / "generations"
+        cp = generations / "cycle-000012"
+        cp.mkdir(parents=True)
+        (cp / "head.safetensors").write_bytes(b"head")
+        atomic_json(cp / "config.json", {"main_computer_cycle": 12})
+        atomic_json(cp / "meta.json", {"cycle": 12})
+        state = {"cycle": 12, "latest_generation": str(cp)}
+        atomic_json(parent / "training_state.json", state)
+        resolved, source = resolve_committed_parent(parent, state, None)
+        assert resolved == cp.resolve()
+        assert source == "three_mode_training_state_latest_generation"
+        balanced_resolved, balanced_source = resolve_soft_feedback_parent(parent, None, None)
+        assert balanced_resolved == cp.resolve()
+        assert balanced_source == "source_soft_feedback_training_state_latest_generation"
+        fixed_resolved, fixed_source = resolve_soft_feedback_parent(parent, None, 12)
+        assert fixed_resolved == cp.resolve()
+        assert fixed_source == "source_soft_feedback_cycle_12"
+
+    old_cfg = {
+        "schema_version": CONFIG_SCHEMA,
+        "legacy_training_percent": 5.0,
+        "mutation_training_percent": 10.0,
+        "ast_training_percent": 20.0,
+        "consensus_training_percent": 15.0,
+        "triad_training_percent": 50.0,
+        "sentinel": "unchanged",
+    }
+    new_cfg = dict(old_cfg)
+    new_cfg["ast_training_percent"] = 5.0
+    new_cfg["consensus_training_percent"] = 30.0
+    assert curriculum_only_migration_allowed(old_cfg, new_cfg)
+    bad_cfg = dict(new_cfg)
+    bad_cfg["sentinel"] = "changed"
+    assert not curriculum_only_migration_allowed(old_cfg, bad_cfg)
+
+    snake_h, snake_w, snake = diagonal_snake_layout(37)
+    assert len(snake) == 37 and len(set(snake)) == 37
+    assert snake[0] == snake_w - 1
+    assert snake[-1] == (snake_h - 1) * snake_w
+    tiny_walk = build_latent_walk_module(hidden_size=8, rank=4, steps=3)
+    tiny_input = torch.randn(2, 17, 8)
+    tiny_mask = torch.ones(2, 17, dtype=torch.long)
+    tiny_walk.begin_penalty_window()
+    tiny_output = tiny_walk(tiny_input, tiny_mask)
+    tiny_penalty = tiny_walk.consume_displacement_penalty_mse()
+    assert tiny_output.shape == tiny_input.shape
+    assert torch.equal(tiny_output, tiny_input), "zero-init latent walk must begin as exact identity"
+    assert tiny_penalty is not None and float(tiny_penalty.detach().item()) == 0.0
+    tiny_output.square().mean().backward()
+    assert tiny_walk.up.weight.grad is not None
+    assert float(tiny_walk.up.weight.grad.detach().abs().sum().item()) > 0.0, "latent walk must receive gradient at zero-init"
+    tiny_walk.zero_grad(set_to_none=True)
+    with torch.no_grad():
+        tiny_walk.up.weight.fill_(0.01)
+    tiny_walk.begin_penalty_window()
+    moved_output = tiny_walk(tiny_input, tiny_mask)
+    moved_penalty = tiny_walk.consume_displacement_penalty_mse()
+    assert moved_penalty is not None and float(moved_penalty.detach().item()) > 0.0
+    (moved_output.square().mean() + DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT * moved_penalty).backward()
+    assert tiny_walk.up.weight.grad is not None
+
+    # Self-organizing sparse-register invariants: inherit a nonzero learned static
+    # token, freeze it, zero-init one shared coefficient head so dynamic == static
+    # at step zero, and prove that task metadata cannot affect routing.
+    from types import SimpleNamespace
+    from torch import nn
+
+    class TinyFeedbackConfig:
+        hidden_size = 8
+        max_position_embeddings = 64
+
+    class TinyFeedbackBackbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = TinyFeedbackConfig()
+            self.embedding = nn.Embedding(32, 8)
+            self.mix = nn.Linear(8, 8, bias=False)
+            self.input_id_calls = 0
+            self.input_embed_calls = 0
+            self.gc_enabled = False
+
+        def get_input_embeddings(self):
+            return self.embedding
+
+        def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+            self.gc_enabled = True
+
+        def forward(self, *, input_ids=None, inputs_embeds=None, attention_mask=None, use_cache=False):
+            if (input_ids is None) == (inputs_embeds is None):
+                raise RuntimeError("tiny backbone expects exactly one of input_ids/inputs_embeds")
+            if input_ids is not None:
+                self.input_id_calls += 1
+                x = self.embedding(input_ids)
+            else:
+                self.input_embed_calls += 1
+                x = inputs_embeds
+            cumulative = x.cumsum(dim=1)
+            denom = torch.arange(1, x.shape[1] + 1, device=x.device, dtype=x.dtype).view(1, -1, 1)
+            hidden = self.mix(cumulative / denom)
+            return SimpleNamespace(last_hidden_state=hidden)
+
+    class TinyFeedbackDecisionModel(nn.Module):
+        def __init__(self, backbone, set_head):
+            super().__init__()
+            self.backbone = backbone
+            hidden = backbone.config.hidden_size
+            self.norm = nn.LayerNorm(hidden)
+            self.scalar = nn.Linear(hidden, 1)
+            self.set_head = set_head
+            self.set_project = nn.Linear(hidden + 1, 128)
+            self.set_attention = nn.MultiheadAttention(128, 4, dropout=0.0, batch_first=True)
+            self.set_output = nn.Linear(128, 1)
+
+    torch.manual_seed(1771)
+    SoftTiny = build_soft_feedback_decision_model_class(
+        TinyFeedbackDecisionModel,
+        control_space_size=6,
+        register_rank=3,
+        strength_init=0.25,
+        active_epsilon=1e-3,
+    )
+    tiny_feedback_model = SoftTiny(TinyFeedbackBackbone(), "attention")
+    feedback_examples = [
+        {
+            "id": "tiny-legacy",
+            "type": "boolean",
+            "candidate_ids": ["false", "true"],
+            "leaf_tokens": [[1, 2, 3]],
+            "gold_index": 1,
+        },
+        {
+            "id": "tiny-consensus",
+            "type": "choice",
+            "candidate_ids": ["a", "b"],
+            "leaf_tokens": [[4, 5], [6, 7]],
+            "gold_index": 0,
+        },
+    ]
+    with torch.no_grad():
+        tiny_feedback_model.soft_feedback.base.copy_(torch.linspace(-0.04, 0.04, 8))
+    inherited_base = tiny_feedback_model.soft_feedback.base.detach().clone()
+    inherited_strength = tiny_feedback_model.soft_feedback.strength_logit.detach().clone()
+    tiny_feedback_model.soft_feedback.reset_dynamic_registers()
+    assert int(torch.count_nonzero(tiny_feedback_model.soft_feedback.router_coeff.weight.detach()).item()) == 0
+    bank = tiny_feedback_model.soft_feedback.normalized_bank().detach().float()
+    gram = bank @ bank.transpose(0, 1)
+    assert float((gram - torch.eye(6)).abs().max().item()) < 1e-5
+    assert torch.equal(tiny_feedback_model.soft_feedback.base.detach(), inherited_base)
+    assert torch.equal(tiny_feedback_model.soft_feedback.strength_logit.detach(), inherited_strength)
+
+    for param in tiny_feedback_model.parameters():
+        param.requires_grad_(False)
+    for param in tiny_feedback_model.soft_feedback.dynamic_parameters():
+        param.requires_grad_(True)
+
+    tiny_feedback_model.set_soft_feedback_mode("static")
+    static_logits, static_valid = tiny_feedback_model(feedback_examples, 0)
+    tiny_feedback_model.set_soft_feedback_mode("dynamic")
+    tiny_feedback_model.backbone.input_id_calls = 0
+    tiny_feedback_model.backbone.input_embed_calls = 0
+    dynamic_logits, dynamic_valid = tiny_feedback_model(feedback_examples, 0)
+    assert torch.equal(dynamic_valid, static_valid)
+    assert torch.allclose(dynamic_logits, static_logits, atol=0.0, rtol=0.0)
+    assert tiny_feedback_model.backbone.input_id_calls == 1
+    assert tiny_feedback_model.backbone.input_embed_calls == 1
+    assert float(tiny_feedback_model.soft_feedback.last_stats["dynamic_raw_rms"]) < 1e-12
+
+    static_before = torch.cat([
+        tiny_feedback_model.soft_feedback.base.detach().reshape(-1),
+        tiny_feedback_model.soft_feedback.strength_logit.detach().reshape(-1),
+    ]).clone()
+    coeff_before = tiny_feedback_model.soft_feedback.router_coeff.weight.detach().clone()
+    feedback_loss = -dynamic_logits[0, :2].log_softmax(-1)[1]
+    feedback_loss = (
+        feedback_loss
+        + DEFAULT_REGISTER_SPARSITY_WEIGHT * tiny_feedback_model.soft_feedback.last_regularization["sparsity"]
+        + DEFAULT_REGISTER_RESIDUAL_WEIGHT * tiny_feedback_model.soft_feedback.last_regularization["residual_mse"]
+        + DEFAULT_REGISTER_ORTHOGONALITY_WEIGHT * tiny_feedback_model.soft_feedback.last_regularization["orthogonality"]
+    )
+    feedback_loss.backward()
+    assert tiny_feedback_model.soft_feedback.base.grad is None
+    assert tiny_feedback_model.soft_feedback.strength_logit.grad is None
+    assert tiny_feedback_model.soft_feedback.router_coeff.weight.grad is not None
+    assert float(tiny_feedback_model.soft_feedback.router_coeff.weight.grad.detach().abs().sum().item()) > 0.0
+    assert all(
+        param.grad is None
+        for name, param in tiny_feedback_model.named_parameters()
+        if not name.startswith("soft_feedback.")
+    )
+    opt = torch.optim.SGD(tiny_feedback_model.soft_feedback.dynamic_parameters(), lr=0.01)
+    opt.step()
+    static_after = torch.cat([
+        tiny_feedback_model.soft_feedback.base.detach().reshape(-1),
+        tiny_feedback_model.soft_feedback.strength_logit.detach().reshape(-1),
+    ])
+    assert torch.equal(static_before, static_after)
+    assert not torch.equal(coeff_before, tiny_feedback_model.soft_feedback.router_coeff.weight.detach())
+    assert tiny_feedback_model.soft_feedback.last_stats["helper_tokens_per_question"] == 1
+    assert tiny_feedback_model.soft_feedback.last_stats["backbone_reads"] == 2
+
+    # Adding or changing explicit task metadata must have no effect: the router never
+    # consumes it.  This catches accidental reintroduction of hard-coded task routing.
+    tagged_examples = [dict(ex, soft_feedback_register="deliberately-ignored") for ex in feedback_examples]
+    tiny_feedback_model.zero_grad(set_to_none=True)
+    tiny_feedback_model.set_soft_feedback_mode("dynamic")
+    routed_logits, routed_valid = tiny_feedback_model(feedback_examples, 0)
+    tagged_logits, tagged_valid = tiny_feedback_model(tagged_examples, 0)
+    assert torch.equal(routed_valid, tagged_valid)
+    assert torch.allclose(routed_logits, tagged_logits, atol=0.0, rtol=0.0)
+
+    usage_acc = new_register_usage_accumulator(6)
+    telemetry_coeff = torch.tensor([
+        [0.20, 0.00, 0.00, 0.00, 0.00, 0.00],
+        [0.18, 0.00, 0.00, 0.00, 0.00, 0.00],
+        [0.10, 0.08, 0.00, 0.00, 0.00, 0.00],
+        [0.12, 0.09, 0.00, 0.00, 0.00, 0.00],
+    ])
+    accumulate_register_usage(
+        usage_acc, ["legacy", "legacy", "consensus", "consensus"], telemetry_coeff
+    )
+    usage_summary = finalize_register_usage(usage_acc, active_epsilon=0.03)
+    assert usage_summary["control_space_size"] == 6
+    assert usage_summary["aggregate_questions"] == 4
+    assert usage_summary["occupied_slot_count"] == 2
+    assert usage_summary["dormant_slot_count"] == 4
+    assert usage_summary["routing_note"].startswith("aggregate occupancy count only")
+
+    expected_dynamic_1024_k32_rank32 = sparse_register_dynamic_parameter_count(1024, 32, 32)
+    expected_static_1024 = soft_feedback_static_parameter_count(1024)
+    assert expected_dynamic_1024_k32_rank32 == 66624
+    print(json.dumps({
+        "ok": True,
+        "self_test": "passed",
+        "curriculum_100_units": {t: tasks.count(t) for t in TASK_ORDER},
+        "budget_128_units": budgets,
+        "pairwise_triad_units": len(triad_units),
+        "pairwise_triad_topology_balance": {label: sum(unit["topology"] == label for unit in triad_units) for label in TRIAD_TOPOLOGY_LABELS},
+        "pairwise_triad_composition_verified": True,
+        "balanced_pairwise_units": len(balanced_units),
+        "balanced_pairwise_exposure": balanced_exposure,
+        "majority_collapse_telemetry_verified": {
+            "raw_accuracy": collapse_metrics["accuracy"],
+            "balanced_relation_accuracy": collapse_metrics["balanced_relation_accuracy"],
+            "predicted_different_rate": collapse_metrics["predicted_different_rate"],
+        },
+        "consensus_dev_label_balance": {label: golds.count(label) for label in CONSENSUS_LABELS},
+        "consensus_orbit_label_balance": {label: orbit_golds.count(label) for label in CONSENSUS_LABELS},
+        "consensus_four_orbit_exposure": four_orbit_exposure,
+        "consensus_optimizer_445_orbit_exposure": orbit_445_exposure,
+        "consensus_optimizer_exposure_spread": consensus_exposure_spread(orbit_445_exposure),
+        "complete_orbit_optimizer_unit_verified": True,
+        "orbit_kind_schedule_verified": True,
+        "canonical_orbit_consistency_zero_for_invariant_views": invariant_js,
+        "canonical_orbit_consistency_detects_slot_lock": slot_locked_js,
+        "orbit_supervision_blend": ORBIT_SUPERVISION_BLEND,
+        "canonical_orbit_supervision_invariant_gold_probability": float(invariant_gold_p.item()),
+        "canonical_orbit_supervision_uniform_gold_probability": float(uniform_gold_p.item()),
+        "canonical_orbit_supervision_invariant_nll": float(invariant_orbit_nll.item()),
+        "canonical_orbit_supervision_uniform_nll": float(uniform_orbit_nll.item()),
+        "canonical_orbit_supervision_rejects_uniform_uncertainty": True,
+        "permutation_counterbalance_verified": True,
+        "orbit_perfect_invariance_verified": perfect_orbit["semantic_consistency_rate"] == 1.0,
+        "orbit_slot_lock_detection_verified": slot_locked_orbit["semantic_consistency_rate"] == 0.0,
+        "reference_free_consensus_verified": True,
+        "none_class_verified": True,
+        "empty_scaffold_recovery_verified": True,
+        "current_three_mode_parent_resolution_verified": True,
+        "latest_committed_soft_feedback_parent_resolution_verified": True,
+        "optional_fixed_soft_feedback_cycle_parent_resolution_verified": True,
+        "default_soft_feedback_parent_selection": "source_soft_feedback_training_state_latest_generation",
+        "curriculum_100_units": {"legacy": 5, "mutation": 10, "ast": 5, "consensus": 30, "triad": 50},
+        "latent_walk_default_curriculum_100_units": {"legacy": 5, "mutation": 10, "ast": 34, "consensus": 1, "triad": 50},
+        "sparse_register_default_curriculum_100_units": {"legacy": 5, "mutation": 10, "ast": 34, "consensus": 1, "triad": 50},
+        "curriculum_migration_5_10_20_15_50_to_5_10_5_30_50_verified": True,
+        "latent_walk_curriculum_migration_5_10_5_30_50_to_5_10_34_1_50_verified": True,
+        "latent_walk_diagonal_snake_verified": True,
+        "latent_walk_zero_init_identity_verified": True,
+        "latent_walk_zero_init_gradient_verified": True,
+        "latent_walk_identity_penalty_verified": True,
+        "latent_walk_default_displacement_penalty_weight": DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT,
+        "soft_feedback_one_token_verified": True,
+        "soft_feedback_dynamic_two_backbone_reads_verified": True,
+        "sparse_register_dynamic_equals_static_at_init_verified": True,
+        "sparse_register_static_frozen_verified": True,
+        "sparse_register_task_identity_absent_from_routing_verified": True,
+        "sparse_register_orthonormal_bank_init_verified": True,
+        "sparse_register_dormant_slot_telemetry_verified": True,
+        "sparse_register_control_space_size": 32,
+        "sparse_register_rank": 32,
+        "sparse_register_trainable_params_qwen3_0_6b_k32_rank32": expected_dynamic_1024_k32_rank32,
+        "soft_feedback_frozen_static_params_qwen3_0_6b": expected_static_1024,
+    }))
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--legacy-experiment-dir", default=DEFAULT_LEGACY_EXPERIMENT)
+    p.add_argument("--mutation-experiment-dir", default=DEFAULT_MUTATION_EXPERIMENT)
+    p.add_argument("--three-mode-experiment-dir", default=DEFAULT_THREE_MODE_EXPERIMENT)
+    p.add_argument("--source-soft-feedback-experiment-dir", default=DEFAULT_SOURCE_SOFT_FEEDBACK_EXPERIMENT,
+                   help="Phase-1 soft-feedback run whose latest committed checkpoint supplies the frozen learned static token")
+    p.add_argument("--experiment-dir", default=None)
+    p.add_argument("--source-balanced-experiment-dir", default=DEFAULT_SOURCE_BALANCED_EXPERIMENT,
+                   help="Balanced-pairwise run whose latest committed head seeds --latent-walk")
+    p.add_argument("--latent-walk", action="store_true",
+                   help="Insert a trainable recurrent diagonal-snake latent walker between frozen Qwen and the NanoJev head")
+    p.add_argument("--latent-walk-steps", type=int, default=4)
+    p.add_argument("--latent-walk-rank", type=int, default=32)
+    p.add_argument("--latent-walk-lr", type=float, default=2e-4)
+    p.add_argument(
+        "--latent-walk-displacement-penalty-weight",
+        type=float,
+        default=DEFAULT_LATENT_WALK_DISPLACEMENT_PENALTY_WEIGHT,
+        help=(
+            "Weight on mean squared latent displacement from the frozen-Qwen prior; "
+            "0 disables the identity/no-op preference"
+        ),
+    )
+    p.add_argument("--control-space-size", type=int, default=DEFAULT_CONTROL_SPACE_SIZE,
+                   help="Overcomplete shared control-bank width; deliberately larger than expected occupied dimensionality")
+    p.add_argument("--register-rank", type=int, default=DEFAULT_REGISTER_RANK,
+                   help="Task-register sensor width; default equals the 32-slot control space so no extra rank bottleneck is imposed")
+    p.add_argument("--register-lr", type=float, default=DEFAULT_SOFT_FEEDBACK_LR,
+                   help="Learning rate for the shared control bank and task-blind router only")
+    p.add_argument("--register-sparsity-weight", type=float, default=DEFAULT_REGISTER_SPARSITY_WEIGHT,
+                   help="L1 pressure on per-question control-bank coefficients")
+    p.add_argument("--register-residual-weight", type=float, default=DEFAULT_REGISTER_RESIDUAL_WEIGHT,
+                   help="L2 pressure on the task-conditioned residual before it is added to S")
+    p.add_argument("--register-orthogonality-weight", type=float, default=DEFAULT_REGISTER_ORTHOGONALITY_WEIGHT,
+                   help="Penalty on pairwise cosine overlap between shared control-bank directions")
+    p.add_argument("--register-active-epsilon", type=float, default=DEFAULT_REGISTER_ACTIVE_EPSILON,
+                   help="Mean absolute coefficient threshold used only for occupancy telemetry")
+    p.add_argument("--soft-feedback-strength-init", type=float, default=DEFAULT_SOFT_FEEDBACK_STRENGTH,
+                   help="Constructor fallback only; fresh sparse-register initialization inherits frozen strength from the phase-1 parent")
+    p.add_argument("--soft-feedback-control-eval-every", type=int, default=DEFAULT_SOFT_FEEDBACK_CONTROL_EVAL_EVERY,
+                   help="Compare none/static/dynamic feedback on held-out binary, consensus, orbit, and pairwise rulers every N cycles; cycle 1 always compares")
+    p.add_argument("--disable-soft-feedback-gradient-checkpointing", action="store_true",
+                   help="Disable second-pass Qwen gradient checkpointing; normally keep it enabled for VRAM")
+    p.add_argument("--parent-cycle", type=int, default=None,
+                   help="Optional phase-1 soft-feedback cycle override; default is training_state.json latest_generation")
+    p.add_argument("--parent-checkpoint",
+                   help="Override phase-1 soft-feedback parent checkpoint for first initialization only")
+    p.add_argument("--legacy-training-percent", type=float, default=None)
+    p.add_argument("--mutation-training-percent", type=float, default=None)
+    p.add_argument("--ast-training-percent", type=float, default=None)
+    p.add_argument("--consensus-training-percent", type=float, default=None)
+    p.add_argument("--triad-training-percent", type=float, default=None)
+    p.add_argument("--dictionary-training-percent", type=float, default=None)
+    p.add_argument("--dictionary-cache", default=DEFAULT_DICTIONARY_CACHE)
+    p.add_argument("--dictionary-url", default=DEFAULT_DICTIONARY_URL)
+    p.add_argument("--dictionary-holdout-pairs", type=int, default=DEFAULT_DICTIONARY_HOLDOUT_PAIRS)
+    p.add_argument("--dictionary-holdout-seed", type=int, default=DEFAULT_DICTIONARY_HOLDOUT_SEED)
+    p.add_argument("--cycles-this-run", type=int, default=100)
+    p.add_argument("--cycle-seconds", type=float, default=75.0)
+    p.add_argument("--train-files-per-cycle", type=int, default=40)
+    p.add_argument("--train-units-per-cycle", type=int, default=128,
+                   help="Unique training-unit budget apportioned 20/5/5/15/20/35 across ordered-legacy/mutation/AST/consensus/triad/dictionary")
+    p.add_argument("--consensus-dev-files", type=int, default=40)
+    p.add_argument("--consensus-dev-records", type=int, default=64)
+    p.add_argument("--mutation-max-code-tokens", type=int, default=96)
+    p.add_argument("--consensus-max-code-tokens", type=int, default=72)
+    p.add_argument("--batch-units", type=int, default=4)
+    p.add_argument("--microbatch-questions", type=int, default=1)
+    p.add_argument("--max-microbatch-tokens", type=int, default=8192)
+    p.add_argument("--head-lr", type=float, default=2e-4)
+    p.add_argument(
+        "--train-r2-gain",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Release recurrent R2 gain and restore pass 3; default follows lane config (frozen at zero after cut-over)",
+    )
+    p.add_argument("--weight-decay", type=float, default=0.01)
+    p.add_argument("--ranking-weight", type=float, default=0.25)
+    p.add_argument("--ranking-margin", type=float, default=0.10)
+    p.add_argument("--precision", choices=["bf16", "fp32"], default="bf16")
+    p.add_argument("--keep-generations", type=int, default=2)
+    p.add_argument("--heartbeat-seconds", type=float, default=30.0,
+                   help="Compact training heartbeat cadence in seconds")
+    p.add_argument("--local-files-only", action="store_true")
+    p.add_argument("--disable-native-triton", action="store_true")
+    p.add_argument("--self-test", action="store_true")
+    p.add_argument("--dry-run", action="store_true", help="Validate the branched lane and resolved training contract without loading Qwen")
+    p.add_argument(
+        "--ordered-legacy-backfill-only", action="store_true",
+        help="Evaluate the held-out 3-5-symbol ordered-continuation ruler on retained checkpoints, write sidecars, and exit without training",
+    )
+    args = p.parse_args()
+    if args.self_test:
+        budgets = largest_remainder_budgets(100, SOFT_FEEDBACK_DEFAULT_CURRICULUM)
+        assert budgets == {"legacy": 20, "mutation": 5, "ast": 5, "consensus": 15, "triad": 20, "dictionary": 35}
+        source_config = {CURRICULUM_CONFIG_KEYS[t]: SOURCE_S1_CURRICULUM[t] for t in TASK_ORDER}
+        dictionary_v1_config = {CURRICULUM_CONFIG_KEYS[t]: DICTIONARY_V1_CURRICULUM[t] for t in TASK_ORDER}
+        target_config = {CURRICULUM_CONFIG_KEYS[t]: SOFT_FEEDBACK_DEFAULT_CURRICULUM[t] for t in TASK_ORDER}
+        assert config_curriculum(source_config) == SOURCE_S1_CURRICULUM
+        assert curriculum_only_migration_allowed(source_config, target_config)
+        assert curriculum_only_migration_allowed(dictionary_v1_config, target_config)
+        old_dictionary_config = dict(target_config)
+        old_dictionary_config["dictionary_negative_strategy"] = DICTIONARY_NEGATIVE_STRATEGY_V1
+        new_dictionary_config = dict(old_dictionary_config)
+        new_dictionary_config["dictionary_negative_strategy"] = DICTIONARY_NEGATIVE_STRATEGY_V2
+        assert dictionary_negative_strategy_migration_allowed(old_dictionary_config, new_dictionary_config)
+        print(json.dumps({
+            "event": "s1_dictionary_curriculum_self_test_ok",
+            "task_order": list(TASK_ORDER),
+            "curriculum_100_units": budgets,
+            "dictionary_holdout_seed": DEFAULT_DICTIONARY_HOLDOUT_SEED,
+            "dictionary_holdout_pairs": DEFAULT_DICTIONARY_HOLDOUT_PAIRS,
+            "dictionary_negative_strategy": DICTIONARY_NEGATIVE_STRATEGY_V2,
+            "ordered_legacy_dev_pairs": ORDERED_LEGACY_DEV_PAIRS,
+            "ordered_legacy_dev_seed_offset": ORDERED_LEGACY_DEV_SEED_OFFSET,
+        }, sort_keys=True))
+        return
+    if args.latent_walk:
+        p.error("soft-feedback residual phase 2 intentionally disables --latent-walk")
+    if args.experiment_dir is None:
+        args.experiment_dir = DEFAULT_EXPERIMENT
+    established_path = Path(args.experiment_dir).expanduser() / "training_config.json"
+    if established_path.is_file():
+        established = read_json(established_path)
+        scalar_keys = {
+            "cycle_seconds": "cycle_seconds",
+            "train_files_per_cycle": "train_files_per_cycle",
+            "train_units_per_cycle": "train_units_per_cycle",
+            "consensus_dev_files": "consensus_dev_files",
+            "consensus_dev_records": "consensus_dev_records",
+            "mutation_max_code_tokens": "mutation_max_code_tokens",
+            "consensus_max_code_tokens": "consensus_max_code_tokens",
+            "batch_units": "batch_units",
+            "microbatch_questions": "microbatch_questions",
+            "max_microbatch_tokens": "max_microbatch_tokens",
+            "head_lr": "head_lr",
+            "weight_decay": "weight_decay",
+            "ranking_weight": "ranking_weight",
+            "ranking_margin": "ranking_margin",
+            "precision": "precision",
+            "control_space_size": "control_space_size",
+            "register_rank": "register_rank",
+            "register_sparsity_weight": "register_sparsity_weight",
+            "register_residual_weight": "register_residual_weight",
+            "register_orthogonality_weight": "register_orthogonality_weight",
+            "register_active_epsilon": "register_active_epsilon",
+            "soft_feedback_strength_init": "soft_feedback_strength_init",
+            "soft_feedback_control_eval_every": "soft_feedback_control_eval_every",
+        }
+        for arg_name, config_name in scalar_keys.items():
+            if config_name in established:
+                setattr(args, arg_name, established[config_name])
+        if "soft_feedback_lr" in established:
+            args.register_lr = established["soft_feedback_lr"]
+        # A source S1 lane without dictionary_training_percent cuts directly to the
+        # current target curriculum.  An established 5/5/10/15/25/40 dictionary lane
+        # is also intentionally migrated once to the 20/5/5/15/20/35 ordered-bootstrap
+        # curriculum.  After that migration, resume the committed curriculum exactly.
+        if "dictionary_training_percent" in established:
+            established_curriculum = config_curriculum(established)
+            migrate_dictionary_v1 = established_curriculum == DICTIONARY_V1_CURRICULUM
+            if not migrate_dictionary_v1:
+                for task in TASK_ORDER:
+                    key = CURRICULUM_CONFIG_KEYS[task]
+                    if key in established:
+                        setattr(args, key, established[key])
+            for arg_name in (
+                "dictionary_cache", "dictionary_url", "dictionary_holdout_pairs", "dictionary_holdout_seed"
+            ):
+                if arg_name in established:
+                    setattr(args, arg_name, established[arg_name])
+        args.disable_native_triton = bool(established.get("disable_native_triton", args.disable_native_triton))
+        args.disable_soft_feedback_gradient_checkpointing = not bool(
+            established.get("soft_feedback_gradient_checkpointing", not args.disable_soft_feedback_gradient_checkpointing)
+        )
+        if args.train_r2_gain is None:
+            args.train_r2_gain = bool(established.get("r2_gain_trainable", False))
+    if args.train_r2_gain is None:
+        args.train_r2_gain = False
+    curriculum_defaults = SOFT_FEEDBACK_DEFAULT_CURRICULUM
+    for task, config_key in CURRICULUM_CONFIG_KEYS.items():
+        if getattr(args, config_key) is None:
+            setattr(args, config_key, curriculum_defaults[task])
+    if args.experiment_dir is None:
+        args.experiment_dir = DEFAULT_EXPERIMENT
+
+    weights = {
+        task: float(getattr(args, CURRICULUM_CONFIG_KEYS[task]))
+        for task in TASK_ORDER
+    }
+    if any(not math.isfinite(float(v)) or float(v) < 0.0 for v in weights.values()):
+        p.error("training percentages must be finite and nonnegative")
+    if abs(sum(weights.values()) - 100.0) > 1e-9:
+        p.error("legacy/mutation/ast/consensus/triad/dictionary training percentages must sum to exactly 100")
+    if min(args.cycles_this_run, args.cycle_seconds, args.train_files_per_cycle, args.train_units_per_cycle,
+           args.consensus_dev_files, args.consensus_dev_records, args.mutation_max_code_tokens,
+           args.consensus_max_code_tokens, args.batch_units, args.microbatch_questions) <= 0:
+        p.error("cycle/data/batch settings must be positive")
+    if args.keep_generations < 1 or args.max_microbatch_tokens < 0 or (args.parent_cycle is not None and args.parent_cycle < 0):
+        p.error("invalid checkpoint/token limits or parent cycle")
+    if args.dictionary_holdout_pairs <= 0:
+        p.error("--dictionary-holdout-pairs must be positive")
+    if not str(args.dictionary_url).strip():
+        p.error("--dictionary-url must be nonempty")
+    if not math.isfinite(args.heartbeat_seconds) or args.heartbeat_seconds <= 0.0:
+        p.error("--heartbeat-seconds must be finite and positive")
+    if not math.isfinite(args.head_lr) or args.head_lr <= 0:
+        p.error("--head-lr must be finite and positive")
+    if args.control_space_size <= 0 or args.register_rank <= 0 or args.soft_feedback_control_eval_every <= 0:
+        p.error("--control-space-size, --register-rank, and --soft-feedback-control-eval-every must be positive")
+    if not math.isfinite(args.register_lr) or args.register_lr <= 0:
+        p.error("--register-lr must be finite and positive")
+    for name in ("register_sparsity_weight", "register_residual_weight", "register_orthogonality_weight"):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value < 0.0:
+            p.error(f"--{name.replace('_', '-')} must be finite and nonnegative")
+    if not math.isfinite(args.register_active_epsilon) or args.register_active_epsilon <= 0.0:
+        p.error("--register-active-epsilon must be finite and positive")
+    if not math.isfinite(args.soft_feedback_strength_init) or not 0.0 < args.soft_feedback_strength_init < 1.0:
+        p.error("--soft-feedback-strength-init must be strictly between 0 and 1")
+    if args.latent_walk and (args.latent_walk_steps <= 0 or args.latent_walk_rank <= 0):
+        p.error("--latent-walk-steps and --latent-walk-rank must be positive")
+    if args.latent_walk and (not math.isfinite(args.latent_walk_lr) or args.latent_walk_lr <= 0):
+        p.error("--latent-walk-lr must be finite and positive")
+    if args.latent_walk and (
+        not math.isfinite(args.latent_walk_displacement_penalty_weight)
+        or args.latent_walk_displacement_penalty_weight < 0
+    ):
+        p.error("--latent-walk-displacement-penalty-weight must be finite and nonnegative")
+    if not math.isfinite(args.ranking_weight) or args.ranking_weight <= 0:
+        p.error("--ranking-weight must be finite and positive")
+    if not math.isfinite(args.ranking_margin) or args.ranking_margin <= 0:
+        p.error("--ranking-margin must be finite and positive")
+
+    if args.dry_run:
+        exp = Path(args.experiment_dir).expanduser().resolve(strict=True)
+        branch_path = exp / "s_first_r2_full_head_branch.json"
+        if not branch_path.is_file():
+            raise RuntimeError(f"full-head lane missing branch record: {branch_path}")
+        branch = read_json(branch_path)
+        if branch.get("schema_version") != "main-computer-nanojev-k1000-s-first-r2-full-head-branch-v1":
+            raise RuntimeError("full-head branch schema mismatch")
+        dictionary_branch_path = exp / DICTIONARY_BRANCH_FILE
+        if not dictionary_branch_path.is_file():
+            raise RuntimeError(f"dictionary lane missing branch record: {dictionary_branch_path}")
+        dictionary_branch = read_json(dictionary_branch_path)
+        if dictionary_branch.get("schema_version") != DICTIONARY_BRANCH_SCHEMA:
+            raise RuntimeError("dictionary branch schema mismatch")
+        config = read_json(exp / "training_config.json")
+        state = read_json(exp / "training_state.json")
+        if config.get("soft_feedback_generator") != SOFT_FEEDBACK_GENERATOR:
+            raise RuntimeError("full-head training_config generator mismatch")
+        if config.get("decision_head_frozen") is not False:
+            raise RuntimeError("full-head training_config must unfreeze the inherited decision head")
+        if bool(config.get("r2_gain_trainable", False)) != bool(args.train_r2_gain):
+            raise RuntimeError("resolved --train-r2-gain mode disagrees with training_config")
+        latest = Path(str(state.get("latest_generation"))).expanduser().resolve(strict=True)
+        import torch
+        opt = torch.load(latest / "optimizer.pt", map_location="cpu", weights_only=False)
+        groups = opt.get("param_groups", []) if isinstance(opt, dict) else []
+        if len(groups) != 2:
+            raise RuntimeError(f"full-head optimizer must have two groups, found {len(groups)}")
+        print(json.dumps({
+            "event": "s1_dictionary_trainer_dry_run",
+            "experiment_dir": str(exp),
+            "full_head_fork_cycle": branch.get("fork_cycle"),
+            "dictionary_fork_cycle": dictionary_branch.get("fork_cycle"),
+            "latest_cycle": state.get("cycle"),
+            "source_curriculum": config_curriculum(config),
+            "target_curriculum": dict(SOFT_FEEDBACK_DEFAULT_CURRICULUM),
+            "latest_checkpoint": str(latest),
+            "backbone_frozen": True,
+            "nanojev_head_trainable_except_r2_gain": not bool(args.train_r2_gain),
+            "r2_gain_trainable": bool(args.train_r2_gain),
+            "r2_third_pass_bypassed": not bool(args.train_r2_gain),
+            "soft_feedback_group_parameter_tensors": len(groups[0].get("params", [])),
+            "decision_head_group_parameter_tensors": len(groups[1].get("params", [])),
+            "control_space_size": config.get("control_space_size"),
+            "register_rank": config.get("register_rank"),
+            "cycle_seconds": config.get("cycle_seconds"),
+            "head_lr": config.get("head_lr"),
+            "register_lr": config.get("soft_feedback_lr"),
+        }, ensure_ascii=False, allow_nan=False), flush=True)
+        return
+
+    tools_dir = Path(__file__).resolve().parent
+    # Reuse the already-tested S-first recurrent-R2 model implementation.
+    s_first_arch = load_local_module(
+        "nanojev_s_first_arch_for_full_head",
+        tools_dir / "nanojev_code_sparse_register_k1000_s_first_train.py",
+    )
+    r2_arch = load_local_module(
+        "nanojev_s_first_r2_arch_for_full_head",
+        tools_dir / "nanojev_code_sparse_register_k1000_s_first_r2_train.py",
+    )
+    inherited_r2_factory = r2_arch.build_r2_factory(sys.modules[__name__], s_first_arch)
+
+    def full_head_factory(BaseDecisionModel, *, control_space_size, register_rank, strength_init, active_epsilon):
+        BaseR2 = inherited_r2_factory(
+            BaseDecisionModel,
+            control_space_size=control_space_size,
+            register_rank=register_rank,
+            strength_init=strength_init,
+            active_epsilon=active_epsilon,
+        )
+
+        class FullHeadDecisionModel(BaseR2):
+            r2_gain_training_enabled = False
+
+            def forward(self, examples, pad_token):
+                if self.soft_feedback.mode == "dynamic" and not self.r2_gain_training_enabled:
+                    # Exact frozen-g2 fast path: call the inherited S-first forward
+                    # directly, skipping C2 and the third frozen-Qwen read entirely.
+                    logits, valid = super(BaseR2, self).forward(examples, pad_token)
+                    stats = dict(self.soft_feedback.last_stats)
+                    stats.update({
+                        "backbone_reads": 2,
+                        "r2_bypassed_frozen_zero_gain": True,
+                        "r2_candidate_active_slot_count": 0,
+                        "r2_effective_active_slot_count": 0,
+                        "r2_candidate_raw_rms": 0.0,
+                        "r2_dynamic_raw_rms": 0.0,
+                        "r2_gain_parameter": 0.0,
+                        "r2_gain": 0.0,
+                        "r1_r2_candidate_coefficient_cosine": 0.0,
+                        "r1_r2_candidate_residual_cosine": 0.0,
+                        "third_pass_prefix": "bypassed_frozen_zero_r2_gain",
+                        "third_pass_answer": "pass2_answer_reused",
+                        "second_to_third_leaf_displacement_rms": 0.0,
+                        "relative_second_to_third_leaf_displacement_rms": 0.0,
+                    })
+                    self.soft_feedback.last_stats = stats
+                    return logits, valid
+                return super().forward(examples, pad_token)
+
+        return FullHeadDecisionModel
+
+    globals()["build_soft_feedback_decision_model_class"] = full_head_factory
+    legacy = load_local_module("nanojev_code_train_for_consensus", tools_dir / "nanojev_code_train.py")
+    data = load_local_module("nanojev_code_lexeme_data_for_consensus", tools_dir / "nanojev_code_lexeme_data.py")
+    mutation = load_local_module("nanojev_code_mutation_for_consensus", tools_dir / "nanojev_code_mutation_train.py")
+    dictionary = load_local_module(
+        "nanojev_dictionary_for_training",
+        tools_dir / "nanojev_dictionary_smoke.py",
+    )
+
+    legacy_exp = Path(args.legacy_experiment_dir).expanduser().resolve(strict=True)
+    mutation_exp = Path(args.mutation_experiment_dir).expanduser().resolve(strict=True)
+    three_mode_exp = Path(args.three_mode_experiment_dir).expanduser().resolve(strict=True)
+    legacy_experiment = read_json(legacy_exp / "experiment.json")
+    legacy_state = read_json(legacy_exp / "training_state.json")
+    mutation_experiment = read_json(mutation_exp / "experiment.json")
+    three_mode_experiment = read_json(three_mode_exp / "experiment.json")
+    three_mode_state = read_json(three_mode_exp / "training_state.json")
+    if legacy_experiment.get("schema_version") != legacy.EXPERIMENT_SCHEMA:
+        raise RuntimeError("legacy experiment is not the expected next-lexeme experiment")
+    if legacy_state.get("schema_version") != legacy.STATE_SCHEMA:
+        raise RuntimeError("legacy training state schema mismatch")
+
+    exp = Path(args.experiment_dir).expanduser().resolve()
+    branch_record_path = exp / "s_first_r2_full_head_branch.json"
+    if not branch_record_path.is_file():
+        raise RuntimeError(
+            "full-head trainer only resumes a cut-over lane; missing " + str(branch_record_path)
+        )
+    branch_record = read_json(branch_record_path)
+    if branch_record.get("schema_version") != "main-computer-nanojev-k1000-s-first-r2-full-head-branch-v1":
+        raise RuntimeError("full-head branch schema mismatch")
+    dictionary_branch_path = exp / DICTIONARY_BRANCH_FILE
+    if not dictionary_branch_path.is_file():
+        raise RuntimeError(f"dictionary lane missing branch record: {dictionary_branch_path}")
+    dictionary_branch = read_json(dictionary_branch_path)
+    if dictionary_branch.get("schema_version") != DICTIONARY_BRANCH_SCHEMA:
+        raise RuntimeError("dictionary branch schema mismatch")
+    if int(dictionary_branch.get("fork_cycle", -1)) < 0:
+        raise RuntimeError("dictionary branch record lacks fork_cycle")
+
+    # Resolve the lightweight ordered-legacy backfill plan *before* loading Qwen.
+    # The fast path below intentionally bypasses dictionary parsing/download, all
+    # unrelated dev probes, optimizer construction/loading, RNG restore, and every
+    # training-only setup step.  It evaluates only retained checkpoint heads against
+    # the fixed held-out 3-5-symbol ordered-continuation ruler.
+    fast_ordered_backfill_targets = []
+    if args.ordered_legacy_backfill_only:
+        fast_state = read_json(exp / "training_state.json")
+        fast_metrics_dir = exp / "probes" / ORDERED_LEGACY_DEV_METRICS_DIR
+        generation_root = exp / "checkpoints" / "generations"
+        fork_cycle = int(dictionary_branch["fork_cycle"])
+        if generation_root.is_dir():
+            for candidate in sorted(generation_root.glob("cycle-*")):
+                if not candidate.is_dir() or not (candidate / "head.safetensors").is_file():
+                    continue
+                try:
+                    candidate_cycle = int(candidate.name.split("-")[-1])
+                except ValueError:
+                    continue
+                if fork_cycle <= candidate_cycle <= int(fast_state.get("cycle", candidate_cycle)):
+                    if not (fast_metrics_dir / f"cycle-{candidate_cycle:06d}.json").is_file():
+                        fast_ordered_backfill_targets.append((candidate_cycle, candidate))
+        emit(
+            "ordered_legacy_fast_backfill_plan",
+            retained_cycles=[cycle for cycle, _ in fast_ordered_backfill_targets],
+            checkpoints=[str(path) for _, path in fast_ordered_backfill_targets],
+            already_scored_cycles=[
+                int(path.stem.split("-")[-1])
+                for path in sorted(fast_metrics_dir.glob("cycle-*.json"))
+                if path.stem.split("-")[-1].isdigit()
+            ] if fast_metrics_dir.is_dir() else [],
+            skips=[
+                "dictionary_download_and_parse",
+                "legacy_mutation_ast_dev_loads",
+                "consensus_and_triad_probe_setup",
+                "optimizer_load",
+                "rng_restore",
+                "training_setup",
+            ],
+        )
+
+    (exp / "shards" / "dictionary").mkdir(parents=True, exist_ok=True)
+    configure_compact_emit(exp, args.heartbeat_seconds)
+    emit(
+        "full_head_training_mode",
+        experiment_dir=str(exp),
+        backbone_frozen=True,
+        nanojev_head_trainable_except_r2_gain=not bool(args.train_r2_gain),
+        r2_gain_trainable=bool(args.train_r2_gain),
+        r2_third_pass_bypassed=not bool(args.train_r2_gain),
+        heartbeat_seconds=args.heartbeat_seconds,
+    )
+    recovering_partial = False
+    recovering_scaffold = False
+    partial_experiment = None
+    if exp.exists() and any(exp.iterdir()) and not (exp / "training_state.json").exists():
+        partial_path = exp / "experiment.json"
+        if not partial_path.exists():
+            if is_empty_scaffold_experiment_dir(exp):
+                recovering_scaffold = True
+                emit("empty_scaffold_recovery", experiment_dir=str(exp))
+            else:
+                raise RuntimeError(
+                    f"consensus experiment directory is non-empty but has no training_state.json or experiment.json: {exp}"
+                )
+        else:
+            partial_experiment = read_json(partial_path)
+            if partial_experiment.get("schema_version") != EXPERIMENT_SCHEMA:
+                raise RuntimeError(f"non-empty experiment directory is not a recoverable consensus run: {exp}")
+            recovering_partial = True
+            emit("partial_initialization_recovery", experiment_dir=str(exp))
+
+    fresh = not exp.exists() or not any(exp.iterdir()) or recovering_partial or recovering_scaffold
+    if fresh:
+        if recovering_partial:
+            if args.parent_checkpoint:
+                raise RuntimeError(
+                    "--parent-checkpoint cannot change a partially initialized balanced-pairwise experiment; "
+                    "use a new --experiment-dir to choose another parent"
+                )
+            parent_checkpoint = Path(partial_experiment["parent_checkpoint"]).resolve(strict=True)
+            parent_source = "partial_experiment_recorded_parent"
+            source_soft_feedback_exp = Path(partial_experiment["source_soft_feedback_experiment"]).resolve(strict=True)
+        else:
+            source_parent_dir = args.source_soft_feedback_experiment_dir
+            source_soft_feedback_exp = Path(source_parent_dir).expanduser().resolve(strict=True)
+            parent_checkpoint, parent_source = resolve_soft_feedback_parent(
+                source_soft_feedback_exp, args.parent_checkpoint, args.parent_cycle
+            )
+        parent_config = read_json(parent_checkpoint / "config.json")
+        parent_meta = read_json(parent_checkpoint / "meta.json")
+        parent_feedback = parent_config.get("soft_feedback")
+        if not isinstance(parent_feedback, dict) or parent_feedback.get("enabled") is not True:
+            raise RuntimeError("sparse-register parent checkpoint is not a soft-feedback checkpoint")
+        if parent_config.get("decision_head_frozen") is not True:
+            raise RuntimeError("sparse-register parent must have a frozen inherited NanoJev decision head")
+        emit(
+            "sparse_register_parent_resolved",
+            source_soft_feedback_experiment=str(source_soft_feedback_exp),
+            requested_parent_cycle=args.parent_cycle,
+            checkpoint=str(parent_checkpoint), source=parent_source,
+            head_sha256=file_sha256(parent_checkpoint / "head.safetensors"),
+        )
+        exp.mkdir(parents=True, exist_ok=True)
+        for rel in ("probes", "shards/legacy", "shards/mutation", "shards/ast", "shards/consensus", "shards/triad", "shards/dictionary", "checkpoints/generations"):
+            (exp / rel).mkdir(parents=True, exist_ok=True)
+    else:
+        if args.parent_checkpoint:
+            raise RuntimeError("--parent-checkpoint is only valid when initializing a new balanced-pairwise experiment")
+        existing = read_json(exp / "experiment.json")
+        if existing.get("schema_version") != EXPERIMENT_SCHEMA:
+            raise RuntimeError(f"existing experiment is not a soft-feedback run: {exp}")
+        parent_checkpoint = Path(existing["parent_checkpoint"]).resolve(strict=True)
+        source_soft_feedback_exp = Path(existing["source_soft_feedback_experiment"]).resolve(strict=True)
+        parent_config = read_json(parent_checkpoint / "config.json")
+        parent_meta = read_json(parent_checkpoint / "meta.json")
+        parent_feedback = parent_config.get("soft_feedback")
+        if not isinstance(parent_feedback, dict) or parent_feedback.get("enabled") is not True:
+            raise RuntimeError("recorded sparse-register parent checkpoint is not a soft-feedback checkpoint")
+
+    repo_root = Path(legacy_experiment["repo_root"]).resolve(strict=True)
+    nanojev_root = Path(legacy_experiment["nanojev_root"]).resolve(strict=True)
+    pipeline, BaseDecisionModel = legacy.import_nanojev(nanojev_root)
+
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+    if args.disable_native_triton:
+        from torch._native import triton_utils
+        triton_utils.deregister_op_overrides()
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required")
+    if args.precision == "bf16" and not torch.cuda.is_bf16_supported():
+        raise RuntimeError("bf16 requested but unsupported by CUDA device")
+    torch.backends.cuda.matmul.allow_tf32 = False
+
+    tokenizer_dir = legacy_exp / "artifacts" / "tokenizer"
+    tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_dir), local_files_only=True, trust_remote_code=False)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Prepare the ordered-continuation ruler before loading Qwen.  The old
+    # implementation lexed the *entire* dev manifest here, which could make both
+    # normal trainer restart and backfill appear hung for minutes.  Reuse the
+    # established canonical 64-pair legacy dev probe instead: it already contains
+    # held-out source paths and exact source boundaries.  Only those referenced
+    # files are lexed, and the resulting ruler is cached permanently.
+    legacy_dev_probe = Path(legacy_experiment["dev_probe"]).resolve(strict=True)
+    ordered_legacy_dev_path = exp / "probes" / "legacy_ordered_continuation_dev.jsonl"
+    if ordered_legacy_dev_path.is_file():
+        ordered_legacy_dev_records = read_jsonl_records(ordered_legacy_dev_path)
+        ordered_probe_source = "cached"
+    else:
+        emit(
+            "ordered_legacy_probe_build_start",
+            source_probe=str(legacy_dev_probe),
+            method="canonical_legacy_boundaries_only",
+            pairs=ORDERED_LEGACY_DEV_PAIRS,
+        )
+        canonical_legacy_records = read_jsonl_records(legacy_dev_probe)
+        ordered_legacy_dev_records = data.sample_ordered_continuation_from_canonical_probe(
+            probe_records=canonical_legacy_records, repo_root=repo_root, tokenizer=tokenizer, split="dev",
+            pair_count=ORDERED_LEGACY_DEV_PAIRS,
+            max_prefix_tokens=legacy_experiment["max_prefix_tokens"],
+            seed=int(legacy_experiment["seed"]) + ORDERED_LEGACY_DEV_SEED_OFFSET,
+            max_lexeme_tokens=legacy_experiment["max_lexeme_tokens"],
+        )
+        validate_records(ordered_legacy_dev_records, pipeline)
+        data.write_jsonl(ordered_legacy_dev_path, ordered_legacy_dev_records)
+        ordered_probe_source = "canonical_legacy_boundaries_only"
+    validate_records(ordered_legacy_dev_records, pipeline)
+    ordered_legacy_dev_examples, _ = pipeline.load_training_examples(
+        ordered_legacy_dev_path, tokenizer, legacy_experiment["max_length"]
+    )
+    pipeline.pack_complete_questions(
+        ordered_legacy_dev_examples, args.microbatch_questions, args.max_microbatch_tokens
+    )
+    ordered_legacy_probe_sha256 = legacy.sha256_file(ordered_legacy_dev_path)
+    emit(
+        "ordered_legacy_probe_ready",
+        pairs=ORDERED_LEGACY_DEV_PAIRS, records=len(ordered_legacy_dev_records),
+        path=str(ordered_legacy_dev_path), sha256=ordered_legacy_probe_sha256,
+        source=ordered_probe_source, source_split="dev", task="ordered_lexeme_continuation_v1",
+    )
+
+    emit("frozen_backbone_load_start", model=legacy_experiment["model"], revision=legacy_experiment["resolved_model_revision"])
+    backbone = AutoModel.from_pretrained(
+        legacy_experiment["model"], revision=legacy_experiment["resolved_model_revision"], dtype=torch.float32,
+        attn_implementation="sdpa", trust_remote_code=False, local_files_only=args.local_files_only,
+    )
+    DecisionModel = build_soft_feedback_decision_model_class(
+        BaseDecisionModel,
+        control_space_size=args.control_space_size,
+        register_rank=args.register_rank,
+        strength_init=args.soft_feedback_strength_init,
+        active_epsilon=args.register_active_epsilon,
+    )
+    # Fresh sparse-register initialization inherits only the frozen static token/strength from phase 1.
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(int(legacy_experiment["seed"]) + 74000)
+        model = DecisionModel(backbone, legacy_experiment["set_head"])
+    model.backbone.config.use_cache = False
+    if not args.disable_soft_feedback_gradient_checkpointing:
+        if not hasattr(model.backbone, "gradient_checkpointing_enable"):
+            raise RuntimeError("frozen Qwen backbone does not expose gradient_checkpointing_enable")
+        model.backbone.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    active_dropouts = [
+        module for module in model.backbone.modules()
+        if isinstance(module, torch.nn.Dropout) and float(module.p) != 0.0
+    ]
+    if active_dropouts and not args.disable_soft_feedback_gradient_checkpointing:
+        raise RuntimeError("soft-feedback gradient checkpointing requires a deterministic zero-dropout frozen backbone")
+    soft_feedback = model.soft_feedback
+    latent_walk = None
+    latent_walk_hook = None
+    if args.latent_walk:
+        hidden_size = int(getattr(model.backbone.config, "hidden_size"))
+        latent_walk = build_latent_walk_module(
+            hidden_size=hidden_size, rank=args.latent_walk_rank, steps=args.latent_walk_steps
+        )
+        model.add_module("latent_walk", latent_walk)
+        latent_walk_hook = install_latent_walk_hook(model, latent_walk)
+    body = list(model.backbone.parameters())
+    for param in body:
+        param.requires_grad_(False)
+    walk = []
+    # Preserve the old dynamic-parameter order first so inherited AdamW moments
+    # continue to attach to the same tensors.  S and strength are appended.
+    dynamic_feedback = list(soft_feedback.dynamic_parameters())
+    static_feedback = list(soft_feedback.static_parameters())
+    feedback = dynamic_feedback + static_feedback
+    head = [
+        param for name, param in model.named_parameters()
+        if not name.startswith("backbone.")
+        and not name.startswith("latent_walk.")
+        and not name.startswith("soft_feedback.")
+    ]
+    if not head or not feedback:
+        raise RuntimeError("full-head training requires the inherited decision head and soft-feedback head")
+    for param in feedback + head:
+        param.requires_grad_(True)
+    soft_feedback.r2_gain.requires_grad_(bool(args.train_r2_gain))
+    model.r2_gain_training_enabled = bool(args.train_r2_gain)
+    trainable_head = [param for param in feedback + head if param.requires_grad]
+
+    if args.ordered_legacy_backfill_only:
+        # Dedicated fast path.  The ordered ruler was prepared/cached before Qwen
+        # load using only canonical legacy-dev boundaries.  Nothing here scans a
+        # manifest or initializes unrelated dictionary/consensus/triad machinery.
+        probe_sha256 = ordered_legacy_probe_sha256
+        emit(
+            "ordered_legacy_fast_probe_ready",
+            pairs=ORDERED_LEGACY_DEV_PAIRS,
+            records=len(ordered_legacy_dev_records),
+            path=str(ordered_legacy_dev_path),
+            sha256=probe_sha256,
+            source=ordered_probe_source,
+            source_split="dev",
+            task="ordered_lexeme_continuation_v1",
+        )
+
+        ordered_legacy_metrics_dir = exp / "probes" / ORDERED_LEGACY_DEV_METRICS_DIR
+        ordered_legacy_metrics_dir.mkdir(parents=True, exist_ok=True)
+        if not fast_ordered_backfill_targets:
+            emit(
+                "ordered_legacy_fast_backfill_complete",
+                newly_evaluated_cycles=[],
+                metrics_dir=str(ordered_legacy_metrics_dir),
+                training_started=False,
+                optimizer_loaded=False,
+                rng_loaded=False,
+            )
+            return
+
+        # Move the frozen backbone/model to CUDA only once, then swap only the small
+        # NanoJev head tensors between retained checkpoints.
+        model.cuda()
+        model.set_soft_feedback_mode("dynamic")
+        scored_cycles = []
+        for cycle_value, checkpoint_value in fast_ordered_backfill_targets:
+            emit(
+                "ordered_legacy_fast_checkpoint_start",
+                cycle=cycle_value, checkpoint=str(checkpoint_value),
+            )
+            load_head_into_model(model, checkpoint_value / "head.safetensors", allow_missing_prefixes=())
+            model.cuda()
+            model.set_soft_feedback_mode("dynamic")
+            metrics = legacy.evaluate(
+                model, ordered_legacy_dev_examples, tokenizer.pad_token_id, pipeline,
+                precision=args.precision, microbatch_questions=args.microbatch_questions,
+                max_microbatch_tokens=args.max_microbatch_tokens,
+                label=f"ordered_legacy_dev_fast_backfill_cycle_{cycle_value}",
+                pair_margin=args.ranking_margin,
+            )
+            atomic_json(ordered_legacy_metrics_dir / f"cycle-{cycle_value:06d}.json", {
+                "schema_version": "main-computer-nanojev-ordered-legacy-dev-metrics-v1",
+                "cycle": int(cycle_value),
+                "checkpoint": str(checkpoint_value),
+                "probe": str(ordered_legacy_dev_path),
+                "probe_sha256": probe_sha256,
+                "task": "ordered_lexeme_continuation_v1",
+                "pair_count": ORDERED_LEGACY_DEV_PAIRS,
+                "metrics": metrics,
+            })
+            scored_cycles.append(cycle_value)
+            emit(
+                "ordered_legacy_fast_checkpoint_done",
+                cycle=cycle_value,
+                balanced_accuracy=metrics["balanced_accuracy"],
+                pair_win_rate=metrics["pair_win_rate"],
+                elapsed_seconds=metrics["elapsed_seconds"],
+            )
+
+        emit(
+            "ordered_legacy_fast_backfill_complete",
+            newly_evaluated_cycles=scored_cycles,
+            metrics_dir=str(ordered_legacy_metrics_dir),
+            training_started=False,
+            optimizer_loaded=False,
+            rng_loaded=False,
+        )
+        return
+
+    train_manifest = read_json(Path(legacy_experiment["manifests"]["train"]))
+    dev_manifest = read_json(Path(legacy_experiment["manifests"]["dev"]))
+
+    legacy_dev_probe = Path(legacy_experiment["dev_probe"]).resolve(strict=True)
+    mutation_fallback = None
+    if mutation_experiment.get("mutation_dev_probe"):
+        mutation_fallback = Path(mutation_experiment["mutation_dev_probe"])
+    mutation_dev_probe = _resolve_probe(three_mode_experiment, three_mode_exp, "mutation_dev_probe", mutation_fallback)
+    ast_dev_probe = _resolve_probe(three_mode_experiment, three_mode_exp, "ast_dev_probe")
+
+    legacy_dev_examples, _ = pipeline.load_training_examples(legacy_dev_probe, tokenizer, legacy_experiment["max_length"])
+    mutation_dev_examples, _ = pipeline.load_training_examples(mutation_dev_probe, tokenizer, legacy_experiment["max_length"])
+    ast_dev_examples, _ = pipeline.load_training_examples(ast_dev_probe, tokenizer, legacy_experiment["max_length"])
+    for examples in (legacy_dev_examples, mutation_dev_examples, ast_dev_examples):
+        pipeline.pack_complete_questions(examples, args.microbatch_questions, args.max_microbatch_tokens)
+
+    # Ordered legacy ruler was prepared and cached before Qwen load above.
+
+    # Dictionary task: bootstrap an overt semantic TRUE/FALSE relation first.
+    # New training negatives are same-POS definitions with ZERO non-stopword
+    # gloss-token overlap with the true definition.  On an existing live run,
+    # migrate the dev probe using only the synsets that were already reserved by
+    # the old hard-negative probe, so the new ruler cannot leak a previously
+    # trained synset into held-out evaluation.
+    dictionary_path = dictionary.download_dictionary(args.dictionary_url, Path(args.dictionary_cache))
+    dictionary_sha = dictionary.file_sha256(dictionary_path)
+    dictionary_synsets = dictionary.parse_wordnet_archive(dictionary_path)
+    dictionary_synset_by_id = {synset["id"]: synset for synset in dictionary_synsets}
+    dictionary_dev_path = exp / "probes" / "dictionary_dev.jsonl"
+    established_dictionary_config_path = exp / "training_config.json"
+    established_dictionary_config = (
+        read_json(established_dictionary_config_path)
+        if established_dictionary_config_path.is_file()
+        else None
+    )
+
+    dictionary_dev_records = []
+    dictionary_holdout_ids: set[str] = set()
+    dictionary_holdout_lemmas: set[str] = set()
+
+    if (
+        dictionary_dev_path.is_file()
+        and established_dictionary_config is not None
+        and established_dictionary_config.get("dictionary_negative_strategy") == DICTIONARY_NEGATIVE_STRATEGY_V2
+    ):
+        # Already migrated: freeze this exact overt ruler across restarts.
+        with dictionary_dev_path.open("r", encoding="utf-8") as fh:
+            dictionary_dev_records = [json.loads(line) for line in fh if line.strip()]
+        dictionary_holdout_ids = set(established_dictionary_config.get("dictionary_holdout_synset_ids", ()))
+        if not dictionary_holdout_ids:
+            raise RuntimeError("overt dictionary config lost its reserved holdout synset IDs")
+        emit(
+            "dictionary_overt_probe_reused",
+            path=str(dictionary_dev_path),
+            records=len(dictionary_dev_records),
+            reserved_synsets=len(dictionary_holdout_ids),
+            negative_strategy=DICTIONARY_NEGATIVE_STRATEGY_V2,
+        )
+    elif dictionary_dev_path.is_file() and established_dictionary_config is not None:
+        # One-time live migration from the old hard ruler.  Archive the exact
+        # old probe and rebuild using ONLY its already-reserved synsets.
+        with dictionary_dev_path.open("r", encoding="utf-8") as fh:
+            old_dictionary_dev_records = [json.loads(line) for line in fh if line.strip()]
+        archive_path = exp / "probes" / "dictionary_dev_hard_v1.jsonl"
+        if not archive_path.exists():
+            shutil.copy2(dictionary_dev_path, archive_path)
+        dictionary_holdout_pairs, preserved_ids = dictionary.build_overt_pairs_from_reserved_records(
+            dictionary_synsets,
+            old_dictionary_dev_records,
+            args.dictionary_holdout_seed,
+        )
+        configured_ids = set(established_dictionary_config.get("dictionary_holdout_synset_ids", ()))
+        if configured_ids and preserved_ids != configured_ids:
+            raise RuntimeError(
+                "dictionary holdout migration did not preserve the exact reserved synset set"
+            )
+        dictionary_holdout_ids = configured_ids or preserved_ids
+        for pair_index, (headword, positive, negative) in enumerate(dictionary_holdout_pairs):
+            dictionary_dev_records.append(dictionary.make_record(
+                pair_index=pair_index, headword=headword, positive=positive, candidate=negative, truth=False
+            ))
+            dictionary_dev_records.append(dictionary.make_record(
+                pair_index=pair_index, headword=headword, positive=positive, candidate=positive, truth=True
+            ))
+        dictionary.write_probe(dictionary_dev_records, dictionary_dev_path)
+        emit(
+            "dictionary_overt_probe_migrated",
+            path=str(dictionary_dev_path),
+            archived_hard_probe=str(archive_path),
+            pairs=len(dictionary_holdout_pairs),
+            reserved_synsets=len(dictionary_holdout_ids),
+            negative_strategy=DICTIONARY_NEGATIVE_STRATEGY_V2,
+            holdout_synsets_preserved=True,
+        )
+    else:
+        # Fresh branch: build the overt held-out task directly.
+        dictionary_holdout_pairs = dictionary.build_pairs(
+            dictionary_synsets, args.dictionary_holdout_pairs, args.dictionary_holdout_seed
+        )
+        for pair_index, (headword, positive, negative) in enumerate(dictionary_holdout_pairs):
+            dictionary_holdout_ids.update((positive["id"], negative["id"]))
+            dictionary_dev_records.append(dictionary.make_record(
+                pair_index=pair_index, headword=headword, positive=positive, candidate=negative, truth=False
+            ))
+            dictionary_dev_records.append(dictionary.make_record(
+                pair_index=pair_index, headword=headword, positive=positive, candidate=positive, truth=True
+            ))
+        dictionary.write_probe(dictionary_dev_records, dictionary_dev_path)
+        emit(
+            "dictionary_overt_probe_created",
+            path=str(dictionary_dev_path),
+            pairs=len(dictionary_holdout_pairs),
+            reserved_synsets=len(dictionary_holdout_ids),
+            negative_strategy=DICTIONARY_NEGATIVE_STRATEGY_V2,
+        )
+
+    # Reconstruct the withheld lemma set from the reserved synsets.  Because a
+    # live migration preserves the exact reserved synset IDs, this keeps the
+    # original train/dev partition intact.
+    for synset_id in dictionary_holdout_ids:
+        held = dictionary_synset_by_id.get(synset_id)
+        if held is None:
+            raise RuntimeError(f"dictionary holdout synset missing after parse: {synset_id}")
+        dictionary_holdout_lemmas.update(lemma.lower() for lemma in held["lemmas"])
+    for row in dictionary_dev_records:
+        metadata = row.get("metadata", {})
+        if metadata.get("headword"):
+            dictionary_holdout_lemmas.add(str(metadata["headword"]).lower())
+        pipeline.validate_training_row(row)
+
+    dictionary_training_synsets = [
+        synset for synset in dictionary_synsets
+        if synset["id"] not in dictionary_holdout_ids
+        and not any(lemma.lower() in dictionary_holdout_lemmas for lemma in synset["lemmas"])
+    ]
+    if len(dictionary_training_synsets) < 1000:
+        raise RuntimeError(
+            f"dictionary training partition unexpectedly small: {len(dictionary_training_synsets)}"
+        )
+    dictionary_dev_examples, _ = pipeline.load_training_examples(
+        dictionary_dev_path, tokenizer, legacy_experiment["max_length"]
+    )
+    pipeline.pack_complete_questions(
+        dictionary_dev_examples, args.microbatch_questions, args.max_microbatch_tokens
+    )
+
+    training_config = {
+        "schema_version": CONFIG_SCHEMA,
+        "cycle_seconds": args.cycle_seconds,
+        "train_files_per_cycle": args.train_files_per_cycle,
+        "train_units_per_cycle": args.train_units_per_cycle,
+        "legacy_training_percent": args.legacy_training_percent,
+        "mutation_training_percent": args.mutation_training_percent,
+        "ast_training_percent": args.ast_training_percent,
+        "consensus_training_percent": args.consensus_training_percent,
+        "triad_training_percent": args.triad_training_percent,
+        "dictionary_training_percent": args.dictionary_training_percent,
+        "dictionary_cache": str(dictionary_path),
+        "dictionary_url": args.dictionary_url,
+        "dictionary_sha256": dictionary_sha,
+        "dictionary_parsed_synsets": len(dictionary_synsets),
+        "dictionary_training_synsets": len(dictionary_training_synsets),
+        "dictionary_holdout_pairs": args.dictionary_holdout_pairs,
+        "dictionary_holdout_seed": args.dictionary_holdout_seed,
+        "dictionary_holdout_synset_ids": sorted(dictionary_holdout_ids),
+        "dictionary_holdout_lemma_count": len(dictionary_holdout_lemmas),
+        "dictionary_negative_strategy": DICTIONARY_NEGATIVE_STRATEGY_V2,
+        "dictionary_partition": "training excludes default smoke holdout synsets and all their lemmas",
+        "consensus_dev_files": args.consensus_dev_files,
+        "consensus_dev_records": args.consensus_dev_records,
+        "mutation_max_code_tokens": args.mutation_max_code_tokens,
+        "consensus_max_code_tokens": args.consensus_max_code_tokens,
+        "batch_units": args.batch_units,
+        "microbatch_questions": args.microbatch_questions,
+        "max_microbatch_tokens": args.max_microbatch_tokens,
+        "head_lr": args.head_lr,
+        "weight_decay": args.weight_decay,
+        "ranking_weight": args.ranking_weight,
+        "ranking_margin": args.ranking_margin,
+        "precision": args.precision,
+        "backbone_frozen": True,
+        "task": TASK,
+        "pairwise_training_sampling": "exact_50_50_same_different_with_per_label_pair_position_balance",
+        "pairwise_topology_training": False,
+        "pairwise_topology_evaluation": True,
+        "disable_native_triton": args.disable_native_triton,
+        "decision_head_frozen": False,
+        "entire_nanojev_head_trainable": bool(args.train_r2_gain),
+        "nanojev_head_trainable_except_r2_gain": not bool(args.train_r2_gain),
+        "r2_gain_trainable": bool(args.train_r2_gain),
+        "r2_gain_rezeroed_at_cutover": True,
+        "r2_third_pass_bypassed_when_gain_frozen": not bool(args.train_r2_gain),
+        "soft_feedback_enabled": True,
+        "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
+        "soft_feedback_lr": args.register_lr,
+        "soft_feedback_strength_init": args.soft_feedback_strength_init,
+        "soft_feedback_generator": SOFT_FEEDBACK_GENERATOR,
+        "soft_feedback_control_modes": list(SOFT_FEEDBACK_CONTROL_MODES),
+        "soft_feedback_control_eval_every": args.soft_feedback_control_eval_every,
+        "soft_feedback_gradient_checkpointing": not args.disable_soft_feedback_gradient_checkpointing,
+        "soft_feedback_parent_role": "latest_committed_phase1_soft_feedback_static_token",
+        "soft_feedback_static_base_frozen": False,
+        "soft_feedback_static_strength_frozen": False,
+        "control_space_size": args.control_space_size,
+        "register_rank": args.register_rank,
+        "router_task_identity_input": False,
+        "task_labels_reporting_only": True,
+        "register_semantics": "emergent_shared_control_slots",
+        "register_sparsity_weight": args.register_sparsity_weight,
+        "register_residual_weight": args.register_residual_weight,
+        "register_orthogonality_weight": args.register_orthogonality_weight,
+        "register_active_epsilon": args.register_active_epsilon,
+        "sparse_registers_trainable": True,
+        "sparse_registers_zero_initialized": True,
+    }
+    if args.latent_walk:
+        training_config.update({
+            "latent_walk_enabled": True,
+            "latent_walk_steps": args.latent_walk_steps,
+            "latent_walk_rank": args.latent_walk_rank,
+            "latent_walk_lr": args.latent_walk_lr,
+            "latent_walk_displacement_penalty_weight": args.latent_walk_displacement_penalty_weight,
+            "latent_walk_displacement_penalty": LATENT_WALK_DISPLACEMENT_PENALTY,
+            "latent_walk_layout": "upper_right_to_lower_left_diagonal_snake_v1",
+            "latent_walk_transition": "weight_shared_residual_2d_field_walk",
+            "latent_walk_parent_role": "latest_committed_phase1_soft_feedback_checkpoint",
+        })
+
+    if fresh:
+        parent_head_sha = legacy.sha256_file(parent_checkpoint / "head.safetensors")
+        parent_cycle = int(parent_config.get("main_computer_cycle", parent_meta.get("cycle", 0)))
+        parent_global_step = int(parent_config.get("main_computer_global_step", parent_meta.get("global_step", 0)))
+        experiment = {
+            "schema_version": EXPERIMENT_SCHEMA,
+            "task": TASK,
+            "repo_root": str(repo_root),
+            "nanojev_root": str(nanojev_root),
+            "model": legacy_experiment["model"],
+            "requested_revision": legacy_experiment["requested_revision"],
+            "resolved_model_revision": legacy_experiment["resolved_model_revision"],
+            "set_head": legacy_experiment["set_head"],
+            "seed": int(legacy_experiment["seed"]) + 74000,
+            "backbone_frozen": True,
+            "max_length": legacy_experiment["max_length"],
+            "max_prefix_tokens": legacy_experiment["max_prefix_tokens"],
+            "max_lexeme_tokens": legacy_experiment["max_lexeme_tokens"],
+            "legacy_experiment": str(legacy_exp),
+            "mutation_experiment": str(mutation_exp),
+            "three_mode_experiment": str(three_mode_exp),
+            "source_soft_feedback_experiment": str(source_soft_feedback_exp),
+            "parent_checkpoint": str(parent_checkpoint),
+            "parent_cycle": parent_cycle,
+            "parent_global_step": parent_global_step,
+            "parent_head_sha256": parent_head_sha,
+            "legacy_dev_probe": str(legacy_dev_probe),
+            "mutation_dev_probe": str(mutation_dev_probe),
+            "ast_dev_probe": str(ast_dev_probe),
+            "initialization": (
+                f"phase-1 soft-feedback cycle-{parent_cycle:06d}; Qwen, inherited NanoJev head, static soft token, "
+                "and static strength frozen; fresh zero-output task-blind router over an orthonormal shared control bank"
+            ),
+            "consensus_labels": list(CONSENSUS_LABELS),
+            "consensus_original_exposed_to_model": False,
+            "consensus_singleton_oracle": "two AST-identical preserving variants plus one AST-different variant",
+            "consensus_none_oracle": "three distinct AST-identical preserving variants",
+            "consensus_training_permutation_counterbalance": "full six-permutation orbits in 24-record A/B/C/NONE-balanced blocks",
+            "consensus_optimizer_label_schedule": "complete six-view orbits with persistent 3-singleton:1-NONE orbit schedule; question exposure spread bounded by 6",
+            "consensus_ambiguous_class_included": False,
+            "pairwise_training_sampling": "one SAME plus one DIFFERENT per optimizer unit; AB/AC/BC balanced independently per label",
+            "pairwise_topology_training": False,
+            "pairwise_triad_composition": "evaluation only: AB/AC/BC SAME/DIFFERENT -> deterministic A/B/C/NONE/AMBIGUOUS",
+            "diagnostic_parent_reason": (
+                "latest committed phase-1 soft-feedback checkpoint; freezing its learned static token and strength "
+                "while zero-initializing one task-blind sparse router tests whether first-pass state can self-organize "
+                "shared, overlapping, distinct, and dormant control coordinates without assigned registers"
+            ),
+            "decision_head_frozen": False,
+            "entire_nanojev_head_trainable": bool(args.train_r2_gain),
+            "nanojev_head_trainable_except_r2_gain": not bool(args.train_r2_gain),
+            "r2_gain_trainable": bool(args.train_r2_gain),
+            "r2_third_pass_bypassed_when_gain_frozen": not bool(args.train_r2_gain),
+            "soft_feedback_enabled": True,
+            "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
+            "soft_feedback_generator": SOFT_FEEDBACK_GENERATOR,
+            "soft_feedback_strength_init": args.soft_feedback_strength_init,
+            "soft_feedback_control_modes": list(SOFT_FEEDBACK_CONTROL_MODES),
+            "soft_feedback_first_pass": "frozen_qwen_plus_frozen_head_sensor",
+            "soft_feedback_second_pass": "one_continuous_helper_embedding_prepended_to_original_path_embeddings",
+            "soft_feedback_helper_sharing": "one_helper_per_question_shared_by_all_candidate_paths",
+            "soft_feedback_backbone_reads_dynamic": 3 if args.train_r2_gain else 2,
+            "soft_feedback_gradient_path": (
+                "final_loss_jointly_updates_head_S_R1_bank_and_released_R2_through_frozen_qwen"
+                if args.train_r2_gain else
+                "final_loss_jointly_updates_head_S_R1_bank_through_frozen_qwen_with_R2_gain_frozen_zero"
+            ),
+            "soft_feedback_static_base_frozen": False,
+            "soft_feedback_static_strength_frozen": False,
+            "control_space_size": args.control_space_size,
+            "register_rank": args.register_rank,
+            "router_task_identity_input": False,
+            "task_labels_reporting_only": True,
+            "register_semantics": "emergent_shared_control_slots",
+            "register_sparsity_weight": args.register_sparsity_weight,
+            "register_residual_weight": args.register_residual_weight,
+            "register_orthogonality_weight": args.register_orthogonality_weight,
+            "register_active_epsilon": args.register_active_epsilon,
+            "sparse_registers_trainable": True,
+            "sparse_registers_zero_initialized": True,
+            "sparse_register_invariant": "dynamic_equals_static_at_initialization; shared router coefficient head starts exactly zero; no task identity enters routing",
+            "latent_walk_enabled": False,
+        }
+        if args.latent_walk:
+            experiment.update({
+                "source_balanced_experiment": str(source_soft_feedback_exp),
+                "latent_walk_enabled": True,
+                "latent_walk_steps": args.latent_walk_steps,
+                "latent_walk_rank": args.latent_walk_rank,
+                "latent_walk_displacement_penalty_weight": args.latent_walk_displacement_penalty_weight,
+                "latent_walk_displacement_penalty": LATENT_WALK_DISPLACEMENT_PENALTY,
+                "latent_walk_layout": "upper_right_to_lower_left_diagonal_snake_v1",
+                "latent_walk_transition": "weight_shared_residual_2d_field_walk",
+                "latent_walk_prior": "frozen_qwen_last_hidden_state_full_buffer",
+                "latent_walk_readout": "existing_nanojev_head_trainable",
+                "initialization": (
+                    f"balanced-pairwise cycle-{parent_cycle:06d} head; zero-init recurrent latent walker; "
+                    "fresh optimizer; Qwen frozen; head and walker trainable"
+                ),
+                "diagnostic_parent_reason": (
+                    "latest committed balanced-pairwise head; recurrent walker starts as exact identity so cycle-0 "
+                    "behavior is inherited before co-adaptation"
+                ),
+            })
+        experiment["experiment_sha256"] = sha256_json({k: v for k, v in experiment.items() if k != "experiment_sha256"})
+        atomic_json(exp / "experiment.json", experiment)
+        atomic_json(exp / "training_config.json", training_config)
+
+        dev_rows, _ = mutation.cyclic_filtered_slice(
+            dev_manifest, 0, args.consensus_dev_files, lambda row: row.get("language") == "python"
+        )
+        dev_docs = data.load_docs(dev_rows, repo_root)
+        consensus_dev_records = sample_consensus_records(
+            docs=dev_docs, mutation=mutation, data=data, tokenizer=tokenizer, split="dev",
+            record_count=args.consensus_dev_records, max_code_tokens=args.consensus_max_code_tokens,
+            max_length=legacy_experiment["max_length"], seed=experiment["seed"] + 4000,
+        )
+        validate_records(consensus_dev_records, pipeline)
+        consensus_dev_path = exp / "probes" / "consensus_dev.jsonl"
+        data.write_jsonl(consensus_dev_path, consensus_dev_records)
+        consensus_dev_examples, _ = pipeline.load_training_examples(
+            consensus_dev_path, tokenizer, legacy_experiment["max_length"]
+        )
+        pipeline.pack_complete_questions(consensus_dev_examples, args.microbatch_questions, args.max_microbatch_tokens)
+        experiment["consensus_dev_probe"] = str(consensus_dev_path)
+        experiment["consensus_dev_probe_sha256"] = legacy.sha256_file(consensus_dev_path)
+        experiment["experiment_sha256"] = sha256_json({k: v for k, v in experiment.items() if k != "experiment_sha256"})
+        atomic_json(exp / "experiment.json", experiment)
+
+        state = {
+            "schema_version": STATE_SCHEMA,
+            "experiment_sha256": experiment["experiment_sha256"],
+            "status": "initialized",
+            "cycle": 0,
+            "global_step": parent_global_step,
+            "phase": PHASE,
+            "training_objective": OBJECTIVE,
+            "legacy_source_cursor": int(legacy_state.get("source_cursor", 0)),
+            "mutation_source_cursor": 0,
+            "ast_source_cursor": 0,
+            "consensus_source_cursor": 0,
+            "triad_source_cursor": 0,
+            "consensus_label_cursor": 0,
+            "consensus_orbit_kind_cursor": 0,
+            "mix_credits": {task: 0.0 for task in TASK_ORDER},
+            "latest_generation": None,
+            "parent_checkpoint": str(parent_checkpoint),
+            "parent_cycle": parent_cycle,
+            "parent_global_step": parent_global_step,
+            "parent_head_sha256": parent_head_sha,
+            "last_legacy_probability_separation": None,
+            "last_legacy_mean_pair_logodds_gap": None,
+            "last_mutation_probability_separation": None,
+            "last_mutation_mean_pair_logodds_gap": None,
+            "last_ast_probability_separation": None,
+            "last_ast_mean_pair_logodds_gap": None,
+            "last_consensus_accuracy": None,
+            "last_consensus_mean_gold_margin": None,
+            "last_triad_relation_accuracy": None,
+            "last_triad_balanced_relation_accuracy": None,
+            "last_triad_topology_accuracy": None,
+            "last_triad_non_ambiguous_topology_accuracy": None,
+        }
+        atomic_json(exp / "training_state.json", state)
+        (exp / "history.jsonl").write_text("", encoding="utf-8")
+        emit(
+            "sparse_register_experiment_initialized", experiment_dir=str(exp), parent_checkpoint=str(parent_checkpoint),
+            parent_cycle=parent_cycle, parent_global_step=parent_global_step, parent_head_sha256=parent_head_sha,
+            legacy_training_percent=args.legacy_training_percent,
+            mutation_training_percent=args.mutation_training_percent,
+            ast_training_percent=args.ast_training_percent,
+            consensus_training_percent=args.consensus_training_percent,
+            triad_training_percent=args.triad_training_percent,
+            dictionary_training_percent=args.dictionary_training_percent,
+            dictionary_holdout_pairs=args.dictionary_holdout_pairs,
+            dictionary_holdout_seed=args.dictionary_holdout_seed,
+            consensus_dev_records=args.consensus_dev_records,
+        )
+    else:
+        experiment = read_json(exp / "experiment.json")
+        state = read_json(exp / "training_state.json")
+        if experiment.get("schema_version") != EXPERIMENT_SCHEMA or state.get("schema_version") != STATE_SCHEMA:
+            raise RuntimeError("sparse-register experiment/state schema mismatch")
+        if state.get("experiment_sha256") != experiment.get("experiment_sha256"):
+            raise RuntimeError("sparse-register training state does not belong to experiment")
+        established_config = read_json(exp / "training_config.json")
+        if established_config != training_config:
+            if curriculum_only_migration_allowed(established_config, training_config):
+                from_curriculum = config_curriculum(established_config)
+                to_curriculum = config_curriculum(training_config)
+                state["mix_credits"] = {task: 0.0 for task in TASK_ORDER}
+                migrations = list(state.get("curriculum_migrations", []))
+                migrations.append({
+                    "at_cycle": int(state.get("cycle", 0)),
+                    "latest_generation": state.get("latest_generation"),
+                    "from": from_curriculum,
+                    "to": to_curriculum,
+                })
+                state["curriculum_migrations"] = migrations
+                atomic_json(exp / "training_config.json", training_config)
+                atomic_json(exp / "training_state.json", state)
+                emit(
+                    "curriculum_migrated",
+                    at_cycle=int(state.get("cycle", 0)),
+                    latest_generation=state.get("latest_generation"),
+                    from_curriculum=from_curriculum,
+                    to_curriculum=to_curriculum,
+                    optimizer_preserved=True,
+                    mix_credits_reset=True,
+                )
+            elif dictionary_negative_strategy_migration_allowed(established_config, training_config):
+                migrations = list(state.get("dictionary_negative_strategy_migrations", []))
+                migrations.append({
+                    "at_cycle": int(state.get("cycle", 0)),
+                    "latest_generation": state.get("latest_generation"),
+                    "from": DICTIONARY_NEGATIVE_STRATEGY_V1,
+                    "to": DICTIONARY_NEGATIVE_STRATEGY_V2,
+                    "holdout_synsets_preserved": True,
+                })
+                state["dictionary_negative_strategy_migrations"] = migrations
+                atomic_json(exp / "training_config.json", training_config)
+                atomic_json(exp / "training_state.json", state)
+                emit(
+                    "dictionary_negative_strategy_migrated",
+                    at_cycle=int(state.get("cycle", 0)),
+                    latest_generation=state.get("latest_generation"),
+                    from_strategy=DICTIONARY_NEGATIVE_STRATEGY_V1,
+                    to_strategy=DICTIONARY_NEGATIVE_STRATEGY_V2,
+                    holdout_synsets_preserved=True,
+                    optimizer_preserved=True,
+                    rng_preserved=True,
+                )
+            elif r2_gain_mode_migration_allowed(established_config, training_config):
+                from_mode = bool(established_config.get("r2_gain_trainable", False))
+                to_mode = bool(training_config.get("r2_gain_trainable", False))
+                emit(
+                    "r2_gain_training_mode_changed",
+                    from_trainable=from_mode,
+                    to_trainable=to_mode,
+                    third_pass_bypassed=not to_mode,
+                )
+                atomic_json(exp / "training_config.json", training_config)
+            elif latent_walk_penalty_migration_allowed(established_config, training_config):
+                migrations = list(state.get("latent_walk_penalty_migrations", []))
+                migrations.append({
+                    "at_cycle": int(state.get("cycle", 0)),
+                    "latest_generation": state.get("latest_generation"),
+                    "from_weight": 0.0,
+                    "to_weight": args.latent_walk_displacement_penalty_weight,
+                })
+                state["latent_walk_penalty_migrations"] = migrations
+                atomic_json(exp / "training_config.json", training_config)
+                atomic_json(exp / "training_state.json", state)
+                emit(
+                    "latent_walk_penalty_migrated",
+                    at_cycle=int(state.get("cycle", 0)),
+                    latest_generation=state.get("latest_generation"),
+                    from_weight=0.0,
+                    to_weight=args.latent_walk_displacement_penalty_weight,
+                    optimizer_preserved=True,
+                )
+            else:
+                raise RuntimeError("training configuration differs from established sparse-register run")
+        consensus_dev_examples, _ = pipeline.load_training_examples(
+            experiment["consensus_dev_probe"], tokenizer, experiment["max_length"]
+        )
+        pipeline.pack_complete_questions(consensus_dev_examples, args.microbatch_questions, args.max_microbatch_tokens)
+
+    orbit_training_contract = {
+        "schema_version": "main-computer-nanojev-consensus-orbit-training-v1",
+        "objective": DIRECT_CONSENSUS_OBJECTIVE,
+        "consensus_optimizer_unit": "complete_six_view_permutation_orbit",
+        "orbit_kind_schedule": list(CONSENSUS_ORBIT_KIND_SCHEDULE),
+        "orbit_consistency": "Jensen-Shannon divergence across canonicalized A/B/C/NONE probabilities",
+        "orbit_consistency_weight": ORBIT_CONSISTENCY_WEIGHT,
+        "canonicalization": "candidate_orbit_roles maps displayed positions back to stable semantic roles",
+        "max_per_cycle_label_exposure_spread": CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD,
+    }
+    orbit_training_contract_path = exp / "orbit_consistency_training.json"
+    if orbit_training_contract_path.is_file():
+        if read_json(orbit_training_contract_path) != orbit_training_contract:
+            raise RuntimeError("orbit consistency training contract differs from established patched run")
+    else:
+        atomic_json(orbit_training_contract_path, orbit_training_contract)
+    emit(
+        "orbit_consistency_training_enabled",
+        contract=str(orbit_training_contract_path),
+        orbit_consistency_weight=ORBIT_CONSISTENCY_WEIGHT,
+        optimizer_unit="complete_six_view_permutation_orbit",
+        orbit_kind_schedule=list(CONSENSUS_ORBIT_KIND_SCHEDULE),
+    )
+
+    orbit_supervision_contract = {
+        "schema_version": "main-computer-nanojev-consensus-orbit-supervision-v1",
+        "optimizer_unit": "complete_six_view_permutation_orbit",
+        "canonical_orbit_mean": "mean of six canonicalized A/B/C/NONE probability distributions",
+        "supervised_nll": "negative log probability of the known semantic target on the canonical orbit mean",
+        "semantic_margin": "log(p_gold) - max(log(p_other)) on the canonical orbit mean",
+        "per_view_orbit_blend": ORBIT_SUPERVISION_BLEND,
+        "ranking_margin": args.ranking_margin,
+        "purpose": "prevent permutation consistency from collapsing to uniform uncertainty",
+    }
+    orbit_supervision_contract_path = exp / "orbit_supervision_training.json"
+    if orbit_supervision_contract_path.is_file():
+        if read_json(orbit_supervision_contract_path) != orbit_supervision_contract:
+            raise RuntimeError("orbit supervision training contract differs from established patched run")
+    else:
+        atomic_json(orbit_supervision_contract_path, orbit_supervision_contract)
+    emit(
+        "orbit_supervision_training_enabled",
+        contract=str(orbit_supervision_contract_path),
+        per_view_orbit_blend=ORBIT_SUPERVISION_BLEND,
+        target="canonical_mean_probability",
+        semantic_margin="log_probability_gap",
+    )
+
+    # Diagnostic-only fixed permutation-orbit ruler. It is intentionally outside the
+    # experiment/training-config hash so established runs can add this probe without
+    # changing their training contract. Build it once from a separate held-out dev slice.
+    consensus_orbit_dev_path = exp / "probes" / "consensus_orbit_dev.jsonl"
+    if not consensus_orbit_dev_path.is_file():
+        orbit_dev_rows, _ = mutation.cyclic_filtered_slice(
+            dev_manifest, args.consensus_dev_files, args.consensus_dev_files,
+            lambda row: row.get("language") == "python",
+        )
+        orbit_dev_docs = data.load_docs(orbit_dev_rows, repo_root)
+        consensus_orbit_dev_records = sample_consensus_orbit_records(
+            docs=orbit_dev_docs, mutation=mutation, data=data, tokenizer=tokenizer, split="dev",
+            record_count=CONSENSUS_ORBIT_DEV_RECORDS,
+            max_code_tokens=args.consensus_max_code_tokens,
+            max_length=legacy_experiment["max_length"], seed=int(experiment["seed"]) + 5000,
+        )
+        validate_records(consensus_orbit_dev_records, pipeline)
+        data.write_jsonl(consensus_orbit_dev_path, consensus_orbit_dev_records)
+        emit(
+            "consensus_orbit_dev_probe_built",
+            path=str(consensus_orbit_dev_path),
+            records=len(consensus_orbit_dev_records),
+            source_files=len(orbit_dev_rows),
+            sha256=legacy.sha256_file(consensus_orbit_dev_path),
+        )
+    else:
+        consensus_orbit_dev_records = read_jsonl_records(consensus_orbit_dev_path)
+        emit(
+            "consensus_orbit_dev_probe_reused",
+            path=str(consensus_orbit_dev_path),
+            records=len(consensus_orbit_dev_records),
+            sha256=legacy.sha256_file(consensus_orbit_dev_path),
+        )
+    validate_records(consensus_orbit_dev_records, pipeline)
+    consensus_orbit_dev_examples, _ = pipeline.load_training_examples(
+        consensus_orbit_dev_path, tokenizer, legacy_experiment["max_length"]
+    )
+    pipeline.pack_complete_questions(
+        consensus_orbit_dev_examples, args.microbatch_questions, args.max_microbatch_tokens
+    )
+
+    triad_dev_path = exp / "probes" / "pairwise_triad_dev.jsonl"
+    if not triad_dev_path.is_file():
+        triad_dev_rows, _ = mutation.cyclic_filtered_slice(
+            dev_manifest, args.consensus_dev_files * 2, args.consensus_dev_files,
+            lambda row: row.get("language") == "python",
+        )
+        triad_dev_docs = data.load_docs(triad_dev_rows, repo_root)
+        triad_dev_records = sample_pairwise_triad_records(
+            docs=triad_dev_docs, mutation=mutation, data=data, tokenizer=tokenizer, split="dev",
+            triad_count=TRIAD_DEV_UNITS, max_code_tokens=args.consensus_max_code_tokens,
+            max_length=legacy_experiment["max_length"], seed=int(experiment["seed"]) + 6000,
+        )
+        validate_records(triad_dev_records, pipeline)
+        data.write_jsonl(triad_dev_path, triad_dev_records)
+        emit(
+            "pairwise_triad_dev_probe_built", path=str(triad_dev_path), triads=TRIAD_DEV_UNITS,
+            records=len(triad_dev_records), source_files=len(triad_dev_rows),
+            sha256=legacy.sha256_file(triad_dev_path),
+        )
+    else:
+        triad_dev_records = read_jsonl_records(triad_dev_path)
+        emit(
+            "pairwise_triad_dev_probe_reused", path=str(triad_dev_path),
+            records=len(triad_dev_records), sha256=legacy.sha256_file(triad_dev_path),
+        )
+    validate_records(triad_dev_records, pipeline)
+    triad_dev_examples, _ = pipeline.load_training_examples(
+        triad_dev_path, tokenizer, legacy_experiment["max_length"]
+    )
+    build_pairwise_triad_units(triad_dev_examples, triad_dev_records)
+    pipeline.pack_complete_questions(triad_dev_examples, args.microbatch_questions, args.max_microbatch_tokens)
+
+    resume_generation = Path(state["latest_generation"]).resolve(strict=True) if state.get("latest_generation") else None
+    head_source = resume_generation / "head.safetensors" if resume_generation else Path(experiment["parent_checkpoint"]) / "head.safetensors"
+    emit("head_load_start", source=str(head_source), inherited_parent=resume_generation is None)
+    if resume_generation is not None:
+        load_head_into_model(model, head_source, allow_missing_prefixes=())
+        if not args.train_r2_gain and int(torch.count_nonzero(soft_feedback.r2_gain.detach()).item()) != 0:
+            raise RuntimeError("frozen R2 gain must remain exact zero; rerun cut-over or explicitly use --train-r2-gain")
+    else:
+        load_parent_static_and_head_into_model(model, head_source)
+        inherited_base = soft_feedback.base.detach().clone()
+        inherited_strength = soft_feedback.strength_logit.detach().clone()
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(int(experiment["seed"]) + 76000)
+            soft_feedback.reset_dynamic_registers()
+        if not torch.equal(soft_feedback.base.detach(), inherited_base):
+            raise RuntimeError("sparse-register initialization changed inherited static soft token")
+        if not torch.equal(soft_feedback.strength_logit.detach(), inherited_strength):
+            raise RuntimeError("sparse-register initialization changed inherited static feedback strength")
+        nonzero_outputs = int(torch.count_nonzero(soft_feedback.router_coeff.weight.detach()).item())
+        if nonzero_outputs != 0:
+            raise RuntimeError("self-organizing sparse-register coefficient head did not initialize to exact zero")
+        with torch.no_grad():
+            gram = soft_feedback.normalized_bank().float() @ soft_feedback.normalized_bank().float().transpose(0, 1)
+            eye = torch.eye(args.control_space_size, dtype=gram.dtype, device=gram.device)
+            max_orth_error = float((gram - eye).abs().max().item())
+        if max_orth_error > 1e-4:
+            raise RuntimeError(f"sparse-register control bank did not initialize orthonormally: max_error={max_orth_error}")
+        emit(
+            "sparse_registers_zero_initialized",
+            parent_checkpoint=str(head_source),
+            control_space_size=args.control_space_size,
+            register_rank=args.register_rank,
+            coefficient_head_nonzero=nonzero_outputs,
+            control_bank_max_orthogonality_error=max_orth_error,
+            frozen_static_strength=float(torch.sigmoid(soft_feedback.strength_logit.detach()).item()),
+        )
+    model.cuda()
+    model.backbone.eval()
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": feedback, "lr": args.register_lr},
+            {"params": head, "lr": args.head_lr},
+        ],
+        weight_decay=args.weight_decay,
+    )
+    if resume_generation is not None:
+        optimizer.load_state_dict(torch.load(resume_generation / "optimizer.pt", map_location="cpu", weights_only=False))
+        legacy.move_optimizer_state_to_cuda(optimizer)
+        legacy.load_rng(resume_generation / "rng_state.pt")
+        emit("resume_optimizer_rng_loaded", cycle=state["cycle"], global_step=state["global_step"])
+    else:
+        seed = int(experiment["seed"])
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    emit("trainer_load_done", gpu=torch.cuda.get_device_name(0),
+         body_params=sum(x.numel() for x in body), trainable_decision_head_params=sum(x.numel() for x in head),
+         trainable_static_feedback_params=sum(x.numel() for x in static_feedback),
+         trainable_soft_feedback_params=sum(x.numel() for x in feedback),
+         trainable_full_head_params=sum(x.numel() for x in trainable_head),
+         r2_gain_trainable=bool(args.train_r2_gain),
+         r2_third_pass_bypassed=not bool(args.train_r2_gain),
+         control_space_size=args.control_space_size, register_rank=args.register_rank,
+         soft_feedback_token_count=SOFT_FEEDBACK_TOKEN_COUNT,
+         soft_feedback_gradient_checkpointing=not args.disable_soft_feedback_gradient_checkpointing,
+         latent_walk_enabled=False, latent_walk_params=0, latent_walk_steps=0, latent_walk_rank=0)
+
+    ordered_legacy_metrics_dir = exp / "probes" / ORDERED_LEGACY_DEV_METRICS_DIR
+    ordered_legacy_metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    def evaluate_and_store_ordered_legacy(cycle_value: int, checkpoint_value: Path, *, label_suffix: str) -> dict:
+        model.set_soft_feedback_mode("dynamic")
+        metrics = legacy.evaluate(
+            model, ordered_legacy_dev_examples, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens,
+            label=f"ordered_legacy_dev_{label_suffix}_cycle_{cycle_value}",
+            pair_margin=args.ranking_margin,
+        )
+        atomic_json(ordered_legacy_metrics_dir / f"cycle-{cycle_value:06d}.json", {
+            "schema_version": "main-computer-nanojev-ordered-legacy-dev-metrics-v1",
+            "cycle": int(cycle_value),
+            "checkpoint": str(checkpoint_value),
+            "probe": str(ordered_legacy_dev_path),
+            "probe_sha256": legacy.sha256_file(ordered_legacy_dev_path),
+            "task": "ordered_lexeme_continuation_v1",
+            "pair_count": ORDERED_LEGACY_DEV_PAIRS,
+            "metrics": metrics,
+        })
+        return metrics
+
+    # Historical ordered-ruler backfill is intentionally explicit-only.  Normal
+    # trainer restart must not pause to score retained checkpoints; every newly
+    # completed cycle is scored below as part of its normal evaluation surface.
+
+    if resume_generation is not None:
+        latest_config = read_json(resume_generation / "config.json")
+        latest_cycle = int(latest_config.get("main_computer_cycle", -1))
+        state_cycle = int(state.get("cycle", -2))
+        if latest_cycle != state_cycle:
+            raise RuntimeError(
+                "consensus latest_generation does not match committed training_state cycle: "
+                f"checkpoint={latest_cycle} state={state_cycle}"
+            )
+        emit(
+            "current_sparse_register_checkpoint_resolved",
+            consensus_state_cycle=state_cycle,
+            checkpoint=str(resume_generation),
+            source="consensus_training_state_latest_generation",
+        )
+        latest_orbit_metrics = evaluate_consensus_orbits(
+            model, consensus_orbit_dev_examples, consensus_orbit_dev_records,
+            tokenizer.pad_token_id, pipeline, precision=args.precision,
+            microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens,
+            label=f"consensus_orbit_dev_latest_cycle_{state_cycle}",
+        )
+        atomic_json(exp / "latest_consensus_orbit_dev.json", {
+            "cycle": state_cycle,
+            "checkpoint": str(resume_generation),
+            "probe": str(consensus_orbit_dev_path),
+            "probe_sha256": legacy.sha256_file(consensus_orbit_dev_path),
+            "metrics": latest_orbit_metrics,
+        })
+
+    if int(state["cycle"]) == 0 and state.get("last_consensus_accuracy") is None:
+        model.set_soft_feedback_mode("none")
+        baseline_sets = {
+            "legacy": legacy_dev_examples,
+            "mutation": mutation_dev_examples,
+            "ast": ast_dev_examples,
+        }
+        baseline_metrics = {}
+        for task, examples in baseline_sets.items():
+            metrics = legacy.evaluate(
+                model, examples, tokenizer.pad_token_id, pipeline,
+                precision=args.precision, microbatch_questions=args.microbatch_questions,
+                max_microbatch_tokens=args.max_microbatch_tokens, label=f"{task}_dev_baseline",
+                pair_margin=args.ranking_margin,
+            )
+            atomic_json(exp / f"baseline_{task}_dev.json", metrics)
+            baseline_metrics[task] = metrics
+        consensus_baseline = evaluate_consensus(
+            model, consensus_dev_examples, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens, label="consensus_dev_baseline",
+            margin=args.ranking_margin,
+        )
+        atomic_json(exp / "baseline_consensus_dev.json", consensus_baseline)
+        for task in ("legacy", "mutation", "ast"):
+            state[f"last_{task}_probability_separation"] = baseline_metrics[task]["probability_separation"]
+            state[f"last_{task}_mean_pair_logodds_gap"] = baseline_metrics[task]["mean_pair_logodds_gap"]
+        state["last_consensus_accuracy"] = consensus_baseline["accuracy"]
+        state["last_consensus_mean_gold_margin"] = consensus_baseline["mean_gold_margin"]
+        atomic_json(exp / "training_state.json", state)
+
+    if state.get("last_triad_topology_accuracy") is None:
+        triad_baseline = evaluate_pairwise_triads(
+            model, triad_dev_examples, triad_dev_records, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens, label=f"pairwise_triad_dev_baseline_cycle_{int(state['cycle'])}",
+            margin=args.ranking_margin,
+        )
+        atomic_json(exp / "baseline_pairwise_triad_dev.json", triad_baseline)
+        state["last_triad_relation_accuracy"] = triad_baseline["accuracy"]
+        state["last_triad_balanced_relation_accuracy"] = triad_baseline["balanced_relation_accuracy"]
+        state["last_triad_topology_accuracy"] = triad_baseline["topology_accuracy"]
+        state["last_triad_non_ambiguous_topology_accuracy"] = triad_baseline["non_ambiguous_topology_accuracy"]
+        atomic_json(exp / "training_state.json", state)
+
+    model.set_soft_feedback_mode("dynamic")
+
+    backbone_probe_name = legacy_experiment["parameter_probes"]["backbone"]["name"]
+    head_probe_name = legacy_experiment["parameter_probes"]["head"]["name"]
+    walk_probe_name = None
+    history_path = exp / "history.jsonl"
+    unit_budgets = largest_remainder_budgets(args.train_units_per_cycle, weights)
+
+    for _ in range(args.cycles_this_run):
+        cycle = int(state["cycle"]) + 1
+        cycle_started = time.perf_counter()
+        shard_seed = int(experiment["seed"]) + cycle * 10007
+
+        legacy_start = int(state["legacy_source_cursor"]) % len(train_manifest)
+        legacy_rows = legacy.cyclic_slice(train_manifest, legacy_start, args.train_files_per_cycle)
+        mutation_rows, mutation_next = mutation.cyclic_filtered_slice(
+            train_manifest, int(state["mutation_source_cursor"]), args.train_files_per_cycle,
+            lambda row: row.get("language") == "python",
+        )
+        ast_rows, ast_next = mutation.cyclic_filtered_slice(
+            train_manifest, int(state["ast_source_cursor"]), args.train_files_per_cycle,
+            lambda row: row.get("language") == "python",
+        )
+        consensus_rows, consensus_next = mutation.cyclic_filtered_slice(
+            train_manifest, int(state["consensus_source_cursor"]), args.train_files_per_cycle,
+            lambda row: row.get("language") == "python",
+        )
+        triad_rows, triad_next = mutation.cyclic_filtered_slice(
+            train_manifest, int(state.get("triad_source_cursor", 0)), args.train_files_per_cycle,
+            lambda row: row.get("language") == "python",
+        )
+        if not mutation_rows or not ast_rows or not consensus_rows or not triad_rows:
+            raise RuntimeError("train manifest contains insufficient Python files for code-task training")
+
+        emit(
+            "cycle_start", cycle=cycle, global_step=state["global_step"],
+            requested_training_seconds=args.cycle_seconds,
+            legacy_training_percent=args.legacy_training_percent,
+            mutation_training_percent=args.mutation_training_percent,
+            ast_training_percent=args.ast_training_percent,
+            consensus_training_percent=args.consensus_training_percent,
+            triad_training_percent=args.triad_training_percent,
+            dictionary_training_percent=args.dictionary_training_percent,
+            legacy_unit_budget=unit_budgets["legacy"], mutation_unit_budget=unit_budgets["mutation"],
+            ast_unit_budget=unit_budgets["ast"], consensus_unit_budget=unit_budgets["consensus"],
+            triad_unit_budget=unit_budgets["triad"], dictionary_unit_budget=unit_budgets["dictionary"],
+            legacy_source_files=len(legacy_rows), mutation_source_files=len(mutation_rows),
+            ast_source_files=len(ast_rows), consensus_source_files=len(consensus_rows),
+            triad_source_files=len(triad_rows), objective=OBJECTIVE,
+        )
+
+        pools: dict[str, list] = {}
+        shard_paths: dict[str, Path | None] = {t: None for t in TASK_ORDER}
+        example_counts: dict[str, int] = {t: 0 for t in TASK_ORDER}
+
+        if unit_budgets["legacy"]:
+            docs = data.load_docs(legacy_rows, repo_root)
+            records = data.sample_ordered_continuation_paired_records(
+                docs=docs, tokenizer=tokenizer, split="train", pair_count=unit_budgets["legacy"],
+                max_prefix_tokens=legacy_experiment["max_prefix_tokens"], seed=shard_seed,
+                max_lexeme_tokens=legacy_experiment["max_lexeme_tokens"],
+                min_symbols=3, max_symbols=5,
+            )
+            path = exp / "shards" / "legacy" / f"cycle-{cycle:06d}.jsonl"
+            data.write_jsonl(path, records)
+            examples, _ = pipeline.load_training_examples(path, tokenizer, legacy_experiment["max_length"])
+            pools["legacy"] = legacy.build_training_pairs(examples)
+            shard_paths["legacy"] = path
+            example_counts["legacy"] = len(examples)
+
+        if unit_budgets["mutation"]:
+            docs = data.load_docs(mutation_rows, repo_root)
+            records = mutation.sample_mutation_records(
+                docs=docs, data=data, tokenizer=tokenizer, split="train", pair_count=unit_budgets["mutation"],
+                max_code_tokens=args.mutation_max_code_tokens, max_length=legacy_experiment["max_length"],
+                seed=shard_seed + 1,
+            )
+            validate_records(records, pipeline)
+            path = exp / "shards" / "mutation" / f"cycle-{cycle:06d}.jsonl"
+            data.write_jsonl(path, records)
+            examples, _ = pipeline.load_training_examples(path, tokenizer, legacy_experiment["max_length"])
+            pools["mutation"] = legacy.build_training_pairs(examples)
+            shard_paths["mutation"] = path
+            example_counts["mutation"] = len(examples)
+
+        if unit_budgets["ast"]:
+            docs = data.load_docs(ast_rows, repo_root)
+            records = sample_ast_records(
+                docs=docs, mutation=mutation, data=data, tokenizer=tokenizer, split="train",
+                pair_count=unit_budgets["ast"], max_code_tokens=args.mutation_max_code_tokens,
+                max_length=legacy_experiment["max_length"], seed=shard_seed + 2,
+            )
+            validate_records(records, pipeline)
+            path = exp / "shards" / "ast" / f"cycle-{cycle:06d}.jsonl"
+            data.write_jsonl(path, records)
+            examples, _ = pipeline.load_training_examples(path, tokenizer, legacy_experiment["max_length"])
+            pools["ast"] = legacy.build_training_pairs(examples)
+            shard_paths["ast"] = path
+            example_counts["ast"] = len(examples)
+
+        if unit_budgets["consensus"]:
+            docs = data.load_docs(consensus_rows, repo_root)
+            records = sample_consensus_orbit_records(
+                docs=docs, mutation=mutation, data=data, tokenizer=tokenizer, split="train",
+                record_count=unit_budgets["consensus"] * 6, max_code_tokens=args.consensus_max_code_tokens,
+                max_length=legacy_experiment["max_length"], seed=shard_seed + 3,
+            )
+            validate_records(records, pipeline)
+            path = exp / "shards" / "consensus" / f"cycle-{cycle:06d}.jsonl"
+            data.write_jsonl(path, records)
+            examples, _ = pipeline.load_training_examples(path, tokenizer, legacy_experiment["max_length"])
+            if any(list(ex["candidate_ids"]) != list(CONSENSUS_LABELS) for ex in examples):
+                raise RuntimeError("consensus shard did not load with canonical A/B/C/NONE candidate order")
+            orbit_units = build_consensus_orbit_units(examples, records)
+            pools["consensus"] = orbit_units
+            shard_paths["consensus"] = path
+            example_counts["consensus"] = len(examples)
+
+        pairwise_training_exposure = None
+        if unit_budgets["triad"]:
+            docs = data.load_docs(triad_rows, repo_root)
+            records = sample_relation_balanced_pairwise_records(
+                docs=docs, mutation=mutation, data=data, tokenizer=tokenizer, split="train",
+                unit_count=unit_budgets["triad"], max_code_tokens=args.consensus_max_code_tokens,
+                max_length=legacy_experiment["max_length"], seed=shard_seed + 4,
+            )
+            validate_records(records, pipeline)
+            pairwise_training_exposure = summarize_relation_balanced_records(records)
+            if pairwise_training_exposure["label_n"] != {"same": unit_budgets["triad"], "different": unit_budgets["triad"]}:
+                raise RuntimeError(f"pairwise training shard lost exact 50/50 relation balance: {pairwise_training_exposure}")
+            for relation in TRIAD_RELATION_LABELS:
+                counts = list(pairwise_training_exposure["position_n"][relation].values())
+                if max(counts) - min(counts) > 1:
+                    raise RuntimeError(
+                        f"pairwise training shard position imbalance exceeded one for {relation}: "
+                        f"{pairwise_training_exposure['position_n'][relation]}"
+                    )
+            path = exp / "shards" / "triad" / f"cycle-{cycle:06d}.jsonl"
+            data.write_jsonl(path, records)
+            examples, _ = pipeline.load_training_examples(path, tokenizer, legacy_experiment["max_length"])
+            if any(list(ex["candidate_ids"]) != list(TRIAD_RELATION_LABELS) for ex in examples):
+                raise RuntimeError("balanced pairwise shard did not load with SAME/DIFFERENT candidate order")
+            pools["triad"] = build_balanced_pairwise_training_units(examples, records)
+            shard_paths["triad"] = path
+            example_counts["triad"] = len(examples)
+
+        if unit_budgets["dictionary"]:
+            dictionary_pairs = dictionary.build_pairs(
+                dictionary_training_synsets,
+                unit_budgets["dictionary"],
+                shard_seed + 5,
+            )
+            records = []
+            for pair_index, (headword, positive, negative) in enumerate(dictionary_pairs):
+                pair_records = [
+                    dictionary.make_record(
+                        pair_index=pair_index,
+                        headword=headword,
+                        positive=positive,
+                        candidate=negative,
+                        truth=False,
+                    ),
+                    dictionary.make_record(
+                        pair_index=pair_index,
+                        headword=headword,
+                        positive=positive,
+                        candidate=positive,
+                        truth=True,
+                    ),
+                ]
+                family_id = f"dictionary-train-c{cycle:06d}-{pair_index:05d}"
+                for row in pair_records:
+                    side = "true" if bool(row["gold"]["definition_matches"]) else "false"
+                    row["split"] = "train"
+                    row["family_id"] = family_id
+                    row["id"] = f"{family_id}-{side}"
+                    row["state_id"] = row["id"]
+                    records.append(row)
+            validate_records(records, pipeline)
+            path = exp / "shards" / "dictionary" / f"cycle-{cycle:06d}.jsonl"
+            data.write_jsonl(path, records)
+            examples, _ = pipeline.load_training_examples(
+                path, tokenizer, legacy_experiment["max_length"]
+            )
+            if any(list(ex["candidate_ids"]) != ["false", "true"] for ex in examples):
+                raise RuntimeError("dictionary shard did not load with FALSE/TRUE candidate order")
+            pools["dictionary"] = legacy.build_training_pairs(examples)
+            shard_paths["dictionary"] = path
+            example_counts["dictionary"] = len(examples)
+
+        for task in TASK_ORDER:
+            if unit_budgets[task] and len(pools.get(task, [])) < min(args.batch_units, unit_budgets[task]):
+                raise RuntimeError(f"{task} shard has too few complete training units")
+        emit(
+            "cycle_shards_ready", cycle=cycle,
+            legacy_questions=example_counts["legacy"], mutation_questions=example_counts["mutation"],
+            ast_questions=example_counts["ast"], consensus_questions=example_counts["consensus"],
+            triad_questions=example_counts["triad"], dictionary_questions=example_counts["dictionary"],
+            consensus_orbits=len(pools.get("consensus", [])), balanced_pairwise_units=len(pools.get("triad", [])),
+            pairwise_training_exposure=pairwise_training_exposure,
+            legacy_shard=str(shard_paths["legacy"]) if shard_paths["legacy"] else None,
+            mutation_shard=str(shard_paths["mutation"]) if shard_paths["mutation"] else None,
+            ast_shard=str(shard_paths["ast"]) if shard_paths["ast"] else None,
+            consensus_shard=str(shard_paths["consensus"]) if shard_paths["consensus"] else None,
+            triad_shard=str(shard_paths["triad"]) if shard_paths["triad"] else None,
+            dictionary_shard=str(shard_paths["dictionary"]) if shard_paths["dictionary"] else None,
+        )
+
+        backbone_before = legacy.named_probe_digest(model, backbone_probe_name)
+        head_before = legacy.named_probe_digest(model, head_probe_name)
+        walk_before = None
+        feedback_before = module_parameter_sha256(soft_feedback)
+        static_feedback_before = hashlib.sha256(
+            soft_feedback.base.detach().float().cpu().contiguous().numpy().tobytes()
+            + soft_feedback.strength_logit.detach().float().cpu().contiguous().numpy().tobytes()
+        ).hexdigest()
+        training_started = time.perf_counter()
+        cycle_steps = 0
+        last_head_grad_norm = 0.0
+        last_feedback_grad_norm = 0.0
+        last_walk_grad_norm = 0.0
+        last_walk_displacement_penalty_mse = 0.0
+        last_walk_displacement_penalty_loss = 0.0
+        rng = random.Random(int(experiment["seed"]) + cycle * 7919)
+        mix_credits = {t: float(state.get("mix_credits", {}).get(t, 0.0)) for t in TASK_ORDER}
+        binary_buckets = {t: binary_training_bucket() for t in ("legacy", "mutation", "ast", "dictionary")}
+        consensus_bucket = consensus_training_bucket()
+        triad_bucket = triad_training_bucket()
+        cycle_register_usage = new_register_usage_accumulator(args.control_space_size)
+        consensus_orbit_pools = build_consensus_orbit_kind_pools(pools["consensus"]) if unit_budgets["consensus"] else {}
+        consensus_orbit_kind_cursor = int(state.get("consensus_orbit_kind_cursor", 0)) % len(CONSENSUS_ORBIT_KIND_SCHEDULE)
+
+        while True:
+            if cycle_steps > 0 and time.perf_counter() - training_started >= args.cycle_seconds:
+                break
+            task_slots, mix_credits = next_task_mix(weights=weights, credits=mix_credits, slots=args.batch_units)
+            selected_by_task: dict[str, list] = {}
+            for task in TASK_ORDER:
+                count = task_slots.count(task)
+                if count == 0:
+                    continue
+                if task == "consensus":
+                    selected_consensus, consensus_orbit_kind_cursor, consensus_plan = select_consensus_orbits(
+                        orbit_pools=consensus_orbit_pools, count=count, cursor=consensus_orbit_kind_cursor, rng=rng,
+                    )
+                    selected_by_task[task] = selected_consensus
+                    continue
+                pool = pools[task]
+                if len(pool) < count:
+                    raise RuntimeError(f"mix scheduler requested {count} distinct {task} units but pool has only {len(pool)}")
+                selected_by_task[task] = rng.sample(pool, count)
+            offsets = {task: 0 for task in selected_by_task}
+            selected: list[tuple[str, object]] = []
+            for task in task_slots:
+                selected.append((task, selected_by_task[task][offsets[task]]))
+                offsets[task] += 1
+
+            batch = []
+            task_for_example: dict[str, str] = {}
+            unit_for_example: dict[str, str] = {}
+            selected_units: list[tuple[str, str, object]] = []
+            for task, unit in selected:
+                if task == "consensus":
+                    uid = unit["orbit_id"]
+                    for ex, _record in unit["members"]:
+                        batch.append(ex)
+                        task_for_example[ex["id"]] = task
+                        unit_for_example[ex["id"]] = uid
+                    selected_units.append((task, uid, unit))
+                elif task == "triad":
+                    uid = unit["unit_id"]
+                    for ex, _record in unit["members"]:
+                        batch.append(ex)
+                        task_for_example[ex["id"]] = task
+                        unit_for_example[ex["id"]] = uid
+                    selected_units.append((task, uid, unit))
+                else:
+                    false_ex, true_ex = unit
+                    uid = false_ex["family_id"]
+                    for ex in (false_ex, true_ex):
+                        batch.append(ex)
+                        task_for_example[ex["id"]] = task
+                        unit_for_example[ex["id"]] = uid
+                    selected_units.append((task, uid, unit))
+
+            groups = pipeline.pack_complete_questions(batch, args.microbatch_questions, args.max_microbatch_tokens)
+            model.train()
+            model.set_soft_feedback_mode("dynamic")
+            if args.disable_soft_feedback_gradient_checkpointing:
+                model.backbone.eval()
+            else:
+                model.backbone.train()
+            optimizer.zero_grad(set_to_none=True)
+            item_losses = {}
+            binary_scores: dict[str, dict[int, object]] = {}
+            consensus_margins = {}
+            consensus_scores = {}
+            triad_margins = {}
+            triad_predictions: dict[str, dict[str, str]] = {}
+            step_correct = step_q = 0
+            step_register_sparsity_terms = []
+            step_register_residual_terms = []
+
+            for group in groups:
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.precision == "bf16"):
+                    logits, _ = model(group, tokenizer.pad_token_id)
+                    losses = pipeline.grouped_target_loss(logits, group, "gold_distribution")
+                step_register_sparsity_terms.append(soft_feedback.last_regularization["sparsity"])
+                step_register_residual_terms.append(soft_feedback.last_regularization["residual_mse"])
+                accumulate_register_usage(
+                    cycle_register_usage,
+                    [task_for_example[ex["id"]] for ex in group],
+                    soft_feedback.last_coefficients,
+                )
+                for ex, z, item_loss in zip(group, logits, losses):
+                    ex_id = ex["id"]
+                    task = task_for_example[ex_id]
+                    item_losses[ex_id] = item_loss
+                    gold = int(ex["gold_index"])
+                    if task == "consensus":
+                        ids = list(ex["candidate_ids"])
+                        if ids != list(CONSENSUS_LABELS):
+                            raise RuntimeError(f"noncanonical consensus candidate order: {ex_id}: {ids}")
+                        scores = z[:4].float()
+                        consensus_scores[ex_id] = scores
+                        pred = int(torch.argmax(scores).item())
+                        other = torch.cat((scores[:gold], scores[gold + 1:]))
+                        gold_margin = scores[gold] - torch.max(other)
+                        consensus_margins[ex_id] = gold_margin
+                        gold_label = ids[gold]
+                        consensus_bucket["questions"] += 1
+                        consensus_bucket["correct"] += int(pred == gold)
+                        consensus_bucket["nll_sum"] += float(item_loss.detach().float().item())
+                        consensus_bucket["label_n"][gold_label] += 1
+                        consensus_bucket["label_correct"][gold_label] += int(pred == gold)
+                    elif task == "triad":
+                        ids = list(ex["candidate_ids"])
+                        if ids != list(TRIAD_RELATION_LABELS):
+                            raise RuntimeError(f"noncanonical balanced-pairwise candidate order: {ex_id}: {ids}")
+                        scores = z[:2].float()
+                        pred = int(torch.argmax(scores).item())
+                        other = 1 - gold
+                        gap = scores[gold] - scores[other]
+                        triad_margins[ex_id] = gap
+                        triad_predictions.setdefault(unit_for_example[ex_id], {})[ex_id] = ids[pred]
+                    else:
+                        if ex["candidate_ids"] != ["false", "true"]:
+                            raise RuntimeError(f"non-Boolean example entered {task} rehearsal: {ex_id}")
+                        pred = int(torch.argmax(z[:2]).item())
+                        bucket = binary_buckets[task]
+                        bucket["questions"] += 1
+                        bucket["correct"] += int(pred == gold)
+                        bucket["nll_sum"] += float(item_loss.detach().float().item())
+                        sides = binary_scores.setdefault(unit_for_example[ex_id], {})
+                        if gold in sides:
+                            raise RuntimeError(f"duplicate binary pair side in optimizer step: {unit_for_example[ex_id]}")
+                        sides[gold] = z[1].float() - z[0].float()
+                    step_correct += int(pred == gold)
+                    step_q += 1
+
+            unit_losses = []
+            margin_losses = []
+            orbit_consistency_losses = []
+            orbit_supervised_nlls = []
+            orbit_gold_probabilities = []
+            orbit_semantic_margins = []
+            step_margins = []
+            for task, uid, unit in selected_units:
+                if task == "consensus":
+                    members = unit["members"]
+                    member_losses = torch.stack([item_losses[ex["id"]] for ex, _record in members])
+                    gaps = torch.stack([consensus_margins[ex["id"]] for ex, _record in members])
+                    mean_gap = gaps.mean()
+                    step_margins.append(mean_gap)
+
+                    canonical_probabilities = torch.stack([
+                        consensus_orbit_canonical_probabilities(consensus_scores[ex["id"]], record)
+                        for ex, record in members
+                    ])
+                    consistency_js = consensus_orbit_consistency_js(canonical_probabilities)
+                    orbit_consistency_losses.append(consistency_js)
+
+                    kind = "none" if unit["orbit_kind"] == "none" else "singleton"
+                    expected_semantic = "none" if kind == "none" else "changed"
+                    canonical_roles = consensus_orbit_canonical_roles(members[0][1])
+                    (
+                        _orbit_mean_probability,
+                        orbit_gold_probability,
+                        orbit_supervised_nll,
+                        orbit_semantic_margin,
+                    ) = consensus_orbit_supervised_terms(
+                        canonical_probabilities, canonical_roles, expected_semantic
+                    )
+                    orbit_supervised_nlls.append(orbit_supervised_nll)
+                    orbit_gold_probabilities.append(orbit_gold_probability)
+                    orbit_semantic_margins.append(orbit_semantic_margin)
+
+                    per_view_nll = member_losses.mean()
+                    per_view_margin_loss = torch.relu(args.ranking_margin - gaps).mean()
+                    orbit_margin_loss = torch.relu(args.ranking_margin - orbit_semantic_margin)
+                    unit_losses.append(
+                        (1.0 - ORBIT_SUPERVISION_BLEND) * per_view_nll
+                        + ORBIT_SUPERVISION_BLEND * orbit_supervised_nll
+                    )
+                    margin_losses.append(
+                        (1.0 - ORBIT_SUPERVISION_BLEND) * per_view_margin_loss
+                        + ORBIT_SUPERVISION_BLEND * orbit_margin_loss
+                    )
+                    semantic_predictions = [
+                        canonical_roles[int(torch.argmax(probabilities).detach().item())]
+                        for probabilities in canonical_probabilities
+                    ]
+                    prediction_consistent = len(set(semantic_predictions)) == 1
+                    prediction_consistent_correct = (
+                        prediction_consistent and semantic_predictions[0] == expected_semantic
+                    )
+
+                    gap_values = gaps.detach().float()
+                    consensus_bucket["unit_n"] += 1
+                    consensus_bucket["margin_sum"] += float(gap_values.sum().item())
+                    consensus_bucket["margin_view_n"] += int(gap_values.numel())
+                    consensus_bucket["margin_satisfied"] += int((gap_values >= args.ranking_margin).sum().item())
+                    consensus_bucket["all_six_margin_satisfied"] += int(
+                        bool(torch.all(gap_values >= args.ranking_margin).item())
+                    )
+                    consensus_bucket["orbit_consistency_sum"] += float(consistency_js.detach().item())
+                    consensus_bucket["orbit_supervised_nll_sum"] += float(orbit_supervised_nll.detach().item())
+                    consensus_bucket["orbit_mean_gold_probability_sum"] += float(orbit_gold_probability.detach().item())
+                    consensus_bucket["orbit_semantic_margin_sum"] += float(orbit_semantic_margin.detach().item())
+                    consensus_bucket["orbit_semantic_margin_satisfied"] += int(
+                        float(orbit_semantic_margin.detach().item()) >= args.ranking_margin
+                    )
+                    consensus_bucket["orbit_prediction_consistent"] += int(prediction_consistent)
+                    consensus_bucket["orbit_prediction_consistent_correct"] += int(prediction_consistent_correct)
+                    consensus_bucket["orbit_kind_n"][kind] += 1
+                elif task == "triad":
+                    members = unit["members"]
+                    member_losses = torch.stack([item_losses[ex["id"]] for ex, _record in members])
+                    gaps = torch.stack([triad_margins[ex["id"]] for ex, _record in members])
+                    unit_losses.append(member_losses.mean())
+                    margin_losses.append(torch.relu(args.ranking_margin - gaps).mean())
+                    step_margins.append(gaps.mean())
+                    triad_bucket["unit_n"] += 1
+                    for ex, _record in members:
+                        ids = list(ex["candidate_ids"])
+                        gold = int(ex["gold_index"])
+                        record_triad_relation(
+                            triad_bucket,
+                            gold_label=ids[gold],
+                            pred_label=triad_predictions[uid][ex["id"]],
+                            nll=float(item_losses[ex["id"]].detach().float().item()),
+                            gap=float(triad_margins[ex["id"]].detach().float().item()),
+                            margin=args.ranking_margin,
+                        )
+                else:
+                    false_ex, true_ex = unit
+                    unit_losses.append(torch.stack((item_losses[false_ex["id"]], item_losses[true_ex["id"]])).mean())
+                    sides = binary_scores.get(uid)
+                    if sides is None or set(sides) != {0, 1}:
+                        raise RuntimeError(f"optimizer step lost TRUE/FALSE member for {task} family {uid}")
+                    gap = sides[1] - sides[0]
+                    margin_losses.append(torch.relu(args.ranking_margin - gap))
+                    step_margins.append(gap)
+                    gap_value = float(gap.detach().item())
+                    bucket = binary_buckets[task]
+                    bucket["unit_n"] += 1
+                    bucket["margin_sum"] += gap_value
+                    bucket["margin_satisfied"] += int(gap_value >= args.ranking_margin)
+
+            if len(unit_losses) != args.batch_units or len(margin_losses) != args.batch_units:
+                raise RuntimeError("optimizer step did not preserve one loss and one margin per scheduled training unit")
+            base_loss = torch.stack(unit_losses).mean()
+            rank_loss = torch.stack(margin_losses).mean()
+            orbit_consistency_loss = (
+                torch.stack(orbit_consistency_losses).sum() / len(unit_losses)
+                if orbit_consistency_losses else base_loss.new_zeros(())
+            )
+            orbit_supervised_nll = (
+                torch.stack(orbit_supervised_nlls).mean()
+                if orbit_supervised_nlls else base_loss.new_zeros(())
+            )
+            orbit_mean_gold_probability = (
+                torch.stack(orbit_gold_probabilities).mean()
+                if orbit_gold_probabilities else base_loss.new_zeros(())
+            )
+            orbit_semantic_margin = (
+                torch.stack(orbit_semantic_margins).mean()
+                if orbit_semantic_margins else base_loss.new_zeros(())
+            )
+            latent_walk_displacement_penalty_mse = base_loss.new_zeros(())
+            latent_walk_displacement_penalty_loss = base_loss.new_zeros(())
+            register_sparsity_loss = (
+                torch.stack(step_register_sparsity_terms).mean()
+                if step_register_sparsity_terms else base_loss.new_zeros(())
+            )
+            register_residual_loss = (
+                torch.stack(step_register_residual_terms).mean()
+                if step_register_residual_terms else base_loss.new_zeros(())
+            )
+            register_orthogonality_loss = soft_feedback.orthogonality_penalty()
+            loss = (
+                base_loss
+                + args.ranking_weight * rank_loss
+                + ORBIT_CONSISTENCY_WEIGHT * orbit_consistency_loss
+                + args.register_sparsity_weight * register_sparsity_loss
+                + args.register_residual_weight * register_residual_loss
+                + args.register_orthogonality_weight * register_orthogonality_loss
+            )
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"cycle {cycle}: nonfinite five-mode training loss")
+            loss.backward()
+
+            body_norm = legacy.grad_norm(body)
+            last_head_grad_norm = legacy.grad_norm(head)
+            last_feedback_grad_norm = legacy.grad_norm(feedback)
+            last_walk_grad_norm = 0.0
+            last_walk_displacement_penalty_mse = 0.0
+            last_walk_displacement_penalty_loss = 0.0
+            if body_norm != 0.0:
+                raise RuntimeError("frozen backbone produced parameter gradients")
+            if last_head_grad_norm == 0.0 and last_feedback_grad_norm == 0.0:
+                raise RuntimeError("fully trainable NanoJev head received zero gradient")
+            torch.nn.utils.clip_grad_norm_(trainable_head, 1.0, error_if_nonfinite=True)
+            optimizer.step()
+            cycle_steps += 1
+            state["global_step"] = int(state["global_step"]) + 1
+            margin_tensor = torch.stack(step_margins)
+            emit(
+                "cycle_train_step", cycle=cycle, cycle_step=cycle_steps, global_step=state["global_step"],
+                phase=PHASE, training_objective=OBJECTIVE,
+                legacy_units_this_step=task_slots.count("legacy"),
+                mutation_units_this_step=task_slots.count("mutation"),
+                ast_units_this_step=task_slots.count("ast"),
+                consensus_units_this_step=task_slots.count("consensus"),
+                triad_units_this_step=task_slots.count("triad"),
+                mean_unit_nll=float(base_loss.detach().item()),
+                top1_error=1.0 - step_correct / max(step_q, 1),
+                unit_margin_loss=float(rank_loss.detach().item()),
+                mean_unit_margin=float(margin_tensor.detach().mean().item()),
+                unit_margin_satisfied_rate=float((margin_tensor.detach() >= args.ranking_margin).float().mean().item()),
+                orbit_consistency_loss=float(orbit_consistency_loss.detach().item()),
+                orbit_consistency_weight=ORBIT_CONSISTENCY_WEIGHT,
+                orbit_supervision_blend=ORBIT_SUPERVISION_BLEND,
+                orbit_supervised_nll=float(orbit_supervised_nll.detach().item()),
+                orbit_mean_gold_probability=float(orbit_mean_gold_probability.detach().item()),
+                orbit_semantic_margin=float(orbit_semantic_margin.detach().item()),
+                register_sparsity_loss=float(register_sparsity_loss.detach().item()),
+                register_sparsity_weight=args.register_sparsity_weight,
+                register_residual_mse=float(register_residual_loss.detach().item()),
+                register_residual_weight=args.register_residual_weight,
+                register_orthogonality_loss=float(register_orthogonality_loss.detach().item()),
+                register_orthogonality_weight=args.register_orthogonality_weight,
+                body_grad_norm=body_norm, head_grad_norm=last_head_grad_norm,
+                soft_feedback_grad_norm=last_feedback_grad_norm,
+                soft_feedback=dict(soft_feedback.last_stats),
+                latent_walk_grad_norm=last_walk_grad_norm,
+                latent_walk_displacement_penalty_weight=(
+                    args.latent_walk_displacement_penalty_weight if latent_walk is not None else 0.0
+                ),
+                latent_walk_displacement_penalty_mse=last_walk_displacement_penalty_mse,
+                latent_walk_displacement_penalty_loss=last_walk_displacement_penalty_loss,
+                latent_walk=None,
+                elapsed_training_seconds=time.perf_counter() - training_started,
+            )
+
+        state["consensus_orbit_kind_cursor"] = consensus_orbit_kind_cursor
+        register_usage_summary = finalize_register_usage(
+            cycle_register_usage, active_epsilon=args.register_active_epsilon
+        )
+        emit("sparse_register_usage", cycle=cycle, **register_usage_summary)
+
+        legacy_dev = legacy.evaluate(
+            model, legacy_dev_examples, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens, label=f"legacy_dev_cycle_{cycle}",
+            pair_margin=args.ranking_margin,
+        )
+        ordered_legacy_dev = evaluate_and_store_ordered_legacy(
+            cycle, exp / "checkpoints" / "generations" / f"cycle-{cycle:06d}", label_suffix="post_train"
+        )
+        mutation_dev = legacy.evaluate(
+            model, mutation_dev_examples, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens, label=f"mutation_dev_cycle_{cycle}",
+            pair_margin=args.ranking_margin,
+        )
+        ast_dev = legacy.evaluate(
+            model, ast_dev_examples, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens, label=f"ast_dev_cycle_{cycle}",
+            pair_margin=args.ranking_margin,
+        )
+        dictionary_dev = legacy.evaluate(
+            model, dictionary_dev_examples, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens, label=f"dictionary_dev_cycle_{cycle}",
+            pair_margin=args.ranking_margin,
+        )
+        consensus_dev = evaluate_consensus(
+            model, consensus_dev_examples, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens, label=f"consensus_dev_cycle_{cycle}",
+            margin=args.ranking_margin,
+        )
+        consensus_orbit_dev = evaluate_consensus_orbits(
+            model, consensus_orbit_dev_examples, consensus_orbit_dev_records,
+            tokenizer.pad_token_id, pipeline, precision=args.precision,
+            microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens,
+            label=f"consensus_orbit_dev_cycle_{cycle}",
+        )
+        triad_dev = evaluate_pairwise_triads(
+            model, triad_dev_examples, triad_dev_records, tokenizer.pad_token_id, pipeline,
+            precision=args.precision, microbatch_questions=args.microbatch_questions,
+            max_microbatch_tokens=args.max_microbatch_tokens, label=f"pairwise_triad_dev_cycle_{cycle}",
+            margin=args.ranking_margin,
+        )
+
+        soft_feedback_control_sweep = None
+        if cycle == 1 or cycle % args.soft_feedback_control_eval_every == 0:
+            soft_feedback_control_sweep = {}
+            for mode in SOFT_FEEDBACK_CONTROL_MODES:
+                if mode == "dynamic":
+                    mode_legacy, mode_mutation, mode_ast = legacy_dev, mutation_dev, ast_dev
+                    mode_dictionary = dictionary_dev
+                    mode_consensus, mode_consensus_orbit, mode_triad = consensus_dev, consensus_orbit_dev, triad_dev
+                else:
+                    model.set_soft_feedback_mode(mode)
+                    mode_legacy = legacy.evaluate(
+                        model, legacy_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_legacy_dev_cycle_{cycle}", pair_margin=args.ranking_margin,
+                    )
+                    mode_mutation = legacy.evaluate(
+                        model, mutation_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_mutation_dev_cycle_{cycle}", pair_margin=args.ranking_margin,
+                    )
+                    mode_ast = legacy.evaluate(
+                        model, ast_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_ast_dev_cycle_{cycle}", pair_margin=args.ranking_margin,
+                    )
+                    mode_dictionary = legacy.evaluate(
+                        model, dictionary_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_dictionary_dev_cycle_{cycle}", pair_margin=args.ranking_margin,
+                    )
+                    mode_consensus = evaluate_consensus(
+                        model, consensus_dev_examples, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_consensus_dev_cycle_{cycle}", margin=args.ranking_margin,
+                    )
+                    mode_consensus_orbit = evaluate_consensus_orbits(
+                        model, consensus_orbit_dev_examples, consensus_orbit_dev_records,
+                        tokenizer.pad_token_id, pipeline, precision=args.precision,
+                        microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_consensus_orbit_dev_cycle_{cycle}",
+                    )
+                    mode_triad = evaluate_pairwise_triads(
+                        model, triad_dev_examples, triad_dev_records, tokenizer.pad_token_id, pipeline,
+                        precision=args.precision, microbatch_questions=args.microbatch_questions,
+                        max_microbatch_tokens=args.max_microbatch_tokens,
+                        label=f"soft_feedback_{mode}_pairwise_triad_dev_cycle_{cycle}", margin=args.ranking_margin,
+                    )
+                soft_feedback_control_sweep[mode] = {
+                    "legacy_pair_win_rate": mode_legacy["pair_win_rate"],
+                    "mutation_pair_win_rate": mode_mutation["pair_win_rate"],
+                    "ast_pair_win_rate": mode_ast["pair_win_rate"],
+                    "dictionary_balanced_accuracy": mode_dictionary["balanced_accuracy"],
+                    "dictionary_pair_win_rate": mode_dictionary["pair_win_rate"],
+                    "consensus_accuracy": mode_consensus["accuracy"],
+                    "consensus_mean_gold_margin": mode_consensus["mean_gold_margin"],
+                    "consensus_orbit_accuracy": mode_consensus_orbit["accuracy"],
+                    "consensus_orbit_semantic_consistency_rate": mode_consensus_orbit["semantic_consistency_rate"],
+                    "triad_relation_accuracy": mode_triad["accuracy"],
+                    "triad_balanced_relation_accuracy": mode_triad["balanced_relation_accuracy"],
+                    "triad_topology_accuracy": mode_triad["topology_accuracy"],
+                    "triad_non_ambiguous_topology_accuracy": mode_triad["non_ambiguous_topology_accuracy"],
+                }
+            model.set_soft_feedback_mode("dynamic")
+            emit(
+                "soft_feedback_control_sweep", cycle=cycle,
+                modes=soft_feedback_control_sweep,
+            )
+
+        backbone_after = legacy.named_probe_digest(model, backbone_probe_name)
+        head_after = legacy.named_probe_digest(model, head_probe_name)
+        walk_after = None
+        feedback_after = module_parameter_sha256(soft_feedback)
+        static_feedback_after = hashlib.sha256(
+            soft_feedback.base.detach().float().cpu().contiguous().numpy().tobytes()
+            + soft_feedback.strength_logit.detach().float().cpu().contiguous().numpy().tobytes()
+        ).hexdigest()
+        if backbone_after != backbone_before:
+            raise RuntimeError("frozen backbone changed during full-head training cycle")
+        decision_head_changed = head_after != head_before
+        static_feedback_changed = static_feedback_after != static_feedback_before
+        soft_feedback_changed = feedback_after != feedback_before
+        if not (decision_head_changed or soft_feedback_changed):
+            raise RuntimeError("fully trainable NanoJev head did not change during training cycle")
+
+        previous = {
+            "legacy_sep": state.get("last_legacy_probability_separation"),
+            "legacy_gap": state.get("last_legacy_mean_pair_logodds_gap"),
+            "mutation_sep": state.get("last_mutation_probability_separation"),
+            "mutation_gap": state.get("last_mutation_mean_pair_logodds_gap"),
+            "ast_sep": state.get("last_ast_probability_separation"),
+            "ast_gap": state.get("last_ast_mean_pair_logodds_gap"),
+            "dictionary_balanced_accuracy": state.get("last_dictionary_balanced_accuracy"),
+            "dictionary_pair_win_rate": state.get("last_dictionary_pair_win_rate"),
+            "consensus_accuracy": state.get("last_consensus_accuracy"),
+            "consensus_margin": state.get("last_consensus_mean_gold_margin"),
+            "triad_relation_accuracy": state.get("last_triad_relation_accuracy"),
+            "triad_balanced_relation_accuracy": state.get("last_triad_balanced_relation_accuracy"),
+            "triad_topology_accuracy": state.get("last_triad_topology_accuracy"),
+            "triad_non_ambiguous_topology_accuracy": state.get("last_triad_non_ambiguous_topology_accuracy"),
+        }
+
+        state["cycle"] = cycle
+        if unit_budgets["legacy"]:
+            state["legacy_source_cursor"] = (legacy_start + len(legacy_rows)) % len(train_manifest)
+        if unit_budgets["mutation"]:
+            state["mutation_source_cursor"] = mutation_next
+        if unit_budgets["ast"]:
+            state["ast_source_cursor"] = ast_next
+        if unit_budgets["consensus"]:
+            state["consensus_source_cursor"] = consensus_next
+        if unit_budgets["triad"]:
+            state["triad_source_cursor"] = triad_next
+        state["mix_credits"] = mix_credits
+        state["status"] = "training"
+        state["phase"] = PHASE
+        state["training_objective"] = OBJECTIVE
+        state["last_legacy_probability_separation"] = legacy_dev["probability_separation"]
+        state["last_legacy_mean_pair_logodds_gap"] = legacy_dev["mean_pair_logodds_gap"]
+        state["last_mutation_probability_separation"] = mutation_dev["probability_separation"]
+        state["last_mutation_mean_pair_logodds_gap"] = mutation_dev["mean_pair_logodds_gap"]
+        state["last_ast_probability_separation"] = ast_dev["probability_separation"]
+        state["last_ast_mean_pair_logodds_gap"] = ast_dev["mean_pair_logodds_gap"]
+        state["last_dictionary_balanced_accuracy"] = dictionary_dev["balanced_accuracy"]
+        state["last_dictionary_pair_win_rate"] = dictionary_dev["pair_win_rate"]
+        state["last_consensus_accuracy"] = consensus_dev["accuracy"]
+        state["last_consensus_mean_gold_margin"] = consensus_dev["mean_gold_margin"]
+        state["last_triad_relation_accuracy"] = triad_dev["accuracy"]
+        state["last_triad_balanced_relation_accuracy"] = triad_dev["balanced_relation_accuracy"]
+        state["last_triad_topology_accuracy"] = triad_dev["topology_accuracy"]
+        state["last_triad_non_ambiguous_topology_accuracy"] = triad_dev["non_ambiguous_topology_accuracy"]
+
+        legacy_train = finalize_binary_bucket(binary_buckets["legacy"])
+        mutation_train = finalize_binary_bucket(binary_buckets["mutation"])
+        ast_train = finalize_binary_bucket(binary_buckets["ast"])
+        dictionary_train = finalize_binary_bucket(binary_buckets["dictionary"])
+        consensus_train = finalize_consensus_bucket(consensus_bucket)
+        triad_train = finalize_triad_bucket(triad_bucket)
+        if unit_budgets["triad"] and triad_train["relation_label_n"]["same"] != triad_train["relation_label_n"]["different"]:
+            raise RuntimeError(
+                f"balanced pairwise optimizer exposure lost 50/50 relation balance: {triad_train['relation_label_n']}"
+            )
+        consensus_spread = consensus_exposure_spread(consensus_train["label_n"])
+        if unit_budgets["consensus"] and consensus_spread > CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD:
+            raise RuntimeError(
+                f"complete-orbit consensus exposure exceeded bounded A/B/C/NONE imbalance: "
+                f"label_n={consensus_train['label_n']} spread={consensus_spread} "
+                f"max={CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD}"
+            )
+
+        def delta(now, before):
+            return None if before is None else now - float(before)
+
+        result = {
+            "cycle": cycle,
+            "global_step": state["global_step"],
+            "phase_after_cycle": PHASE,
+            "steps": cycle_steps,
+            "legacy_training_percent": args.legacy_training_percent,
+            "mutation_training_percent": args.mutation_training_percent,
+            "ast_training_percent": args.ast_training_percent,
+            "consensus_training_percent": args.consensus_training_percent,
+            "triad_training_percent": args.triad_training_percent,
+            "dictionary_training_percent": args.dictionary_training_percent,
+            "legacy_units_seen": binary_buckets["legacy"]["unit_n"],
+            "mutation_units_seen": binary_buckets["mutation"]["unit_n"],
+            "ast_units_seen": binary_buckets["ast"]["unit_n"],
+            "dictionary_units_seen": binary_buckets["dictionary"]["unit_n"],
+            "consensus_units_seen": consensus_bucket["unit_n"],
+            "triad_units_seen": triad_bucket["unit_n"],
+            "pairwise_optimizer_relation_exposure": triad_train["relation_label_n"],
+            "pairwise_optimizer_predicted_relation_n": triad_train["predicted_relation_n"],
+            "pairwise_shard_relation_exposure": pairwise_training_exposure,
+            "consensus_optimizer_label_exposure": consensus_train["label_n"],
+            "consensus_optimizer_exposure_spread": consensus_spread,
+            "consensus_optimizer_exposure_max_spread": CONSENSUS_ORBIT_EXPOSURE_MAX_SPREAD,
+            "consensus_orbit_kind_cursor_after_cycle": consensus_orbit_kind_cursor,
+            "consensus_orbit_consistency_weight": ORBIT_CONSISTENCY_WEIGHT,
+            "consensus_orbit_supervision_blend": ORBIT_SUPERVISION_BLEND,
+            "legacy_train": legacy_train,
+            "mutation_train": mutation_train,
+            "ast_train": ast_train,
+            "dictionary_train": dictionary_train,
+            "consensus_train": consensus_train,
+            "triad_train": triad_train,
+            **metric_prefix(legacy_dev, "legacy_dev"),
+            **metric_prefix(ordered_legacy_dev, "ordered_legacy_dev"),
+            "ordered_legacy_dev_positive_accuracy": ordered_legacy_dev["positive_accuracy"],
+            "ordered_legacy_dev_negative_accuracy": ordered_legacy_dev["negative_accuracy"],
+            **metric_prefix(mutation_dev, "mutation_dev"),
+            **metric_prefix(ast_dev, "ast_dev"),
+            **metric_prefix(dictionary_dev, "dictionary_dev"),
+            "dictionary_dev_balanced_accuracy": dictionary_dev["balanced_accuracy"],
+            "dictionary_dev_pair_win_rate": dictionary_dev["pair_win_rate"],
+            "dictionary_dev_positive_accuracy": dictionary_dev["positive_accuracy"],
+            "dictionary_dev_negative_accuracy": dictionary_dev["negative_accuracy"],
+            "consensus_dev_accuracy": consensus_dev["accuracy"],
+            "consensus_dev_mean_nll": consensus_dev["mean_nll"],
+            "consensus_dev_singleton_accuracy": consensus_dev["singleton_accuracy"],
+            "consensus_dev_none_accuracy": consensus_dev["none_accuracy"],
+            "consensus_dev_a_accuracy": consensus_dev["a_accuracy"],
+            "consensus_dev_b_accuracy": consensus_dev["b_accuracy"],
+            "consensus_dev_c_accuracy": consensus_dev["c_accuracy"],
+            "consensus_dev_position_accuracy_spread": consensus_dev["position_accuracy_spread"],
+            "consensus_dev_mean_gold_margin": consensus_dev["mean_gold_margin"],
+            "consensus_dev_margin_satisfied_rate": consensus_dev["margin_satisfied_rate"],
+            "consensus_orbit_dev_accuracy": consensus_orbit_dev["accuracy"],
+            "consensus_orbit_dev_all_six_correct_rate": consensus_orbit_dev["all_six_correct_rate"],
+            "consensus_orbit_dev_singleton_all_six_correct_rate": consensus_orbit_dev["singleton_all_six_correct_rate"],
+            "consensus_orbit_dev_none_all_six_correct_rate": consensus_orbit_dev["none_all_six_correct_rate"],
+            "consensus_orbit_dev_semantic_consistency_rate": consensus_orbit_dev["semantic_consistency_rate"],
+            "consensus_orbit_dev_singleton_semantic_consistency_rate": consensus_orbit_dev["singleton_semantic_consistency_rate"],
+            "consensus_orbit_dev_none_semantic_consistency_rate": consensus_orbit_dev["none_semantic_consistency_rate"],
+            "consensus_orbit_dev_semantic_consistent_correct_rate": consensus_orbit_dev["semantic_consistent_correct_rate"],
+            "consensus_orbit_dev_a_accuracy": consensus_orbit_dev["a_accuracy"],
+            "consensus_orbit_dev_b_accuracy": consensus_orbit_dev["b_accuracy"],
+            "consensus_orbit_dev_c_accuracy": consensus_orbit_dev["c_accuracy"],
+            "consensus_orbit_dev_position_accuracy_spread": consensus_orbit_dev["position_accuracy_spread"],
+            "consensus_orbit_dev_predicted_label_n": consensus_orbit_dev["predicted_label_n"],
+            "triad_dev_relation_accuracy": triad_dev["accuracy"],
+            "triad_dev_balanced_relation_accuracy": triad_dev["balanced_relation_accuracy"],
+            "triad_dev_same_accuracy": triad_dev["same_accuracy"],
+            "triad_dev_different_accuracy": triad_dev["different_accuracy"],
+            "triad_dev_relation_label_n": triad_dev["relation_label_n"],
+            "triad_dev_predicted_relation_n": triad_dev["predicted_relation_n"],
+            "triad_dev_predicted_same_rate": triad_dev["predicted_same_rate"],
+            "triad_dev_predicted_different_rate": triad_dev["predicted_different_rate"],
+            "triad_dev_relation_mean_nll": triad_dev["mean_nll"],
+            "triad_dev_mean_gold_margin": triad_dev["mean_gold_margin"],
+            "triad_dev_same_mean_gold_margin": triad_dev["same_mean_gold_margin"],
+            "triad_dev_different_mean_gold_margin": triad_dev["different_mean_gold_margin"],
+            "triad_dev_margin_satisfied_rate": triad_dev["margin_satisfied_rate"],
+            "triad_dev_same_margin_satisfied_rate": triad_dev["same_margin_satisfied_rate"],
+            "triad_dev_different_margin_satisfied_rate": triad_dev["different_margin_satisfied_rate"],
+            "triad_dev_all_three_relations_correct_rate": triad_dev["all_three_relations_correct_rate"],
+            "triad_dev_topology_accuracy": triad_dev["topology_accuracy"],
+            "triad_dev_non_ambiguous_topology_accuracy": triad_dev["non_ambiguous_topology_accuracy"],
+            "triad_dev_topology_n": triad_dev["topology_n"],
+            "triad_dev_a_topology_accuracy": triad_dev["a_topology_accuracy"],
+            "triad_dev_b_topology_accuracy": triad_dev["b_topology_accuracy"],
+            "triad_dev_c_topology_accuracy": triad_dev["c_topology_accuracy"],
+            "triad_dev_none_topology_accuracy": triad_dev["none_topology_accuracy"],
+            "triad_dev_ambiguous_topology_accuracy": triad_dev["ambiguous_topology_accuracy"],
+            "delta_legacy_dev_probability_separation": delta(legacy_dev["probability_separation"], previous["legacy_sep"]),
+            "delta_legacy_dev_mean_pair_logodds_gap": delta(legacy_dev["mean_pair_logodds_gap"], previous["legacy_gap"]),
+            "delta_mutation_dev_probability_separation": delta(mutation_dev["probability_separation"], previous["mutation_sep"]),
+            "delta_mutation_dev_mean_pair_logodds_gap": delta(mutation_dev["mean_pair_logodds_gap"], previous["mutation_gap"]),
+            "delta_ast_dev_probability_separation": delta(ast_dev["probability_separation"], previous["ast_sep"]),
+            "delta_ast_dev_mean_pair_logodds_gap": delta(ast_dev["mean_pair_logodds_gap"], previous["ast_gap"]),
+            "delta_dictionary_dev_balanced_accuracy": delta(
+                dictionary_dev["balanced_accuracy"], previous["dictionary_balanced_accuracy"]
+            ),
+            "delta_dictionary_dev_pair_win_rate": delta(
+                dictionary_dev["pair_win_rate"], previous["dictionary_pair_win_rate"]
+            ),
+            "delta_consensus_dev_accuracy": delta(consensus_dev["accuracy"], previous["consensus_accuracy"]),
+            "delta_consensus_dev_mean_gold_margin": delta(consensus_dev["mean_gold_margin"], previous["consensus_margin"]),
+            "delta_triad_dev_relation_accuracy": delta(triad_dev["accuracy"], previous["triad_relation_accuracy"]),
+            "delta_triad_dev_balanced_relation_accuracy": delta(
+                triad_dev["balanced_relation_accuracy"], previous["triad_balanced_relation_accuracy"]
+            ),
+            "delta_triad_dev_topology_accuracy": delta(triad_dev["topology_accuracy"], previous["triad_topology_accuracy"]),
+            "delta_triad_dev_non_ambiguous_topology_accuracy": delta(
+                triad_dev["non_ambiguous_topology_accuracy"], previous["triad_non_ambiguous_topology_accuracy"]
+            ),
+            "ranking_weight": args.ranking_weight,
+            "ranking_margin": args.ranking_margin,
+            "body_grad_norm_last_step": 0.0,
+            "head_grad_norm_last_step": last_head_grad_norm,
+            "soft_feedback_grad_norm_last_step": last_feedback_grad_norm,
+            "soft_feedback_enabled": True,
+            "soft_feedback_token_count": SOFT_FEEDBACK_TOKEN_COUNT,
+            "register_lr": args.register_lr,
+            "head_lr": args.head_lr,
+            "decision_head_frozen": False,
+            "soft_feedback_static_base_frozen": False,
+            "soft_feedback_static_strength_frozen": False,
+            "control_space_size": args.control_space_size,
+            "register_rank": args.register_rank,
+            "register_sparsity_weight": args.register_sparsity_weight,
+            "register_residual_weight": args.register_residual_weight,
+            "register_orthogonality_weight": args.register_orthogonality_weight,
+            "register_active_epsilon": args.register_active_epsilon,
+            "register_usage": register_usage_summary,
+            "soft_feedback_last_forward": dict(soft_feedback.last_stats),
+            "soft_feedback_control_sweep": soft_feedback_control_sweep,
+            "soft_feedback_probe_changed": soft_feedback_changed,
+            "soft_feedback_static_probe_changed": static_feedback_changed,
+            "decision_head_probe_changed": decision_head_changed,
+            "entire_nanojev_head_trainable": bool(args.train_r2_gain),
+            "nanojev_head_trainable_except_r2_gain": not bool(args.train_r2_gain),
+            "r2_gain_trainable": bool(args.train_r2_gain),
+            "r2_third_pass_bypassed": not bool(args.train_r2_gain),
+            "sparse_register_probe_changed": soft_feedback_changed,
+            "latent_walk_grad_norm_last_step": last_walk_grad_norm,
+            "latent_walk_displacement_penalty_weight": (
+                0.0
+            ),
+            "latent_walk_displacement_penalty_mse_last_step": last_walk_displacement_penalty_mse,
+            "latent_walk_displacement_penalty_loss_last_step": last_walk_displacement_penalty_loss,
+            "latent_walk_enabled": args.latent_walk,
+            "latent_walk_steps": 0,
+            "latent_walk_rank": 0,
+            "latent_walk_last_forward": None,
+            "backbone_probe_changed": False,
+            "head_probe_changed": False,
+            "latent_walk_probe_changed": False,
+            "training_seconds": time.perf_counter() - training_started,
+            "legacy_shard": str(shard_paths["legacy"]) if shard_paths["legacy"] else None,
+            "mutation_shard": str(shard_paths["mutation"]) if shard_paths["mutation"] else None,
+            "ast_shard": str(shard_paths["ast"]) if shard_paths["ast"] else None,
+            "consensus_shard": str(shard_paths["consensus"]) if shard_paths["consensus"] else None,
+            "triad_shard": str(shard_paths["triad"]) if shard_paths["triad"] else None,
+            "dictionary_shard": str(shard_paths["dictionary"]) if shard_paths["dictionary"] else None,
+            "dictionary_sha256": dictionary_sha,
+            "dictionary_holdout_pairs": args.dictionary_holdout_pairs,
+            "dictionary_holdout_seed": args.dictionary_holdout_seed,
+            "parent_checkpoint": experiment["parent_checkpoint"],
+            "parent_head_sha256": experiment["parent_head_sha256"],
+        }
+
+        meta = {
+            **result,
+            "training_objective": OBJECTIVE,
+            "legacy_unit_budget": unit_budgets["legacy"],
+            "mutation_unit_budget": unit_budgets["mutation"],
+            "ast_unit_budget": unit_budgets["ast"],
+            "consensus_unit_budget": unit_budgets["consensus"],
+            "triad_unit_budget": unit_budgets["triad"],
+            "dictionary_unit_budget": unit_budgets["dictionary"],
+            "consensus_dev_confusion": consensus_dev["confusion"],
+        }
+        generation = save_generation(
+            exp=exp, model=model, optimizer=optimizer, cycle=cycle, global_step=state["global_step"],
+            experiment=experiment, training_config=training_config, meta=meta, legacy=legacy,
+        )
+        result["checkpoint"] = str(generation)
+        result["cycle_total_seconds"] = time.perf_counter() - cycle_started
+        state["latest_generation"] = str(generation)
+        state["latest_head_sha256"] = legacy.sha256_file(generation / "head.safetensors")
+        state["last_result"] = result
+        atomic_json(exp / "training_state.json", state)
+        with history_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(result, ensure_ascii=False, allow_nan=False) + "\n")
+        emit("cycle_result", **result)
+        emit("checkpoint_committed", cycle=cycle, checkpoint=str(generation), state=str(exp / "training_state.json"))
+        garbage_collect(exp, args.keep_generations)
+
+
+if __name__ == "__main__":
+    main()

@@ -26,7 +26,14 @@ from . import atomic_files
 from .canonical import canonical_json
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
-from .deployment_validator_routes import allocate_candidate_validator_route, validator_route_from_record
+from .deployment_validator_routes import (
+    MotherDeploymentValidatorRouteError,
+    allocate_candidate_validator_route,
+    normalize_validator_route_bindings,
+    require_validator_route_binding,
+    validator_route_from_record,
+    validator_routes_same,
+)
 
 
 _TRANSACTION_KIND = "main_computer.mother.deployment_node_add_prep_transaction.v1"
@@ -276,16 +283,40 @@ def _merge_validator_route_binding(
     *,
     node: str,
     record: Mapping[str, Any],
+    required: bool = False,
 ) -> None:
-    route = validator_route_from_record(record)
+    try:
+        route = require_validator_route_binding(record, label=f"{node} validator route binding") if required else validator_route_from_record(record)
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID", str(exc)) from exc
     if route is None:
         return
     if not route.get("controller_id"):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID", f"{node} validator route controller id is missing")
     previous = bindings.get(node)
-    if previous is not None and canonical_json(previous) != canonical_json(route):
+    if previous is not None and not validator_routes_same(previous, route):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_MISMATCH", f"{node} validator route binding changed")
-    bindings[node] = dict(route)
+    if previous is None:
+        bindings[node] = dict(route)
+
+
+def _merge_explicit_validator_route_bindings(
+    bindings: dict[str, dict[str, Any]],
+    raw: Any,
+    *,
+    label: str,
+) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID", f"{label} is not a mapping")
+    try:
+        normalized = normalize_validator_route_bindings(raw, label=label)
+    except MotherDeploymentValidatorRouteError as exc:
+        code = "MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_MISMATCH" if exc.code == "MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_CONFLICT" else "MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID"
+        raise _fail(code, str(exc)) from exc
+    for node, route in normalized.items():
+        _merge_validator_route_binding(bindings, node=node, record=route, required=True)
 
 
 def _validator_route_bindings(document: Mapping[str, Any], services: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -294,26 +325,29 @@ def _validator_route_bindings(document: Mapping[str, Any], services: Mapping[str
         topology = document.get(topology_key)
         if not isinstance(topology, Mapping):
             continue
-        raw = topology.get("validator_route_bindings")
-        if not isinstance(raw, Mapping):
-            continue
-        for node, route in raw.items():
-            if isinstance(node, str) and isinstance(route, Mapping):
-                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
-    raw = document.get("validator_route_bindings")
-    if isinstance(raw, Mapping):
-        for node, route in raw.items():
-            if isinstance(node, str) and isinstance(route, Mapping):
-                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
-    service_routes = document.get("service_routes")
-    if isinstance(service_routes, Mapping):
-        for node, route in service_routes.items():
-            if isinstance(node, str) and isinstance(route, Mapping):
-                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
+        _merge_explicit_validator_route_bindings(
+            bindings,
+            topology.get("validator_route_bindings"),
+            label=f"{topology_key} validator route bindings",
+        )
+    _merge_explicit_validator_route_bindings(
+        bindings,
+        document.get("validator_route_bindings"),
+        label="validator route bindings",
+    )
+    _merge_explicit_validator_route_bindings(
+        bindings,
+        document.get("service_routes"),
+        label="service routes",
+    )
     for node, record in services.items():
         if isinstance(record, Mapping):
             _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=record)
-    return bindings
+    try:
+        return normalize_validator_route_bindings(bindings)
+    except MotherDeploymentValidatorRouteError as exc:
+        code = "MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_MISMATCH" if exc.code == "MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_CONFLICT" else "MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID"
+        raise _fail(code, str(exc)) from exc
 
 
 def _service_record_from_observation(item: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -751,30 +785,35 @@ def build_node_add_prep_transaction(
         target_validator_route = dict(recorded_target_route)
         route_source = "recorded-validator-route-binding"
     else:
-        allocation_services = {node: dict(record) for node, record in current_services.items()}
-        for bound_node, bound_route in route_bindings.items():
-            if bound_node not in allocation_services:
-                allocation_services[bound_node] = {
-                    "node": bound_node,
-                    "controller_id": bound_route.get("controller_id"),
-                    "validator_route": dict(bound_route),
-                }
+        known_historical_target = mode == "reactivate" or removed_target is not None or target in historical_nodes
+        if known_historical_target:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_PREP_REACTIVATION_ROUTE_MISSING",
+                f"{target} is a known historical node but has no permanent validator route binding",
+            )
         target_validator_route = allocate_candidate_validator_route(
             private_state,
             network=network,
             controller_id=host,
-            existing_services=allocation_services,
+            existing_services=current_services,
+            reserved_bindings=route_bindings,
         )
-        route_source = "legacy-reactivation-route-fallback" if mode == "reactivate" else "new-validator-route-allocation"
+        route_source = "new-validator-route-allocation"
 
-    target_route_binding = validator_route_from_record(target_validator_route)
-    if target_route_binding is None:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID", f"{target} validator route binding is invalid")
+    try:
+        target_route_binding = require_validator_route_binding(target_validator_route, label=f"{target} validator route binding")
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID", str(exc)) from exc
     post_route_bindings = {node: dict(route) for node, route in route_bindings.items()}
     previous_target_binding = post_route_bindings.get(target)
-    if previous_target_binding is not None and canonical_json(previous_target_binding) != canonical_json(target_route_binding):
+    if previous_target_binding is not None and not validator_routes_same(previous_target_binding, target_route_binding):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_MISMATCH", f"{target} validator route binding changed")
     post_route_bindings[target] = dict(target_route_binding)
+    try:
+        post_route_bindings = normalize_validator_route_bindings(post_route_bindings)
+    except MotherDeploymentValidatorRouteError as exc:
+        code = "MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_MISMATCH" if exc.code == "MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_CONFLICT" else "MOTHER_DEPLOY_NODE_ADD_PREP_ROUTE_IDENTITY_INVALID"
+        raise _fail(code, str(exc)) from exc
     target_service_record = {
         "node": target,
         "controller_id": host,

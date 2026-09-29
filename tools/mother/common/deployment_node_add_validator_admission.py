@@ -49,7 +49,15 @@ from .deployment_completed_helper_cleanup import (
 from .deployment_node_add_replica_sync import verify_node_add_replica_sync_evidence
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
-from .deployment_validator_routes import ensure_service_validator_route, validator_route_advertised_host, validator_route_from_record
+from .deployment_validator_routes import (
+    MotherDeploymentValidatorRouteError,
+    ensure_service_validator_route,
+    normalize_validator_route_bindings,
+    require_validator_route_binding,
+    validator_route_advertised_host,
+    validator_route_from_record,
+    validator_routes_same,
+)
 from .ethereum_identity import checksum_address
 from tools.mother_service_line_restart_helper import run_service_line_restart_helper
 
@@ -1472,15 +1480,18 @@ def _load_sync_context(
     if not isinstance(current_topology, Mapping) or not isinstance(target, Mapping) or not isinstance(proof_summary, Mapping) or not isinstance(proof, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "replica-sync evidence lacks admission context")
     route_bindings_raw = None
-    if isinstance(prepared_post_add_topology, Mapping):
+    if isinstance(prepared_post_add_topology, Mapping) and "validator_route_bindings" in prepared_post_add_topology:
         route_bindings_raw = prepared_post_add_topology.get("validator_route_bindings")
-    if not isinstance(route_bindings_raw, Mapping):
+        if not isinstance(route_bindings_raw, Mapping):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "prepared validator_route_bindings is not a mapping")
+    elif "validator_route_bindings" in current_topology:
         route_bindings_raw = current_topology.get("validator_route_bindings")
-    validator_route_bindings = {
-        str(node): dict(route)
-        for node, route in (route_bindings_raw.items() if isinstance(route_bindings_raw, Mapping) else [])
-        if isinstance(node, str) and isinstance(route, Mapping)
-    }
+        if not isinstance(route_bindings_raw, Mapping):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "current validator_route_bindings is not a mapping")
+    try:
+        validator_route_bindings = normalize_validator_route_bindings(route_bindings_raw) if isinstance(route_bindings_raw, Mapping) else {}
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", str(exc)) from exc
     voter_nodes = tuple(_identifier(item, "voter node") for item in current_topology.get("nodes", []))
     if len(voter_nodes) < 1:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "no existing validators are available to vote")
@@ -1520,7 +1531,12 @@ def _load_sync_context(
     if not isinstance(candidate_route, Mapping):
         candidate_route = proof_summary.get("candidate_validator_route") if isinstance(proof_summary.get("candidate_validator_route"), Mapping) else None
     if not isinstance(candidate_route, Mapping):
-        candidate_route = validator_route_from_record(target) or {}
+        candidate_route = validator_route_from_record(target)
+    bound_candidate_route = validator_route_bindings.get(target_node)
+    if not isinstance(candidate_route, Mapping) and bound_candidate_route is not None:
+        candidate_route = dict(bound_candidate_route)
+    if not isinstance(candidate_route, Mapping):
+        candidate_route = {}
     candidate_p2p_host = validator_route_advertised_host(candidate_route)
     if candidate_p2p_host is None:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route advertised P2P host is missing or not reachable")
@@ -1530,7 +1546,15 @@ def _load_sync_context(
     service_routes: dict[str, dict[str, Any]] = {}
     for voter_node in voter_nodes:
         voter_service = services.get(voter_node)
-        if isinstance(voter_service, Mapping):
+        if not isinstance(voter_service, Mapping):
+            continue
+        bound_route = validator_route_bindings.get(voter_node)
+        explicit_service_route = validator_route_from_record(voter_service)
+        if bound_route is not None:
+            if explicit_service_route is not None and not validator_routes_same(bound_route, explicit_service_route):
+                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", f"{voter_node} active service route disagrees with its permanent route binding")
+            service_routes[voter_node] = dict(bound_route)
+        else:
             service_routes[voter_node] = ensure_service_validator_route(
                 private_state,
                 network=network,
@@ -1539,25 +1563,28 @@ def _load_sync_context(
                 services=services,
             )
     service_routes[target_node] = dict(candidate_route)
-    normalized_candidate_route = validator_route_from_record(candidate_route)
-    if normalized_candidate_route is None:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route binding is invalid")
-    bound_candidate_route = validator_route_bindings.get(target_node)
-    if bound_candidate_route is not None:
-        normalized_bound_candidate_route = validator_route_from_record(bound_candidate_route)
-        if normalized_bound_candidate_route is None or canonical_json(normalized_bound_candidate_route) != canonical_json(normalized_candidate_route):
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route changed from the prepared permanent route binding")
-    validator_route_bindings[target_node] = dict(normalized_candidate_route)
+    try:
+        normalized_candidate_route = require_validator_route_binding(candidate_route, label=f"{target_node} candidate validator route")
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", str(exc)) from exc
+    if bound_candidate_route is not None and not validator_routes_same(bound_candidate_route, normalized_candidate_route):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate validator route changed from the prepared permanent route binding")
+    if bound_candidate_route is None:
+        validator_route_bindings[target_node] = dict(normalized_candidate_route)
     for voter_node, route in service_routes.items():
-        normalized_route = validator_route_from_record(route)
-        if normalized_route is None:
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", f"{voter_node} validator route binding is invalid")
+        try:
+            normalized_route = require_validator_route_binding(route, label=f"{voter_node} validator route")
+        except MotherDeploymentValidatorRouteError as exc:
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", str(exc)) from exc
         bound_route = validator_route_bindings.get(voter_node)
-        if bound_route is not None:
-            normalized_bound_route = validator_route_from_record(bound_route)
-            if normalized_bound_route is None or canonical_json(normalized_bound_route) != canonical_json(normalized_route):
-                raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", f"{voter_node} validator route changed from the prepared permanent route binding")
-        validator_route_bindings[voter_node] = dict(normalized_route)
+        if bound_route is not None and not validator_routes_same(bound_route, normalized_route):
+            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", f"{voter_node} validator route changed from the prepared permanent route binding")
+        if bound_route is None:
+            validator_route_bindings[voter_node] = dict(normalized_route)
+    try:
+        validator_route_bindings = normalize_validator_route_bindings(validator_route_bindings)
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", str(exc)) from exc
     target_node_id = _public_node_id(_validator_private_key(private_state, network=network, node=target_node))
     candidate_validator_enode = _candidate_validator_enode(target_node_id, candidate_route)
     target_controller = resolve_coolify_controller(private_state, network, target_host)

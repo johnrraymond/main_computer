@@ -194,3 +194,92 @@ def test_rolling_dev_fresh_source_selection_excludes_canonical_probe_files():
     assert len(rows) == 40
     assert all(row["relative"] not in excluded for row in rows)
     assert rows == train.select_fresh_dev_rows(manifest, excluded, count=40, seed=9)
+
+
+def test_ordered_continuation_pairs_use_same_3_to_5_lexemes_with_only_order_changed(tmp_path):
+    from collections import Counter
+
+    data = load("lexeme_data_ordered_sequence_test", TOOLS / "nanojev_code_lexeme_data.py")
+    text = "def add(left, right):\n    result = left + right\n    return result\n"
+    path = tmp_path / "sample.py"
+    path.write_text(text, encoding="utf-8")
+    doc = data.SourceDoc(path, "sample.py", "python", text, tuple(data.lex_python(text)))
+    records = data.sample_ordered_continuation_paired_records(
+        docs=[doc], tokenizer=FakeTokenizer(), split="train", pair_count=20,
+        max_prefix_tokens=200, seed=11, max_lexeme_tokens=48, min_symbols=3, max_symbols=5,
+    )
+    assert len(records) == 40
+    by_family = {}
+    for row in records:
+        by_family.setdefault(row["family_id"], []).append(row)
+    assert len(by_family) == 20
+    for rows in by_family.values():
+        assert len(rows) == 2
+        true_row = next(r for r in rows if r["gold"]["suffix_matches"] is True)
+        false_row = next(r for r in rows if r["gold"]["suffix_matches"] is False)
+        actual = true_row["metadata"]["actual_lexemes"]
+        proposed_true = true_row["metadata"]["proposed_lexemes"]
+        proposed_false = false_row["metadata"]["proposed_lexemes"]
+        assert 3 <= len(actual) <= 5
+        assert proposed_true == actual
+        assert proposed_false != actual
+        assert Counter(proposed_false) == Counter(actual)
+        assert true_row["metadata"]["permutation"] == list(range(len(actual)))
+        assert false_row["metadata"]["negative_strategy"] == "same_lexemes_permuted"
+        assert false_row["metadata"]["permutation"] != list(range(len(actual)))
+
+
+def test_ordered_continuation_probe_reuses_only_canonical_heldout_boundaries(tmp_path):
+    from collections import Counter
+
+    data = load("lexeme_data_ordered_canonical_probe_test", TOOLS / "nanojev_code_lexeme_data.py")
+    canonical = []
+    # 24 canonical held-out boundaries * 3 available lengths = 72 candidates,
+    # enough to build the fixed 64-pair ordered ruler without any manifest scan.
+    for i in range(24):
+        relative = f"heldout_{i}.py"
+        text = "a = b + c * d - e / f\n"
+        path = tmp_path / relative
+        path.write_text(text, encoding="utf-8")
+        first = data.lex_python(text)[0]
+        common = {
+            "source_path": relative,
+            "source_group_id": relative,
+            "language": "python",
+            "source_boundary": first.start,
+        }
+        canonical.append({
+            "family_id": f"p{i}",
+            "gold": {"suffix_matches": True},
+            "metadata": {**common, "is_true_suffix": True},
+        })
+        canonical.append({
+            "family_id": f"p{i}",
+            "gold": {"suffix_matches": False},
+            "metadata": {**common, "is_true_suffix": False},
+        })
+
+    records = data.sample_ordered_continuation_from_canonical_probe(
+        probe_records=canonical,
+        repo_root=tmp_path,
+        tokenizer=FakeTokenizer(),
+        split="dev",
+        pair_count=64,
+        max_prefix_tokens=200,
+        seed=123,
+        max_lexeme_tokens=48,
+    )
+    assert len(records) == 128
+    by_family = {}
+    for row in records:
+        by_family.setdefault(row["family_id"], []).append(row)
+    assert len(by_family) == 64
+    for rows in by_family.values():
+        true_row = next(r for r in rows if r["gold"]["suffix_matches"] is True)
+        false_row = next(r for r in rows if r["gold"]["suffix_matches"] is False)
+        assert true_row["metadata"]["source_path"].startswith("heldout_")
+        assert 3 <= true_row["metadata"]["continuation_length"] <= 5
+        assert Counter(true_row["metadata"]["proposed_lexemes"]) == Counter(
+            false_row["metadata"]["proposed_lexemes"]
+        )
+        assert true_row["metadata"]["proposed_lexemes"] != false_row["metadata"]["proposed_lexemes"]

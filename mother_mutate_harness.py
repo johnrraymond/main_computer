@@ -48,6 +48,7 @@ from tools.mother.common.static_node_precleanup_gate import build_static_node_pr
 
 COMMON_STEPS = [
     "detect-topology",
+    "reserve-identity",
     "preflight-paranoia",
     "prep",
     "verify-prep",
@@ -1012,6 +1013,30 @@ class Harness:
         ])
         return argv
 
+    def reserve_identity_cmd(self, *, execute: bool) -> list[str]:
+        argv = self.cmd(
+            "add-node", "reserve-identity", self.args.network,
+            "--node", self.args.node,
+            "--host", self.args.host,
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--topology-evidence",
+            require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256",
+            require(
+                "--baseline-evidence-sha256",
+                self.state["baseline_evidence_sha256"],
+            ),
+            "--topology-max-age-seconds",
+            str(self.args.baseline_max_age_seconds),
+            "--timeout",
+            str(self.args.timeout),
+            "--max-response-bytes",
+            str(self.args.max_response_bytes),
+        )
+        if execute:
+            argv.append("--execute")
+        return argv
+
     def preflight_paranoia_cmd(self) -> list[str]:
         return [
             sys.executable,
@@ -1320,6 +1345,46 @@ class Harness:
             else:
                 print("\nNo non-empty live node set was established, so no live-subset seal command is safe to suggest.")
             raise SystemExit(3)
+
+    def step_reserve_identity(self) -> None:
+        obj = self.run(
+            "reserve-identity",
+            self.reserve_identity_cmd(execute=self.mutations_allowed()),
+        )
+        update_required = obj.get("private_state_update_required") is True
+        updated = obj.get("private_state_updated") is True
+
+        self.state["identity_reservation_status"] = obj.get("status")
+        self.state["identity_already_reserved"] = obj.get("identity_already_reserved")
+        self.state["reserved_validator_address"] = obj.get("validator_address")
+
+        if update_required and not updated:
+            print(
+                "\nMOTHER_MUTATE_HARNESS_IDENTITY_RESERVATION_REQUIRED: "
+                "the add-node identity is missing from Mother private state."
+            )
+            print(
+                "Rerun with --execute-mutations "
+                "--yes-i-know-this-mutates-target-host to reserve it."
+            )
+            raise SystemExit(3)
+
+        refreshed = obj.get("refreshed_topology_evidence")
+        refreshed_sha = obj.get("refreshed_topology_evidence_sha256")
+        if updated and not (refreshed and refreshed_sha):
+            raise SystemExit(
+                "MOTHER_MUTATE_HARNESS_IDENTITY_RESERVATION_REFRESH_REQUIRED: "
+                "private state changed but refreshed topology evidence was not returned"
+            )
+        if refreshed or refreshed_sha:
+            self.state["baseline_evidence"] = require(
+                "refreshed_topology_evidence",
+                refreshed,
+            )
+            self.state["baseline_evidence_sha256"] = require(
+                "refreshed_topology_evidence_sha256",
+                refreshed_sha,
+            )
 
     def step_preflight_paranoia(self) -> None:
         if self.args.skip_preflight_paranoia:
@@ -2083,6 +2148,7 @@ class Harness:
     def methods(self) -> dict[str, Any]:
         return {
             "detect-topology": self.step_detect_topology,
+            "reserve-identity": self.step_reserve_identity,
             "preflight-paranoia": self.step_preflight_paranoia,
             "preflight-paranoia2": self.step_preflight_paranoia2,
             "preflight-rpc-paranoia": self.step_preflight_rpc_paranoia,

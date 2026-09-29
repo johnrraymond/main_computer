@@ -25,7 +25,13 @@ from . import atomic_files
 from .canonical import canonical_json
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
-from .deployment_validator_routes import validator_route_from_record
+from .deployment_validator_routes import (
+    MotherDeploymentValidatorRouteError,
+    normalize_validator_route_bindings,
+    require_validator_route_binding,
+    validator_route_from_record,
+    validator_routes_same,
+)
 
 
 _TRANSACTION_KIND = "main_computer.mother.deployment_node_remove_prep_transaction.v1"
@@ -255,16 +261,40 @@ def _merge_validator_route_binding(
     *,
     node: str,
     record: Mapping[str, Any],
+    required: bool = False,
 ) -> None:
-    route = validator_route_from_record(record)
+    try:
+        route = require_validator_route_binding(record, label=f"{node} validator route binding") if required else validator_route_from_record(record)
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_INVALID", str(exc)) from exc
     if route is None:
         return
     if not route.get("controller_id"):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_INVALID", f"{node} validator route controller id is missing")
     previous = bindings.get(node)
-    if previous is not None and canonical_json(previous) != canonical_json(route):
+    if previous is not None and not validator_routes_same(previous, route):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_MISMATCH", f"{node} validator route binding changed")
-    bindings[node] = dict(route)
+    if previous is None:
+        bindings[node] = dict(route)
+
+
+def _merge_explicit_validator_route_bindings(
+    bindings: dict[str, dict[str, Any]],
+    raw: Any,
+    *,
+    label: str,
+) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_INVALID", f"{label} is not a mapping")
+    try:
+        normalized = normalize_validator_route_bindings(raw, label=label)
+    except MotherDeploymentValidatorRouteError as exc:
+        code = "MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_MISMATCH" if exc.code == "MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_CONFLICT" else "MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_INVALID"
+        raise _fail(code, str(exc)) from exc
+    for node, route in normalized.items():
+        _merge_validator_route_binding(bindings, node=node, record=route, required=True)
 
 
 def _validator_route_bindings(document: Mapping[str, Any], services: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -273,26 +303,29 @@ def _validator_route_bindings(document: Mapping[str, Any], services: Mapping[str
         topology = document.get(topology_key)
         if not isinstance(topology, Mapping):
             continue
-        raw = topology.get("validator_route_bindings")
-        if not isinstance(raw, Mapping):
-            continue
-        for node, route in raw.items():
-            if isinstance(node, str) and isinstance(route, Mapping):
-                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
-    raw = document.get("validator_route_bindings")
-    if isinstance(raw, Mapping):
-        for node, route in raw.items():
-            if isinstance(node, str) and isinstance(route, Mapping):
-                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
-    service_routes = document.get("service_routes")
-    if isinstance(service_routes, Mapping):
-        for node, route in service_routes.items():
-            if isinstance(node, str) and isinstance(route, Mapping):
-                _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=route)
+        _merge_explicit_validator_route_bindings(
+            bindings,
+            topology.get("validator_route_bindings"),
+            label=f"{topology_key} validator route bindings",
+        )
+    _merge_explicit_validator_route_bindings(
+        bindings,
+        document.get("validator_route_bindings"),
+        label="validator route bindings",
+    )
+    _merge_explicit_validator_route_bindings(
+        bindings,
+        document.get("service_routes"),
+        label="service routes",
+    )
     for node, record in services.items():
         if isinstance(record, Mapping):
             _merge_validator_route_binding(bindings, node=_identifier(node, "validator route binding node"), record=record)
-    return bindings
+    try:
+        return normalize_validator_route_bindings(bindings)
+    except MotherDeploymentValidatorRouteError as exc:
+        code = "MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_MISMATCH" if exc.code == "MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_CONFLICT" else "MOTHER_DEPLOY_NODE_REMOVE_PREP_ROUTE_IDENTITY_INVALID"
+        raise _fail(code, str(exc)) from exc
 
 
 def _receipt_service_records(

@@ -260,6 +260,68 @@ def validator_route_from_record(record: Mapping[str, Any]) -> dict[str, Any] | N
     return route
 
 
+def require_validator_route_binding(record: Mapping[str, Any], *, label: str = "validator route binding") -> dict[str, Any]:
+    """Return a normalized permanent route binding or fail closed.
+
+    Permanent bindings are stricter than ordinary service records: once the
+    binding key exists, malformed route data must not be treated as absent.
+    """
+
+    route = validator_route_from_record(record)
+    if route is None:
+        raise _fail("MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_INVALID", f"{label} is incomplete or inconsistent")
+    controller_id = route.get("controller_id")
+    if not isinstance(controller_id, str) or not controller_id:
+        raise _fail("MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_INVALID", f"{label} controller id is missing")
+    route["controller_id"] = _identifier(controller_id, f"{label} controller id")
+    return route
+
+
+def validator_route_identity(record: Mapping[str, Any]) -> tuple[str, str, int, int] | None:
+    """Return immutable route identity, excluding provenance/allocation metadata."""
+
+    route = validator_route_from_record(record)
+    if route is None:
+        return None
+    controller_id = route.get("controller_id")
+    host = route.get("vpn_ip")
+    port = _port(route.get("p2p_port"))
+    container_port = _port(route.get("container_p2p_port"))
+    if not isinstance(controller_id, str) or not controller_id or not isinstance(host, str) or port is None or container_port is None:
+        return None
+    return (controller_id, host, port, container_port)
+
+
+def validator_routes_same(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Compare immutable route identity without treating provenance as identity."""
+
+    left_identity = validator_route_identity(left)
+    right_identity = validator_route_identity(right)
+    return left_identity is not None and left_identity == right_identity
+
+
+def normalize_validator_route_bindings(bindings: Mapping[str, Any], *, label: str = "validator route bindings") -> dict[str, dict[str, Any]]:
+    """Normalize permanent bindings and reject invalid or duplicate ownership."""
+
+    normalized: dict[str, dict[str, Any]] = {}
+    owners: dict[tuple[str, int], str] = {}
+    for raw_node, raw_route in bindings.items():
+        node = _identifier(raw_node, f"{label} node")
+        if not isinstance(raw_route, Mapping):
+            raise _fail("MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_INVALID", f"{node} {label} entry is not a mapping")
+        route = require_validator_route_binding(raw_route, label=f"{node} {label} entry")
+        owner = (str(route["controller_id"]), int(route["p2p_port"]))
+        previous_node = owners.get(owner)
+        if previous_node is not None and previous_node != node:
+            raise _fail(
+                "MOTHER_DEPLOY_VALIDATOR_ROUTE_BINDING_CONFLICT",
+                f"{previous_node} and {node} both own {owner[0]} validator P2P port {owner[1]}",
+            )
+        owners[owner] = node
+        normalized[node] = route
+    return normalized
+
+
 def _service_sort_key(item: tuple[str, Mapping[str, Any]]) -> tuple[str, str]:
     node, record = item
     return (str(record.get("controller_id") or ""), node)
@@ -300,6 +362,7 @@ def allocate_candidate_validator_route(
     network: str,
     controller_id: str,
     existing_services: Mapping[str, Any],
+    reserved_bindings: Mapping[str, Any] | None = None,
     default_port: int = _DEFAULT_P2P_PORT,
 ) -> dict[str, Any]:
     """Allocate the candidate's externally reachable validator P2P route."""
@@ -307,6 +370,11 @@ def allocate_candidate_validator_route(
     controller = _identifier(controller_id, "controller_id")
     host, source = controller_validator_host(private_state, network=network, controller_id=controller)
     used = used_p2p_ports_for_controller(existing_services, controller_id=controller, default_port=default_port)
+    if reserved_bindings is not None:
+        normalized_bindings = normalize_validator_route_bindings(reserved_bindings)
+        for route in normalized_bindings.values():
+            if route.get("controller_id") == controller:
+                used.add(int(route["p2p_port"]))
     port = int(default_port)
     while port in used:
         port += 1

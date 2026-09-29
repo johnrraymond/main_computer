@@ -33,7 +33,12 @@ from .coolify_state import (
 )
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult
-from .deployment_validator_routes import validator_route_from_record
+from .deployment_validator_routes import (
+    MotherDeploymentValidatorRouteError,
+    normalize_validator_route_bindings,
+    validator_route_from_record,
+    validator_routes_same,
+)
 
 
 _STALENESS_EVIDENCE_KIND = "main_computer.mother.live_topology_staleness_observation.v1"
@@ -482,16 +487,13 @@ def _validator_route_bindings_for_topology(
     topology: Mapping[str, Any],
     services: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    bindings: dict[str, dict[str, Any]] = {}
     raw = topology.get("validator_route_bindings")
-    if isinstance(raw, Mapping):
-        for node, raw_route in raw.items():
-            if not isinstance(node, str) or not isinstance(raw_route, Mapping):
-                continue
-            node_id = _identifier(node, "validator route binding node")
-            route = validator_route_from_record(raw_route)
-            if route is not None:
-                bindings[node_id] = dict(route)
+    if raw is not None and not isinstance(raw, Mapping):
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator_route_bindings is not a mapping")
+    try:
+        bindings = normalize_validator_route_bindings(raw) if isinstance(raw, Mapping) else {}
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", str(exc)) from exc
     for node, service in services.items():
         if not isinstance(service, Mapping):
             continue
@@ -500,10 +502,14 @@ def _validator_route_bindings_for_topology(
             continue
         node_id = _identifier(node, "validator route binding node")
         previous = bindings.get(node_id)
-        if previous is not None and canonical_json(previous) != canonical_json(route):
+        if previous is not None and not validator_routes_same(previous, route):
             raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", f"{node_id} validator route binding disagrees with active service route")
-        bindings[node_id] = dict(route)
-    return bindings
+        if previous is None:
+            bindings[node_id] = dict(route)
+    try:
+        return normalize_validator_route_bindings(bindings)
+    except MotherDeploymentValidatorRouteError as exc:
+        raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", str(exc)) from exc
 
 
 def _preserve_validator_route_fields(previous: Mapping[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
@@ -813,6 +819,10 @@ def _topology_detection_document(document: Mapping[str, Any]) -> Mapping[str, An
     chain_id = document.get("chain_id")
     if not isinstance(chain_id, int) or chain_id <= 0:
         raise _fail("MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_INVALID", "validator-admission chain_id is invalid")
+    validator_route_bindings = _validator_route_bindings_for_topology(
+        {"validator_route_bindings": document.get("validator_route_bindings")},
+        services,
+    )
 
     return {
         "kind": document.get("kind"),
@@ -838,11 +848,7 @@ def _topology_detection_document(document: Mapping[str, Any]) -> Mapping[str, An
             "genesis_sha256": _sha256(document.get("genesis_sha256"), "validator-admission genesis SHA-256"),
             "nodes": nodes,
             "services": services,
-            "validator_route_bindings": {
-                str(node): dict(route)
-                for node, route in (document.get("validator_route_bindings") or {}).items()
-                if isinstance(node, str) and isinstance(route, Mapping)
-            },
+            "validator_route_bindings": {node: dict(route) for node, route in validator_route_bindings.items()},
             "validator_count": len(validators),
             "validator_set": validators,
             "validator_admission_performed": True,

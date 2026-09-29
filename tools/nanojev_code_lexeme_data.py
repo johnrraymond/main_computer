@@ -443,6 +443,289 @@ def make_record(*, doc: SourceDoc, lexeme: Lexeme, proposed: str, truth: bool,
     }
 
 
+
+def make_ordered_continuation_record(*, doc: SourceDoc, lexemes: Sequence[Lexeme], proposed: Sequence[str],
+                                     truth: bool, tokenizer, max_prefix_tokens: int, pair_id: str,
+                                     record_id: str, split: str, permutation: Sequence[int]) -> dict:
+    if not 3 <= len(lexemes) <= 5:
+        raise ValueError("ordered legacy continuation must contain 3-5 lexemes")
+    if len(proposed) != len(lexemes) or len(permutation) != len(lexemes):
+        raise ValueError("ordered legacy continuation lengths do not match")
+    prefix = bounded_prefix(doc.text[:lexemes[0].start], tokenizer, max_prefix_tokens)
+    actual = [lexeme.text for lexeme in lexemes]
+    state = (
+        f"Language: {doc.language}\n"
+        "Code prefix (exact source text immediately before the target boundary):\n"
+        "```\n"
+        f"{prefix}\n"
+        "```\n"
+        f"Proposed next {len(actual)} lexical symbols, in order:\n"
+        f"{json.dumps(list(proposed), ensure_ascii=False)}"
+    )
+    return {
+        "id": record_id,
+        "state_id": record_id,
+        "family_id": pair_id,
+        "split": split,
+        "state": state,
+        "questions": {
+            "suffix_matches": {
+                "type": "boolean",
+                "instructions": (
+                    "Are these proposed lexical symbols exactly the next lexical symbols in the original "
+                    "source code, in exactly this order? Judge the complete ordered continuation. "
+                    "The same symbols in a different order are FALSE."
+                ),
+                "criteria": {
+                    "false": "No. The proposed symbols are not the actual next lexical symbols in the exact original order.",
+                    "true": "Yes. The proposed symbols are the actual next lexical symbols in the exact original order.",
+                },
+            }
+        },
+        "gold": {"suffix_matches": truth},
+        "gold_label_kind": {"suffix_matches": "deterministic_truth"},
+        "metadata": {
+            "source_group_id": doc.relative,
+            "source_path": doc.relative,
+            "language": doc.language,
+            "legacy_task": "ordered_lexeme_continuation_v1",
+            "continuation_length": len(actual),
+            "lexeme_kinds": [lexeme.kind for lexeme in lexemes],
+            "actual_lexemes": actual,
+            "proposed_lexemes": list(proposed),
+            "permutation": list(permutation),
+            "is_true_suffix": truth,
+            "negative_strategy": None if truth else "same_lexemes_permuted",
+            "source_boundary": lexemes[0].start,
+        },
+    }
+
+
+def _permuted_sequence(values: Sequence[str], rng: random.Random) -> tuple[list[str], list[int]]:
+    """Return a non-identity permutation whose visible value sequence changes."""
+    if len(values) < 2:
+        raise ValueError("need at least two values to permute")
+    identity = list(range(len(values)))
+    for _ in range(32):
+        order = identity.copy()
+        rng.shuffle(order)
+        proposed = [values[i] for i in order]
+        if order != identity and proposed != list(values):
+            return proposed, order
+    # Duplicate-heavy windows can make many index permutations visually identical.
+    # Deterministically try every non-zero rotation before giving up.
+    for shift in range(1, len(values)):
+        order = identity[shift:] + identity[:shift]
+        proposed = [values[i] for i in order]
+        if proposed != list(values):
+            return proposed, order
+    raise RuntimeError("continuation window cannot produce a visibly different permutation")
+
+
+def sample_ordered_continuation_from_canonical_probe(*, probe_records: Sequence[dict], repo_root: Path,
+                                                       tokenizer, split: str, pair_count: int,
+                                                       max_prefix_tokens: int, seed: int,
+                                                       max_lexeme_tokens: int = 48,
+                                                       min_symbols: int = 3,
+                                                       max_symbols: int = 5) -> list[dict]:
+    """Build an ordered-continuation ruler from an existing canonical legacy probe.
+
+    Unlike ``sample_ordered_continuation_paired_records`` this does *not* scan or
+    lex an entire manifest.  It reuses the already-held-out canonical legacy
+    boundaries, loads only source files referenced by TRUE canonical records,
+    and creates 3-5-symbol windows beginning at those exact boundaries.
+
+    This keeps the ordered ruler held out while making trainer startup bounded by
+    at most the canonical probe's source files rather than the whole dev corpus.
+    """
+    if pair_count <= 0:
+        raise ValueError("pair_count must be positive")
+    if min_symbols < 3 or max_symbols > 5 or min_symbols > max_symbols:
+        raise ValueError("ordered legacy continuation requires 3 <= min_symbols <= max_symbols <= 5")
+
+    # One canonical TRUE member per original pair is enough to recover the exact
+    # held-out source boundary.  Deduplicate defensively because TRUE/FALSE members
+    # share the same boundary metadata.
+    boundaries: list[tuple[str, str, int]] = []
+    seen_boundaries: set[tuple[str, int]] = set()
+    for row in probe_records:
+        if not isinstance(row, dict):
+            continue
+        metadata = row.get("metadata") or {}
+        gold = row.get("gold") or {}
+        is_true = metadata.get("is_true_suffix") is True or gold.get("suffix_matches") is True
+        if not is_true:
+            continue
+        relative = metadata.get("source_path") or metadata.get("source_group_id")
+        language = metadata.get("language")
+        boundary = metadata.get("source_boundary")
+        if not isinstance(relative, str) or not isinstance(language, str) or not isinstance(boundary, int):
+            continue
+        key = (relative, boundary)
+        if key in seen_boundaries:
+            continue
+        seen_boundaries.add(key)
+        boundaries.append((relative, language, boundary))
+    if not boundaries:
+        raise RuntimeError("canonical legacy probe contains no recoverable TRUE source boundaries")
+
+    # Lex each referenced held-out source file once.  In the established probe
+    # this is bounded by <=64 source boundaries instead of every dev-manifest file.
+    docs: dict[str, SourceDoc] = {}
+    for relative, language, _boundary in boundaries:
+        if relative in docs:
+            continue
+        path = repo_root / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        lexemes = tuple(lex_source(text, language))
+        if len(lexemes) < min_symbols:
+            continue
+        docs[relative] = SourceDoc(path, relative, language, text, lexemes)
+
+    token_ok: dict[str, bool] = {}
+    candidates: list[tuple[SourceDoc, int, int]] = []
+    for relative, _language, boundary in boundaries:
+        doc = docs.get(relative)
+        if doc is None:
+            continue
+        # Exact boundary lookup: the old legacy probe records the start offset of
+        # its TRUE next lexeme, so the new window begins at precisely the same point.
+        start = next((i for i, lexeme in enumerate(doc.lexemes) if lexeme.start == boundary), None)
+        if start is None:
+            continue
+        for length in range(min_symbols, max_symbols + 1):
+            end = start + length
+            if end > len(doc.lexemes):
+                break
+            window = doc.lexemes[start:end]
+            values = [lexeme.text for lexeme in window]
+            if len(set(values)) < 2:
+                continue
+            usable = True
+            for value in values:
+                ok = token_ok.get(value)
+                if ok is None:
+                    ok = bool(value.strip()) and 0 < len(
+                        tokenizer.encode(value, add_special_tokens=False)
+                    ) <= max_lexeme_tokens
+                    token_ok[value] = ok
+                if not ok:
+                    usable = False
+                    break
+            if usable:
+                candidates.append((doc, start, length))
+
+    if len(candidates) < pair_count:
+        raise RuntimeError(
+            "canonical legacy probe does not expose enough usable 3-5-symbol windows: "
+            f"need {pair_count}, found {len(candidates)} from {len(boundaries)} boundaries"
+        )
+
+    rng = random.Random(seed)
+    rng.shuffle(candidates)
+    records: list[dict] = []
+    for pair_index, (doc, start, length) in enumerate(candidates[:pair_count]):
+        window = tuple(doc.lexemes[start:start + length])
+        actual = [lexeme.text for lexeme in window]
+        proposed_false, false_permutation = _permuted_sequence(actual, rng)
+        digest = hashlib.sha256(
+            f"{seed}:{doc.relative}:{window[0].start}:{length}:{pair_index}".encode("utf-8")
+        ).hexdigest()[:16]
+        pair_id = f"{split}-ordered-lexeme-{digest}"
+        identity = list(range(length))
+        records.append(make_ordered_continuation_record(
+            doc=doc, lexemes=window, proposed=actual, truth=True, tokenizer=tokenizer,
+            max_prefix_tokens=max_prefix_tokens, pair_id=pair_id,
+            record_id=f"{pair_id}-true", split=split, permutation=identity,
+        ))
+        records.append(make_ordered_continuation_record(
+            doc=doc, lexemes=window, proposed=proposed_false, truth=False, tokenizer=tokenizer,
+            max_prefix_tokens=max_prefix_tokens, pair_id=pair_id,
+            record_id=f"{pair_id}-false", split=split, permutation=false_permutation,
+        ))
+    rng.shuffle(records)
+    return records
+
+
+def sample_ordered_continuation_paired_records(*, docs: Sequence[SourceDoc], tokenizer, split: str,
+                                                pair_count: int, max_prefix_tokens: int, seed: int,
+                                                max_lexeme_tokens: int = 48, min_symbols: int = 3,
+                                                max_symbols: int = 5) -> list[dict]:
+    """Build TRUE/FALSE legacy pairs from ordered 3-5 lexeme continuations.
+
+    TRUE presents the next consecutive lexemes in their source order.  FALSE
+    presents exactly the same lexeme multiset in a different order.  This removes
+    the old corpus-frequency negative and forces the head to model continuation
+    order rather than merely whether one proposed symbol looks plausible.
+    """
+    if pair_count <= 0:
+        raise ValueError("pair_count must be positive")
+    if not docs:
+        raise RuntimeError(f"no usable {split} source documents")
+    if min_symbols < 3 or max_symbols > 5 or min_symbols > max_symbols:
+        raise ValueError("ordered legacy continuation requires 3 <= min_symbols <= max_symbols <= 5")
+
+    token_ok: dict[str, bool] = {}
+    windows_by_length: dict[int, list[tuple[SourceDoc, int, int]]] = {
+        length: [] for length in range(min_symbols, max_symbols + 1)
+    }
+    for doc in docs:
+        lexemes = doc.lexemes
+        for start in range(len(lexemes)):
+            for length in range(min_symbols, max_symbols + 1):
+                end = start + length
+                if end > len(lexemes):
+                    break
+                window = lexemes[start:end]
+                values = [lexeme.text for lexeme in window]
+                if len(set(values)) < 2:
+                    continue
+                usable = True
+                for value in values:
+                    ok = token_ok.get(value)
+                    if ok is None:
+                        ok = bool(value.strip()) and 0 < len(
+                            tokenizer.encode(value, add_special_tokens=False)
+                        ) <= max_lexeme_tokens
+                        token_ok[value] = ok
+                    if not ok:
+                        usable = False
+                        break
+                if usable:
+                    windows_by_length[length].append((doc, start, length))
+    available_lengths = [length for length, windows in windows_by_length.items() if windows]
+    if not available_lengths:
+        raise RuntimeError("no usable 3-5 lexeme continuation windows")
+
+    rng = random.Random(seed)
+    records: list[dict] = []
+    for pair_index in range(pair_count):
+        length = rng.choice(available_lengths)
+        doc, start, length = rng.choice(windows_by_length[length])
+        window = tuple(doc.lexemes[start:start + length])
+        actual = [lexeme.text for lexeme in window]
+        proposed_false, false_permutation = _permuted_sequence(actual, rng)
+        digest = hashlib.sha256(
+            f"{seed}:{doc.relative}:{window[0].start}:{length}:{pair_index}".encode("utf-8")
+        ).hexdigest()[:16]
+        pair_id = f"{split}-ordered-lexeme-{digest}"
+        identity = list(range(length))
+        records.append(make_ordered_continuation_record(
+            doc=doc, lexemes=window, proposed=actual, truth=True, tokenizer=tokenizer,
+            max_prefix_tokens=max_prefix_tokens, pair_id=pair_id,
+            record_id=f"{pair_id}-true", split=split, permutation=identity,
+        ))
+        records.append(make_ordered_continuation_record(
+            doc=doc, lexemes=window, proposed=proposed_false, truth=False, tokenizer=tokenizer,
+            max_prefix_tokens=max_prefix_tokens, pair_id=pair_id,
+            record_id=f"{pair_id}-false", split=split, permutation=false_permutation,
+        ))
+    rng.shuffle(records)
+    return records
+
 def sample_paired_records(*, docs: Sequence[SourceDoc], tokenizer, split: str, pair_count: int,
                           max_prefix_tokens: int, seed: int,
                           pools: dict[str, list[str]] | None = None,

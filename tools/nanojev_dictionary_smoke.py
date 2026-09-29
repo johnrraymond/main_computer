@@ -40,6 +40,9 @@ DEFAULT_DICTIONARY_URL = "https://en-word.net/static/english-wordnet-2025.zip"
 DEFAULT_PAIRS = 32
 DEFAULT_SEED = 20260927
 DEFAULT_MODES = ("none", "static", "dynamic")
+OLD_NEGATIVE_STRATEGY = "same-part-of-speech lexical-overlap hard negative"
+NEGATIVE_STRATEGY = "zero-content-overlap overt negative; same-part-of-speech and different lexical file preferred"
+NEGATIVE_STRATEGY_ID = "zero_content_overlap_overt_v1"
 DATA_BASENAMES = ("data.noun", "data.verb", "data.adj", "data.adv")
 
 POS_NAMES = {
@@ -181,6 +184,7 @@ def parse_wordnet_archive(path: Path) -> list[dict]:
                     continue
                 try:
                     offset = fields[0]
+                    lex_filenum = fields[1]
                     pos = fields[2] if fields[2] in POS_NAMES else fallback_pos
                     word_count = int(fields[3], 16)
                 except (ValueError, IndexError):
@@ -204,6 +208,7 @@ def parse_wordnet_archive(path: Path) -> list[dict]:
                 synsets.append({
                     "id": f"{pos}:{offset}",
                     "pos": pos,
+                    "lex_filenum": lex_filenum,
                     "lemmas": tuple(dict.fromkeys(lemmas)),
                     "definition": definition,
                     "tokens": tokens,
@@ -224,63 +229,99 @@ def pick_headword(synset: dict, seen_words: set[str], rng: random.Random) -> str
     return None
 
 
-def hard_negative_for(
+def _negative_candidate_ok(positive: dict, headword: str, candidate: dict) -> bool:
+    if candidate["id"] == positive["id"]:
+        return False
+    headword_l = headword.lower()
+    if any(lemma.lower() == headword_l for lemma in candidate["lemmas"]):
+        return False
+    positive_lemmas = {lemma.lower() for lemma in positive["lemmas"]}
+    candidate_lemmas = {lemma.lower() for lemma in candidate["lemmas"]}
+    if positive_lemmas & candidate_lemmas:
+        return False
+    if re.search(rf"\b{re.escape(headword_l)}\b", candidate["definition"].lower()):
+        return False
+    return True
+
+
+def overt_negative_for(
     positive: dict,
     headword: str,
     *,
     synsets: list[dict],
     by_pos: dict[str, list[int]],
-    inverted: dict[tuple[str, str], list[int]],
     rng: random.Random,
+    candidate_indices: list[int] | tuple[int, ...] | None = None,
+    allow_cross_pos_fallback: bool = False,
 ) -> dict:
-    candidates: set[int] = set()
-    useful_tokens = sorted(positive["tokens"], key=lambda t: (len(inverted[(positive["pos"], t)]), -len(t)))
-    for token in useful_tokens[:8]:
-        bucket = inverted.get((positive["pos"], token), ())
-        if len(bucket) <= 2000:
-            candidates.update(bucket)
-        if len(candidates) >= 256:
-            break
+    """Choose an intentionally obvious FALSE definition.
 
-    headword_l = headword.lower()
-    valid = []
-    for index in candidates:
-        candidate = synsets[index]
-        if candidate["id"] == positive["id"]:
-            continue
-        if any(lemma.lower() == headword_l for lemma in candidate["lemmas"]):
-            continue
-        if re.search(rf"\b{re.escape(headword_l)}\b", candidate["definition"].lower()):
-            continue
-        overlap = len(positive["tokens"] & candidate["tokens"])
-        union = len(positive["tokens"] | candidate["tokens"])
-        jaccard = overlap / union if union else 0.0
-        length_penalty = abs(len(candidate["definition"]) - len(positive["definition"])) / 500.0
-        valid.append((jaccard - length_penalty, rng.random(), candidate))
+    The bootstrap dictionary task is meant to teach the binary semantic relation
+    before asking NanoJev to discriminate fine WordNet sense boundaries.  A
+    negative therefore prefers the same part of speech but MUST share zero
+    non-stopword gloss tokens with the true definition.  Among those candidates
+    it prefers a different WordNet lexical file (semantic category).  We also
+    reject shared lemmas so polysemy/synonym accidents cannot masquerade as negatives.
 
-    if valid:
-        valid.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return valid[0][2]
+    When migrating an already-running experiment, ``candidate_indices`` can be
+    restricted to the originally reserved holdout synsets.  Cross-POS fallback
+    is allowed only for that migration path so the holdout never leaks a new
+    synset that may have appeared in earlier training.
+    """
+    if candidate_indices is None:
+        primary_pool = list(by_pos[positive["pos"]])
+    else:
+        primary_pool = [
+            int(i) for i in candidate_indices
+            if synsets[int(i)]["pos"] == positive["pos"]
+        ]
 
-    pool = by_pos[positive["pos"]]
-    for _ in range(500):
-        candidate = synsets[rng.choice(pool)]
-        if candidate["id"] == positive["id"]:
-            continue
-        if any(lemma.lower() == headword_l for lemma in candidate["lemmas"]):
-            continue
-        return candidate
-    raise RuntimeError(f"could not find negative definition for {headword!r}")
+    def choose_zero_overlap(pool: list[int]) -> dict | None:
+        if not pool:
+            return None
+        # Randomize first, then prefer roughly similar gloss length.  Similar
+        # length prevents a cheap length cue while zero content overlap keeps
+        # the semantic contrast deliberately overt.
+        order = list(pool)
+        rng.shuffle(order)
+        valid = []
+        for index in order:
+            candidate = synsets[index]
+            if not _negative_candidate_ok(positive, headword, candidate):
+                continue
+            if positive["tokens"] & candidate["tokens"]:
+                continue
+            lexical_file_penalty = int(
+                candidate.get("lex_filenum") == positive.get("lex_filenum")
+            )
+            length_gap = abs(len(candidate["definition"]) - len(positive["definition"]))
+            valid.append((lexical_file_penalty, length_gap, rng.random(), candidate))
+            if len(valid) >= 64:
+                break
+        if not valid:
+            return None
+        valid.sort(key=lambda item: (item[0], item[1], item[2]))
+        return valid[0][3]
+
+    chosen = choose_zero_overlap(primary_pool)
+    if chosen is not None:
+        return chosen
+
+    if allow_cross_pos_fallback and candidate_indices is not None:
+        chosen = choose_zero_overlap([int(i) for i in candidate_indices])
+        if chosen is not None:
+            return chosen
+
+    raise RuntimeError(
+        f"could not find overt zero-content-overlap negative definition for {headword!r}"
+    )
 
 
 def build_pairs(synsets: list[dict], count: int, seed: int) -> list[tuple[str, dict, dict]]:
     rng = random.Random(seed)
     by_pos: dict[str, list[int]] = defaultdict(list)
-    inverted: dict[tuple[str, str], list[int]] = defaultdict(list)
     for i, synset in enumerate(synsets):
         by_pos[synset["pos"]].append(i)
-        for token in synset["tokens"]:
-            inverted[(synset["pos"], token)].append(i)
 
     indices = list(range(len(synsets)))
     rng.shuffle(indices)
@@ -291,12 +332,11 @@ def build_pairs(synsets: list[dict], count: int, seed: int) -> list[tuple[str, d
         headword = pick_headword(positive, seen_words, rng)
         if headword is None:
             continue
-        negative = hard_negative_for(
+        negative = overt_negative_for(
             positive,
             headword,
             synsets=synsets,
             by_pos=by_pos,
-            inverted=inverted,
             rng=rng,
         )
         pairs.append((headword, positive, negative))
@@ -305,6 +345,82 @@ def build_pairs(synsets: list[dict], count: int, seed: int) -> list[tuple[str, d
     if len(pairs) != count:
         raise RuntimeError(f"requested {count} dictionary pairs but built {len(pairs)}")
     return pairs
+
+
+def build_overt_pairs_from_reserved_records(
+    synsets: list[dict],
+    records: list[dict],
+    seed: int,
+) -> tuple[list[tuple[str, dict, dict]], set[str]]:
+    """Rebuild an existing held-out probe with overt negatives only.
+
+    Every replacement negative is drawn exclusively from synsets that were
+    already reserved by the old probe.  This is important for a live migration:
+    no newly chosen dev synset can have leaked through earlier training cycles.
+    """
+    synset_index = {synset["id"]: i for i, synset in enumerate(synsets)}
+    reserved_ids: set[str] = set()
+    positives_by_family: dict[str, dict] = {}
+    for row in records:
+        metadata = row.get("metadata", {})
+        positive_id = metadata.get("positive_synset_id")
+        candidate_id = metadata.get("candidate_synset_id")
+        if positive_id:
+            reserved_ids.add(str(positive_id))
+        if candidate_id:
+            reserved_ids.add(str(candidate_id))
+        if bool(row.get("gold", {}).get("definition_matches")):
+            positives_by_family[str(row.get("family_id", row.get("id", "")))] = row
+
+    missing = sorted(sid for sid in reserved_ids if sid not in synset_index)
+    if missing:
+        raise RuntimeError(f"reserved dictionary synsets disappeared from WordNet: {missing[:5]}")
+    if not positives_by_family:
+        raise RuntimeError("existing dictionary probe has no TRUE records to preserve")
+
+    reserved_indices = [synset_index[sid] for sid in sorted(reserved_ids)]
+    by_pos: dict[str, list[int]] = defaultdict(list)
+    for index in reserved_indices:
+        by_pos[synsets[index]["pos"]].append(index)
+
+    rng = random.Random(seed ^ 0x0A11CE)
+    used_negative_ids: set[str] = set()
+    pairs: list[tuple[str, dict, dict]] = []
+    for family_id in sorted(positives_by_family):
+        row = positives_by_family[family_id]
+        metadata = row["metadata"]
+        positive_id = str(metadata["positive_synset_id"])
+        headword = str(metadata["headword"])
+        positive = synsets[synset_index[positive_id]]
+
+        unused_indices = [
+            index for index in reserved_indices
+            if synsets[index]["id"] not in used_negative_ids
+        ]
+        try:
+            negative = overt_negative_for(
+                positive,
+                headword,
+                synsets=synsets,
+                by_pos=by_pos,
+                rng=rng,
+                candidate_indices=unused_indices,
+                allow_cross_pos_fallback=True,
+            )
+        except RuntimeError:
+            negative = overt_negative_for(
+                positive,
+                headword,
+                synsets=synsets,
+                by_pos=by_pos,
+                rng=rng,
+                candidate_indices=reserved_indices,
+                allow_cross_pos_fallback=True,
+            )
+        used_negative_ids.add(negative["id"])
+        pairs.append((headword, positive, negative))
+
+    return pairs, reserved_ids
 
 
 def make_record(
@@ -351,7 +467,7 @@ def make_record(
             "part_of_speech": POS_NAMES.get(positive["pos"], positive["pos"]),
             "positive_synset_id": positive["id"],
             "candidate_synset_id": candidate["id"],
-            "negative_strategy": None if truth else "same_pos_lexical_overlap",
+            "negative_strategy": None if truth else NEGATIVE_STRATEGY_ID,
         },
     }
 
@@ -624,6 +740,13 @@ def main() -> None:
             family_counts[row["family_id"]][truth] += 1
         if any(sides != {False: 1, True: 1} for sides in family_counts.values()):
             raise RuntimeError("dictionary pair construction self-test failed")
+        for headword, positive, negative in pairs:
+            if positive["pos"] != negative["pos"]:
+                raise RuntimeError(f"overt negative changed part of speech for {headword!r}")
+            if positive["tokens"] & negative["tokens"]:
+                raise RuntimeError(f"overt negative retained content-word overlap for {headword!r}")
+            if not _negative_candidate_ok(positive, headword, negative):
+                raise RuntimeError(f"overt negative failed semantic-safety guards for {headword!r}")
         print(json.dumps({
             "event": "dictionary_smoke_self_test_ok",
             "dictionary": str(dictionary_path),
@@ -631,6 +754,7 @@ def main() -> None:
             "synsets": len(synsets),
             "pairs": len(pairs),
             "records": len(records),
+            "negative_strategy": NEGATIVE_STRATEGY,
         }, sort_keys=True))
         return
 
@@ -747,7 +871,7 @@ def main() -> None:
             "seed": args.seed,
             "pairs": len(pairs),
             "questions": len(records),
-            "negative_strategy": "same-part-of-speech lexical-overlap hard negative",
+            "negative_strategy": NEGATIVE_STRATEGY,
         },
         "modes": metrics_by_mode,
         "deltas": deltas,
