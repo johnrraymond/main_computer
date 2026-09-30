@@ -750,19 +750,40 @@ def _successful_live_current_topology_baseline(path: Path) -> bool:
     )
 
 
-def _auto_baseline_matches(patterns: list[Path]) -> list[Path]:
+_REMOVE_AUTO_BASELINE_KIND_BY_DIRECTORY = {
+    "deployment-node-add-post-admission-observe": "main_computer.mother.add_node_post_admission_topology_evidence.v1",
+    "deployment-node-remove-finalize": REMOVE_FINALIZE_EVIDENCE_KIND,
+    "deployment-node-add-single-node-chain-and-hub-proof": "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1",
+    LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY: LIVE_CURRENT_TOPOLOGY_EVIDENCE_KIND,
+}
+
+
+def _remove_auto_baseline_supported(path: Path) -> bool:
+    expected_kind = _REMOVE_AUTO_BASELINE_KIND_BY_DIRECTORY.get(path.parent.name)
+    if expected_kind is None:
+        return False
+    try:
+        document = _read_json_object(path)
+    except SystemExit:
+        return False
+    return document.get("kind") == expected_kind
+
+
+def _auto_baseline_matches(args: argparse.Namespace, patterns: list[Path]) -> list[Path]:
     matches: list[Path] = []
     for pattern in patterns:
         matches.extend(
             path
             for path in pattern.parent.glob(pattern.name)
-            if path.is_file() and _successful_live_current_topology_baseline(path)
+            if path.is_file()
+            and _successful_live_current_topology_baseline(path)
+            and (args.operation != "remove-node" or _remove_auto_baseline_supported(path))
         )
     return matches
 
 
 def select_auto_baseline_file(args: argparse.Namespace, patterns: list[Path]) -> Path | None:
-    matches = _auto_baseline_matches(patterns)
+    matches = _auto_baseline_matches(args, patterns)
     if not matches:
         return None
     return max(matches, key=lambda path: (_baseline_path_recency(path), path.stat().st_mtime, path.name))
@@ -1011,6 +1032,20 @@ class Harness:
             "--execute",
             "--allow-mutation",
         ])
+        return argv
+
+    def out_of_band_reseal_input_cmd(self, nodes: list[str]) -> list[str]:
+        argv = [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_build_reseal_input.py"),
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--network", self.args.network,
+            "--source-evidence", require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--timeout", str(self.args.timeout),
+            "--max-response-bytes", str(self.args.max_response_bytes),
+        ]
+        for node in nodes:
+            argv.extend(["--node", str(node)])
         return argv
 
     def reserve_identity_cmd(self, *, execute: bool) -> list[str]:
@@ -1329,6 +1364,41 @@ class Harness:
 
             print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_SPLIT_LIVE: live Coolify inventory contains nodes outside the supplied Mother topology evidence.")
             print(json.dumps(short_summary("detect-topology", obj), indent=2, sort_keys=True))
+
+            reseal_nodes = [
+                str(node)
+                for node in (obj.get("observed_live_node_hints") or [])
+                if isinstance(node, str) and node
+            ]
+            reseal_nodes = list(dict.fromkeys(reseal_nodes))
+            if not reseal_nodes:
+                print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_SPLIT_RESEAL_INPUT_UNAVAILABLE: no non-empty live node set was established.")
+                raise SystemExit(3)
+
+            builder = self.repo_root / "tools" / "mother_build_reseal_input.py"
+            if not builder.is_file():
+                print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_SPLIT_RESEAL_INPUT_BUILDER_MISSING: tools/mother_build_reseal_input.py is not installed.")
+                raise SystemExit(3)
+
+            reseal_input = self.run(
+                "topology-split-build-reseal-input",
+                self.out_of_band_reseal_input_cmd(reseal_nodes),
+            )
+            reseal_path = require("reseal_input", reseal_input.get("reseal_input"))
+            reseal_sha = require("reseal_input_sha256", reseal_input.get("reseal_input_sha256"))
+            reseal_argv = reseal_input.get("reseal_command_argv")
+            if not isinstance(reseal_argv, list) or not reseal_argv or not all(isinstance(item, str) for item in reseal_argv):
+                reseal_argv = self.seal_live_current_topology_cmd(
+                    topology_evidence=str(reseal_path),
+                    topology_evidence_sha256=str(reseal_sha),
+                )
+
+            print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_SPLIT_RESEAL_INPUT_GENERATED: out-of-band reseal input is ready.")
+            print(f"reseal_input={reseal_path}")
+            print(f"reseal_input_sha256={reseal_sha}")
+            print("Run this exact read-only reseal command:")
+            print(quote_command([str(item) for item in reseal_argv]))
+            print("After the reseal passes, rerun the harness without the stale explicit baseline so normal auto-baseline selection can use the new canonical seal.")
             raise SystemExit(3)
         if manual_review_required and (not topology_current or topology_stale):
             print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_MANUAL_REVIEW_REQUIRED: supplied topology evidence does not match the live non-empty topology.")
@@ -2224,6 +2294,17 @@ class Harness:
         print("\n=== harness complete ===")
         print(json.dumps({k: v for k, v in self.state.items() if v not in (None, "")}, indent=2, sort_keys=True))
         print(f"logs={self.run_dir}")
+        pristine_cleanup_argv = [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_pristine_cleanup.py"),
+            "execute",
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--network", self.args.network,
+            "--yes-i-know-this-deletes-ephemeral-mother-services",
+        ]
+        print("\nOptional manual pristine cleanup:")
+        print("Run this manually if you wish to keep Coolify pristine by removing leftover ephemeral Mother services:")
+        print(quote_command(pristine_cleanup_argv))
 
 
 def build_parser() -> argparse.ArgumentParser:

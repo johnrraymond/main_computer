@@ -786,11 +786,6 @@ def build_node_add_prep_transaction(
         route_source = "recorded-validator-route-binding"
     else:
         known_historical_target = mode == "reactivate" or removed_target is not None or target in historical_nodes
-        if known_historical_target:
-            raise _fail(
-                "MOTHER_DEPLOY_NODE_ADD_PREP_REACTIVATION_ROUTE_MISSING",
-                f"{target} is a known historical node but has no permanent validator route binding",
-            )
         target_validator_route = allocate_candidate_validator_route(
             private_state,
             network=network,
@@ -798,7 +793,11 @@ def build_node_add_prep_transaction(
             existing_services=current_services,
             reserved_bindings=route_bindings,
         )
-        route_source = "new-validator-route-allocation"
+        route_source = (
+            "reactivation-missing-route-binding-repair"
+            if known_historical_target
+            else "new-validator-route-allocation"
+        )
 
     try:
         target_route_binding = require_validator_route_binding(target_validator_route, label=f"{target} validator route binding")

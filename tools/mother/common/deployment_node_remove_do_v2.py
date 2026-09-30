@@ -709,6 +709,105 @@ def _fetch_node_remove_do_proof_payload(
     return None, summary
 
 
+
+_NODE_REMOVE_DO_PROOF_LOG_PREFIX = "MOTHER_NODE_REMOVE_DO_PROOF_JSON="
+
+
+def _node_remove_do_log_text_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        values: list[str] = []
+        for key, child in value.items():
+            if str(key).lower() in {"docker_compose_raw", "docker_compose", "compose", "source", "raw"}:
+                continue
+            values.extend(_node_remove_do_log_text_values(child))
+        return values
+    if isinstance(value, (list, tuple)):
+        values: list[str] = []
+        for child in value:
+            values.extend(_node_remove_do_log_text_values(child))
+        return values
+    return []
+
+
+def _node_remove_do_proof_from_logs_payload(value: Any) -> Mapping[str, Any] | None:
+    for text in _node_remove_do_log_text_values(value):
+        for line in text.splitlines():
+            if _NODE_REMOVE_DO_PROOF_LOG_PREFIX not in line:
+                continue
+            encoded = line.split(_NODE_REMOVE_DO_PROOF_LOG_PREFIX, 1)[1].strip()
+            try:
+                payload = json.loads(encoded)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, Mapping):
+                return payload
+    return None
+
+
+def _fetch_node_remove_do_guardian_log_proof(
+    controller: Any,
+    *,
+    service_uuid: str,
+    guardian: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> tuple[Mapping[str, Any] | None, dict[str, Any]]:
+    encoded_service = urllib.parse.quote(str(service_uuid), safe="")
+    encoded_guardian = urllib.parse.quote(str(guardian), safe="")
+    endpoints = (
+        f"/api/v1/services/{encoded_service}/logs?sub_service_name={encoded_guardian}",
+        f"/api/v1/services/{encoded_service}/logs",
+    )
+    probes: list[dict[str, Any]] = []
+    for endpoint in endpoints:
+        try:
+            response = _http(
+                controller,
+                "GET",
+                endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+        except Exception as exc:
+            probes.append({
+                "method": "GET",
+                "endpoint": endpoint,
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:300],
+            })
+            continue
+        payload = _node_remove_do_proof_from_logs_payload(response.get("payload"))
+        probes.append({
+            "method": "GET",
+            "endpoint": endpoint,
+            "status": response.get("status"),
+            "ok": response.get("ok"),
+            "response_sha256": response.get("response_sha256"),
+            "byte_length": response.get("byte_length"),
+            "elapsed_ms": response.get("elapsed_ms"),
+            "proof_payload_observed": isinstance(payload, Mapping),
+        })
+        if isinstance(payload, Mapping):
+            return payload, {
+                "transport": "coolify-service-line-logs",
+                "ok": True,
+                "proof_payload_observed": True,
+                "probes": probes,
+            }
+    return None, {
+        "transport": "coolify-service-line-logs",
+        "ok": False,
+        "proof_payload_observed": False,
+        "probes": probes,
+    }
+
+
 def _node_remove_do_proof_endpoint_reachable(fetch_summary: Mapping[str, Any], payload: Mapping[str, Any] | None) -> bool:
     status = fetch_summary.get("status")
     # A live remove-helper proof server returns 404 until /proof exists.  A 200
@@ -822,6 +921,25 @@ def _observe_removal_guardian_deployment(
         proof_payload_source = "http-public-proof-endpoint-missing"
 
     proof_payload_verified = _node_remove_do_proof_payload_verified(proof_payload, voter=voter, release=release)
+    log_proof_payload: Mapping[str, Any] | None = None
+    log_proof_summary: dict[str, Any] | None = None
+    if not proof_payload_verified:
+        log_proof_payload, log_proof_summary = _fetch_node_remove_do_guardian_log_proof(
+            controller,
+            service_uuid=service_uuid,
+            guardian=guardian,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        if isinstance(log_proof_payload, Mapping):
+            proof_payload = log_proof_payload
+            proof_payload_source = "coolify-service-line-logs"
+            proof_payload_verified = _node_remove_do_proof_payload_verified(
+                proof_payload,
+                voter=voter,
+                release=release,
+            )
     endpoint_reachable = _node_remove_do_proof_endpoint_reachable(proof_fetch_summary, fetched_payload)
 
     compose_installed = guardian in compose_text
@@ -840,8 +958,10 @@ def _observe_removal_guardian_deployment(
     })
     if proof_fetch_summary is not None:
         observation["proof_endpoint_probe"] = proof_fetch_summary
+    if log_proof_summary is not None:
+        observation["proof_log_probe"] = log_proof_summary
 
-    observation["verified"] = True and proof_payload_verified
+    observation["verified"] = bool(proof_payload_verified)
     if not observation["verified"]:
         if not compose_installed:
             observation["reason"] = "removal guardian Compose is not visible in exact survivor service detail"
@@ -2680,6 +2800,7 @@ def execute_node_remove_do_release(
                         proof_payload = _guardian_component_node_remove_do_proof(record, guardian_name=guardian)
                         proof_payload_source = "coolify-component-detail" if isinstance(proof_payload, Mapping) else "missing"
                     proof_fetch_summary: dict[str, Any] | None = None
+                    proof_log_summary: dict[str, Any] | None = None
                     if (
                         not isinstance(proof_payload, Mapping)
                         or not _node_remove_do_proof_payload_verified(proof_payload, voter=voter, release=release)
@@ -2695,6 +2816,24 @@ def execute_node_remove_do_release(
                             proof_payload_source = "http-public-proof-endpoint"
                         elif not isinstance(proof_payload, Mapping):
                             proof_payload_source = "http-public-proof-endpoint-missing"
+                    if (
+                        strategy != "host-docker-besu-network-helper"
+                        and (
+                            not isinstance(proof_payload, Mapping)
+                            or not _node_remove_do_proof_payload_verified(proof_payload, voter=voter, release=release)
+                        )
+                    ):
+                        log_payload, proof_log_summary = _fetch_node_remove_do_guardian_log_proof(
+                            controller,
+                            service_uuid=target_uuid,
+                            guardian=guardian,
+                            timeout=timeout,
+                            max_response_bytes=max_response_bytes,
+                            opener=opener,
+                        )
+                        if isinstance(log_payload, Mapping):
+                            proof_payload = log_payload
+                            proof_payload_source = "coolify-service-line-logs"
                     proof_payload_missing_fields = _node_remove_do_proof_payload_missing_fields(proof_payload)
                     proof_payload_verified = _node_remove_do_proof_payload_verified(proof_payload, voter=voter, release=release)
                     proof_payload_sha = _node_remove_do_proof_payload_sha256(proof_payload) if isinstance(proof_payload, Mapping) else None
@@ -2735,6 +2874,8 @@ def execute_node_remove_do_release(
                     }
                     if proof_fetch_summary is not None:
                         observation["guardian_proof_fetch"] = proof_fetch_summary
+                    if proof_log_summary is not None:
+                        observation["guardian_proof_log_fetch"] = proof_log_summary
                     health_observations.append(observation)
             if set(guardians) <= proven_voters:
                 break
