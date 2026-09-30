@@ -63,6 +63,7 @@ COMMON_STEPS = [
 ]
 
 POST_WORK_CLEANUP_STEP = "post-work-cleanup"
+PRISTINE_CLEANUP_STEP = "pristine-cleanup"
 FRESH_EMPTY_TOPOLOGY_REFRESH_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 SINGLE_NODE_STEPS = [
@@ -73,6 +74,7 @@ SINGLE_NODE_STEPS = [
     "finalize-single-node-proof",
     "verify-single-node-proof",
     POST_WORK_CLEANUP_STEP,
+    PRISTINE_CLEANUP_STEP,
 ]
 
 REPLICA_ADMISSION_STEPS = [
@@ -86,6 +88,7 @@ REPLICA_ADMISSION_STEPS = [
     "verify-validator-admission-evidence",
     "finalize-post-admission-topology",
     POST_WORK_CLEANUP_STEP,
+    PRISTINE_CLEANUP_STEP,
 ]
 
 REMOVE_STEPS = [
@@ -102,6 +105,7 @@ REMOVE_STEPS = [
     "finalize-remove",
     "verify-remove-finalize",
     POST_WORK_CLEANUP_STEP,
+    PRISTINE_CLEANUP_STEP,
 ]
 
 
@@ -117,10 +121,10 @@ def _unique_steps(steps: list[str]) -> list[str]:
 
 STEP_ORDER = _unique_steps(
     COMMON_STEPS
-    + [step for step in SINGLE_NODE_STEPS if step != POST_WORK_CLEANUP_STEP]
-    + [step for step in REPLICA_ADMISSION_STEPS if step != POST_WORK_CLEANUP_STEP]
-    + [step for step in REMOVE_STEPS if step != POST_WORK_CLEANUP_STEP]
-    + [POST_WORK_CLEANUP_STEP]
+    + [step for step in SINGLE_NODE_STEPS if step not in {POST_WORK_CLEANUP_STEP, PRISTINE_CLEANUP_STEP}]
+    + [step for step in REPLICA_ADMISSION_STEPS if step not in {POST_WORK_CLEANUP_STEP, PRISTINE_CLEANUP_STEP}]
+    + [step for step in REMOVE_STEPS if step not in {POST_WORK_CLEANUP_STEP, PRISTINE_CLEANUP_STEP}]
+    + [POST_WORK_CLEANUP_STEP, PRISTINE_CLEANUP_STEP]
 )
 
 MUTATION_STEPS = {
@@ -130,6 +134,7 @@ MUTATION_STEPS = {
     "execute-replica-sync",
     "execute-validator-admission",
     "execute-remove-do",
+    PRISTINE_CLEANUP_STEP,
 }
 
 
@@ -1000,6 +1005,7 @@ class Harness:
             "remove_finalize_evidence": args.remove_finalize_evidence,
             "remove_finalize_evidence_sha256": args.remove_finalize_evidence_sha256,
             "post_work_cleanup_results": [],
+            "pristine_cleanup_result": None,
         }
 
     def cmd(self, *parts: Any) -> list[str]:
@@ -2215,6 +2221,26 @@ class Harness:
 
         self.state["post_work_cleanup_results"] = results
 
+    def step_pristine_cleanup(self) -> None:
+        obj = self.run(
+            PRISTINE_CLEANUP_STEP,
+            [
+                sys.executable,
+                str(self.repo_root / "tools" / "mother_pristine_cleanup.py"),
+                "execute",
+                "--runtime-state-root", self.args.runtime_state_root,
+                "--network", self.args.network,
+                "--yes-i-know-this-deletes-ephemeral-mother-services",
+            ],
+        )
+        self.state["pristine_cleanup_result"] = {
+            "status": obj.get("status"),
+            "candidate_count": obj.get("candidate_count"),
+            "deleted_count": pick(obj, "summary.deleted_count"),
+            "already_absent_count": pick(obj, "summary.already_absent_count"),
+            "clean": pick(obj, "summary.clean"),
+        }
+
     def methods(self) -> dict[str, Any]:
         return {
             "detect-topology": self.step_detect_topology,
@@ -2256,6 +2282,7 @@ class Harness:
             "finalize-remove": self.step_finalize_remove,
             "verify-remove-finalize": self.step_verify_remove_finalize,
             POST_WORK_CLEANUP_STEP: self.step_post_work_cleanup,
+            PRISTINE_CLEANUP_STEP: self.step_pristine_cleanup,
         }
 
     def run_steps(self, steps: list[str], start_at: str) -> None:
@@ -2294,23 +2321,12 @@ class Harness:
         print("\n=== harness complete ===")
         print(json.dumps({k: v for k, v in self.state.items() if v not in (None, "")}, indent=2, sort_keys=True))
         print(f"logs={self.run_dir}")
-        pristine_cleanup_argv = [
-            sys.executable,
-            str(self.repo_root / "tools" / "mother_pristine_cleanup.py"),
-            "execute",
-            "--runtime-state-root", self.args.runtime_state_root,
-            "--network", self.args.network,
-            "--yes-i-know-this-deletes-ephemeral-mother-services",
-        ]
-        print("\nOptional manual pristine cleanup:")
-        print("Run this manually if you wish to keep Coolify pristine by removing leftover ephemeral Mother services:")
-        print(quote_command(pristine_cleanup_argv))
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=["add-node", "remove-node"])
-    parser.add_argument("--runtime-state-root", required=True)
+    parser.add_argument("--runtime-state-root", default=str((Path(__file__).resolve().parent / "runtime" / "state").resolve()))
     parser.add_argument("--network", default="mainnet")
     parser.add_argument("--node", default="mainneta-super1")
     parser.add_argument("--host", default="coolify-a")

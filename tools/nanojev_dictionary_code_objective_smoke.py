@@ -773,8 +773,8 @@ def main() -> None:
     parser.add_argument("--dictionary-cache", default=DEFAULT_DICTIONARY_CACHE)
     parser.add_argument("--dictionary-url", default=DEFAULT_DICTIONARY_URL)
     parser.add_argument(
-        "--cycles", type=int, default=20,
-        help="number of additional training cycles to execute on this invocation",
+        "--cycles", type=int, default=None,
+        help="deprecated compatibility argument; accepted but ignored because training runs continuously until interrupted",
     )
     parser.add_argument("--train-questions-per-cycle", type=int, default=96)
     parser.add_argument("--eval-questions-per-cycle", type=int, default=128)
@@ -798,7 +798,7 @@ def main() -> None:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
-    for name in ("cycles", "train_questions_per_cycle", "eval_questions_per_cycle", "steps_per_cycle",
+    for name in ("train_questions_per_cycle", "eval_questions_per_cycle", "steps_per_cycle",
                  "batch_questions", "eval_batch_questions", "cache_qwen_batch_questions"):
         if int(getattr(args, name)) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
@@ -943,6 +943,8 @@ def main() -> None:
             backbone_frozen=all(not p.requires_grad for p in model.backbone.parameters()),
             database=store.stats(),
             reserve=store.reserve_counts(),
+            continuous_training=True,
+            cycles_argument_ignored=args.cycles,
         )
 
         # One rotating fresh baseline.  Evaluation objects are permanently excluded
@@ -966,9 +968,9 @@ def main() -> None:
         streak = int(state.get("success_streak", 0))
         learned_observed = bool(state.get("learned_observed", False))
         learned_cycle = state.get("learned_cycle")
-        final_cycle = cycle_start
-        for offset in range(1, args.cycles + 1):
-            cycle = cycle_start + offset
+        cycle = cycle_start
+        while True:
+            cycle += 1
             train_rng = random.Random(stable_seed(args.seed, cycle, "train"))
             eval_rng = random.Random(stable_seed(args.seed, cycle, "eval"))
             train_questions = registry.generate_train(
@@ -1070,7 +1072,6 @@ def main() -> None:
             }
             atomic_json(state_path, state)
             emit("dictionary_code_smoke_cycle", cycle=cycle, metrics=metrics, checkpoint=str(checkpoint))
-            final_cycle = cycle
 
             if learned_now:
                 emit(
@@ -1084,32 +1085,6 @@ def main() -> None:
                     training_continues=True,
                 )
 
-        if not learned_observed:
-            emit(
-                "dictionary_code_smoke_not_yet_learned",
-                cycle=final_cycle,
-                target_accuracy=args.target_accuracy,
-                achieved_streak=streak,
-                last_paired_accuracy=eval_metrics["paired"]["accuracy"],
-                coverage=store.stats(),
-            )
-
-        if old_cached:
-            final_old = evaluate_old_probes(
-                direct=direct, model=model, cached=old_cached,
-                batch_questions=args.eval_batch_questions,
-            )
-            atomic_json(experiment_dir / f"old_probe_after_cycle_{final_cycle:06d}.json", final_old)
-            emit("old_probe_after", cycle=final_cycle, metrics=final_old, overall=direct.aggregate_metrics(final_old))
-
-        emit(
-            "dictionary_code_objective_smoke_done",
-            cycle=final_cycle,
-            global_step=global_step,
-            database=store.stats(),
-            reserve=store.reserve_counts(),
-            latest_checkpoint=state.get("latest_checkpoint"),
-        )
 
 
 if __name__ == "__main__":

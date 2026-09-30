@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Manual cleanup of orphaned top-level Ephemeral Mother Coolify services.
+"""Cleanup of orphaned top-level Ephemeral Mother Coolify services.
 
-This script is intentionally standalone and is never called by Mother harnesses.
-It discovers top-level Coolify service rows in the configured network/project,
-selects only rows that are explicitly marked as ephemeral Mother helpers, and
-can delete them after an explicit operator acknowledgement.
+This script can be called directly or as the final cleanup step of a successful
+Mother add/remove harness. It discovers top-level Coolify service rows in the
+configured network/project, selects only rows that are explicitly marked as
+ephemeral Mother helpers, and deletes them after an explicit acknowledgement.
 
 It does not inspect or modify validator topology, node identities, routes,
 Compose contents of primary node services, Docker containers directly, or
@@ -509,7 +509,9 @@ def run(
         "deletions": [],
         "live_mutation_performed": False,
         "policy": {
-            "manual_only": True,
+            "manual_only": False,
+            "manual_invocation_supported": True,
+            "automatic_harness_final_cleanup_supported": True,
             "allowed_http_methods": ["GET"] if mode == "inspect" else ["GET", "DELETE"],
             "eligibility": "top-level Coolify service belongs to configured project/network and is explicitly Ephemeral Mother",
             "validator_mutation_performed": False,
@@ -590,7 +592,7 @@ def run(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Manually inspect or delete top-level Ephemeral Mother Coolify service rows from the configured network project.",
+        description="Inspect or delete top-level Ephemeral Mother Coolify service rows from the configured network project.",
         allow_abbrev=False,
     )
     parser.add_argument("mode", choices=["inspect", "execute"])

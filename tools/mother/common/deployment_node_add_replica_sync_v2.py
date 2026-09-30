@@ -1477,7 +1477,7 @@ def _sync_script(
         "    if rpc('eth_syncing', []) is not False:",
         "        raise RuntimeError('replica is still syncing')",
         "    validators = [str(item).lower() for item in rpc('qbft_getValidatorsByBlockNumber', ['latest'])]",
-        "    if validators != EXPECTED_VALIDATORS:",
+        "    if sorted(validators) != sorted(EXPECTED_VALIDATORS):",
         "        raise RuntimeError('validator set mismatch')",
         "    if TARGET_VALIDATOR_ADDRESS in validators:",
         "        raise RuntimeError('target is already a validator')",
@@ -1882,7 +1882,7 @@ def build_node_add_replica_sync_release(
             ],
             "mutations": [
                 {"ordinal": 1, "mutation_id": f"{node}.install-replica-sync-compose", "controller_id": controller_id, "method": "PATCH", "endpoint": f"/api/v1/services/{service_uuid_quoted}", "canonical_request_body": body, "body_sha256": body_sha, "success_statuses": [200, 201, 202]},
-                {"ordinal": 2, "mutation_id": f"{node}.start-replica-sync-compose", "controller_id": controller_id, "method": "POST", "endpoint": f"/api/v1/services/{service_uuid_quoted}/start", "canonical_request_body": None, "body_sha256": None, "success_statuses": [200, 201, 202]},
+                {"ordinal": 2, "mutation_id": f"{node}.deploy-replica-sync-compose", "controller_id": controller_id, "method": "POST", "endpoint": "/api/v1/deploy", "canonical_request_body": {"uuid": service_uuid, "force": True}, "body_sha256": hashlib.sha256(canonical_json({"uuid": service_uuid, "force": True})).hexdigest(), "success_statuses": [200, 201, 202]},
             ],
             "proof": {
                 "transport": "coolify-control-plane-plus-temporary-docker-helper",
@@ -2483,6 +2483,328 @@ def execute_node_add_replica_sync_release(
     return {**evidence, "evidence": {"path": str(path), "sha256": digest}}
 
 
+
+def adopt_node_add_replica_sync_live_proof(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    failed_evidence_path: Path,
+    *,
+    acknowledged_failed_evidence_sha256: str,
+    max_age_seconds: int = 86400,
+    timeout: float = 30.0,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    max_wait_seconds: float = 300.0,
+    poll_interval_seconds: float = 5.0,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    """Read-only adopt replica-sync proof that converged after executor timeout.
+
+    The source execution must already have completed both replica-sync service
+    mutations successfully.  Adoption performs only Coolify GET observations,
+    requires the released replica-sync Compose to still be installed, and waits
+    for both the replica node and its internal proof guardian to report healthy.
+    It never redeploys the service and therefore cannot reset a replica that has
+    already spent time synchronizing.
+    """
+
+    resolved = Path(failed_evidence_path).resolve(strict=False)
+    allowed = _root(paths, _EVIDENCE_DIRECTORY).resolve(strict=False)
+    try:
+        resolved.relative_to(allowed)
+    except ValueError as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_PATH_INVALID",
+            "failed replica-sync evidence is outside its evidence directory",
+        ) from exc
+
+    failed, _raw, failed_sha = _canonical_file(resolved)
+    expected_sha = _sha256(
+        acknowledged_failed_evidence_sha256,
+        "failed replica-sync evidence SHA-256",
+    )
+    if failed_sha != expected_sha:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_ACK_MISMATCH",
+            "failed replica-sync evidence SHA-256 mismatch",
+        )
+    if (
+        failed.get("kind") != _EVIDENCE_KIND
+        or failed.get("mother_binding") != _binding(private_state)
+        or _contains_sensitive(failed)
+    ):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "failed replica-sync evidence is invalid or sensitive",
+        )
+    if _age_seconds(failed.get("completed_at"), now=now) > max_age_seconds:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_STALE",
+            "failed replica-sync evidence is outside the adoption freshness window",
+        )
+    if failed.get("status") == "pass" or failed.get("next_phase") != "manual-review-required":
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "source replica-sync evidence is not an unclean failed execution",
+        )
+    if failed.get("validator_admission_performed") is not False:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "source evidence is beyond the replica-sync boundary",
+        )
+
+    receipts = failed.get("mutation_receipts")
+    if not (
+        isinstance(receipts, list)
+        and len(receipts) == 2
+        and all(
+            isinstance(item, Mapping)
+            and item.get("status") == "succeeded"
+            and item.get("live_write_acknowledged") is True
+            for item in receipts
+        )
+    ):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "source evidence does not prove both replica-sync service mutations succeeded",
+        )
+
+    release_ref = failed.get("release")
+    if not isinstance(release_ref, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "source replica-sync release binding is missing",
+        )
+    release_path = _resolve_under(
+        paths,
+        release_ref.get("locator"),
+        _RELEASE_DIRECTORY,
+        label="add-node replica-sync release",
+    )
+    release, _release_raw, _release_file_sha = _canonical_file(release_path)
+    release_digest = _digest_without(release, "node_add_replica_sync_release_sha256")
+    if (
+        release.get("kind") != _RELEASE_KIND
+        or release.get("node_add_replica_sync_release_sha256") != release_digest
+        or release_ref.get("sha256") != release_digest
+        or release.get("mother_binding") != _binding(private_state)
+        or _contains_sensitive(release)
+    ):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "source replica-sync release binding is invalid",
+        )
+
+    target = failed.get("target")
+    plan = release.get("proof_plan")
+    if not isinstance(target, Mapping) or not isinstance(plan, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "source target or release proof plan is missing",
+        )
+    node = _identifier(target.get("node"), "target node")
+    controller_id = _identifier(target.get("controller_id"), "target controller")
+    service_uuid = _identifier(target.get("created_service_uuid"), "created service UUID")
+    release_target = release.get("target")
+    if not isinstance(release_target, Mapping) or (
+        release_target.get("node") != node
+        or release_target.get("controller_id") != controller_id
+        or release_target.get("created_service_uuid") != service_uuid
+    ):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "source release target does not match failed evidence",
+        )
+    sync_compose = plan.get("sync_compose")
+    if not isinstance(sync_compose, Mapping) or not isinstance(sync_compose.get("canonical_text"), str):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_INVALID",
+            "source release lacks the replica-sync Compose commitment",
+        )
+
+    controller = resolve_coolify_controller(private_state, str(failed.get("network")), controller_id)
+    service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+    observations: list[dict[str, Any]] = []
+    started_at = _timestamp(now=now)
+    component_health = _wait_for_replica_sync_components(
+        controller=controller,
+        controller_id=controller_id,
+        service_uuid=service_uuid,
+        node=node,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        max_wait_seconds=max_wait_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        opener=opener,
+        observations=observations,
+    )
+    if component_health.get("healthy") is not True:
+        summary = component_health.get("component_summary") if isinstance(component_health, Mapping) else {}
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_NOT_HEALTHY",
+            "live replica-sync components are not healthy: "
+            + repr({
+                "node_status": summary.get("node_status") if isinstance(summary, Mapping) else None,
+                "guardian_status": summary.get("guardian_status") if isinstance(summary, Mapping) else None,
+            }),
+        )
+
+    detail = _http(
+        controller,
+        "GET",
+        service_endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if not detail.get("ok"):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_FAILED",
+            f"Coolify service detail failed with HTTP {detail.get('status')}",
+        )
+    service_record = _service_record(detail["payload"], service_uuid=service_uuid, node=node)
+    proof_report = _compose_report(
+        observed=_compose_from_service_record(service_record),
+        expected=str(sync_compose["canonical_text"]),
+        node=node,
+    )
+    if proof_report.get("sync_compose_verified") is not True:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_COMPOSE_MISMATCH",
+            "live target Compose no longer matches the released replica-sync proof Compose",
+        )
+
+    adopted = json.loads(json.dumps(failed))
+    completed_at = _timestamp(now=now)
+    adopted["started_at"] = started_at
+    adopted["completed_at"] = completed_at
+    adopted["status"] = "pass"
+    adopted["failure"] = None
+    adopted["source_failed_replica_sync_evidence"] = {
+        "locator": _relative(paths, resolved, label="failed replica-sync evidence"),
+        "sha256": failed_sha,
+        "status": failed.get("status"),
+        "completed_at": failed.get("completed_at"),
+    }
+    adopted["health_observations"] = observations
+    live_summary = component_health.get("component_summary") if isinstance(component_health, Mapping) else {}
+    adopted["replica_sync_node_readiness"] = {
+        "healthy": True,
+        "reason": "replica-sync-node-running-healthy-during-read-only-adoption",
+        "service_uuid": service_uuid,
+        "node": node,
+        "component_summary": live_summary,
+        "observation_count": component_health.get("observation_count"),
+        "observed_statuses": component_health.get("observed_statuses", []),
+        "wait_seconds": component_health.get("wait_seconds", 0),
+        "wait_milliseconds": component_health.get("wait_milliseconds", 0),
+    }
+    adopted["replica_sync_guardian_start"] = {
+        "status": "pass",
+        "reason": "guardian-already-running-healthy-during-read-only-adoption",
+        "skipped": True,
+        "temporary_service_created": False,
+        "temporary_service_deleted": False,
+        "temporary_service_uuid": None,
+        "temporary_service_name": None,
+        "target_service_uuid": service_uuid,
+        "forced_service": "mother-replica-sync-guardian",
+        "parent_redeploy_performed": False,
+        "parent_restart_performed": False,
+    }
+    adopted["replica_sync_component_health"] = component_health
+    proof = adopted.get("proof") if isinstance(adopted.get("proof"), dict) else {}
+    proof.update({
+        "service_status": live_summary.get("guardian_status") if isinstance(live_summary, Mapping) else None,
+        "component_health": component_health,
+        "compose_verification": proof_report,
+        "target_validator_active": False,
+    })
+    adopted["proof"] = proof
+    preconditions = list(adopted.get("precondition_receipts") or [])
+    preconditions.append({
+        "name": "read-only-live-replica-sync-adoption",
+        "controller_id": controller_id,
+        "method": "GET",
+        "endpoint": service_endpoint,
+        "status": detail.get("status"),
+        "response_sha256": detail.get("response_sha256"),
+        "verified": True,
+        "compose_verification": proof_report,
+        "component_health": component_health,
+    })
+    adopted["precondition_receipts"] = preconditions
+
+    authority = adopted.get("authority") if isinstance(adopted.get("authority"), dict) else {}
+    authority.update({
+        "replica_sync_proven": True,
+        "validator_admission_authorized": False,
+        "validator_vote_authorized": False,
+        "validator_activation_authorized": False,
+        "routing_or_topology_publication_authorized": False,
+        "read_only_live_proof_adoption": True,
+    })
+    adopted["authority"] = authority
+    policy = adopted.get("policy") if isinstance(adopted.get("policy"), dict) else {}
+    policy.update({
+        "allowed_http_methods": ["GET"],
+        "read_only_live_proof_adoption": True,
+        "replica_sync_performed": True,
+        "validator_admission_performed": False,
+        "validator_vote_performed": False,
+        "validator_activation_performed": False,
+        "routing_or_topology_published": False,
+    })
+    adopted["policy"] = policy
+    adopted["replica_sync_performed"] = True
+    adopted["remaining_phases"] = ["admit-validator", "post-admission-observe", "finalize-operation"]
+    adopted["next_phase"] = f"add-node-validator-admission-{failed.get('network')}"
+
+    summary = adopted.get("summary") if isinstance(adopted.get("summary"), dict) else {}
+    summary.update({
+        "clean": True,
+        "complete": True,
+        "replica_sync_performed": True,
+        "replica_sync_proven": True,
+        "service_running_healthy": True,
+        "component_aware_health_verified": True,
+        "sync_compose_verified": True,
+        "genesis_file_commitment_verified": True,
+        "chain_id_verified": True,
+        "genesis_block_present": True,
+        "replica_node_identity_verified": True,
+        "bootnode_peer_verified": True,
+        "peer_count_positive": True,
+        "sync_complete": True,
+        "blocks_advancing": True,
+        "latest_block_fresh": True,
+        "validator_set_verified": True,
+        "target_not_validator": True,
+        "validator_admission_performed": False,
+        "validator_vote_performed": False,
+        "validator_activation_performed": False,
+        "manual_ssh_required": False,
+        "public_endpoint_created": False,
+        "routing_or_topology_published": False,
+        "network_access_performed": True,
+        "live_mutation_performed": False,
+        "read_only_live_proof_adoption": True,
+        "mutation_count": 0,
+        "next_phase": adopted["next_phase"],
+    })
+    adopted["summary"] = summary
+
+    if _contains_sensitive(adopted):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ADOPT_SENSITIVE",
+            "adopted replica-sync evidence contains sensitive material",
+        )
+    evidence_path, evidence_sha = _write_evidence(paths, adopted, operation=operation)
+    adopted["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
+    return adopted
+
 def verify_node_add_replica_sync_evidence(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -2618,6 +2940,7 @@ def verify_node_add_replica_sync_evidence(
 
 __all__ = [
     "MotherDeploymentNodeAddReplicaSyncError",
+    "adopt_node_add_replica_sync_live_proof",
     "build_node_add_replica_sync_release",
     "execute_node_add_replica_sync_release",
     "verify_node_add_replica_sync_evidence",

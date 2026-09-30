@@ -532,6 +532,87 @@ class DictionaryCodeStore:
             )
         }
 
+    def fresh_relation_eval_reserve(self, count: int, rng: random.Random) -> list[dict]:
+        """Reserve fresh word->definition relations as a permanent evaluation holdout.
+
+        Relation holdouts are disjoint from both prior smoke-eval edges and curriculum
+        training edges.  The caller may persist the generated ObjectQuestions and reuse
+        the same holdout indefinitely without consuming more reserve rows.
+        """
+        if count <= 0:
+            return []
+        rows = self.conn.execute(
+            """
+            SELECT r.relation_id, w.word, d.definition_id, d.definition_text, d.pos
+            FROM relation_reserve r
+            JOIN words w ON w.word_id=r.word_id
+            JOIN definitions d ON d.definition_id=r.definition_id
+            WHERE r.status='unused'
+            ORDER BY r.relation_id
+            """
+        ).fetchall()
+        if len(rows) < count:
+            raise RuntimeError(
+                f"not enough fresh dictionary relations for eval: requested={count} available={len(rows)}"
+            )
+        chosen = rng.sample(list(rows), count)
+        with self.transaction():
+            self.conn.executemany(
+                "UPDATE relation_reserve SET status='definition_eval' WHERE relation_id=?",
+                ((str(row["relation_id"]),) for row in chosen),
+            )
+        return [dict(row) for row in chosen]
+
+    def training_relation_reserve(self, count: int, rng: random.Random) -> list[dict]:
+        """Return relation rows for curriculum training without touching eval holdouts.
+
+        Fresh unused relations are preferred and permanently tagged as training rows.
+        Only after the fresh reserve is exhausted are already-trained relation rows
+        reused.  Evaluation statuses are never eligible for training.
+        """
+        if count <= 0:
+            return []
+        fresh = self.conn.execute(
+            """
+            SELECT r.relation_id, w.word, d.definition_id, d.definition_text, d.pos
+            FROM relation_reserve r
+            JOIN words w ON w.word_id=r.word_id
+            JOIN definitions d ON d.definition_id=r.definition_id
+            WHERE r.status='unused'
+            ORDER BY r.relation_id
+            LIMIT ?
+            """,
+            (count,),
+        ).fetchall()
+        chosen = list(fresh)
+        if fresh:
+            with self.transaction():
+                self.conn.executemany(
+                    "UPDATE relation_reserve SET status='definition_train' WHERE relation_id=?",
+                    ((str(row["relation_id"]),) for row in fresh),
+                )
+        if len(chosen) < count:
+            need = count - len(chosen)
+            trained = self.conn.execute(
+                """
+                SELECT r.relation_id, w.word, d.definition_id, d.definition_text, d.pos
+                FROM relation_reserve r
+                JOIN words w ON w.word_id=r.word_id
+                JOIN definitions d ON d.definition_id=r.definition_id
+                WHERE r.status='definition_train'
+                ORDER BY r.relation_id
+                """
+            ).fetchall()
+            fresh_ids = {str(row["relation_id"]) for row in chosen}
+            reusable = [row for row in trained if str(row["relation_id"]) not in fresh_ids]
+            if len(reusable) < need:
+                raise RuntimeError(
+                    f"not enough dictionary relations for training: requested={count} available={len(chosen) + len(reusable)}"
+                )
+            chosen.extend(rng.sample(reusable, need))
+        rng.shuffle(chosen)
+        return [dict(row) for row in chosen]
+
     def fresh_covered_relation_reserve(self, count: int, rng: random.Random, *, consume: bool) -> list[dict]:
         """Return holdout edges whose headword and definition tokenyms are covered.
 

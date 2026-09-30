@@ -186,6 +186,7 @@ from tools.mother.common.deployment_node_add_single_node_bootstrap_v2 import (
 # Replica-sync v2 rollout. Roll back by removing ``_v2`` from this module path.
 from tools.mother.common.deployment_node_add_replica_sync_v2 import (
     MotherDeploymentNodeAddReplicaSyncError,
+    adopt_node_add_replica_sync_live_proof,
     build_node_add_replica_sync_release,
     execute_node_add_replica_sync_release,
     verify_node_add_replica_sync_evidence,
@@ -1073,6 +1074,22 @@ def _parser() -> argparse.ArgumentParser:
     verify_node_add_replica_sync_evidence_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
     verify_node_add_replica_sync_evidence_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     verify_node_add_replica_sync_evidence_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    adopt_node_add_replica_sync_live_proof_parser = subparsers.add_parser(
+        "adopt-add-node-replica-sync-live-proof",
+        help="read-only adopt live replica-sync proof after a timeout/unclean execution",
+        allow_abbrev=False,
+    )
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--operation-id")
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--failed-evidence", required=True)
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--acknowledge-failed-evidence-sha256", required=True)
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--max-age-seconds", type=int, default=86400)
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--timeout", type=float, default=30.0)
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--max-wait-seconds", type=float, default=300.0)
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
 
 
     release_node_add_validator_admission = subparsers.add_parser(
@@ -6191,6 +6208,23 @@ def _cmd_verify_node_add_replica_sync_evidence(args: argparse.Namespace, private
 
 
 
+def _cmd_adopt_node_add_replica_sync_live_proof(args: argparse.Namespace, private_state) -> int:
+    result = adopt_node_add_replica_sync_live_proof(
+        _paths(args),
+        private_state,
+        Path(args.failed_evidence),
+        acknowledged_failed_evidence_sha256=args.acknowledge_failed_evidence_sha256,
+        max_age_seconds=args.max_age_seconds,
+        timeout=args.timeout,
+        max_response_bytes=args.max_response_bytes,
+        max_wait_seconds=args.max_wait_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
+        operation=_operation("adopt-node-add-replica-sync-live-proof", args.network, args.operation_id),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "pass" else 1
+
+
 def _cmd_release_node_add_validator_admission(args: argparse.Namespace, private_state) -> int:
     release = build_node_add_validator_admission_release(
         _paths(args),
@@ -6602,6 +6636,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify_node_add_replica_sync_release(args, private_state)
         if args.command == "verify-add-node-replica-sync-evidence":
             return _cmd_verify_node_add_replica_sync_evidence(args, private_state)
+        if args.command == "adopt-add-node-replica-sync-live-proof":
+            return _cmd_adopt_node_add_replica_sync_live_proof(args, private_state)
         if args.command == "release-add-node-validator-admission":
             return _cmd_release_node_add_validator_admission(args, private_state)
         if args.command == "verify-add-node-validator-admission-release":

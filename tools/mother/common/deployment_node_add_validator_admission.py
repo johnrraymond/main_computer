@@ -107,6 +107,7 @@ _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD = "candidate_activation_cano
 _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD = "candidate_activation_canonical_history_proof_sha256"
 _CANDIDATE_ACTIVATION_PROOF_HTTP_PORT = 8797
 _CANDIDATE_ACTIVATION_PROOF_PORT_OFFSET = 9000
+_CANDIDATE_ACTIVATION_PROOF_LOG_PREFIX = "MOTHER_NODE_ADD_VALIDATOR_ADMISSION_PROOF_JSON="
 
 AdmissionProgressCallback = Callable[[Mapping[str, Any]], None]
 
@@ -696,6 +697,7 @@ def _activation_guardian_script(
         "    if block_time > now + 15 or now - block_time > MAX_BLOCK_AGE_SECONDS: raise RuntimeError('latest block is stale')",
         f"    proof = {{'target_node':TARGET_NODE,'target_node_id':actual_node_id,'target_validator_node_identity_verified':True,'chain_id':EXPECTED_CHAIN_ID,'genesis_sha256':EXPECTED_GENESIS_SHA256,'canonical_history_proof_contract':{_CANONICAL_HISTORY_PROOF_CONTRACT!r},'bootnode_enode_sha256':hashlib.sha256(BOOTNODE_ENODE.encode()).hexdigest(),'bootnode_peer_connect_result':bootnode_peer_connect_result,'peer_count':peer_count(),'desired_validator_set':EXPECTED_DESIRED,'final_validator_set':final,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'first_block_hash':first_history['hash'],'first_block_parent_hash':first_history.get('parent_hash'),'first_block_validator_set':first_history['validator_set'],'second_block_hash':second_history['hash'],'second_block_parent_hash':second_history.get('parent_hash'),'second_block_validator_set':second_history['validator_set'],'latest_block_number':latest_number,'latest_block_hash':latest_history['hash'],'latest_block_parent_hash':latest_history.get('parent_hash'),'latest_validator_set':latest_history['validator_set'],'latest_block_timestamp':block_time,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}}",
         "    write_json(PROOF, proof)",
+        "    print('MOTHER_NODE_ADD_VALIDATOR_ADMISSION_PROOF_JSON=' + json.dumps(proof, sort_keys=True, separators=(',', ':')), flush=True)",
         "    try: os.unlink(LAST_ERROR)",
         "    except FileNotFoundError: pass",
         "    with open(HEALTHY, 'w', encoding='ascii') as handle: handle.write(str(int(time.time())))",
@@ -3119,6 +3121,101 @@ def _fetch_candidate_activation_proof_payload(
     return None, summary
 
 
+def _candidate_activation_log_text_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        values: list[str] = []
+        for key, child in value.items():
+            if str(key).lower() in {"docker_compose_raw", "docker_compose", "compose", "source", "raw"}:
+                continue
+            values.extend(_candidate_activation_log_text_values(child))
+        return values
+    if isinstance(value, (list, tuple)):
+        values: list[str] = []
+        for child in value:
+            values.extend(_candidate_activation_log_text_values(child))
+        return values
+    return []
+
+
+def _candidate_activation_proof_from_logs_payload(value: Any) -> Mapping[str, Any] | None:
+    for text in _candidate_activation_log_text_values(value):
+        for line in text.splitlines():
+            if _CANDIDATE_ACTIVATION_PROOF_LOG_PREFIX not in line:
+                continue
+            encoded = line.split(_CANDIDATE_ACTIVATION_PROOF_LOG_PREFIX, 1)[1].strip()
+            try:
+                payload = json.loads(encoded)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, Mapping):
+                return payload
+    return None
+
+
+def _fetch_candidate_activation_guardian_log_proof(
+    controller: Any,
+    *,
+    service_uuid: str,
+    guardian: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> tuple[Mapping[str, Any] | None, dict[str, Any]]:
+    encoded_service = urllib.parse.quote(str(service_uuid), safe="")
+    encoded_guardian = urllib.parse.quote(str(guardian), safe="")
+    endpoints = (
+        f"/api/v1/services/{encoded_service}/logs?sub_service_name={encoded_guardian}",
+        f"/api/v1/services/{encoded_service}/logs",
+    )
+    probes: list[dict[str, Any]] = []
+    for endpoint in endpoints:
+        try:
+            response = _http(
+                controller,
+                "GET",
+                endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+        except Exception as exc:
+            probes.append({
+                "method": "GET",
+                "endpoint": endpoint,
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:300],
+            })
+            continue
+        payload = _candidate_activation_proof_from_logs_payload(response.get("payload"))
+        probes.append({
+            "method": "GET",
+            "endpoint": endpoint,
+            "status": response.get("status"),
+            "ok": response.get("ok"),
+            "response_sha256": response.get("response_sha256"),
+            "byte_length": response.get("byte_length"),
+            "elapsed_ms": response.get("elapsed_ms"),
+            "proof_payload_observed": isinstance(payload, Mapping),
+        })
+        if isinstance(payload, Mapping):
+            return payload, {
+                "transport": "coolify-service-line-logs",
+                "ok": True,
+                "proof_payload_observed": True,
+                "probes": probes,
+            }
+    return None, {
+        "transport": "coolify-service-line-logs",
+        "ok": False,
+        "proof_payload_observed": False,
+        "probes": probes,
+    }
+
+
 def _records(payload: Any) -> list[Mapping[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, Mapping)]
@@ -4109,6 +4206,7 @@ def _observe_admission_proof_guardians(
             proof_latest_validator_set: list[str] = []
             proof_payload_transport = "not_required"
             proof_endpoint_response: dict[str, Any] | None = None
+            proof_log_response: dict[str, Any] | None = None
             if durable_proof_required:
                 component_healthy = True
                 proof_payload = _guardian_component_canonical_history_proof(record, names=[proof_guardian])
@@ -4124,7 +4222,19 @@ def _observe_admission_proof_guardians(
                     if proof_payload is not None:
                         proof_payload_transport = "mother-public-proof-endpoint"
                     else:
-                        proof_payload_transport = "mother-public-proof-endpoint-unavailable"
+                        log_payload, proof_log_response = _fetch_candidate_activation_guardian_log_proof(
+                            controller,
+                            service_uuid=str(service_uuid or ""),
+                            guardian=proof_guardian,
+                            timeout=timeout,
+                            max_response_bytes=max_response_bytes,
+                            opener=opener,
+                        )
+                        if log_payload is not None:
+                            proof_payload = log_payload
+                            proof_payload_transport = "coolify-service-line-logs"
+                        else:
+                            proof_payload_transport = "mother-public-proof-endpoint-and-coolify-logs-unavailable"
                 if proof_payload is None:
                     proof_payload_status = "missing"
                     proof_payload_missing_fields = list(_CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS)
@@ -4179,6 +4289,7 @@ def _observe_admission_proof_guardians(
                 "guardian_proof_payload_verified": proof_payload_verified,
                 "guardian_proof_latest_validator_set": proof_latest_validator_set,
                 "guardian_proof_endpoint_response": proof_endpoint_response,
+                "guardian_proof_log_response": proof_log_response,
                 "response_sha256": service_response["response_sha256"],
                 "observed_at": _timestamp(),
                 "durable_sample_index": durable_sample_index,
