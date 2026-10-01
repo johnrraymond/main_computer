@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Continual NanoJev consensus-heavy curriculum with two complementary meta tasks.
+"""Continual NanoJev curriculum cut over to consensus-heavy training with meta rehearsal.
 
-The total meta optimizer share remains 20%, split evenly:
-  * 10% candidate correctness: Is this candidate correct?
-  * 10% primary-error prediction: Will the primary consensus decision be wrong?
-
+The existing 20% relative-candidate/meta training share is preserved exactly.
 The remaining 80% is the primary-task budget; within that primary budget:
   * 90% consensus
   * 10% shared evenly by triad, dictionary-definition, and English/code
@@ -14,26 +11,25 @@ With the default 150-question cycle this is:
   *   4 / 150 ( 2.667%): triad rehearsal
   *   4 / 150 ( 2.667%): dictionary-definition rehearsal
   *   4 / 150 ( 2.667%): English/code rehearsal
-  *  15 / 150 (10.000%): candidate-correctness meta
-  *  15 / 150 (10.000%): primary-error-prediction meta
+  *  15 / 150 (10.000%): relative verifier, correct candidate
+  *  15 / 150 (10.000%): relative verifier, wrong candidate
 
-Because 15 is odd, each binary meta population is 8/7 balanced per cycle and
-the majority label alternates by cycle, giving exact balance across every two
-cycles. The two meta tasks use opposite 8/7 phases, so the combined 30-question
-meta population remains exactly YES/NO balanced every cycle. Candidate-correctness
-sources retain exhaustive four-way negative coverage in the source pool before
-deterministic down-selection. Error-meta labels are frozen from the cycle-start
-primary head before optimizer updates.
+Each binary meta source contributes one correct-candidate probe and one
+wrong-candidate probe. Each four-way consensus source is expanded into three
+balanced correct/wrong pairs: the gold candidate is paired once against each
+of the three wrong alternatives. The meta-label population therefore remains
+exactly balanced while training covers every candidate the verifier must rank.
 
 Evaluation keeps the inherited dictionary + English/code holdout, historical
-triad probe, historical consensus probe, candidate-correctness analysis, and a
-fixed consensus tractability probe that asks whether the current primary head
-will be wrong. Error prediction is compared against primary margin, entropy,
-and max-probability uncertainty baselines.
+triad probe, and historical consensus probe. Relative candidate verification is
+generalized to arbitrary candidate counts so four-way consensus can contribute
+genuine primary errors to conditioned arbitration. Consensus candidate probes
+serialize one canonical direction for each of the three pairwise relations.
 
 Training remains ordinary cross entropy on the generic
 Question -> Candidate -> ObjectPath boundary with the frozen Qwen backbone.
-All arbitration and tractability diagnostics are reporting-only.
+Conditioned arbitration remains reporting-only and does not feed back into
+training.
 """
 from __future__ import annotations
 
@@ -64,13 +60,13 @@ from nanojev_objective_api import (
 )
 
 
-SCHEMA = "main-computer-nanojev-consensus-heavy-meta-curriculum-v1"
-DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_consensus_heavy_meta_curriculum_v1"
+SCHEMA = "main-computer-nanojev-three-backbone-consensus-heavy-meta-curriculum-v1"
+DEFAULT_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_three_backbone_consensus_heavy_meta_curriculum_v1"
 DEFAULT_SOURCE_EXPERIMENT = r"C:\Users\subsi\NanoJev\runs\main_computer_relative_candidate_curriculum_v1"
 DEFAULT_TRAIN_QUESTIONS = 150
 DEFAULT_CONSENSUS_PERCENT = 90.0
-DEFAULT_CANDIDATE_META_PERCENT = 10.0
-DEFAULT_ERROR_META_PERCENT = 10.0
+DEFAULT_RELATIVE_CORRECT_PERCENT = 10.0
+DEFAULT_RELATIVE_WRONG_PERCENT = 10.0
 DEFAULT_TRAIN_FILES_PER_CYCLE = 40
 DEFAULT_TRIAD_MAX_CODE_TOKENS = 128
 DEFAULT_CONSENSUS_MAX_CODE_TOKENS = 128
@@ -83,10 +79,8 @@ TRIAD_TASK = "triad"
 DICTIONARY_TASK = "dictionary_definition"
 ENGLISH_CODE_TASK = "english_code"
 META_TASK = "relative_candidate_correctness"
-ERROR_META_TASK = "primary_error_prediction"
-CANDIDATE_META = "candidate_meta"
-LEGACY_RELATIVE_CORRECT = "relative_correct"
-LEGACY_RELATIVE_WRONG = "relative_wrong"
+RELATIVE_CORRECT = "relative_correct"
+RELATIVE_WRONG = "relative_wrong"
 
 
 def emit(event: str, **fields: Any) -> None:
@@ -148,16 +142,21 @@ def parse_gap_thresholds(raw: str) -> tuple[float, ...]:
 
 
 def training_plan(total_questions: int, *, consensus_percent: float,
-                  candidate_meta_percent: float, error_meta_percent: float) -> dict[str, int]:
-    """Build the exact optimizer population with a 10%/10% meta split."""
+                  relative_correct_percent: float, relative_wrong_percent: float) -> dict[str, int]:
+    """Build the exact optimizer population.
+
+    ``consensus_percent`` is the share of the *primary-task* budget allocated to
+    consensus, not the share of the full optimizer population. The meta share is
+    reserved first, then the primary budget is split consensus vs. rehearsal.
+    """
     if not (0.0 < float(consensus_percent) < 100.0):
         raise ValueError("consensus percent must be between 0 and 100")
-    if candidate_meta_percent <= 0 or error_meta_percent <= 0:
-        raise ValueError("candidate-meta and error-meta percentages must be positive")
-    if abs(float(candidate_meta_percent) - float(error_meta_percent)) > 1e-9:
-        raise ValueError("the two meta schemes must receive equal optimizer share")
-    if float(candidate_meta_percent) + float(error_meta_percent) >= 100.0:
-        raise ValueError("meta percentages leave no primary-task budget")
+    if relative_correct_percent <= 0 or relative_wrong_percent <= 0:
+        raise ValueError("relative verifier percentages must be positive")
+    if abs(float(relative_correct_percent) - float(relative_wrong_percent)) > 1e-9:
+        raise ValueError("relative verifier requires equal correct-candidate and wrong-candidate percentages")
+    if float(relative_correct_percent) + float(relative_wrong_percent) >= 100.0:
+        raise ValueError("relative verifier percentages leave no primary-task budget")
 
     def integral_count(percent: float, name: str) -> int:
         exact = total_questions * float(percent) / 100.0
@@ -168,12 +167,14 @@ def training_plan(total_questions: int, *, consensus_percent: float,
             )
         return count
 
-    candidate_meta = integral_count(candidate_meta_percent, CANDIDATE_META)
-    error_meta = integral_count(error_meta_percent, ERROR_META_TASK)
-    if candidate_meta < 4 or error_meta < 4:
-        raise ValueError("each meta scheme needs at least four questions per cycle")
+    relative_correct = integral_count(relative_correct_percent, RELATIVE_CORRECT)
+    relative_wrong = integral_count(relative_wrong_percent, RELATIVE_WRONG)
+    if relative_correct != relative_wrong:
+        raise ValueError("relative verifier requires equal correct-candidate and wrong-candidate counts")
+    if relative_correct < 4:
+        raise ValueError("relative verifier needs at least four paired source questions per cycle")
 
-    primary_total = total_questions - candidate_meta - error_meta
+    primary_total = total_questions - relative_correct - relative_wrong
     exact_consensus = primary_total * float(consensus_percent) / 100.0
     consensus = int(round(exact_consensus))
     if abs(consensus - exact_consensus) > 1e-9:
@@ -192,8 +193,8 @@ def training_plan(total_questions: int, *, consensus_percent: float,
         TRIAD_TASK: each,
         DICTIONARY_TASK: each,
         ENGLISH_CODE_TASK: each,
-        CANDIDATE_META: candidate_meta,
-        ERROR_META_TASK: error_meta,
+        RELATIVE_CORRECT: relative_correct,
+        RELATIVE_WRONG: relative_wrong,
     }
     if sum(plan.values()) != total_questions:
         raise ValueError(f"training plan does not sum to population: {plan}")
@@ -206,32 +207,29 @@ def training_plan(total_questions: int, *, consensus_percent: float,
     return plan
 
 
-def binary_label_targets(count: int, *, cycle: int) -> tuple[int, int]:
-    """Return (positive, negative) counts; odd budgets alternate 8/7 then 7/8."""
-    if count <= 0:
-        raise ValueError("binary meta count must be positive")
-    low = count // 2
-    high = count - low
-    if count % 2 == 0:
-        return high, low
-    if int(cycle) % 2 == 0:
-        return high, low
-    return low, high
+def relative_source_plan(plan: dict[str, int]) -> dict[str, int]:
+    """Choose fresh primary sources for the balanced meta population.
 
+    Binary sources consume one correct/wrong pair each. A four-way consensus
+    source consumes three pairs because the same gold candidate is paired once
+    against each of its three wrong alternatives.
 
-def error_meta_label_targets(count: int, *, cycle: int) -> tuple[int, int]:
-    """Opposite phase keeps the combined candidate/error meta pool balanced each cycle."""
-    return binary_label_targets(count, cycle=int(cycle) + 1)
-
-
-def candidate_meta_source_plan(plan: dict[str, int]) -> dict[str, int]:
-    """Build a balanced source pool large enough to down-select the candidate-meta budget."""
-    target = int(plan[CANDIDATE_META])
-    # One binary source from each preserved task contributes 2 probes total.
-    binary_pool_questions = 6
-    consensus_sources = max(1, math.ceil(max(0, target - binary_pool_questions) / 6.0))
+    With the default 15 correct + 15 wrong meta questions, one source is retained
+    from each established binary task (3 pairs total), leaving 12 pairs for
+    consensus -> 4 consensus source questions.
+    """
+    pairs = int(plan[RELATIVE_CORRECT])
+    if pairs != int(plan[RELATIVE_WRONG]):
+        raise ValueError("relative verifier pair counts differ")
+    binary_pairs = 3
+    remaining_pairs = pairs - binary_pairs
+    if remaining_pairs <= 0 or remaining_pairs % 3:
+        raise ValueError(
+            "relative verifier pair budget must leave a positive multiple of three "
+            f"for four-way consensus coverage: pairs={pairs}"
+        )
     source_plan = {
-        CONSENSUS_TASK: int(consensus_sources),
+        CONSENSUS_TASK: remaining_pairs // 3,
         TRIAD_TASK: 1,
         DICTIONARY_TASK: 1,
         ENGLISH_CODE_TASK: 1,
@@ -240,13 +238,8 @@ def candidate_meta_source_plan(plan: dict[str, int]) -> dict[str, int]:
     for task, count in source_plan.items():
         if count > primary[task]:
             raise ValueError(
-                f"candidate meta needs {count} {task} sources but primary cache only has {primary[task]}"
+                f"relative verifier needs {count} {task} sources but primary cache only has {primary[task]}"
             )
-    pool_size = 6 * source_plan[CONSENSUS_TASK] + 2 * (
-        source_plan[TRIAD_TASK] + source_plan[DICTIONARY_TASK] + source_plan[ENGLISH_CODE_TASK]
-    )
-    if pool_size < target:
-        raise ValueError(f"candidate-meta source pool is too small: pool={pool_size} target={target}")
     return source_plan
 
 
@@ -348,6 +341,112 @@ def resolve_curriculum_source(source_experiment: Path) -> dict[str, Any]:
         },
     })
     return inherited
+
+
+def resolve_three_backbone_cutover_source(cutover_dir: Path) -> dict[str, Any]:
+    """Resolve lineage from the exact consensus checkpoint used to build the cutover."""
+    cutover_dir = Path(cutover_dir).expanduser().resolve(strict=True)
+    cutover = read_json(cutover_dir / "cutover.json")
+    expected_schema = "main-computer-nanojev-three-backbone-logp-cutover-v1"
+    if cutover.get("schema_version") != expected_schema:
+        raise RuntimeError(
+            f"unsupported three-backbone cutover schema: {cutover.get('schema_version')}"
+        )
+    if int(cutover.get("candidate_feature_width", 0)) != 2307:
+        raise RuntimeError("three-backbone cutover candidate feature width is not 2307")
+
+    source_experiment = Path(str(cutover["source_experiment"])).expanduser().resolve(strict=True)
+    source_checkpoint = Path(str(cutover["source_checkpoint"])).expanduser().resolve(strict=True)
+    checkpoint_meta = read_json(source_checkpoint / "meta.json")
+    source_manifest = dict(cutover.get("source") or read_json(source_experiment / "experiment.json"))
+    inherited = dict(source_manifest.get("source") or {})
+    required = ("model", "revision", "probe_experiment", "legacy_experiment", "repo_root")
+    missing = [name for name in required if not inherited.get(name)]
+    if missing:
+        raise RuntimeError(f"cutover consensus source metadata missing fields: {missing}")
+    database = source_manifest.get("database")
+    if not database:
+        raise RuntimeError("cutover consensus source manifest does not identify its lexical DB")
+
+    source_cycle = int(checkpoint_meta.get("cycle", cutover.get("source_cycle", 0)))
+    source_global_step = int(
+        checkpoint_meta.get("global_step", cutover.get("source_global_step", 0))
+    )
+    inherited.update({
+        "kind": "logp_experiment",
+        "source_lineage": "three_backbone_cutover_from_consensus_checkpoint",
+        "checkpoint": str(cutover_dir),
+        "optimizer": str((cutover_dir / "optimizer.pt").resolve(strict=True)),
+        "rng": str((cutover_dir / "rng_state.pt").resolve(strict=True)),
+        "source_experiment": str(source_experiment),
+        "source_checkpoint": str(source_checkpoint),
+        "source_cycle": source_cycle,
+        "source_global_step": source_global_step,
+        "source_database": str(Path(str(database)).expanduser().resolve(strict=True)),
+        "selection": {
+            "selection": "three_backbone_cutover_source_checkpoint",
+            "cycle": source_cycle,
+            "global_step": source_global_step,
+        },
+    })
+    return inherited
+
+
+def _same_cutover_lineage(stored: dict[str, Any], expected: dict[str, Any]) -> bool:
+    keys = (
+        "checkpoint", "source_experiment", "source_checkpoint",
+        "source_cycle", "source_global_step", "source_database",
+    )
+    return all(stored.get(key) == expected.get(key) for key in keys)
+
+
+def repair_uncommitted_cutover_lineage(*, manifest_path: Path, state_path: Path,
+                                        db_path: Path, manifest: dict[str, Any],
+                                        expected_source: dict[str, Any]) -> dict[str, Any]:
+    """Repair the initial bad 497 metadata only before any target checkpoint exists."""
+    stored = dict(manifest.get("source") or {})
+    if _same_cutover_lineage(stored, expected_source):
+        return expected_source
+
+    state = read_json(state_path) if state_path.is_file() else None
+    if state is not None and state.get("latest_checkpoint"):
+        raise RuntimeError(
+            "three-backbone experiment already committed a checkpoint with mismatched cutover lineage; "
+            "refusing automatic repair. Start a clean target experiment from the cutover."
+        )
+
+    old_cycle = stored.get("source_cycle")
+    old_global_step = stored.get("source_global_step")
+    db_path.unlink(missing_ok=True)
+    clone_sqlite(Path(expected_source["source_database"]), db_path)
+    manifest["source"] = expected_source
+    migrations = list(manifest.get("migrations") or [])
+    migrations.append({
+        "kind": "repair_three_backbone_cutover_lineage",
+        "from_source_cycle": old_cycle,
+        "from_source_global_step": old_global_step,
+        "to_source_cycle": expected_source["source_cycle"],
+        "to_source_global_step": expected_source["source_global_step"],
+        "source_checkpoint": expected_source["source_checkpoint"],
+    })
+    manifest["migrations"] = migrations
+    atomic_json(manifest_path, manifest)
+
+    if state is not None:
+        state["cycle"] = int(expected_source["source_cycle"])
+        state["global_step"] = int(expected_source["source_global_step"])
+        state["cutover_checkpoint"] = expected_source["checkpoint"]
+        atomic_json(state_path, state)
+
+    emit(
+        "three_backbone_cutover_lineage_repaired",
+        from_cycle=old_cycle,
+        from_global_step=old_global_step,
+        to_cycle=expected_source["source_cycle"],
+        to_global_step=expected_source["source_global_step"],
+        source_checkpoint=expected_source["source_checkpoint"],
+    )
+    return expected_source
 
 
 def load_preservation_holdout(*, source_experiment: Path, target: Path,
@@ -561,8 +660,8 @@ def relative_questions_for_source(*, question: ObjectQuestion, cycle: int,
 
     Binary tasks produce one correct/wrong pair. Four-way consensus produces
     three pairs so every wrong candidate is seen against the same gold candidate.
-    The caller may later down-select this exhaustive source pool to the configured
-    candidate-meta optimizer budget.
+    This makes training geometry match evaluation geometry without changing the
+    total correct/wrong meta budget.
     """
     del seed  # source selection is seeded; expansion itself is exhaustive.
     gold = int(question.gold_index)
@@ -599,209 +698,6 @@ def relative_questions_for_source(*, question: ObjectQuestion, cycle: int,
             salt=f"train-{source_index}-pair-{pair_index}-wrong",
         ))
     return result
-
-
-
-def select_candidate_meta_questions(*, pool: Sequence[ObjectQuestion], count: int,
-                                    cycle: int, seed: int,
-                                    required: Sequence[ObjectQuestion] = ()) -> list[ObjectQuestion]:
-    """Down-select an exhaustive source pool while preserving required rehearsal probes."""
-    positive_target, negative_target = binary_label_targets(int(count), cycle=cycle)
-    required = list(required)
-    required_ids = {q.question_id for q in required}
-    if len(required_ids) != len(required):
-        raise RuntimeError("candidate-meta required probes contain duplicate question IDs")
-    required_positive = sum(q.stratum == "correct_candidate" for q in required)
-    required_negative = sum(q.stratum == "wrong_candidate" for q in required)
-    if required_positive > positive_target or required_negative > negative_target:
-        raise RuntimeError(
-            "candidate-meta required probes exceed label budget: "
-            f"positive={required_positive}/{positive_target} negative={required_negative}/{negative_target}"
-        )
-    optional = [q for q in pool if q.question_id not in required_ids]
-    positive = [q for q in optional if q.stratum == "correct_candidate"]
-    negative = [q for q in optional if q.stratum == "wrong_candidate"]
-    need_positive = positive_target - required_positive
-    need_negative = negative_target - required_negative
-    if len(positive) < need_positive or len(negative) < need_negative:
-        raise RuntimeError(
-            "candidate-meta pool cannot satisfy alternating balance: "
-            f"positive={len(positive)}/{need_positive} negative={len(negative)}/{need_negative}"
-        )
-    random.Random(stable_seed(seed, cycle, "candidate-meta-positive")).shuffle(positive)
-    random.Random(stable_seed(seed, cycle, "candidate-meta-negative")).shuffle(negative)
-    selected = required + positive[:need_positive] + negative[:need_negative]
-    random.Random(stable_seed(seed, cycle, "candidate-meta-final")).shuffle(selected)
-    if len(selected) != count:
-        raise RuntimeError(f"candidate-meta selection returned wrong count: {len(selected)} != {count}")
-    return selected
-
-
-def _reference_code_from_relation_prompt(prompt: str) -> str:
-    prefix = "Language: Python\nReference code:\n```python\n"
-    if not prompt.startswith(prefix):
-        raise ValueError("unexpected consensus relation prompt prefix")
-    start = len(prefix)
-    end = prompt.find("\n```\n", start)
-    if end < 0:
-        raise ValueError("unexpected consensus relation prompt fence")
-    return prompt[start:end]
-
-
-def consensus_code_triplet(question: ObjectQuestion) -> tuple[str, str, str]:
-    """Recover the raw A/B/C code objects from the consensus ObjectQuestion."""
-    if question.task != CONSENSUS_TASK or len(question.candidates) != 4:
-        raise ValueError(f"primary-error meta expects four-way consensus: {question.question_id}")
-    paths = list(question.candidates[0].paths)
-    if len(paths) < 6:
-        raise ValueError(f"consensus source has too few relation paths: {question.question_id}")
-    a_code = _reference_code_from_relation_prompt(paths[0].prompt)
-    b_code = str(paths[0].answer)
-    c_code = str(paths[2].answer)
-    # Verify the expected AB/AC/BC canonical layout before using this compact view.
-    if _reference_code_from_relation_prompt(paths[2].prompt) != a_code:
-        raise ValueError(f"consensus AC path does not share A reference: {question.question_id}")
-    if _reference_code_from_relation_prompt(paths[4].prompt) != b_code:
-        raise ValueError(f"consensus BC path does not share B reference: {question.question_id}")
-    if str(paths[4].answer) != c_code:
-        raise ValueError(f"consensus BC path does not share C continuation: {question.question_id}")
-    return a_code, b_code, c_code
-
-
-def primary_error_evidence_prompt(question: ObjectQuestion) -> str:
-    """Present the raw consensus problem once, without primary or gold answers."""
-    a_code, b_code, c_code = consensus_code_triplet(question)
-    return "".join((
-        "Primary-error prediction.\n",
-        "Original task family: consensus\n",
-        "The primary consensus head will compare these three Python objects.\n",
-        "Its proposed answer and the gold answer are hidden.\n\n",
-        "Object A:\n```python\n", a_code.rstrip(), "\n```\n\n",
-        "Object B:\n```python\n", b_code.rstrip(), "\n```\n\n",
-        "Object C:\n```python\n", c_code.rstrip(), "\n```\n\n",
-        "Will the primary consensus decision be wrong?",
-    ))
-
-
-def build_error_meta_train_question(*, question: ObjectQuestion, primary_was_wrong: bool,
-                                    cycle: int, source_index: int) -> ObjectQuestion:
-    digest = hashlib.sha256(
-        f"primary-error-meta\0{question.question_id}\0{cycle}\0{source_index}".encode("utf-8")
-    ).hexdigest()[:20]
-    return binary_yes_no_question(
-        question_id=f"primary-error:{digest}:cycle-{cycle:06d}",
-        task=ERROR_META_TASK,
-        stratum="primary_wrong" if primary_was_wrong else "primary_correct",
-        prompt=primary_error_evidence_prompt(question),
-        yes_is_gold=bool(primary_was_wrong),
-        shuffle_seed=stable_seed(question.question_id, cycle, source_index, "primary-error-order"),
-    )
-
-
-def build_error_meta_eval_question(*, question: ObjectQuestion) -> ObjectQuestion:
-    digest = hashlib.sha256(
-        f"primary-error-eval\0{question.question_id}".encode("utf-8")
-    ).hexdigest()[:20]
-    # Gold is intentionally fixed to NO here. Evaluation compares YES evidence
-    # against the current primary head's actual correctness, not this static gold.
-    return binary_yes_no_question(
-        question_id=f"primary-error-eval:{digest}",
-        task=ERROR_META_TASK,
-        stratum="dynamic_primary_error",
-        prompt=primary_error_evidence_prompt(question),
-        yes_is_gold=False,
-        shuffle_seed=stable_seed(question.question_id, "primary-error-eval-order"),
-    )
-
-
-def select_error_meta_rows(*, scored_primary: Sequence[dict[str, Any]], count: int,
-                           cycle: int, seed: int) -> list[dict[str, Any]]:
-    """Select balanced parent-primary correct/wrong rows for tractability training."""
-    wrong_target, correct_target = error_meta_label_targets(int(count), cycle=cycle)
-    wrong = [row for row in scored_primary if not bool(row["correct"])]
-    correct = [row for row in scored_primary if bool(row["correct"])]
-    if len(wrong) < wrong_target or len(correct) < correct_target:
-        raise RuntimeError(
-            "primary-error source pool lacks enough parent outcomes: "
-            f"wrong={len(wrong)}/{wrong_target} correct={len(correct)}/{correct_target}"
-        )
-    random.Random(stable_seed(seed, cycle, "error-meta-wrong")).shuffle(wrong)
-    random.Random(stable_seed(seed, cycle, "error-meta-correct")).shuffle(correct)
-    selected = wrong[:wrong_target] + correct[:correct_target]
-    random.Random(stable_seed(seed, cycle, "error-meta-final")).shuffle(selected)
-    return selected
-
-def mine_error_meta_rows(*, model, primary_questions: Sequence[ObjectQuestion], primary_cached: Sequence,
-                         consensus_objective, smoke, direct, tokenizer, args,
-                         count: int, cycle: int, seed: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Mine enough cycle-start consensus errors to build the balanced error-meta population."""
-    cached_by_id = {cached.question_id: cached for cached in primary_cached}
-    base_sources = [question for question in primary_questions if question.task == CONSENSUS_TASK]
-    base_cached = [cached_by_id[question.question_id] for question in base_sources]
-    scored = score_primary(
-        model=model,
-        cached_questions=base_cached,
-        source_questions=base_sources,
-        batch_questions=args.eval_batch_questions,
-    )
-    initial_count = len(scored)
-    extra_cache_stats: list[dict[str, Any]] = []
-    wrong_target, correct_target = error_meta_label_targets(int(count), cycle=cycle)
-    known_ids = {row["question_id"] for row in scored}
-    attempt = 0
-    while (
-        sum(not bool(row["correct"]) for row in scored) < wrong_target
-        or sum(bool(row["correct"]) for row in scored) < correct_target
-    ):
-        attempt += 1
-        if attempt > 6:
-            raise RuntimeError(
-                "could not mine enough primary-error outcomes after six extra consensus batches: "
-                f"wrong={sum(not bool(row['correct']) for row in scored)}/{wrong_target} "
-                f"correct={sum(bool(row['correct']) for row in scored)}/{correct_target}"
-            )
-        extra_questions = consensus_objective._questions(
-            count=64,
-            cycle=cycle,
-            split=f"primary-error-meta-{attempt}",
-        )
-        extra_questions = [q for q in extra_questions if q.question_id not in known_ids]
-        if not extra_questions:
-            continue
-        extra_cached, cache_stats = smoke.cache_questions(
-            direct=direct,
-            model=model,
-            tokenizer=tokenizer,
-            questions=extra_questions,
-            args=args,
-        )
-        extra_rows = score_primary(
-            model=model,
-            cached_questions=extra_cached,
-            source_questions=extra_questions,
-            batch_questions=args.eval_batch_questions,
-        )
-        scored.extend(extra_rows)
-        known_ids.update(row["question_id"] for row in extra_rows)
-        extra_cache_stats.append(dict(cache_stats))
-
-    selected = select_error_meta_rows(
-        scored_primary=scored,
-        count=count,
-        cycle=cycle,
-        seed=seed,
-    )
-    telemetry = {
-        "initial_primary_consensus_questions": initial_count,
-        "total_primary_questions_scored": len(scored),
-        "pool_primary_wrong": sum(not bool(row["correct"]) for row in scored),
-        "pool_primary_correct": sum(bool(row["correct"]) for row in scored),
-        "extra_mining_batches": attempt,
-        "extra_cache_stats": extra_cache_stats,
-        "target_primary_wrong": wrong_target,
-        "target_primary_correct": correct_target,
-    }
-    return selected, telemetry
 
 
 def build_relative_eval_variant(*, question: ObjectQuestion, candidate_index: int) -> ObjectQuestion:
@@ -842,7 +738,6 @@ def score_primary(*, model, cached_questions: Sequence, source_questions: Sequen
                         f"relative candidate evaluation requires at least two primary candidates: {source.question_id}"
                     )
                 scores = logits[index, :len(cached.candidate_ids)].detach().float()
-                probabilities = scores.softmax(-1)
                 proposal = int(scores.argmax().item())
                 ordered = torch.sort(scores, descending=True).values
                 rows.append({
@@ -853,171 +748,9 @@ def score_primary(*, model, cached_questions: Sequence, source_questions: Sequen
                     "gold_index": int(source.gold_index),
                     "correct": proposal == int(source.gold_index),
                     "primary_margin": float((ordered[0] - ordered[1]).item()),
-                    "candidate_primary_probabilities": [
-                        float(value) for value in probabilities.tolist()
-                    ],
                 })
     return rows
 
-
-
-def score_binary_yes_no(*, model, cached_questions: Sequence, batch_questions: int) -> list[dict[str, float]]:
-    import torch
-
-    rows: list[dict[str, float]] = []
-    model.eval()
-    model.backbone.eval()
-    with torch.no_grad():
-        for start in range(0, len(cached_questions), batch_questions):
-            batch = list(cached_questions[start:start + batch_questions])
-            logits, _ = model.score_cached_questions(batch)
-            for index, cached in enumerate(batch):
-                ids = list(cached.candidate_ids)
-                if "yes" not in ids or "no" not in ids:
-                    raise RuntimeError(f"binary meta cache lost yes/no candidates: {cached.question_id}")
-                yi = ids.index("yes")
-                ni = ids.index("no")
-                scores = logits[index, :len(ids)].detach().float()
-                probs = scores.softmax(-1)
-                rows.append({
-                    "question_id": cached.question_id,
-                    "yes_probability": float(probs[yi].item()),
-                    "yes_minus_no": float((scores[yi] - scores[ni]).item()),
-                })
-    return rows
-
-
-def _binary_ranking_metrics(labels: Sequence[bool], scores: Sequence[float]) -> dict[str, float | None]:
-    if len(labels) != len(scores):
-        raise ValueError("binary ranking labels/scores length mismatch")
-    positives = [float(score) for label, score in zip(labels, scores) if bool(label)]
-    negatives = [float(score) for label, score in zip(labels, scores) if not bool(label)]
-    auroc = None
-    if positives and negatives:
-        wins = 0.0
-        for positive in positives:
-            for negative in negatives:
-                if positive > negative:
-                    wins += 1.0
-                elif positive == negative:
-                    wins += 0.5
-        auroc = wins / (len(positives) * len(negatives))
-    average_precision = None
-    if positives:
-        ordered = sorted(
-            ((float(score), bool(label), index) for index, (label, score) in enumerate(zip(labels, scores))),
-            key=lambda item: (-item[0], item[2]),
-        )
-        tp = 0
-        precision_sum = 0.0
-        for rank, (_score, label, _index) in enumerate(ordered, start=1):
-            if label:
-                tp += 1
-                precision_sum += tp / rank
-        average_precision = precision_sum / len(positives)
-    return {"auroc": auroc, "average_precision": average_precision}
-
-
-def evaluate_primary_error_meta(*, model, primary_cached: Sequence,
-                                source_questions: Sequence[ObjectQuestion], error_meta_cached: Sequence,
-                                batch_questions: int) -> dict[str, Any]:
-    if len(source_questions) != len(error_meta_cached):
-        raise RuntimeError("primary-error eval source/cache count mismatch")
-    primary_rows = score_primary(
-        model=model,
-        cached_questions=primary_cached,
-        source_questions=source_questions,
-        batch_questions=batch_questions,
-    )
-    meta_rows = score_binary_yes_no(
-        model=model,
-        cached_questions=error_meta_cached,
-        batch_questions=batch_questions,
-    )
-    labels = [not bool(row["correct"]) for row in primary_rows]
-    meta_scores = [float(row["yes_probability"]) for row in meta_rows]
-    predictions = [score >= 0.5 for score in meta_scores]
-    tp = sum(pred and gold for pred, gold in zip(predictions, labels))
-    fp = sum(pred and not gold for pred, gold in zip(predictions, labels))
-    tn = sum((not pred) and (not gold) for pred, gold in zip(predictions, labels))
-    fn = sum((not pred) and gold for pred, gold in zip(predictions, labels))
-    positives = tp + fn
-    negatives = tn + fp
-    recall = tp / positives if positives else None
-    specificity = tn / negatives if negatives else None
-    precision = tp / (tp + fp) if tp + fp else None
-    accuracy = (tp + tn) / len(labels) if labels else None
-    balanced_accuracy = None
-    if recall is not None and specificity is not None:
-        balanced_accuracy = 0.5 * (recall + specificity)
-    f1 = None
-    if precision is not None and recall is not None and (precision + recall) > 0:
-        f1 = 2.0 * precision * recall / (precision + recall)
-
-    margin_uncertainty = [-float(row["primary_margin"]) for row in primary_rows]
-    max_probability_uncertainty: list[float] = []
-    entropy_uncertainty: list[float] = []
-    for row in primary_rows:
-        probs = [max(1e-12, float(value)) for value in row["candidate_primary_probabilities"]]
-        max_probability_uncertainty.append(1.0 - max(probs))
-        entropy_uncertainty.append(-sum(value * math.log(value) for value in probs))
-
-    return {
-        "questions": len(labels),
-        "primary_accuracy": sum(not label for label in labels) / len(labels) if labels else None,
-        "primary_error_rate": sum(labels) / len(labels) if labels else None,
-        "confusion": {"true_positive": tp, "false_positive": fp, "true_negative": tn, "false_negative": fn},
-        "accuracy": accuracy,
-        "balanced_accuracy": balanced_accuracy,
-        "error_precision": precision,
-        "error_recall": recall,
-        "error_f1": f1,
-        "meta_yes_probability": _binary_ranking_metrics(labels, meta_scores),
-        "ranking_chance": {
-            "auroc": 0.5 if positives and negatives else None,
-            "average_precision": positives / len(labels) if labels else None,
-        },
-        "primary_uncertainty_baselines": {
-            "negative_top2_margin": _binary_ranking_metrics(labels, margin_uncertainty),
-            "one_minus_max_probability": _binary_ranking_metrics(labels, max_probability_uncertainty),
-            "entropy": _binary_ranking_metrics(labels, entropy_uncertainty),
-        },
-        "contract": {
-            "positive_class": "current primary consensus decision is wrong",
-            "meta_prompt_hides_primary_choice": True,
-            "meta_prompt_hides_gold": True,
-            "training_labels": "cycle-start parent-primary correctness frozen before optimizer updates",
-            "evaluation_labels": "current checkpoint primary correctness on the fixed consensus probe",
-            "baseline_question": "does learned error prediction rank primary mistakes better than primary uncertainty alone?",
-        },
-    }
-
-
-def cache_meta_questions(*, direct, model, tokenizer, questions: Sequence[ObjectQuestion], args):
-    filtered, filter_stats = direct.filter_bounded_questions(
-        list(questions),
-        tokenizer,
-        max_prompt_tokens=args.relative_max_prompt_tokens,
-        max_answer_tokens=args.max_answer_tokens,
-    )
-    if len(filtered) != len(questions):
-        raise RuntimeError(
-            "meta questions exceeded the dedicated prompt budget: "
-            f"kept={len(filtered)} expected={len(questions)} stats={filter_stats}"
-        )
-    cached, stats = direct.materialize_cached_questions(
-        model=model,
-        tokenizer=tokenizer,
-        questions=filtered,
-        max_prompt_tokens=args.relative_max_prompt_tokens,
-        pad_token_id=int(tokenizer.pad_token_id),
-        precision=args.precision,
-        qwen_batch_questions=args.cache_qwen_batch_questions,
-    )
-    result = dict(stats)
-    result["filter"] = filter_stats
-    result["max_prompt_tokens"] = int(args.relative_max_prompt_tokens)
-    return cached, result
 
 
 def cache_relative_eval_variants(*, smoke, direct, model, tokenizer,
@@ -1146,299 +879,10 @@ def relative_rows(*, model, primary_cached: Sequence, source_questions: Sequence
             "relative_probability_gap": probability_gap,
             "relative_logit_gap": logit_gap,
             "relative_tie": tie,
-            "candidate_primary_probabilities": [
-                float(value) for value in primary_row["candidate_primary_probabilities"]
-            ],
             "candidate_yes_probabilities": [float(item["yes_probability"]) for item in candidate_scores],
             "candidate_yes_minus_no": [float(item["yes_minus_no"]) for item in candidate_scores],
         })
     return rows
-
-
-def _softmax_values(values: Sequence[float]) -> list[float]:
-    if not values:
-        return []
-    maximum = max(float(value) for value in values)
-    exponentials = [math.exp(max(-60.0, min(60.0, float(value) - maximum))) for value in values]
-    total = sum(exponentials)
-    if total <= 0.0 or not math.isfinite(total):
-        return [1.0 / len(exponentials)] * len(exponentials)
-    return [value / total for value in exponentials]
-
-
-def _accuracy_reliability(rows: Sequence[dict[str, Any]]) -> dict[str, float]:
-    if not rows:
-        raise ValueError("deterministic ruler reliability needs calibration rows")
-    candidate_counts = {int(row["candidate_count"]) for row in rows}
-    if len(candidate_counts) != 1:
-        raise ValueError(f"deterministic ruler calibration mixes candidate counts: {candidate_counts}")
-    candidate_count = candidate_counts.pop()
-    chance = 1.0 / candidate_count
-    total = len(rows)
-    primary_correct = sum(bool(row["primary_correct"]) for row in rows)
-    relative_correct = sum(bool(row["relative_correct"]) for row in rows)
-    # Laplace smoothing prevents infinite reliability weights on small folds while
-    # preserving the measured dev accuracy as the reported quantity.
-    primary_smoothed = (primary_correct + 1.0) / (total + 2.0)
-    relative_smoothed = (relative_correct + 1.0) / (total + 2.0)
-    chance_logit = _safe_logit(chance)
-    return {
-        "questions": total,
-        "candidate_count": candidate_count,
-        "chance_accuracy": chance,
-        "primary_accuracy": primary_correct / total,
-        "relative_accuracy": relative_correct / total,
-        "primary_smoothed_accuracy": primary_smoothed,
-        "relative_smoothed_accuracy": relative_smoothed,
-        "primary_log_odds_skill": _safe_logit(primary_smoothed) - chance_logit,
-        "relative_log_odds_skill": _safe_logit(relative_smoothed) - chance_logit,
-    }
-
-
-def _dev_accuracy_conditioned_choice(row: dict[str, Any], reliability: dict[str, float]) -> int:
-    primary = [float(value) for value in row["candidate_primary_probabilities"]]
-    relative_log_odds = [float(value) for value in row["candidate_yes_minus_no"]]
-    if len(primary) != int(row["candidate_count"]) or len(relative_log_odds) != len(primary):
-        raise RuntimeError(f"deterministic ruler candidate vector mismatch: {row['question_id']}")
-    relative = _softmax_values(relative_log_odds)
-    primary_weight = float(reliability["primary_log_odds_skill"])
-    relative_weight = float(reliability["relative_log_odds_skill"])
-    scores = [
-        primary_weight * math.log(max(primary[index], 1e-12))
-        + relative_weight * math.log(max(relative[index], 1e-12))
-        for index in range(len(primary))
-    ]
-    best = max(scores)
-    tied = [index for index, score in enumerate(scores) if abs(score - best) <= 1e-12]
-    primary_index = int(row["primary_index"])
-    if primary_index in tied:
-        return primary_index
-    return int(tied[0])
-
-
-def _candidate_choice_metrics(rows: Sequence[dict[str, Any]], choices: dict[str, int], *,
-                              method: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    total = len(rows)
-    primary_correct = sum(bool(row["primary_correct"]) for row in rows)
-    relative_correct = sum(bool(row["relative_correct"]) for row in rows)
-    chosen_correct = 0
-    changed = 0
-    corrections = 0
-    regressions = 0
-    for row in rows:
-        qid = str(row["question_id"])
-        choice = int(choices.get(qid, row["primary_index"]))
-        gold = int(row["gold_index"])
-        primary_index = int(row["primary_index"])
-        correct = choice == gold
-        chosen_correct += int(correct)
-        if choice != primary_index:
-            changed += 1
-            if (not bool(row["primary_correct"])) and correct:
-                corrections += 1
-            elif bool(row["primary_correct"]) and (not correct):
-                regressions += 1
-    result = {
-        "method": method,
-        "questions": total,
-        "primary_accuracy": primary_correct / total if total else None,
-        "relative_candidate_accuracy": relative_correct / total if total else None,
-        "deterministic_accuracy": chosen_correct / total if total else None,
-        "deterministic_delta": (chosen_correct - primary_correct) / total if total else None,
-        "changed_from_primary": changed,
-        "corrections": corrections,
-        "regressions": regressions,
-    }
-    if extra:
-        result.update(extra)
-    return result
-
-
-def _with_task_metrics(rows: Sequence[dict[str, Any]], choices: dict[str, int], *,
-                       method: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    result = _candidate_choice_metrics(rows, choices, method=method, extra=extra)
-    result["by_task"] = {}
-    for task in sorted({str(row["task"]) for row in rows}):
-        task_rows = [row for row in rows if str(row["task"]) == task]
-        result["by_task"][task] = _candidate_choice_metrics(
-            task_rows, choices, method=method
-        )
-    return result
-
-
-def _top1_union_oracle(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    total = len(rows)
-    primary_correct = sum(bool(row["primary_correct"]) for row in rows)
-    union_correct = sum(
-        bool(row["primary_correct"]) or bool(row["relative_correct"])
-        for row in rows
-    )
-    result = {
-        "questions": total,
-        "primary_accuracy": primary_correct / total if total else None,
-        "top1_union_oracle_accuracy": union_correct / total if total else None,
-        "top1_union_oracle_delta": (union_correct - primary_correct) / total if total else None,
-        "reporting_only": True,
-        "meaning": "upper bound if an oracle could choose between the primary and relative top-1 answers on each question",
-    }
-    by_task = {}
-    for task in sorted({str(row["task"]) for row in rows}):
-        task_rows = [row for row in rows if str(row["task"]) == task]
-        task_primary = sum(bool(row["primary_correct"]) for row in task_rows)
-        task_union = sum(bool(row["primary_correct"]) or bool(row["relative_correct"]) for row in task_rows)
-        by_task[task] = {
-            "questions": len(task_rows),
-            "primary_accuracy": task_primary / len(task_rows),
-            "top1_union_oracle_accuracy": task_union / len(task_rows),
-            "top1_union_oracle_delta": (task_union - task_primary) / len(task_rows),
-        }
-    result["by_task"] = by_task
-    return result
-
-
-def _same_holdout_dev_accuracy_ruler(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    choices: dict[str, int] = {}
-    reliability_by_task: dict[str, dict[str, float]] = {}
-    selected_rule_by_task: dict[str, str] = {}
-    best_choices: dict[str, int] = {}
-    for task in sorted({str(row["task"]) for row in rows}):
-        task_rows = [row for row in rows if str(row["task"]) == task]
-        reliability = _accuracy_reliability(task_rows)
-        reliability_by_task[task] = reliability
-        fused = {
-            str(row["question_id"]): _dev_accuracy_conditioned_choice(row, reliability)
-            for row in task_rows
-        }
-        choices.update(fused)
-        primary_correct = sum(bool(row["primary_correct"]) for row in task_rows)
-        relative_correct = sum(bool(row["relative_correct"]) for row in task_rows)
-        fused_correct = sum(
-            fused[str(row["question_id"])] == int(row["gold_index"])
-            for row in task_rows
-        )
-        ranked = [
-            (primary_correct, 2, "primary"),
-            (fused_correct, 1, "dev_accuracy_conditioned_fusion"),
-            (relative_correct, 0, "relative"),
-        ]
-        _score, _tie, selected = max(ranked)
-        selected_rule_by_task[task] = selected
-        for row in task_rows:
-            qid = str(row["question_id"])
-            if selected == "primary":
-                best_choices[qid] = int(row["primary_index"])
-            elif selected == "relative":
-                best_choices[qid] = int(row["relative_index"])
-            else:
-                best_choices[qid] = fused[qid]
-    fusion = _with_task_metrics(
-        rows, choices, method="same_holdout_dev_accuracy_conditioned_log_pool",
-        extra={"reliability_by_task": reliability_by_task, "optimistic_reporting_only": True},
-    )
-    best = _with_task_metrics(
-        rows, best_choices, method="same_holdout_best_available_deterministic",
-        extra={
-            "selected_rule_by_task": selected_rule_by_task,
-            "optimistic_reporting_only": True,
-            "warning": "rule selection and scoring use the same holdout; use cross-fitted deterministic result as the ruler bottom line",
-        },
-    )
-    return {"fusion": fusion, "best_available": best}
-
-
-def _cross_fitted_dev_accuracy_ruler(rows: Sequence[dict[str, Any]], *, folds: int) -> dict[str, Any]:
-    assignments = _conditioned_fold_map(rows, folds)
-    fusion_choices: dict[str, int] = {}
-    best_choices: dict[str, int] = {}
-    calibration_by_fold: dict[str, dict[str, Any]] = {}
-    tasks = sorted({str(row["task"]) for row in rows})
-    for fold in range(folds):
-        train = [row for row in rows if assignments[str(row["question_id"])] != fold]
-        test = [row for row in rows if assignments[str(row["question_id"])] == fold]
-        fold_state: dict[str, Any] = {}
-        for task in tasks:
-            train_task = [row for row in train if str(row["task"]) == task]
-            test_task = [row for row in test if str(row["task"]) == task]
-            if not train_task:
-                continue
-            reliability = _accuracy_reliability(train_task)
-            train_fused = {
-                str(row["question_id"]): _dev_accuracy_conditioned_choice(row, reliability)
-                for row in train_task
-            }
-            primary_correct = sum(bool(row["primary_correct"]) for row in train_task)
-            relative_correct = sum(bool(row["relative_correct"]) for row in train_task)
-            fused_correct = sum(
-                train_fused[str(row["question_id"])] == int(row["gold_index"])
-                for row in train_task
-            )
-            ranked = [
-                (primary_correct, 2, "primary"),
-                (fused_correct, 1, "dev_accuracy_conditioned_fusion"),
-                (relative_correct, 0, "relative"),
-            ]
-            _score, _tie, selected = max(ranked)
-            fold_state[task] = {
-                "reliability": reliability,
-                "calibration_accuracy": {
-                    "primary": primary_correct / len(train_task),
-                    "relative": relative_correct / len(train_task),
-                    "dev_accuracy_conditioned_fusion": fused_correct / len(train_task),
-                },
-                "selected_rule": selected,
-            }
-            for row in test_task:
-                qid = str(row["question_id"])
-                fused_choice = _dev_accuracy_conditioned_choice(row, reliability)
-                fusion_choices[qid] = fused_choice
-                if selected == "primary":
-                    best_choices[qid] = int(row["primary_index"])
-                elif selected == "relative":
-                    best_choices[qid] = int(row["relative_index"])
-                else:
-                    best_choices[qid] = fused_choice
-        calibration_by_fold[str(fold)] = fold_state
-    fusion = _with_task_metrics(
-        rows, fusion_choices, method="cross_fitted_dev_accuracy_conditioned_log_pool",
-        extra={
-            "folds": folds,
-            "out_of_fold": True,
-            "calibration_by_fold": calibration_by_fold,
-        },
-    )
-    best = _with_task_metrics(
-        rows, best_choices, method="cross_fitted_best_available_deterministic",
-        extra={
-            "folds": folds,
-            "out_of_fold": True,
-            "calibration_by_fold": calibration_by_fold,
-            "selection_candidates": ["primary", "relative", "dev_accuracy_conditioned_fusion"],
-        },
-    )
-    return {"fusion": fusion, "best_available": best}
-
-
-def deterministic_ruler_analysis(rows: Sequence[dict[str, Any]], *, folds: int) -> dict[str, Any]:
-    if not rows:
-        return {}
-    same_holdout = _same_holdout_dev_accuracy_ruler(rows)
-    cross_fitted = _cross_fitted_dev_accuracy_ruler(rows, folds=folds)
-    return {
-        "top1_union_oracle": _top1_union_oracle(rows),
-        "same_holdout": same_holdout,
-        "cross_fitted": cross_fitted,
-        "bottom_line": cross_fitted["best_available"],
-        "contract": {
-            "training_unchanged_by_analysis": True,
-            "deterministic": True,
-            "dev_conditioning": "task-specific primary and relative dev accuracies are estimated on calibration folds",
-            "candidate_evidence": "full primary candidate softmax probabilities plus every meta candidate YES-minus-NO score",
-            "fusion": "log-probability pool weighted by each system's Laplace-smoothed log-odds skill above task chance",
-            "model_selection": "within each calibration fold/task, choose the best of primary, relative, or deterministic fusion; apply that fixed rule to the held-out fold",
-            "gold_label_isolation": "held-out fold gold labels are not used to compute reliability weights or select its rule",
-            "oracle_warning": "top1_union_oracle and same_holdout best-available are diagnostics, not deployable estimates",
-        },
-    }
 
 
 def override_metrics(rows: Sequence[dict[str, Any]], probability_gap_threshold: float) -> dict[str, Any]:
@@ -1826,14 +1270,11 @@ def conditioned_arbitration_analysis(rows: Sequence[dict[str, Any]],
     oracle = task_conditioned_gap_oracle(rows, gap_thresholds)
     cross_gap = cross_fitted_task_gap(rows, gap_thresholds, folds=effective_folds)
     cross_logistic = cross_fitted_conditioned_logistic(rows, folds=effective_folds)
-    deterministic = deterministic_ruler_analysis(rows, folds=effective_folds)
     return {
         "task_priors": priors,
         "task_conditioned_gap_oracle_reporting_only": oracle,
         "cross_fitted_task_gap": cross_gap,
         "cross_fitted_conditioned_logistic": cross_logistic,
-        "deterministic_ruler": deterministic,
-        "best_deterministic_ruler": deterministic.get("bottom_line"),
         "bottom_line": {
             "primary_method": "cross_fitted_conditioned_logistic",
             "primary_accuracy": cross_logistic.get("primary_accuracy"),
@@ -1928,26 +1369,29 @@ def save_checkpoint(*, smoke, direct, experiment_dir: Path, model, optimizer,
 
 
 def self_test() -> None:
-    plan = training_plan(150, consensus_percent=90.0, candidate_meta_percent=10.0, error_meta_percent=10.0)
+    plan = training_plan(150, consensus_percent=90.0, relative_correct_percent=10.0, relative_wrong_percent=10.0)
     assert plan == {
         CONSENSUS_TASK: 108,
         TRIAD_TASK: 4,
         DICTIONARY_TASK: 4,
         ENGLISH_CODE_TASK: 4,
-        CANDIDATE_META: 15,
-        ERROR_META_TASK: 15,
+        RELATIVE_CORRECT: 15,
+        RELATIVE_WRONG: 15,
     }
-    source_plan = candidate_meta_source_plan(plan)
+    source_plan = relative_source_plan(plan)
     assert source_plan == {
-        CONSENSUS_TASK: 2,
+        CONSENSUS_TASK: 4,
         TRIAD_TASK: 1,
         DICTIONARY_TASK: 1,
         ENGLISH_CODE_TASK: 1,
     }
-    assert binary_label_targets(15, cycle=2) == (8, 7)
-    assert binary_label_targets(15, cycle=3) == (7, 8)
-    assert error_meta_label_targets(15, cycle=2) == (7, 8)
-    assert error_meta_label_targets(15, cycle=3) == (8, 7)
+    expanded_pairs = (
+        3 * source_plan[CONSENSUS_TASK]
+        + source_plan[TRIAD_TASK]
+        + source_plan[DICTIONARY_TASK]
+        + source_plan[ENGLISH_CODE_TASK]
+    )
+    assert expanded_pairs == plan[RELATIVE_CORRECT] == plan[RELATIVE_WRONG], (expanded_pairs, plan)
     assert parse_gap_thresholds("0,0.1,0.5") == (0.0, 0.1, 0.5)
 
     source = ObjectQuestion(
@@ -1989,61 +1433,6 @@ def self_test() -> None:
     assert len(binary_meta) == 2, binary_meta
     assert sum(q.stratum == "correct_candidate" for q in binary_meta) == 1, binary_meta
     assert sum(q.stratum == "wrong_candidate" for q in binary_meta) == 1, binary_meta
-
-    candidate_pool = list(consensus_meta) * 3
-    selected_candidate_meta = select_candidate_meta_questions(
-        pool=candidate_pool, count=15, cycle=2, seed=7
-    )
-    assert len(selected_candidate_meta) == 15
-    assert sum(q.stratum == "correct_candidate" for q in selected_candidate_meta) == 8
-    assert sum(q.stratum == "wrong_candidate" for q in selected_candidate_meta) == 7
-
-    def _rel_prompt(code: str, hypothesis: str) -> str:
-        return "Language: Python\nReference code:\n```python\n" + code + "\n```\n" + hypothesis + "\n```python\n"
-
-    a_code, b_code, c_code = "a = 1", "b = 2", "c = 3"
-    structural_paths = (
-        ObjectPath(_rel_prompt(a_code, "same"), b_code),
-        ObjectPath(_rel_prompt(b_code, "same"), a_code),
-        ObjectPath(_rel_prompt(a_code, "different"), c_code),
-        ObjectPath(_rel_prompt(c_code, "different"), a_code),
-        ObjectPath(_rel_prompt(b_code, "same"), c_code),
-        ObjectPath(_rel_prompt(c_code, "same"), b_code),
-    )
-    tractability_source = ObjectQuestion(
-        question_id="consensus:tractability",
-        task=CONSENSUS_TASK,
-        candidates=tuple(ObjectCandidate(label, structural_paths) for label in ("a", "b", "c", "none")),
-        gold_index=1,
-    )
-    assert consensus_code_triplet(tractability_source) == (a_code, b_code, c_code)
-    error_prompt = primary_error_evidence_prompt(tractability_source)
-    assert "Will the primary consensus decision be wrong?" in error_prompt
-    assert "proposed answer and the gold answer are hidden" in error_prompt
-    assert "Object A:" in error_prompt and "Object B:" in error_prompt and "Object C:" in error_prompt
-    assert "consensus:tractability" not in error_prompt
-    error_question = build_error_meta_train_question(
-        question=tractability_source, primary_was_wrong=True, cycle=2, source_index=0
-    )
-    assert error_question.task == ERROR_META_TASK
-    assert error_question.stratum == "primary_wrong"
-    synthetic_error_rows = [
-        {"question_id": f"wrong:{index}", "correct": False} for index in range(9)
-    ] + [
-        {"question_id": f"correct:{index}", "correct": True} for index in range(9)
-    ]
-    selected_error_rows = select_error_meta_rows(
-        scored_primary=synthetic_error_rows, count=15, cycle=2, seed=7
-    )
-    assert sum(not bool(row["correct"]) for row in selected_error_rows) == 7
-    assert sum(bool(row["correct"]) for row in selected_error_rows) == 8
-    assert (
-        sum(q.stratum == "correct_candidate" for q in selected_candidate_meta)
-        + sum(not bool(row["correct"]) for row in selected_error_rows)
-    ) == 15
-    perfect_rank = _binary_ranking_metrics([True, False, True, False], [0.9, 0.1, 0.8, 0.2])
-    assert perfect_rank["auroc"] == 1.0, perfect_rank
-    assert perfect_rank["average_precision"] == 1.0, perfect_rank
     rows = [
         {"primary_correct": True, "relative_correct": True, "disagree": False, "relative_probability_gap": 0.8, "relative_tie": False},
         {"primary_correct": True, "relative_correct": False, "disagree": True, "relative_probability_gap": 0.90, "relative_tie": False},
@@ -2092,20 +1481,6 @@ def self_test() -> None:
                 "relative_logit_gap": 2.0 * relative_gap,
                 "primary_margin": primary_margin,
                 "relative_tie": False,
-                "candidate_count": 2,
-                "gold_index": index % 2,
-                "primary_index": (index % 2) if primary_correct else 1 - (index % 2),
-                "relative_index": (index % 2) if relative_correct_flag else 1 - (index % 2),
-                "candidate_primary_probabilities": (
-                    [0.82, 0.18]
-                    if ((index % 2) if primary_correct else 1 - (index % 2)) == 0
-                    else [0.18, 0.82]
-                ),
-                "candidate_yes_minus_no": (
-                    [1.4, -1.4]
-                    if ((index % 2) if relative_correct_flag else 1 - (index % 2)) == 0
-                    else [-1.4, 1.4]
-                ),
             })
     conditioned = conditioned_arbitration_analysis(
         conditioned_rows, (0.0, 0.1, 0.2, 0.3, 0.4), folds=5
@@ -2114,11 +1489,6 @@ def self_test() -> None:
     assert conditioned["task_conditioned_gap_oracle_reporting_only"]["synthetic_accuracy"] >= conditioned["task_conditioned_gap_oracle_reporting_only"]["primary_accuracy"], conditioned
     bottom = conditioned["bottom_line"]
     assert 0.0 <= float(bottom["synthetic_accuracy"]) <= 1.0, bottom
-    ruler = conditioned["deterministic_ruler"]
-    assert ruler["contract"]["deterministic"] is True, ruler
-    assert ruler["bottom_line"]["out_of_fold"] is True, ruler
-    assert 0.0 <= float(ruler["bottom_line"]["deterministic_accuracy"]) <= 1.0, ruler
-    assert ruler["top1_union_oracle"]["top1_union_oracle_accuracy"] >= ruler["top1_union_oracle"]["primary_accuracy"], ruler
 
     with tempfile.TemporaryDirectory(prefix="nanojev_consensus_heavy_meta_selftest_") as td:
         root = Path(td)
@@ -2154,10 +1524,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment-dir", default=DEFAULT_EXPERIMENT)
     parser.add_argument("--source-experiment", default=DEFAULT_SOURCE_EXPERIMENT)
+    parser.add_argument("--three-backbone-cutover-dir", default=r"C:\Users\subsi\NanoJev\runs\main_computer_three_backbone_logp_cutover_v1")
     parser.add_argument("--train-questions-per-cycle", type=int, default=DEFAULT_TRAIN_QUESTIONS)
     parser.add_argument("--consensus-percent", type=float, default=DEFAULT_CONSENSUS_PERCENT, help="consensus share within the primary-task budget")
-    parser.add_argument("--candidate-meta-percent", type=float, default=DEFAULT_CANDIDATE_META_PERCENT)
-    parser.add_argument("--error-meta-percent", type=float, default=DEFAULT_ERROR_META_PERCENT)
+    parser.add_argument("--relative-correct-percent", type=float, default=DEFAULT_RELATIVE_CORRECT_PERCENT)
+    parser.add_argument("--relative-wrong-percent", type=float, default=DEFAULT_RELATIVE_WRONG_PERCENT)
     parser.add_argument("--train-files-per-cycle", type=int, default=DEFAULT_TRAIN_FILES_PER_CYCLE)
     parser.add_argument("--triad-max-code-tokens", type=int, default=DEFAULT_TRIAD_MAX_CODE_TOKENS)
     parser.add_argument("--consensus-max-code-tokens", type=int, default=DEFAULT_CONSENSUS_MAX_CODE_TOKENS)
@@ -2200,10 +1571,10 @@ def main() -> None:
         plan = training_plan(
             args.train_questions_per_cycle,
             consensus_percent=args.consensus_percent,
-            candidate_meta_percent=args.candidate_meta_percent,
-            error_meta_percent=args.error_meta_percent,
+            relative_correct_percent=args.relative_correct_percent,
+            relative_wrong_percent=args.relative_wrong_percent,
         )
-        candidate_source_plan = candidate_meta_source_plan(plan)
+        pair_source_plan = relative_source_plan(plan)
         gap_thresholds = parse_gap_thresholds(args.relative_gap_thresholds)
     except ValueError as exc:
         parser.error(str(exc))
@@ -2213,11 +1584,11 @@ def main() -> None:
     tools_dir = Path(__file__).resolve().parent
     smoke = load_local_module(
         "nanojev_dictionary_code_smoke_for_relative_candidate",
-        tools_dir / "nanojev_dictionary_code_objective_smoke.py",
+        tools_dir / "nanojev_three_backbone_objective_smoke.py",
     )
     direct = load_local_module(
         "nanojev_direct_logp_for_relative_candidate",
-        tools_dir / "nanojev_code_direct_qwen_logp_train.py",
+        tools_dir / "nanojev_three_backbone_logp_train.py",
     )
     dictionary_curriculum = load_local_module(
         "nanojev_dictionary_curriculum_for_relative_candidate",
@@ -2250,74 +1621,57 @@ def main() -> None:
     state_path = experiment_dir / "state.json"
     db_path = experiment_dir / "lexical.db"
 
-    legacy_plan = {
-        CONSENSUS_TASK: 108,
-        TRIAD_TASK: 4,
-        DICTIONARY_TASK: 4,
-        ENGLISH_CODE_TASK: 4,
-        LEGACY_RELATIVE_CORRECT: 15,
-        LEGACY_RELATIVE_WRONG: 15,
-    }
+    cutover_dir = Path(args.three_backbone_cutover_dir).expanduser().resolve(strict=True)
+    expected_source = resolve_three_backbone_cutover_source(cutover_dir)
+
     if manifest_path.is_file():
         manifest = read_json(manifest_path)
         if manifest.get("schema_version") != SCHEMA:
             raise RuntimeError(f"existing consensus-heavy-meta experiment has wrong schema: {manifest_path}")
-        source = dict(manifest["source"])
+        source = repair_uncommitted_cutover_lineage(
+            manifest_path=manifest_path,
+            state_path=state_path,
+            db_path=db_path,
+            manifest=manifest,
+            expected_source=expected_source,
+        )
         stored_plan = {k: int(v) for k, v in manifest["training_plan"].items()}
         if stored_plan != plan:
-            if stored_plan != legacy_plan:
-                raise RuntimeError(f"cannot resume with a different training mix: stored={stored_plan} requested={plan}")
-            old_source_plan = dict(manifest.get("relative_source_plan") or {})
-            manifest["training_plan"] = plan
-            manifest["candidate_meta_source_plan"] = candidate_source_plan
-            manifest["relative_source_plan"] = candidate_source_plan  # compatibility alias
-            manifest["training_mix_percent"] = {
-                task: 100.0 * count / args.train_questions_per_cycle
-                for task, count in plan.items()
+            raise RuntimeError(f"cannot resume with a different training mix: stored={stored_plan} requested={plan}")
+        stored_pair_source_plan = {k: int(v) for k, v in manifest["relative_source_plan"].items()}
+        if stored_pair_source_plan != pair_source_plan:
+            legacy_pair_source_plan = {
+                CONSENSUS_TASK: int(plan[RELATIVE_CORRECT]) - 3,
+                TRIAD_TASK: 1,
+                DICTIONARY_TASK: 1,
+                ENGLISH_CODE_TASK: 1,
             }
-            manifest["training_contract"] = (
-                f"{args.train_questions_per_cycle} questions: {plan[CONSENSUS_TASK]} consensus + "
-                f"{plan[TRIAD_TASK]} triad + {plan[DICTIONARY_TASK]} dictionary-definition + "
-                f"{plan[ENGLISH_CODE_TASK]} English/code + {plan[CANDIDATE_META]} candidate-meta + "
-                f"{plan[ERROR_META_TASK]} primary-error-meta -> {args.steps_per_cycle} ordinary cross-entropy steps -> checkpoint -> repeat"
-            )
+            if stored_pair_source_plan != legacy_pair_source_plan:
+                raise RuntimeError(
+                    f"cannot resume with a different relative source mix: "
+                    f"stored={stored_pair_source_plan} requested={pair_source_plan}"
+                )
+            manifest["relative_source_plan"] = pair_source_plan
             manifest["relative_contract"] = (
-                "10% optimizer share for candidate-correctness meta; exhaustive candidate source pools are "
-                "down-selected to an alternating 8/7 correct-vs-wrong population at the default 15-question budget"
+                "20% optimizer share retained for balanced candidate-correctness training; binary sources yield one "
+                "correct/wrong pair, while each four-way consensus source yields three balanced pairs covering all "
+                "three wrong alternatives"
             )
-            manifest["error_meta_contract"] = (
-                "10% optimizer share for primary-error prediction on consensus; labels are the frozen cycle-start "
-                "primary outcome, balanced 8/7 per cycle in the opposite phase from candidate-meta so combined meta labels stay exactly balanced"
-            )
-            manifest["meta_split_contract"] = "20% total meta share = 10% candidate correctness + 10% primary-error prediction"
             migrations = list(manifest.get("migrations") or [])
             migrations.append({
-                "kind": "candidate_meta_plus_primary_error_meta_10_10",
-                "from_training_plan": stored_plan,
-                "to_training_plan": plan,
-                "from_relative_source_plan": old_source_plan,
-                "to_candidate_meta_source_plan": candidate_source_plan,
-                "optimizer_steps_unchanged": True,
-                "primary_budget_unchanged": True,
-                "total_meta_share_unchanged": True,
+                "kind": "consensus_meta_full_negative_coverage",
+                "from_relative_source_plan": stored_pair_source_plan,
+                "to_relative_source_plan": pair_source_plan,
+                "training_plan_unchanged": True,
             })
             manifest["migrations"] = migrations
             atomic_json(manifest_path, manifest)
             emit(
-                "consensus_heavy_meta_curriculum_10_10_meta_migrated",
-                from_plan=stored_plan,
-                to_plan=plan,
-                candidate_meta_source_plan=candidate_source_plan,
+                "consensus_heavy_meta_curriculum_source_plan_migrated",
+                from_plan=stored_pair_source_plan,
+                to_plan=pair_source_plan,
+                training_plan=plan,
             )
-        else:
-            stored_candidate_source_plan = {
-                k: int(v) for k, v in (manifest.get("candidate_meta_source_plan") or manifest.get("relative_source_plan") or {}).items()
-            }
-            if stored_candidate_source_plan != candidate_source_plan:
-                raise RuntimeError(
-                    f"cannot resume with a different candidate-meta source mix: "
-                    f"stored={stored_candidate_source_plan} requested={candidate_source_plan}"
-                )
         stored_thresholds = tuple(float(v) for v in manifest["relative_gap_thresholds"])
         if stored_thresholds != gap_thresholds:
             raise RuntimeError(
@@ -2326,7 +1680,7 @@ def main() -> None:
         if not db_path.is_file():
             raise RuntimeError(f"consensus-heavy-meta lexical DB is missing: {db_path}")
     else:
-        source = resolve_curriculum_source(Path(args.source_experiment))
+        source = expected_source
         clone_sqlite(Path(source["source_database"]), db_path)
         manifest = {
             "schema_version": SCHEMA,
@@ -2334,33 +1688,29 @@ def main() -> None:
             "source": source,
             "database": str(db_path.resolve()),
             "training_plan": plan,
-            "candidate_meta_source_plan": candidate_source_plan,
-            "relative_source_plan": candidate_source_plan,
+            "relative_source_plan": pair_source_plan,
             "training_mix_percent": {
                 task: 100.0 * count / args.train_questions_per_cycle
                 for task, count in plan.items()
             },
             "relative_gap_thresholds": list(gap_thresholds),
             "training_contract": (
-                f"{args.train_questions_per_cycle} questions: {plan[CONSENSUS_TASK]} consensus + "
-                f"{plan[TRIAD_TASK]} triad + {plan[DICTIONARY_TASK]} dictionary-definition + "
-                f"{plan[ENGLISH_CODE_TASK]} English/code + {plan[CANDIDATE_META]} candidate-meta + "
-                f"{plan[ERROR_META_TASK]} primary-error-meta -> {args.steps_per_cycle} ordinary cross-entropy steps -> checkpoint -> repeat"
+                "150 questions: 108 consensus + 4 triad + 4 dictionary-definition + 4 English/code + "
+                "15 relative-correct + 15 relative-wrong -> 32 ordinary cross-entropy steps -> checkpoint -> repeat"
             ),
             "relative_contract": (
-                "10% optimizer share for candidate-correctness meta; exhaustive candidate source pools are "
-                "down-selected to an alternating 8/7 correct-vs-wrong population at the default 15-question budget"
+                "20% optimizer share retained for balanced candidate-correctness training; binary sources yield one "
+                "correct/wrong pair, while each four-way consensus source yields three balanced pairs covering all "
+                "three wrong alternatives"
             ),
-            "error_meta_contract": (
-                "10% optimizer share for primary-error prediction on consensus; labels are the frozen cycle-start "
-                "primary outcome, balanced 8/7 per cycle in the opposite phase from candidate-meta so combined meta labels stay exactly balanced"
-            ),
-            "meta_split_contract": "20% total meta share = 10% candidate correctness + 10% primary-error prediction",
             "synthetic_contract": (
                 "fixed heldout question -> score every cached candidate-correctness probe -> choose the candidate with "
-                "greatest YES evidence; primary-error meta is evaluated separately as tractability prediction"
+                "greatest YES evidence; optional reporting-only override requires a top-two probability-evidence gap"
             ),
             "generic_boundary": "Question->Candidate->ObjectPath(prompt,answer)",
+            "candidate_feature_order": ["qwen_hidden_1024", "qwen_logp_1", "pythia_hidden_512", "pythia_logp_1", "tinystories_hidden_768", "tinystories_logp_1"],
+            "candidate_feature_width": 2307,
+            "frozen_backbones": ["Qwen/Qwen3-0.6B", "EleutherAI/pythia-70m", "roneneldan/TinyStories-33M"],
         }
         atomic_json(manifest_path, manifest)
         emit("consensus_heavy_meta_curriculum_source_selected", **source["selection"], checkpoint=source["checkpoint"])
@@ -2512,19 +1862,6 @@ def main() -> None:
             qwen_batch_questions=args.cache_qwen_batch_questions,
         )
 
-        error_meta_eval_questions = [
-            build_error_meta_eval_question(question=question)
-            for question in consensus_source_questions
-        ]
-        validate_questions(error_meta_eval_questions)
-        error_meta_eval_cached, error_meta_eval_cache_stats = cache_meta_questions(
-            direct=direct,
-            model=model,
-            tokenizer=tokenizer,
-            questions=error_meta_eval_questions,
-            args=args,
-        )
-
         relative_eval_sources = (
             list(preservation_questions) + list(triad_source_questions) + list(consensus_source_questions)
         )
@@ -2581,19 +1918,11 @@ def main() -> None:
                 gap_thresholds=gap_thresholds,
                 conditioned_analysis_folds=args.conditioned_analysis_folds,
             )
-            error_meta_eval = evaluate_primary_error_meta(
-                model=model,
-                primary_cached=consensus_cached,
-                source_questions=consensus_source_questions,
-                error_meta_cached=error_meta_eval_cached,
-                batch_questions=args.eval_batch_questions,
-            )
             cutover_eval = {
                 "preservation": preservation,
                 TRIAD_TASK: triad_eval,
                 CONSENSUS_TASK: consensus_eval,
                 "relative_candidate": relative_eval,
-                ERROR_META_TASK: error_meta_eval,
             }
             atomic_json(cutover_eval_path, cutover_eval)
             emit(
@@ -2603,7 +1932,6 @@ def main() -> None:
                 triad_cache=triad_cache_stats,
                 consensus_cache=consensus_cache_stats,
                 relative_eval_cache=relative_eval_cache_stats,
-                error_meta_eval_cache=error_meta_eval_cache_stats,
             )
         elif cycle > int(source["source_cycle"]):
             resume_relative_eval = evaluate_relative_candidate(
@@ -2615,19 +1943,11 @@ def main() -> None:
                 gap_thresholds=gap_thresholds,
                 conditioned_analysis_folds=args.conditioned_analysis_folds,
             )
-            resume_error_meta_eval = evaluate_primary_error_meta(
-                model=model,
-                primary_cached=consensus_cached,
-                source_questions=consensus_source_questions,
-                error_meta_cached=error_meta_eval_cached,
-                batch_questions=args.eval_batch_questions,
-            )
             emit(
                 "consensus_heavy_meta_curriculum_conditioned_eval_resume",
                 cycle=cycle,
                 global_step=global_step,
                 relative_candidate=resume_relative_eval,
-                primary_error_prediction=resume_error_meta_eval,
             )
 
         emit(
@@ -2639,7 +1959,7 @@ def main() -> None:
             global_step=global_step,
             registered_objectives=registry.names(),
             training_plan=plan,
-            candidate_meta_source_plan=candidate_source_plan,
+            relative_source_plan=pair_source_plan,
             training_mix_percent={
                 task: 100.0 * count / args.train_questions_per_cycle
                 for task, count in plan.items()
@@ -2651,7 +1971,6 @@ def main() -> None:
             trainable_head_params=sum(parameter.numel() for parameter in head_params),
             fixed_relative_eval_questions=len(relative_eval_sources),
             fixed_relative_eval_variants=len(relative_eval_cached_by_key),
-            fixed_error_meta_eval_questions=len(error_meta_eval_cached),
             database=store.stats(),
             reserve=store.reserve_counts(),
             continuous=True,
@@ -2670,104 +1989,38 @@ def main() -> None:
                 args=args,
             )
 
-            candidate_sources = select_relative_source_questions(
+            relative_sources = select_relative_source_questions(
                 questions=primary_questions,
-                source_plan=candidate_source_plan,
+                source_plan=pair_source_plan,
                 cycle=cycle,
                 seed=args.seed,
             )
-            candidate_pool: list[ObjectQuestion] = []
-            candidate_required: list[ObjectQuestion] = []
-            for source_index, source_question in enumerate(candidate_sources):
-                expanded = relative_questions_for_source(
+            relative_questions: list[ObjectQuestion] = []
+            for source_index, source_question in enumerate(relative_sources):
+                relative_questions.extend(relative_questions_for_source(
                     question=source_question,
                     cycle=cycle,
                     source_index=source_index,
                     seed=args.seed,
-                )
-                candidate_pool.extend(expanded)
-                if source_question.task != CONSENSUS_TASK:
-                    candidate_required.extend(expanded)
-            validate_questions(candidate_pool)
-            candidate_meta_questions = select_candidate_meta_questions(
-                pool=candidate_pool,
-                count=plan[CANDIDATE_META],
-                cycle=cycle,
-                seed=args.seed,
-                required=candidate_required,
-            )
-            validate_questions(candidate_meta_questions)
-            candidate_correct_count = sum(
-                question.stratum == "correct_candidate" for question in candidate_meta_questions
-            )
-            candidate_wrong_count = sum(
-                question.stratum == "wrong_candidate" for question in candidate_meta_questions
-            )
-            expected_candidate_correct, expected_candidate_wrong = binary_label_targets(
-                plan[CANDIDATE_META], cycle=cycle
-            )
-            if (
-                candidate_correct_count != expected_candidate_correct
-                or candidate_wrong_count != expected_candidate_wrong
-            ):
+                ))
+            validate_questions(relative_questions)
+            relative_correct_count = sum(question.stratum == "correct_candidate" for question in relative_questions)
+            relative_wrong_count = sum(question.stratum == "wrong_candidate" for question in relative_questions)
+            if relative_correct_count != plan[RELATIVE_CORRECT] or relative_wrong_count != plan[RELATIVE_WRONG]:
                 raise RuntimeError(
-                    "candidate-meta down-selection broke alternating balance: "
-                    f"correct={candidate_correct_count}/{expected_candidate_correct} "
-                    f"wrong={candidate_wrong_count}/{expected_candidate_wrong}"
+                    "relative pair construction broke balance: "
+                    f"correct={relative_correct_count}/{plan[RELATIVE_CORRECT]} "
+                    f"wrong={relative_wrong_count}/{plan[RELATIVE_WRONG]}"
                 )
-            candidate_meta_cached, candidate_meta_cache_stats = smoke.cache_questions(
+            relative_cached, relative_cache_stats = smoke.cache_questions(
                 direct=direct,
                 model=model,
                 tokenizer=tokenizer,
-                questions=candidate_meta_questions,
+                questions=relative_questions,
                 args=args,
             )
 
-            error_source_rows, error_mining = mine_error_meta_rows(
-                model=model,
-                primary_questions=primary_questions,
-                primary_cached=primary_cached,
-                consensus_objective=consensus_objective,
-                smoke=smoke,
-                direct=direct,
-                tokenizer=tokenizer,
-                args=args,
-                count=plan[ERROR_META_TASK],
-                cycle=cycle,
-                seed=args.seed,
-            )
-            error_meta_questions = [
-                build_error_meta_train_question(
-                    question=row["source"],
-                    primary_was_wrong=not bool(row["correct"]),
-                    cycle=cycle,
-                    source_index=source_index,
-                )
-                for source_index, row in enumerate(error_source_rows)
-            ]
-            validate_questions(error_meta_questions)
-            error_wrong_count = sum(question.stratum == "primary_wrong" for question in error_meta_questions)
-            error_correct_count = sum(question.stratum == "primary_correct" for question in error_meta_questions)
-            expected_error_wrong, expected_error_correct = error_meta_label_targets(
-                plan[ERROR_META_TASK], cycle=cycle
-            )
-            if error_wrong_count != expected_error_wrong or error_correct_count != expected_error_correct:
-                raise RuntimeError(
-                    "primary-error meta construction broke alternating balance: "
-                    f"wrong={error_wrong_count}/{expected_error_wrong} "
-                    f"correct={error_correct_count}/{expected_error_correct}"
-                )
-            error_meta_cached, error_meta_cache_stats = cache_meta_questions(
-                direct=direct,
-                model=model,
-                tokenizer=tokenizer,
-                questions=error_meta_questions,
-                args=args,
-            )
-
-            training_cached = (
-                list(primary_cached) + list(candidate_meta_cached) + list(error_meta_cached)
-            )
+            training_cached = list(primary_cached) + list(relative_cached)
             if len(training_cached) != args.train_questions_per_cycle:
                 raise RuntimeError(
                     f"final training cache has wrong size: {len(training_cached)} != {args.train_questions_per_cycle}"
@@ -2814,13 +2067,6 @@ def main() -> None:
                 gap_thresholds=gap_thresholds,
                 conditioned_analysis_folds=args.conditioned_analysis_folds,
             )
-            error_meta_eval = evaluate_primary_error_meta(
-                model=model,
-                primary_cached=consensus_cached,
-                source_questions=consensus_source_questions,
-                error_meta_cached=error_meta_eval_cached,
-                batch_questions=args.eval_batch_questions,
-            )
 
             old_metrics = None
             if args.old_probe_every and cycle % args.old_probe_every == 0:
@@ -2839,32 +2085,21 @@ def main() -> None:
                     TRIAD_TASK: triad_eval,
                     CONSENSUS_TASK: consensus_eval,
                     "relative_candidate": relative_eval,
-                    ERROR_META_TASK: error_meta_eval,
                 },
                 "old_probe": old_metrics,
                 "database": store.stats(),
                 "reserve": store.reserve_counts(),
                 "primary_train_cache": primary_cache_stats,
-                "candidate_meta_train_cache": candidate_meta_cache_stats,
-                "error_meta_train_cache": error_meta_cache_stats,
-                "candidate_meta_source_plan": candidate_source_plan,
-                "candidate_meta_training": {
-                    "source_questions": len(candidate_sources),
-                    "pool_questions": len(candidate_pool),
-                    "required_rehearsal_probes": len(candidate_required),
-                    "selected_questions": len(candidate_meta_questions),
-                    "correct_candidate": candidate_correct_count,
-                    "wrong_candidate": candidate_wrong_count,
-                    "source_by_task": candidate_source_plan,
-                },
-                "error_meta_training": {
-                    "selected_questions": len(error_meta_questions),
-                    "primary_wrong": error_wrong_count,
-                    "primary_correct": error_correct_count,
-                    "mining": error_mining,
+                "relative_train_cache": relative_cache_stats,
+                "relative_source_plan": pair_source_plan,
+                "relative_training": {
+                    "source_questions": len(relative_sources),
+                    "candidate_questions": len(relative_questions),
+                    "correct_candidate": relative_correct_count,
+                    "wrong_candidate": relative_wrong_count,
+                    "source_by_task": pair_source_plan,
                 },
                 "fixed_relative_eval_cache": relative_eval_cache_stats,
-                "fixed_error_meta_eval_cache": error_meta_eval_cache_stats,
                 "consensus_eval_cache": consensus_cache_stats,
             }
             checkpoint = save_checkpoint(
@@ -2885,8 +2120,7 @@ def main() -> None:
                 "latest_checkpoint": str(checkpoint.resolve()),
                 "cutover_checkpoint": source["checkpoint"],
                 "training_plan": plan,
-                "candidate_meta_source_plan": candidate_source_plan,
-                "relative_source_plan": candidate_source_plan,
+                "relative_source_plan": pair_source_plan,
                 "last_eval": metrics["eval"],
                 "database": store.stats(),
                 "reserve": store.reserve_counts(),
