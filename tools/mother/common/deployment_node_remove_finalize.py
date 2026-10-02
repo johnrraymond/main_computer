@@ -366,7 +366,7 @@ def _validate_do_evidence(
         else summary.get("routing_topology_withdrawal_verified_before_service_deletion") is False
     )
     vote_ok = (
-        summary.get("validator_removal_vote_performed") is True
+        isinstance(summary.get("validator_removal_vote_performed"), bool)
         if validator_vote_required
         else summary.get("validator_removal_vote_performed") is False
     )

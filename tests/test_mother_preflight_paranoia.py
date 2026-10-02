@@ -184,7 +184,7 @@ services:
     assert result["required_validator_health_failures"][0]["service_status"] == "running:unhealthy"
 
 
-def test_preflight_recommends_cleanup_for_unhealthy_parent_with_retired_helpers(monkeypatch, tmp_path: Path) -> None:
+def test_preflight_recommends_broken_validator_cleanup_for_unhealthy_parent_with_retired_helpers(monkeypatch, tmp_path: Path) -> None:
     compose = """
 services:
   mainnetc-super1:
@@ -220,13 +220,16 @@ services:
     assert result["cleanup_required"] is False
     assert result["required_validator_unhealthy"] is True
     assert result["summary"]["retired_cleanup_helper_count"] == 1
-    assert result["summary"]["cleanup_command_emitted"] is True
-    assert "mother_helper_cleanup2_yagni.py execute" in result["cleanup_command"]
-    assert f"--topology-evidence {topology_path}" in result["cleanup_command"]
+    assert result["summary"]["cleanup_command_emitted"] is False
+    assert result["cleanup_command"] is None
+    assert result["summary"]["broken_validator_cleanup_command_emitted"] is True
+    assert result["broken_validator_cleanup_target"] == "mainnetc-super1"
+    assert "mother_broken_validator_cleanup.py --dry-run" in result["broken_validator_cleanup_command"]
+    assert f"--topology-evidence {topology_path}" in result["broken_validator_cleanup_command"]
 
 
-def test_preflight_cli_prints_recommended_cleanup_command_as_final_line(monkeypatch, tmp_path: Path, capsys) -> None:
-    cleanup_command = "python mother_helper_cleanup2_yagni.py execute --write-evidence"
+def test_preflight_cli_prints_recommended_broken_validator_cleanup_as_final_line(monkeypatch, tmp_path: Path, capsys) -> None:
+    broken_command = "python mother_broken_validator_cleanup.py --dry-run --node mainnetc-super1"
 
     def fake_run_preflight_paranoia(**kwargs):  # noqa: ARG001
         return {
@@ -240,7 +243,10 @@ def test_preflight_cli_prints_recommended_cleanup_command_as_final_line(monkeypa
             "read_only": True,
             "cleanup_required": False,
             "required_validator_unhealthy": True,
-            "cleanup_command": cleanup_command,
+            "cleanup_command": None,
+            "broken_validator_cleanup_required": True,
+            "broken_validator_cleanup_target": "mainnetc-super1",
+            "broken_validator_cleanup_command": broken_command,
             "topology_evidence": {"path": str(tmp_path / "topology.json"), "sha256": "a" * 64},
             "active_cleanup_helpers": [],
             "retired_cleanup_helpers": [{"helper_service": "mother-node-remove-voter-mainnetc_super1"}],
@@ -252,7 +258,8 @@ def test_preflight_cli_prints_recommended_cleanup_command_as_final_line(monkeypa
                 "retired_cleanup_helper_count": 1,
                 "blocking_conflict_count": 0,
                 "required_validator_unhealthy_count": 1,
-                "cleanup_command_emitted": True,
+                "cleanup_command_emitted": False,
+                "broken_validator_cleanup_command_emitted": True,
                 "network_mutation_performed": False,
                 "clean": False,
             },
@@ -275,7 +282,8 @@ def test_preflight_cli_prints_recommended_cleanup_command_as_final_line(monkeypa
     output = capsys.readouterr().out
     assert code == 0
     assert "MOTHER_PREFLIGHT_PARANOIA_REQUIRED_VALIDATOR_UNHEALTHY" in output
-    assert output.rstrip().endswith(cleanup_command)
+    assert "Run this broken-validator cleanup dry-run before the mutation:" in output
+    assert output.rstrip().endswith(broken_command)
 
 
 def test_add_node_preflight_accepts_acknowledged_empty_topology_evidence(monkeypatch, tmp_path: Path) -> None:
@@ -399,3 +407,119 @@ def test_preflight_is_advisory_zero_exit_when_cleanup_required(monkeypatch, caps
     assert output.index('"cleanup_command": "python cleanup.py execute"') < output.rindex(
         "Run this cleanup command before the mutation:"
     )
+
+
+def test_unfinished_broken_validator_operation_takes_precedence_over_cleanup(monkeypatch, tmp_path: Path) -> None:
+    compose = f"""
+services:
+  mainnetc-super1:
+    image: hyperledger/besu:latest
+  mother-node-remove-voter-mainnetc_super1:
+    image: python:3.12-alpine
+    command:
+      - python
+      - -c
+      - |
+        TARGET_VALIDATOR = '{A1}'
+        REQUEST = json.loads('{{"id":1,"jsonrpc":"2.0","method":"qbft_proposeValidatorVote","params":["{A1}",false]}}')
+"""
+    topology_path = _install_fakes(
+        monkeypatch,
+        tmp_path,
+        compose,
+        service_status="degraded:unhealthy",
+    )
+    operation_path = (
+        tmp_path
+        / "mother"
+        / "evidence"
+        / paranoia.BROKEN_VALIDATOR_OPERATION_DIR
+        / "mainnet-mainnetc-super1.json"
+    )
+    operation_path.parent.mkdir(parents=True, exist_ok=True)
+    resume_command = (
+        "python mother_broken_validator_cleanup.py --execute --node mainnetc-super1 "
+        "--topology-evidence C:\\stale-topology.json --topology-max-age-seconds 900 "
+        "--assessment-max-age-seconds 300"
+    )
+    assessment_path = tmp_path / "mother" / "evidence" / "deployment-broken-validator-cleanup-assessment" / "assessment.json"
+    assessment_sha = "b" * 64
+    operation_path.write_text(
+        json.dumps(
+            {
+                "kind": paranoia.BROKEN_VALIDATOR_OPERATION_KIND,
+                "schema_version": 1,
+                "operation_id": "mother-broken-validator-mainnet-mainnetc-super1-test",
+                "network": "mainnet",
+                "target": {"node": "mainnetc-super1", "validator_address": C1},
+                "status": "authorized",
+                "assessment_evidence": {"path": str(assessment_path), "sha256": assessment_sha},
+                "resume_command": resume_command,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = paranoia.run_preflight_paranoia(
+        operation="add-node",
+        runtime_state_root=tmp_path,
+        network="mainnet",
+        node="mainneta-super1",
+        python_executable="python.exe",
+    )
+
+    assert result["status"] == "broken-validator-recovery-required"
+    assert result["cleanup_required"] is True
+    assert result["cleanup_deferred_to_broken_validator_operation"] is True
+    assert result["cleanup_command"] is None
+    assert result["broken_validator_operation_precedence"] is True
+    assert result["broken_validator_operation_bootstrap"] is False
+    assert result["broken_validator_operation"]["operation_id"] == "mother-broken-validator-mainnet-mainnetc-super1-test"
+    command = result["broken_validator_cleanup_command"]
+    assert result["broken_validator_cleanup_mode"] == "execute"
+    assert "--execute" in command
+    assert str(topology_path) in command
+    assert "C:\\stale-topology.json" not in command
+    assert str(assessment_path) in command
+    assert f"--acknowledge-assessment-evidence-sha256={assessment_sha}" in command
+    assert "--assessment-max-age-seconds" not in command
+    assert result["topology_evidence"]["path"] == str(topology_path)
+
+
+def test_unhealthy_validator_with_only_remove_voter_helpers_bootstraps_broken_validator_ownership(monkeypatch, tmp_path: Path) -> None:
+    compose = f"""
+services:
+  mainnetc-super1:
+    image: hyperledger/besu:latest
+  mother-node-remove-voter-mainnetc_super1:
+    image: python:3.12-alpine
+    command:
+      - python
+      - -c
+      - |
+        TARGET_VALIDATOR = '{A1}'
+        REQUEST = json.loads('{{"id":1,"jsonrpc":"2.0","method":"qbft_proposeValidatorVote","params":["{A1}",false]}}')
+"""
+    _install_fakes(
+        monkeypatch,
+        tmp_path,
+        compose,
+        service_status="degraded:unhealthy",
+    )
+
+    result = paranoia.run_preflight_paranoia(
+        operation="add-node",
+        runtime_state_root=tmp_path,
+        network="mainnet",
+        node="mainneta-super1",
+        python_executable="python.exe",
+    )
+
+    assert result["status"] == "broken-validator-recovery-required"
+    assert result["cleanup_required"] is True
+    assert result["cleanup_deferred_to_broken_validator_operation"] is True
+    assert result["cleanup_command"] is None
+    assert result["broken_validator_operation"] is None
+    assert result["broken_validator_operation_bootstrap"] is True
+    assert result["broken_validator_operation_precedence"] is True
+    assert "mother_broken_validator_cleanup.py --dry-run" in result["broken_validator_cleanup_command"]

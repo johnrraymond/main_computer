@@ -3,8 +3,8 @@
 This phase consumes clean ``deployment-node-add-replica-sync`` evidence and
 performs the next live boundary only after an explicit expiring operator release:
 
-* replace the target standby replica service row with a fresh validator-activation
-  service row and bind its identity env values before start;
+* patch the target standby replica service row in place with the validator-activation
+  Compose while preserving its Coolify service UUID and project-scoped data volume;
 * create internal-only disposable voting guardian service rows for every existing validator service;
 * have the existing validators cast the exact QBFT add-validator vote for the
   prepared target; and
@@ -88,6 +88,7 @@ _ONE_SHOT_GUARDIAN_SUCCESS_LINGER_SECONDS = 3600
 _QBFT_STALE_VOTE_QUIET_SECONDS = 35
 _QBFT_STALE_VOTE_POLL_SECONDS = 5
 _ADMISSION_PROGRESS_EMIT_INTERVAL_SECONDS = 30.0
+_ADOPTION_PROOF_MAX_AGE_SECONDS = 120
 _CANONICAL_HISTORY_PROOF_CONTRACT = "mother-add-node-validator-admission-canonical-block-history-v1"
 _CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS = (
     "first_block_number",
@@ -1748,6 +1749,12 @@ def build_node_add_validator_admission_release(
             "candidate_p2p_host": context["candidate_p2p_host"],
             "candidate_p2p_port": context["candidate_p2p_port"],
             "candidate_activation_proof_endpoint": dict(context["candidate_activation_proof_endpoint"]),
+            "candidate_parent_service_transition": {
+                "strategy": "patch-existing-service-row",
+                "service_uuid": context["target_service_uuid"],
+                "service_uuid_must_be_preserved": True,
+                "compose_project_must_be_preserved": True,
+            },
             "service_routes": {node: dict(route) for node, route in context["service_routes"].items()},
             "validator_route_bindings": {node: dict(route) for node, route in context["validator_route_bindings"].items()},
             "rpc_requests": list(context["voters"]),
@@ -1761,6 +1768,9 @@ def build_node_add_validator_admission_release(
             "proof_required": [
                 "replica-sync evidence remains clean",
                 "target identity env keys remain installed",
+                "target Coolify service UUID remains unchanged across activation",
+                "target activation is installed by PATCH on the replica-sync parent row",
+                "target existing project-scoped Besu data volume remains attached",
                 "target service is redeployed with validator identity active",
                 "selected bootnode P2P endpoint is reachable before validator vote",
                 "target activation guardian explicitly peers candidate to bootnode and proves sync",
@@ -1786,12 +1796,12 @@ def build_node_add_validator_admission_release(
             "requested_use_limit": 1,
         },
         "policy": {
-            "allowed_http_methods": ["GET", "POST", "DELETE"],
+            "allowed_http_methods": ["GET", "PATCH", "POST", "DELETE"],
             "compiler": "mother-native-add-node-validator-admission-v1",
             "coolify_control_plane_only": False,
             "all_existing_validator_votes_required": True,
             "qbft_transition_recovery_restart_authorized": True,
-            "candidate_parent_service_replacement_authorized": True,
+            "candidate_parent_service_patch_authorized": True,
             "manual_ssh_required": False,
             "public_http_endpoint_created": True,
             "public_candidate_activation_proof_endpoint_created": True,
@@ -1958,6 +1968,7 @@ def inspect_node_add_validator_admission_release(
         "current_validator_set": list(document["admission_plan"]["current_validator_set"]),
         "desired_validator_set": list(document["admission_plan"]["desired_validator_set"]),
         "activation_compose_sha256": document["admission_plan"]["activation_compose"]["sha256"],
+        "candidate_parent_service_transition": dict(document["admission_plan"]["candidate_parent_service_transition"]),
         "source_replica_sync_evidence_sha256": source["sha256"],
         "validator_vote_authorized": True,
         "validator_activation_authorized": True,
@@ -2339,51 +2350,6 @@ def _delete_disposable_service_row(
     }
 
 
-def _private_state_path_value(private_state: PrivateStateReadResult, dotted_path: str, label: str) -> Any:
-    document = _document(private_state)
-    current: Any = document
-    for part in _identifier(dotted_path, label).split("."):
-        if not isinstance(current, Mapping) or part not in current:
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{label} is missing from private state")
-        current = current[part]
-    return current
-
-
-def _private_state_private_key(value: Any, label: str) -> str:
-    text = str(value or "").strip()
-    if _PRIVATE_KEY_RE.fullmatch(text) is None:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{label} is not a valid private key")
-    return text
-
-
-def _target_identity_env_values(
-    private_state: PrivateStateReadResult,
-    *,
-    network: str,
-    node: str,
-) -> list[tuple[str, str, str]]:
-    network_name = _identifier(network, "network")
-    node_name = _identifier(node, "candidate node")
-    validator_ref = f"networks.{network_name}.validators.{node_name}.private_key"
-    validator_key = _validator_private_key(private_state, network=network_name, node=node_name)
-
-    document = _document(private_state)
-    try:
-        target = document["networks"][network_name]["deployment"]["targets"][node_name]
-    except (KeyError, TypeError) as exc:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{node_name} deployment target is missing") from exc
-    if not isinstance(target, Mapping):
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{node_name} deployment target is invalid")
-    hub_ref = target.get("hub_admin_private_key_path")
-    if type(hub_ref) is not str or not hub_ref:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_STATE_INVALID", f"{node_name} hub administrator private key reference is missing")
-    hub_key = _private_state_private_key(_private_state_path_value(private_state, hub_ref, hub_ref), hub_ref)
-    return [
-        (_VALIDATOR_KEY, validator_ref, validator_key),
-        (_HUB_KEY, hub_ref, hub_key),
-    ]
-
-
 def _candidate_parent_activation_compose_without_transient_guardians(
     activation_compose: str,
     *,
@@ -2416,94 +2382,124 @@ def _candidate_parent_activation_compose_without_transient_guardians(
     return compose
 
 
-def _candidate_service_env_body(value: str) -> dict[str, Any]:
-    return {
-        "key": "",
-        "value": value,
-        "is_build_time": False,
-        "is_runtime": True,
-        "is_literal": True,
-        "is_multiline": False,
-    }
-
-
-def _service_env_item_key(item: Mapping[str, Any]) -> str:
-    for field in ("key", "name", "environment_key", "variable"):
-        value = item.get(field)
-        if type(value) is str and value.strip():
-            return value.strip()
-    return ""
-
-
-def _service_env_item_identifier(item: Mapping[str, Any]) -> str:
-    for field in ("uuid", "id"):
-        value = item.get(field)
-        if type(value) in {str, int}:
-            text = str(value).strip()
-            if text:
-                return text
-    return ""
-
-
-def _service_env_visible_value(item: Mapping[str, Any]) -> str | None:
-    for field in ("value", "real_value", "literal_value"):
-        if field not in item:
-            continue
-        value = item.get(field)
-        if type(value) is not str:
-            continue
-        if value and (set(value) <= {"*", "•"} or value.lower() in {"<redacted>", "redacted", "masked"}):
-            continue
-        return value
-    return None
-
-
-def _service_env_value_summary(item: Mapping[str, Any], *, expected_value_sha256: str | None) -> dict[str, Any]:
-    env_identifier = _service_env_item_identifier(item)
-    visible = _service_env_visible_value(item)
-    summary: dict[str, Any] = {
-        "environment_variable_identifier": env_identifier or None,
-        "value_visible": visible is not None,
-        "value_sha256_matches": None,
-        "value_bytes": None,
-        "stripped_length": None,
-        "starts_with_0x": None,
-        "value_is_private_key_shape": None,
-    }
-    if visible is None:
-        return summary
-    stripped = visible[2:] if visible.lower().startswith("0x") else visible
-    value_sha256 = hashlib.sha256(visible.encode("utf-8")).hexdigest()
-    summary.update(
-        {
-            "value_bytes": len(visible.encode("utf-8")),
-            "stripped_length": len(stripped),
-            "starts_with_0x": visible.lower().startswith("0x"),
-            "value_is_private_key_shape": _PRIVATE_KEY_RE.fullmatch(visible) is not None,
-            "value_sha256_matches": value_sha256 == expected_value_sha256 if expected_value_sha256 else None,
-        }
-    )
-    return summary
-
-
-def _service_env_key_readback(
+def _patch_candidate_parent_service_row(
     *,
     controller: Mapping[str, Any],
     controller_id: str,
+    candidate_node: str,
     service_uuid: str,
-    environment_key: str,
-    expected_value: str | None = None,
+    compose: str,
     timeout: float,
     max_response_bytes: int,
     opener: Any,
-    lifecycle_scope: str,
 ) -> dict[str, Any]:
+    """Install validator activation on the existing replica-sync service row.
+
+    The Coolify service UUID is the storage-ownership boundary.  Validator
+    activation therefore patches and deploys that exact row rather than deleting
+    it and creating a new Compose project.
+    """
+
     controller_name = _identifier(controller_id, "controller_id")
-    row_uuid = _identifier(service_uuid, "service UUID")
-    key = _identifier(environment_key, "environment key")
-    expected_value_sha256 = hashlib.sha256(expected_value.encode("utf-8")).hexdigest() if expected_value is not None else None
-    endpoint = f"/api/v1/services/{urllib.parse.quote(row_uuid, safe='')}/envs"
-    response = _http(
+    node_name = _identifier(candidate_node, "candidate node")
+    row_uuid = _identifier(service_uuid, "candidate parent service UUID")
+    endpoint = f"/api/v1/services/{urllib.parse.quote(row_uuid, safe='')}"
+    compose_bytes = compose.encode("utf-8")
+    patch_body = {
+        "name": node_name,
+        "docker_compose_raw": base64.b64encode(compose_bytes).decode("ascii"),
+    }
+    patch_body_sha256 = hashlib.sha256(canonical_json(patch_body)).hexdigest()
+    observations: list[dict[str, Any]] = []
+
+    patch_response = _http(
+        controller,
+        "PATCH",
+        endpoint,
+        body=patch_body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    patch_ok = patch_response["status"] in {200, 201, 202}
+    patch_receipt = {
+        "method": "PATCH",
+        "endpoint": endpoint,
+        "status": patch_response["status"],
+        "ok": patch_ok,
+        "http_ok": patch_response["ok"],
+        "response_sha256": patch_response["response_sha256"],
+        "byte_length": patch_response["byte_length"],
+        "elapsed_ms": patch_response["elapsed_ms"],
+        "controller_id": controller_name,
+        "service_uuid": row_uuid,
+        "service_name": node_name,
+        "request_body_sha256": patch_body_sha256,
+        "lifecycle_scope": "candidate-parent-service-row-in-place-transition",
+    }
+    observations.append({**patch_receipt, "phase": "candidate-parent-service-row-patch-in-place"})
+    if not patch_ok:
+        return {
+            "status": "failed",
+            "reason": "candidate-parent-service-row-patch-failed",
+            "controller_id": controller_name,
+            "service_name": node_name,
+            "previous_service_uuid": row_uuid,
+            "source_service_uuid": row_uuid,
+            "service_uuid": row_uuid,
+            "uuid_preserved": True,
+            "patch": patch_receipt,
+            "deploy": None,
+            "readback": None,
+            "observations": observations,
+            "live_mutation_performed": False,
+        }
+
+    deploy_body = {"uuid": row_uuid, "force": True}
+    deploy_response = _http(
+        controller,
+        "POST",
+        "/api/v1/deploy",
+        body=deploy_body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    deploy_ok = deploy_response["status"] in {200, 201, 202}
+    deploy_receipt = {
+        "method": "POST",
+        "endpoint": "/api/v1/deploy",
+        "status": deploy_response["status"],
+        "ok": deploy_ok,
+        "http_ok": deploy_response["ok"],
+        "response_sha256": deploy_response["response_sha256"],
+        "byte_length": deploy_response["byte_length"],
+        "elapsed_ms": deploy_response["elapsed_ms"],
+        "controller_id": controller_name,
+        "service_uuid": row_uuid,
+        "service_name": node_name,
+        "request_body_sha256": hashlib.sha256(canonical_json(deploy_body)).hexdigest(),
+        "lifecycle_scope": "candidate-parent-service-row-in-place-transition",
+    }
+    observations.append({**deploy_receipt, "phase": "candidate-parent-service-row-deploy-in-place"})
+    if not deploy_ok:
+        return {
+            "status": "failed",
+            "reason": "candidate-parent-service-row-deploy-failed",
+            "controller_id": controller_name,
+            "service_name": node_name,
+            "previous_service_uuid": row_uuid,
+            "source_service_uuid": row_uuid,
+            "service_uuid": row_uuid,
+            "uuid_preserved": True,
+            "patch": patch_receipt,
+            "deploy": deploy_receipt,
+            "readback": None,
+            "observations": observations,
+            "live_mutation_performed": True,
+        }
+
+    readback_response = _http(
         controller,
         "GET",
         endpoint,
@@ -2512,548 +2508,111 @@ def _service_env_key_readback(
         max_response_bytes=max_response_bytes,
         opener=opener,
     )
-    matches = 0
-    observed_keys: list[str] = []
-    matched_summaries: list[dict[str, Any]] = []
-    for item in _records(response.get("payload")):
-        observed = _service_env_item_key(item)
-        if observed:
-            observed_keys.append(observed)
-        if observed == key:
-            matches += 1
-            matched_summaries.append(_service_env_value_summary(item, expected_value_sha256=expected_value_sha256))
-    matched_value = matched_summaries[0] if len(matched_summaries) == 1 else {}
-    value_verified = (
-        expected_value is None
-        or (
-            len(matched_summaries) == 1
-            and matched_summaries[0].get("value_visible") is True
-            and matched_summaries[0].get("value_sha256_matches") is True
-        )
-    )
-    verified = response["ok"] is True and matches == 1 and value_verified is True
-    if matches != 1:
-        reason = "exact-key-not-present-on-new-service-row" if matches == 0 else "exact-key-ambiguous-on-new-service-row"
-    elif expected_value is None:
-        reason = "exact-key-present-on-new-service-row"
-    elif matched_value.get("value_visible") is not True:
-        reason = "exact-key-value-not-visible-on-new-service-row"
-    elif matched_value.get("value_sha256_matches") is True:
-        reason = "exact-key-value-matched-on-new-service-row"
-    elif matched_value.get("value_bytes") == 0:
-        reason = "exact-key-value-empty-on-new-service-row"
-    else:
-        reason = "exact-key-value-mismatch-on-new-service-row"
-    return {
+    readback_receipt: dict[str, Any] = {
         "method": "GET",
         "endpoint": endpoint,
-        "status": response["status"],
-        "ok": verified,
-        "http_ok": response["ok"],
-        "response_sha256": response["response_sha256"],
-        "byte_length": response["byte_length"],
-        "elapsed_ms": response["elapsed_ms"],
+        "status": readback_response["status"],
+        "ok": readback_response["ok"],
+        "response_sha256": readback_response["response_sha256"],
+        "byte_length": readback_response["byte_length"],
+        "elapsed_ms": readback_response["elapsed_ms"],
         "controller_id": controller_name,
         "service_uuid": row_uuid,
-        "environment_key": key,
-        "matches": matches,
-        "present": matches > 0,
-        "verified": verified,
-        "reason": reason,
-        "value_verification_required": expected_value is not None,
-        "matched_environment_variable_identifier": matched_value.get("environment_variable_identifier"),
-        "matched_value_visible": matched_value.get("value_visible"),
-        "matched_value_bytes": matched_value.get("value_bytes"),
-        "matched_value_stripped_length": matched_value.get("stripped_length"),
-        "matched_starts_with_0x": matched_value.get("starts_with_0x"),
-        "matched_value_is_private_key_shape": matched_value.get("value_is_private_key_shape"),
-        "matched_value_sha256_matches": matched_value.get("value_sha256_matches"),
-        "observed_key_count": len(observed_keys),
-        "observed_keys_sample": observed_keys[:10],
-        "lifecycle_scope": lifecycle_scope,
-    }
-
-
-def _service_env_update_attempts(
-    *,
-    controller: Mapping[str, Any],
-    controller_id: str,
-    service_uuid: str,
-    environment_key: str,
-    value: str,
-    env_body: Mapping[str, Any],
-    existing_identifier: str | None,
-    timeout: float,
-    max_response_bytes: int,
-    opener: Any,
-    lifecycle_scope: str,
-) -> list[dict[str, Any]]:
-    controller_name = _identifier(controller_id, "controller_id")
-    row_uuid = _identifier(service_uuid, "service UUID")
-    key = _identifier(environment_key, "environment key")
-    base_endpoint = f"/api/v1/services/{urllib.parse.quote(row_uuid, safe='')}/envs"
-    candidate_endpoints: list[str] = []
-    if existing_identifier:
-        candidate_endpoints.append(f"{base_endpoint}/{urllib.parse.quote(str(existing_identifier), safe='')}")
-    candidate_endpoints.append(f"{base_endpoint}/{urllib.parse.quote(key, safe='')}")
-    candidate_endpoints.append(base_endpoint)
-    attempts: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for endpoint in candidate_endpoints:
-        for method in ("PATCH", "PUT"):
-            marker = (method, endpoint)
-            if marker in seen:
-                continue
-            seen.add(marker)
-            response = _http(
-                controller,
-                method,
-                endpoint,
-                body=env_body,
-                timeout=timeout,
-                max_response_bytes=max_response_bytes,
-                opener=opener,
-            )
-            attempt = {
-                "method": method,
-                "endpoint": endpoint,
-                "status": response["status"],
-                "ok": response["ok"],
-                "http_ok": response["ok"],
-                "response_sha256": response["response_sha256"],
-                "byte_length": response["byte_length"],
-                "elapsed_ms": response["elapsed_ms"],
-                "controller_id": controller_name,
-                "service_uuid": row_uuid,
-                "environment_key": key,
-                "value_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
-                "value_bytes": len(value.encode("utf-8")),
-                "request_body_sha256": hashlib.sha256(canonical_json(env_body)).hexdigest(),
-                "lifecycle_scope": lifecycle_scope,
-            }
-            attempts.append(attempt)
-            if response["ok"] is True:
-                return attempts
-            if response["status"] not in {400, 404, 405, 409, 422}:
-                return attempts
-    return attempts
-
-
-def _bind_candidate_parent_service_env_with_readback(
-    *,
-    controller: Mapping[str, Any],
-    controller_id: str,
-    service_uuid: str,
-    service_name: str,
-    environment_key: str,
-    source_ref: str,
-    value: str,
-    timeout: float,
-    max_response_bytes: int,
-    opener: Any,
-) -> dict[str, Any]:
-    controller_name = _identifier(controller_id, "controller_id")
-    row_uuid = _identifier(service_uuid, "candidate parent service UUID")
-    row_name = _identifier(service_name, "candidate parent service name")
-    key = _identifier(environment_key, "environment key")
-    source = _identifier(source_ref, f"{key} source reference")
-    env_body = _candidate_service_env_body(value)
-    env_body["key"] = key
-    endpoint = f"/api/v1/services/{urllib.parse.quote(row_uuid, safe='')}/envs"
-    response = _http(
-        controller,
-        "POST",
-        endpoint,
-        body=env_body,
-        timeout=timeout,
-        max_response_bytes=max_response_bytes,
-        opener=opener,
-    )
-    receipt = {
-        "method": "POST",
-        "endpoint": endpoint,
-        "status": response["status"],
-        "ok": False,
-        "http_ok": response["ok"],
-        "response_sha256": response["response_sha256"],
-        "byte_length": response["byte_length"],
-        "elapsed_ms": response["elapsed_ms"],
-        "controller_id": controller_name,
-        "service_uuid": row_uuid,
-        "service_name": row_name,
-        "environment_key": key,
-        "source_ref": source,
-        "value_sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
-        "value_bytes": len(value.encode("utf-8")),
-        "request_body_sha256": hashlib.sha256(canonical_json(env_body)).hexdigest(),
-        "lifecycle_scope": "candidate-parent-service-row-replacement",
-        "env_bind_readback_performed": False,
-        "env_bind_readback_verified": False,
-        "env_bind_conflict_readback_performed": False,
-        "env_bind_conflict_readback_verified": False,
-        "env_bind_repair_performed": False,
-        "env_bind_repair_verified": False,
-        "env_bind_repair_attempts": [],
-    }
-
-    if response["ok"] is True:
-        readback = _service_env_key_readback(
-            controller=controller,
-            controller_id=controller_name,
-            service_uuid=row_uuid,
-            environment_key=key,
-            expected_value=value,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            lifecycle_scope="candidate-parent-service-row-replacement",
-        )
-        verified = readback["verified"] is True
-        receipt.update(
-            {
-                "ok": verified,
-                "reason": "candidate-parent-service-row-env-bound" if verified else "candidate-parent-service-row-env-bound-but-readback-mismatch",
-                "env_bind_readback_performed": True,
-                "env_bind_readback_verified": verified,
-                "env_bind_readback_reason": readback["reason"],
-                "env_bind_readback_matches": readback["matches"],
-                "env_bind_readback": readback,
-            }
-        )
-        return receipt
-
-    if response["status"] != 409:
-        receipt["reason"] = "candidate-parent-service-row-env-bind-failed"
-        return receipt
-
-    readback = _service_env_key_readback(
-        controller=controller,
-        controller_id=controller_name,
-        service_uuid=row_uuid,
-        environment_key=key,
-        expected_value=value,
-        timeout=timeout,
-        max_response_bytes=max_response_bytes,
-        opener=opener,
-        lifecycle_scope="candidate-parent-service-row-replacement",
-    )
-    conflict_verified = readback["verified"] is True
-    receipt.update(
-        {
-            "env_bind_conflict_readback_performed": True,
-            "env_bind_conflict_readback_verified": conflict_verified,
-            "env_bind_conflict_readback_reason": readback["reason"],
-            "env_bind_conflict_readback_matches": readback["matches"],
-            "env_bind_conflict_readback": readback,
-        }
-    )
-    if conflict_verified:
-        receipt.update(
-            {
-                "ok": True,
-                "reason": "env-key-already-present-with-matching-value-after-create",
-            }
-        )
-        return receipt
-
-    if readback["http_ok"] is not True or readback["matches"] != 1:
-        receipt.update(
-            {
-                "ok": False,
-                "reason": "env-key-conflict-but-readback-unverified",
-            }
-        )
-        return receipt
-
-    repair_attempts = _service_env_update_attempts(
-        controller=controller,
-        controller_id=controller_name,
-        service_uuid=row_uuid,
-        environment_key=key,
-        value=value,
-        env_body=env_body,
-        existing_identifier=readback.get("matched_environment_variable_identifier"),
-        timeout=timeout,
-        max_response_bytes=max_response_bytes,
-        opener=opener,
-        lifecycle_scope="candidate-parent-service-row-replacement",
-    )
-    repair_accepted = any(attempt.get("ok") is True for attempt in repair_attempts)
-    repair_readback = None
-    repair_verified = False
-    if repair_accepted:
-        repair_readback = _service_env_key_readback(
-            controller=controller,
-            controller_id=controller_name,
-            service_uuid=row_uuid,
-            environment_key=key,
-            expected_value=value,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            lifecycle_scope="candidate-parent-service-row-replacement",
-        )
-        repair_verified = repair_readback["verified"] is True
-    receipt.update(
-        {
-            "ok": repair_verified,
-            "reason": "env-key-conflict-repaired-after-readback-mismatch" if repair_verified else "env-key-conflict-repair-failed",
-            "env_bind_repair_performed": True,
-            "env_bind_repair_verified": repair_verified,
-            "env_bind_repair_attempts": repair_attempts,
-            "env_bind_repair_readback": repair_readback,
-        }
-    )
-    return receipt
-
-
-def _replace_candidate_parent_service_row(
-    private_state: PrivateStateReadResult,
-    *,
-    network: str,
-    controller: Mapping[str, Any],
-    controller_id: str,
-    candidate_node: str,
-    previous_service_uuid: str,
-    compose: str,
-    description: str,
-    timeout: float,
-    max_response_bytes: int,
-    opener: Any,
-) -> dict[str, Any]:
-    controller_name = _identifier(controller_id, "controller_id")
-    network_name = _identifier(network, "network")
-    node_name = _identifier(candidate_node, "candidate node")
-    previous_uuid = _identifier(previous_service_uuid, "previous candidate parent service UUID")
-    observations: list[dict[str, Any]] = []
-
-    try:
-        controller_config = _controller_config(
-            private_state,
-            network=network_name,
-            controller_id=controller_name,
-        )
-    except MotherDeploymentCompletedHelperCleanupError as exc:
-        raise _fail(
-            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_CANDIDATE_PARENT_REPLACE_INVALID",
-            str(exc),
-        ) from exc
-
-    try:
-        environment_uuid = _resolve_environment_uuid(
-            controller=controller,
-            controller_id=controller_name,
-            endpoint=f"/api/v1/projects/{urllib.parse.quote(str(controller_config['project_uuid']), safe='')}/environments",
-            expected_name=network_name,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-            observations=observations,
-        )
-    except MotherDeploymentCompletedHelperCleanupError as exc:
-        raise _fail(
-            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_CANDIDATE_PARENT_REPLACE_INVALID",
-            str(exc),
-        ) from exc
-
-    delete_endpoint = f"/api/v1/services/{urllib.parse.quote(previous_uuid, safe='')}"
-    delete_response = _http(
-        controller,
-        "DELETE",
-        delete_endpoint,
-        body=None,
-        timeout=timeout,
-        max_response_bytes=max_response_bytes,
-        opener=opener,
-    )
-    delete_ok = delete_response["ok"] is True or delete_response["status"] == 404
-    delete_receipt = {
-        "method": "DELETE",
-        "endpoint": delete_endpoint,
-        "status": delete_response["status"],
-        "ok": delete_ok,
-        "http_ok": delete_response["ok"],
-        "response_sha256": delete_response["response_sha256"],
-        "byte_length": delete_response["byte_length"],
-        "elapsed_ms": delete_response["elapsed_ms"],
-        "controller_id": controller_name,
-        "previous_service_uuid": previous_uuid,
         "service_name": node_name,
-        "lifecycle_scope": "candidate-parent-service-row-replacement",
+        "uuid_preserved": False,
+        "semantic_match": False,
+        "lifecycle_scope": "candidate-parent-service-row-in-place-transition",
     }
-    observations.append({**delete_receipt, "phase": "candidate-parent-service-row-delete-previous"})
-    if not delete_ok:
+    observations.append({**readback_receipt, "phase": "candidate-parent-service-row-readback"})
+    if readback_response["ok"] is not True:
         return {
             "status": "failed",
-            "reason": "candidate-parent-service-row-delete-previous-failed",
+            "reason": "candidate-parent-service-row-readback-failed",
             "controller_id": controller_name,
-            "network": network_name,
             "service_name": node_name,
-            "previous_service_uuid": previous_uuid,
-            "service_uuid": None,
-            "delete_previous": delete_receipt,
-            "create": None,
-            "envs": [],
-            "start": None,
-            "observations": observations,
-            "live_mutation_performed": False,
-        }
-
-    body = _service_row_body(
-        controller_config,
-        network=network_name,
-        environment_uuid=environment_uuid,
-        service_name=node_name,
-        compose=compose,
-        description=description,
-    )
-    body_sha256 = hashlib.sha256(canonical_json(body)).hexdigest()
-    create_response = _http(
-        controller,
-        "POST",
-        "/api/v1/services",
-        body=body,
-        timeout=timeout,
-        max_response_bytes=max_response_bytes,
-        opener=opener,
-    )
-    create_receipt = {
-        "method": "POST",
-        "endpoint": "/api/v1/services",
-        "status": create_response["status"],
-        "ok": create_response["ok"],
-        "response_sha256": create_response["response_sha256"],
-        "byte_length": create_response["byte_length"],
-        "elapsed_ms": create_response["elapsed_ms"],
-        "controller_id": controller_name,
-        "service_name": node_name,
-        "previous_service_uuid": previous_uuid,
-        "request_body_sha256": body_sha256,
-        "lifecycle_scope": "candidate-parent-service-row-replacement",
-    }
-    observations.append({**create_receipt, "phase": "candidate-parent-service-row-create"})
-    if create_response["ok"] is not True:
-        return {
-            "status": "failed",
-            "reason": "candidate-parent-service-row-create-failed",
-            "controller_id": controller_name,
-            "network": network_name,
-            "service_name": node_name,
-            "previous_service_uuid": previous_uuid,
-            "service_uuid": None,
-            "delete_previous": delete_receipt,
-            "create": create_receipt,
-            "envs": [],
-            "start": None,
-            "observations": observations,
-            "live_mutation_performed": delete_response["ok"] is True,
-        }
-
-    try:
-        service_uuid = _application_uuid(create_response.get("payload"))
-    except MotherDeploymentCompletedHelperCleanupError as exc:
-        return {
-            "status": "failed",
-            "reason": "candidate-parent-service-row-create-response-missing-service-uuid",
-            "controller_id": controller_name,
-            "network": network_name,
-            "service_name": node_name,
-            "previous_service_uuid": previous_uuid,
-            "service_uuid": None,
-            "delete_previous": delete_receipt,
-            "create": create_receipt,
-            "envs": [],
-            "start": None,
-            "observations": observations,
-            "live_mutation_performed": True,
-            "error": str(exc),
-        }
-
-    env_receipts: list[dict[str, Any]] = []
-    for key, source_ref, value in _target_identity_env_values(private_state, network=network_name, node=node_name):
-        env_receipt = _bind_candidate_parent_service_env_with_readback(
-            controller=controller,
-            controller_id=controller_name,
-            service_uuid=service_uuid,
-            service_name=node_name,
-            environment_key=key,
-            source_ref=source_ref,
-            value=value,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            opener=opener,
-        )
-        env_receipts.append(env_receipt)
-        observations.append({**env_receipt, "phase": "candidate-parent-service-row-bind-env"})
-        bind_readback = env_receipt.get("env_bind_readback")
-        if isinstance(bind_readback, Mapping):
-            observations.append({**bind_readback, "phase": "candidate-parent-service-row-bind-env-readback"})
-        conflict_readback = env_receipt.get("env_bind_conflict_readback")
-        if isinstance(conflict_readback, Mapping):
-            observations.append({**conflict_readback, "phase": "candidate-parent-service-row-bind-env-conflict-readback"})
-        repair_readback = env_receipt.get("env_bind_repair_readback")
-        if isinstance(repair_readback, Mapping):
-            observations.append({**repair_readback, "phase": "candidate-parent-service-row-bind-env-repair-readback"})
-    failed_envs = [item for item in env_receipts if item.get("ok") is not True]
-    if failed_envs:
-        return {
-            "status": "failed",
-            "reason": "candidate-parent-service-row-env-bind-failed",
-            "controller_id": controller_name,
-            "network": network_name,
-            "service_name": node_name,
-            "previous_service_uuid": previous_uuid,
-            "service_uuid": service_uuid,
-            "partial_replacement_service_uuid": service_uuid,
-            "delete_previous": delete_receipt,
-            "create": create_receipt,
-            "envs": env_receipts,
-            "start": None,
+            "previous_service_uuid": row_uuid,
+            "source_service_uuid": row_uuid,
+            "service_uuid": row_uuid,
+            "uuid_preserved": True,
+            "patch": patch_receipt,
+            "deploy": deploy_receipt,
+            "readback": readback_receipt,
             "observations": observations,
             "live_mutation_performed": True,
         }
 
-    start_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start"
-    start_response = _http(
-        controller,
-        "POST",
-        start_endpoint,
-        body=None,
-        timeout=timeout,
-        max_response_bytes=max_response_bytes,
-        opener=opener,
-    )
-    start_receipt = {
-        "method": "POST",
-        "endpoint": start_endpoint,
-        "status": start_response["status"],
-        "ok": start_response["ok"],
-        "response_sha256": start_response["response_sha256"],
-        "byte_length": start_response["byte_length"],
-        "elapsed_ms": start_response["elapsed_ms"],
-        "controller_id": controller_name,
-        "service_uuid": service_uuid,
-        "service_name": node_name,
-        "lifecycle_scope": "candidate-parent-service-row-replacement",
-    }
-    observations.append({**start_receipt, "phase": "candidate-parent-service-row-start"})
-    start_ok = start_response["ok"] is True
+    try:
+        record = _find_service_record(readback_response.get("payload"), node=node_name, service_uuid=row_uuid)
+        observed_uuid = str(record.get("uuid") or record.get("id") or row_uuid).strip()
+        observed_compose = _compose_text(record)
+        expected_semantic_sha = hashlib.sha256(canonical_json(yaml.safe_load(compose))).hexdigest()
+        observed_semantic_sha = hashlib.sha256(canonical_json(yaml.safe_load(observed_compose))).hexdigest()
+    except (MotherDeploymentNodeAddValidatorAdmissionError, yaml.YAMLError, TypeError, ValueError) as exc:
+        readback_receipt["reason"] = f"candidate activation readback could not be verified: {exc}"
+        return {
+            "status": "failed",
+            "reason": "candidate-parent-service-row-readback-invalid",
+            "controller_id": controller_name,
+            "service_name": node_name,
+            "previous_service_uuid": row_uuid,
+            "source_service_uuid": row_uuid,
+            "service_uuid": row_uuid,
+            "uuid_preserved": True,
+            "patch": patch_receipt,
+            "deploy": deploy_receipt,
+            "readback": readback_receipt,
+            "observations": observations,
+            "live_mutation_performed": True,
+        }
+
+    uuid_preserved = observed_uuid == row_uuid
+    semantic_match = observed_semantic_sha == expected_semantic_sha
+    readback_receipt.update({
+        "observed_service_uuid": observed_uuid,
+        "uuid_preserved": uuid_preserved,
+        "service_status": _service_status(record),
+        "expected_semantic_sha256": expected_semantic_sha,
+        "observed_semantic_sha256": observed_semantic_sha,
+        "semantic_match": semantic_match,
+        "verified": uuid_preserved and semantic_match,
+    })
+    observations[-1] = {**readback_receipt, "phase": "candidate-parent-service-row-readback"}
+    if not uuid_preserved or not semantic_match:
+        return {
+            "status": "failed",
+            "reason": (
+                "candidate-parent-service-row-uuid-changed"
+                if not uuid_preserved
+                else "candidate-parent-service-row-compose-mismatch"
+            ),
+            "controller_id": controller_name,
+            "service_name": node_name,
+            "previous_service_uuid": row_uuid,
+            "source_service_uuid": row_uuid,
+            "service_uuid": row_uuid,
+            "uuid_preserved": uuid_preserved,
+            "patch": patch_receipt,
+            "deploy": deploy_receipt,
+            "readback": readback_receipt,
+            "observations": observations,
+            "live_mutation_performed": True,
+        }
+
     return {
-        "status": "succeeded" if start_ok else "failed",
-        "reason": "candidate-parent-service-row-replaced-and-started" if start_ok else "candidate-parent-service-row-start-failed",
+        "status": "succeeded",
+        "reason": "candidate-parent-service-row-patched-and-deployed",
         "controller_id": controller_name,
-        "network": network_name,
         "service_name": node_name,
-        "previous_service_uuid": previous_uuid,
-        "service_uuid": service_uuid,
-        "delete_previous": delete_receipt,
-        "create": create_receipt,
-        "envs": env_receipts,
-        "start": start_receipt,
+        "previous_service_uuid": row_uuid,
+        "source_service_uuid": row_uuid,
+        "service_uuid": row_uuid,
+        "uuid_preserved": True,
+        "patch": patch_receipt,
+        "deploy": deploy_receipt,
+        "readback": readback_receipt,
         "observations": observations,
         "live_mutation_performed": True,
     }
-
 
 
 def _fetch_candidate_activation_proof_payload(
@@ -4688,7 +4247,7 @@ def execute_node_add_validator_admission_release(
     validator_service_uuids: dict[str, str] = {candidate_node: target_uuid}
     guardian_service_uuids: dict[str, str] = {}
     target_activation_guardian_row: dict[str, Any] | None = None
-    target_parent_service_replacement: dict[str, Any] | None = None
+    target_parent_service_transition: dict[str, Any] | None = None
     voter_guardian_service_rows: dict[str, dict[str, Any]] = {}
     controllers: dict[str, Mapping[str, Any]] = {}
 
@@ -4794,52 +4353,52 @@ def execute_node_add_validator_admission_release(
                 "candidate activation parent Compose is missing from release",
             )
         # The candidate activation guardian owns the public /proof endpoint.
-        # It must remain embedded in the fresh candidate parent row so the proof
-        # producer and proof consumer refer to the same lifecycle object.  Voter
-        # guardians stay disposable; the durable activation guardian does not.
+        # It must remain embedded in the same candidate parent row so the proof
+        # producer, storage owner, and proof consumer refer to one lifecycle
+        # object. Voter guardians stay disposable; the durable activation
+        # guardian does not.
         activation_parent_compose = str(activation_plan["canonical_text"])
         activation_body_sha = hashlib.sha256(activation_parent_compose.encode("utf-8")).hexdigest()
         previous_target_uuid = target_uuid
-        target_parent_replacement_receipt = _replace_candidate_parent_service_row(
-            private_state,
-            network=inspected["network"],
+        target_parent_transition_receipt = _patch_candidate_parent_service_row(
             controller=target_controller,
             controller_id=target_controller_id,
             candidate_node=candidate_node,
-            previous_service_uuid=previous_target_uuid,
+            service_uuid=previous_target_uuid,
             compose=activation_parent_compose,
-            description="Mother add-node validator activation parent service row",
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             opener=opener,
         )
-        target_parent_replacement_receipt.update({
+        target_parent_transition_receipt.update({
             "ordinal": len(receipts) + 1,
-            "mutation_id": f"{candidate_node}.replace-candidate-parent-validator-service-row",
+            "mutation_id": f"{candidate_node}.patch-candidate-parent-validator-service-row",
             "node": candidate_node,
             "guardian_service": target_guardian_name,
             "guardian_lifecycle_scope": "embedded-in-candidate-parent-service-row",
-            "method": "DELETE_AND_POST_CREATE_BIND_ENVS_START_SERVICE",
+            "method": "PATCH_AND_DEPLOY_EXISTING_SERVICE_ROW",
             "body_sha256": activation_body_sha,
-            "live_write_acknowledged": target_parent_replacement_receipt.get("live_mutation_performed") is True,
+            "live_write_acknowledged": target_parent_transition_receipt.get("live_mutation_performed") is True,
         })
-        receipts.append(target_parent_replacement_receipt)
-        if target_parent_replacement_receipt.get("status") != "succeeded":
+        receipts.append(target_parent_transition_receipt)
+        if target_parent_transition_receipt.get("status") != "succeeded":
             raise _fail(
                 "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED",
-                f"{candidate_node} candidate parent validator service row was not replaced/started",
+                f"{candidate_node} candidate parent validator service row was not patched/deployed in place",
             )
-        target_uuid = _identifier(
-            target_parent_replacement_receipt["service_uuid"],
-            f"{candidate_node} replacement candidate parent service UUID",
-        )
+        target_uuid = _identifier(target_parent_transition_receipt["service_uuid"], f"{candidate_node} candidate parent service UUID")
+        if target_uuid != previous_target_uuid or target_parent_transition_receipt.get("uuid_preserved") is not True:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_MUTATION_FAILED",
+                f"{candidate_node} candidate parent service UUID changed during in-place activation",
+            )
         validator_service_uuids[candidate_node] = target_uuid
-        target_parent_service_replacement = dict(target_parent_replacement_receipt)
+        target_parent_service_transition = dict(target_parent_transition_receipt)
 
         guardian_service_uuids[candidate_node] = target_uuid
         target_activation_guardian_row = {
             "status": "succeeded",
-            "reason": "candidate-activation-guardian-owned-by-replaced-parent-service-row",
+            "reason": "candidate-activation-guardian-owned-by-patched-parent-service-row",
             "controller_id": target_controller_id,
             "service_uuid": target_uuid,
             "service_name": candidate_node,
@@ -5005,17 +4564,14 @@ def execute_node_add_validator_admission_release(
 
         post_admission_cleanup = {
             "status": "skipped",
-            "reason": "post-admission-candidate-parent-cleanup-skipped-no-patch",
+            "reason": "post-admission-candidate-parent-cleanup-not-required",
             "summary": {
-                "clean": False,
-                "no_patch_policy_enforced": True,
+                "clean": True,
+                "candidate_parent_service_uuid_preserved": target_uuid == previous_target_uuid,
                 "validator_set_proof_is_authoritative": True,
             },
         }
-        post_admission_cleanup_warning = {
-            "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_POST_ADMISSION_CLEANUP_SKIPPED_NO_PATCH_NONFATAL",
-            "message": "post-admission candidate parent cleanup was skipped because validator admission does not allow Coolify patch; validator-set proof remains authoritative",
-        }
+        post_admission_cleanup_warning = None
 
         # Dynamic voter helpers are one-shot and may be cleaned up after their
         # durable vote proof has already been sampled.  The terminal check after
@@ -5146,14 +4702,17 @@ def execute_node_add_validator_admission_release(
         "target_host": target_controller_id,
         "created_service_uuid": target_uuid,
         "previous_target_service_uuid": target.get("service_uuid"),
-        "target_parent_service_replacement": {
-            "previous_service_uuid": target_parent_service_replacement.get("previous_service_uuid"),
-            "service_uuid": target_parent_service_replacement.get("service_uuid"),
-            "service_name": target_parent_service_replacement.get("service_name"),
-            "controller_id": target_parent_service_replacement.get("controller_id"),
-            "status": target_parent_service_replacement.get("status"),
-            "reason": target_parent_service_replacement.get("reason"),
-        } if isinstance(target_parent_service_replacement, Mapping) else None,
+        "target_parent_service_transition": {
+            "strategy": "patch-existing-service-row",
+            "previous_service_uuid": target_parent_service_transition.get("previous_service_uuid"),
+            "source_service_uuid": target_parent_service_transition.get("source_service_uuid"),
+            "service_uuid": target_parent_service_transition.get("service_uuid"),
+            "uuid_preserved": target_parent_service_transition.get("uuid_preserved"),
+            "service_name": target_parent_service_transition.get("service_name"),
+            "controller_id": target_parent_service_transition.get("controller_id"),
+            "status": target_parent_service_transition.get("status"),
+            "reason": target_parent_service_transition.get("reason"),
+        } if isinstance(target_parent_service_transition, Mapping) else None,
         "voter_nodes": voter_nodes,
         "durable_admission_proof_nodes": sorted(required_healthy_nodes),
         "transient_voter_guardian_nodes": voter_nodes,
@@ -5197,11 +4756,11 @@ def execute_node_add_validator_admission_release(
         "post_admission_cleanup_warning": post_admission_cleanup_warning,
         "failure": failure,
         "policy": {
-            "allowed_http_methods": ["GET", "POST", "DELETE"],
+            "allowed_http_methods": ["GET", "PATCH", "POST", "DELETE"],
             "coolify_control_plane_only": False,
             "all_existing_validator_votes_required": True,
             "qbft_transition_recovery_restart_authorized": True,
-            "candidate_parent_service_replacement_authorized": True,
+            "candidate_parent_service_patch_authorized": True,
             "manual_ssh_required": False,
             "public_http_endpoint_created": candidate_activation_proof_endpoint.get("public_http_endpoint_created") is True,
             "public_candidate_activation_proof_endpoint_created": candidate_activation_proof_endpoint.get("public_http_endpoint_created") is True,
@@ -5216,7 +4775,7 @@ def execute_node_add_validator_admission_release(
             "validator_vote_authorized": True,
             "validator_activation_authorized": True,
             "qbft_transition_recovery_authorized": True,
-            "candidate_parent_service_replacement_authorized": True,
+            "candidate_parent_service_patch_authorized": True,
             "transient_admission_guardian_service_creation_authorized": True,
             "transient_admission_guardian_service_delete_authorized": True,
             "validator_vote_proven": admission_proven and proof_guardians_verified,
@@ -5334,6 +4893,226 @@ def _admission_evidence_service_uuids(document: Mapping[str, Any]) -> dict[str, 
     return service_uuids
 
 
+def _adoption_compose_semantic_sha256(compose_text: str, *, label: str) -> str:
+    try:
+        document = yaml.safe_load(compose_text)
+    except yaml.YAMLError as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            f"{label} is not valid YAML",
+        ) from exc
+    if not isinstance(document, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            f"{label} does not contain a Compose mapping",
+        )
+    return hashlib.sha256(canonical_json(document)).hexdigest()
+
+
+def _adoption_candidate_proof_freshness(
+    payload: Any,
+    *,
+    now: datetime | None,
+    max_age_seconds: int = _ADOPTION_PROOF_MAX_AGE_SECONDS,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "verified": False,
+        "max_age_seconds": int(max_age_seconds),
+        "max_future_skew_seconds": 15,
+        "proved_at_age_seconds": None,
+        "latest_block_age_seconds": None,
+    }
+    if not isinstance(payload, Mapping):
+        result["reason"] = "canonical admission proof payload is missing"
+        return result
+    reference = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    try:
+        proved_at = _parse_utc(payload.get("proved_at"), "candidate activation proof proved_at")
+    except MotherDeploymentNodeAddValidatorAdmissionError as exc:
+        result["reason"] = str(exc)
+        return result
+    latest_block_timestamp = payload.get("latest_block_timestamp")
+    if not isinstance(latest_block_timestamp, int):
+        result["reason"] = "candidate activation proof latest_block_timestamp is missing"
+        return result
+    try:
+        latest_block_at = datetime.fromtimestamp(latest_block_timestamp, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError) as exc:
+        result["reason"] = f"candidate activation proof latest_block_timestamp is invalid: {exc}"
+        return result
+    proved_age = (reference - proved_at).total_seconds()
+    block_age = (reference - latest_block_at).total_seconds()
+    result["proved_at_age_seconds"] = int(proved_age)
+    result["latest_block_age_seconds"] = int(block_age)
+    if proved_age < -15 or block_age < -15:
+        result["reason"] = "candidate activation proof timestamp is in the future"
+        return result
+    if proved_age > max_age_seconds:
+        result["reason"] = "candidate activation proof payload is stale"
+        return result
+    if block_age > max_age_seconds:
+        result["reason"] = "candidate activation proof latest block is stale"
+        return result
+    result["verified"] = True
+    result["reason"] = "candidate activation proof and latest block are fresh"
+    return result
+
+
+def _adoption_source_mutation_receipts(
+    failed: Mapping[str, Any],
+    *,
+    candidate_node: str,
+    target_controller_id: str,
+    target_uuid: str,
+    voter_nodes: Sequence[str],
+    activation_compose_sha256: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    receipts = failed.get("mutation_receipts")
+    if not isinstance(receipts, list):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source evidence has no validator-admission mutation receipts",
+        )
+    legacy_candidate_id = f"{candidate_node}.replace-candidate-parent-validator-service-row"
+    current_candidate_id = f"{candidate_node}.patch-candidate-parent-validator-service-row"
+    voter_ids = {f"{voter}.create-disposable-add-node-validator-admission-voter" for voter in voter_nodes}
+    by_id: dict[str, dict[str, Any]] = {}
+    for raw in receipts:
+        if not isinstance(raw, Mapping):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+                "source evidence contains a malformed validator-admission mutation receipt",
+            )
+        mutation_id = raw.get("mutation_id")
+        if not isinstance(mutation_id, str) or mutation_id in by_id:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+                "source evidence contains a missing or duplicate validator-admission mutation id",
+            )
+        by_id[mutation_id] = dict(raw)
+    candidate_ids = [item for item in (legacy_candidate_id, current_candidate_id) if item in by_id]
+    if len(candidate_ids) != 1 or set(by_id) != voter_ids | {candidate_ids[0]}:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source evidence does not contain exactly the candidate activation and all voter-helper mutations",
+        )
+
+    candidate_id = candidate_ids[0]
+    candidate_receipt = by_id[candidate_id]
+    common_candidate_receipt_valid = all([
+        candidate_receipt.get("node") == candidate_node,
+        candidate_receipt.get("controller_id") == target_controller_id,
+        candidate_receipt.get("service_uuid") == target_uuid,
+        candidate_receipt.get("guardian_service") == "mother-add-node-validator-activation-guardian",
+        candidate_receipt.get("body_sha256") == activation_compose_sha256,
+        candidate_receipt.get("status") == "succeeded",
+        candidate_receipt.get("live_write_acknowledged") is True,
+    ])
+    if candidate_id == legacy_candidate_id:
+        lifecycle_valid = candidate_receipt.get("method") == "DELETE_AND_POST_CREATE_BIND_ENVS_START_SERVICE"
+    else:
+        lifecycle_valid = all([
+            candidate_receipt.get("method") == "PATCH_AND_DEPLOY_EXISTING_SERVICE_ROW",
+            candidate_receipt.get("source_service_uuid") == target_uuid,
+            candidate_receipt.get("previous_service_uuid") == target_uuid,
+            candidate_receipt.get("uuid_preserved") is True,
+        ])
+    if not common_candidate_receipt_valid or not lifecycle_valid:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source candidate activation mutation is not exactly the successful released activation write",
+        )
+
+    voter_receipts: dict[str, dict[str, Any]] = {}
+    for voter in voter_nodes:
+        mutation_id = f"{voter}.create-disposable-add-node-validator-admission-voter"
+        receipt = by_id[mutation_id]
+        if not all([
+            receipt.get("node") == voter,
+            receipt.get("guardian_service") == _guardian_service_name(voter),
+            receipt.get("method") == "POST_CREATE_AND_START_DISPOSABLE_SERVICE",
+            isinstance(receipt.get("controller_id"), str),
+            isinstance(receipt.get("service_uuid"), str),
+            isinstance(receipt.get("validator_parent_service_uuid"), str),
+            receipt.get("status") == "succeeded",
+            receipt.get("live_write_acknowledged") is True,
+        ]):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+                f"source voter-helper mutation for {voter} is not a successful acknowledged write",
+            )
+        voter_receipts[voter] = receipt
+    return candidate_receipt, voter_receipts
+
+
+def _adoption_live_activation_compose_receipt(
+    *,
+    controller: Mapping[str, Any],
+    controller_id: str,
+    candidate_node: str,
+    service_uuid: str,
+    expected_compose: str,
+    expected_compose_sha256: str,
+    expected_semantic_sha256: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+    detail = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if not detail.get("ok"):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_COMPOSE_MISMATCH",
+            f"live candidate activation service detail failed with HTTP {detail.get('status')}",
+        )
+    record = _find_service_record(detail.get("payload"), node=candidate_node, service_uuid=service_uuid)
+    observed_compose = _compose_text(record)
+    observed_sha = hashlib.sha256(observed_compose.encode("utf-8")).hexdigest()
+    observed_semantic_sha = _adoption_compose_semantic_sha256(
+        observed_compose,
+        label="live candidate activation Compose",
+    )
+    expected_live_semantic_sha = _adoption_compose_semantic_sha256(
+        expected_compose,
+        label="released candidate activation Compose",
+    )
+    if expected_live_semantic_sha != expected_semantic_sha256:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "released candidate activation Compose semantic commitment is inconsistent",
+        )
+    if observed_semantic_sha != expected_semantic_sha256:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_COMPOSE_MISMATCH",
+            "live candidate activation Compose no longer matches the released activation Compose",
+        )
+    return {
+        "name": "live-candidate-activation-compose-before-validator-admission-adoption",
+        "controller_id": controller_id,
+        "method": "GET",
+        "endpoint": endpoint,
+        "status": detail.get("status"),
+        "response_sha256": detail.get("response_sha256"),
+        "service_uuid": service_uuid,
+        "service_status": _service_status(record),
+        "expected_compose_sha256": expected_compose_sha256,
+        "observed_compose_sha256": observed_sha,
+        "exact_match": observed_sha == expected_compose_sha256,
+        "expected_semantic_sha256": expected_semantic_sha256,
+        "observed_semantic_sha256": observed_semantic_sha,
+        "semantic_match": True,
+        "verified": True,
+    }
+
+
 def adopt_node_add_validator_admission_live_proof(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -5349,14 +5128,12 @@ def adopt_node_add_validator_admission_live_proof(
     now: datetime | None = None,
     operation: OperationIdentity,
 ) -> dict[str, Any]:
-    """Adopt durable live validator-admission proof after a timeout failure.
+    """Adopt a completed validator admission using only current GET observations.
 
-    This command is deliberately read-only against Coolify.  It consumes a failed
-    validator-admission evidence document whose live mutations may have continued
-    converging after the operator-side process timed out.  It never reruns the
-    admission mutation or resubmits votes; it only reobserves the exact guardians
-    and writes a new clean evidence document when the current live proof is
-    durable.
+    The source execution must already prove that the exact released activation
+    service replacement and every voter-helper service creation succeeded.  This
+    recovery path never mutates Coolify or QBFT.  It binds those historical writes
+    to the still-installed activation Compose and a fresh canonical guardian proof.
     """
 
     resolved = _resolve_locator(
@@ -5377,8 +5154,7 @@ def adopt_node_add_validator_admission_live_proof(
             "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
             "failed validator-admission evidence is invalid or sensitive",
         )
-    age = _age(failed.get("completed_at"), now=now)
-    if age > max_age_seconds:
+    if _age(failed.get("completed_at"), now=now) > max_age_seconds:
         raise _fail(
             "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_STALE",
             "failed validator-admission evidence is outside the adoption freshness window",
@@ -5411,60 +5187,119 @@ def adopt_node_add_validator_admission_live_proof(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID", "candidate is not in desired validator set")
 
     release_ref = failed.get("release")
-    release: Mapping[str, Any] | None = None
-    release_digest: str | None = None
-    if isinstance(release_ref, Mapping) and isinstance(release_ref.get("locator"), str) and isinstance(release_ref.get("sha256"), str):
-        release_path = _resolve_locator(
-            paths,
-            release_ref["locator"],
-            _RELEASE_DIRECTORY,
-            label="add-node validator-admission release",
-        )
-        release_document, _, release_sha = _canonical_file(release_path, label="add-node validator-admission release")
-        if release_sha != _sha256(release_ref["sha256"], "add-node validator-admission release SHA-256"):
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID", "source release digest mismatch")
-        if release_document.get("mother_binding") != _binding(private_state):
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID", "source release binding mismatch")
-        release = release_document
-        release_digest = release_sha
-
-    service_uuids = _admission_evidence_service_uuids(failed)
-    missing = [node for node in [candidate_node, *voter_nodes] if node not in service_uuids]
-    if missing:
+    if not isinstance(release_ref, Mapping) or not isinstance(release_ref.get("locator"), str) or not isinstance(release_ref.get("sha256"), str):
         raise _fail(
             "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
-            f"source evidence lacks service UUIDs for admission guardians: {missing}",
+            "source validator-admission release binding is missing",
+        )
+    release_path = _resolve_locator(
+        paths,
+        release_ref["locator"],
+        _RELEASE_DIRECTORY,
+        label="add-node validator-admission release",
+    )
+    release, _, _release_file_sha = _canonical_file(release_path, label="add-node validator-admission release")
+    release_digest = _digest_without(release, "node_add_validator_admission_release_sha256")
+    if not all([
+        release.get("kind") == _RELEASE_KIND,
+        release.get("node_add_validator_admission_release_sha256") == release_digest,
+        release_ref.get("sha256") == release_digest,
+        release.get("mother_binding") == _binding(private_state),
+        not _contains_sensitive(release),
+    ]):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source validator-admission release binding is invalid",
+        )
+    release_target = release.get("target")
+    plan = release.get("admission_plan")
+    if not isinstance(release_target, Mapping) or not isinstance(plan, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source validator-admission release target or plan is missing",
+        )
+    if not all([
+        release.get("network") == network,
+        release_target.get("node") == candidate_node,
+        release_target.get("controller_id") == target_controller_id,
+        plan.get("candidate_node") == candidate_node,
+        str(plan.get("candidate_validator_address") or "").lower() == candidate,
+        plan.get("voter_nodes") == voter_nodes,
+    ]):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source release identity does not match failed validator-admission evidence",
+        )
+    try:
+        release_current = [_address(item, "released current validator") for item in plan.get("current_validator_set", [])]
+        release_desired = [_address(item, "released desired validator") for item in plan.get("desired_validator_set", [])]
+        sets_match = _same_set(release_current, current_set) and _same_set(release_desired, desired_set)
+    except MotherDeploymentNodeAddValidatorAdmissionError:
+        sets_match = False
+    if not sets_match:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source release validator sets do not match failed validator-admission evidence",
+        )
+
+    activation_plan = plan.get("activation_compose")
+    if not isinstance(activation_plan, Mapping) or not isinstance(activation_plan.get("canonical_text"), str):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source release lacks the validator activation Compose commitment",
+        )
+    activation_compose = str(activation_plan["canonical_text"])
+    activation_compose_sha = hashlib.sha256(activation_compose.encode("utf-8")).hexdigest()
+    activation_semantic_sha = _adoption_compose_semantic_sha256(
+        activation_compose,
+        label="released candidate activation Compose",
+    )
+    if (
+        activation_plan.get("sha256") != activation_compose_sha
+        or activation_plan.get("semantic_sha256") != activation_semantic_sha
+    ):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source release validator activation Compose commitment is inconsistent",
+        )
+
+    candidate_receipt, voter_receipts = _adoption_source_mutation_receipts(
+        failed,
+        candidate_node=candidate_node,
+        target_controller_id=target_controller_id,
+        target_uuid=target_uuid,
+        voter_nodes=voter_nodes,
+        activation_compose_sha256=activation_compose_sha,
+    )
+    previous_target_uuid = _identifier(candidate_receipt.get("previous_service_uuid"), "previous target service UUID")
+    if isinstance(release_target.get("service_uuid"), str) and release_target.get("service_uuid") != previous_target_uuid:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
+            "source activation mutation previous service UUID does not match the released target service",
         )
 
     voter_guardian_names = {node: _guardian_service_name(node) for node in voter_nodes}
     target_guardian_name = "mother-add-node-validator-activation-guardian"
     node_to_controller: dict[str, str] = {candidate_node: target_controller_id}
-    for item in failed.get("mutation_receipts", []):
-        if not isinstance(item, Mapping):
-            continue
-        node = item.get("node")
-        controller_id = item.get("controller_id")
-        if isinstance(node, str) and isinstance(controller_id, str) and node in voter_nodes:
-            node_to_controller[node] = _identifier(controller_id, f"{node} controller")
-    for node in voter_nodes:
-        if node not in node_to_controller:
-            raise _fail(
-                "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_INVALID",
-                f"source evidence lacks controller binding for voter {node}",
-            )
+    guardian_service_uuids: dict[str, str] = {candidate_node: target_uuid}
+    validator_service_uuids: dict[str, str] = {candidate_node: target_uuid}
+    voter_guardian_service_rows: dict[str, dict[str, Any]] = {}
+    for voter, receipt in voter_receipts.items():
+        node_to_controller[voter] = _identifier(receipt["controller_id"], f"{voter} controller")
+        guardian_service_uuids[voter] = _identifier(receipt["service_uuid"], f"{voter} voter-helper service UUID")
+        validator_service_uuids[voter] = _identifier(receipt["validator_parent_service_uuid"], f"{voter} validator parent service UUID")
+        voter_guardian_service_rows[voter] = dict(receipt)
     controllers = {
         controller_id: resolve_coolify_controller(private_state, network, controller_id)
         for controller_id in set(node_to_controller.values())
     }
+
     raw_proof_endpoint = failed.get("candidate_activation_proof_endpoint")
-    if not isinstance(raw_proof_endpoint, Mapping) and isinstance(release, Mapping):
-        plan = release.get("admission_plan")
-        if isinstance(plan, Mapping):
-            raw_proof_endpoint = plan.get("candidate_activation_proof_endpoint")
+    if not isinstance(raw_proof_endpoint, Mapping):
+        raw_proof_endpoint = plan.get("candidate_activation_proof_endpoint")
     candidate_activation_proof_endpoint = dict(raw_proof_endpoint) if isinstance(raw_proof_endpoint, Mapping) else None
 
-    started = _timestamp(now=now)
-    observations: list[dict[str, Any]] = []
+    started = _timestamp(now.isoformat() if now is not None else None)
     adoption_preconditions: list[dict[str, Any]] = [
         {
             "name": "failed-validator-admission-evidence-before-live-proof-adoption",
@@ -5473,18 +5308,31 @@ def adopt_node_add_validator_admission_live_proof(
             "status": "verified",
             "response_sha256": failed_sha,
             "verified": True,
-        }
-    ]
-    if release is not None and release_digest is not None:
-        adoption_preconditions.append({
+        },
+        {
             "name": "source-validator-admission-release-before-live-proof-adoption",
             "method": "READ",
-            "endpoint": str(release_ref["locator"]) if isinstance(release_ref, Mapping) else "",
+            "endpoint": str(release_ref["locator"]),
             "status": "verified",
             "response_sha256": release_digest,
             "verified": True,
-        })
+        },
+    ]
+    live_compose_receipt = _adoption_live_activation_compose_receipt(
+        controller=controllers[target_controller_id],
+        controller_id=target_controller_id,
+        candidate_node=candidate_node,
+        service_uuid=target_uuid,
+        expected_compose=activation_compose,
+        expected_compose_sha256=activation_compose_sha,
+        expected_semantic_sha256=activation_semantic_sha,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    adoption_preconditions.append(live_compose_receipt)
 
+    observations: list[dict[str, Any]] = []
     admission_nodes = [candidate_node, *voter_nodes]
     durable_admission_nodes = _durable_admission_proof_nodes(candidate_node=candidate_node)
     healthy, last_statuses = _wait_for_admission_proof_guardians(
@@ -5493,7 +5341,7 @@ def adopt_node_add_validator_admission_live_proof(
         desired_validator_set=desired_set,
         controllers=controllers,
         node_to_controller=node_to_controller,
-        all_service_uuids=service_uuids,
+        all_service_uuids=guardian_service_uuids,
         voter_guardian_names=voter_guardian_names,
         target_guardian_name=target_guardian_name,
         candidate_activation_proof_endpoint=candidate_activation_proof_endpoint,
@@ -5505,147 +5353,7 @@ def adopt_node_add_validator_admission_live_proof(
         max_response_bytes=max_response_bytes,
         opener=opener,
     )
-    if not (durable_admission_nodes <= healthy):
-        failure = {
-            "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_NOT_HEALTHY",
-            "message": (
-                "admission activation guardian did not prove durable live admission during adoption: "
-                + repr({
-                    "durable_required_nodes": sorted(durable_admission_nodes),
-                    "observed_nodes": admission_nodes,
-                    "transient_voter_nodes": voter_nodes,
-                    "last_statuses": last_statuses,
-                })
-            ),
-        }
-        completed = _timestamp()
-        evidence = {
-            "kind": _EVIDENCE_KIND,
-            "schema_version": 1,
-            "started_at": started,
-            "completed_at": completed,
-            "status": "failed",
-            "mother_binding": _binding(private_state),
-            "network": network,
-            "mode": failed.get("mode"),
-            "candidate_node": candidate_node,
-            "candidate_validator_address": candidate,
-            "candidate_validator_route": dict(failed.get("candidate_validator_route") or {}),
-            "candidate_p2p_port": failed.get("candidate_p2p_port"),
-            "candidate_p2p_endpoint": failed.get("candidate_p2p_endpoint"),
-            "service_routes": {str(node): dict(route) for node, route in (failed.get("service_routes") or {}).items() if isinstance(route, Mapping)},
-            "target_host": target_controller_id,
-            "created_service_uuid": target_uuid,
-            "candidate_activation_proof_endpoint": dict(candidate_activation_proof_endpoint) if isinstance(candidate_activation_proof_endpoint, Mapping) else None,
-            "voter_nodes": voter_nodes,
-            "durable_admission_proof_nodes": sorted(durable_admission_nodes),
-            "transient_voter_guardian_nodes": voter_nodes,
-        "validator_service_uuids": dict(validator_service_uuids),
-        "guardian_service_uuids": dict(guardian_service_uuids),
-        "target_activation_guardian_service_row": {
-            "service_uuid": target_activation_guardian_row.get("service_uuid"),
-            "service_name": target_activation_guardian_row.get("service_name"),
-            "controller_id": target_activation_guardian_row.get("controller_id"),
-            "guardian_service": target_activation_guardian_row.get("guardian_service"),
-            "validator_parent_service_uuid": target_activation_guardian_row.get("validator_parent_service_uuid"),
-        } if isinstance(target_activation_guardian_row, Mapping) else None,
-        "transient_voter_guardian_service_rows": {
-            voter: {
-                "service_uuid": row.get("service_uuid"),
-                "service_name": row.get("service_name"),
-                "controller_id": row.get("controller_id"),
-                "guardian_service": row.get("guardian_service"),
-                "validator_parent_service_uuid": row.get("validator_parent_service_uuid"),
-            }
-            for voter, row in voter_guardian_service_rows.items()
-        },
-            "release": dict(release_ref) if isinstance(release_ref, Mapping) else None,
-            "source_failed_validator_admission_evidence": {
-                "locator": _relative(paths, resolved, label="failed validator-admission evidence"),
-                "sha256": failed_sha,
-                "status": failed.get("status"),
-                "completed_at": failed.get("completed_at"),
-            },
-            "source_replica_sync_evidence": dict(failed.get("source_replica_sync_evidence") or {}),
-            "chain_id": failed.get("chain_id"),
-            "genesis_sha256": failed.get("genesis_sha256"),
-            "current_validator_set": current_set,
-            "desired_validator_set": desired_set,
-            "final_validator_set": None,
-            "precondition_receipts": adoption_preconditions,
-            "mutation_receipts": [],
-            "qbft_transition_recovery": [],
-            "health_observations": observations,
-            "post_admission_validator_refresh": [],
-            "post_admission_cleanup": None,
-            "post_admission_cleanup_warning": None,
-            "failure": failure,
-            "policy": {
-                "allowed_http_methods": ["GET"],
-                "coolify_control_plane_only": True,
-                "read_only_live_proof_adoption": True,
-                "all_existing_validator_votes_required": True,
-                "manual_ssh_required": False,
-                "public_http_endpoint_created": False,
-                "public_endpoint_created": False,
-                "routing_or_topology_published": False,
-                "private_keys_materialized_in_memory_only": False,
-                "private_keys_persisted": False,
-                "secrets_in_output": False,
-                "automatic_rollback_performed": False,
-            },
-            "authority": {
-                "source_failed_evidence_reobserved": True,
-                "validator_vote_authorized": False,
-                "validator_activation_authorized": False,
-                "validator_vote_proven": False,
-                "validator_activation_proven": False,
-                "routing_or_topology_publication_authorized": False,
-            },
-            "summary": {
-                "clean": False,
-                "complete": False,
-                "target_validator_identity_activated": False,
-                "current_validator_set_reverified": False,
-                "final_validator_set_verified": False,
-                "admission_proof_guardian_components_verified": False,
-                "desired_validator_count": len(desired_set),
-                "current_validator_count": len(current_set),
-                "logical_vote_count": len(voter_nodes),
-                "all_existing_validator_votes_required": True,
-                "planned_mutation_count": 0,
-                "attempted_mutation_count": 0,
-                "succeeded_mutation_count": 0,
-                "failed_mutation_count": 0,
-                "network_access_performed": True,
-                "live_mutation_performed": False,
-                "read_only_live_proof_adoption": True,
-                "validator_vote_performed": False,
-                "validator_activation_performed": False,
-                "routing_or_topology_publication_authorized": False,
-                "routing_or_topology_published": False,
-                "public_endpoint_created": False,
-                "manual_ssh_required": False,
-                "blocks_advancing": False,
-                "latest_block_fresh": False,
-                "target_host": target_controller_id,
-                "target_node": candidate_node,
-                "next_phase": "manual-review-required",
-            },
-            "next_phase": "manual-review-required",
-            "validator_mutation_count": 0,
-            "validator_vote_performed": False,
-            "validator_activation_performed": False,
-            "validator_restart_count": 0,
-            "post_admission_validator_refresh_performed": False,
-            "chain_mutation_count": 0,
-            "service_mutation_count": 0,
-        }
-        evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)
-        evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
-        return evidence
 
-    completed = _timestamp()
     candidate_activation_proof = _latest_candidate_activation_canonical_history_proof(
         observations,
         candidate_node=candidate_node,
@@ -5658,13 +5366,21 @@ def adopt_node_add_validator_admission_live_proof(
     )
     final_validator_set = (
         [str(item) for item in candidate_activation_proof["latest_validator_set"]]
-        if isinstance(candidate_activation_proof, Mapping) and isinstance(candidate_activation_proof.get("latest_validator_set"), list)
+        if isinstance(candidate_activation_proof, Mapping)
+        and isinstance(candidate_activation_proof.get("latest_validator_set"), list)
         else None
     )
+    proof_freshness = _adoption_candidate_proof_freshness(candidate_activation_proof, now=now)
+    adoption_preconditions.append({
+        "name": "fresh-candidate-validator-admission-proof-before-adoption",
+        "method": "READ",
+        "endpoint": "candidate-activation-canonical-history-proof",
+        **proof_freshness,
+    })
     canonical_validator_history_proof = {
         "contract": _CANONICAL_HISTORY_PROOF_CONTRACT,
         "target_guardian_name": target_guardian_name,
-        "activation_compose_body_sha256": None,
+        "activation_compose_body_sha256": activation_compose_sha,
         "exact_block_history_required_before_health": True,
         "proof_payload_required": True,
         "proof_payload_observed": candidate_activation_proof is not None,
@@ -5672,164 +5388,162 @@ def adopt_node_add_validator_admission_live_proof(
         "required_guardian_proof_fields": list(_CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS),
         "missing_guardian_proof_fields": _canonical_history_proof_payload_missing_fields(candidate_activation_proof),
     }
-    # Adoption is read-only and cannot re-assert the original compose-write body SHA, so
-    # it cannot create a fresh clean evidence document under the strict proof
-    # contract.  It still records observations for diagnostics and remains a
-    # manual-review bridge rather than a topology baseline source.
-    proof_guardians_verified = False
-    complete = False
-    evidence = {
-        "kind": _EVIDENCE_KIND,
-        "schema_version": 1,
-        "started_at": started,
-        "completed_at": completed,
-        "status": "pass" if complete else "failed",
-        "mother_binding": _binding(private_state),
-        "network": network,
-        "mode": failed.get("mode"),
+    proof_guardians_verified = _durable_validator_admission_proof_verified({
         "candidate_node": candidate_node,
-        "candidate_validator_address": candidate,
-        "candidate_validator_route": dict(failed.get("candidate_validator_route") or {}),
-        "candidate_p2p_port": failed.get("candidate_p2p_port"),
-        "candidate_p2p_endpoint": failed.get("candidate_p2p_endpoint"),
-        "service_routes": {str(node): dict(route) for node, route in (failed.get("service_routes") or {}).items() if isinstance(route, Mapping)},
-        "target_host": target_controller_id,
-        "created_service_uuid": target_uuid,
-        "previous_target_service_uuid": target.get("service_uuid"),
-        "target_parent_service_replacement": {
-            "previous_service_uuid": target_parent_service_replacement.get("previous_service_uuid"),
-            "service_uuid": target_parent_service_replacement.get("service_uuid"),
-            "service_name": target_parent_service_replacement.get("service_name"),
-            "controller_id": target_parent_service_replacement.get("controller_id"),
-            "status": target_parent_service_replacement.get("status"),
-            "reason": target_parent_service_replacement.get("reason"),
-        } if isinstance(target_parent_service_replacement, Mapping) else None,
         "voter_nodes": voter_nodes,
-        "durable_admission_proof_nodes": sorted(durable_admission_nodes),
-        "transient_voter_guardian_nodes": voter_nodes,
-        "validator_service_uuids": dict(validator_service_uuids),
-        "guardian_service_uuids": dict(guardian_service_uuids),
-        "target_activation_guardian_service_row": {
-            "service_uuid": target_activation_guardian_row.get("service_uuid"),
-            "service_name": target_activation_guardian_row.get("service_name"),
-            "controller_id": target_activation_guardian_row.get("controller_id"),
-            "guardian_service": target_activation_guardian_row.get("guardian_service"),
-            "validator_parent_service_uuid": target_activation_guardian_row.get("validator_parent_service_uuid"),
-        } if isinstance(target_activation_guardian_row, Mapping) else None,
-        "transient_voter_guardian_service_rows": {
-            voter: {
-                "service_uuid": row.get("service_uuid"),
-                "service_name": row.get("service_name"),
-                "controller_id": row.get("controller_id"),
-                "guardian_service": row.get("guardian_service"),
-                "validator_parent_service_uuid": row.get("validator_parent_service_uuid"),
-            }
-            for voter, row in voter_guardian_service_rows.items()
-        },
-        "release": dict(release_ref) if isinstance(release_ref, Mapping) else None,
-        "source_failed_validator_admission_evidence": {
-            "locator": _relative(paths, resolved, label="failed validator-admission evidence"),
-            "sha256": failed_sha,
-            "status": failed.get("status"),
-            "completed_at": failed.get("completed_at"),
-        },
-        "source_replica_sync_evidence": dict(failed.get("source_replica_sync_evidence") or {}),
-        "chain_id": failed.get("chain_id"),
-        "genesis_sha256": failed.get("genesis_sha256"),
-        "current_validator_set": current_set,
         "desired_validator_set": desired_set,
-        "final_validator_set": final_validator_set if complete else None,
-        "precondition_receipts": adoption_preconditions,
-        "mutation_receipts": [],
-        "qbft_transition_recovery": [],
-        "canonical_validator_history_proof": canonical_validator_history_proof,
-        _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD: dict(candidate_activation_proof) if isinstance(candidate_activation_proof, Mapping) else None,
-        _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD: candidate_activation_proof_sha,
+        "final_validator_set": final_validator_set,
         "health_observations": observations,
-        "post_admission_validator_refresh": [],
-        "post_admission_cleanup": failed.get("post_admission_cleanup"),
-        "post_admission_cleanup_warning": failed.get("post_admission_cleanup_warning"),
-        "failure": None if complete else {
-            "code": "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_DURABLE_PROOF_INVALID",
-            "message": "adoption observations did not satisfy durable admission proof",
-        },
-        "policy": {
-            "allowed_http_methods": ["GET"],
-            "coolify_control_plane_only": True,
-            "read_only_live_proof_adoption": True,
-            "all_existing_validator_votes_required": True,
-            "manual_ssh_required": False,
-            "public_http_endpoint_created": False,
-            "public_endpoint_created": False,
-            "routing_or_topology_published": False,
-            "private_keys_materialized_in_memory_only": False,
-            "private_keys_persisted": False,
-            "secrets_in_output": False,
-            "automatic_rollback_performed": False,
-        },
-        "authority": {
-            "source_failed_evidence_reobserved": True,
-            "validator_vote_authorized": False,
-            "validator_activation_authorized": False,
-            "validator_vote_proven": complete,
-            "validator_activation_proven": complete,
-            "routing_or_topology_publication_authorized": False,
-        },
-        "summary": {
-            "clean": complete,
-            "complete": complete,
-            "target_validator_identity_activated": complete,
-            "current_validator_set_reverified": complete,
-            "final_validator_set_verified": complete,
-            "admission_proof_guardian_components_verified": proof_guardians_verified,
-            "desired_validator_count": len(desired_set),
-            "current_validator_count": len(current_set),
-            "logical_vote_count": len(voter_nodes),
-            "all_existing_validator_votes_required": True,
-            "planned_mutation_count": 0,
-            "attempted_mutation_count": 0,
-            "succeeded_mutation_count": 0,
-            "failed_mutation_count": 0,
-            "network_access_performed": True,
-            "live_mutation_performed": False,
-            "read_only_live_proof_adoption": True,
-            "validator_vote_performed": complete,
-            "validator_activation_performed": complete,
-            "routing_or_topology_publication_authorized": False,
-            "routing_or_topology_published": False,
-            "public_endpoint_created": False,
-            "manual_ssh_required": False,
-            "qbft_transition_recovery_performed": False,
-            "qbft_transition_recovery_clean": False,
-            "post_admission_validator_refresh_performed": False,
-            "post_admission_validator_refresh_clean": False,
-            "post_admission_validator_refresh_guardians_verified": False,
-            "post_admission_cleanup_clean": False,
-            "post_admission_cleanup_nonfatal": failed.get("post_admission_cleanup_warning") is not None,
-            "post_admission_cleanup_performed": failed.get("post_admission_cleanup") is not None,
-            "target_service_top_level_healthy": False,
-            "blocks_advancing": complete,
-            "latest_block_fresh": complete,
-            "target_host": target_controller_id,
-            "target_node": candidate_node,
-            "target_p2p_port": failed.get("candidate_p2p_port"),
-            "target_p2p_endpoint": failed.get("candidate_p2p_endpoint"),
-            "next_phase": f"add-node-post-admission-observe-{network}" if complete else "manual-review-required",
-        },
-        "next_phase": f"add-node-post-admission-observe-{network}" if complete else "manual-review-required",
-        "validator_mutation_count": 0,
+        "canonical_validator_history_proof": canonical_validator_history_proof,
+        _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD: candidate_activation_proof,
+        _CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD: candidate_activation_proof_sha,
+        "mutation_receipts": list(failed.get("mutation_receipts") or []),
+    })
+    complete = (
+        durable_admission_nodes <= healthy
+        and proof_freshness.get("verified") is True
+        and proof_guardians_verified
+    )
+
+    adopted = json.loads(json.dumps(failed))
+    adopted["started_at"] = started
+    adopted["completed_at"] = _timestamp(now.isoformat() if now is not None else None)
+    adopted["status"] = "pass" if complete else "failed"
+    adopted["failure"] = None if complete else {
+        "code": (
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_NOT_HEALTHY"
+            if not (durable_admission_nodes <= healthy)
+            else "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_DURABLE_PROOF_INVALID"
+        ),
+        "message": (
+            "admission activation guardian did not prove durable live admission during adoption: "
+            + repr({
+                "durable_required_nodes": sorted(durable_admission_nodes),
+                "observed_nodes": admission_nodes,
+                "transient_voter_nodes": voter_nodes,
+                "last_statuses": last_statuses,
+            })
+            if not (durable_admission_nodes <= healthy)
+            else "adoption observations did not satisfy fresh durable admission proof"
+        ),
+    }
+    adopted["source_failed_validator_admission_evidence"] = {
+        "locator": _relative(paths, resolved, label="failed validator-admission evidence"),
+        "sha256": failed_sha,
+        "status": failed.get("status"),
+        "completed_at": failed.get("completed_at"),
+    }
+    adopted["previous_target_service_uuid"] = previous_target_uuid
+    if candidate_receipt.get("method") == "PATCH_AND_DEPLOY_EXISTING_SERVICE_ROW":
+        adopted["target_parent_service_transition"] = dict(candidate_receipt)
+        adopted.pop("target_parent_service_replacement", None)
+    else:
+        adopted["target_parent_service_replacement"] = dict(candidate_receipt)
+    adopted["validator_service_uuids"] = validator_service_uuids
+    adopted["guardian_service_uuids"] = guardian_service_uuids
+    adopted["target_activation_guardian_service_row"] = {
+        "service_uuid": target_uuid,
+        "service_name": candidate_node,
+        "controller_id": target_controller_id,
+        "guardian_service": target_guardian_name,
+        "validator_parent_service_uuid": target_uuid,
+    }
+    adopted["transient_voter_guardian_service_rows"] = {
+        voter: {
+            "service_uuid": receipt.get("service_uuid"),
+            "service_name": receipt.get("service_name"),
+            "controller_id": receipt.get("controller_id"),
+            "guardian_service": receipt.get("guardian_service"),
+            "validator_parent_service_uuid": receipt.get("validator_parent_service_uuid"),
+        }
+        for voter, receipt in voter_guardian_service_rows.items()
+    }
+    adopted["durable_admission_proof_nodes"] = sorted(durable_admission_nodes)
+    adopted["health_observations"] = observations
+    adopted["precondition_receipts"] = list(failed.get("precondition_receipts") or []) + adoption_preconditions
+    adopted["canonical_validator_history_proof"] = canonical_validator_history_proof
+    adopted[_CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_FIELD] = (
+        dict(candidate_activation_proof) if isinstance(candidate_activation_proof, Mapping) else None
+    )
+    adopted[_CANDIDATE_ACTIVATION_CANONICAL_HISTORY_PROOF_SHA_FIELD] = candidate_activation_proof_sha
+    adopted["final_validator_set"] = final_validator_set if complete else None
+    adopted["qbft_transition_recovery"] = list(failed.get("qbft_transition_recovery") or [])
+
+    policy = adopted.get("policy") if isinstance(adopted.get("policy"), dict) else {}
+    policy.update({
+        "allowed_http_methods": ["GET"],
+        "coolify_control_plane_only": True,
+        "read_only_live_proof_adoption": True,
+        "automatic_rollback_performed": False,
+        "routing_or_topology_published": False,
+        "private_keys_materialized_in_memory_only": False,
+        "private_keys_persisted": False,
+        "secrets_in_output": False,
+    })
+    adopted["policy"] = policy
+
+    authority = adopted.get("authority") if isinstance(adopted.get("authority"), dict) else {}
+    authority.update({
+        "source_failed_evidence_reobserved": True,
+        "validator_vote_authorized": False,
+        "validator_activation_authorized": False,
+        "validator_vote_proven": complete,
+        "validator_activation_proven": complete,
+        "routing_or_topology_publication_authorized": False,
+        "read_only_live_proof_adoption": True,
+    })
+    adopted["authority"] = authority
+
+    adopted_summary = adopted.get("summary") if isinstance(adopted.get("summary"), dict) else {}
+    adopted_summary.update({
+        "clean": complete,
+        "complete": complete,
+        "target_validator_identity_activated": complete,
+        "current_validator_set_reverified": complete,
+        "final_validator_set_verified": complete,
+        "admission_proof_guardian_components_verified": proof_guardians_verified,
+        "desired_validator_count": len(desired_set),
+        "current_validator_count": len(current_set),
+        "logical_vote_count": len(voter_nodes),
+        "all_existing_validator_votes_required": True,
+        "planned_mutation_count": 0,
+        "attempted_mutation_count": 0,
+        "succeeded_mutation_count": 0,
+        "failed_mutation_count": 0,
+        "network_access_performed": True,
+        "live_mutation_performed": False,
+        "read_only_live_proof_adoption": True,
         "validator_vote_performed": complete,
         "validator_activation_performed": complete,
-        "validator_restart_count": 0,
-        "post_admission_validator_refresh_performed": False,
-        "chain_mutation_count": 0,
-        "service_mutation_count": 0,
-    }
-    evidence_path, evidence_sha = _write_evidence(paths, evidence, operation=operation)
-    evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
-    return evidence
+        "routing_or_topology_publication_authorized": False,
+        "routing_or_topology_published": False,
+        "manual_ssh_required": False,
+        "blocks_advancing": complete,
+        "latest_block_fresh": complete,
+        "target_host": target_controller_id,
+        "target_node": candidate_node,
+        "target_p2p_port": failed.get("candidate_p2p_port"),
+        "target_p2p_endpoint": failed.get("candidate_p2p_endpoint"),
+        "next_phase": f"add-node-post-admission-observe-{network}" if complete else "manual-review-required",
+    })
+    adopted["summary"] = adopted_summary
+    adopted["next_phase"] = adopted_summary["next_phase"]
+    adopted["validator_mutation_count"] = 0
+    adopted["validator_vote_performed"] = complete
+    adopted["validator_activation_performed"] = complete
+    adopted["validator_restart_count"] = 0
+    adopted["post_admission_validator_refresh_performed"] = False
+    adopted["chain_mutation_count"] = 0
+    adopted["service_mutation_count"] = 0
 
-
+    if _contains_sensitive(adopted):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ADOPT_SENSITIVE",
+            "adopted validator-admission evidence contains sensitive material",
+        )
+    evidence_path, evidence_sha = _write_evidence(paths, adopted, operation=operation)
+    adopted["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
+    return adopted
 
 
 def _scoped_public_candidate_activation_proof_endpoint(document: Mapping[str, Any]) -> bool:

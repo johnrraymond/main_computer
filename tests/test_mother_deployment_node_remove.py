@@ -3140,3 +3140,486 @@ def test_remove_node_single_node_harness_cli_and_do_finalize_empty_topology(tmp_
     )
     assert args.operation == "remove-node"
     assert args.start_at == "detect-topology"
+
+
+def _write_identity_reservation_topology_refresh_baseline_for_remove_prep(paths, private_state) -> tuple[Path, str]:
+    nodes = ["mainneta-super1", "mainnetc-super1", "mainnetc-super2"]
+    validators = [
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+    ]
+    services = {
+        "mainneta-super1": {
+            "node": "mainneta-super1",
+            "controller_id": "coolify-a",
+            "service_uuid": "ekir2raevwzk8p6kznbujems",
+            "service_status": "running:healthy",
+            "readiness_source": "service-observation",
+            "last_observed_at": "2026-10-01T21:42:44Z",
+        },
+        "mainnetc-super1": {
+            "node": "mainnetc-super1",
+            "controller_id": "coolify-c",
+            "service_uuid": "7t28sx8iqm2pofmmfwarrild",
+            "service_status": "degraded:unhealthy",
+            "readiness_source": "service-observation",
+            "last_observed_at": "2026-10-01T21:42:44Z",
+        },
+        "mainnetc-super2": {
+            "node": "mainnetc-super2",
+            "controller_id": "coolify-c",
+            "service_uuid": "jtrfztgxdqnkuwrh5rhvlzkc",
+            "service_status": "running:healthy",
+            "readiness_source": "service-observation",
+            "last_observed_at": "2026-10-01T21:42:44Z",
+        },
+    }
+    topology = {
+        "source": "add-node-identity-reservation-topology-refresh",
+        "chain_id": 42424240,
+        "genesis_sha256": "364df17daf2dfa428bd486e9c4e8b46c70317f65b23b55aaf78f749e15de6c92",
+        "nodes": nodes,
+        "services": services,
+        "validator_route_bindings": {},
+        "validator_count": len(validators),
+        "validator_set": validators,
+        "identity_catalog_refreshed": True,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+    }
+    evidence = {
+        "kind": "main_computer.mother.add_node_identity_reservation_topology_refresh_evidence.v1",
+        "schema_version": 1,
+        "completed_at": "2026-10-01T21:42:44Z",
+        "observed_at": "2026-10-01T21:42:44Z",
+        "status": "pass",
+        "failure": None,
+        "mother_binding": _binding_for_test(private_state),
+        "network": "mainnet",
+        "mode": "add-node-identity-reservation-topology-refresh",
+        "reserved_node": "mainnetc-super1",
+        "reserved_host": "coolify-c",
+        "source_topology_evidence": {
+            "path": "unused.json",
+            "locator": "evidence/deployment-live-current-topology/unused.json",
+            "sha256": "f" * 64,
+            "kind": "main_computer.mother.live_current_topology_evidence.v1",
+            "completed_at": "2026-10-01T21:40:00Z",
+            "mother_binding": _binding_for_test(private_state),
+        },
+        "predecessor_binding": _binding_for_test(private_state),
+        "successor_binding": _binding_for_test(private_state),
+        "live_topology_observation": {
+            "status": "pass",
+            "observed_at": "2026-10-01T21:42:44Z",
+            "summary": {"clean": True, "topology_current": True, "topology_stale": False},
+            "topology_evidence": {},
+        },
+        "expected_service_observations": [],
+        "observed_live_node_hints": nodes,
+        "observed_service_hints": [],
+        "target": {"node": "mainnetc-super1"},
+        "current_topology": topology,
+        "final_topology": topology,
+        "topology_diff": {
+            "operation": "add-node-identity-reservation-topology-refresh",
+            "added_nodes": [],
+            "removed_nodes": [],
+            "unchanged_nodes": nodes,
+            "pre_validator_count": len(validators),
+            "post_validator_count": len(validators),
+        },
+        "authority": {
+            "read_only_topology_refresh": True,
+            "identity_reservation_previously_performed": True,
+            "topology_current": True,
+            "live_mutation_authorized": False,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "manual_ssh_required": False,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "finalize_mutation_performed": False,
+            "chain_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_http_endpoint_created": False,
+            "public_endpoint_created": False,
+            "validator_admission_performed": False,
+            "validator_vote_performed": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "topology_current": True,
+            "topology_stale": False,
+            "identity_catalog_refreshed": True,
+            "refreshed_for_node": "mainnetc-super1",
+            "refreshed_for_host": "coolify-c",
+            "current_nodes": nodes,
+            "current_validator_count": len(validators),
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "next_phase": "add-node-prep-mainnet",
+        },
+        "live_mutation_performed": False,
+        "chain_mutation_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": False,
+        "next_phase": "add-node-prep-mainnet",
+    }
+    payload = canonical_json(evidence)
+    path = (
+        paths.root
+        / "evidence"
+        / "deployment-node-add-post-admission-observe"
+        / "20261001T214244Z-mainnet-identity-refresh-mainnetc-super1-test.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path, hashlib.sha256(payload).hexdigest()
+
+
+def test_remove_prep_accepts_identity_reservation_topology_refresh_baseline(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_identity_reservation_topology_refresh_baseline_for_remove_prep(paths, private_state)
+
+    transaction = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node="mainnetc-super1",
+        baseline_evidence_sha256=baseline_sha,
+        baseline_max_age_seconds=86400,
+        created_at="2026-10-01T21:43:00Z",
+    )
+
+    assert transaction["target"]["service_uuid"] == "7t28sx8iqm2pofmmfwarrild"
+    assert transaction["summary"]["current_validator_count"] == 3
+    assert transaction["summary"]["post_removal_validator_count"] == 2
+    assert transaction["source_baseline_evidence"]["kind"] == "main_computer.mother.add_node_identity_reservation_topology_refresh_evidence.v1"
+
+
+def test_remove_prep_rejects_mutating_identity_reservation_topology_refresh_baseline(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    baseline_path, _baseline_sha = _write_identity_reservation_topology_refresh_baseline_for_remove_prep(paths, private_state)
+    document = json.loads(baseline_path.read_text(encoding="utf-8"))
+    document["authority"]["live_mutation_authorized"] = True
+    payload = canonical_json(document)
+    baseline_path.write_bytes(payload)
+    baseline_sha = hashlib.sha256(payload).hexdigest()
+
+    with pytest.raises(MotherDeploymentNodeRemovePrepError, match="clean read-only current-topology refresh"):
+        build_node_remove_prep_transaction(
+            paths,
+            private_state,
+            baseline_path,
+            network="mainnet",
+            target_node="mainnetc-super1",
+            baseline_evidence_sha256=baseline_sha,
+            baseline_max_age_seconds=86400,
+            created_at="2026-10-01T21:43:00Z",
+        )
+
+
+def test_remove_node_do_post_proof_resume_skips_revote_and_deletes_exact_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_t3_baseline_for_remove_prep(paths, private_state)
+    prep = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node="mainnetc-super1",
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-11T19:20:00Z",
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 20, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    prep_path, prep_sha = write_node_remove_prep_transaction(
+        paths, prep, operation=_operation("write-post-proof-resume-prep")
+    )
+    release = node_remove_do_v2_module.build_node_remove_do_release(
+        paths,
+        private_state,
+        prep_path,
+        acknowledged_prep_transaction_sha256=prep_sha,
+        created_at="2026-08-11T19:22:00Z",
+        expires_in_seconds=900,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 22, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    release_path, release_sha = node_remove_do_v2_module.write_node_remove_do_release(
+        paths, release, operation=_operation("write-post-proof-resume-release")
+    )
+
+    current = list(release["current_topology"]["validator_set"])
+    desired = list(release["post_removal_topology"]["validator_set"])
+    target = str(release["target"]["validator_address"])
+    request_sha = str(release["validator_removal_vote"]["request_sha256"])
+
+    def proof(voter: str, ordinal: int) -> dict[str, Any]:
+        first = 143700 + ordinal * 2
+        second = first + 2
+        return {
+            "node_remove_do_proof_contract": "main_computer.mother.node_remove_do.validator_removal_proof.v1",
+            "voter_node": voter,
+            "chain_id": 42424240,
+            "genesis_sha256": release["current_topology"]["genesis_sha256"],
+            "rpc_request_sha256": request_sha,
+            "vote_submitted": False,
+            "target_validator": target,
+            "target_validator_absent": True,
+            "expected_current_validator_set": current,
+            "desired_validator_set": desired,
+            "final_validator_set": desired,
+            "latest_validator_set": desired,
+            "first_block_number": first,
+            "first_block_hash": "0x" + f"{ordinal + 1:x}" * 64,
+            "first_block_parent_hash": "0x" + f"{ordinal:x}" * 64,
+            "first_block_validator_set": desired,
+            "second_block_number": second,
+            "second_block_hash": "0x" + f"{ordinal + 2:x}" * 64,
+            "second_block_parent_hash": "0x" + f"{ordinal + 1:x}" * 64,
+            "second_block_validator_set": desired,
+            "block_advance": 2,
+            "latest_block_number": second,
+            "latest_block_hash": "0x" + f"{ordinal + 2:x}" * 64,
+            "latest_block_parent_hash": "0x" + f"{ordinal + 1:x}" * 64,
+            "latest_block_timestamp": 1786485840 + ordinal,
+            "final_pending_votes": {target: False},
+            "proved_at": "2026-08-11T19:24:00Z",
+        }
+
+    voters = list(release["validator_removal_vote"]["voter_nodes"])
+    proofs = {voter: proof(voter, index + 1) for index, voter in enumerate(voters)}
+    proof_shas = {
+        voter: node_remove_do_v2_module._node_remove_do_proof_payload_sha256(payload)
+        for voter, payload in proofs.items()
+    }
+    proof_endpoints = {
+        voter: {
+            "kind": "main_computer.mother.node-remove-do-public-proof-endpoint.v1",
+            "transport": "http-public-controller",
+            "host": "127.0.0.1",
+            "host_port": 39000 + index,
+            "container_port": 8798,
+            "base_host_port": 30303 + index,
+            "bind_host": "0.0.0.0",
+            "public_http_endpoint_created": True,
+            "url": f"http://127.0.0.1:{39000 + index}/proof",
+        }
+        for index, voter in enumerate(voters)
+    }
+    failed = {
+        "kind": node_remove_do_v2_module._EVIDENCE_KIND,
+        "schema_version": 1,
+        "started_at": "2026-08-11T19:23:00Z",
+        "completed_at": "2026-08-11T19:24:00Z",
+        "status": "failed",
+        "failure": {"code": "TEST_POST_PROOF_FAILURE", "message": "failed after validator proof"},
+        "mother_binding": node_remove_do_v2_module._binding(private_state),
+        "network": "mainnet",
+        "mode": "soft",
+        "target": dict(release["target"]),
+        "survivors": [dict(item) for item in release["survivors"]],
+        "current_topology": dict(release["current_topology"]),
+        "post_removal_topology": dict(release["post_removal_topology"]),
+        "release": {
+            "locator": node_remove_do_v2_module._relative(paths, release_path, label="node-removal do release"),
+            "sha256": release_sha,
+        },
+        "execution_claim": {"locator": "actions/deployment-node-remove-do-execution-claims/test.json"},
+        "source_transaction": dict(release["source_transaction"]),
+        "source_baseline_evidence": dict(release["source_baseline_evidence"]),
+        "routing_topology_withdrawal_receipts": [
+            {
+                "ordinal": 1,
+                "phase": "withdraw-hub-fdb-topology",
+                "status": "already-unpublished",
+                "live_mutation_performed": False,
+                "verified_before_service_deletion": True,
+                "source": "source_baseline_evidence",
+            }
+        ],
+        "validator_removal_vote": dict(release["validator_removal_vote"]),
+        "mutation_receipts": [],
+        "health_observations": [],
+        "validator_removal_proofs": proofs,
+        "validator_removal_proof_sha256_by_voter": proof_shas,
+        "validator_removal_proof_endpoints": proof_endpoints,
+        "validator_removal_guardian_targets": {},
+        "borrowed_survivor_guardians": {},
+        "host_docker_survivor_guardians": {},
+        "static_node_precleanup": {"status": "pass", "policy": {"live_mutation_performed": True}, "summary": {}},
+        "static_node_precleanup_warning": None,
+        "survivor_guardian_cleanup": [],
+        "rpc_route_rewire": None,
+        "service_removal": None,
+        "authority": {
+            "release_consumed": True,
+            "routing_topology_withdrawal_authorized": True,
+            "routing_or_topology_publication_authorized": False,
+            "validator_removal_vote_authorized": True,
+            "validator_removal_vote_required": True,
+            "validator_removal_vote_proven": True,
+            "validator_removal_vote_proven_by_proof_payload": True,
+            "final_validator_set_verified_by_proof_payload": True,
+            "validator_activation_authorized": False,
+            "service_deletion_authorized": True,
+            "service_deletion_proven": False,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET", "PATCH", "POST", "DELETE"],
+            "coolify_control_plane_only": False,
+            "manual_ssh_required": False,
+            "private_keys_materialized": False,
+            "private_keys_persisted": False,
+            "secrets_in_output": False,
+            "public_http_endpoint_created": True,
+            "public_http_endpoint_purpose": "node-remove-do-proof-capture",
+            "routing_or_topology_published": False,
+            "routing_or_topology_withdrawn": True,
+            "validator_activation_performed": False,
+            "static_node_precleanup_required": True,
+            "static_node_precleanup_performed": True,
+            "static_node_precleanup_live_mutation_performed": True,
+            "static_node_precleanup_preserve_services": False,
+            "static_node_precleanup_warning_present": False,
+            "static_node_precleanup_blocking_after_validator_removal_proof": False,
+            "single_node_decommission": False,
+            "validator_removal_vote_required": True,
+            "service_deletion_is_first": False,
+        },
+        "summary": {
+            "clean": False,
+            "complete": False,
+            "target_node": release["target"]["node"],
+            "target_validator_address": target,
+            "survivor_nodes": [item["node"] for item in release["survivors"]],
+            "current_validator_count": len(current),
+            "post_removal_validator_count": len(desired),
+            "routing_topology_withdrawal_verified_before_service_deletion": False,
+            "service_deletion_is_first": False,
+            "single_node_decommission": False,
+            "validator_removal_vote_required": True,
+            "validator_removal_vote_performed": False,
+            "validator_removal_vote_proven_by_proof_payload": True,
+            "final_validator_set_verified_by_proof_payload": True,
+            "validator_removal_proof_voters": sorted(voters),
+            "service_deletion_performed": False,
+            "service_already_absent": False,
+            "network_access_performed": True,
+            "live_mutation_performed": True,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": True,
+            "manual_ssh_required": False,
+            "next_phase": "manual-review-required",
+        },
+        "next_phase": "manual-review-required",
+        "live_mutation_performed": True,
+        "service_deletion_performed": False,
+        "validator_removal_vote_performed": False,
+        "routing_or_topology_published": False,
+        "public_endpoint_created": True,
+    }
+    failed_path, _ = node_remove_do_v2_module._write_evidence(
+        paths, failed, operation=_operation("write-failed-post-proof-resume-fixture")
+    )
+
+    route_calls: list[dict[str, Any]] = []
+    delete_calls: list[dict[str, Any]] = []
+
+    def fake_route(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        route_calls.append(dict(kwargs))
+        return {"status": "pass", "target_node": kwargs["target_node"]}
+
+    def fake_remove(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        delete_calls.append(dict(kwargs))
+        return {"status": "pass", "already_absent": False, "live_mutation_performed": True}
+
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_shared_rpc_route_rewire", fake_route)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_node_removal", fake_remove)
+
+    target_info = failed["target"]
+    resumed = node_remove_do_v2_module.resume_node_remove_do_after_validator_proof(
+        paths,
+        private_state,
+        failed_path,
+        network="mainnet",
+        target_node=target_info["node"],
+        target_validator_address=target_info["validator_address"],
+        target_service_uuid=target_info["service_uuid"],
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("resume-post-proof-remove-do"),
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 24, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert resumed["status"] == "pass", resumed
+    assert resumed["summary"]["validator_removal_vote_performed"] is False
+    assert resumed["summary"]["validator_removal_vote_proven_by_proof_payload"] is True
+    assert resumed["summary"]["final_validator_set_verified_by_proof_payload"] is True
+    assert resumed["summary"]["service_deletion_performed"] is True
+    assert resumed["service_deletion_performed"] is True
+    assert len(route_calls) == 1
+    assert len(delete_calls) == 1
+    assert delete_calls[0]["node"] == target_info["node"]
+    assert delete_calls[0]["service_uuid"] == target_info["service_uuid"]
+    assert delete_calls[0]["acknowledged_node_removal"] == acknowledgement_for(target_info["node"], target_info["service_uuid"])
+
+    verified = node_remove_do_v2_module.verify_node_remove_do_evidence(
+        paths,
+        private_state,
+        Path(resumed["evidence"]["path"]),
+        max_age_seconds=86400,
+        release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 24, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert verified["clean"] is True
+    assert verified["validator_removal_vote_performed"] is False
+    assert verified["validator_removal_vote_proven_by_proof_payload"] is True
+
+    class _FinalizeOpener:
+        def open(self, request, timeout: float):  # noqa: ANN001
+            parsed = urlsplit(request.full_url)
+            assert timeout > 0
+            target_path = f"/api/v1/services/{target_info['service_uuid']}"
+            if parsed.path == target_path:
+                return _Response({"message": "not found"}, status=404)
+            for survivor in release["survivors"]:
+                if parsed.path == f"/api/v1/services/{survivor['service_uuid']}":
+                    return _Response({
+                        "uuid": survivor["service_uuid"],
+                        "name": survivor["node"],
+                        "status": "running:healthy",
+                    })
+            raise AssertionError(f"unexpected finalize request: {parsed.path}")
+
+    finalized = finalize_node_remove(
+        paths,
+        private_state,
+        Path(resumed["evidence"]["path"]),
+        network="mainnet",
+        max_age_seconds=86400,
+        timeout=30,
+        max_response_bytes=12 * 1024 * 1024,
+        opener=_FinalizeOpener(),
+        write_evidence=False,
+        operation=_operation("finalize-post-proof-resume"),
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 24, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    assert finalized["status"] == "pass", finalized
+    assert finalized["summary"]["complete"] is True

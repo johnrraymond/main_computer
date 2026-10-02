@@ -40,12 +40,14 @@ _T3_BASELINE_KIND = "main_computer.mother.deployment_t3_post_admission_steady_st
 _SINGLE_NODE_FINAL_TOPOLOGY_KIND = "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1"
 _ADD_VALIDATOR_ADMISSION_KIND = "main_computer.mother.deployment_node_add_validator_admission_evidence.v1"
 _ADD_POST_ADMISSION_TOPOLOGY_KIND = "main_computer.mother.add_node_post_admission_topology_evidence.v1"
+_IDENTITY_RESERVATION_TOPOLOGY_REFRESH_KIND = "main_computer.mother.add_node_identity_reservation_topology_refresh_evidence.v1"
 _LIVE_CURRENT_TOPOLOGY_KIND = "main_computer.mother.live_current_topology_evidence.v1"
 _REMOVE_FINALIZE_KIND = "main_computer.mother.deployment_node_remove_finalize_evidence.v1"
 _T3_BASELINE_DIRECTORY = ("evidence", "deployment-t3-post-admission-steady-state")
 _SINGLE_NODE_FINAL_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-single-node-chain-and-hub-proof")
 _ADD_VALIDATOR_ADMISSION_DIRECTORY = ("evidence", "deployment-node-add-validator-admission")
 _ADD_POST_ADMISSION_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-post-admission-observe")
+_IDENTITY_RESERVATION_TOPOLOGY_REFRESH_DIRECTORY = ("evidence", "deployment-node-add-post-admission-observe")
 _LIVE_CURRENT_TOPOLOGY_DIRECTORY = ("evidence", "deployment-live-current-topology")
 _REMOVE_FINALIZE_DIRECTORY = ("evidence", "deployment-node-remove-finalize")
 _SUPPORTED_BASELINE_KINDS = frozenset(
@@ -54,6 +56,7 @@ _SUPPORTED_BASELINE_KINDS = frozenset(
         _SINGLE_NODE_FINAL_TOPOLOGY_KIND,
         _ADD_VALIDATOR_ADMISSION_KIND,
         _ADD_POST_ADMISSION_TOPOLOGY_KIND,
+        _IDENTITY_RESERVATION_TOPOLOGY_REFRESH_KIND,
         _LIVE_CURRENT_TOPOLOGY_KIND,
         _REMOVE_FINALIZE_KIND,
     }
@@ -523,6 +526,8 @@ def _baseline_directory_for_kind(kind: Any) -> tuple[str, ...]:
         return _ADD_VALIDATOR_ADMISSION_DIRECTORY
     if kind == _ADD_POST_ADMISSION_TOPOLOGY_KIND:
         return _ADD_POST_ADMISSION_TOPOLOGY_DIRECTORY
+    if kind == _IDENTITY_RESERVATION_TOPOLOGY_REFRESH_KIND:
+        return _IDENTITY_RESERVATION_TOPOLOGY_REFRESH_DIRECTORY
     if kind == _LIVE_CURRENT_TOPOLOGY_KIND:
         return _LIVE_CURRENT_TOPOLOGY_DIRECTORY
     if kind == _REMOVE_FINALIZE_KIND:
@@ -614,6 +619,162 @@ def _normalize_add_post_admission_topology_baseline(
     normalized["service_observations"] = list(document.get("service_observations") or [])
     return normalized, services
 
+
+
+def _normalize_identity_reservation_topology_refresh_baseline(
+    document: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Normalize the read-only topology refresh emitted by add-node identity reservation.
+
+    This evidence lives in the post-admission topology directory but has its own
+    kind.  It is acceptable for remove-node only when it proves a clean,
+    unchanged, current topology under the current Mother binding.  Supporting it
+    here avoids translating the document into a weaker synthetic baseline in
+    callers such as broken-validator cleanup.
+    """
+
+    network = _identifier(document.get("network"), "baseline network")
+    expected_next_phase = f"add-node-prep-{network}"
+    authority = document.get("authority")
+    if not isinstance(authority, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "identity-reservation topology refresh authority is missing",
+        )
+
+    allowed_methods = policy.get("allowed_http_methods")
+    topology_diff = document.get("topology_diff")
+    if not isinstance(topology_diff, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "identity-reservation topology refresh topology_diff is missing",
+        )
+
+    required_truths = (
+        document.get("status") == "pass",
+        document.get("failure") is None,
+        document.get("next_phase") == expected_next_phase,
+        summary.get("clean") is True,
+        summary.get("complete") is True,
+        summary.get("topology_current") is True,
+        summary.get("topology_stale") is False,
+        summary.get("identity_catalog_refreshed") is True,
+        summary.get("next_phase") == expected_next_phase,
+        summary.get("live_mutation_performed") is False,
+        summary.get("routing_or_topology_published") is False,
+        summary.get("public_endpoint_created") is False,
+        authority.get("read_only_topology_refresh") is True,
+        authority.get("identity_reservation_previously_performed") is True,
+        authority.get("topology_current") is True,
+        authority.get("live_mutation_authorized") is False,
+        policy.get("coolify_control_plane_only") is True,
+        allowed_methods == ["GET"],
+        policy.get("manual_ssh_required") is False,
+        policy.get("live_mutation_performed") is False,
+        policy.get("finalize_mutation_performed") is False,
+        policy.get("chain_mutation_performed") is False,
+        policy.get("validator_admission_performed") is False,
+        policy.get("validator_vote_performed") is False,
+        policy.get("routing_or_topology_published") is False,
+        policy.get("public_http_endpoint_created") is False,
+        policy.get("private_keys_materialized") is False,
+        policy.get("private_keys_persisted") is False,
+        document.get("live_mutation_performed") is False,
+        document.get("chain_mutation_performed") is False,
+        document.get("routing_or_topology_published") is False,
+        document.get("public_endpoint_created") is False,
+        topology_diff.get("operation") == "add-node-identity-reservation-topology-refresh",
+        list(topology_diff.get("added_nodes") or []) == [],
+        list(topology_diff.get("removed_nodes") or []) == [],
+    )
+    if not all(required_truths):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "identity-reservation topology refresh evidence is not a clean read-only current-topology refresh",
+        )
+
+    current_topology = document.get("current_topology")
+    final_topology = document.get("final_topology")
+    if not isinstance(current_topology, Mapping) or not isinstance(final_topology, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "identity-reservation topology refresh current/final topology is missing",
+        )
+
+    for field in ("nodes", "validator_set", "services", "validator_route_bindings", "chain_id", "genesis_sha256"):
+        if current_topology.get(field) != final_topology.get(field):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+                f"identity-reservation topology refresh current and final topology disagree on {field}",
+            )
+
+    nodes_raw = final_topology.get("nodes")
+    validators_raw = final_topology.get("validator_set")
+    if not isinstance(nodes_raw, list) or not isinstance(validators_raw, list):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "identity-reservation topology refresh nodes or validator set is missing",
+        )
+    nodes = [_identifier(item, "baseline node") for item in nodes_raw]
+    validators = [_address(item, "baseline validator address") for item in validators_raw]
+    _dedupe(nodes, "baseline nodes")
+    _dedupe(validators, "baseline validator set")
+    if len(nodes) != len(validators) or len(nodes) < 1:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "identity-reservation topology refresh must contain matching nodes and validators",
+        )
+    if int(final_topology.get("validator_count", len(validators))) != len(validators):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "identity-reservation topology refresh validator count is inconsistent",
+        )
+    if int(summary.get("current_validator_count", len(validators))) != len(validators):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "identity-reservation topology refresh summary validator count is inconsistent",
+        )
+    unchanged_nodes = list(topology_diff.get("unchanged_nodes") or [])
+    if unchanged_nodes != nodes:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "identity-reservation topology refresh unchanged_nodes does not match current topology",
+        )
+    if int(topology_diff.get("pre_validator_count", -1)) != len(validators) or int(topology_diff.get("post_validator_count", -1)) != len(validators):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INVALID",
+            "identity-reservation topology refresh validator-count diff is not identity-preserving",
+        )
+
+    services_raw = final_topology.get("services")
+    if not isinstance(services_raw, Mapping):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+            "identity-reservation topology refresh services are missing",
+        )
+    services: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        record = services_raw.get(node)
+        if not isinstance(record, Mapping):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_PREP_BASELINE_INCOMPLETE",
+                f"identity-reservation topology refresh is missing service for: {node}",
+            )
+        item = dict(record)
+        item.setdefault("node", node)
+        item.setdefault("observed_at", item.get("last_observed_at") or document.get("observed_at") or document.get("completed_at"))
+        services[node] = item
+
+    normalized = dict(document)
+    normalized["nodes"] = list(nodes)
+    normalized["validator_set"] = list(validators)
+    normalized["validator_count"] = len(validators)
+    normalized["chain_id"] = final_topology.get("chain_id")
+    normalized["genesis_sha256"] = final_topology.get("genesis_sha256")
+    normalized["service_observations"] = list(document.get("expected_service_observations") or [])
+    return normalized, services
 
 def _normalize_live_current_topology_baseline(
     document: Mapping[str, Any],
@@ -946,6 +1107,10 @@ def _load_baseline(
 
     if kind == _ADD_POST_ADMISSION_TOPOLOGY_KIND:
         normalized, services = _normalize_add_post_admission_topology_baseline(document, summary, policy)
+        return normalized, digest, age, services
+
+    if kind == _IDENTITY_RESERVATION_TOPOLOGY_REFRESH_KIND:
+        normalized, services = _normalize_identity_reservation_topology_refresh_baseline(document, summary, policy)
         return normalized, digest, age, services
 
     if kind == _LIVE_CURRENT_TOPOLOGY_KIND:

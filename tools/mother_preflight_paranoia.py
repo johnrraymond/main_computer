@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Read-only Mother mutation preflight for stale helper cleanup.
+"""Read-only Mother mutation preflight for cleanup and validator recovery.
 
 It inspects the current topology's live Coolify service details and Compose
-documents before add-node/remove-node.  It reports stale helper cleanup needs
-and blocks mutation when required current validators are not live-healthy.
+documents before add-node/remove-node.  It reports stale helper cleanup needs,
+routes a single broken required validator to the dedicated broken-validator
+cleanup dry-run, and blocks mutation when required current validators are not
+live-healthy.
 
 It performs GET-only inspection and never patches, restarts, deploys, votes, or
 deletes anything.
@@ -59,11 +61,54 @@ CURRENT_TOPOLOGY_EVIDENCE_DIRS = (
     "deployment-live-topology-empty-rectification",
 )
 ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+BROKEN_VALIDATOR_OPERATION_KIND = "main_computer.mother.broken_validator_operation.v1"
+BROKEN_VALIDATOR_OPERATION_DIR = "deployment-broken-validator-operation"
+BROKEN_VALIDATOR_OPERATION_TERMINAL_STATUSES = {"completed", "aborted"}
 
 
 class MotherPreflightParanoiaError(RuntimeError):
     """The read-only preflight could not produce a trustworthy result."""
 
+
+
+def _active_broken_validator_operation(
+    runtime_state_root: str | Path,
+    *,
+    network: str,
+    node: str,
+) -> dict[str, Any] | None:
+    path = (
+        MotherPaths(runtime_state_root=Path(runtime_state_root)).evidence_root
+        / BROKEN_VALIDATOR_OPERATION_DIR
+        / f"{network}-{node}.json"
+    )
+    if not path.exists():
+        return None
+    try:
+        payload = path.read_bytes()
+        document = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MotherPreflightParanoiaError(
+            f"broken-validator operation record is unreadable: {path}"
+        ) from exc
+    if not isinstance(document, Mapping):
+        raise MotherPreflightParanoiaError("broken-validator operation record must be a JSON object")
+    if (
+        document.get("kind") != BROKEN_VALIDATOR_OPERATION_KIND
+        or str(document.get("network") or "") != str(network)
+        or str(document.get("target", {}).get("node") or "") != str(node)
+    ):
+        raise MotherPreflightParanoiaError(
+            "broken-validator operation record identity does not match its path"
+        )
+    if str(document.get("status") or "") in BROKEN_VALIDATOR_OPERATION_TERMINAL_STATUSES:
+        return None
+    return dict(document)
+
+
+def _remove_voter_only_cleanup_state(active_helpers: list[Mapping[str, Any]]) -> bool:
+    names = [str(item.get("helper_service") or "") for item in active_helpers]
+    return bool(names) and all(name.startswith("mother-node-remove-voter-") for name in names)
 
 def _summary_marks_current_topology(summary: Mapping[str, Any]) -> bool:
     return (
@@ -518,6 +563,96 @@ def _cleanup_command(
     return subprocess.list2cmdline(argv)
 
 
+def _broken_validator_cleanup_command(
+    *,
+    python_executable: str,
+    runtime_state_root: str | Path,
+    network: str,
+    node: str,
+    topology_path: str | Path,
+    topology_sha256: str,
+    timeout: float,
+    max_response_bytes: int,
+) -> str:
+    cleanup_script = REPO_ROOT / "tools" / "mother_broken_validator_cleanup.py"
+    argv = [
+        str(python_executable),
+        str(cleanup_script),
+        "--dry-run",
+        "--runtime-state-root",
+        str(runtime_state_root),
+        "--network",
+        str(network),
+        "--node",
+        str(node),
+        "--topology-evidence",
+        str(topology_path),
+        "--acknowledge-topology-evidence-sha256",
+        str(topology_sha256),
+        "--topology-max-age-seconds",
+        "900",
+        "--timeout",
+        str(float(timeout)),
+        "--max-response-bytes",
+        str(int(max_response_bytes)),
+    ]
+    return subprocess.list2cmdline(argv)
+
+
+
+def _broken_validator_resume_command(
+    *,
+    python_executable: str,
+    runtime_state_root: str | Path,
+    network: str,
+    node: str,
+    topology_path: str | Path,
+    topology_sha256: str,
+    timeout: float,
+    max_response_bytes: int,
+    operation_record: Mapping[str, Any],
+) -> str | None:
+    assessment = operation_record.get("assessment_evidence")
+    if not isinstance(assessment, Mapping):
+        return None
+    assessment_path = str(assessment.get("path") or "").strip()
+    assessment_sha256 = str(assessment.get("sha256") or "").strip()
+    if not assessment_path or not re.fullmatch(r"[0-9a-fA-F]{64}", assessment_sha256):
+        return None
+    cleanup_script = REPO_ROOT / "tools" / "mother_broken_validator_cleanup.py"
+    argv = [
+        str(python_executable),
+        str(cleanup_script),
+        "--execute",
+        "--runtime-state-root",
+        str(runtime_state_root),
+        "--network",
+        str(network),
+        "--node",
+        str(node),
+        "--topology-evidence",
+        str(topology_path),
+        "--acknowledge-topology-evidence-sha256",
+        str(topology_sha256),
+        "--assessment-evidence",
+        assessment_path,
+        f"--acknowledge-assessment-evidence-sha256={assessment_sha256}",
+        "--topology-max-age-seconds",
+        "900",
+        "--timeout",
+        str(float(timeout)),
+        "--max-response-bytes",
+        str(int(max_response_bytes)),
+        "--max-wait-seconds",
+        "900.0",
+        "--poll-interval-seconds",
+        "5.0",
+    ]
+    prior_resume = str(operation_record.get("resume_command") or "")
+    if "--rpc-will-work-post-remove" in prior_resume:
+        argv.append("--rpc-will-work-post-remove")
+    return subprocess.list2cmdline(argv)
+
 def run_preflight_paranoia(
     *,
     operation: str,
@@ -695,10 +830,57 @@ def run_preflight_paranoia(
     topology_path = str(topology["path"])
     topology_sha256 = str(topology["sha256"])
     command = None
-    cleanup_command_recommended = cleanup_required or (
-        required_validator_unhealthy and bool(retired_helpers)
-    )
-    if cleanup_command_recommended:
+    broken_validator_command = None
+    broken_validator_cleanup_target = None
+    broken_validator_operation = None
+    broken_validator_operation_bootstrap = False
+    broken_validator_operation_precedence = False
+    broken_validator_cleanup_mode = None
+
+    if required_validator_unhealthy and len(required_validator_health_failures) == 1:
+        broken_validator_cleanup_target = str(required_validator_health_failures[0]["node"])
+        broken_validator_operation = _active_broken_validator_operation(
+            runtime_state_root,
+            network=network_name,
+            node=broken_validator_cleanup_target,
+        )
+        broken_validator_operation_bootstrap = bool(
+            broken_validator_operation is None
+            and cleanup_required
+            and _remove_voter_only_cleanup_state(active_helpers)
+        )
+        broken_validator_operation_precedence = bool(
+            broken_validator_operation is not None or broken_validator_operation_bootstrap
+        )
+
+    if broken_validator_operation_precedence:
+        if broken_validator_operation is not None:
+            broken_validator_command = _broken_validator_resume_command(
+                python_executable=python_executable or sys.executable,
+                runtime_state_root=runtime_state_root,
+                network=network_name,
+                node=str(broken_validator_cleanup_target),
+                topology_path=topology_path,
+                topology_sha256=topology_sha256,
+                timeout=float(timeout),
+                max_response_bytes=int(max_response_bytes),
+                operation_record=broken_validator_operation,
+            )
+        if broken_validator_command:
+            broken_validator_cleanup_mode = "execute"
+        else:
+            broken_validator_command = _broken_validator_cleanup_command(
+                python_executable=python_executable or sys.executable,
+                runtime_state_root=runtime_state_root,
+                network=network_name,
+                node=str(broken_validator_cleanup_target),
+                topology_path=topology_path,
+                topology_sha256=topology_sha256,
+                timeout=float(timeout),
+                max_response_bytes=int(max_response_bytes),
+            )
+            broken_validator_cleanup_mode = "dry-run"
+    elif cleanup_required:
         command = _cleanup_command(
             python_executable=python_executable or sys.executable,
             runtime_state_root=runtime_state_root,
@@ -710,12 +892,26 @@ def run_preflight_paranoia(
             max_wait_seconds=float(max_wait_seconds),
             poll_interval_seconds=float(poll_interval_seconds),
         )
+    elif required_validator_unhealthy and broken_validator_cleanup_target:
+        broken_validator_command = _broken_validator_cleanup_command(
+            python_executable=python_executable or sys.executable,
+            runtime_state_root=runtime_state_root,
+            network=network_name,
+            node=broken_validator_cleanup_target,
+            topology_path=topology_path,
+            topology_sha256=topology_sha256,
+            timeout=float(timeout),
+            max_response_bytes=int(max_response_bytes),
+        )
+        broken_validator_cleanup_mode = "dry-run"
 
     return {
         "kind": KIND,
         "schema_version": 1,
         "status": (
-            "cleanup-required"
+            "broken-validator-recovery-required"
+            if broken_validator_operation_precedence
+            else "cleanup-required"
             if cleanup_required
             else "required-validator-unhealthy"
             if required_validator_unhealthy
@@ -727,8 +923,18 @@ def run_preflight_paranoia(
         "target_validator": target_validator,
         "read_only": True,
         "cleanup_required": cleanup_required,
+        "cleanup_deferred_to_broken_validator_operation": bool(cleanup_required and broken_validator_operation_precedence),
         "required_validator_unhealthy": required_validator_unhealthy,
         "cleanup_command": command,
+        "broken_validator_cleanup_required": bool(
+            required_validator_unhealthy and (not cleanup_required or broken_validator_operation_precedence)
+        ),
+        "broken_validator_cleanup_target": broken_validator_cleanup_target,
+        "broken_validator_cleanup_command": broken_validator_command,
+        "broken_validator_cleanup_mode": broken_validator_cleanup_mode,
+        "broken_validator_operation": broken_validator_operation,
+        "broken_validator_operation_bootstrap": broken_validator_operation_bootstrap,
+        "broken_validator_operation_precedence": broken_validator_operation_precedence,
         "topology_evidence": {
             "path": topology_path,
             "sha256": topology_sha256,
@@ -745,6 +951,9 @@ def run_preflight_paranoia(
             "blocking_conflict_count": len(blocking_conflicts),
             "required_validator_unhealthy_count": len(required_validator_health_failures),
             "cleanup_command_emitted": command is not None,
+            "broken_validator_cleanup_command_emitted": broken_validator_command is not None,
+            "broken_validator_operation_precedence": broken_validator_operation_precedence,
+            "broken_validator_operation_bootstrap": broken_validator_operation_bootstrap,
             "current_topology_marker_accepted": bool(topology.get("current_topology_marker_accepted")),
             "empty_topology_accepted_for_add_node": bool(topology.get("empty_topology_accepted_for_add_node")),
             "network_mutation_performed": False,
@@ -792,7 +1001,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"MOTHER_PREFLIGHT_PARANOIA_FAILED: {exc}", file=sys.stderr)
         return 1
 
-    if result["cleanup_required"]:
+    if result["cleanup_required"] and not result.get("cleanup_deferred_to_broken_validator_operation"):
         print(
             "MOTHER_PREFLIGHT_PARANOIA_CLEANUP_REQUIRED: "
             f"{result['summary']['active_cleanup_helper_count']} active cleanup2-supported helper(s) "
@@ -803,6 +1012,11 @@ def main(argv: list[str] | None = None) -> int:
                 "MOTHER_PREFLIGHT_PARANOIA_BLOCKING_CONFLICTS: "
                 f"{len(result['blocking_conflicts'])} opposite-operation voter conflict(s) detected."
             )
+    if result.get("broken_validator_operation_precedence"):
+        print(
+            "MOTHER_PREFLIGHT_PARANOIA_BROKEN_VALIDATOR_OPERATION_PRECEDENCE: "
+            "unfinished broken-validator/removal state owns recovery; ordinary helper cleanup is deferred."
+        )
     if result.get("required_validator_unhealthy"):
         print(
             "MOTHER_PREFLIGHT_PARANOIA_REQUIRED_VALIDATOR_UNHEALTHY: "
@@ -820,6 +1034,13 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print("Run this cleanup command before the mutation:")
         print(result["cleanup_command"])
+    if result.get("broken_validator_cleanup_command"):
+        print()
+        if result.get("broken_validator_cleanup_mode") == "execute":
+            print("Resume this broken-validator cleanup before the mutation:")
+        else:
+            print("Run this broken-validator cleanup dry-run before the mutation:")
+        print(result["broken_validator_cleanup_command"])
     return 0
 
 

@@ -3060,8 +3060,17 @@ def execute_node_remove_do_release(
         or (bool(voter_nodes) and set(voter_nodes) <= set(validator_removal_proofs))
     )
     guardian_complete = failure is None and proof_complete
-    validator_vote_performed = bool(vote_required and guardian_complete)
-    proof_payload_vote_proven = bool(vote_required and guardian_complete)
+    validator_vote_performed = bool(
+        vote_required
+        and proof_complete
+        and any(
+            isinstance(payload, Mapping) and payload.get("vote_submitted") is True
+            for payload in validator_removal_proofs.values()
+        )
+    )
+    # Validator-removal proof is a committed historical fact.  A later RPC-route
+    # or service-deletion failure must not retroactively erase a complete proof.
+    proof_payload_vote_proven = bool(vote_required and proof_complete)
     service_deleted = bool(service_removal and service_removal.get("status") == "pass" and service_removal.get("already_absent") is not True)
     service_already_absent = bool(service_removal and service_removal.get("already_absent") is True)
     static_node_precleanup_mutated = bool(
@@ -3206,6 +3215,325 @@ def execute_node_remove_do_release(
     return evidence
 
 
+
+def _load_resumable_node_remove_do_evidence(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    evidence_path: Path,
+    *,
+    network: str,
+    target_node: str,
+    target_validator_address: str,
+    target_service_uuid: str,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Validate failed do evidence whose validator-removal proof is already complete.
+
+    This is intentionally narrower than ``verify_node_remove_do_evidence``: the
+    service-deletion stage may have failed, but every expected voter proof must
+    already prove the exact desired validator set, target absence, and post-change
+    block advancement.  The historical proof is not freshness-limited; resume
+    revalidates the exact target service and performs only the remaining stages.
+    """
+    document, _, digest = _canonical_under(
+        paths, Path(evidence_path), _EVIDENCE_DIRECTORY, "node-removal do evidence"
+    )
+    if document.get("kind") != _EVIDENCE_KIND or document.get("schema_version") != 1:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID",
+            "resume evidence kind/schema is invalid",
+        )
+    if document.get("mother_binding") != _binding(private_state):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID",
+            "resume evidence Mother binding mismatch",
+        )
+    sensitive_hit = _find_sensitive_marker(document)
+    if sensitive_hit:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID",
+            "resume evidence contains sensitive material: " + _format_sensitive_hit(sensitive_hit),
+        )
+    if str(document.get("network") or "") != str(network):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID",
+            "resume evidence network mismatch",
+        )
+    target = document.get("target")
+    if not isinstance(target, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID", "resume evidence target is missing")
+    expected_target = {
+        "node": str(target_node),
+        "validator_address": _address(target_validator_address, "authorized target validator"),
+        "service_uuid": str(target_service_uuid),
+    }
+    observed_target = {
+        "node": str(target.get("node") or ""),
+        "validator_address": _address(target.get("validator_address"), "resume target validator"),
+        "service_uuid": str(target.get("service_uuid") or ""),
+    }
+    if observed_target != expected_target:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID",
+            "resume evidence target identity does not match the authorized broken validator",
+        )
+
+    release_ref = document.get("release")
+    if not isinstance(release_ref, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID", "resume evidence release binding is missing")
+    release_path = _resolve_under(paths, release_ref.get("locator"), _RELEASE_DIRECTORY, label="node-removal do release")
+    release_document, _, _release_file_digest = _canonical_under(paths, release_path, _RELEASE_DIRECTORY, "node-removal do release")
+    release_digest = _digest_without(release_document, "node_remove_do_release_sha256")
+    if (
+        release_document.get("node_remove_do_release_sha256") != release_digest
+        or release_ref.get("sha256") != release_digest
+    ):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID", "resume evidence release binding changed")
+    release_target = release_document.get("target")
+    if not isinstance(release_target, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID", "resume release target is missing")
+    if (
+        str(release_target.get("node") or "") != expected_target["node"]
+        or _address(release_target.get("validator_address"), "release target validator") != expected_target["validator_address"]
+        or str(release_target.get("service_uuid") or "") != expected_target["service_uuid"]
+    ):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID", "resume release target identity mismatch")
+
+    vote = release_document.get("validator_removal_vote")
+    proof_payloads = document.get("validator_removal_proofs")
+    proof_sha_by_voter = document.get("validator_removal_proof_sha256_by_voter")
+    if not isinstance(vote, Mapping) or vote.get("required", True) is not True:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID", "resume requires a proved validator-removal stage")
+    if not isinstance(proof_payloads, Mapping) or not isinstance(proof_sha_by_voter, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID", "resume validator-removal proofs are missing")
+    voter_nodes = [str(item) for item in vote.get("voter_nodes", [])]
+    if not voter_nodes or set(voter_nodes) != set(proof_payloads) or set(voter_nodes) != set(proof_sha_by_voter):
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID", "resume validator-removal proof voters are incomplete")
+    for voter in voter_nodes:
+        payload = proof_payloads.get(voter)
+        if not _node_remove_do_proof_payload_verified(payload, voter=voter, release=release_document):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID",
+                f"resume validator-removal proof is invalid for {voter!r}",
+            )
+        if proof_sha_by_voter.get(voter) != _node_remove_do_proof_payload_sha256(payload):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_EVIDENCE_INVALID",
+                f"resume validator-removal proof SHA mismatch for {voter!r}",
+            )
+    return dict(document), dict(release_document), digest
+
+
+def inspect_node_remove_do_post_proof_resume(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    evidence_path: Path,
+    *,
+    network: str,
+    target_node: str,
+    target_validator_address: str,
+    target_service_uuid: str,
+) -> dict[str, Any]:
+    document, release, digest = _load_resumable_node_remove_do_evidence(
+        paths,
+        private_state,
+        evidence_path,
+        network=network,
+        target_node=target_node,
+        target_validator_address=target_validator_address,
+        target_service_uuid=target_service_uuid,
+    )
+    service_removal = document.get("service_removal") if isinstance(document.get("service_removal"), Mapping) else None
+    if service_removal and service_removal.get("status") == "pass":
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_NOT_REQUIRED",
+            "target service deletion is already proved complete",
+        )
+    return {
+        "status": "post-validator-proof-resume",
+        "evidence_path": str(Path(evidence_path).resolve(strict=False)),
+        "evidence_sha256": digest,
+        "target": dict(release["target"]),
+        "survivors": [dict(item) for item in release.get("survivors", []) if isinstance(item, Mapping)],
+        "validator_removal_proof_voters": sorted(document.get("validator_removal_proofs", {})),
+        "post_removal_validator_set": list(release.get("post_removal_topology", {}).get("validator_set", [])),
+    }
+
+
+def resume_node_remove_do_after_validator_proof(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    evidence_path: Path,
+    *,
+    network: str,
+    target_node: str,
+    target_validator_address: str,
+    target_service_uuid: str,
+    timeout: float = 30.0,
+    max_wait_seconds: float = 300.0,
+    poll_interval_seconds: float = 5.0,
+    allow_missing_service: bool = True,
+    max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    opener: Any = _DEFAULT_OPENER,
+    now: datetime | None = None,
+    operation: OperationIdentity,
+) -> dict[str, Any]:
+    """Resume only the post-consensus stages of a proved node removal."""
+    prior, release, prior_digest = _load_resumable_node_remove_do_evidence(
+        paths,
+        private_state,
+        evidence_path,
+        network=network,
+        target_node=target_node,
+        target_validator_address=target_validator_address,
+        target_service_uuid=target_service_uuid,
+    )
+    target = release["target"]
+    survivors = [dict(item) for item in release.get("survivors", []) if isinstance(item, Mapping)]
+    rpc_route_rewire = prior.get("rpc_route_rewire") if isinstance(prior.get("rpc_route_rewire"), Mapping) else None
+    routing_receipts = [dict(item) for item in prior.get("routing_topology_withdrawal_receipts", []) if isinstance(item, Mapping)]
+    service_removal: dict[str, Any] | None = None
+    failure: dict[str, str] | None = None
+    route_rewire_performed = False
+
+    try:
+        if network == "mainnet":
+            target_controller_id = str(target["controller_id"])
+            local_rpc_survivors = sorted(
+                (item for item in survivors if str(item.get("controller_id")) == target_controller_id),
+                key=lambda item: str(item.get("node") or ""),
+            )
+            if not local_rpc_survivors:
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ROUTE_SURVIVOR_REQUIRED",
+                    f"refusing post-proof resume for {target_node!r}: no surviving mainnet RPC node remains on {target_controller_id!r}",
+                )
+            rpc_survivor = local_rpc_survivors[0]
+            if not isinstance(rpc_route_rewire, Mapping) or rpc_route_rewire.get("status") != "pass":
+                try:
+                    rpc_route_rewire = execute_shared_rpc_route_rewire(
+                        private_state,
+                        controller_id=target_controller_id,
+                        target_node=str(rpc_survivor["node"]),
+                        timeout=timeout,
+                        max_response_bytes=max_response_bytes,
+                        max_wait_seconds=max_wait_seconds,
+                        poll_interval_seconds=poll_interval_seconds,
+                        opener=opener,
+                    )
+                    route_rewire_performed = True
+                except MotherDeploymentValidatorRpcCanaryFundingError as exc:
+                    raise _fail(
+                        "MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ROUTE_REWIRE_FAILED",
+                        f"{exc.code}: {str(exc)[:400]}",
+                    ) from exc
+            routing_receipts = [item for item in routing_receipts if item.get("phase") != "withdraw-rpc-routing"]
+            routing_receipts.append({
+                "ordinal": 2,
+                "phase": "withdraw-rpc-routing",
+                "status": "repointed-to-survivor",
+                "removed_node": target_node,
+                "replacement_node": rpc_survivor["node"],
+                "controller_id": target_controller_id,
+                "live_mutation_performed": route_rewire_performed,
+                "verified_before_service_deletion": True,
+                "source": (
+                    "mother-owned-shared-rpc-route-rewire-post-proof-resume"
+                    if route_rewire_performed
+                    else "mother-owned-shared-rpc-route-rewire-prior-proof"
+                ),
+            })
+
+        service_removal = execute_node_removal(
+            private_state,
+            network=network,
+            controller_id=str(target["controller_id"]),
+            node=str(target["node"]),
+            service_uuid=str(target["service_uuid"]),
+            acknowledged_node_removal=acknowledgement_for(str(target["node"]), str(target["service_uuid"])),
+            allow_missing=allow_missing_service,
+            timeout=timeout,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            max_response_bytes=max_response_bytes,
+            operation=operation,
+            opener=opener,
+        )
+    except MotherDeploymentNodeRemoveDoError as exc:
+        failure = {"code": exc.code, "message": str(exc)[:512]}
+    except MotherDeploymentNodeRemoveError as exc:
+        failure = {"code": exc.code, "message": str(exc)[:512]}
+    except Exception as exc:  # pragma: no cover
+        failure = {"code": "MOTHER_DEPLOY_NODE_REMOVE_DO_RESUME_UNEXPECTED_FAILURE", "message": str(exc)[:512]}
+
+    service_pass = bool(service_removal and service_removal.get("status") == "pass")
+    service_deleted = bool(service_pass and service_removal.get("already_absent") is not True)
+    service_already_absent = bool(service_pass and service_removal.get("already_absent") is True)
+    complete = failure is None and service_pass
+    proof_payloads = prior.get("validator_removal_proofs") if isinstance(prior.get("validator_removal_proofs"), Mapping) else {}
+    vote_performed = any(
+        isinstance(payload, Mapping) and payload.get("vote_submitted") is True
+        for payload in proof_payloads.values()
+    )
+    routing_verified = bool(routing_receipts) and (
+        network != "mainnet" or any(
+            item.get("phase") == "withdraw-rpc-routing" and item.get("verified_before_service_deletion") is True
+            for item in routing_receipts
+        )
+    )
+
+    resumed = dict(prior)
+    resumed.pop("evidence", None)
+    resumed.update({
+        "completed_at": _timestamp(now=now),
+        "status": "pass" if complete else "failed",
+        "failure": failure,
+        "routing_topology_withdrawal_receipts": routing_receipts,
+        "rpc_route_rewire": dict(rpc_route_rewire) if isinstance(rpc_route_rewire, Mapping) else None,
+        "service_removal": service_removal,
+        "resume_source_evidence": {
+            "path": str(Path(evidence_path).resolve(strict=False)),
+            "sha256": prior_digest,
+            "stage": "post-validator-removal-proof",
+        },
+        "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
+        "live_mutation_performed": bool(
+            route_rewire_performed or service_deleted
+        ),
+        "service_deletion_performed": service_deleted,
+        "validator_removal_vote_performed": vote_performed,
+    })
+    authority = dict(resumed.get("authority") or {})
+    authority.update({
+        "validator_removal_vote_proven": True,
+        "validator_removal_vote_proven_by_proof_payload": True,
+        "final_validator_set_verified_by_proof_payload": True,
+        "service_deletion_proven": complete,
+    })
+    resumed["authority"] = authority
+    policy = dict(resumed.get("policy") or {})
+    policy["routing_or_topology_published"] = False
+    resumed["policy"] = policy
+    summary = dict(resumed.get("summary") or {})
+    summary.update({
+        "clean": complete,
+        "complete": complete,
+        "routing_topology_withdrawal_verified_before_service_deletion": routing_verified,
+        "validator_removal_vote_performed": vote_performed,
+        "validator_removal_vote_proven_by_proof_payload": True,
+        "final_validator_set_verified_by_proof_payload": True,
+        "service_deletion_performed": service_deleted,
+        "service_already_absent": service_already_absent,
+        "network_access_performed": True,
+        "live_mutation_performed": bool(
+            route_rewire_performed or service_deleted
+        ),
+        "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
+    })
+    resumed["summary"] = summary
+    evidence_out, evidence_sha = _write_evidence(paths, resumed, operation=operation)
+    resumed["evidence"] = {"path": str(evidence_out), "sha256": evidence_sha}
+    return resumed
+
 def verify_node_remove_do_evidence(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -3262,7 +3590,7 @@ def verify_node_remove_do_evidence(
     validator_vote_required = bool(summary.get("validator_removal_vote_required", not single_node_decommission))
     ordering_ok = summary.get("service_deletion_is_first") is bool(single_node_decommission)
     vote_ok = (
-        summary.get("validator_removal_vote_performed") is True
+        isinstance(summary.get("validator_removal_vote_performed"), bool)
         if validator_vote_required
         else summary.get("validator_removal_vote_performed") is False
     )
@@ -3358,5 +3686,7 @@ __all__ = [
     "verify_node_remove_do_release",
     "inspect_node_remove_do_release",
     "execute_node_remove_do_release",
+    "inspect_node_remove_do_post_proof_resume",
+    "resume_node_remove_do_after_validator_proof",
     "verify_node_remove_do_evidence",
 ]
