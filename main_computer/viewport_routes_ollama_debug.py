@@ -30,7 +30,7 @@ class ViewportOllamaDebugRoutesMixin:
             if not prompt:
                 self._send_json({"error": "Prompt is required."}, status=HTTPStatus.BAD_REQUEST)
                 return
-            model = str(body.get("model") or self.server.config.model or "gemma4:26b").strip()
+            model = str(body.get("model") or self.server.config.model or "gemma4:26b-a4b-it-q4_K_M").strip()
             provider_class = viewport_ollama_provider_class()
             provider = provider_class(
                 model=model,
@@ -138,7 +138,7 @@ class ViewportOllamaDebugRoutesMixin:
             if len(current.encode("utf-8")) > 250_000:
                 self._send_json({"error": "Revision input is limited to 250 KB."}, status=HTTPStatus.BAD_REQUEST)
                 return
-            model = str(body.get("model") or self.server.config.model or "gemma4:26b").strip()
+            model = str(body.get("model") or self.server.config.model or "gemma4:26b-a4b-it-q4_K_M").strip()
             provider_class = viewport_ollama_provider_class()
             provider = provider_class(
                 model=model,
@@ -188,7 +188,7 @@ class ViewportOllamaDebugRoutesMixin:
         return {
             "active": self.server.ollama_debug_active,
             "provider": "ollama",
-            "model": self.server.config.model or "gemma4:26b",
+            "model": self.server.config.model or "gemma4:26b-a4b-it-q4_K_M",
             "patch_level": self.server.config.patch_level,
             "ollama_base_url": self.server.config.ollama_base_url,
             "ollama_timeout_s": self.server.config.ollama_timeout_s,

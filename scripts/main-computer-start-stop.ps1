@@ -694,6 +694,123 @@ function Get-MainComputerRequestedContainerRuntime([object]$LaunchContext) {
   return ""
 }
 
+function Resolve-MainComputerDockerCommand {
+  $command = Get-Command "docker" -ErrorAction SilentlyContinue
+  if ($command) {
+    return $command.Source
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+    $candidate = Join-Path $env:ProgramFiles "Docker\Docker\resources\bin\docker.exe"
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      return $candidate
+    }
+  }
+
+  return ""
+}
+
+function Test-MainComputerDockerRuntimeReachable([string]$DockerCommand) {
+  if ([string]::IsNullOrWhiteSpace($DockerCommand)) {
+    return $false
+  }
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "SilentlyContinue"
+    & $DockerCommand version *> $null
+    return ($LASTEXITCODE -eq 0)
+  } catch {
+    return $false
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+}
+
+function Resolve-MainComputerDockerDesktopExecutable {
+  $override = [Environment]::GetEnvironmentVariable("MAIN_COMPUTER_DOCKER_DESKTOP_EXE")
+  if (-not [string]::IsNullOrWhiteSpace($override)) {
+    if (Test-Path -LiteralPath $override -PathType Leaf) {
+      return $override
+    }
+    throw "MAIN_COMPUTER_DOCKER_DESKTOP_EXE points to a missing file: $override"
+  }
+
+  $candidate = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+    $candidate = Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
+  }
+  if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+    return $candidate
+  }
+
+  return ""
+}
+
+function Ensure-MainComputerDockerDesktopStarted([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
+  if ($NoDocker) {
+    return
+  }
+
+  $requested = Get-MainComputerRequestedContainerRuntime $LaunchContext
+  if ($requested -eq "podman") {
+    return
+  }
+
+  $dockerRequired = ($requested -eq "docker") -or (Test-MainComputerNanoJevManaged $LaunchContext)
+  if (-not $dockerRequired) {
+    try {
+      $resolvedRuntime = Get-MainComputerContainerRuntime $RootPath $PythonCommand
+      $dockerRequired = ([string]$resolvedRuntime.runtime -eq "docker")
+    } catch {
+      return
+    }
+  }
+  if (-not $dockerRequired) {
+    return
+  }
+
+  $docker = Resolve-MainComputerDockerCommand
+  if ([string]::IsNullOrWhiteSpace($docker)) {
+    throw "Docker is required for Main Computer startup, but docker.exe was not found."
+  }
+  if (Test-MainComputerDockerRuntimeReachable $docker) {
+    Write-Host "Docker runtime is reachable."
+    return
+  }
+
+  if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+    throw "Docker is required for Main Computer startup, but the Docker runtime is not reachable."
+  }
+
+  $dockerDesktop = Resolve-MainComputerDockerDesktopExecutable
+  if ([string]::IsNullOrWhiteSpace($dockerDesktop)) {
+    throw "Docker is required for Main Computer startup, but Docker Desktop.exe was not found. Set MAIN_COMPUTER_DOCKER_DESKTOP_EXE if it is installed elsewhere."
+  }
+
+  Write-Host "Docker runtime is not reachable; starting Docker Desktop before container-backed startup work."
+  try {
+    Start-Process -FilePath $dockerDesktop -ErrorAction Stop | Out-Null
+  } catch {
+    throw ("Failed to start Docker Desktop: {0}" -f $_.Exception.Message)
+  }
+
+  $timeoutSeconds = 180
+  $timeoutText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_DESKTOP_START_TIMEOUT_SECONDS" "180"
+  try { $timeoutSeconds = [Math]::Max(15, [int]$timeoutText) } catch { $timeoutSeconds = 180 }
+  $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+
+  do {
+    Start-Sleep -Seconds 2
+    if (Test-MainComputerDockerRuntimeReachable $docker) {
+      Write-Host "Docker Desktop started and the Docker runtime is reachable."
+      return
+    }
+  } while ((Get-Date) -lt $deadline)
+
+  throw ("Docker Desktop was started, but the Docker runtime did not become reachable within {0} seconds." -f $timeoutSeconds)
+}
+
 function Resolve-MainComputerPodmanCommand {
   $candidates = @()
   if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
@@ -2693,6 +2810,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
   $controlRoot = Get-ControlRoot $RootPath $launchContext
   $pythonCommand = [string]$launchContext.python
 
+  Ensure-MainComputerDockerDesktopStarted $RootPath $launchContext $pythonCommand
   Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand
 
   $devChainStart = Start-MainComputerDevChainIfNeeded $RootPath $launchContext $pythonCommand

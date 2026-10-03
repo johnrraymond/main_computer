@@ -47,7 +47,7 @@ except ModuleNotFoundError:  # pragma: no cover - package import fallback
 
 
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_OLLAMA_MODEL = "gemma4:26b"
+DEFAULT_OLLAMA_MODEL = "gemma4:26b-a4b-it-q4_K_M"
 DEFAULT_AI_TIMEOUT_SECONDS = 600.0
 DEFAULT_TERMINAL_NUM_PREDICT = 3000
 DEFAULT_GROUNDING_NUM_PREDICT = 1600

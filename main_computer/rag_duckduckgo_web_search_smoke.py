@@ -84,7 +84,7 @@ def _shorten(value: Any, *, limit: int = 500) -> str:
 def _get_local_ollama_provider() -> LLMProvider:
     config = MainComputerConfig.from_env()
     return OllamaProvider(
-        model=config.model or "gemma4:26b",
+        model=config.model or "gemma4:26b-a4b-it-q4_K_M",
         base_url=config.ollama_base_url,
         timeout_s=config.ollama_timeout_s,
         fallback=config.fallback,

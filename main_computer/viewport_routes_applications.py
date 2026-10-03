@@ -1257,7 +1257,7 @@ class ViewportApplicationRoutesMixin:
             },
         )
 
-        model = str(body.get("model") or getattr(self.server.config, "model", "") or "gemma4:26b")
+        model = str(body.get("model") or getattr(self.server.config, "model", "") or "gemma4:26b-a4b-it-q4_K_M")
         timeout_seconds = self._website_builder_generated_editor_float(
             body,
             "ai_timeout",
@@ -2408,7 +2408,7 @@ class ViewportApplicationRoutesMixin:
         return {
             "active": self.server.ollama_debug_active,
             "provider": "ollama",
-            "model": self.server.config.model or "gemma4:26b",
+            "model": self.server.config.model or "gemma4:26b-a4b-it-q4_K_M",
             "patch_level": self.server.config.patch_level,
             "ollama_base_url": self.server.config.ollama_base_url,
             "ollama_timeout_s": self.server.config.ollama_timeout_s,

@@ -74,7 +74,8 @@ _IMPLEMENTATION_VERSION = 2
 _GUARDIAN_START_DIAGNOSTIC_MARKERS = {
     "project-not-found": "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG project-not-found",
     "node-not-running-healthy": "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG node-not-running-healthy",
-    "guardian-compose-up-failed": "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG guardian-compose-up-failed",
+    "canonical-compose-missing": "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG canonical-compose-missing",
+    "canonical-compose-up-failed": "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG canonical-compose-up-failed",
     "guardian-health-timeout": "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG guardian-health-timeout",
 }
 
@@ -788,7 +789,7 @@ def _wait_for_replica_sync_components(
     }
 
 
-def _guardian_start_script(*, service_uuid: str, node: str, compose_b64: str, wait_seconds: int, poll_seconds: int) -> str:
+def _guardian_start_script(*, service_uuid: str, node: str, wait_seconds: int, poll_seconds: int) -> str:
     service = _identifier(service_uuid, "service_uuid")
     node_name = _identifier(node, "node")
     wait_limit = max(1, int(wait_seconds))
@@ -801,11 +802,6 @@ def _guardian_start_script(*, service_uuid: str, node: str, compose_b64: str, wa
             "GUARDIAN_NAME='mother-replica-sync-guardian'",
             f"WAIT_LIMIT={wait_limit}",
             f"POLL_INTERVAL={poll_interval}",
-            "COMPOSE_FILE=/tmp/mother-replica-sync-guardian.yml",
-            "cat > /tmp/mother-replica-sync-guardian.yml.b64 <<'MOTHER_REPLICA_SYNC_GUARDIAN_COMPOSE'",
-            compose_b64,
-            "MOTHER_REPLICA_SYNC_GUARDIAN_COMPOSE",
-            "base64 -d /tmp/mother-replica-sync-guardian.yml.b64 > \"$COMPOSE_FILE\"",
             "normalize_label() {",
             "  case \"${1:-}\" in ''|'<no value>'|'<nil>'|'null') printf '' ;; *) printf '%s' \"$1\" ;; esac",
             "}",
@@ -814,12 +810,12 @@ def _guardian_start_script(*, service_uuid: str, node: str, compose_b64: str, wa
             "  for c in $(docker ps -aq --filter \"label=com.docker.compose.project=$uuid\" 2>/dev/null || true); do",
             "    project=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$c\" 2>/dev/null || true)\")\"",
             "    workdir=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project.working_dir\" }}' \"$c\" 2>/dev/null || true)\")\"",
-            "    if [ -n \"$project\" ]; then printf '%s\\n%s\\n' \"$project\" \"$workdir\"; return 0; fi",
+            "    if [ -n \"$project\" ] && [ -n \"$workdir\" ]; then printf '%s\\n%s\\n' \"$project\" \"$workdir\"; return 0; fi",
             "  done",
             "  for c in $(docker ps -aq --filter \"name=$uuid\" 2>/dev/null || true); do",
             "    project=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$c\" 2>/dev/null || true)\")\"",
             "    workdir=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project.working_dir\" }}' \"$c\" 2>/dev/null || true)\")\"",
-            "    if [ -n \"$project\" ]; then printf '%s\\n%s\\n' \"$project\" \"$workdir\"; return 0; fi",
+            "    if [ -n \"$project\" ] && [ -n \"$workdir\" ]; then printf '%s\\n%s\\n' \"$project\" \"$workdir\"; return 0; fi",
             "  done",
             "  echo \"MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG project-not-found service_uuid=$uuid\" >&2",
             "  return 1",
@@ -847,15 +843,16 @@ def _guardian_start_script(*, service_uuid: str, node: str, compose_b64: str, wa
             "info=\"$(find_project \"$TARGET_SERVICE_UUID\")\"",
             "PROJECT=\"$(printf '%s\\n' \"$info\" | sed -n '1p')\"",
             "WORKDIR=\"$(printf '%s\\n' \"$info\" | sed -n '2p')\"",
+            "CANONICAL_COMPOSE=\"$WORKDIR/docker-compose.yml\"",
             "if ! node_healthy \"$PROJECT\"; then",
             "  echo \"MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG node-not-running-healthy node=$NODE_NAME project=$PROJECT\" >&2",
             "  exit 1",
             "fi",
-            "if [ -n \"$WORKDIR\" ] && [ -d \"$WORKDIR\" ]; then",
-            "  docker compose -p \"$PROJECT\" -f \"$COMPOSE_FILE\" --project-directory \"$WORKDIR\" up -d --no-deps --force-recreate \"$GUARDIAN_NAME\" || { echo \"MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG guardian-compose-up-failed project=$PROJECT\" >&2; exit 1; }",
-            "else",
-            "  docker compose -p \"$PROJECT\" -f \"$COMPOSE_FILE\" up -d --no-deps --force-recreate \"$GUARDIAN_NAME\" || { echo \"MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG guardian-compose-up-failed project=$PROJECT\" >&2; exit 1; }",
+            "if [ ! -f \"$CANONICAL_COMPOSE\" ]; then",
+            "  echo \"MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG canonical-compose-missing path=$CANONICAL_COMPOSE\" >&2",
+            "  exit 1",
             "fi",
+            "docker compose -p \"$PROJECT\" -f \"$CANONICAL_COMPOSE\" --project-directory \"$WORKDIR\" up -d --no-deps --force-recreate \"$GUARDIAN_NAME\" || { echo \"MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG canonical-compose-up-failed project=$PROJECT\" >&2; exit 1; }",
             "start=$(date +%s)",
             "while :; do",
             "  if guardian_healthy \"$PROJECT\"; then",
@@ -1046,7 +1043,6 @@ def _run_replica_sync_guardian_start(
     controller_id: str,
     service_uuid: str,
     node: str,
-    compose_text: str,
     timeout: float,
     max_response_bytes: int,
     max_wait_seconds: float,
@@ -1082,7 +1078,6 @@ def _run_replica_sync_guardian_start(
         script = _guardian_start_script(
             service_uuid=service_uuid,
             node=node,
-            compose_b64=base64.b64encode(compose_text.encode("utf-8")).decode("ascii"),
             wait_seconds=max(1, int(max_wait_seconds)),
             poll_seconds=max(1, int(poll_interval_seconds or 1)),
         )
@@ -1577,8 +1572,9 @@ def _replica_sync_compose(
         "      - --sync-min-peers=0",
         "      - --node-private-key-file=/config/nodekey",
         f"      - --network-id={chain_id}",
-        "      - --sync-mode=FULL",
+        "      - --sync-mode=SNAP",
         "      - --data-storage-format=BONSAI",
+        "      - --snapsync-server-enabled=true",
         "      - --p2p-enabled=true",
         f"      - --p2p-host={advertised_host}",
         f"      - --p2p-port={candidate_p2p_port}",
@@ -1660,7 +1656,8 @@ def _compose_report(*, observed: str, expected: str, node: str) -> dict[str, Any
         "guardian_healthcheck_present": isinstance(guardian.get("healthcheck"), Mapping),
         "uses_genesis_file_arg": "--genesis-file=/config/genesis.json" in observed_text,
         "uses_node_private_key_file": "--node-private-key-file=/config/nodekey" in observed_text,
-        "sync_mode_full": "--sync-mode=FULL" in observed_text,
+        "sync_mode_snap": "--sync-mode=SNAP" in observed_text,
+        "snap_sync_server_enabled": "--snapsync-server-enabled=true" in observed_text,
         "bootnode_present": "--bootnodes=enode://" in observed_text,
         "p2p_advertised_host_enabled": "--p2p-host=" in observed_text and "--p2p-host=127.0.0.1" not in observed_text,
         "p2p_container_port_enabled": f"--p2p-port={expected_p2p_port}" in observed_text,
@@ -2247,7 +2244,6 @@ def execute_node_add_replica_sync_release(
                 controller_id=controller_id,
                 service_uuid=service_uuid,
                 node=node,
-                compose_text=plan["sync_compose"]["canonical_text"],
                 timeout=timeout,
                 max_response_bytes=max_response_bytes,
                 max_wait_seconds=max_wait_seconds,

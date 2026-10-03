@@ -6,7 +6,7 @@ seven-question architecture smoke into a resumable training experiment while
 preserving the proven core contract:
 
 * Qwen3-0.6B, Pythia-70M, and TinyStories-33M stay frozen;
-* their evidence is recomputed live for every question (no hidden-state cache);
+* their evidence is computed live once per fresh training question and cached for head-only reuse;
 * only the ~121M-parameter Clef-inspired joint decision head trains;
 * all seven current direct NanoJev objectives remain visible independently;
 * training and development populations are generated from separate objective
@@ -52,17 +52,17 @@ smoke = load_local_module(
     TOOLS / "nanojev_three_backbone_clef_sized_live_train_smoke.py",
 )
 
-SCHEMA = "main-computer-three-backbone-clef-sized-live-train-v1"
+SCHEMA = "main-computer-three-backbone-clef-sized-live-train-composition-v2"
 DEFAULT_SOURCE_EXPERIMENT = Path(
     r"C:\Users\subsi\NanoJev\runs\main_computer_three_backbone_latent_top2_broad_curriculum_v1"
 )
-DEFAULT_OUTPUT = Path(r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_sized_live_train_v1")
+DEFAULT_OUTPUT = Path(r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_composition_v2_reuse32_train_v1")
 DEFAULT_SEED = 20261002
 DEFAULT_DATA_CYCLE_BASE = 992000
 DEFAULT_TRAIN_QUESTIONS = 160
 DEFAULT_DEV_QUESTIONS = 48
 DEFAULT_MAX_CYCLES = 20
-DEFAULT_EPOCHS_PER_CYCLE = 1
+DEFAULT_EPOCHS_PER_CYCLE = 32
 DEFAULT_GRAD_ACCUMULATION = 4
 DEFAULT_HEAD_LR = 1e-4
 DEFAULT_WEIGHT_DECAY = 0.01
@@ -115,6 +115,13 @@ class EventLog:
         payload = {"stage": stage, "updated_unix": time.time(), **fields}
         smoke.atomic_json(self.progress_path, payload)
         self.emit("clef_sized_train_stage", **payload)
+
+
+
+
+TASK_COMPOSITION_VERSION = smoke.TASK_COMPOSITION_VERSION
+EVIDENCE_CONTRACT_VERSION = smoke.EVIDENCE_CONTRACT_VERSION
+compose_relational_question_v2 = smoke.compose_relational_question_v2
 
 
 def stable_seed(*parts: Any) -> int:
@@ -196,6 +203,42 @@ def question_row(question) -> dict[str, Any]:
             for candidate in question.candidates
         ],
     }
+
+
+def serialize_question(question) -> dict[str, Any]:
+    return {
+        "question_id": str(question.question_id),
+        "task": str(question.task),
+        "stratum": str(getattr(question, "stratum", "") or ""),
+        "gold_index": int(question.gold_index),
+        "candidates": [
+            {
+                "candidate_id": str(candidate.candidate_id),
+                "paths": [
+                    {"prompt": str(path.prompt), "answer": str(path.answer)}
+                    for path in candidate.paths
+                ],
+            }
+            for candidate in question.candidates
+        ],
+    }
+
+
+def deserialize_question(row: dict[str, Any], objective_api):
+    candidates = []
+    for candidate in row["candidates"]:
+        paths = tuple(
+            objective_api.ObjectPath(str(path["prompt"]), str(path["answer"]))
+            for path in candidate["paths"]
+        )
+        candidates.append(objective_api.ObjectCandidate(str(candidate["candidate_id"]), paths))
+    return objective_api.ObjectQuestion(
+        question_id=str(row["question_id"]),
+        task=str(row["task"]),
+        candidates=tuple(candidates),
+        gold_index=int(row["gold_index"]),
+        stratum=str(row.get("stratum") or ""),
+    )
 
 
 def summarize_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -367,6 +410,7 @@ class QuestionFactory:
             objective_smoke.EnglishCodeObjective(store, repo_root),
         ]
         self.registry = objective_api.ObjectiveRegistry(objectives)
+        self.objective_api = objective_api
         self.question_fingerprint = objective_api.question_fingerprint
         self.source = source
         self.source_experiment = source_experiment
@@ -391,51 +435,110 @@ class QuestionFactory:
         self.close()
         return False
 
-    def generate(
-        self, *, data_cycle: int, train_plan: dict[str, int], dev_plan: dict[str, int], seed: int
-    ) -> tuple[list[Any], list[Any], dict[str, Any]]:
-        # Build development first.  Dictionary/English-code objectives mark eval
-        # objects as holdout, so training generated afterward cannot consume them.
-        dev = self.registry.generate_eval(
-            dev_plan,
-            cycle=int(data_cycle),
-            rng=random.Random(stable_seed(seed, data_cycle, "dev")),
-        )
-        dev_fp = {self.question_fingerprint(question) for question in dev}
-        train: list[Any] = []
-        overlap: list[str] = []
-        split_retry_count = 0
+    def _generate_filtered(
+        self, *, kind: str, plan: dict[str, int], data_cycle: int, seed: int,
+        blocked_fingerprints: set[str], event_prefix: str,
+    ) -> tuple[list[Any], int, list[str]]:
+        generator = self.registry.generate_eval if kind == "eval" else self.registry.generate_train
+        deficits: dict[str, int] = dict(plan)
+        rejected: list[str] = []
         for attempt in range(MAX_TRAIN_DEV_SPLIT_RETRIES + 1):
-            # Attempt zero preserves the original deterministic population.  Only
-            # collision retries use a salted seed, so upgrading an in-flight run
-            # does not silently change cycles that would already have been clean.
-            train_seed = (
-                stable_seed(seed, data_cycle, "train")
-                if attempt == 0
-                else stable_seed(seed, data_cycle, "train-retry", attempt)
-            )
-            train = self.registry.generate_train(
-                train_plan,
-                cycle=int(data_cycle),
-                rng=random.Random(train_seed),
-            )
-            train_fp = {self.question_fingerprint(question) for question in train}
-            overlap = sorted(train_fp & dev_fp)
-            if not overlap:
-                split_retry_count = attempt
-                break
+            expansion = attempt + 1
+            request_plan = {task: int(count) * expansion for task, count in plan.items()}
+            rng = random.Random(stable_seed(seed, data_cycle, event_prefix, attempt))
+            candidates = [
+                compose_relational_question_v2(question)
+                for question in generator(request_plan, cycle=int(data_cycle), rng=rng)
+            ]
+            selected: list[Any] = []
+            selected_by_task = {task: 0 for task in plan}
+            selected_fp: set[str] = set()
+            rejected_set: set[str] = set()
+            for question in candidates:
+                task = str(question.task)
+                if task not in plan or selected_by_task[task] >= int(plan[task]):
+                    continue
+                fp = self.question_fingerprint(question)
+                if fp in blocked_fingerprints or fp in selected_fp:
+                    rejected_set.add(fp)
+                    continue
+                selected.append(question)
+                selected_fp.add(fp)
+                selected_by_task[task] += 1
+            deficits = {
+                task: int(plan[task]) - selected_by_task[task]
+                for task in plan
+                if selected_by_task[task] < int(plan[task])
+            }
+            rejected = sorted(rejected_set)
+            if not deficits:
+                if attempt:
+                    self.logger.emit(
+                        "clef_sized_train_split_repaired",
+                        population=event_prefix,
+                        data_cycle=int(data_cycle),
+                        retry=attempt,
+                        expansion=expansion,
+                        rejected_overlap_count=len(rejected),
+                        rejected_overlap=rejected[:5],
+                    )
+                return selected, attempt, rejected
             self.logger.emit(
                 "clef_sized_train_split_retry",
+                population=event_prefix,
                 data_cycle=int(data_cycle),
                 retry=attempt + 1,
-                overlap_count=len(overlap),
-                overlap=overlap[:5],
+                expansion=expansion,
+                overlap_count=len(rejected),
+                overlap=rejected[:5],
+                deficits=deficits,
             )
-        else:
-            raise RuntimeError(
-                "train/dev question overlap persisted after "
-                f"{MAX_TRAIN_DEV_SPLIT_RETRIES} retries: {overlap[:5]}"
-            )
+        raise RuntimeError(
+            f"{event_prefix} split could not be filled without blocked overlap after "
+            f"{MAX_TRAIN_DEV_SPLIT_RETRIES} expansions; "
+            f"deficits={deficits}, overlap={rejected[:5]}"
+        )
+
+    def generate_selection(
+        self, *, data_cycle: int, selection_plan: dict[str, int], seed: int
+    ) -> list[Any]:
+        selection, _retry, _rejected = self._generate_filtered(
+            kind="eval",
+            plan=selection_plan,
+            data_cycle=int(data_cycle),
+            seed=int(seed),
+            blocked_fingerprints=set(),
+            event_prefix="selection",
+        )
+        return selection
+
+    def generate(
+        self, *, data_cycle: int, train_plan: dict[str, int], dev_plan: dict[str, int],
+        seed: int, blocked_fingerprints: set[str] | None = None,
+    ) -> tuple[list[Any], list[Any], dict[str, Any]]:
+        blocked = set(blocked_fingerprints or ())
+        # Fresh diagnostic development is generated first, excluding the fixed
+        # selection bank.  Training then excludes both populations.
+        dev, dev_retry, dev_rejected = self._generate_filtered(
+            kind="eval",
+            plan=dev_plan,
+            data_cycle=int(data_cycle),
+            seed=int(seed),
+            blocked_fingerprints=blocked,
+            event_prefix="fresh-dev",
+        )
+        dev_fp = {self.question_fingerprint(question) for question in dev}
+        train, train_retry, train_rejected = self._generate_filtered(
+            kind="train",
+            plan=train_plan,
+            data_cycle=int(data_cycle),
+            seed=int(seed),
+            blocked_fingerprints=blocked | dev_fp,
+            event_prefix="train",
+        )
+        train_fp = {self.question_fingerprint(question) for question in train}
+        if train_fp & dev_fp or train_fp & blocked or dev_fp & blocked:
+            raise RuntimeError("selection/train/dev fingerprint isolation invariant failed")
         meta = {
             "data_cycle": int(data_cycle),
             "train_plan": dict(train_plan),
@@ -443,7 +546,12 @@ class QuestionFactory:
             "train_count": len(train),
             "dev_count": len(dev),
             "train_dev_fingerprint_overlap": 0,
-            "train_split_retry_count": split_retry_count,
+            "selection_train_fingerprint_overlap": 0,
+            "selection_dev_fingerprint_overlap": 0,
+            "train_split_retry_count": train_retry,
+            "dev_split_retry_count": dev_retry,
+            "train_rejected_overlap": train_rejected[:5],
+            "dev_rejected_overlap": dev_rejected[:5],
             "train": [question_row(question) for question in train],
             "dev": [question_row(question) for question in dev],
         }
@@ -473,8 +581,36 @@ def evaluate_population(*, torch, head, bundles, questions, args, logger: EventL
     return {"summary": summarize_rows(rows), "rows": rows}
 
 
+def build_training_evidence_cache(
+    *, torch, bundles, questions, args, logger: EventLog, cycle: int, reuse_epochs: int,
+) -> list[dict[str, dict[str, Any]]]:
+    """Compute frozen-backbone evidence once, then reuse it for head-only epochs."""
+    cache: list[dict[str, dict[str, Any]]] = []
+    for index, question in enumerate(questions, 1):
+        evidence = smoke.extract_live_evidence(
+            torch=torch, bundles=bundles, question=question, args=args, logger=logger
+        )
+        cache.append(evidence)
+        logger.emit(
+            "clef_sized_train_evidence_cached",
+            cycle=cycle,
+            question_index=index,
+            total_questions=len(questions),
+            question_id=question.question_id,
+            task=question.task,
+        )
+    logger.emit(
+        "clef_sized_train_evidence_cache_ready",
+        cycle=cycle,
+        questions=len(cache),
+        reuse_epochs=int(reuse_epochs),
+        memory=smoke.cuda_memory(torch, f"cycle_{cycle}_evidence_cache_ready"),
+    )
+    return cache
+
+
 def train_population(
-    *, torch, head, optimizer, bundles, questions, args, logger: EventLog,
+    *, torch, head, optimizer, questions, evidence_cache, args, logger: EventLog,
     cycle: int, epoch: int, global_step: int,
 ) -> tuple[dict[str, Any], int, float]:
     order = list(range(len(questions)))
@@ -489,9 +625,7 @@ def train_population(
         group_tasks: list[str] = []
         for local_index, question_index in enumerate(group, 1):
             question = questions[question_index]
-            evidence = smoke.extract_live_evidence(
-                torch=torch, bundles=bundles, question=question, args=args, logger=logger
-            )
+            evidence = evidence_cache[question_index]
             logits = head(evidence)
             loss, ce, brier = smoke.loss_parts(torch, logits, question.gold_index)
             if not bool(torch.isfinite(loss).item()):
@@ -511,7 +645,7 @@ def train_population(
                 total_questions=len(order),
                 **row,
             )
-            del evidence, logits, loss, ce, brier
+            del logits, loss, ce, brier
 
         grad_norm = float(
             torch.nn.utils.clip_grad_norm_(head.parameters(), float(args.grad_clip)).item()
@@ -653,7 +787,7 @@ def prepare_new_output(output_dir: Path) -> Path:
 
 def validate_resume_experiment(
     experiment: dict[str, Any], *, source_experiment: Path, train_plan: dict[str, int],
-    dev_plan: dict[str, int], seed: int,
+    dev_plan: dict[str, int], seed: int, data_cycle_base: int, hyperparameters: dict[str, Any],
 ) -> None:
     if experiment.get("schema_version") != SCHEMA:
         raise RuntimeError(f"unsupported experiment schema: {experiment.get('schema_version')}")
@@ -662,7 +796,11 @@ def validate_resume_experiment(
         "source_experiment": expected_source,
         "train_plan": train_plan,
         "dev_plan": dev_plan,
+        "selection_plan": dev_plan,
+        "selection_data_cycle": int(data_cycle_base),
+        "data_cycle_base": int(data_cycle_base),
         "seed": int(seed),
+        "hyperparameters": hyperparameters,
     }
     mismatches = {
         key: {"expected": value, "observed": experiment.get(key)}
@@ -700,6 +838,21 @@ def write_error_report(output_dir: Path, logger: EventLog | None, exc: BaseExcep
     print(json.dumps(payload, sort_keys=True), flush=True)
 
 
+def training_hyperparameters(args) -> dict[str, Any]:
+    return {
+        "head_lr": float(args.head_lr),
+        "weight_decay": float(args.weight_decay),
+        "grad_clip": float(args.grad_clip),
+        "grad_accumulation": int(args.grad_accumulation),
+        "epochs_per_cycle": int(args.epochs_per_cycle),
+        "max_prompt_tokens": int(args.max_prompt_tokens),
+        "max_answer_tokens": int(args.max_answer_tokens),
+        "prompt_evidence_tokens": int(args.prompt_evidence_tokens),
+        "answer_evidence_tokens": int(args.answer_evidence_tokens),
+        "path_batch": int(args.path_batch),
+    }
+
+
 def run(args, logger: EventLog) -> None:
     import torch
 
@@ -710,6 +863,7 @@ def run(args, logger: EventLog) -> None:
     experiment_path = output_dir / "experiment.json"
     state_path = output_dir / "training_state.json"
     training_db = output_dir / "training_lexical.db"
+    selection_path = output_dir / "selection_questions.json"
 
     if args.resume:
         if not experiment_path.is_file() or not state_path.is_file():
@@ -721,12 +875,14 @@ def run(args, logger: EventLog) -> None:
             train_plan=train_plan,
             dev_plan=dev_plan,
             seed=args.seed,
+            data_cycle_base=args.data_cycle_base,
+            hyperparameters=training_hyperparameters(args),
         )
         state = smoke.read_json(state_path)
         start_cycle = int(state["cycle"]) + 1
         global_step = int(state["global_step"])
         latest_checkpoint = Path(str(state["latest_checkpoint"])).resolve(strict=True)
-        best_dev_loss = float(state.get("best_dev_loss", math.inf))
+        best_selection_loss = float(state.get("best_selection_loss", math.inf))
         best_checkpoint = (
             Path(str(state["best_checkpoint"])).resolve(strict=True)
             if state.get("best_checkpoint") else None
@@ -743,36 +899,35 @@ def run(args, logger: EventLog) -> None:
             "data_cycle_base": int(args.data_cycle_base),
             "train_plan": train_plan,
             "dev_plan": dev_plan,
+            "selection_plan": dev_plan,
+            "selection_data_cycle": int(args.data_cycle_base),
             "head": {
-                "style": "Clef-inspired multi-backbone joint choice head",
+                "style": "Clef-inspired multi-backbone joint choice head, composition-v2",
                 "parameters": smoke.production_head_parameter_count(),
                 "released_clef_parameters": smoke.CLEF_RELEASED_HEAD_PARAMS,
             },
             "contract": {
                 "frozen_backbones": ["Qwen/Qwen3-0.6B", "EleutherAI/pythia-70m", "roneneldan/TinyStories-33M"],
                 "live_backbone_evidence": True,
-                "hidden_state_cache": False,
+                "hidden_state_cache": "detached-per-cycle-training-evidence",
+                "training_evidence_reuse": True,
                 "primary_tasks": list(TASKS),
                 "dev_is_hidden_holdout": False,
+                "fixed_selection_bank": True,
+                "fresh_cycle_dev": True,
+                "task_composition": TASK_COMPOSITION_VERSION,
+                "evidence_contract": EVIDENCE_CONTRACT_VERSION,
+                "relational_paths_bidirectional": True,
+                "native_continuation_logp": True,
+                "predictor_aligned_evidence": True,
             },
-            "hyperparameters": {
-                "head_lr": float(args.head_lr),
-                "weight_decay": float(args.weight_decay),
-                "grad_clip": float(args.grad_clip),
-                "grad_accumulation": int(args.grad_accumulation),
-                "epochs_per_cycle": int(args.epochs_per_cycle),
-                "max_prompt_tokens": int(args.max_prompt_tokens),
-                "max_answer_tokens": int(args.max_answer_tokens),
-                "prompt_evidence_tokens": int(args.prompt_evidence_tokens),
-                "answer_evidence_tokens": int(args.answer_evidence_tokens),
-                "path_batch": int(args.path_batch),
-            },
+            "hyperparameters": training_hyperparameters(args),
         }
         smoke.atomic_json(experiment_path, experiment)
         start_cycle = 1
         global_step = 0
         latest_checkpoint = None
-        best_dev_loss = math.inf
+        best_selection_loss = math.inf
         best_checkpoint = None
         create_db = True
 
@@ -785,9 +940,13 @@ def run(args, logger: EventLog) -> None:
         max_cycles=args.max_cycles,
         train_plan=train_plan,
         dev_plan=dev_plan,
+        selection_plan=dev_plan,
         head_lr=args.head_lr,
         grad_accumulation=args.grad_accumulation,
-        no_hidden_state_cache=True,
+        training_evidence_cache=True,
+        reuse_epochs=int(args.epochs_per_cycle),
+        task_composition=TASK_COMPOSITION_VERSION,
+        evidence_contract=EVIDENCE_CONTRACT_VERSION,
     )
 
     logger.set_stage("question_source")
@@ -799,6 +958,42 @@ def run(args, logger: EventLog) -> None:
         logger=logger,
     ) as factory:
         source = factory.source
+
+        if args.resume:
+            if not selection_path.is_file():
+                raise RuntimeError(f"resume selection bank missing: {selection_path}")
+            selection_payload = smoke.read_json(selection_path)
+            selection_questions = [
+                deserialize_question(row, factory.objective_api)
+                for row in selection_payload["questions"]
+            ]
+        else:
+            logger.set_stage("selection_generation")
+            selection_questions = factory.generate_selection(
+                data_cycle=int(args.data_cycle_base),
+                selection_plan=dev_plan,
+                seed=args.seed,
+            )
+            selection_payload = {
+                "schema_version": SCHEMA,
+                "data_cycle": int(args.data_cycle_base),
+                "plan": dev_plan,
+                "count": len(selection_questions),
+                "questions": [serialize_question(question) for question in selection_questions],
+            }
+            smoke.atomic_json(selection_path, selection_payload)
+        selection_fingerprints = {
+            factory.question_fingerprint(question) for question in selection_questions
+        }
+        if len(selection_fingerprints) != len(selection_questions):
+            raise RuntimeError("fixed selection bank contains duplicate fingerprints")
+        logger.emit(
+            "clef_sized_train_selection_ready",
+            count=len(selection_questions),
+            plan=dev_plan,
+            data_cycle=int(args.data_cycle_base),
+            path=str(selection_path),
+        )
 
         logger.set_stage("backbone_load")
         torch.manual_seed(args.seed)
@@ -851,6 +1046,77 @@ def run(args, logger: EventLog) -> None:
             memory=smoke.cuda_memory(torch, "after_head_load"),
         )
 
+        if latest_checkpoint is None:
+            logger.set_stage("selection_baseline", cycle=0)
+            selection_baseline = evaluate_population(
+                torch=torch,
+                head=head,
+                bundles=bundles,
+                questions=selection_questions,
+                args=args,
+                logger=logger,
+                phase="cycle-000000-selection",
+            )
+            baseline_metrics = {
+                "cycle": 0,
+                "data_cycle": int(args.data_cycle_base),
+                "global_step": 0,
+                "selection": selection_baseline["summary"],
+                "training": [],
+                "frozen_backbones": smoke.verify_frozen_unchanged(bundles, frozen_before),
+                "memory": smoke.cuda_memory(torch, "cycle_0_baseline"),
+            }
+            baseline_dir = output_dir / "cycles" / "cycle-000000"
+            baseline_dir.mkdir(parents=True, exist_ok=False)
+            smoke.atomic_json(baseline_dir / "metrics.json", baseline_metrics)
+            smoke.atomic_json(
+                baseline_dir / "questions.json",
+                {
+                    "selection": [question_row(question) for question in selection_questions],
+                    "selection_count": len(selection_questions),
+                },
+            )
+            latest_checkpoint = save_checkpoint(
+                torch=torch,
+                output_dir=output_dir,
+                head=head,
+                optimizer=optimizer,
+                cycle=0,
+                global_step=0,
+                experiment_meta={
+                    "source_experiment": str(source_experiment),
+                    "train_plan": train_plan,
+                    "dev_plan": dev_plan,
+                },
+                cycle_metrics=baseline_metrics,
+                logger=logger,
+            )
+            best_checkpoint = latest_checkpoint
+            best_selection_loss = float(
+                selection_baseline["summary"]["overall"]["mean_loss"]
+            )
+            smoke.atomic_json(
+                state_path,
+                {
+                    "schema_version": SCHEMA,
+                    "cycle": 0,
+                    "data_cycle": int(args.data_cycle_base),
+                    "global_step": 0,
+                    "latest_checkpoint": str(latest_checkpoint),
+                    "best_checkpoint": str(best_checkpoint),
+                    "best_selection_loss": best_selection_loss,
+                    "latest_selection_accuracy": selection_baseline["summary"]["overall"]["accuracy"],
+                    "latest_selection_loss": best_selection_loss,
+                    "updated_unix": time.time(),
+                },
+            )
+            logger.emit(
+                "clef_sized_train_selection_baseline",
+                selection_accuracy=selection_baseline["summary"]["overall"]["accuracy"],
+                selection_loss=best_selection_loss,
+                checkpoint=str(latest_checkpoint),
+            )
+
         stop_cycle = (
             start_cycle + int(args.max_cycles) - 1
             if int(args.max_cycles) > 0
@@ -867,6 +1133,7 @@ def run(args, logger: EventLog) -> None:
                 train_plan=train_plan,
                 dev_plan=dev_plan,
                 seed=args.seed,
+                blocked_fingerprints=selection_fingerprints,
             )
             smoke.atomic_json(cycle_dir / "questions.json", question_meta)
             logger.emit(
@@ -879,29 +1146,28 @@ def run(args, logger: EventLog) -> None:
                 dev_plan=dev_plan,
             )
 
-            logger.set_stage("dev_before", cycle=cycle)
-            dev_before = evaluate_population(
-                torch=torch,
-                head=head,
-                bundles=bundles,
-                questions=dev_questions,
-                args=args,
-                logger=logger,
-                phase=f"cycle-{cycle:06d}-before",
-            )
-
             tracked = head.backbone_modules["qwen"].memory_projection.weight
             tracked_before = smoke.sampled_parameter_signature(tracked)
             train_passes: list[dict[str, Any]] = []
             cycle_max_grad = 0.0
+            logger.set_stage("training_evidence_cache", cycle=cycle)
+            training_evidence_cache = build_training_evidence_cache(
+                torch=torch,
+                bundles=bundles,
+                questions=train_questions,
+                args=args,
+                logger=logger,
+                cycle=cycle,
+                reuse_epochs=int(args.epochs_per_cycle),
+            )
             logger.set_stage("training", cycle=cycle)
             for epoch in range(1, int(args.epochs_per_cycle) + 1):
                 train_result, global_step, epoch_max_grad = train_population(
                     torch=torch,
                     head=head,
                     optimizer=optimizer,
-                    bundles=bundles,
                     questions=train_questions,
+                    evidence_cache=training_evidence_cache,
                     args=args,
                     logger=logger,
                     cycle=cycle,
@@ -912,15 +1178,28 @@ def run(args, logger: EventLog) -> None:
                 train_passes.append(train_result)
                 cycle_max_grad = max(cycle_max_grad, epoch_max_grad)
 
-            logger.set_stage("dev_after", cycle=cycle)
-            dev_after = evaluate_population(
+            del training_evidence_cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            logger.set_stage("fresh_dev", cycle=cycle)
+            fresh_dev = evaluate_population(
                 torch=torch,
                 head=head,
                 bundles=bundles,
                 questions=dev_questions,
                 args=args,
                 logger=logger,
-                phase=f"cycle-{cycle:06d}-after",
+                phase=f"cycle-{cycle:06d}-fresh",
+            )
+            logger.set_stage("selection_dev", cycle=cycle)
+            selection_after = evaluate_population(
+                torch=torch,
+                head=head,
+                bundles=bundles,
+                questions=selection_questions,
+                args=args,
+                logger=logger,
+                phase=f"cycle-{cycle:06d}-selection",
             )
             tracked_after = smoke.sampled_parameter_signature(tracked)
             tracked_delta = float((tracked_after - tracked_before).abs().max().item())
@@ -936,14 +1215,15 @@ def run(args, logger: EventLog) -> None:
             if cycle_max_grad <= 0.0:
                 raise RuntimeError(f"no nonzero gradient observed during cycle {cycle}")
 
-            dev_loss = float(dev_after["summary"]["overall"]["mean_loss"])
+            fresh_dev_loss = float(fresh_dev["summary"]["overall"]["mean_loss"])
+            selection_loss = float(selection_after["summary"]["overall"]["mean_loss"])
             cycle_metrics = {
                 "cycle": cycle,
                 "data_cycle": data_cycle,
                 "global_step": global_step,
-                "dev_before": dev_before["summary"],
                 "training": [row["summary"] for row in train_passes],
-                "dev_after": dev_after["summary"],
+                "fresh_dev": fresh_dev["summary"],
+                "selection": selection_after["summary"],
                 "maximum_grad_norm": cycle_max_grad,
                 "tracked_head_max_abs_delta": tracked_delta,
                 "frozen_backbones": frozen,
@@ -968,13 +1248,13 @@ def run(args, logger: EventLog) -> None:
                 logger=logger,
             )
             latest_checkpoint = checkpoint
-            if dev_loss < best_dev_loss:
-                best_dev_loss = dev_loss
+            if selection_loss < best_selection_loss:
+                best_selection_loss = selection_loss
                 best_checkpoint = checkpoint
                 logger.emit(
                     "clef_sized_train_new_best",
                     cycle=cycle,
-                    dev_loss=dev_loss,
+                    selection_loss=selection_loss,
                     checkpoint=str(checkpoint),
                 )
 
@@ -985,9 +1265,11 @@ def run(args, logger: EventLog) -> None:
                 "global_step": global_step,
                 "latest_checkpoint": str(latest_checkpoint),
                 "best_checkpoint": None if best_checkpoint is None else str(best_checkpoint),
-                "best_dev_loss": best_dev_loss,
-                "latest_dev_accuracy": dev_after["summary"]["overall"]["accuracy"],
-                "latest_dev_loss": dev_loss,
+                "best_selection_loss": best_selection_loss,
+                "latest_dev_accuracy": fresh_dev["summary"]["overall"]["accuracy"],
+                "latest_dev_loss": fresh_dev_loss,
+                "latest_selection_accuracy": selection_after["summary"]["overall"]["accuracy"],
+                "latest_selection_loss": selection_loss,
                 "updated_unix": time.time(),
             }
             smoke.atomic_json(state_path, state)
@@ -1002,12 +1284,15 @@ def run(args, logger: EventLog) -> None:
                 "clef_sized_train_cycle_complete",
                 cycle=cycle,
                 global_step=global_step,
-                dev_accuracy=dev_after["summary"]["overall"]["accuracy"],
-                dev_loss=dev_loss,
-                best_dev_loss=best_dev_loss,
+                dev_accuracy=fresh_dev["summary"]["overall"]["accuracy"],
+                dev_loss=fresh_dev_loss,
+                selection_accuracy=selection_after["summary"]["overall"]["accuracy"],
+                selection_loss=selection_loss,
+                best_selection_loss=best_selection_loss,
                 latest_checkpoint=str(latest_checkpoint),
                 best_checkpoint=None if best_checkpoint is None else str(best_checkpoint),
-                by_task=dev_after["summary"]["by_task"],
+                by_task=fresh_dev["summary"]["by_task"],
+                selection_by_task=selection_after["summary"]["by_task"],
             )
             cycle += 1
 
@@ -1018,7 +1303,7 @@ def run(args, logger: EventLog) -> None:
             global_step=global_step,
             latest_checkpoint=str(latest_checkpoint),
             best_checkpoint=None if best_checkpoint is None else str(best_checkpoint),
-            best_dev_loss=best_dev_loss,
+            best_selection_loss=best_selection_loss,
             hidden_holdout_required=True,
         )
 

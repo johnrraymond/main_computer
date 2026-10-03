@@ -5557,6 +5557,8 @@
           this.shipDefinitionValidation = this.interiorConfig.validationReport;
           this.spaceNavigationRuntime = this.createSpaceNavigationRuntime(options);
           this.spaceNavigationError = this.spaceNavigationRuntime ? "" : this.spaceNavigationError || "Space-navigation definition unavailable.";
+          this.spaceGravityRuntime = this.createSpaceGravityRuntime(options);
+          this.spaceGravityError = this.spaceGravityRuntime ? "" : this.spaceGravityError || "Space-physics definition unavailable.";
           this.characterAIRuntime = this.createCharacterAIRuntime(options);
           this.characterAIError = this.characterAIRuntime ? "" : this.characterAIError || "Character AI definition unavailable.";
           this.lastCharacterAIUiAt = -Infinity;
@@ -5853,6 +5855,36 @@
             console.error("Space-navigation runtime initialization failed", error);
             return null;
           }
+        }
+
+        createSpaceGravityRuntime(options = {}) {
+          const api = globalThis.MainComputerSpaceGravityRuntime;
+          const definition = options.spacePhysics
+            || options.project?.metadata?.spacePhysics
+            || null;
+          if (!api?.create || !definition) return null;
+          try {
+            const runtime = api.create(definition, {projectId: options.projectId || options.project?.id || "game-project"});
+            const navigation = this.spaceNavigationRuntime?.snapshot?.() || null;
+            runtime.setActiveSystem(navigation?.currentSystemId || "");
+            return runtime;
+          } catch (error) {
+            this.spaceGravityError = error instanceof Error ? error.message : String(error || "Space-physics runtime failed.");
+            console.error("Space-physics runtime initialization failed", error);
+            return null;
+          }
+        }
+
+        updateSpaceGravity(nowMs = this.lastFrameTime ?? performance.now(), deltaSeconds = 0) {
+          if (!this.spaceGravityRuntime) return null;
+          const navigation = this.spaceNavigationRuntime?.snapshot?.(nowMs) || null;
+          this.spaceGravityRuntime.setActiveSystem(navigation?.currentSystemId || "");
+          if (!navigation?.travelling) this.spaceGravityRuntime.advanceRealSeconds(deltaSeconds);
+          return this.spaceGravityRuntime.snapshot();
+        }
+
+        spaceGravitySnapshot() {
+          return this.spaceGravityRuntime?.snapshot?.() || null;
         }
 
         createCharacterAIRuntime(options = {}) {
@@ -11163,6 +11195,7 @@
           const deltaSeconds = this.lastFrameTime === null ? 0 : Math.max(0, (frameTime - this.lastFrameTime) / 1000);
           this.lastFrameTime = frameTime;
           this.updateSpaceNavigation(frameTime);
+          this.updateSpaceGravity(frameTime, deltaSeconds);
           this.syncVelaSubsurfaceScene?.();
           this.updateMovement(deltaSeconds);
           this.updateCharacterAI(frameTime, deltaSeconds);

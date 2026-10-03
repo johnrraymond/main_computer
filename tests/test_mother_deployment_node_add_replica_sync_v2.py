@@ -11,6 +11,7 @@ from tools.mother.common.deployment_node_add_replica_sync import (
     write_node_add_replica_sync_release,
 )
 from tools.mother.common.deployment_node_add_replica_sync_v2 import (
+    _guardian_start_script,
     execute_node_add_replica_sync_release,
 )
 from tests.test_mother_deployment_executor import _operation
@@ -118,6 +119,24 @@ def test_mother_deploy_selects_replica_sync_v2_executor() -> None:
     assert mother_deploy.execute_node_add_replica_sync_release.__module__.endswith(
         "deployment_node_add_replica_sync_v2"
     )
+
+
+def test_replica_sync_v2_guardian_helper_uses_coolify_canonical_compose() -> None:
+    script = _guardian_start_script(
+        service_uuid="svc-a1",
+        node=A_NODE,
+        wait_seconds=120,
+        poll_seconds=2,
+    )
+
+    assert 'CANONICAL_COMPOSE="$WORKDIR/docker-compose.yml"' in script
+    assert '-f "$CANONICAL_COMPOSE"' in script
+    assert '--project-directory "$WORKDIR"' in script
+    assert 'up -d --no-deps --force-recreate "$GUARDIAN_NAME"' in script
+    assert 'canonical-compose-missing path=$CANONICAL_COMPOSE' in script
+    assert 'canonical-compose-up-failed project=$PROJECT' in script
+    assert '/tmp/mother-replica-sync-guardian.yml' not in script
+    assert 'MOTHER_REPLICA_SYNC_GUARDIAN_COMPOSE' not in script
 
 
 def test_replica_sync_v2_waits_for_node_before_creating_guardian_helper(tmp_path: Path) -> None:

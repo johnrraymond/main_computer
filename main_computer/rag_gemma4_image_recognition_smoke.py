@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 
 
-DEFAULT_MODEL = "gemma4:26b"
+DEFAULT_MODEL = "gemma4:26b-a4b-it-q4_K_M"
 DEFAULT_IMAGE = Path("main_computer/gemma4-test-image.png")
 DEFAULT_URL = "http://localhost:11434/api/chat"
 DEFAULT_OUTPUT_ROOT = Path("diagnostics_output/rag_runs")

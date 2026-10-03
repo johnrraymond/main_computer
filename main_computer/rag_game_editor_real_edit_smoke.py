@@ -67,7 +67,7 @@ from typing import Any
 MODE = "rag_game_editor_real_edit_smoke"
 DEFAULT_PROJECT_ID = "webgl-demo"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_OLLAMA_MODEL = "gemma4:26b"
+DEFAULT_OLLAMA_MODEL = "gemma4:26b-a4b-it-q4_K_M"
 
 TEXT_FILE_EXTENSIONS = {
     ".css", ".html", ".js", ".json", ".md", ".mjs", ".py", ".ts", ".tsx", ".txt", ".yaml", ".yml"

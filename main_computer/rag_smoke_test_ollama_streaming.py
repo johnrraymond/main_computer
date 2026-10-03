@@ -7,7 +7,7 @@ Usage:
 
 Optional env vars:
     OLLAMA_BASE_URL=http://localhost:11434
-    OLLAMA_MODEL=gemma4:26b
+    OLLAMA_MODEL=gemma4:26b-a4b-it-q4_K_M
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def one_line(text: str) -> str:
 
 def main() -> int:
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-    model = os.environ.get("OLLAMA_MODEL", "gemma4:26b")
+    model = os.environ.get("OLLAMA_MODEL", "gemma4:26b-a4b-it-q4_K_M")
     url = f"{base_url}/api/chat"
 
     payload = {

@@ -153,7 +153,7 @@ class TextConsoleConfig:
             context_root=current,
             working_directory=current,
             provider=str(provider or "ollama"),
-            model=str(model or "gemma4:26b"),
+            model=str(model or "gemma4:26b-a4b-it-q4_K_M"),
             ollama_base_url=str(base_url or "http://127.0.0.1:11434"),
             ollama_timeout_s=float(timeout or 600.0),
             ollama_think=think,
@@ -164,7 +164,7 @@ class TextConsoleConfig:
         cls,
         *,
         provider: str = "ollama",
-        model: str = "gemma4:26b",
+        model: str = "gemma4:26b-a4b-it-q4_K_M",
         base_url: str = "http://127.0.0.1:11434",
         timeout: float = 600.0,
         think: bool | str | None = None,
@@ -196,7 +196,7 @@ class TextConsoleConfig:
             context_root=context_root,
             working_directory=working_directory,
             provider=str(data.get("provider") or getattr(base_config, "provider", "ollama")),
-            model=str(data.get("model") or getattr(base_config, "model", "gemma4:26b")),
+            model=str(data.get("model") or getattr(base_config, "model", "gemma4:26b-a4b-it-q4_K_M")),
             ollama_base_url=str(
                 data.get("ollama_base_url")
                 or getattr(base_config, "ollama_base_url", "http://127.0.0.1:11434")

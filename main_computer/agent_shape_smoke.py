@@ -837,7 +837,7 @@ class AgentShapeSmokeRunner:
             no_auto_worker=False,
             auto_worker_timeout=10.0,
             auto_worker_seconds=3600,
-            worker_model=os.environ.get("MAIN_COMPUTER_MICRO_AGENT_WORKER_MODEL", "gemma4:26b"),
+            worker_model=os.environ.get("MAIN_COMPUTER_MICRO_AGENT_WORKER_MODEL", "gemma4:26b-a4b-it-q4_K_M"),
             worker_endpoint=os.environ.get("MAIN_COMPUTER_MICRO_AGENT_WORKER_ENDPOINT", "http://127.0.0.1:8771"),
             worker_credits_per_token="0.001",
             worker_target_tokens=int(self.spec.worker_target_tokens),

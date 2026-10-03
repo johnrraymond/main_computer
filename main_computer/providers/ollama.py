@@ -198,7 +198,7 @@ def prepare_ollama_generate_payload(
 
 @dataclass
 class OllamaProvider(LLMProvider):
-    model: str = "gemma4:26b"
+    model: str = "gemma4:26b-a4b-it-q4_K_M"
     base_url: str = "http://localhost:11434"
     timeout_s: float = 600.0
     options: dict[str, Any] | None = None

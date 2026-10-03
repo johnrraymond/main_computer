@@ -9,7 +9,7 @@ Install these before trying to run the system from a checkout:
 - Windows 10 or Windows 11.
 - Python 3.10 or newer, available from PowerShell and Command Prompt as `python`.
 - Git, if you are checking the code out directly.
-- Ollama, running locally. The default provider is Ollama and the default model is `gemma4:26b` unless you override `MAIN_COMPUTER_MODEL`.
+- Ollama, running locally. The default provider is Ollama and the default model is `gemma4:26b-a4b-it-q4_K_M` unless you override `MAIN_COMPUTER_MODEL`.
 - Docker Desktop with the WSL 2 backend enabled.
 - WSL installed and working.
 - PowerShell.
@@ -78,7 +78,7 @@ python -m pip install -r requirements.txt
 Make sure Ollama is running, then pull the model you intend to use. The project default is:
 
 ```bat
-ollama pull gemma4:26b
+ollama pull gemma4:26b-a4b-it-q4_K_M
 ```
 
 To use a different installed Ollama model, set `MAIN_COMPUTER_MODEL` before starting:
@@ -238,7 +238,7 @@ Start a local worker and register it with the Hub:
 $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
 python -m main_computer.cli hub-worker `
   --provider ollama `
-  --model gemma4:26b `
+  --model gemma4:26b-a4b-it-q4_K_M `
   --host 127.0.0.1 `
   --port 8771 `
   --hub-url http://127.0.0.1:8770 `
@@ -247,7 +247,7 @@ python -m main_computer.cli hub-worker `
   --hub-credits-per-request 1
 ```
 
-Replace `gemma4:26b` with another installed Ollama model when needed.
+Replace `gemma4:26b-a4b-it-q4_K_M` with another installed Ollama model when needed.
 
 Start the viewport as a Hub client:
 
@@ -314,7 +314,7 @@ Useful environment variables:
 
 ```bat
 set MAIN_COMPUTER_PROVIDER=ollama
-set MAIN_COMPUTER_MODEL=gemma4:26b
+set MAIN_COMPUTER_MODEL=gemma4:26b-a4b-it-q4_K_M
 set OLLAMA_BASE_URL=http://localhost:11434
 ```
 

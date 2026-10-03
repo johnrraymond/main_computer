@@ -2869,6 +2869,8 @@ def _run_block_advance_waiter(
     target_node: str,
     service_uuid: str,
     runtime_state_root: str | Path,
+    topology_evidence: str | Path | None = None,
+    acknowledged_topology_evidence_sha256: str | None = None,
     topology_node_count: int | None = None,
     wait_forever_after_baseline: bool = False,
     runner: Callable[..., Any] | None = None,
@@ -2885,10 +2887,23 @@ def _run_block_advance_waiter(
         service_uuid,
         "--runtime-state-root",
         str(runtime_state_root),
-        "--max-wait-seconds",
-        str(BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS),
-        "--quiet",
     ]
+    if topology_evidence is not None:
+        argv.extend(["--topology-evidence", str(topology_evidence)])
+    if acknowledged_topology_evidence_sha256 is not None:
+        argv.extend(
+            [
+                "--acknowledge-topology-evidence-sha256",
+                str(acknowledged_topology_evidence_sha256),
+            ]
+        )
+    argv.extend(
+        [
+            "--max-wait-seconds",
+            str(BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS),
+            "--quiet",
+        ]
+    )
     if wait_forever_after_baseline:
         argv.append("--wait-forever-after-baseline")
     subprocess_timeout = None if wait_forever_after_baseline else BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS
@@ -2902,6 +2917,8 @@ def _run_block_advance_waiter(
         "node": target_node,
         "target_node": target_node,
         "service_uuid": service_uuid,
+        "topology_evidence": str(topology_evidence) if topology_evidence is not None else None,
+        "acknowledged_topology_evidence_sha256": acknowledged_topology_evidence_sha256,
         "topology_node_count": topology_node_count,
         "wait_forever_after_baseline": bool(wait_forever_after_baseline),
         "subprocess_timeout_seconds": subprocess_timeout,
@@ -3698,6 +3715,8 @@ def run_helper_cleanup2_yagni(
                     target_node=node,
                     service_uuid=service_uuid,
                     runtime_state_root=runtime_state_root,
+                    topology_evidence=topology["path"],
+                    acknowledged_topology_evidence_sha256=topology["sha256"],
                     topology_node_count=topology_node_count,
                     wait_forever_after_baseline=wait_forever_after_baseline,
                     runner=block_advance_waiter_runner,

@@ -6,7 +6,7 @@ Diagnostic matrix for Ollama streaming routes used by the RAG gremlin smoke path
 
 Run from repo root:
 
-    python -u .\main_computer\rag_ollama_stream_route_matrix_smoke.py --repo . --model gemma4:26b
+    python -u .\main_computer\rag_ollama_stream_route_matrix_smoke.py --repo . --model gemma4:26b-a4b-it-q4_K_M
 
 This compares:
 
@@ -40,7 +40,7 @@ import urllib.request
 
 DEFAULT_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 DEFAULT_CHAT_URL = "http://127.0.0.1:11434/api/chat"
-DEFAULT_MODEL = os.environ.get("MAIN_COMPUTER_GREMLIN_MODEL", "gemma4:26b")
+DEFAULT_MODEL = os.environ.get("MAIN_COMPUTER_GREMLIN_MODEL", "gemma4:26b-a4b-it-q4_K_M")
 DEFAULT_PROMPT = (
     "Return exactly these five lowercase words, one per line, with no markdown: "
     "alpha, beta, gamma, delta, epsilon."

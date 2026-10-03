@@ -1,0 +1,664 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maincomputer.local/schemas/game.meaningfulGameModuleDesign.v1.schema.json",
+  "title": "Meaningful Game Module Design v1",
+  "description": "Source-grounded translation contract between current Main Computer game state and one generated per-game module.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "game.meaningfulGameModuleDesign.v1"
+    },
+    "moduleId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "responsibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "owns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "doesNotOwn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "owns",
+        "doesNotOwn"
+      ]
+    },
+    "stateTranslation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "readsExistingState": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "need": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "need",
+              "source",
+              "evidence"
+            ]
+          }
+        },
+        "seedsModuleState": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": "string",
+                "minLength": 1
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rule": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "rule"
+            ]
+          }
+        },
+        "ownedState": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "authority": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "path",
+              "authority"
+            ]
+          }
+        },
+        "derivedOnlyState": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "derivedFrom": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "path",
+              "derivedFrom"
+            ]
+          }
+        },
+        "outboundConsequences": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "source_grounded",
+                  "runtime_gap"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              },
+              "idempotency": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "type",
+              "target",
+              "status",
+              "evidence",
+              "idempotency"
+            ],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "source_grounded"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "evidence": {
+                      "minItems": 1
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "save": {
+              "type": "string",
+              "minLength": 1
+            },
+            "restore": {
+              "type": "string",
+              "minLength": 1
+            },
+            "migration": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "save",
+            "restore",
+            "migration"
+          ]
+        }
+      },
+      "required": [
+        "readsExistingState",
+        "seedsModuleState",
+        "ownedState",
+        "derivedOnlyState",
+        "outboundConsequences",
+        "persistence"
+      ]
+    },
+    "turnModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "encounterChecks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "randomnessRule": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "phases",
+        "encounterChecks",
+        "randomnessRule"
+      ]
+    },
+    "informationModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tracker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "corridorSensors": {
+          "type": "string",
+          "minLength": 1
+        },
+        "asymmetry": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "tracker",
+        "corridorSensors",
+        "asymmetry"
+      ]
+    },
+    "economy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "farm": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hop": {
+          "type": "string",
+          "minLength": 1
+        },
+        "opportunityCost": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "farm",
+        "hop",
+        "opportunityCost"
+      ]
+    },
+    "spyPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "objective": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "legalOutputs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "FARM",
+              "HOP"
+            ]
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "allOf": [
+            {
+              "contains": {
+                "const": "FARM"
+              }
+            },
+            {
+              "contains": {
+                "const": "HOP"
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "objective",
+        "inputs",
+        "legalOutputs"
+      ]
+    },
+    "outcomes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "terminalPredicates": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "receiptInputs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "persistentEffectClasses": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "terminalPredicates",
+        "receiptInputs",
+        "persistentEffectClasses"
+      ]
+    },
+    "integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "need": {
+                "type": "string",
+                "minLength": 1
+              },
+              "boundary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "need",
+              "boundary",
+              "evidence"
+            ]
+          }
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "need": {
+                "type": "string",
+                "minLength": 1
+              },
+              "boundary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "need",
+              "boundary",
+              "evidence"
+            ]
+          }
+        },
+        "eventsIn": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "need": {
+                "type": "string",
+                "minLength": 1
+              },
+              "boundary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "need",
+              "boundary",
+              "evidence"
+            ]
+          }
+        },
+        "eventsOut": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "need": {
+                "type": "string",
+                "minLength": 1
+              },
+              "boundary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "need",
+              "boundary",
+              "evidence"
+            ]
+          }
+        },
+        "runtimeGaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "need": {
+                "type": "string",
+                "minLength": 1
+              },
+              "missingBoundary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidenceReviewed": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              },
+              "blockingForCode": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "need",
+              "missingBoundary",
+              "evidenceReviewed",
+              "blockingForCode"
+            ]
+          }
+        }
+      },
+      "required": [
+        "reads",
+        "writes",
+        "eventsIn",
+        "eventsOut",
+        "runtimeGaps"
+      ]
+    },
+    "exports": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "invariants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "enforcedBy": {
+            "type": "string",
+            "enum": [
+              "module",
+              "host",
+              "integration",
+              "test"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "statement",
+          "enforcedBy"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "moduleId",
+    "responsibility",
+    "stateTranslation",
+    "turnModel",
+    "informationModel",
+    "economy",
+    "spyPolicy",
+    "outcomes",
+    "integration",
+    "exports",
+    "invariants"
+  ]
+}

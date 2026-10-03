@@ -361,7 +361,7 @@ class DiagnosticRunner:
 
     def _ollama_diagnostic_provider(self, *, num_predict: int = 64) -> OllamaProvider:
         return OllamaProvider(
-            model=self.config.model or "gemma4:26b",
+            model=self.config.model or "gemma4:26b-a4b-it-q4_K_M",
             base_url=self.config.ollama_base_url,
             timeout_s=self.config.ollama_timeout_s,
             options={"temperature": 0, "num_predict": num_predict},
@@ -372,7 +372,7 @@ class DiagnosticRunner:
         try:
             tags = self._get_json(f"{self.config.ollama_base_url.rstrip('/')}/api/tags")
             models = [str(model.get("name", "")) for model in tags.get("models", []) if isinstance(model, dict)]
-            expected_model = self.config.model or "gemma4:26b"
+            expected_model = self.config.model or "gemma4:26b-a4b-it-q4_K_M"
             self._record(
                 "ollama-probe-tags",
                 bool(models),
@@ -389,7 +389,7 @@ class DiagnosticRunner:
             self._record("ollama-probe-tags", False, "ollama-probe", str(exc))
 
         generate_payload = {
-            "model": self.config.model or "gemma4:26b",
+            "model": self.config.model or "gemma4:26b-a4b-it-q4_K_M",
             "prompt": "Reply with exactly READY.",
             "stream": False,
             "options": {"temperature": 0, "num_predict": 16},
@@ -407,7 +407,7 @@ class DiagnosticRunner:
             self._record("ollama-probe-generate-completes", False, "ollama-probe", str(exc))
 
         chat_payload = {
-            "model": self.config.model or "gemma4:26b",
+            "model": self.config.model or "gemma4:26b-a4b-it-q4_K_M",
             "messages": [{"role": "user", "content": "Reply with exactly READY."}],
             "stream": False,
             "think": False,

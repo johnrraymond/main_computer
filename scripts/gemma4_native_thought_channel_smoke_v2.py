@@ -69,7 +69,7 @@ import urllib.request
 
 
 SCRIPT_VERSION = "gemma4_native_thought_channel_smoke_v3"
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:26b")
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:26b-a4b-it-q4_K_M")
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_OUT_DIR = (
     Path("diagnostics_output") / "gemma4_thinking_fabrication_smoke"

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from main_computer.config import DEFAULT_OLLAMA_THINK, MainComputerConfig
+from main_computer.config import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_THINK, MainComputerConfig
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
 from main_computer.providers.base import LLMProvider
 from main_computer.providers.hub import HubProvider
@@ -58,6 +58,19 @@ class RouterTests(unittest.TestCase):
         evidence_paths = {item["path"] for item in response.metadata["workspace_context"]["evidence"]}
         self.assertTrue(any(path.endswith("TODO.md") for path in evidence_paths))
         self.assertTrue(any(path.endswith("viewport.py") for path in evidence_paths))
+
+    def test_config_defaults_to_pinned_ollama_model(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            config = MainComputerConfig.from_env()
+
+        self.assertEqual(DEFAULT_OLLAMA_MODEL, "gemma4:26b-a4b-it-q4_K_M")
+        self.assertEqual(config.model, DEFAULT_OLLAMA_MODEL)
+
+    def test_config_preserves_explicit_model_override(self) -> None:
+        with patch.dict("os.environ", {"MAIN_COMPUTER_MODEL": "gemma4:26b"}, clear=True):
+            config = MainComputerConfig.from_env()
+
+        self.assertEqual(config.model, "gemma4:26b")
 
     def test_config_reads_ollama_timeout_from_env(self) -> None:
         with patch.dict("os.environ", {"MAIN_COMPUTER_OLLAMA_TIMEOUT_S": "600"}, clear=True):

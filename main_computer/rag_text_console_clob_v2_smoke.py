@@ -47,7 +47,7 @@ from typing import Any
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "gemma4:26b"
+DEFAULT_MODEL = "gemma4:26b-a4b-it-q4_K_M"
 DEFAULT_TIMEOUT = 120.0
 DEFAULT_CLOB_DIR = Path("diagnostics_output") / "text_console_clobs"
 DEFAULT_REPORT_PATH = Path("diagnostics_output") / "rag_text_console_clob_v2_smoke_report.json"

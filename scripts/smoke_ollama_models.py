@@ -15,7 +15,7 @@ stream chunks.
 
 Default contest:
 
-    qwen3.8:27b vs gemma4:26b
+    qwen3.8:27b vs gemma4:26b-a4b-it-q4_K_M
 
 By default, this script now benchmarks in grouped model order with a warmup
 request and keep_alive set. The summary reports both end-to-end timing and
@@ -25,7 +25,7 @@ Run from repo root:
 
     python scripts/smoke_ollama_models.py
     python scripts/smoke_ollama_models.py --twiddle-only
-    python scripts/smoke_ollama_models.py --models qwen3.8:27b gemma4:26b --runs 2
+    python scripts/smoke_ollama_models.py --models qwen3.8:27b gemma4:26b-a4b-it-q4_K_M --runs 2
     python scripts/smoke_ollama_models.py --hardness 4:11
     python scripts/smoke_ollama_models.py --hardness 7:12 --runs 1
 
@@ -52,7 +52,7 @@ import urllib.request
 
 
 SCRIPT_VERSION = "6.0.1"
-DEFAULT_MODELS = ["qwen3.8:27b", "gemma4:26b"]
+DEFAULT_MODELS = ["qwen3.8:27b", "gemma4:26b-a4b-it-q4_K_M"]
 DEFAULT_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 DEFAULT_OUT_ROOT = Path("diagnostics_output") / "ollama_model_contest"
 
@@ -254,11 +254,11 @@ def score_json_config(text: str) -> tuple[int, int, str]:
 
     checks = [
         (obj.get("env_var") == "MAIN_COMPUTER_MODEL", "env_var"),
-        (obj.get("python_default") == "gemma4:26b", "python_default"),
+        (obj.get("python_default") == "gemma4:26b-a4b-it-q4_K_M", "python_default"),
         (obj.get("compose_default") == "qwen2.5:1.5b", "compose_default"),
         ("mismatch" in str(obj.get("problem", "")).lower(), "problem mentions mismatch"),
         (
-            "gemma4:26b" in str(obj.get("recommendation", "")).lower()
+            "gemma4:26b-a4b-it-q4_K_M" in str(obj.get("recommendation", "")).lower()
             and "qwen2.5" in str(obj.get("recommendation", "")).lower(),
             "recommendation names both defaults",
         ),
@@ -363,7 +363,7 @@ def score_local_model_resolver(text: str) -> tuple[int, int, str]:
         ("main_computer_model" in cleaned, "MAIN_COMPUTER_MODEL env"),
         (".main-computer" in cleaned or "local.toml" in cleaned or "repo-local" in cleaned, "repo-local config file"),
         ("gitignore" in cleaned or "gitignored" in cleaned or "untracked" in cleaned, "untracked local state"),
-        ("default_ollama_model" in cleaned or "gemma4:26b" in cleaned or "tracked default" in cleaned, "tracked fallback"),
+        ("default_ollama_model" in cleaned or "gemma4:26b-a4b-it-q4_K_M" in cleaned or "tracked default" in cleaned, "tracked fallback"),
         ("precedence" in cleaned and ("test" in cleaned or "tests" in cleaned), "precedence tests"),
         ("resolver" in cleaned or "resolve_model" in cleaned or "single" in cleaned, "single resolver"),
         ("ollama" in cleaned and ("tags" in cleaned or "list" in cleaned or "installed" in cleaned), "installed-model validation"),
@@ -432,7 +432,7 @@ def score_agentic_patch_plan(text: str) -> tuple[int, int, str]:
 def score_benchmark_decision(text: str) -> tuple[int, int, str]:
     cleaned = strip_think_blocks(text).lower()
     checks = [
-        ("gemma4:26b" in cleaned and ("default" in cleaned or "winner" in cleaned), "keeps gemma default"),
+        ("gemma4:26b-a4b-it-q4_K_M" in cleaned and ("default" in cleaned or "winner" in cleaned), "keeps gemma default"),
         ("qwen3.8:27b" in cleaned and ("optional" in cleaned or "experiment" in cleaned or "deep" in cleaned), "keeps qwen as experiment"),
         ("loaded" in cleaned and ("speed" in cleaned or "total" in cleaned), "uses loaded-speed metric"),
         ("eval_tps" in cleaned or "tokens/sec" in cleaned or "tok/s" in cleaned, "uses token throughput"),
@@ -462,7 +462,7 @@ def build_tasks() -> list[SmokeTask]:
             prompt=(
                 "You are checking a repo's Ollama configuration.\n\n"
                 "Facts:\n"
-                '- main_computer/config.py has DEFAULT_OLLAMA_MODEL = "gemma4:26b"\n'
+                '- main_computer/config.py has DEFAULT_OLLAMA_MODEL = "gemma4:26b-a4b-it-q4_K_M"\n'
                 "- environment variable override is MAIN_COMPUTER_MODEL\n"
                 '- docker-compose.dev.yml incorrectly falls back to "qwen2.5:1.5b"\n\n'
                 "Return only valid JSON with exactly these keys:\n"
@@ -496,7 +496,7 @@ def build_tasks() -> list[SmokeTask]:
                 "Hardness 4. Use deliberate reasoning if thinking is enabled, then give the final answer.\n\n"
                 "We want a better way to select the default Ollama model in a checked-out repo.\n\n"
                 "Current behavior:\n"
-                '- Python code has DEFAULT_OLLAMA_MODEL = "gemma4:26b".\n'
+                '- Python code has DEFAULT_OLLAMA_MODEL = "gemma4:26b-a4b-it-q4_K_M".\n'
                 "- MAIN_COMPUTER_MODEL can override it.\n"
                 "- Some dev/docs defaults accidentally used qwen2.5:1.5b.\n"
                 "- We want each checkout to remember its own preferred model without editing tracked source files.\n\n"
@@ -513,7 +513,7 @@ def build_tasks() -> list[SmokeTask]:
                 "Hardness 5. Use deliberate reasoning if thinking is enabled, then give the final answer.\n\n"
                 "Review this proposed cleanup before a patch:\n\n"
                 "Goal:\n"
-                "Align incorrect qwen2.5:1.5b references to gemma4:26b, because config.py says gemma4:26b is the default.\n\n"
+                "Align incorrect qwen2.5:1.5b references to gemma4:26b-a4b-it-q4_K_M, because config.py says gemma4:26b-a4b-it-q4_K_M is the default.\n\n"
                 "Observed files:\n"
                 "- docker-compose.dev.yml contains qwen2.5:1.5b as a fallback.\n"
                 "- README.md contains qwen2.5:1.5b as an example default.\n"
@@ -600,7 +600,7 @@ def build_tasks() -> list[SmokeTask]:
             num_predict=1200,
             prompt=(
                 "Hardness 10. Use thinking if enabled, but the final answer must be only a JSON object.\n\n"
-                "Review this inventory for a narrow replacement-file patch. config.py says gemma4:26b is the true "
+                "Review this inventory for a narrow replacement-file patch. config.py says gemma4:26b-a4b-it-q4_K_M is the true "
                 "runtime default. Inventory:\n"
                 "- docker-compose.dev.yml: MAIN_COMPUTER_MODEL fallback is qwen2.5:1.5b\n"
                 "- README.md: setup example says export MAIN_COMPUTER_MODEL=qwen2.5:1.5b\n"
@@ -623,7 +623,7 @@ def build_tasks() -> list[SmokeTask]:
                 "Hardness 11. Use thinking if enabled. Final answer should be a concrete patch plan, not code.\n\n"
                 "Plan a bounded implementation for repo-local model selection. The repo already has Ollama provider "
                 "code, RAG Ollama smoke scripts, docker-compose.dev.yml, README.md, ENVIRONMENT.md, and tests. "
-                "The default must remain gemma4:26b unless overridden. qwen3.8:27b should be available as an "
+                "The default must remain gemma4:26b-a4b-it-q4_K_M unless overridden. qwen3.8:27b should be available as an "
                 "optional comparison/deep model.\n\n"
                 "Produce a dependency-ordered patch plan with likely files, exact behavior, CLI surface, config "
                 "format, validation behavior, test cases, docs updates, migration/backward compatibility, and "

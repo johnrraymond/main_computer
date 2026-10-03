@@ -1,4 +1,4 @@
-# The core project uses only the Python standard library.
+# Most core modules use the Python standard library; growth-contract validation uses jsonschema.
 # Optional:
 #   pip install openai   # enables --provider openai
 #   pip install playwright && python -m playwright install chromium
@@ -17,3 +17,4 @@ eth-account==0.13.7
 foundationdb==7.4.6
 PyYAML==6.0.3
 graphifyy==0.9.29
+jsonschema>=4.26.0,<5

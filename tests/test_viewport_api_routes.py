@@ -68,7 +68,7 @@ class ViewportApiRouteTests(unittest.TestCase):
             with urlopen(f"{base}/api/ollama-debug/status", timeout=5) as response:
                 debug_status = json.loads(response.read().decode("utf-8"))
             self.assertFalse(debug_status["active"])
-            self.assertEqual(debug_status["model"], "gemma4:26b")
+            self.assertEqual(debug_status["model"], "gemma4:26b-a4b-it-q4_K_M")
             self.assertEqual(debug_status["ollama_timeout_s"], 600.0)
             self.assertEqual(debug_status["patch_level"], "0.1.0")
 

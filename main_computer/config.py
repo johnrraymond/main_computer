@@ -8,7 +8,7 @@ from main_computer.contract_config import get_contract_address, load_contract_co
 
 
 DEFAULT_PATCH_LEVEL = "0.1.0"
-DEFAULT_OLLAMA_MODEL = "gemma4:26b"
+DEFAULT_OLLAMA_MODEL = "gemma4:26b-a4b-it-q4_K_M"
 DEFAULT_OLLAMA_THINK = False
 DEFAULT_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:18545"
 DEFAULT_ENERGY_CHAIN_ID = 42424242

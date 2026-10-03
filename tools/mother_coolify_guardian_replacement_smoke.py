@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Reproduce the Coolify guardian replacement split without SSH.
+"""Verify the Coolify replica-sync guardian production fallback without SSH.
 
 This smoke uses only the local Mother private-state bundle plus outbound Coolify
-API calls.  It creates a disposable two-component Coolify service on one
+API calls. It creates a disposable two-component Coolify service on one
 controller, proves the node and replica-sync guardian are healthy, then invokes
 the *actual* production replica-sync guardian-start fallback against that
 disposable service.
 
-The production fallback creates its normal temporary Docker-control service via
-Coolify and performs the raw ``docker compose --force-recreate`` guardian
-replacement.  The smoke then observes the target through the Coolify API and
-tries the candidate repair: restart/start the existing guardian child
-application through Coolify's API, without restarting the parent service.
+The production fallback must recreate only ``mother-replica-sync-guardian`` from
+Coolify's canonical normalized ``docker-compose.yml``. The smoke then verifies
+through the Coolify API that the guardian and parent return healthy while the
+node application UUID remains unchanged.
 
-No SSH is used.  No real Mother node, validator, topology, or chain state is
-mutated.  All target resources created by this smoke are disposable.
+No SSH is used. No real Mother node, validator, topology, or chain state is
+mutated. All target resources created by this smoke are disposable.
 """
 
 from __future__ import annotations
@@ -65,7 +64,7 @@ def _preparse_repo_root(argv: list[str]) -> str | None:
 
 REPO_ROOT = _install_repo_import_path(_preparse_repo_root(sys.argv[1:]))
 
-from tools.mother.common.coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, resolve_coolify_controller
+from tools.mother.common.coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
 from tools.mother.common.deployment_completed_helper_cleanup import (
     _application_records,
     _application_uuid,
@@ -74,6 +73,7 @@ from tools.mother.common.deployment_completed_helper_cleanup import (
     _resolve_environment_uuid,
     _temporary_service_body,
 )
+import tools.mother.common.deployment_node_add_replica_sync_v2 as replica_sync_v2
 from tools.mother.common.deployment_node_add_replica_sync_v2 import _run_replica_sync_guardian_start
 from tools.mother.common.models import OperationIdentity
 from tools.mother.common.paths import MotherPaths
@@ -326,6 +326,171 @@ def _wait_snapshot(
         time.sleep(max(0.5, min(poll_interval_seconds, deadline - time.monotonic())))
 
 
+def _canonical_repair_script(*, target_uuid: str, node: str, wait_seconds: int, poll_seconds: int) -> str:
+    target = _identifier(target_uuid, "target_uuid")
+    node_name = _identifier(node, "node")
+    wait_limit = max(1, int(wait_seconds))
+    poll_interval = max(1, int(poll_seconds))
+    return "\n".join(
+        [
+            "set -eu",
+            f"TARGET_SERVICE_UUID='{target}'",
+            f"NODE_NAME='{node_name}'",
+            "GUARDIAN_NAME='mother-replica-sync-guardian'",
+            f"WAIT_LIMIT={wait_limit}",
+            f"POLL_INTERVAL={poll_interval}",
+            "normalize_label() {",
+            "  case \"${1:-}\" in ''|'<no value>'|'<nil>'|'null') printf '' ;; *) printf '%s' \"$1\" ;; esac",
+            "}",
+            "find_project() {",
+            "  uuid=\"$1\"",
+            "  for c in $(docker ps -aq --filter \"label=com.docker.compose.project=$uuid\" 2>/dev/null || true); do",
+            "    project=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    workdir=\"$(normalize_label \"$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project.working_dir\" }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    if [ -n \"$project\" ] && [ -n \"$workdir\" ]; then printf '%s\\n%s\\n' \"$project\" \"$workdir\"; return 0; fi",
+            "  done",
+            "  echo \"MOTHER_COOLIFY_GUARDIAN_CANONICAL_REPAIR_DIAG project-not-found service_uuid=$uuid\" >&2",
+            "  return 1",
+            "}",
+            "node_healthy() {",
+            "  project=\"$1\"",
+            "  ids=\"$(docker ps -aq --filter \"label=com.docker.compose.project=$project\" --filter \"label=com.docker.compose.service=$NODE_NAME\" 2>/dev/null || true)\"",
+            "  for c in $ids; do",
+            "    state=\"$(normalize_label \"$(docker inspect -f '{{ .State.Status }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    health=\"$(normalize_label \"$(docker inspect -f '{{ if .State.Health }}{{ .State.Health.Status }}{{ end }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    if [ \"$state\" = running ] && [ \"$health\" = healthy ]; then return 0; fi",
+            "  done",
+            "  return 1",
+            "}",
+            "guardian_healthy() {",
+            "  project=\"$1\"",
+            "  ids=\"$(docker ps -aq --filter \"label=com.docker.compose.project=$project\" --filter \"label=com.docker.compose.service=$GUARDIAN_NAME\" 2>/dev/null || true)\"",
+            "  for c in $ids; do",
+            "    state=\"$(normalize_label \"$(docker inspect -f '{{ .State.Status }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    health=\"$(normalize_label \"$(docker inspect -f '{{ if .State.Health }}{{ .State.Health.Status }}{{ end }}' \"$c\" 2>/dev/null || true)\")\"",
+            "    if [ \"$state\" = running ] && [ \"$health\" = healthy ]; then return 0; fi",
+            "  done",
+            "  return 1",
+            "}",
+            "info=\"$(find_project \"$TARGET_SERVICE_UUID\")\"",
+            "PROJECT=\"$(printf '%s\\n' \"$info\" | sed -n '1p')\"",
+            "WORKDIR=\"$(printf '%s\\n' \"$info\" | sed -n '2p')\"",
+            "CANONICAL_COMPOSE=\"$WORKDIR/docker-compose.yml\"",
+            "if ! node_healthy \"$PROJECT\"; then echo \"MOTHER_COOLIFY_GUARDIAN_CANONICAL_REPAIR_DIAG node-not-running-healthy\" >&2; exit 1; fi",
+            "if [ ! -f \"$CANONICAL_COMPOSE\" ]; then echo \"MOTHER_COOLIFY_GUARDIAN_CANONICAL_REPAIR_DIAG canonical-compose-missing path=$CANONICAL_COMPOSE\" >&2; exit 1; fi",
+            "docker compose -p \"$PROJECT\" -f \"$CANONICAL_COMPOSE\" --project-directory \"$WORKDIR\" up -d --no-deps --force-recreate \"$GUARDIAN_NAME\" || { echo \"MOTHER_COOLIFY_GUARDIAN_CANONICAL_REPAIR_DIAG canonical-compose-up-failed project=$PROJECT\" >&2; exit 1; }",
+            "start=$(date +%s)",
+            "while :; do",
+            "  if guardian_healthy \"$PROJECT\"; then",
+            "    touch /tmp/mother-coolify-guardian-canonical-repair-done",
+            "    echo mother-coolify-guardian-canonical-repair-done",
+            "    sleep 120",
+            "    exit 0",
+            "  fi",
+            "  now=$(date +%s)",
+            "  if [ $((now - start)) -ge \"$WAIT_LIMIT\" ]; then echo \"MOTHER_COOLIFY_GUARDIAN_CANONICAL_REPAIR_DIAG guardian-health-timeout project=$PROJECT\" >&2; exit 1; fi",
+            "  sleep \"$POLL_INTERVAL\"",
+            "done",
+        ]
+    ) + "\n"
+
+
+def _canonical_repair_compose(service_name: str, script: str) -> str:
+    compose = {
+        "services": {
+            service_name: {
+                "image": "docker:27-cli",
+                "command": ["sh", "-lc", script.replace("$", "$$")],
+                "volumes": [
+                    "/var/run/docker.sock:/var/run/docker.sock",
+                    "/data/coolify:/data/coolify:ro",
+                ],
+                "restart": "no",
+                "labels": {
+                    "main_computer.mother.component": "coolify-guardian-canonical-repair-smoke",
+                    "main_computer.mother.not_a_validator": "true",
+                    "main_computer.mother.not_a_chain_service": "true",
+                },
+                "healthcheck": {
+                    "test": ["CMD-SHELL", "test -f /tmp/mother-coolify-guardian-canonical-repair-done"],
+                    "interval": "5s",
+                    "timeout": "2s",
+                    "retries": 3,
+                    "start_period": "1s",
+                },
+            }
+        }
+    }
+    return yaml.safe_dump(compose, sort_keys=False)
+
+
+def _start_canonical_repair_helper(
+    *,
+    controller: Any,
+    controller_config: Mapping[str, Any],
+    environment_uuid: str,
+    network: str,
+    target_uuid: str,
+    node: str,
+    timeout: float,
+    max_response_bytes: int,
+    wait_seconds: float,
+    poll_interval_seconds: float,
+) -> dict[str, Any]:
+    helper_name = _identifier(f"mother-guardian-canonical-repair-{_stamp()}"[:63], "canonical repair helper")
+    script = _canonical_repair_script(
+        target_uuid=target_uuid,
+        node=node,
+        wait_seconds=max(1, int(wait_seconds)),
+        poll_seconds=max(1, int(poll_interval_seconds)),
+    )
+    compose = _canonical_repair_compose(helper_name, script)
+    body = _temporary_service_body(controller_config, helper_name, compose)
+    body["environment_name"] = network
+    body["environment_uuid"] = environment_uuid
+    body["description"] = "Disposable Coolify canonical guardian repair smoke helper"
+    body["instant_deploy"] = False
+    create = _http(
+        controller,
+        "POST",
+        "/api/v1/services",
+        body=body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=urllib.request.urlopen,
+    )
+    result: dict[str, Any] = {
+        "helper_name": helper_name,
+        "helper_uuid": None,
+        "create": {
+            "status": create.get("status"),
+            "ok": create.get("ok") is True,
+            "response_sha256": create.get("response_sha256"),
+        },
+        "start": None,
+    }
+    if not create.get("ok"):
+        return result
+    helper_uuid = _application_uuid(create.get("payload"))
+    result["helper_uuid"] = helper_uuid
+    endpoint = f"/api/v1/services/{urllib.parse.quote(helper_uuid, safe='')}/start"
+    start = _http(
+        controller,
+        "POST",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=urllib.request.urlopen,
+    )
+    result["start"] = {
+        "status": start.get("status"),
+        "ok": start.get("ok") is True,
+        "response_sha256": start.get("response_sha256"),
+    }
+    return result
+
+
 def _child_action(
     controller: Any,
     *,
@@ -351,7 +516,7 @@ def _child_action(
             body=None,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
-            opener=urllib.request.urlopen,
+            opener=_DEFAULT_OPENER,
         )
         receipt = {
             "method": method,
@@ -367,6 +532,116 @@ def _child_action(
         if receipt["ok"]:
             return {"ok": True, "selected": receipt, "attempts": receipts}
     return {"ok": False, "selected": None, "attempts": receipts}
+
+
+
+def _smoke_guardian_start_log_diagnostic(
+    *,
+    controller: Any,
+    controller_id: str,
+    service_uuid: str,
+    service_name: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    """Read helper logs through Coolify's child-application APIs while it still exists."""
+    quoted_service = urllib.parse.quote(service_uuid, safe="")
+    detail_endpoint = f"/api/v1/services/{quoted_service}"
+    detail = _http(
+        controller,
+        "GET",
+        detail_endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    applications = []
+    if detail.get("ok"):
+        applications = [dict(item) for item in _application_records(detail.get("payload"))]
+    selected = None
+    for item in applications:
+        if str(item.get("name") or "") == service_name:
+            selected = item
+            break
+    if selected is None and len(applications) == 1:
+        selected = applications[0]
+
+    application_uuid = str((selected or {}).get("uuid") or "")
+    attempts: list[dict[str, Any]] = []
+    selected_logs: str | None = None
+    if application_uuid:
+        quoted_app = urllib.parse.quote(application_uuid, safe="")
+        endpoints = (
+            (
+                "service-application",
+                f"/api/v1/services/{quoted_service}/applications/{quoted_app}/logs?lines=300&show_timestamps=true",
+            ),
+            ("application", f"/api/v1/applications/{quoted_app}/logs?lines=300"),
+        )
+        for endpoint_kind, endpoint in endpoints:
+            response = _http(
+                controller,
+                "GET",
+                endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            payload = response.get("payload")
+            logs = None
+            if isinstance(payload, Mapping) and isinstance(payload.get("logs"), str):
+                logs = payload.get("logs")
+            elif isinstance(payload, str):
+                logs = payload
+            attempts.append(
+                {
+                    "endpoint_kind": endpoint_kind,
+                    "endpoint": endpoint,
+                    "status": response.get("status"),
+                    "ok": response.get("ok") is True,
+                    "response_sha256": response.get("response_sha256"),
+                    "byte_length": response.get("byte_length"),
+                    "logs_field_present": isinstance(logs, str),
+                }
+            )
+            if isinstance(logs, str):
+                selected_logs = logs
+                break
+
+    markers = []
+    if isinstance(selected_logs, str):
+        for token in (
+            "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG project-not-found",
+            "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG node-not-running-healthy",
+            "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG canonical-compose-missing",
+            "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG canonical-compose-up-failed",
+            "MOTHER_REPLICA_SYNC_GUARDIAN_START_DIAG guardian-health-timeout",
+            "mother-replica-sync-guardian-started",
+        ):
+            if token in selected_logs:
+                markers.append(token)
+
+    return {
+        "observed_at": _utc_now(),
+        "controller_id": controller_id,
+        "temporary_service_uuid": service_uuid,
+        "temporary_service_name": service_name,
+        "application_uuid": application_uuid or None,
+        "application_name": str((selected or {}).get("name") or "") or None,
+        "application_status": str((selected or {}).get("status") or "") or None,
+        "detail_status": detail.get("status"),
+        "detail_ok": detail.get("ok") is True,
+        "attempts": attempts,
+        "failure_markers": markers,
+        "logs": selected_logs[-12000:] if isinstance(selected_logs, str) else None,
+        "logs_sha256": hashlib.sha256(selected_logs.encode("utf-8")).hexdigest() if isinstance(selected_logs, str) else None,
+        "logs_byte_length": len(selected_logs.encode("utf-8")) if isinstance(selected_logs, str) else None,
+        "raw_logs_persisted": isinstance(selected_logs, str),
+        "read_only": True,
+    }
 
 
 def _delete_service(
@@ -549,7 +824,7 @@ def run_smoke(
         "node": node,
         "guardian": GUARDIAN_NAME,
         "production_function_under_test": "tools.mother.common.deployment_node_add_replica_sync_v2._run_replica_sync_guardian_start",
-        "candidate_repair": "Coolify child application restart/start only",
+        "expected_behavior": "production guardian helper recreates from Coolify canonical normalized docker-compose.yml only",
         "uses_ssh": False,
         "parent_restart_allowed": False,
         "real_mother_node_mutation_allowed": False,
@@ -631,46 +906,26 @@ def run_smoke(
         if not node_uuid or not guardian_uuid:
             raise _fail("MOTHER_COOLIFY_GUARDIAN_SMOKE_COMPONENT_UUID_MISSING", "Coolify baseline lacks node/guardian application UUID")
 
-        broken = _run_replica_sync_guardian_start(
-            private_state,
-            network=network,
-            controller_id=controller_id,
-            service_uuid=target_uuid,
-            node=node,
-            compose_text=compose_text,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            max_wait_seconds=fallback_wait_seconds,
-            poll_interval_seconds=poll_interval_seconds,
-            opener=urllib.request.urlopen,
-        )
+        original_log_diagnostic = replica_sync_v2._guardian_start_log_diagnostic
+        replica_sync_v2._guardian_start_log_diagnostic = _smoke_guardian_start_log_diagnostic
+        try:
+            broken = replica_sync_v2._run_replica_sync_guardian_start(
+                private_state,
+                network=network,
+                controller_id=controller_id,
+                service_uuid=target_uuid,
+                node=node,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                max_wait_seconds=fallback_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                opener=_DEFAULT_OPENER,
+            )
+        finally:
+            replica_sync_v2._guardian_start_log_diagnostic = original_log_diagnostic
         result["production_fallback"] = broken
 
-        post_bug, post_bug_samples = _wait_snapshot(
-            controller,
-            target_uuid,
-            node=node,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            max_wait_seconds=min(wait_seconds, 60.0),
-            poll_interval_seconds=poll_interval_seconds,
-            predicate=_split_observed,
-        )
-        result["post_bug"] = post_bug
-        result["post_bug_samples"] = post_bug_samples
-        result["bug_reproduced"] = _split_observed(post_bug)
-        result["node_uuid_preserved_during_bug"] = str(post_bug.get("node", {}).get("uuid") or "") == node_uuid
-
-        child_repair = _child_action(
-            controller,
-            parent_service_uuid=target_uuid,
-            application_uuid=guardian_uuid,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-        )
-        result["candidate_child_repair"] = child_repair
-
-        repaired, repair_samples = _wait_snapshot(
+        post_fallback, post_fallback_samples = _wait_snapshot(
             controller,
             target_uuid,
             node=node,
@@ -680,23 +935,26 @@ def run_smoke(
             poll_interval_seconds=poll_interval_seconds,
             predicate=lambda item: _repaired(item, expected_node_uuid=node_uuid),
         )
-        result["post_repair"] = repaired
-        result["post_repair_samples"] = repair_samples
-        result["candidate_repair_verified"] = bool(child_repair.get("ok")) and _repaired(repaired, expected_node_uuid=node_uuid)
-        result["node_uuid_preserved_by_repair"] = str(repaired.get("node", {}).get("uuid") or "") == node_uuid
+        result["post_fallback"] = post_fallback
+        result["post_fallback_samples"] = post_fallback_samples
+        result["production_fallback_verified"] = (
+            broken.get("status") == "pass"
+            and _repaired(post_fallback, expected_node_uuid=node_uuid)
+        )
+        result["node_uuid_preserved"] = str(post_fallback.get("node", {}).get("uuid") or "") == node_uuid
+        result["bug_reproduced"] = _split_observed(post_fallback)
 
         result["status"] = (
             "pass"
-            if result["bug_reproduced"]
-            and result["candidate_repair_verified"]
-            and result["node_uuid_preserved_during_bug"]
-            and result["node_uuid_preserved_by_repair"]
+            if result["production_fallback_verified"]
+            and result["node_uuid_preserved"]
+            and not result["bug_reproduced"]
             else "failed"
         )
         result["verdict"] = {
+            "production_canonical_compose_fallback_worked": result["production_fallback_verified"],
             "bug_reproduced": result["bug_reproduced"],
-            "candidate_api_child_repair_worked": result["candidate_repair_verified"],
-            "node_application_uuid_unchanged": result["node_uuid_preserved_by_repair"],
+            "node_application_uuid_unchanged": result["node_uuid_preserved"],
             "parent_restart_used": False,
             "ssh_used": False,
         }
@@ -750,8 +1008,8 @@ def run_smoke(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Reproduce the Coolify replica-sync guardian raw-compose replacement bug on a disposable service, "
-            "then test a child-application API restart repair. No SSH."
+            "Verify the Coolify replica-sync guardian production fallback on a disposable service using "
+            "Coolify's canonical normalized Compose definition. No SSH."
         )
     )
     parser.add_argument("command", choices=["plan", "run"])
@@ -763,7 +1021,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--max-response-bytes", type=int, default=_DEFAULT_MAX_RESPONSE_BYTES)
     parser.add_argument("--wait-seconds", type=float, default=90.0)
-    parser.add_argument("--fallback-wait-seconds", type=float, default=25.0)
+    parser.add_argument("--fallback-wait-seconds", type=float, default=120.0)
     parser.add_argument("--poll-interval-seconds", type=float, default=2.0)
     parser.add_argument("--keep-target", action="store_true", help="Keep the disposable target service for manual Coolify inspection.")
     return parser

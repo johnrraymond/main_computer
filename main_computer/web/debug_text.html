@@ -368,7 +368,7 @@
       </section>
       <aside class="fullscreen-widget" aria-label="Debug output">
         <button class="fullscreen-control" type="button" data-fullscreen-target="closest">Full Screen</button>
-        <p class="meta">Local Ollama route: <strong>gemma4:26b</strong></p>
+        <p class="meta">Local Ollama route: <strong>gemma4:26b-a4b-it-q4_K_M</strong></p>
         <p class="meta">Read, write, and revise stay inside the running main computer project root.</p>
         <p class="meta">Debug assets are saved under <strong>debug_assets</strong> in the running project.</p>
         <div id="asset-nav" class="asset-nav" aria-label="Saved debug assets"></div>
@@ -392,7 +392,7 @@
     function setDebugStatus(data) {
       const lock = data.passcode_required ? "passcode protected" : "local open";
       const state = data.active ? "enabled" : "disabled";
-      debugStatus.textContent = `${state} | ${lock} | ${data.model || "gemma4:26b"}`;
+      debugStatus.textContent = `${state} | ${lock} | ${data.model || "gemma4:26b-a4b-it-q4_K_M"}`;
       debugToggle.textContent = data.active ? "Disable" : "Enable";
       debugToggle.classList.toggle("debug-disable", Boolean(data.active));
       debugToggle.classList.toggle("debug-enable", !data.active);

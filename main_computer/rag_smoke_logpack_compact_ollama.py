@@ -1009,7 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.add_argument("log_file", help="Path to .log file. Example: aider.log\\aider.log")
     parser.add_argument("--query", default=DEFAULT_QUERY)
-    parser.add_argument("--model", default="gemma4:26b")
+    parser.add_argument("--model", default="gemma4:26b-a4b-it-q4_K_M")
     parser.add_argument("--url", default="http://127.0.0.1:11434/api/generate")
     parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument("--expect", action="append", default=[])

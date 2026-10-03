@@ -397,7 +397,7 @@ def _data_agent_model(args: argparse.Namespace | None = None, explicit_model: st
     """Resolve Data's agent model from an explicit option or local Main Computer config.
 
     This keeps `data engage computer --agent` and `data ... --god-mode --agent`
-    on the same inferred model without requiring `--model gemma4:26b`.
+    on the same inferred model without requiring `--model gemma4:26b-a4b-it-q4_K_M`.
     """
 
     explicit = str(explicit_model or "").strip()
@@ -1383,7 +1383,7 @@ def cmd_project(args: argparse.Namespace) -> int:
 
 
 def cmd_providers(args: argparse.Namespace) -> int:
-    print("ollama | default | local HTTP API | model default: gemma4:26b")
+    print("ollama | default | local HTTP API | model default: gemma4:26b-a4b-it-q4_K_M")
     print("openai | optional | OpenAI Python SDK | requires OPENAI_API_KEY")
     print("hub | remote | Main Computer hub broker | set MAIN_COMPUTER_HUB_URL or --hub-url")
     return 0

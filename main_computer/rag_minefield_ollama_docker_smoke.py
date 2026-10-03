@@ -255,7 +255,7 @@ def extract_json_object(text: str) -> dict[str, Any]:
 def get_local_ollama_provider(*, model: str | None, stream_model: bool) -> LLMProvider:
     config = MainComputerConfig.from_env()
     provider: LLMProvider = OllamaProvider(
-        model=model or config.model or "gemma4:26b",
+        model=model or config.model or "gemma4:26b-a4b-it-q4_K_M",
         base_url=config.ollama_base_url,
         timeout_s=config.ollama_timeout_s,
         fallback=config.fallback,

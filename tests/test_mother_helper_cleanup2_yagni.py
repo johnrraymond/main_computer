@@ -518,6 +518,11 @@ def test_cleanup2_yagni_patches_helpers_and_runs_one_host_local_cleanup2_service
     assert waiter_argv[2:5] == ["mainnet", "coolify-c", "mainnetc-super2"]
     assert waiter_argv[waiter_argv.index("--target-service-uuid") + 1] == SERVICE_UUID
     assert "--runtime-state-root" in waiter_argv
+    assert waiter_argv[waiter_argv.index("--topology-evidence") + 1] == str(topology_path)
+    assert (
+        waiter_argv[waiter_argv.index("--acknowledge-topology-evidence-sha256") + 1]
+        == hashlib.sha256(topology_path.read_bytes()).hexdigest()
+    )
     assert waiter_argv[waiter_argv.index("--max-wait-seconds") + 1] == str(BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS)
     assert "--quiet" in waiter_argv
     assert "--wait-forever-after-baseline" not in waiter_argv

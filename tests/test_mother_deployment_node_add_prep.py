@@ -1197,8 +1197,13 @@ class _AddNodeReplicaSyncOpener:
         if method == "POST" and path == "/api/v1/services":
             decoded = __import__("base64").b64decode(body["docker_compose_raw"]).decode("utf-8")
             assert "mother-replica-sync-guardian" in decoded
-            assert "docker compose" in decoded
             assert "--force-recreate" in decoded
+            if "CANONICAL_COMPOSE" in decoded:
+                assert "docker-compose.yml" in decoded
+                assert "--project-directory" in decoded
+                assert "/tmp/mother-replica-sync-guardian.yml" not in decoded
+            else:
+                assert "docker compose" in decoded
             assert "mother-replica-init" not in decoded
             assert A_NODE in decoded
             self.temp_service_name = body["name"]

@@ -37,7 +37,7 @@ from typing import Any
 
 
 SMOKE_DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-SMOKE_DEFAULT_OLLAMA_MODEL = "gemma4:26b"
+SMOKE_DEFAULT_OLLAMA_MODEL = "gemma4:26b-a4b-it-q4_K_M"
 DEFAULT_PROJECT_ID = "webgl-demo"
 MODE = "chat_app_game_editor_read_only_operator_smoke"
 
@@ -614,7 +614,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-id", default=DEFAULT_PROJECT_ID, help="Game project id to load from the Game Editor API.")
     parser.add_argument("--skip-ai", action="store_true", help="Verify route/static/API contracts only; do not call Ollama.")
     parser.add_argument("--ollama-url", default=None, help="Ollama base URL. Defaults to env or http://127.0.0.1:11434.")
-    parser.add_argument("--model", default=None, help="Ollama model. Defaults to env or gemma4:26b.")
+    parser.add_argument("--model", default=None, help="Ollama model. Defaults to env or gemma4:26b-a4b-it-q4_K_M.")
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument("--ai-timeout-seconds", type=float, default=600.0)
     parser.add_argument("--num-predict", type=int, default=900)

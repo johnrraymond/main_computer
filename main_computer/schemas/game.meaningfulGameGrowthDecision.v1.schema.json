@@ -1,0 +1,496 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maincomputer.local/schemas/game.meaningfulGameGrowthDecision.v1.schema.json",
+  "title": "Meaningful Game Growth Decision v1",
+  "description": "Strict model response contract for translation/context/design rounds in meaningful_game_growth_prompt_v2.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "game.meaningfulGameGrowthDecision.v1"
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "translate",
+        "design"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "moduleProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "responsibility": {
+          "type": "string",
+          "minLength": 1
+        },
+        "playerMeaning": {
+          "type": "string",
+          "minLength": 1
+        },
+        "persistentEffectClasses": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "responsibility",
+        "playerMeaning",
+        "persistentEffectClasses"
+      ]
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "claim": {
+            "type": "string",
+            "minLength": 1
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "brief",
+              "source",
+              "inference"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "id",
+          "claim",
+          "basis",
+          "evidence"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "basis": {
+                  "enum": [
+                    "brief",
+                    "source"
+                  ]
+                }
+              },
+              "required": [
+                "basis"
+              ]
+            },
+            "then": {
+              "properties": {
+                "evidence": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1
+          },
+          "blocking": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "blocking"
+        ]
+      }
+    },
+    "catalogQueries": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "terms": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "terms",
+          "reason"
+        ]
+      }
+    },
+    "contextRequests": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "selector": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "search"
+                  },
+                  "terms": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "contextLines": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 120
+                  }
+                },
+                "required": [
+                  "kind",
+                  "terms",
+                  "contextLines"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "lines"
+                  },
+                  "start": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "end": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "kind",
+                  "start",
+                  "end"
+                ],
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "start": {
+                          "type": "integer"
+                        },
+                        "end": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "then": {}
+                  }
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "whole_if_under"
+                  },
+                  "maxChars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 12000
+                  }
+                },
+                "required": [
+                  "kind",
+                  "maxChars"
+                ]
+              }
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "selector",
+          "reason",
+          "required"
+        ]
+      }
+    },
+    "readyForDesign": {
+      "type": "boolean"
+    },
+    "readyForCode": {
+      "type": "boolean"
+    },
+    "design": {
+      "oneOf": [
+        {
+          "type": "object",
+          "maxProperties": 0
+        },
+        {
+          "$ref": "https://maincomputer.local/schemas/game.meaningfulGameModuleDesign.v1.schema.json"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "phase",
+    "summary",
+    "moduleProposal",
+    "facts",
+    "unknowns",
+    "catalogQueries",
+    "contextRequests",
+    "readyForDesign",
+    "readyForCode",
+    "design"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "translate"
+          }
+        },
+        "required": [
+          "phase"
+        ]
+      },
+      "then": {
+        "properties": {
+          "readyForCode": {
+            "const": false
+          },
+          "design": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "design"
+          }
+        },
+        "required": [
+          "phase"
+        ]
+      },
+      "then": {
+        "properties": {
+          "readyForDesign": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "readyForCode": {
+            "const": true
+          }
+        },
+        "required": [
+          "readyForCode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase": {
+            "const": "design"
+          },
+          "design": {
+            "$ref": "https://maincomputer.local/schemas/game.meaningfulGameModuleDesign.v1.schema.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "catalogQueries": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "contextRequests": {
+                "minItems": 1
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "phase": {
+                  "const": "translate"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "readyForDesign": {
+                  "const": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "phase": {
+                  "const": "design"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "readyForCode": {
+                  "const": false
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "catalogQueries": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "contextRequests": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "phase": {
+              "const": "translate"
+            },
+            "readyForDesign": {
+              "const": true
+            }
+          },
+          "required": [
+            "phase",
+            "readyForDesign"
+          ]
+        },
+        {
+          "properties": {
+            "phase": {
+              "const": "design"
+            },
+            "readyForCode": {
+              "const": true
+            }
+          },
+          "required": [
+            "phase",
+            "readyForCode"
+          ]
+        }
+      ]
+    }
+  ]
+}

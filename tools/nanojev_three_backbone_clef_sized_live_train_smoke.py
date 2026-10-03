@@ -46,8 +46,8 @@ DEFAULT_EPOCHS = 2
 DEFAULT_HEAD_LR = 1e-4
 DEFAULT_WEIGHT_DECAY = 0.01
 DEFAULT_GRAD_CLIP = 1.0
-DEFAULT_MAX_PROMPT_TOKENS = 128
-DEFAULT_MAX_ANSWER_TOKENS = 64
+DEFAULT_MAX_PROMPT_TOKENS = 768
+DEFAULT_MAX_ANSWER_TOKENS = 128
 DEFAULT_PROMPT_EVIDENCE_TOKENS = 8
 DEFAULT_ANSWER_EVIDENCE_TOKENS = 8
 DEFAULT_PATH_BATCH = 4
@@ -218,13 +218,132 @@ def balanced_truncate(ids: Sequence[int], limit: int) -> list[int]:
 
 
 def canonical_candidate_paths(question, candidate) -> tuple:
+    # Composition-v2 keeps every semantic path.  In particular, consensus needs
+    # both orientations of each pair so an outlier hypothesis is not evaluated
+    # through an arbitrary A->B/A->C/B->C directional projection.  Exact
+    # duplicate (prompt, answer) work is interned later by _model_sequences().
+    return tuple(candidate.paths)
+
+
+RELATIONAL_TASKS = {"mutation", "ast", "consensus", "triad"}
+TASK_COMPOSITION_VERSION = "direct-relational-labels-bidirectional-v2"
+EVIDENCE_CONTRACT_VERSION = "three-backbone-native-logp-predictor-terminal-v2"
+
+
+def _program_pair_prompt(left: str, right: str, *, task: str) -> str:
+    if task in {"ast", "triad", "consensus"}:
+        instruction = (
+            "Determine whether Program A and Program B have exactly the same normalized "
+            "Python AST. Ignore formatting-only differences. "
+            "Answer with exactly SAME or DIFFERENT."
+        )
+    elif task == "mutation":
+        instruction = (
+            "Determine whether Program B is a behavior-preserving rewrite of Program A. "
+            "Answer with exactly PRESERVING or CHANGING."
+        )
+    else:
+        raise ValueError(f"unsupported relational task: {task}")
+    return (
+        "Language: Python\n"
+        "Program A:\n```python\n" + left.rstrip() + "\n```\n"
+        "Program B:\n```python\n" + right.rstrip() + "\n```\n"
+        "Task: " + instruction + "\n"
+        "Answer:"
+    )
+
+
+def _new_path(template, prompt: str, answer: str):
+    return template.__class__(prompt, answer)
+
+
+def _new_candidate(template, candidate_id: str, paths: Sequence[Any]):
+    return template.__class__(candidate_id, tuple(paths))
+
+
+def _new_question_like(question, candidates: Sequence[Any]):
+    kwargs = {
+        "question_id": question.question_id,
+        "task": question.task,
+        "candidates": tuple(candidates),
+        "gold_index": int(question.gold_index),
+    }
+    if hasattr(question, "stratum"):
+        kwargs["stratum"] = str(getattr(question, "stratum") or "")
+    try:
+        return question.__class__(**kwargs)
+    except TypeError:
+        kwargs.pop("stratum", None)
+        return question.__class__(**kwargs)
+
+
+def _pair_codes_from_relation_candidate(candidate) -> tuple[str, str]:
     paths = tuple(candidate.paths)
-    # Consensus stores each pair in both directions.  Existing NanoJev relative
-    # diagnostics use one canonical direction per pair; do the same here to avoid
-    # paying twice for equivalent evidence.
-    if str(question.task) == "consensus" and len(paths) >= 6:
-        paths = paths[::2]
-    return paths
+    if len(paths) < 2:
+        raise RuntimeError(f"relational candidate has fewer than two paths: {candidate.candidate_id}")
+    # Legacy relation_candidate(left,right,...) stores left->right then right->left.
+    return str(paths[1].answer), str(paths[0].answer)
+
+
+def compose_relational_question_v2(question):
+    """Turn hypothesis-conditioned code continuations into direct relation labels."""
+    task = str(question.task)
+    if task not in RELATIONAL_TASKS:
+        return question
+    if not question.candidates:
+        raise RuntimeError(f"relational question has no candidates: {question.question_id}")
+    template_candidate = question.candidates[0]
+    template_path = template_candidate.paths[0]
+
+    if task in {"ast", "mutation", "triad"}:
+        left, right = _pair_codes_from_relation_candidate(template_candidate)
+        answer_by_id = {
+            "ast": {"positive": " SAME", "negative": " DIFFERENT"},
+            "mutation": {"positive": " PRESERVING", "negative": " CHANGING"},
+            "triad": {"same": " SAME", "different": " DIFFERENT"},
+        }[task]
+        candidates = []
+        for candidate in question.candidates:
+            if candidate.candidate_id not in answer_by_id:
+                raise RuntimeError(f"unexpected {task} candidate id: {candidate.candidate_id}")
+            answer = answer_by_id[candidate.candidate_id]
+            paths = (
+                _new_path(template_path, _program_pair_prompt(left, right, task=task), answer),
+                _new_path(template_path, _program_pair_prompt(right, left, task=task), answer),
+            )
+            candidates.append(_new_candidate(candidate, candidate.candidate_id, paths))
+        return _new_question_like(question, candidates)
+
+    paths = tuple(template_candidate.paths)
+    if len(paths) < 6:
+        raise RuntimeError(
+            f"consensus candidate lost bidirectional pair geometry: {question.question_id}"
+        )
+    a = str(paths[1].answer)
+    b = str(paths[0].answer)
+    c = str(paths[2].answer)
+    pair_codes = {"ab": (a, b), "ac": (a, c), "bc": (b, c)}
+    expected_by_id = {
+        "none": {"ab": "same", "ac": "same", "bc": "same"},
+        "a": {"ab": "different", "ac": "different", "bc": "same"},
+        "b": {"ab": "different", "ac": "same", "bc": "different"},
+        "c": {"ab": "same", "ac": "different", "bc": "different"},
+    }
+    candidates = []
+    for candidate in question.candidates:
+        expected = expected_by_id.get(candidate.candidate_id)
+        if expected is None:
+            raise RuntimeError(f"unexpected consensus candidate id: {candidate.candidate_id}")
+        new_paths = []
+        for pair_name in ("ab", "ac", "bc"):
+            left, right = pair_codes[pair_name]
+            answer = " SAME" if expected[pair_name] == "same" else " DIFFERENT"
+            new_paths.extend((
+                _new_path(template_path, _program_pair_prompt(left, right, task="consensus"), answer),
+                _new_path(template_path, _program_pair_prompt(right, left, task="consensus"), answer),
+            ))
+        candidates.append(_new_candidate(candidate, candidate.candidate_id, new_paths))
+    return _new_question_like(question, candidates)
 
 
 @dataclass
@@ -362,6 +481,8 @@ def build_head_class():
             self.global_projection = nn.Linear(hidden, width, bias=False)
             self.option_context_projection = nn.Linear(hidden, width, bias=False)
             self.option_lexical_projection = nn.Linear(hidden, width, bias=False)
+            self.option_logp_projection = nn.Linear(1, width, bias=False)
+            self.option_logp_scalar = nn.Linear(1, 1, bias=False)
 
     class ThreeBackboneClefHead(nn.Module):
         def __init__(
@@ -430,14 +551,24 @@ def build_head_class():
             field_parts = []
             global_parts = []
             lexical_parts = []
+            logp_prior_parts = []
             for label in self.labels:
                 row = evidence[label]
                 module = self.backbone_modules[label]
                 memory = module.hidden_norm(row["memory"])
                 option_context = module.hidden_norm(row["option_context"])
+                option_predictor = module.hidden_norm(row["option_predictor"])
+                option_terminal = module.hidden_norm(row["option_terminal"])
                 option_question = module.hidden_norm(row["option_question"])
                 lexical = module.hidden_norm(row["option_lexical"])
                 global_vector = module.hidden_norm(row["global"])
+                option_logp = row["option_logp"].to(
+                    device=option_context.device, dtype=option_context.dtype
+                ).reshape(-1, 1)
+                # Absolute LM calibration differs by backbone and question length.
+                # Candidate selection needs the within-question continuation
+                # evidence, so center each model's logP before projecting it.
+                centered_logp = option_logp - option_logp.mean(dim=0, keepdim=True)
                 if option_count is None:
                     option_count = int(option_context.shape[0])
                 elif option_count != int(option_context.shape[0]):
@@ -445,18 +576,24 @@ def build_head_class():
                 embed = self.model_embeddings[label]
                 memory_parts.append(module.memory_projection(memory) + embed)
                 option_query_parts.append(
-                    module.option_context_projection(option_context)
+                    module.option_context_projection(
+                        (option_context + option_predictor + option_terminal)
+                        / math.sqrt(3.0)
+                    )
                     + module.option_lexical_projection(lexical)
                     + module.option_question_projection(option_question)
+                    + module.option_logp_projection(centered_logp)
                 )
                 field_parts.append(module.question_projection(option_question.mean(dim=0)))
                 global_parts.append(module.global_projection(global_vector))
                 lexical_parts.append(module.option_lexical_projection(lexical))
+                logp_prior_parts.append(module.option_logp_scalar(centered_logp).squeeze(-1))
 
             scale = 1.0 / math.sqrt(float(len(self.labels)))
             memory = torch.cat(memory_parts, dim=0).unsqueeze(0)
             options = torch.stack(option_query_parts, dim=0).sum(dim=0) * scale
             lexical = torch.stack(lexical_parts, dim=0).sum(dim=0) * scale
+            logp_prior = torch.stack(logp_prior_parts, dim=0).sum(dim=0) * scale
             base_field = torch.stack(field_parts, dim=0).sum(dim=0) * scale
             global_vector = torch.stack(global_parts, dim=0).sum(dim=0) * scale
 
@@ -499,7 +636,11 @@ def build_head_class():
             residual = self.residual_scorer(features).squeeze(-1)
             joint_scale = self.joint_logit_scale.clamp(max=math.log(100.0)).exp()
             joint = joint_scale * cosine + residual
-            return prior_scale * lexical_prior + torch.sigmoid(self.residual_gate) * joint
+            return (
+                prior_scale * lexical_prior
+                + logp_prior
+                + torch.sigmoid(self.residual_gate) * joint
+            )
 
     return ThreeBackboneClefHead
 
@@ -694,11 +835,14 @@ def build_smoke_questions(*, experiment_dir: Path, output_dir: Path, seed: int, 
             smoke.EnglishCodeObjective(store, repo_root),
         ]
         registry = objective_api.ObjectiveRegistry(objectives)
-        generated = registry.generate_train(
-            dict(GENERATION_PLAN),
-            cycle=int(cycle),
-            rng=random.Random(int(seed)),
-        )
+        generated = [
+            compose_relational_question_v2(question)
+            for question in registry.generate_train(
+                dict(GENERATION_PLAN),
+                cycle=int(cycle),
+                rng=random.Random(int(seed)),
+            )
+        ]
         by_task: dict[str, list[Any]] = defaultdict(list)
         for question in generated:
             by_task[str(question.task)].append(question)
@@ -738,43 +882,95 @@ def build_smoke_questions(*, experiment_dir: Path, output_dir: Path, seed: int, 
 
 
 def _model_sequences(bundle: BackboneBundle, question, *, max_prompt_tokens: int, max_answer_tokens: int):
-    rows = []
+    """Encode and intern exact object paths while preserving semantic occurrences.
+
+    Composition-v2 preserves the complete answer in every backbone's native token
+    space.  Qwen's source objective already enforces the requested answer budget;
+    auxiliary tokenizers may expand the same text beyond that count, so truncating
+    them would silently change the candidate.  Prompt context is suffix-oriented,
+    matching the mature three-backbone logP path.
+    """
+    rows: list[dict[str, Any]] = []
+    row_by_key: dict[tuple[tuple[int, ...], tuple[int, ...]], int] = {}
+    occurrence_count = 0
     for candidate_index, candidate in enumerate(question.candidates):
         for path_index, path in enumerate(canonical_candidate_paths(question, candidate)):
             prompt_ids = list(bundle.tokenizer.encode(path.prompt, add_special_tokens=False))
             answer_ids = list(bundle.tokenizer.encode(path.answer, add_special_tokens=False))
             if not answer_ids:
                 raise RuntimeError(
-                    f"{bundle.label} produced empty answer tokens: {question.question_id}/{candidate_index}/{path_index}"
+                    f"{bundle.label} produced empty answer tokens: "
+                    f"{question.question_id}/{candidate_index}/{path_index}"
                 )
-            prompt_ids = balanced_truncate(prompt_ids, max_prompt_tokens)
-            answer_ids = balanced_truncate(answer_ids, max_answer_tokens)
-            room = bundle.max_positions - len(answer_ids)
-            if room <= 0:
+            if bundle.label == "qwen" and len(answer_ids) > int(max_answer_tokens):
                 raise RuntimeError(
-                    f"{bundle.label} answer cannot fit model context: {question.question_id} answer={len(answer_ids)}"
+                    f"qwen answer exceeds max_answer_tokens={max_answer_tokens}: "
+                    f"{question.question_id}/{candidate_index}/{path_index} tokens={len(answer_ids)}"
                 )
-            prompt_ids = balanced_truncate(prompt_ids, min(max_prompt_tokens, room))
+            if len(answer_ids) >= bundle.max_positions:
+                raise RuntimeError(
+                    f"{bundle.label} answer cannot fit model context: "
+                    f"{question.question_id} answer={len(answer_ids)} max={bundle.max_positions}"
+                )
+            prompt_budget = min(
+                int(max_prompt_tokens),
+                int(bundle.max_positions) - len(answer_ids),
+            )
+            if prompt_budget <= 0:
+                raise RuntimeError(
+                    f"{bundle.label} has no prompt room after preserving the answer: "
+                    f"{question.question_id} answer={len(answer_ids)}"
+                )
+            prompt_ids = prompt_ids[-prompt_budget:]
             if not prompt_ids:
                 raise RuntimeError(
-                    f"{bundle.label} produced empty bounded prompt: {question.question_id}/{candidate_index}/{path_index}"
+                    f"{bundle.label} produced empty bounded prompt: "
+                    f"{question.question_id}/{candidate_index}/{path_index}"
                 )
-            rows.append({
-                "candidate": candidate_index,
-                "prompt_ids": prompt_ids,
-                "answer_ids": answer_ids,
-            })
+            key = (tuple(prompt_ids), tuple(answer_ids))
+            row_index = row_by_key.get(key)
+            if row_index is None:
+                row_index = len(rows)
+                row_by_key[key] = row_index
+                rows.append({
+                    "candidates": [candidate_index],
+                    "prompt_ids": prompt_ids,
+                    "answer_ids": answer_ids,
+                })
+            else:
+                rows[row_index]["candidates"].append(candidate_index)
+            occurrence_count += 1
     if not rows:
         raise RuntimeError(f"question has no encoded paths: {question.question_id}")
-    return rows
+    return rows, occurrence_count
+
+
+def _continuation_mean_logp(*, torch, hidden, tokens, prompt_length: int,
+                            answer_length: int, output_weight):
+    import torch.nn.functional as F
+
+    start = int(prompt_length)
+    count = int(answer_length)
+    if start <= 0 or count <= 0:
+        raise RuntimeError("continuation logP requires nonempty prompt and answer")
+    predictors = hidden[start - 1 : start + count - 1]
+    targets = tokens[start : start + count]
+    if predictors.shape[0] != count or targets.shape[0] != count:
+        raise RuntimeError("continuation logP span accounting mismatch")
+    logits = F.linear(predictors, output_weight).float()
+    selected = F.log_softmax(logits, dim=-1).gather(
+        1, targets.long().unsqueeze(1)
+    ).squeeze(1)
+    return selected.mean(), predictors.mean(dim=0)
 
 
 def extract_bundle_evidence(
     *, torch, bundle: BackboneBundle, question, path_batch: int,
     max_prompt_tokens: int, max_answer_tokens: int,
     prompt_evidence_tokens: int, answer_evidence_tokens: int,
+    track_grad: bool = False,
 ):
-    rows = _model_sequences(
+    rows, occurrence_count = _model_sequences(
         bundle, question,
         max_prompt_tokens=max_prompt_tokens,
         max_answer_tokens=max_answer_tokens,
@@ -782,8 +978,11 @@ def extract_bundle_evidence(
     candidate_count = len(question.candidates)
     memory_parts = []
     option_answer: list[list[Any]] = [[] for _ in range(candidate_count)]
+    option_predictor: list[list[Any]] = [[] for _ in range(candidate_count)]
+    option_terminal: list[list[Any]] = [[] for _ in range(candidate_count)]
     option_prompt: list[list[Any]] = [[] for _ in range(candidate_count)]
     option_lexical: list[list[Any]] = [[] for _ in range(candidate_count)]
+    option_logp: list[list[Any]] = [[] for _ in range(candidate_count)]
     device = bundle.output_weight.device
     pad = int(bundle.tokenizer.pad_token_id)
 
@@ -797,7 +996,9 @@ def extract_bundle_evidence(
             seq = row["prompt_ids"] + row["answer_ids"]
             tokens[index, :len(seq)] = torch.tensor(seq, dtype=torch.long, device=device)
             attention[index, :len(seq)] = 1
-        with torch.no_grad():
+        from contextlib import nullcontext
+        grad_context = nullcontext() if track_grad else torch.no_grad()
+        with grad_context:
             output = bundle.backbone(
                 input_ids=tokens,
                 attention_mask=attention,
@@ -805,20 +1006,37 @@ def extract_bundle_evidence(
                 return_dict=True,
             )
             hidden = output.last_hidden_state
+
+            def preserve(value):
+                return value if track_grad else value.detach()
+
             for index, row in enumerate(chunk):
-                candidate = int(row["candidate"])
                 plen = len(row["prompt_ids"])
                 alen = len(row["answer_ids"])
                 prompt_idx = balanced_indices(0, plen, prompt_evidence_tokens)
                 answer_idx = balanced_indices(plen, plen + alen, answer_evidence_tokens)
                 evidence_idx = prompt_idx + answer_idx
-                memory_parts.append(hidden[index, evidence_idx].detach())
-                option_prompt[candidate].append(hidden[index, :plen].mean(dim=0).detach())
-                option_answer[candidate].append(hidden[index, plen:plen + alen].mean(dim=0).detach())
-                answer_token_ids = tokens[index, plen:plen + alen]
-                option_lexical[candidate].append(
-                    bundle.output_weight[answer_token_ids].mean(dim=0).detach()
+                memory_parts.append(preserve(hidden[index, evidence_idx]))
+                path_logp, predictor_mean = _continuation_mean_logp(
+                    torch=torch,
+                    hidden=hidden[index],
+                    tokens=tokens[index],
+                    prompt_length=plen,
+                    answer_length=alen,
+                    output_weight=bundle.output_weight,
                 )
+                prompt_mean = preserve(hidden[index, :plen].mean(dim=0))
+                answer_mean = preserve(hidden[index, plen:plen + alen].mean(dim=0))
+                terminal = preserve(hidden[index, plen + alen - 1])
+                answer_token_ids = tokens[index, plen:plen + alen]
+                lexical = preserve(bundle.output_weight[answer_token_ids].mean(dim=0))
+                for candidate in row["candidates"]:
+                    option_prompt[candidate].append(prompt_mean)
+                    option_answer[candidate].append(answer_mean)
+                    option_predictor[candidate].append(preserve(predictor_mean))
+                    option_terminal[candidate].append(terminal)
+                    option_lexical[candidate].append(lexical)
+                    option_logp[candidate].append(preserve(path_logp))
         del output, hidden, tokens, attention
 
     def stack_mean(groups, label: str):
@@ -833,10 +1051,14 @@ def extract_bundle_evidence(
     return {
         "memory": memory,
         "option_context": stack_mean(option_answer, "answer"),
+        "option_predictor": stack_mean(option_predictor, "predictor"),
+        "option_terminal": stack_mean(option_terminal, "terminal"),
         "option_question": stack_mean(option_prompt, "prompt"),
         "option_lexical": stack_mean(option_lexical, "lexical"),
+        "option_logp": stack_mean(option_logp, "logp"),
         "global": memory.mean(dim=0),
-        "path_count": len(rows),
+        "path_count": occurrence_count,
+        "unique_path_count": len(rows),
         "memory_tokens": int(memory.shape[0]),
     }
 
@@ -855,7 +1077,11 @@ def extract_live_evidence(*, torch, bundles: dict[str, BackboneBundle], question
             prompt_evidence_tokens=args.prompt_evidence_tokens,
             answer_evidence_tokens=args.answer_evidence_tokens,
         )
-        stats[label] = {"path_count": row.pop("path_count"), "memory_tokens": row.pop("memory_tokens")}
+        stats[label] = {
+            "path_count": row.pop("path_count"),
+            "unique_path_count": row.pop("unique_path_count"),
+            "memory_tokens": row.pop("memory_tokens"),
+        }
         evidence[label] = row
     logger.emit(
         "clef_sized_live_evidence",
@@ -1200,8 +1426,11 @@ def self_test() -> dict[str, Any]:
         evidence[label] = {
             "memory": torch.randn(11, hidden),
             "option_context": torch.randn(2, hidden),
+            "option_predictor": torch.randn(2, hidden),
+            "option_terminal": torch.randn(2, hidden),
             "option_question": torch.randn(2, hidden),
             "option_lexical": torch.randn(2, hidden),
+            "option_logp": torch.randn(2),
             "global": torch.randn(hidden),
         }
     optimizer = torch.optim.AdamW(tiny.parameters(), lr=1e-2)

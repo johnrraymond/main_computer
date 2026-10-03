@@ -372,6 +372,31 @@ def test_start_path_starts_explicit_podman_machine_without_docker_host_bridge() 
     assert "Podman was selected, but the Podman runtime is still not reachable after attempting to start its machine" in helper
 
 
+def test_start_path_ensures_docker_desktop_before_pre_supervisor_docker_consumers() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert "function Ensure-MainComputerDockerDesktopStarted" in helper
+    assert "function Resolve-MainComputerDockerDesktopExecutable" in helper
+    assert 'MAIN_COMPUTER_DOCKER_DESKTOP_EXE' in helper
+    assert 'Docker\\Docker\\Docker Desktop.exe' in helper
+    assert '& $DockerCommand version *> $null' in helper
+    assert 'MAIN_COMPUTER_DOCKER_DESKTOP_START_TIMEOUT_SECONDS' in helper
+    assert 'if ($NoDocker)' in helper
+
+    start_function = helper[
+        helper.index("function Start-MainComputer("):
+        helper.index("function Start-MainComputerDevHubOnly")
+    ]
+    ensure = "Ensure-MainComputerDockerDesktopStarted $RootPath $launchContext $pythonCommand"
+    assert ensure in start_function
+    assert start_function.index(ensure) < start_function.index(
+        "Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand"
+    )
+    assert start_function.index(ensure) < start_function.index(
+        "Start-MainComputerNanoJevManager $RootPath $launchContext $pythonCommand"
+    )
+
+
 def test_dev_hub_only_path_preflights_explicit_podman_runtime() -> None:
     helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 

@@ -5152,6 +5152,191 @@
       },
       "captainScrawl": "Congratulations, Captain, on picking the better of the two systems."
     },
+    "spacePhysics": {
+      "enabled": true,
+      "schema": "game.spacePhysics.v1",
+      "definitionVersion": "game.spacePhysics.definition.v1",
+      "stateVersion": "game.spacePhysics.state.v1",
+      "gravitationalConstant": 6.6743e-11,
+      "fixedStepSeconds": 30,
+      "timeScale": 60,
+      "maxSubstepsPerUpdate": 120,
+      "maxRealDeltaSeconds": 0.25,
+      "systems": [
+        {
+          "id": "system.solace-reach",
+          "epochSeconds": 0,
+          "anchors": [
+            {
+              "id": "anchor.solace-barycenter",
+              "massKg": 3.579246e+30,
+              "positionM": [
+                0,
+                0,
+                0
+              ],
+              "velocityMps": [
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "bodies": [
+            {
+              "id": "star.solace-reach-a",
+              "label": "Solace A",
+              "kind": "star",
+              "massKg": 1.98847e+30,
+              "radiusM": 695700000.0,
+              "initialState": {
+                "positionM": [
+                  -13297588506.666668,
+                  0,
+                  0
+                ],
+                "velocityMps": [
+                  0,
+                  -39713.522892294706,
+                  0
+                ]
+              }
+            },
+            {
+              "id": "star.solace-reach-b",
+              "label": "Solace B",
+              "kind": "star",
+              "massKg": 1.590776e+30,
+              "radiusM": 542646000.0,
+              "initialState": {
+                "positionM": [
+                  16621985633.333334,
+                  0,
+                  0
+                ],
+                "velocityMps": [
+                  0,
+                  49641.90361536838,
+                  0
+                ]
+              }
+            },
+            {
+              "id": "planet.haven",
+              "label": "Haven",
+              "kind": "planet",
+              "massKg": 6.337746417600001e+24,
+              "radiusM": 6498420.0,
+              "orbit": {
+                "primaryId": "anchor.solace-barycenter",
+                "semiMajorAxisM": 194477231910.0,
+                "eccentricity": 0.02,
+                "inclinationDeg": 1.0,
+                "longitudeAscendingNodeDeg": 12,
+                "argumentPeriapsisDeg": 33,
+                "meanAnomalyDeg": 0
+              }
+            },
+            {
+              "id": "moon.haven-i",
+              "label": "Haven I",
+              "kind": "moon",
+              "massKg": 7.342e+22,
+              "radiusM": 1737400.0,
+              "orbit": {
+                "primaryId": "planet.haven",
+                "semiMajorAxisM": 384400000,
+                "eccentricity": 0.055,
+                "inclinationDeg": 5.14,
+                "longitudeAscendingNodeDeg": 20,
+                "argumentPeriapsisDeg": 40,
+                "meanAnomalyDeg": 120
+              }
+            },
+            {
+              "id": "planet.osprey",
+              "label": "Osprey",
+              "kind": "planet",
+              "massKg": 6.5259841894e+24,
+              "radiusM": 6562130.0,
+              "orbit": {
+                "primaryId": "anchor.solace-barycenter",
+                "semiMajorAxisM": 269276167260.0,
+                "eccentricity": 0.06,
+                "inclinationDeg": 2.2,
+                "longitudeAscendingNodeDeg": 70,
+                "argumentPeriapsisDeg": 15,
+                "meanAnomalyDeg": 80
+              }
+            },
+            {
+              "id": "planet.bellara",
+              "label": "Bellara",
+              "kind": "planet",
+              "massKg": 8.390511001600003e+24,
+              "radiusM": 7135520.000000001,
+              "orbit": {
+                "primaryId": "anchor.solace-barycenter",
+                "semiMajorAxisM": 373994676750.0,
+                "eccentricity": 0.1,
+                "inclinationDeg": 0.5,
+                "longitudeAscendingNodeDeg": 130,
+                "argumentPeriapsisDeg": 110,
+                "meanAnomalyDeg": 150
+              }
+            },
+            {
+              "id": "planet.lyria",
+              "label": "Lyria",
+              "kind": "planet",
+              "massKg": 5.4506656906e+24,
+              "radiusM": 6179870.0,
+              "orbit": {
+                "primaryId": "anchor.solace-barycenter",
+                "semiMajorAxisM": 493672973310.0,
+                "eccentricity": 0.18,
+                "inclinationDeg": 5.0,
+                "longitudeAscendingNodeDeg": 210,
+                "argumentPeriapsisDeg": 75,
+                "meanAnomalyDeg": 230
+              }
+            },
+            {
+              "id": "planet.talon",
+              "label": "Talon",
+              "kind": "planet",
+              "massKg": 4.2102158618000003e+24,
+              "radiusM": 5670190.0,
+              "orbit": {
+                "primaryId": "anchor.solace-barycenter",
+                "semiMajorAxisM": 628311056940.0,
+                "eccentricity": 0.35,
+                "inclinationDeg": 8.0,
+                "longitudeAscendingNodeDeg": 300,
+                "argumentPeriapsisDeg": 190,
+                "meanAnomalyDeg": 310
+              }
+            },
+            {
+              "id": "ship.mother",
+              "label": "Mother Ship",
+              "kind": "ship",
+              "massKg": 0,
+              "radiusM": 150,
+              "orbit": {
+                "primaryId": "planet.haven",
+                "semiMajorAxisM": 7498420.0,
+                "eccentricity": 0.0,
+                "inclinationDeg": 28.5,
+                "longitudeAscendingNodeDeg": 0,
+                "argumentPeriapsisDeg": 0,
+                "meanAnomalyDeg": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
     "strategicAI": {
       "schema": "game.strategicAI.v1",
       "definitionVersion": "game.strategicAI.definition.v8",

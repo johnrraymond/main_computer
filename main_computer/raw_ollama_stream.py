@@ -3,7 +3,7 @@ import json
 import sys
 import urllib.request
 
-model = sys.argv[1] if len(sys.argv) > 1 else "gemma4:26b"
+model = sys.argv[1] if len(sys.argv) > 1 else "gemma4:26b-a4b-it-q4_K_M"
 prompt = sys.argv[2] if len(sys.argv) > 2 else "Return only this exact text: hello"
 
 body = json.dumps({

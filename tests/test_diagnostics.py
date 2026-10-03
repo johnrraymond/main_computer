@@ -198,7 +198,7 @@ class DiagnosticTests(unittest.TestCase):
         def fake_urlopen(request_or_url, timeout):
             url = request_or_url if isinstance(request_or_url, str) else request_or_url.full_url
             if url.endswith("/api/tags"):
-                return FakeResponse({"models": [{"name": "gemma4:26b"}]})
+                return FakeResponse({"models": [{"name": "gemma4:26b-a4b-it-q4_K_M"}]})
             if url.endswith("/api/generate"):
                 return FakeResponse({"response": "READY", "done": True, "eval_count": 1})
             if url.endswith("/api/chat"):

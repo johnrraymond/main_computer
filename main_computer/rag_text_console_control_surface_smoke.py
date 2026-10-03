@@ -43,8 +43,8 @@ Useful options:
 
 Environment:
   OLLAMA_BASE_URL=http://127.0.0.1:11434
-  OLLAMA_MODEL=gemma4:26b
-  MAIN_COMPUTER_GREMLIN_MODEL=gemma4:26b
+  OLLAMA_MODEL=gemma4:26b-a4b-it-q4_K_M
+  MAIN_COMPUTER_GREMLIN_MODEL=gemma4:26b-a4b-it-q4_K_M
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ DEFAULT_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = (
     os.environ.get("OLLAMA_MODEL")
     or os.environ.get("MAIN_COMPUTER_GREMLIN_MODEL")
-    or "gemma4:26b"
+    or "gemma4:26b-a4b-it-q4_K_M"
 )
 
 PARANOIA_LEVELS = ("relaxed", "normal", "strict", "locked")

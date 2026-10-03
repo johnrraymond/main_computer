@@ -75,7 +75,7 @@ def test_worker_settings_defaults_to_idle_only_enabled() -> None:
     assert settings["rentalOnlyWhenIdle"] is True
     assert settings["sellerCreditsPerToken"] == "0.001"
     assert settings["sellerTargetTokens"] == 1024
-    assert settings["models"] == "gemma4:26b"
+    assert settings["models"] == "gemma4:26b-a4b-it-q4_K_M"
 
 
 def test_worker_auto_connect_network_drives_saved_selected_network() -> None:
@@ -170,7 +170,7 @@ def test_worker_settings_migrates_old_visual_defaults_to_current_defaults() -> N
         }
     )
 
-    assert settings["models"] == "gemma4:26b"
+    assert settings["models"] == "gemma4:26b-a4b-it-q4_K_M"
     assert settings["sellerCreditsPerToken"] == "0.001"
     assert settings["sellerTargetTokens"] == 1024
 
@@ -336,8 +336,8 @@ def test_worker_offer_registration_migrates_legacy_default_model_and_price(monke
 
     normalized = _WorkerRoutesHarness()._worker_registration_payload_from_ui(payload)
 
-    assert normalized["model"] == "gemma4:26b"
-    assert normalized["models"] == ["gemma4:26b"]
+    assert normalized["model"] == "gemma4:26b-a4b-it-q4_K_M"
+    assert normalized["models"] == ["gemma4:26b-a4b-it-q4_K_M"]
     assert normalized["credits_per_token"] == "0.001"
     assert normalized["credits_per_token_wei"] == "1000000000000000"
     assert normalized["estimated_credits_per_request"] == "1.024"

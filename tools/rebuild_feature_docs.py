@@ -2206,7 +2206,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rebuild safe HTML documentation for a feature/component anchor.")
     parser.add_argument("--feature", required=True, help="Human description of the feature to document.")
     parser.add_argument("--id", required=True, help="Anchor id, route, DOM id, component id, widget id, feature id, function name, or filename.")
-    parser.add_argument("--model", default="ollama_chat/gemma4:26b")
+    parser.add_argument("--model", default="ollama_chat/gemma4:26b-a4b-it-q4_K_M")
     parser.add_argument("--engine", choices=["ollama", "aider", "template"], default="ollama")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--ollama-model", default="")

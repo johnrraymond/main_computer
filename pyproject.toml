@@ -3,7 +3,7 @@ name = "main-computer-test"
 version = "0.1.0"
 description = "Test install of the main local AI computer router."
 requires-python = ">=3.10"
-dependencies = ["psutil>=5.9.0"]
+dependencies = ["psutil>=5.9.0", "jsonschema>=4.26.0,<5"]
 
 [project.optional-dependencies]
 openai = ["openai>=1.0.0"]

@@ -63,12 +63,28 @@ def test_task_summary_keeps_consensus_visible():
 def test_resume_contract_rejects_changed_training_population(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()
+    hyperparameters = {
+        "head_lr": 1e-4,
+        "weight_decay": 0.01,
+        "grad_clip": 1.0,
+        "grad_accumulation": 4,
+        "epochs_per_cycle": 1,
+        "max_prompt_tokens": 768,
+        "max_answer_tokens": 128,
+        "prompt_evidence_tokens": 8,
+        "answer_evidence_tokens": 8,
+        "path_batch": 4,
+    }
     experiment = {
         "schema_version": m.SCHEMA,
         "source_experiment": str(source.resolve()),
         "train_plan": m.curriculum_plan(160),
         "dev_plan": m.curriculum_plan(48),
+        "selection_plan": m.curriculum_plan(48),
+        "selection_data_cycle": 992000,
+        "data_cycle_base": 992000,
         "seed": 123,
+        "hyperparameters": hyperparameters,
     }
     m.validate_resume_experiment(
         experiment,
@@ -76,6 +92,8 @@ def test_resume_contract_rejects_changed_training_population(tmp_path: Path):
         train_plan=m.curriculum_plan(160),
         dev_plan=m.curriculum_plan(48),
         seed=123,
+        data_cycle_base=992000,
+        hyperparameters=hyperparameters,
     )
     with pytest.raises(RuntimeError, match="resume experiment contract mismatch"):
         m.validate_resume_experiment(
@@ -84,6 +102,20 @@ def test_resume_contract_rejects_changed_training_population(tmp_path: Path):
             train_plan=m.curriculum_plan(64),
             dev_plan=m.curriculum_plan(48),
             seed=123,
+            data_cycle_base=992000,
+            hyperparameters=hyperparameters,
+        )
+    changed = dict(hyperparameters)
+    changed["max_prompt_tokens"] = 512
+    with pytest.raises(RuntimeError, match="resume experiment contract mismatch"):
+        m.validate_resume_experiment(
+            experiment,
+            source_experiment=source,
+            train_plan=m.curriculum_plan(160),
+            dev_plan=m.curriculum_plan(48),
+            seed=123,
+            data_cycle_base=992000,
+            hyperparameters=changed,
         )
 
 
@@ -157,8 +189,8 @@ def test_resume_optimizer_state_matches_bfloat16_parameter_dtype():
     optimizer.step()
 
 
-def test_question_factory_retries_training_population_on_dev_overlap(monkeypatch):
-    """A rare sampled collision should regenerate train, not abort a long run."""
+def test_question_factory_oversamples_filters_and_refills_dev_overlap(monkeypatch):
+    """Cycle-deterministic collisions are filtered while exact task counts are preserved."""
     from types import SimpleNamespace
 
     def q(question_id: str):
@@ -167,15 +199,17 @@ def test_question_factory_retries_training_population_on_dev_overlap(monkeypatch
     class Registry:
         def __init__(self):
             self.train_calls = 0
+            self.requested = []
 
         def generate_eval(self, plan, *, cycle, rng):
             return [q("shared"), q("dev-only")]
 
         def generate_train(self, plan, *, cycle, rng):
             self.train_calls += 1
-            if self.train_calls == 1:
+            self.requested.append(dict(plan))
+            if plan["legacy"] == 2:
                 return [q("shared"), q("train-first")]
-            return [q("train-second"), q("train-third")]
+            return [q("shared"), q("train-first"), q("train-second"), q("train-third")]
 
     class Logger:
         def __init__(self):
@@ -202,15 +236,227 @@ def test_question_factory_retries_training_population_on_dev_overlap(monkeypatch
     )
 
     assert [question.question_id for question in dev] == ["shared", "dev-only"]
-    assert [question.question_id for question in train] == ["train-second", "train-third"]
+    assert [question.question_id for question in train] == ["train-first", "train-second"]
     assert factory.registry.train_calls == 2
+    assert factory.registry.requested == [{"legacy": 2}, {"legacy": 4}]
+    assert meta["train_count"] == 2
     assert meta["train_dev_fingerprint_overlap"] == 0
     assert meta["train_split_retry_count"] == 1
-    retries = [row for row in factory.logger.rows if row["event"] == "clef_sized_train_split_retry"]
-    assert retries == [{
-        "event": "clef_sized_train_split_retry",
+    repaired = [row for row in factory.logger.rows if row["event"] == "clef_sized_train_split_repaired"]
+    assert repaired == [{
+        "event": "clef_sized_train_split_repaired",
+        "population": "train",
         "data_cycle": 992010,
         "retry": 1,
-        "overlap_count": 1,
-        "overlap": ["shared"],
+        "expansion": 2,
+        "rejected_overlap_count": 1,
+        "rejected_overlap": ["shared"],
     }]
+
+
+def test_composition_v2_ast_candidates_have_distinct_label_answers_and_both_orientations():
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class PathRow:
+        prompt: str
+        answer: str
+
+    @dataclass(frozen=True)
+    class Candidate:
+        candidate_id: str
+        paths: tuple[PathRow, ...]
+
+    @dataclass(frozen=True)
+    class Question:
+        question_id: str
+        task: str
+        candidates: tuple[Candidate, ...]
+        gold_index: int
+
+    left = "x = 1\nprint(x)"
+    right = "x=1\nprint(x)"
+    old_paths = (PathRow("old-left", right), PathRow("old-right", left))
+    question = Question(
+        "ast-1",
+        "ast",
+        (
+            Candidate("negative", old_paths),
+            Candidate("positive", old_paths),
+        ),
+        1,
+    )
+
+    composed = m.compose_relational_question_v2(question)
+    assert composed.gold_index == 1
+    assert [candidate.candidate_id for candidate in composed.candidates] == ["negative", "positive"]
+    assert [path.answer for path in composed.candidates[0].paths] == [" DIFFERENT", " DIFFERENT"]
+    assert [path.answer for path in composed.candidates[1].paths] == [" SAME", " SAME"]
+    assert composed.candidates[0].paths[0].prompt == composed.candidates[1].paths[0].prompt
+    assert composed.candidates[0].paths[1].prompt == composed.candidates[1].paths[1].prompt
+    assert "Program A:\n```python\n" + left in composed.candidates[0].paths[0].prompt
+    assert "Program A:\n```python\n" + right in composed.candidates[0].paths[1].prompt
+
+
+def test_composition_v2_consensus_keeps_six_symmetric_relation_paths_per_hypothesis():
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class PathRow:
+        prompt: str
+        answer: str
+
+    @dataclass(frozen=True)
+    class Candidate:
+        candidate_id: str
+        paths: tuple[PathRow, ...]
+
+    @dataclass(frozen=True)
+    class Question:
+        question_id: str
+        task: str
+        candidates: tuple[Candidate, ...]
+        gold_index: int
+
+    # Legacy consensus geometry is AB, BA, AC, CA, BC, CB.
+    old_paths = (
+        PathRow("ab", "B"), PathRow("ba", "A"),
+        PathRow("ac", "C"), PathRow("ca", "A"),
+        PathRow("bc", "C"), PathRow("cb", "B"),
+    )
+    question = Question(
+        "consensus-1",
+        "consensus",
+        tuple(Candidate(label, old_paths) for label in ("c", "none", "a", "b")),
+        0,
+    )
+
+    composed = m.compose_relational_question_v2(question)
+    assert composed.gold_index == 0
+    assert all(len(candidate.paths) == 6 for candidate in composed.candidates)
+    by_id = {candidate.candidate_id: candidate for candidate in composed.candidates}
+    assert [path.answer for path in by_id["none"].paths] == [" SAME"] * 6
+    assert [path.answer for path in by_id["c"].paths] == [
+        " SAME", " SAME", " DIFFERENT", " DIFFERENT", " DIFFERENT", " DIFFERENT"
+    ]
+    # Every pair is represented in both directions instead of paths[::2].
+    assert "Program A:\n```python\nA" in by_id["none"].paths[0].prompt
+    assert "Program A:\n```python\nB" in by_id["none"].paths[1].prompt
+
+
+def test_composition_v2_runtime_budgets_and_consensus_path_contract():
+    assert m.smoke.DEFAULT_MAX_PROMPT_TOKENS == 768
+    assert m.smoke.DEFAULT_MAX_ANSWER_TOKENS == 128
+
+    class Candidate:
+        paths = tuple(range(6))
+
+    class Question:
+        task = "consensus"
+
+    assert m.smoke.canonical_candidate_paths(Question(), Candidate()) == tuple(range(6))
+
+
+def test_native_continuation_logp_uses_predictor_state_for_each_answer_token():
+    import torch
+    import torch.nn.functional as F
+
+    hidden = torch.tensor([
+        [0.0, 0.0],
+        [2.0, 0.0],  # predicts first answer token
+        [0.0, 2.0],  # predicts second answer token
+        [9.0, 9.0],  # terminal answer state must not predict itself
+    ])
+    tokens = torch.tensor([0, 0, 1, 2])
+    output_weight = torch.tensor([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+    ])
+    observed, predictor_mean = m.smoke._continuation_mean_logp(
+        torch=torch,
+        hidden=hidden,
+        tokens=tokens,
+        prompt_length=2,
+        answer_length=2,
+        output_weight=output_weight,
+    )
+    logits_1 = F.linear(hidden[1], output_weight).float()
+    logits_2 = F.linear(hidden[2], output_weight).float()
+    expected = torch.stack([
+        F.log_softmax(logits_1, dim=-1)[1],
+        F.log_softmax(logits_2, dim=-1)[2],
+    ]).mean()
+    assert observed.item() == pytest.approx(expected.item())
+    assert torch.equal(predictor_mean, torch.tensor([1.0, 1.0]))
+
+
+def test_fixed_selection_fingerprints_are_excluded_from_fresh_dev_and_train(monkeypatch):
+    from types import SimpleNamespace
+
+    def q(question_id: str):
+        return SimpleNamespace(question_id=question_id, task="legacy")
+
+    class Registry:
+        def generate_eval(self, plan, *, cycle, rng):
+            if plan["legacy"] == 2:
+                return [q("selection-hit"), q("fresh-a")]
+            return [q("selection-hit"), q("fresh-a"), q("fresh-b"), q("fresh-c")]
+
+        def generate_train(self, plan, *, cycle, rng):
+            if plan["legacy"] == 2:
+                return [q("selection-hit"), q("fresh-a")]
+            return [q("selection-hit"), q("fresh-a"), q("train-a"), q("train-b")]
+
+    class Logger:
+        def emit(self, event, **fields):
+            pass
+
+    factory = object.__new__(m.QuestionFactory)
+    factory.registry = Registry()
+    factory.question_fingerprint = lambda question: question.question_id
+    factory.logger = Logger()
+    monkeypatch.setattr(
+        m,
+        "question_row",
+        lambda question: {"question_id": question.question_id, "task": question.task},
+    )
+
+    train, dev, meta = factory.generate(
+        data_cycle=992011,
+        train_plan={"legacy": 2},
+        dev_plan={"legacy": 2},
+        seed=123,
+        blocked_fingerprints={"selection-hit"},
+    )
+    assert [question.question_id for question in dev] == ["fresh-a", "fresh-b"]
+    assert [question.question_id for question in train] == ["train-a", "train-b"]
+    assert meta["selection_train_fingerprint_overlap"] == 0
+    assert meta["selection_dev_fingerprint_overlap"] == 0
+
+
+def test_default_training_reuses_each_fresh_population_for_32_epochs():
+    assert m.DEFAULT_EPOCHS_PER_CYCLE == 32
+    assert "reuse32" in str(m.DEFAULT_OUTPUT)
+
+
+def test_train_population_consumes_cached_evidence_instead_of_live_backbones():
+    import ast
+
+    tree = ast.parse(TOOL.read_text(encoding="utf-8"))
+    target = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "train_population"
+    )
+    calls = [node for node in ast.walk(target) if isinstance(node, ast.Call)]
+    assert not any(
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "extract_live_evidence"
+        for call in calls
+    )
+    assert any(
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "evidence_cache"
+        for node in ast.walk(target)
+    )

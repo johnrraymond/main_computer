@@ -402,7 +402,7 @@
       <aside class="output fullscreen-widget" aria-label="Debug output">
         <button class="fullscreen-control" type="button" data-fullscreen-target="closest">Full Screen</button>
         <p class="meta">Debug mode is separate from the command viewport.</p>
-        <p class="meta">Default route: local Ollama, `gemma4:26b`.</p>
+        <p class="meta">Default route: local Ollama, `gemma4:26b-a4b-it-q4_K_M`.</p>
         <p class="meta">Debug assets are saved under `debug_assets` in the running project.</p>
         <div id="asset-nav" class="asset-nav" aria-label="Saved debug assets"></div>
         <pre id="output" aria-live="polite"></pre>
@@ -425,7 +425,7 @@
     function setDebugStatus(data) {
       const lock = data.passcode_required ? "passcode protected" : "local open";
       const state = data.active ? "enabled" : "disabled";
-      debugStatus.textContent = `${state} | ${lock} | ${data.model || "gemma4:26b"} | ${data.root || ""}`;
+      debugStatus.textContent = `${state} | ${lock} | ${data.model || "gemma4:26b-a4b-it-q4_K_M"} | ${data.root || ""}`;
       debugToggle.textContent = data.active ? "Disable" : "Enable";
       debugToggle.classList.toggle("debug-disable", Boolean(data.active));
       debugToggle.classList.toggle("debug-enable", !data.active);

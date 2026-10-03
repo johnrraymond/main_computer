@@ -107,7 +107,7 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "Target output tokens per request" in seller_section
     assert 'id="worker-offer-target-tokens" type="number" min="1" step="1" value="1024"' in seller_section
     assert "Matches the requester default max output-token authorization" in seller_section
-    assert 'id="worker-offer-models" type="text" value="gemma4:26b" autocomplete="off" disabled aria-disabled="true"' in seller_section
+    assert 'id="worker-offer-models" type="text" value="gemma4:26b-a4b-it-q4_K_M" autocomplete="off" disabled aria-disabled="true"' in seller_section
     assert "Minimum ETH per estimated token" in seller_section
     assert 'id="worker-offer-credits-per-token" type="number" min="0.000000000000000001" step="0.000000000000000001" value="0.001"' in seller_section
     assert "Displayed as ETH decimals; worker registration stores exact wei strings behind the scenes." in seller_section

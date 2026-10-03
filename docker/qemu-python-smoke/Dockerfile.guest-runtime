@@ -1,0 +1,11 @@
+ARG PYTHON_MAJOR_MINOR=3.12
+FROM python:${PYTHON_MAJOR_MINOR}-alpine
+RUN apk add --no-cache linux-virt cpio
+COPY guest_init.sh /sbin/mc-qemu-init
+COPY qemu_python_guest_runner.py /opt/main-computer/qemu_python_guest_runner.py
+COPY build_guest_runtime.sh /usr/local/bin/build-main-computer-qemu-python-runtime
+RUN chmod 0755 \
+    /sbin/mc-qemu-init \
+    /opt/main-computer/qemu_python_guest_runner.py \
+    /usr/local/bin/build-main-computer-qemu-python-runtime
+ENTRYPOINT ["/usr/local/bin/build-main-computer-qemu-python-runtime"]

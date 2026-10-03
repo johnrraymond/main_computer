@@ -6,7 +6,7 @@ Run from repo root:
 
   python scripts/twiddle_ollama_provider.py
   python scripts/twiddle_ollama_provider.py --model qwen3.8
-  python scripts/twiddle_ollama_provider.py --model gemma4:26b
+  python scripts/twiddle_ollama_provider.py --model gemma4:26b-a4b-it-q4_K_M
   python scripts/twiddle_ollama_provider.py --both
 
 This imports main_computer.providers.ollama.OllamaProvider and calls provider.chat().
@@ -99,8 +99,8 @@ def run_one(model: str, host: str, prompt: str, timeout: float, diag: str | None
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
-    parser.add_argument("--model", default=os.environ.get("MAIN_COMPUTER_MODEL", "gemma4:26b"))
-    parser.add_argument("--both", action="store_true", help="Run qwen3.8 and gemma4:26b.")
+    parser.add_argument("--model", default=os.environ.get("MAIN_COMPUTER_MODEL", "gemma4:26b-a4b-it-q4_K_M"))
+    parser.add_argument("--both", action="store_true", help="Run qwen3.8 and gemma4:26b-a4b-it-q4_K_M.")
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument(
         "--prompt",
@@ -116,7 +116,7 @@ def main() -> int:
     ensure_repo_importable()
 
     diag = args.diag or None
-    models = ["qwen3.8", "gemma4:26b"] if args.both else [args.model]
+    models = ["qwen3.8", "gemma4:26b-a4b-it-q4_K_M"] if args.both else [args.model]
 
     failures = 0
     for model in models:

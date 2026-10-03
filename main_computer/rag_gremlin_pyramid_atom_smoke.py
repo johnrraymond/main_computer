@@ -43,7 +43,7 @@ from main_computer.providers.ollama import parse_ollama_think_choice, prepare_ol
 DEFAULT_OUTPUT_ROOT = Path("debug_assets") / "rgp"
 DEFAULT_DOCKER_IMAGE = "main-computer-executor:latest"
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-DEFAULT_MODEL = os.environ.get("MAIN_COMPUTER_GREMLIN_MODEL", "gemma4:26b")
+DEFAULT_MODEL = os.environ.get("MAIN_COMPUTER_GREMLIN_MODEL", "gemma4:26b-a4b-it-q4_K_M")
 DEFAULT_SOURCE_DIRS = ["main_computer", "tests"]
 SOURCE_GLOBS = ["*.py", "*.html", "*.js", "*.css", "*.ts", "*.tsx"]
 

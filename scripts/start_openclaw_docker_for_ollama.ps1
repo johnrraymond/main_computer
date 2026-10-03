@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Model = "gemma4:26b",
+    [string]$Model = "gemma4:26b-a4b-it-q4_K_M",
     [int]$Port = 18789,
     [string]$AgentId = "main",
     [string]$StateRoot,

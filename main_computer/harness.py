@@ -124,7 +124,7 @@ class WidgetHarness:
         return report
 
     def _start_server(self) -> str:
-        config = MainComputerConfig(workspace=harness_workspace(), provider="ollama", model="gemma4:26b")
+        config = MainComputerConfig(workspace=harness_workspace(), provider="ollama", model="gemma4:26b-a4b-it-q4_K_M")
         self.server = ViewportServer((self.host, self.port), config, verbose=False)
         self.server.computer = HarnessComputer()  # type: ignore[assignment]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

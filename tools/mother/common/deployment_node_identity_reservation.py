@@ -396,10 +396,18 @@ def _write_refreshed_topology_evidence(
     if set(expected_services) != set(expected_nodes):
         raise _fail("MOTHER_DEPLOY_NODE_IDENTITY_RESERVATION_TOPOLOGY_INVALID", "topology services are not aligned with nodes")
     completed = _utc(generated_at, "generated_at")
+    genesis_sha256 = detection.get("genesis_sha256")
+    fresh_genesis_required = genesis_sha256 is None
+    if fresh_genesis_required and (expected_nodes or expected_validator_set):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_IDENTITY_RESERVATION_TOPOLOGY_INVALID",
+            "topology refresh cannot preserve a missing genesis SHA-256 for a non-empty topology",
+        )
+
     topology = {
         "source": "add-node-identity-reservation-topology-refresh",
         "chain_id": detection.get("chain_id"),
-        "genesis_sha256": detection.get("genesis_sha256"),
+        "genesis_sha256": genesis_sha256,
         "nodes": expected_nodes,
         "services": expected_services,
         "validator_route_bindings": deepcopy(detection.get("validator_route_bindings") or {}),
@@ -409,6 +417,13 @@ def _write_refreshed_topology_evidence(
         "routing_or_topology_published": False,
         "public_endpoint_created": False,
     }
+    if fresh_genesis_required:
+        # detect_topology_staleness only permits a missing genesis digest for an
+        # explicitly marked fresh-empty topology.  Preserve that semantic state
+        # across the private-state-binding refresh so the refreshed artifact is
+        # itself a valid baseline for the subsequent add-node prep.
+        topology["genesis_lineage"] = "fresh-required"
+        topology["fresh_genesis_required"] = True
     evidence: dict[str, Any] = {
         "kind": _TOPOLOGY_REFRESH_KIND,
         "schema_version": 1,
@@ -496,6 +511,19 @@ def _write_refreshed_topology_evidence(
         "public_endpoint_created": False,
         "next_phase": f"add-node-prep-{network}",
     }
+    if fresh_genesis_required:
+        # The refreshed evidence must remain recognizable as an explicitly
+        # acknowledged empty current topology by every downstream consumer.
+        # Preflight uses these summary markers to distinguish a legitimate
+        # first-node topology from evidence that merely forgot to list nodes.
+        evidence["summary"].update(
+            {
+                "empty_topology_marked_by_evidence": True,
+                "current_topology_marked_by_evidence": True,
+                "final_nodes": [],
+            }
+        )
+
     payload = canonical_json(evidence)
     root = paths.root.joinpath(*_TOPOLOGY_REFRESH_DIRECTORY)
     atomic_files.ensure_durable_directory(root, operation=operation)
