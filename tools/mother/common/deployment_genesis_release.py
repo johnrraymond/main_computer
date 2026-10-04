@@ -354,7 +354,7 @@ def _first_genesis_compose(
             "      - --sync-min-peers=0",
             "      - --node-private-key-file=/config/nodekey",
             f"      - --network-id={chain_id}",
-            "      - --sync-mode=SNAP",
+            "      - --sync-mode=FULL",
             "      - --data-storage-format=BONSAI",
             "      - --snapsync-server-enabled=true",
             "      - --p2p-enabled=true",

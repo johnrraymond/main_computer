@@ -27,6 +27,7 @@ import urllib.request
 from . import atomic_files
 from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
+from .deployment_coolify_context import load_controller_config
 from .deployment_genesis_birth import (
     _compose_semantic_sha256,
     _internal_proof_compose,
@@ -56,6 +57,8 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-f]{40}$")
 _IDENTITY_ENV_KEYS = ("MC_MOTHER_VALIDATOR_PRIVATE_KEY", "MC_MOTHER_HUB_ADMIN_PRIVATE_KEY")
+_CLEANUP_CHECKER_TTL_SECONDS = 180
+_CLEANUP_MAX_DEPLOY_ATTEMPTS = 2
 
 
 class MotherDeploymentNodeAddSingleNodeBootstrapError(RuntimeError):
@@ -513,6 +516,228 @@ def _http(controller: Any, method: str, endpoint: str, *, body: Mapping[str, Any
         "byte_length": len(raw),
         "elapsed_ms": int((time.monotonic() - started) * 1000),
     }
+
+
+
+def _cleanup_items(response: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if response.get("ok") is not True:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CLEANUP_STATE_FAILED",
+            f"Coolify cleanup query failed with HTTP {response.get('status')}",
+        )
+    payload = response.get("payload")
+    items: Any = payload
+    if isinstance(payload, Mapping):
+        for key in ("executions", "items", "data"):
+            if isinstance(payload.get(key), list):
+                items = payload[key]
+                break
+    if not isinstance(items, list):
+        return []
+    return [dict(item) for item in items if isinstance(item, Mapping)]
+
+
+def _cleanup_id(item: Mapping[str, Any]) -> str:
+    value = item.get("uuid")
+    return value if isinstance(value, str) else ""
+
+
+def _cleanup_terminal(item: Mapping[str, Any]) -> bool:
+    if item.get("finished_at"):
+        return True
+    return str(item.get("status") or "").strip().lower() in {
+        "completed", "complete", "finished", "success", "successful",
+        "failed", "error", "cancelled", "canceled",
+    }
+
+
+def _cleanup_succeeded(item: Mapping[str, Any]) -> bool:
+    return _cleanup_terminal(item) and str(item.get("status") or "").strip().lower() not in {
+        "failed", "error", "cancelled", "canceled",
+    }
+
+
+def _cleanup_boundary_config(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+) -> dict[str, Any]:
+    config = load_controller_config(
+        private_state,
+        network=network,
+        controller_id=controller_id,
+        allowed_controllers={controller_id},
+        error_factory=_fail,
+        rejected_code="MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CONTROLLER_REJECTED",
+        invalid_code="MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CONTROLLER_INVALID",
+        placement_description="single-node bootstrap cleanup boundary",
+    )
+    server_uuid = _identifier(config.get("server_uuid"), "Coolify server UUID")
+    return {
+        "server_uuid": server_uuid,
+        "executions_endpoint": f"/api/v1/servers/{urllib.parse.quote(server_uuid, safe='')}/docker-cleanup/executions",
+        "checker_ttl_seconds": _CLEANUP_CHECKER_TTL_SECONDS,
+        "max_deploy_attempts": _CLEANUP_MAX_DEPLOY_ATTEMPTS,
+        "retry_only_on_cleanup_overlap": True,
+    }
+
+
+def _cleanup_snapshot(
+    controller: Any,
+    endpoint: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    response = _http(
+        controller, "GET", endpoint, body=None,
+        timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+    )
+    return response, _cleanup_items(response)
+
+
+def _wait_cleanup_clear(
+    controller: Any,
+    endpoint: str,
+    *,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> set[str]:
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+    while True:
+        _response, items = _cleanup_snapshot(
+            controller, endpoint, timeout=timeout,
+            max_response_bytes=max_response_bytes, opener=opener,
+        )
+        if not any(not _cleanup_terminal(item) for item in items):
+            return {_cleanup_id(item) for item in items if _cleanup_id(item)}
+        if time.monotonic() >= deadline:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CLEANUP_WAIT_TIMEOUT",
+                "Coolify cleanup did not clear before the deployment boundary deadline",
+            )
+        time.sleep(max(0.0, poll_interval_seconds))
+
+
+def _wait_cleanup_terminal(
+    controller: Any,
+    endpoint: str,
+    cleanup_uuid: str,
+    *,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> None:
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+    while True:
+        _response, items = _cleanup_snapshot(
+            controller, endpoint, timeout=timeout,
+            max_response_bytes=max_response_bytes, opener=opener,
+        )
+        item = next((item for item in items if _cleanup_id(item) == cleanup_uuid), None)
+        if item is not None and _cleanup_terminal(item):
+            if not _cleanup_succeeded(item):
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CLEANUP_FAILED",
+                    "cleanup execution that crossed the deployment boundary failed",
+                )
+            return
+        if time.monotonic() >= deadline:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CLEANUP_WAIT_TIMEOUT",
+                "cleanup execution that crossed the deployment boundary did not finish",
+            )
+        time.sleep(max(0.0, poll_interval_seconds))
+
+
+def _watch_deploy_boundary(
+    controller: Any,
+    cleanup_endpoint: str,
+    *,
+    service_uuid: str,
+    service_name: str,
+    expected_semantic_sha256: str,
+    baseline_cleanup_ids: set[str],
+    checker_ttl_seconds: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    deploy_boundary_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    overall_deadline = time.monotonic() + max(0.0, max_wait_seconds)
+    checker_deadline = time.monotonic() + min(float(checker_ttl_seconds), max(0.0, max_wait_seconds))
+    baseline = set(baseline_cleanup_ids)
+    checker_generations = 1
+    last_status = ""
+    observations: list[dict[str, Any]] = []
+    while True:
+        inventory = _http(
+            controller, "GET", "/api/v1/services", body=None,
+            timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+        )
+        if inventory["ok"]:
+            last_status = _service_status(_service_item(inventory["payload"], service_uuid, service_name))
+        detail_snapshot = _try_coolify_service_detail_snapshot(
+            controller, "poll-service-detail", service_uuid=service_uuid,
+            service_name=service_name, expected_semantic_sha256=expected_semantic_sha256,
+            timeout=timeout, max_response_bytes=max_response_bytes, opener=opener,
+        )
+        deploy_boundary_diagnostics["snapshots"].append(detail_snapshot)
+        cleanup_response, cleanup_items = _cleanup_snapshot(
+            controller, cleanup_endpoint, timeout=timeout,
+            max_response_bytes=max_response_bytes, opener=opener,
+        )
+        overlap = next(
+            (item for item in cleanup_items if _cleanup_id(item) and _cleanup_id(item) not in baseline),
+            None,
+        )
+        observations.append({
+            "status": last_status,
+            "response_sha256": inventory.get("response_sha256"),
+            "observed_at": _timestamp(),
+            "service_detail_snapshot": detail_snapshot,
+            "cleanup_response_sha256": cleanup_response["response_sha256"],
+            "cleanup_execution_uuid": _cleanup_id(overlap) if overlap is not None else None,
+        })
+        if overlap is not None:
+            return {
+                "status": "cleanup-overlap",
+                "last_status": last_status,
+                "cleanup_uuid": _cleanup_id(overlap),
+                "checker_generations": checker_generations,
+                "observations": observations,
+            }
+        if last_status == "running:healthy":
+            return {
+                "status": "healthy",
+                "last_status": last_status,
+                "cleanup_uuid": None,
+                "checker_generations": checker_generations,
+                "observations": observations,
+            }
+        now_mono = time.monotonic()
+        if now_mono >= overall_deadline:
+            return {
+                "status": "not-healthy",
+                "last_status": last_status,
+                "cleanup_uuid": None,
+                "checker_generations": checker_generations,
+                "observations": observations,
+            }
+        if now_mono >= checker_deadline:
+            baseline = {_cleanup_id(item) for item in cleanup_items if _cleanup_id(item)}
+            checker_generations += 1
+            checker_deadline = min(overall_deadline, time.monotonic() + float(checker_ttl_seconds))
+        time.sleep(max(0.0, poll_interval_seconds))
 
 
 def _items(payload: Any) -> list[Mapping[str, Any]]:
@@ -1008,6 +1233,7 @@ def build_node_add_single_node_bootstrap_release(
     node = _identifier(target["node"], "target node")
     controller_id = _identifier(target["controller_id"], "target controller")
     service_uuid = _identifier(target["created_service_uuid"], "created service UUID")
+    cleanup_boundary = _cleanup_boundary_config(private_state, network=network, controller_id=controller_id)
     target_validator_route = target.get("validator_route") if isinstance(target.get("validator_route"), Mapping) else {}
     target_p2p_port = int(target_validator_route.get("p2p_port") or 30303)
     if not 1 <= target_p2p_port <= 65535:
@@ -1119,6 +1345,7 @@ def build_node_add_single_node_bootstrap_release(
                 "hub_public_endpoint_present": False,
                 "guardian_service_present": "mother-genesis-proof-guardian:" in proof_compose,
             },
+            "cleanup_boundary": cleanup_boundary,
             "preconditions": [
                 {"method": "GET", "endpoint": f"/api/v1/services/{service_uuid_quoted}", "assertion": "operator-selected service exists"},
                 {"method": "GET", "endpoint": f"/api/v1/services/{service_uuid_quoted}/envs", "assertion": "target validator and Hub identity env vars are installed"},
@@ -1145,6 +1372,8 @@ def build_node_add_single_node_bootstrap_release(
             "single_node_bootstrap_authorized": True,
             "service_compose_patch_authorized": True,
             "service_deploy_authorized": True,
+            "cleanup_boundary_retry_authorized": True,
+            "cleanup_boundary_max_deploy_attempts": _CLEANUP_MAX_DEPLOY_ATTEMPTS,
             "replica_sync_authorized": False,
             "validator_admission_authorized": False,
             "validator_vote_authorized": False,
@@ -1155,6 +1384,8 @@ def build_node_add_single_node_bootstrap_release(
             "allowed_http_methods": ["GET", "PATCH", "POST"],
             "coolify_control_plane_only": True,
             "single_node_bootstrap_authorized": True,
+            "cleanup_boundary_checker_required": True,
+            "cleanup_boundary_retry_only_on_overlap": True,
             "identity_install_previously_performed": True,
             "private_keys_materialized": False,
             "private_keys_persisted": False,
@@ -1269,6 +1500,22 @@ def verify_node_add_single_node_bootstrap_release(
         or summary.get("serves_hub") is not True
     ):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "release does not prove the operator-directed single-node path")
+    expected_cleanup_boundary = _cleanup_boundary_config(
+        private_state,
+        network=_identifier(release.get("network"), "network"),
+        controller_id=_identifier(target.get("controller_id"), "target controller"),
+    )
+    if (
+        plan.get("cleanup_boundary") != expected_cleanup_boundary
+        or release.get("authority", {}).get("cleanup_boundary_retry_authorized") is not True
+        or release.get("authority", {}).get("cleanup_boundary_max_deploy_attempts") != _CLEANUP_MAX_DEPLOY_ATTEMPTS
+        or release.get("policy", {}).get("cleanup_boundary_checker_required") is not True
+        or release.get("policy", {}).get("cleanup_boundary_retry_only_on_overlap") is not True
+    ):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID",
+            "release cleanup-boundary contract is invalid",
+        )
     claim_path = _root(paths, _CLAIM_DIRECTORY) / f"{digest}.json"
     return {
         "clean": True,
@@ -1400,6 +1647,15 @@ def execute_node_add_single_node_bootstrap_release(
     status = "failed"
     compose_proven = False
     healthy = False
+    cleanup_plan = plan["cleanup_boundary"]
+    cleanup_endpoint = cleanup_plan["executions_endpoint"]
+    cleanup_retry_receipts: list[dict[str, Any]] = []
+    cleanup_boundary_evidence: dict[str, Any] = {
+        "checker_ttl_seconds": cleanup_plan["checker_ttl_seconds"],
+        "attempts": [],
+        "retry_reason": None,
+    }
+    deploy_cleanup_baseline: set[str] | None = None
     try:
         service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
         service_detail = _http(controller, "GET", service_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
@@ -1443,6 +1699,17 @@ def execute_node_add_single_node_bootstrap_release(
             raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_IDENTITY_PRECONDITION_FAILED", "target service does not expose both installed identity environment keys")
 
         for mutation in plan["mutations"]:
+            is_deploy = mutation["method"] == "POST" and mutation["endpoint"] == "/api/v1/deploy"
+            if is_deploy:
+                deploy_cleanup_baseline = _wait_cleanup_clear(
+                    controller,
+                    cleanup_endpoint,
+                    max_wait_seconds=min(float(cleanup_plan["checker_ttl_seconds"]), max(0.0, max_wait_seconds)),
+                    poll_interval_seconds=poll_interval_seconds,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
             body = mutation.get("canonical_request_body")
             response = _http(
                 controller,
@@ -1505,34 +1772,119 @@ def execute_node_add_single_node_bootstrap_release(
             if not accepted:
                 raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_MUTATION_FAILED", f"Coolify rejected single-node bootstrap mutation {mutation['ordinal']}")
 
-        deadline = time.monotonic() + max(0.0, max_wait_seconds)
-        last_status = ""
-        while True:
-            inventory = _http(controller, "GET", "/api/v1/services", body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
-            if inventory["ok"]:
-                service = _service_item(inventory["payload"], service_uuid, node)
-                last_status = _service_status(service)
-                observation = {"status": last_status, "response_sha256": inventory["response_sha256"], "observed_at": _timestamp()}
-                detail_snapshot = _try_coolify_service_detail_snapshot(
-                    controller,
-                    "poll-service-detail",
-                    service_uuid=service_uuid,
-                    service_name=node,
-                    expected_semantic_sha256=plan["compose"]["semantic_sha256"],
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
-                    opener=opener,
+        if deploy_mutation is None or deploy_cleanup_baseline is None:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID",
+                "single-node bootstrap deploy boundary was not armed",
+            )
+
+        first = _watch_deploy_boundary(
+            controller,
+            cleanup_endpoint,
+            service_uuid=service_uuid,
+            service_name=node,
+            expected_semantic_sha256=plan["compose"]["semantic_sha256"],
+            baseline_cleanup_ids=deploy_cleanup_baseline,
+            checker_ttl_seconds=int(cleanup_plan["checker_ttl_seconds"]),
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            deploy_boundary_diagnostics=deploy_boundary_diagnostics,
+        )
+        observations.extend(first["observations"])
+        cleanup_boundary_evidence["attempts"].append({
+            "attempt": 1,
+            "status": first["status"],
+            "cleanup_uuid": first["cleanup_uuid"],
+            "checker_generations": first["checker_generations"],
+        })
+
+        if first["status"] == "healthy":
+            healthy = True
+        elif first["status"] == "cleanup-overlap":
+            cleanup_boundary_evidence["retry_reason"] = "cleanup-boundary-crossed"
+            _wait_cleanup_terminal(
+                controller,
+                cleanup_endpoint,
+                first["cleanup_uuid"],
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            retry_baseline = _wait_cleanup_clear(
+                controller,
+                cleanup_endpoint,
+                max_wait_seconds=min(float(cleanup_plan["checker_ttl_seconds"]), max(0.0, max_wait_seconds)),
+                poll_interval_seconds=poll_interval_seconds,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            retry_body = deploy_mutation.get("canonical_request_body")
+            retry_response = _http(
+                controller,
+                deploy_mutation["method"],
+                deploy_mutation["endpoint"],
+                body=dict(retry_body) if isinstance(retry_body, Mapping) else None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            retry_accepted = retry_response["status"] in deploy_mutation["success_statuses"]
+            cleanup_retry_receipts.append({
+                "attempt": 2,
+                "retry_reason": "cleanup-boundary-crossed",
+                "method": deploy_mutation["method"],
+                "endpoint": deploy_mutation["endpoint"],
+                "body_sha256": deploy_mutation.get("body_sha256"),
+                "status": "succeeded" if retry_accepted else "failed",
+                "live_write_acknowledged": retry_response["status"] in {200, 201, 202},
+                "response": {key: retry_response[key] for key in ("status", "response_sha256", "byte_length", "elapsed_ms")},
+            })
+            if not retry_accepted:
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CLEANUP_RACE_RETRY_FAILED",
+                    "Coolify rejected the cleanup-boundary-authorized redeploy",
                 )
-                observation["service_detail_snapshot"] = detail_snapshot
-                observations.append(observation)
-                deploy_boundary_diagnostics["snapshots"].append(detail_snapshot)
-                if last_status == "running:healthy":
-                    healthy = True
-                    break
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(max(0.0, poll_interval_seconds))
-        if not healthy:
+            second = _watch_deploy_boundary(
+                controller,
+                cleanup_endpoint,
+                service_uuid=service_uuid,
+                service_name=node,
+                expected_semantic_sha256=plan["compose"]["semantic_sha256"],
+                baseline_cleanup_ids=retry_baseline,
+                checker_ttl_seconds=int(cleanup_plan["checker_ttl_seconds"]),
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                deploy_boundary_diagnostics=deploy_boundary_diagnostics,
+            )
+            observations.extend(second["observations"])
+            cleanup_boundary_evidence["attempts"].append({
+                "attempt": 2,
+                "status": second["status"],
+                "cleanup_uuid": second["cleanup_uuid"],
+                "checker_generations": second["checker_generations"],
+            })
+            if second["status"] == "healthy":
+                healthy = True
+            elif second["status"] == "cleanup-overlap":
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CLEANUP_RACE_RETRY_CONTAMINATED",
+                    "Coolify cleanup crossed the one authorized redeploy; no third deploy is allowed",
+                )
+            else:
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CLEANUP_RACE_RETRY_FAILED",
+                    f"cleanup-boundary redeploy did not reach running:healthy (last status {second['last_status']!r})",
+                )
+        else:
             deploy_boundary_diagnostics["snapshots"].append(
                 _try_coolify_service_detail_snapshot(
                     controller,
@@ -1545,7 +1897,10 @@ def execute_node_add_single_node_bootstrap_release(
                     opener=opener,
                 )
             )
-            raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_NOT_HEALTHY", f"single-node chain+Hub service did not reach running:healthy (last status {last_status!r})")
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_NOT_HEALTHY",
+                f"single-node chain+Hub service did not reach running:healthy (last status {first['last_status']!r})",
+            )
 
         detail = _http(controller, "GET", service_endpoint, body=None, timeout=timeout, max_response_bytes=max_response_bytes, opener=opener)
         if not detail["ok"]:
@@ -1585,10 +1940,24 @@ def execute_node_add_single_node_bootstrap_release(
         completed_at=completed_at,
     )
     planned_mutation_count = len(plan.get("mutations", []))
+    boundary_attempts = cleanup_boundary_evidence["attempts"]
+    boundary_proven = (
+        len(boundary_attempts) == 1
+        and boundary_attempts[0].get("status") == "healthy"
+        and not cleanup_retry_receipts
+    ) or (
+        len(boundary_attempts) == 2
+        and boundary_attempts[0].get("status") == "cleanup-overlap"
+        and boundary_attempts[1].get("status") == "healthy"
+        and cleanup_boundary_evidence.get("retry_reason") == "cleanup-boundary-crossed"
+        and len(cleanup_retry_receipts) == 1
+        and cleanup_retry_receipts[0].get("status") == "succeeded"
+    )
     complete = (
         status == "pass"
         and healthy
         and compose_proven
+        and boundary_proven
         and len(receipts) == planned_mutation_count
         and all(item["status"] == "succeeded" for item in receipts)
     )
@@ -1628,6 +1997,8 @@ def execute_node_add_single_node_bootstrap_release(
         },
         "preconditions": preconditions,
         "mutation_receipts": receipts,
+        "cleanup_boundary_retry_receipts": cleanup_retry_receipts,
+        "cleanup_boundary": cleanup_boundary_evidence,
         "observations": observations,
         "deploy_boundary_diagnostics": deploy_boundary_diagnostics,
         "deploy_boundary_debug_artifacts": deploy_boundary_debug_artifacts,
@@ -1640,12 +2011,14 @@ def execute_node_add_single_node_bootstrap_release(
         "validator_vote_performed": False,
         "routing_or_topology_published": False,
         "public_endpoint_created": False,
-        "live_mutation_performed": len(receipts) > 0,
+        "live_mutation_performed": (len(receipts) + len(cleanup_retry_receipts)) > 0,
         "policy": {
             "allowed_http_methods": ["GET", "PATCH", "POST"],
             "coolify_control_plane_only": True,
             "single_node_bootstrap_performed": len(receipts) > 0,
             "single_node_bootstrap_proven": complete,
+            "cleanup_boundary_checker_proven": boundary_proven,
+            "cleanup_boundary_retry_performed": len(cleanup_retry_receipts) == 1,
             "private_keys_materialized": False,
             "private_keys_persisted": False,
             "secrets_in_output": False,
@@ -1662,6 +2035,8 @@ def execute_node_add_single_node_bootstrap_release(
             "release_consumed": True,
             "single_node_bootstrap_authorized": True,
             "single_node_bootstrap_proven": complete,
+            "cleanup_boundary_retry_authorized": True,
+            "cleanup_boundary_retry_performed": len(cleanup_retry_receipts) == 1,
             "replica_sync_authorized": False,
             "validator_admission_authorized": False,
             "validator_vote_authorized": False,
@@ -1686,8 +2061,11 @@ def execute_node_add_single_node_bootstrap_release(
             "validator_vote_performed": False,
             "old_baseline_topology_used_as_live": False,
             "coolify_c_required": False,
-            "live_mutation_performed": len(receipts) > 0,
-            "mutation_count": len(receipts),
+            "live_mutation_performed": (len(receipts) + len(cleanup_retry_receipts)) > 0,
+            "mutation_count": len(receipts) + len(cleanup_retry_receipts),
+            "cleanup_boundary_checker_proven": boundary_proven,
+            "cleanup_boundary_overlap_detected": any(item.get("status") == "cleanup-overlap" for item in boundary_attempts),
+            "cleanup_boundary_retry_performed": len(cleanup_retry_receipts) == 1,
             "deploy_boundary_diagnostics_captured": True,
             "host_manual_diagnostic_commands_available": True,
             "routing_or_topology_published": False,
@@ -1998,6 +2376,10 @@ def verify_node_add_single_node_bootstrap_evidence(
         now=now,
         enforce_freshness=False,
     )
+    cleanup_boundary_clean = (
+        document.get("read_only_adoption_performed") is True
+        or document.get("summary", {}).get("cleanup_boundary_checker_proven") is True
+    )
     clean = (
         document.get("status") == "pass"
         and document.get("failure") is None
@@ -2012,6 +2394,7 @@ def verify_node_add_single_node_bootstrap_evidence(
         and document.get("public_endpoint_created") is False
         and document.get("summary", {}).get("old_baseline_topology_used_as_live") is False
         and document.get("summary", {}).get("coolify_c_required") is False
+        and cleanup_boundary_clean
     )
     if not clean:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_EVIDENCE_INVALID", "single-node bootstrap evidence is not clean")

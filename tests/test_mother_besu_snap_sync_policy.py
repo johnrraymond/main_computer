@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from pathlib import Path
 
 from tools.mother.common import deployment_c2_replica_standby as c2_standby
 from tools.mother.common import deployment_genesis_release as genesis_release
@@ -19,16 +18,19 @@ VALIDATOR = "0x" + ("3" * 40)
 EXPECTED_VALIDATORS = ["0x" + ("4" * 40)]
 
 
-def _assert_snap_client(compose: str, *, require_zero_min_peers: bool) -> None:
-    assert "--sync-mode=SNAP" in compose
-    assert "--sync-mode=FULL" not in compose
+def _assert_mode(compose: str, mode: str) -> None:
+    assert f"--sync-mode={mode}" in compose
+    other = "FULL" if mode == "SNAP" else "SNAP"
+    assert f"--sync-mode={other}" not in compose
+    expected_min_peers = 0 if mode == "FULL" else 2
+    other_min_peers = 2 if mode == "FULL" else 0
+    assert f"--sync-min-peers={expected_min_peers}" in compose
+    assert f"--sync-min-peers={other_min_peers}" not in compose
     assert "--data-storage-format=BONSAI" in compose
     assert "--snapsync-server-enabled=true" in compose
-    if require_zero_min_peers:
-        assert "--sync-min-peers=0" in compose
 
 
-def test_genesis_uses_snap_and_serves_snap() -> None:
+def test_genesis_first_validator_uses_full_and_still_serves_snap() -> None:
     compose = genesis_release._first_genesis_compose(
         node="mainneta-super1",
         chain_id=CHAIN_ID,
@@ -36,18 +38,18 @@ def test_genesis_uses_snap_and_serves_snap() -> None:
         hub_git_repository="example.invalid/main-computer.git",
         hub_git_ref="main",
     )
+    _assert_mode(compose, "FULL")
+    assert "--sync-min-peers=0" in compose
 
-    _assert_snap_client(compose, require_zero_min_peers=True)
 
-
-def test_replica_paths_use_snap_and_serve_snap() -> None:
+def test_legacy_replica_paths_remain_snap() -> None:
     c2 = c2_standby._replica_compose(
         node="mainnetc-super2",
         chain_id=CHAIN_ID,
         genesis={},
         bootnode_enode=BOOTNODE,
     )
-    _assert_snap_client(c2, require_zero_min_peers=False)
+    _assert_mode(c2, "SNAP")
 
     soft = soft_replica._replica_compose(
         node="mainnetc-super2",
@@ -55,7 +57,7 @@ def test_replica_paths_use_snap_and_serve_snap() -> None:
         genesis={},
         bootnode_enode=BOOTNODE,
     )
-    _assert_snap_client(soft, require_zero_min_peers=True)
+    _assert_mode(soft, "SNAP")
 
     common = dict(
         node="mainnetc-super3",
@@ -69,17 +71,29 @@ def test_replica_paths_use_snap_and_serve_snap() -> None:
         candidate_p2p_host="10.0.0.2",
         candidate_p2p_port=30303,
     )
-
-    v1 = replica_sync_v1._replica_sync_compose(**common)
-    _assert_snap_client(v1, require_zero_min_peers=False)
-
-    v2 = replica_sync_v2._replica_sync_compose(**common)
-    _assert_snap_client(v2, require_zero_min_peers=True)
+    _assert_mode(replica_sync_v1._replica_sync_compose(**common), "SNAP")
 
 
-def test_validator_admission_preserves_snap_and_zero_min_peers() -> None:
+def test_add_node_replica_sync_v2_defaults_snap_but_accepts_full() -> None:
+    common = dict(
+        node="mainnetc-super3",
+        chain_id=CHAIN_ID,
+        genesis={},
+        genesis_sha256="0" * 64,
+        expected_validators=EXPECTED_VALIDATORS,
+        bootnode_enode=BOOTNODE,
+        target_validator_node_id=NODE_ID,
+        target_validator_address=VALIDATOR,
+        candidate_p2p_host="10.0.0.2",
+        candidate_p2p_port=30303,
+    )
+    _assert_mode(replica_sync_v2._replica_sync_compose(**common), "SNAP")
+    _assert_mode(replica_sync_v2._replica_sync_compose(**common, sync_mode="FULL"), "FULL")
+
+
+def test_validator_activation_preserves_requested_sync_mode() -> None:
     genesis_bytes = b"{}"
-    compose = validator_admission._candidate_activation_compose(
+    common = dict(
         target_node="mainnetc-super3",
         genesis_b64=base64.b64encode(genesis_bytes).decode("ascii"),
         bootnode_enode=BOOTNODE,
@@ -90,16 +104,28 @@ def test_validator_admission_preserves_snap_and_zero_min_peers() -> None:
         candidate_p2p_host="10.0.0.2",
         candidate_p2p_port=30303,
     )
+    _assert_mode(validator_admission._candidate_activation_compose(**common), "SNAP")
+    _assert_mode(validator_admission._candidate_activation_compose(**common, sync_mode="FULL"), "FULL")
 
-    _assert_snap_client(compose, require_zero_min_peers=True)
 
-
-def test_no_mother_besu_generator_falls_back_to_full_sync() -> None:
-    common_dir = Path(__file__).resolve().parents[1] / "tools" / "mother" / "common"
-    offenders = []
-    for source in sorted(common_dir.glob("deployment_*.py")):
-        text = source.read_text(encoding="utf-8")
-        if "hyperledger/besu" in text or "_BESU_IMAGE" in text:
-            if "--sync-mode=FULL" in text:
-                offenders.append(source.name)
-    assert offenders == []
+def test_validator_vote_is_gated_on_frozen_voter_checkpoint() -> None:
+    script = validator_admission._voter_guardian_script(
+        voter="mainneta-super1",
+        candidate=VALIDATOR,
+        candidate_enode=BOOTNODE,
+        current_validators=EXPECTED_VALIDATORS,
+        desired_validators=[VALIDATOR, *EXPECTED_VALIDATORS],
+        chain_id=CHAIN_ID,
+        genesis_sha256="0" * 64,
+        request_sha256="1" * 64,
+    )
+    assert "def prove_candidate_reached_voter_checkpoint():" in script
+    assert "checkpoint_height = block_number()" in script
+    assert "if candidate_height < checkpoint_height:" in script
+    assert "voter_candidate_block = block_by_number(candidate_height)" in script
+    assert "candidate head is not canonical on voter chain" in script
+    assert "candidate did not reach frozen voter checkpoint" in script
+    assert "candidate_height != voter_height" not in script
+    gate = script.index("pre_vote_candidate_head_proof = prove_candidate_reached_voter_checkpoint()")
+    vote = script.index("rpc(REQUEST['method'], REQUEST['params'])")
+    assert gate < vote

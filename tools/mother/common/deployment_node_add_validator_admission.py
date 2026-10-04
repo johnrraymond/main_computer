@@ -156,6 +156,17 @@ def _sha256(value: Any, label: str) -> str:
     return text
 
 
+def _sync_mode(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text not in {"FULL", "SNAP"}:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_INVALID", "sync mode must be FULL or SNAP")
+    return text
+
+
+def _sync_min_peers_for_mode(value: Any) -> int:
+    return 0 if _sync_mode(value) == "FULL" else 2
+
+
 def _address(value: Any, label: str) -> str:
     text = str(value or "").lower()
     if re.fullmatch(r"0x[0-9a-f]{40}", text) is None:
@@ -724,9 +735,12 @@ def _candidate_activation_compose(
     desired_validators: Iterable[str],
     candidate_p2p_host: str,
     candidate_p2p_port: int,
+    sync_mode: str = "SNAP",
     candidate_validator_route: Mapping[str, Any] | None = None,
     proof_public_host: str | None = None,
 ) -> str:
+    sync_mode = _sync_mode(sync_mode)
+    sync_min_peers = _sync_min_peers_for_mode(sync_mode)
     advertised_host = validator_route_advertised_host({"advertised_host": candidate_p2p_host})
     if advertised_host is None:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_ROUTE_INVALID", "candidate P2P advertised host is missing or not reachable")
@@ -797,10 +811,10 @@ def _candidate_activation_compose(
         "    command:",
         "      - --data-path=/var/lib/besu",
         "      - --genesis-file=/config/genesis.json",
-        "      - --sync-min-peers=0",
+        f"      - --sync-min-peers={sync_min_peers}",
         "      - --node-private-key-file=/config/nodekey",
         f"      - --network-id={int(chain_id)}",
-        "      - --sync-mode=SNAP",
+        f"      - --sync-mode={sync_mode}",
         "      - --data-storage-format=BONSAI",
         "      - --snapsync-server-enabled=true",
         "      - --p2p-enabled=true",
@@ -1042,6 +1056,43 @@ def _voter_guardian_script(
         "        time.sleep(1)",
         "        if peer_connected(enode): return 'already_connected_after_reject_wait'",
         "    raise RuntimeError('admin_addPeer rejected ' + label + ' and expected peer is not connected')",
+        "def parse_block_number(value):",
+        "    if isinstance(value, int): return value",
+        "    text = str(value or '').strip().lower()",
+        "    if text.startswith('0x'): return int(text, 16)",
+        "    if text.isdigit(): return int(text, 10)",
+        "    raise RuntimeError('candidate peer latestBlock is invalid: ' + repr(value))",
+        "def candidate_peer_head():",
+        "    expected = enode_node_id(CANDIDATE_ENODE)",
+        "    peers = rpc('admin_peers', [])",
+        "    if not isinstance(peers, list): raise RuntimeError('admin_peers response is not a list')",
+        "    for peer in peers:",
+        "        if not isinstance(peer, dict) or normalize_node_id(peer.get('id')) != expected: continue",
+        "        protocols = peer.get('protocols')",
+        "        eth = protocols.get('eth') if isinstance(protocols, dict) else None",
+        "        if not isinstance(eth, dict): raise RuntimeError('candidate peer ETH protocol status missing')",
+        "        height = parse_block_number(eth.get('latestBlock'))",
+        "        head = str(eth.get('head') or '').strip().lower()",
+        "        if not head.startswith('0x') or len(head) != 66: raise RuntimeError('candidate peer head hash missing or invalid')",
+        "        return height, head",
+        "    raise RuntimeError('candidate peer status missing')",
+        "def prove_candidate_reached_voter_checkpoint():",
+        "    checkpoint_height = block_number()",
+        "    checkpoint_block = block_by_number(checkpoint_height)",
+        "    checkpoint_hash = str(checkpoint_block.get('hash') or '').lower()",
+        "    deadline = time.time() + 20",
+        "    last_candidate_height = None",
+        "    while time.time() < deadline:",
+        "        candidate_height, candidate_hash = candidate_peer_head()",
+        "        last_candidate_height = candidate_height",
+        "        if candidate_height < checkpoint_height:",
+        "            time.sleep(0.5)",
+        "            continue",
+        "        voter_candidate_block = block_by_number(candidate_height)",
+        "        voter_candidate_hash = str(voter_candidate_block.get('hash') or '').lower()",
+        "        if candidate_hash != voter_candidate_hash: raise RuntimeError('candidate head is not canonical on voter chain at ' + str(candidate_height))",
+        "        return {'checkpoint_height':checkpoint_height,'checkpoint_hash':checkpoint_hash,'candidate_height':candidate_height,'candidate_hash':candidate_hash,'voter_hash_at_candidate_height':voter_candidate_hash}",
+        "    raise RuntimeError('candidate did not reach frozen voter checkpoint: candidate=' + str(last_candidate_height) + ' checkpoint=' + str(checkpoint_height))",
         "def same_set(left, right): return sorted(left) == sorted(right)",
         "def write_json(path, payload):",
         "    tmp = path + '.tmp'",
@@ -1063,8 +1114,10 @@ def _voter_guardian_script(
         "        stale_vote_cleanup.append(cleanup_satisfied_pending_votes(current, 'before-candidate-vote'))",
         "        current = validators()",
         "    vote_submitted = False",
+        "    pre_vote_candidate_head_proof = None",
         "    if not same_set(current, EXPECTED_DESIRED):",
         "        if not same_set(current, EXPECTED_CURRENT): raise RuntimeError('unexpected pre-vote validator set')",
+        "        pre_vote_candidate_head_proof = prove_candidate_reached_voter_checkpoint()",
         "        if rpc(REQUEST['method'], REQUEST['params']) is not True: raise RuntimeError('validator vote rejected')",
         "        vote_submitted = True",
         "    deadline = time.time() + 180",
@@ -1090,7 +1143,7 @@ def _voter_guardian_script(
         "    block_time = int(latest.get('timestamp', '0x0'), 16)",
         "    now = int(time.time())",
         "    if block_time > now + 15 or now - block_time > MAX_BLOCK_AGE_SECONDS: raise RuntimeError('latest block is stale')",
-        f"    proof = {{'voter_node':VOTER_NODE,'chain_id':EXPECTED_CHAIN_ID,'genesis_sha256':EXPECTED_GENESIS_SHA256,'canonical_history_proof_contract':{_CANONICAL_HISTORY_PROOF_CONTRACT!r},'candidate_validator':CANDIDATE_VALIDATOR,'candidate_enode_sha256':hashlib.sha256(CANDIDATE_ENODE.encode()).hexdigest(),'candidate_peer_connect_result':candidate_peer_connect_result,'rpc_request_sha256':EXPECTED_REQUEST_SHA256,'vote_submitted':vote_submitted,'expected_current_validator_set':EXPECTED_CURRENT,'desired_validator_set':EXPECTED_DESIRED,'final_validator_set':final,'stale_vote_cleanup':stale_vote_cleanup,'final_pending_votes':pending_votes(),'first_block_number':first,'second_block_number':second,'block_advance':second-first,'first_block_hash':first_history['hash'],'first_block_parent_hash':first_history.get('parent_hash'),'first_block_validator_set':first_history['validator_set'],'second_block_hash':second_history['hash'],'second_block_parent_hash':second_history.get('parent_hash'),'second_block_validator_set':second_history['validator_set'],'latest_block_number':latest_number,'latest_block_hash':latest_history['hash'],'latest_block_parent_hash':latest_history.get('parent_hash'),'latest_validator_set':latest_history['validator_set'],'latest_block_timestamp':block_time,'peer_count':peer_count(),'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}}",
+        f"    proof = {{'voter_node':VOTER_NODE,'chain_id':EXPECTED_CHAIN_ID,'genesis_sha256':EXPECTED_GENESIS_SHA256,'canonical_history_proof_contract':{_CANONICAL_HISTORY_PROOF_CONTRACT!r},'candidate_validator':CANDIDATE_VALIDATOR,'candidate_enode_sha256':hashlib.sha256(CANDIDATE_ENODE.encode()).hexdigest(),'candidate_peer_connect_result':candidate_peer_connect_result,'pre_vote_candidate_head_proof':pre_vote_candidate_head_proof,'rpc_request_sha256':EXPECTED_REQUEST_SHA256,'vote_submitted':vote_submitted,'expected_current_validator_set':EXPECTED_CURRENT,'desired_validator_set':EXPECTED_DESIRED,'final_validator_set':final,'stale_vote_cleanup':stale_vote_cleanup,'final_pending_votes':pending_votes(),'first_block_number':first,'second_block_number':second,'block_advance':second-first,'first_block_hash':first_history['hash'],'first_block_parent_hash':first_history.get('parent_hash'),'first_block_validator_set':first_history['validator_set'],'second_block_hash':second_history['hash'],'second_block_parent_hash':second_history.get('parent_hash'),'second_block_validator_set':second_history['validator_set'],'latest_block_number':latest_number,'latest_block_hash':latest_history['hash'],'latest_block_parent_hash':latest_history.get('parent_hash'),'latest_validator_set':latest_history['validator_set'],'latest_block_timestamp':block_time,'peer_count':peer_count(),'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}}",
         "    write_json(PROOF, proof)",
         "    try: os.unlink(LAST_ERROR)",
         "    except FileNotFoundError: pass",
@@ -1475,6 +1528,7 @@ def _load_sync_context(
         or sync_release_sha != release_ref.get("sha256")
     ):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_VALIDATOR_ADMISSION_SYNC_EVIDENCE_INVALID", "replica-sync release digest mismatch")
+    sync_mode = _sync_mode(sync_release.get("proof_plan", {}).get("sync_mode") or "SNAP")
 
     current_topology = evidence.get("current_topology")
     prepared_post_add_topology = evidence.get("prepared_post_add_topology")
@@ -1608,6 +1662,7 @@ def _load_sync_context(
         desired_validators=desired_set,
         candidate_p2p_host=candidate_p2p_host,
         candidate_p2p_port=candidate_p2p_port,
+        sync_mode=sync_mode,
         candidate_validator_route=candidate_route,
         proof_public_host=proof_public_host,
     )
@@ -1650,6 +1705,7 @@ def _load_sync_context(
         "current_validator_set": current_set,
         "desired_validator_set": desired_set,
         "chain_id": chain_id,
+        "sync_mode": sync_mode,
         "genesis_sha256": genesis_sha256,
         "bootnode": dict(bootnode),
         "activation_compose": activation_compose,
@@ -1744,6 +1800,7 @@ def build_node_add_validator_admission_release(
             "current_validator_set": list(context["current_validator_set"]),
             "desired_validator_set": list(context["desired_validator_set"]),
             "chain_id": context["chain_id"],
+            "sync_mode": context["sync_mode"],
             "genesis_sha256": context["genesis_sha256"],
             "bootnode": dict(context["bootnode"]),
             "candidate_validator_route": dict(context["candidate_validator_route"]),
@@ -1822,6 +1879,7 @@ def build_node_add_validator_admission_release(
             "current_validator_count": len(context["current_validator_set"]),
             "desired_validator_count": len(context["desired_validator_set"]),
             "logical_vote_count": len(context["voter_nodes"]),
+            "sync_mode": context["sync_mode"],
             "validator_vote_authorized": True,
             "validator_activation_authorized": True,
             "qbft_transition_recovery_authorized": True,

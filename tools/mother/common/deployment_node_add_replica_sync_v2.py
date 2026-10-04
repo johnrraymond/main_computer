@@ -113,6 +113,17 @@ def _sha256(value: Any, label: str) -> str:
     return value
 
 
+def _sync_mode(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text not in {"FULL", "SNAP"}:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_INVALID", "sync mode must be FULL or SNAP")
+    return text
+
+
+def _sync_min_peers_for_mode(value: Any) -> int:
+    return 0 if _sync_mode(value) == "FULL" else 2
+
+
 def _timestamp(value: str | None = None, *, now: datetime | None = None) -> str:
     if value is not None:
         parsed = _parse_utc(value, "timestamp")
@@ -1518,7 +1529,10 @@ def _replica_sync_compose(
     target_validator_address: str,
     candidate_p2p_host: str,
     candidate_p2p_port: int,
+    sync_mode: str = "SNAP",
 ) -> str:
+    sync_mode = _sync_mode(sync_mode)
+    sync_min_peers = _sync_min_peers_for_mode(sync_mode)
     advertised_host = validator_route_advertised_host({"advertised_host": candidate_p2p_host})
     if advertised_host is None:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_ROUTE_INVALID", "candidate P2P advertised host is missing or not reachable")
@@ -1569,10 +1583,10 @@ def _replica_sync_compose(
         "    command:",
         "      - --data-path=/var/lib/besu",
         "      - --genesis-file=/config/genesis.json",
-        "      - --sync-min-peers=0",
+        f"      - --sync-min-peers={sync_min_peers}",
         "      - --node-private-key-file=/config/nodekey",
         f"      - --network-id={chain_id}",
-        "      - --sync-mode=SNAP",
+        f"      - --sync-mode={sync_mode}",
         "      - --data-storage-format=BONSAI",
         "      - --snapsync-server-enabled=true",
         "      - --p2p-enabled=true",
@@ -1645,6 +1659,9 @@ def _compose_report(*, observed: str, expected: str, node: str) -> dict[str, Any
     observed_text = observed
     expected_p2p_match = re.search(r"--p2p-port=(\d+)", expected)
     expected_p2p_port = expected_p2p_match.group(1) if expected_p2p_match else "30303"
+    expected_sync_match = re.search(r"--sync-mode=(FULL|SNAP)", expected)
+    expected_sync_mode = expected_sync_match.group(1) if expected_sync_match else "SNAP"
+    expected_sync_min_peers = _sync_min_peers_for_mode(expected_sync_mode)
     services = observed_doc.get("services") if isinstance(observed_doc, Mapping) else {}
     replica = services.get(node) if isinstance(services, Mapping) and isinstance(services.get(node), Mapping) else {}
     guardian = services.get("mother-replica-sync-guardian") if isinstance(services, Mapping) and isinstance(services.get("mother-replica-sync-guardian"), Mapping) else {}
@@ -1656,7 +1673,8 @@ def _compose_report(*, observed: str, expected: str, node: str) -> dict[str, Any
         "guardian_healthcheck_present": isinstance(guardian.get("healthcheck"), Mapping),
         "uses_genesis_file_arg": "--genesis-file=/config/genesis.json" in observed_text,
         "uses_node_private_key_file": "--node-private-key-file=/config/nodekey" in observed_text,
-        "sync_mode_snap": "--sync-mode=SNAP" in observed_text,
+        "sync_mode_matches_expected": f"--sync-mode={expected_sync_mode}" in observed_text,
+        "sync_min_peers_matches_expected": f"--sync-min-peers={expected_sync_min_peers}" in observed_text,
         "snap_sync_server_enabled": "--snapsync-server-enabled=true" in observed_text,
         "bootnode_present": "--bootnodes=enode://" in observed_text,
         "p2p_advertised_host_enabled": "--p2p-host=" in observed_text and "--p2p-host=127.0.0.1" not in observed_text,
@@ -1752,9 +1770,11 @@ def build_node_add_replica_sync_release(
     transaction_max_age_seconds: int = 86400,
     baseline_max_age_seconds: int = 86400,
     expires_in_seconds: int = 300,
+    sync_mode: str = "SNAP",
     created_at: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    sync_mode = _sync_mode(sync_mode)
     if not _MIN_RELEASE_SECONDS <= int(expires_in_seconds) <= _MAX_RELEASE_SECONDS:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_RELEASE_INVALID", "release expiry must be between 1 and 900 seconds")
     identity_evidence, resolved, evidence_sha, byte_sha = _load_identity_evidence(
@@ -1812,6 +1832,7 @@ def build_node_add_replica_sync_release(
         target_validator_address=target_validator,
         candidate_p2p_host=candidate_p2p_host,
         candidate_p2p_port=candidate_p2p_port,
+        sync_mode=sync_mode,
     )
     compose_bytes = compose.encode("utf-8")
     service_uuid_quoted = urllib.parse.quote(service_uuid, safe="")
@@ -1849,6 +1870,7 @@ def build_node_add_replica_sync_release(
             "controller_id": controller_id,
             "service_uuid": service_uuid,
             "chain_id": chain_id,
+            "sync_mode": sync_mode,
             "genesis_sha256": genesis_sha,
             "genesis_source": genesis_source,
             "expected_validator_set": expected_validators,
@@ -1948,6 +1970,7 @@ def build_node_add_replica_sync_release(
             "created_service_uuid": service_uuid,
             "target_p2p_port": candidate_p2p_port,
             "target_p2p_endpoint": candidate_route.get("p2p_endpoint"),
+            "sync_mode": sync_mode,
             "identity_install_previously_performed": True,
             "replica_sync_authorized": True,
             "validator_admission_authorized": False,
@@ -2010,6 +2033,10 @@ def verify_node_add_replica_sync_release(
     )
     if document.get("target") != identity_evidence.get("target"):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_RELEASE_INVALID", "release target does not match identity evidence")
+    proof_plan = document.get("proof_plan")
+    if not isinstance(proof_plan, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_REPLICA_SYNC_RELEASE_INVALID", "release proof plan is missing")
+    sync_mode = _sync_mode(proof_plan.get("sync_mode") or "SNAP")
     claim_path = _root(paths, _CLAIM_DIRECTORY) / f"{digest}.json"
     target = document["target"]
     return {
@@ -2030,6 +2057,7 @@ def verify_node_add_replica_sync_release(
         "target_host": target["controller_id"],
         "created_service_uuid": target["created_service_uuid"],
         "chain_id": document["proof_plan"]["chain_id"],
+        "sync_mode": sync_mode,
         "genesis_sha256": document["proof_plan"]["genesis_sha256"],
         "bootnode_node": document["proof_plan"]["bootnode"]["node"],
         "replica_sync_authorized": True,
@@ -2088,6 +2116,7 @@ def execute_node_add_replica_sync_release(
     service_uuid = _identifier(target["created_service_uuid"], "created service UUID")
     controller = resolve_coolify_controller(private_state, network, controller_id)
     plan = release["proof_plan"]
+    sync_mode = _sync_mode(plan.get("sync_mode") or "SNAP")
 
     started_at = _timestamp(now=now)
     preconditions: list[dict[str, Any]] = []
@@ -2342,6 +2371,7 @@ def execute_node_add_replica_sync_release(
         "identity_commitments": list(release.get("identity_commitments", [])),
         "proof_plan_summary": {
             "chain_id": plan["chain_id"],
+            "sync_mode": sync_mode,
             "genesis_sha256": plan["genesis_sha256"],
             "expected_validator_set": list(plan["expected_validator_set"]),
             "target_validator_address": plan["target_validator_address"],
@@ -2374,6 +2404,7 @@ def execute_node_add_replica_sync_release(
             "compose_verification": proof_report,
             "predicates_proven_by_guardian": list(plan["proof"]["predicates"]),
             "chain_id": plan["chain_id"],
+            "sync_mode": sync_mode,
             "genesis_sha256": plan["genesis_sha256"],
             "expected_validator_set": list(plan["expected_validator_set"]),
             "target_validator_address": plan["target_validator_address"],
@@ -2917,6 +2948,7 @@ def verify_node_add_replica_sync_evidence(
         "target_host": target["controller_id"],
         "created_service_uuid": target["created_service_uuid"],
         "chain_id": document["proof"]["chain_id"],
+        "sync_mode": _sync_mode(document["proof"].get("sync_mode") or release_document.get("proof_plan", {}).get("sync_mode") or "SNAP"),
         "genesis_sha256": document["proof"]["genesis_sha256"],
         "bootnode_node": document["proof"]["bootnode_node"],
         "identity_install_previously_performed": True,

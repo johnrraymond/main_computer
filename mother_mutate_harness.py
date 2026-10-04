@@ -862,6 +862,35 @@ def _baseline_topology_nodes(document: dict[str, Any]) -> list[Any] | None:
     return None
 
 
+def _baseline_established_validator_count(document: dict[str, Any]) -> int | None:
+    for path in (
+        "final_topology.validator_set",
+        "topology.validator_set",
+        "current_topology.validator_set",
+        "summary.final_validator_set",
+        "summary.current_validator_set",
+    ):
+        value = pick(document, path)
+        if isinstance(value, list):
+            return len(value)
+
+    value = pick(
+        document,
+        "final_topology.validator_count",
+        "topology.validator_count",
+        "current_topology.validator_count",
+        "summary.final_validator_count",
+        "summary.current_validator_count",
+    )
+    if isinstance(value, bool):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
 def infer_internal_add_prep_mode(args: argparse.Namespace, baseline_path: Path) -> str | None:
     if args.operation != "add-node":
         return None
@@ -1822,7 +1851,30 @@ class Harness:
             "--baseline-max-age-seconds", str(self.args.baseline_max_age_seconds),
         ))
 
+    def resolved_add_node_sync_mode(self) -> str:
+        explicit = getattr(self.args, "sync_mode", None)
+        if explicit in {"FULL", "SNAP"}:
+            return str(explicit)
+
+        baseline = Path(require("baseline_evidence", self.state["baseline_evidence"]))
+        document = _read_json_object(baseline)
+        established_validator_count = _baseline_established_validator_count(document)
+        if established_validator_count is None:
+            raise SystemExit(
+                "MOTHER_MUTATE_HARNESS_SYNC_MODE_DEFAULT_UNAVAILABLE: "
+                "could not determine established validator count from baseline topology; "
+                "pass --sync-mode FULL or --sync-mode SNAP explicitly"
+            )
+        mode = "FULL" if established_validator_count < 2 else "SNAP"
+        self.args.sync_mode = mode
+        print(
+            "MOTHER_MUTATE_HARNESS_SYNC_MODE_DEFAULT: "
+            f"established_validator_count={established_validator_count} sync_mode={mode}"
+        )
+        return mode
+
     def step_release_replica_sync(self) -> None:
+        sync_mode = self.resolved_add_node_sync_mode()
         obj = self.run("release-replica-sync", self.cmd(
             "release-add-node-replica-sync",
             "--network", self.args.network,
@@ -1836,6 +1888,7 @@ class Harness:
             "--transaction-max-age-seconds", str(self.args.transaction_max_age_seconds),
             "--baseline-max-age-seconds", str(self.args.baseline_max_age_seconds),
             "--expires-in-seconds", str(self.args.release_expires_in_seconds),
+            "--sync-mode", sync_mode,
             "--write-release",
         ))
         self.state["replica_sync_release"] = require("replica sync release path", pick(obj, "release_artifact.path"))
@@ -2331,6 +2384,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--node", default="mainneta-super1")
     parser.add_argument("--host", default="coolify-a")
     parser.add_argument("--remove-mode", default="soft", choices=["soft"])
+    parser.add_argument(
+        "--sync-mode",
+        choices=["FULL", "SNAP"],
+        default=None,
+        help=(
+            "add-node replica sync mode override; by default FULL is used while the "
+            "established topology has fewer than 2 nodes, otherwise SNAP"
+        ),
+    )
 
     parser.add_argument("--baseline-evidence")
     parser.add_argument("--baseline-evidence-sha256")

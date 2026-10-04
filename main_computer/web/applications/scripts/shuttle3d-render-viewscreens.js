@@ -43,15 +43,27 @@
             this.appendWarpTransitDisplay(builder, prop, nowMs, navigation);
             return;
           }
-          const openingEncounterActive = Boolean(
+          const openingEncounterBaseState = Boolean(
             navigation.currentSystemId
             && navigation.currentSystemId === navigation.startSystemId
             && !navigation.lastCompletedRouteId
             && !navigation.lastArrivalAtMs
             && Number(navigation.elapsedWorldTime || 0) === 0
           );
+          const openingEncounterActive = Boolean(
+            openingEncounterBaseState
+            && (
+              !this.enemyShipDisabled?.()
+              || Number(this.bridgeTacticalShotAgeMs?.(nowMs) ?? Infinity) < 1900
+            )
+          );
           if (openingEncounterActive) {
             this.appendEnemyShipTacticalDisplay(builder, prop, nowMs);
+            return;
+          }
+          const astrometrics = this.astrometricSnapshot?.() || null;
+          if (astrometrics?.observer && astrometrics?.targetObject) {
+            this.appendAstrometricSystemDisplay(builder, prop, nowMs, navigation, astrometrics);
             return;
           }
           const planet = navigation.currentPlanet || {};
@@ -200,6 +212,221 @@
           builder.box([px(0.73), py(0.82), displayZ + depth * 0.55], [px(0.925), py(0.855), displayZ + depth * 1.15], atmosphere);
           builder.box([px(0.775), py(0.87), displayZ + depth * 0.55], [px(0.925), py(0.9), displayZ + depth * 1.15], clouds);
 
+          if (tracked) {
+            const thickness = 0.016 + scanPulse * 0.012;
+            builder.beam([planetCenter[0] - radius * 1.2, planetCenter[1] - radius * 1.2, displayZ + depth * 1.2], [planetCenter[0] - radius * 0.72, planetCenter[1] - radius * 1.2, displayZ + depth * 1.2], thickness, statusColor);
+            builder.beam([planetCenter[0] + radius * 0.72, planetCenter[1] - radius * 1.2, displayZ + depth * 1.2], [planetCenter[0] + radius * 1.2, planetCenter[1] - radius * 1.2, displayZ + depth * 1.2], thickness, statusColor);
+            builder.beam([planetCenter[0] - radius * 1.2, planetCenter[1] + radius * 1.2, displayZ + depth * 1.2], [planetCenter[0] - radius * 0.72, planetCenter[1] + radius * 1.2, displayZ + depth * 1.2], thickness, statusColor);
+            builder.beam([planetCenter[0] + radius * 0.72, planetCenter[1] + radius * 1.2, displayZ + depth * 1.2], [planetCenter[0] + radius * 1.2, planetCenter[1] + radius * 1.2, displayZ + depth * 1.2], thickness, statusColor);
+          } else {
+            const scanX = px(0.1 + scanPulse * 0.8);
+            builder.beam([scanX, py(0.13), displayZ + depth], [scanX, py(0.91), displayZ + depth], 0.012, atmosphere);
+          }
+        },
+
+        appendAstrometricSystemDisplay(builder, prop, nowMs = 0, navigationState = null, astrometricState = null) {
+          const navigation = navigationState || this.navigationSnapshot?.(nowMs) || {};
+          const astrometrics = astrometricState || this.astrometricSnapshot?.() || {};
+          const target = astrometrics.targetObject || null;
+          if (!target?.direction) return;
+
+          const position = Array.isArray(prop?.position) ? prop.position.map(Number) : [0, -39.12];
+          const size = Array.isArray(prop?.size) ? prop.size.map(Number) : [6.9, 2.1, 0.08];
+          const centerX = Number.isFinite(position[0]) ? position[0] : 0;
+          const centerZ = Number.isFinite(position[1]) ? position[1] : -39.12;
+          const width = Math.max(1.0, Number.isFinite(size[0]) ? size[0] : 6.9);
+          const height = Math.max(0.65, Number.isFinite(size[1]) ? size[1] : 2.1);
+          const depth = Math.max(0.02, Number.isFinite(size[2]) ? size[2] : 0.08);
+          const x0 = centerX - width / 2;
+          const x1 = centerX + width / 2;
+          const y0 = 0.18;
+          const y1 = y0 + height;
+          const px = (ratio) => x0 + width * ratio;
+          const py = (ratio) => y0 + height * ratio;
+          const frontZ = centerZ + depth;
+          const displayZ = centerZ + depth * 2.1;
+          const color = (value, fallback, emissive = false) => builder.color(
+            /^#[0-9a-f]{6}$/i.test(String(value || "")) ? String(value) : fallback,
+            emissive
+          );
+          const vector = (value, fallback = [0, 0, -1]) => {
+            const result = Array.isArray(value) && value.length === 3 ? value.map(Number) : fallback.slice();
+            return result.every(Number.isFinite) ? result : fallback.slice();
+          };
+          const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+          const cross = (a, b) => [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]
+          ];
+          const normalized = (value, fallback = [0, 0, -1]) => {
+            const item = vector(value, fallback);
+            const length = Math.hypot(item[0], item[1], item[2]);
+            return length > 1e-12 ? [item[0] / length, item[1] / length, item[2] / length] : fallback.slice();
+          };
+
+          // The viewscreen is a tracked sensor display. It remains ship-centered, but its
+          // orientation follows the selected local destination so we do not need propulsion
+          // or ship attitude before the first physical universe can be rendered.
+          const forward = normalized(target.direction);
+          const referenceUp = Math.abs(dot(forward, [0, 0, 1])) > 0.93 ? [0, 1, 0] : [0, 0, 1];
+          const right = normalized(cross(forward, referenceUp), [1, 0, 0]);
+          const up = normalized(cross(right, forward), [0, 1, 0]);
+          const targetAngularRadius = Math.max(1e-8, Number(target.angularRadiusRad) || 0);
+          const targetVisualRadius = Math.min(width * 0.145, height * 0.39);
+          const tangentScale = targetVisualRadius / Math.max(1e-8, Math.tan(targetAngularRadius));
+          const screenCenter = [centerX + width * 0.04, py(0.53)];
+          const project = (entry) => {
+            const direction = normalized(entry?.direction);
+            const forwardComponent = dot(direction, forward);
+            if (!(forwardComponent > 1e-6)) return null;
+            const tangentX = dot(direction, right) / forwardComponent;
+            const tangentY = dot(direction, up) / forwardComponent;
+            const angularRadius = Math.max(0, Number(entry?.angularRadiusRad) || 0);
+            return {
+              x: screenCenter[0] + tangentX * tangentScale,
+              y: screenCenter[1] + tangentY * tangentScale,
+              radius: Math.abs(Math.tan(angularRadius) * tangentScale),
+              forwardComponent
+            };
+          };
+          const inside = (projection, margin = 0) => Boolean(
+            projection
+            && projection.x >= x0 - margin
+            && projection.x <= x1 + margin
+            && projection.y >= y0 - margin
+            && projection.y <= y1 + margin
+          );
+
+          const glass = builder.color("#030712");
+          const grid = builder.color("#0e7490", true);
+          const frame = color(prop?.color, "#38bdf8", true);
+          builder.box([x0, y0, centerZ - depth / 2], [x1, y1, centerZ + depth / 2], glass);
+          builder.beam([px(0.025), py(0.075), frontZ], [px(0.975), py(0.075), frontZ], 0.02, grid);
+          builder.beam([px(0.025), py(0.925), frontZ], [px(0.975), py(0.925), frontZ], 0.02, grid);
+          builder.beam([px(0.03), py(0.11), frontZ], [px(0.03), py(0.89), frontZ], 0.016, frame);
+          builder.beam([px(0.97), py(0.11), frontZ], [px(0.97), py(0.89), frontZ], 0.016, frame);
+
+          // Catalog stars come from the hyperbolic universe estimator. There is no seeded
+          // decorative star loop here: if a star is not in the catalog/observation, it is not drawn.
+          (Array.isArray(astrometrics.visibleObjects) ? astrometrics.visibleObjects : [])
+            .filter((entry) => entry.kind === "star" && entry.id !== target.id)
+            .forEach((entry) => {
+              const projected = project(entry);
+              if (!inside(projected, 0.03)) return;
+              const visual = entry.visual || {};
+              const starSize = entry.local
+                ? Math.max(0.008, Math.min(height * 0.13, projected.radius || 0.008))
+                : 0.007 + Math.min(0.007, Math.max(0, Number(visual.radiusScale) || 1) * 0.003);
+              const starColor = color(visual.color, entry.local ? "#fff4d6" : "#f8fafc", true);
+              builder.ellipsoid(
+                [projected.x, projected.y, displayZ - depth * 0.42],
+                [starSize, starSize, depth * 0.24],
+                entry.local ? 12 : 7,
+                entry.local ? 6 : 4,
+                starColor
+              );
+            });
+
+          const targetProjection = project(target) || {x: screenCenter[0], y: screenCenter[1], radius: targetVisualRadius};
+          const planet = target.visual || navigation.currentPlanet || {};
+          const radius = Math.max(0.05, Math.min(Math.max(width, height), targetProjection.radius || targetVisualRadius));
+          const planetCenter = [targetProjection.x, targetProjection.y, displayZ];
+          const atmosphere = color(planet.atmosphereColor, "#67e8f9", true);
+          const surface = color(planet.surfaceColor, "#2563eb");
+          const secondary = color(planet.secondaryColor, "#16a34a");
+          const clouds = color(planet.cloudColor, "#f8fafc", true);
+          const darkSide = builder.color("#0f172a");
+          const ringColor = color(planet.rings?.color, "#94a3b8", true);
+          const tracked = this.bridgeViewscreenTrackingActive?.() || Boolean(this.shipState?.flags?.currentSystemPlanetSurveyed);
+          const pulse = 0.5 + 0.5 * Math.sin((nowMs || 0) / 430);
+          const scanPulse = 0.5 + 0.5 * Math.sin((nowMs || 0) / 180);
+
+          const rings = planet.rings || {};
+          if (rings.enabled) {
+            const outer = Math.max(1.18, Math.min(2.2, Number(rings.outerRadius) || 1.75));
+            const inner = Math.max(1.05, Math.min(outer - 0.08, Number(rings.innerRadius) || 1.35));
+            const tilt = Math.max(-0.65, Math.min(0.65, Number(rings.tiltDegrees || 0) / 90));
+            builder.ellipsoid(
+              [planetCenter[0], planetCenter[1] + radius * tilt * 0.12, displayZ - depth * 0.12],
+              [radius * outer, Math.max(radius * 0.055, radius * 0.12 * Math.abs(tilt)), depth * 0.75],
+              28,
+              5,
+              ringColor
+            );
+            builder.ellipsoid(
+              [planetCenter[0], planetCenter[1] + radius * tilt * 0.12, displayZ + depth * 0.02],
+              [radius * inner, Math.max(radius * 0.035, radius * 0.07 * Math.abs(tilt)), depth * 0.92],
+              28,
+              5,
+              glass
+            );
+          }
+
+          builder.ellipsoid(planetCenter, [radius * 1.09, radius * 1.09, depth * 0.8], 28, 14, atmosphere);
+          builder.ellipsoid(
+            [planetCenter[0], planetCenter[1], displayZ + depth * 0.12],
+            [radius, radius, depth * 0.95],
+            28,
+            14,
+            surface
+          );
+          builder.ellipsoid(
+            [planetCenter[0] - radius * 0.17, planetCenter[1] + radius * 0.1, displayZ + depth * 0.75],
+            [radius * 0.48, radius * 0.31, depth * 0.38],
+            16,
+            8,
+            secondary
+          );
+          builder.ellipsoid(
+            [planetCenter[0] + radius * 0.26, planetCenter[1] - radius * 0.2, displayZ + depth * 0.78],
+            [radius * 0.31, radius * 0.2, depth * 0.35],
+            14,
+            7,
+            secondary
+          );
+          builder.ellipsoid(
+            [planetCenter[0] + radius * 0.48, planetCenter[1], displayZ + depth * 0.72],
+            [radius * 0.62, radius * 1.02, depth * 0.42],
+            22,
+            12,
+            darkSide
+          );
+          [-0.28, 0.08, 0.34].forEach((offset, index) => {
+            builder.beam(
+              [planetCenter[0] - radius * (0.78 - index * 0.08), planetCenter[1] + radius * offset, displayZ + depth * 1.08],
+              [planetCenter[0] + radius * (0.45 + index * 0.06), planetCenter[1] + radius * (offset + 0.04), displayZ + depth * 1.08],
+              0.01 + pulse * 0.004,
+              clouds
+            );
+          });
+
+          // Every other local body is projected from the same ship-centered observation.
+          // Moons are no longer generated from planet.moonCount or a decorative angle.
+          (Array.isArray(astrometrics.visibleObjects) ? astrometrics.visibleObjects : [])
+            .filter((entry) => entry.local && entry.id !== target.id && entry.kind !== "star")
+            .forEach((entry) => {
+              const projected = project(entry);
+              if (!inside(projected, 0.05)) return;
+              const bodyRadius = Math.max(0.006, Math.min(height * 0.12, projected.radius || 0.006));
+              const bodyVisual = entry.visual || {};
+              const bodyColor = entry.kind === "moon"
+                ? builder.color("#cbd5e1")
+                : color(bodyVisual.surfaceColor, "#94a3b8");
+              builder.ellipsoid(
+                [projected.x, projected.y, displayZ + depth * 0.9],
+                [bodyRadius, bodyRadius, depth * 0.28],
+                10,
+                6,
+                bodyColor
+              );
+            });
+
+          const statusColor = tracked ? builder.color("#86efac", true) : atmosphere;
+          builder.box([px(0.075), py(0.145), displayZ + depth * 0.55], [px(0.27), py(0.18), displayZ + depth * 1.15], surface);
+          builder.box([px(0.075), py(0.195), displayZ + depth * 0.55], [px(0.225), py(0.225), displayZ + depth * 1.15], secondary);
+          builder.box([px(0.73), py(0.82), displayZ + depth * 0.55], [px(0.925), py(0.855), displayZ + depth * 1.15], atmosphere);
+          builder.box([px(0.775), py(0.87), displayZ + depth * 0.55], [px(0.925), py(0.9), displayZ + depth * 1.15], clouds);
           if (tracked) {
             const thickness = 0.016 + scanPulse * 0.012;
             builder.beam([planetCenter[0] - radius * 1.2, planetCenter[1] - radius * 1.2, displayZ + depth * 1.2], [planetCenter[0] - radius * 0.72, planetCenter[1] - radius * 1.2, displayZ + depth * 1.2], thickness, statusColor);

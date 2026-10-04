@@ -662,6 +662,7 @@ def _replica_compose(*, node: str, chain_id: int, genesis: Mapping[str, Any], bo
         "    command:",
         "      - --data-path=/var/lib/besu",
         "      - --genesis-file=/config/genesis.json",
+        "      - --sync-min-peers=2",
         "      - --node-private-key-file=/config/nodekey",
         f"      - --network-id={chain_id}",
         "      - --sync-mode=SNAP",

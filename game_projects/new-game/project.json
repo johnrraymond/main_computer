@@ -9242,6 +9242,276 @@
     "combatEnabled": true,
     "healthHud": true,
     "alienTransportEnabled": true,
-    "consolePilotEnabled": true
+    "consolePilotEnabled": true,
+    "spaceUniverse": {
+      "enabled": true,
+      "schema": "game.spaceUniverse.v1",
+      "definitionVersion": "game.spaceUniverse.definition.v1",
+      "stateVersion": "game.spaceUniverse.state.v1",
+      "model": "poincare-ball",
+      "epochSeconds": 0,
+      "lightYearsPerHyperbolicUnit": 36,
+      "secondsPerWorldTimeUnit": 3600,
+      "realtimeTimeScale": 60,
+      "observerBodyId": "ship.mother",
+      "systemAnchors": [
+        {
+          "id": "system.solace-reach",
+          "poincare": [
+            0.0,
+            -0.083140966434,
+            0.0
+          ]
+        },
+        {
+          "id": "system.vela-gate",
+          "poincare": [
+            0.055441525261,
+            -0.055441525261,
+            0.0
+          ]
+        },
+        {
+          "id": "system.carina-watch",
+          "poincare": [
+            0.083140966434,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "id": "system.orison",
+          "poincare": [
+            0.055441525261,
+            0.055441525261,
+            0.0
+          ]
+        },
+        {
+          "id": "system.cinder",
+          "poincare": [
+            0.0,
+            0.083140966434,
+            0.0
+          ]
+        },
+        {
+          "id": "system.lumen",
+          "poincare": [
+            -0.055441525261,
+            0.055441525261,
+            0.0
+          ]
+        },
+        {
+          "id": "system.ardent",
+          "poincare": [
+            -0.083140966434,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "id": "system.pax",
+          "poincare": [
+            -0.055441525261,
+            -0.055441525261,
+            0.0
+          ]
+        },
+        {
+          "id": "system.meridian-prime",
+          "poincare": [
+            0.270243645453,
+            -0.081073093636,
+            0.0
+          ]
+        },
+        {
+          "id": "system.tethys",
+          "poincare": [
+            0.321198716214,
+            -0.053533119369,
+            0.0
+          ]
+        },
+        {
+          "id": "system.ilyra",
+          "poincare": [
+            0.346192355444,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "id": "system.daedalus",
+          "poincare": [
+            0.321198716214,
+            0.053533119369,
+            0.0
+          ]
+        },
+        {
+          "id": "system.nacre",
+          "poincare": [
+            0.270243645453,
+            0.081073093636,
+            0.0
+          ]
+        },
+        {
+          "id": "system.sable",
+          "poincare": [
+            0.218415493952,
+            0.054603873488,
+            0.0
+          ]
+        },
+        {
+          "id": "system.vesper",
+          "poincare": [
+            0.192030386653,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "id": "system.kestrel",
+          "poincare": [
+            0.218415493952,
+            -0.054603873488,
+            0.0
+          ]
+        },
+        {
+          "id": "system.helix-prime",
+          "poincare": [
+            0.501859952773,
+            0.125464988193,
+            0.0
+          ]
+        },
+        {
+          "id": "system.aster",
+          "poincare": [
+            0.540663349819,
+            0.14745364086,
+            0.0
+          ]
+        },
+        {
+          "id": "system.calyx",
+          "poincare": [
+            0.556493393279,
+            0.193562919401,
+            0.0
+          ]
+        },
+        {
+          "id": "system.remora",
+          "poincare": [
+            0.533312212171,
+            0.242414641896,
+            0.0
+          ]
+        },
+        {
+          "id": "system.eos",
+          "poincare": [
+            0.451774545281,
+            0.250985858489,
+            0.0
+          ]
+        },
+        {
+          "id": "system.morrow",
+          "poincare": [
+            0.433555501062,
+            0.204026118147,
+            0.0
+          ]
+        },
+        {
+          "id": "system.halcyon",
+          "poincare": [
+            0.458327888305,
+            0.152775962768,
+            0.0
+          ]
+        },
+        {
+          "id": "system.crown-prime",
+          "poincare": [
+            0.491405977694,
+            -0.270273287732,
+            0.0
+          ]
+        },
+        {
+          "id": "system.regulus",
+          "poincare": [
+            0.533312212171,
+            -0.242414641896,
+            0.0
+          ]
+        },
+        {
+          "id": "system.kepler",
+          "poincare": [
+            0.501859952773,
+            -0.125464988193,
+            0.0
+          ]
+        },
+        {
+          "id": "system.verge-prime",
+          "poincare": [
+            0.681080187408,
+            -0.068108018741,
+            0.0
+          ]
+        },
+        {
+          "id": "system.rook",
+          "poincare": [
+            0.710315476173,
+            -0.044394717261,
+            0.0
+          ]
+        },
+        {
+          "id": "system.fenris",
+          "poincare": [
+            0.72431668607,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "id": "system.nyx",
+          "poincare": [
+            0.710315476173,
+            0.044394717261,
+            0.0
+          ]
+        },
+        {
+          "id": "system.tempest",
+          "poincare": [
+            0.65091020227,
+            0.046493585876,
+            0.0
+          ]
+        },
+        {
+          "id": "system.axiom",
+          "poincare": [
+            0.65091020227,
+            -0.046493585876,
+            0.0
+          ]
+        }
+      ]
+    }
   }
 }

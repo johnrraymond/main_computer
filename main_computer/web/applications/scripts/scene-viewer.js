@@ -5557,8 +5557,13 @@
           this.shipDefinitionValidation = this.interiorConfig.validationReport;
           this.spaceNavigationRuntime = this.createSpaceNavigationRuntime(options);
           this.spaceNavigationError = this.spaceNavigationRuntime ? "" : this.spaceNavigationError || "Space-navigation definition unavailable.";
+          this.spaceUniverseRuntime = this.createSpaceUniverseRuntime(options);
+          this.spaceUniverseError = this.spaceUniverseRuntime ? "" : this.spaceUniverseError || "Space-universe definition unavailable.";
           this.spaceGravityRuntime = this.createSpaceGravityRuntime(options);
           this.spaceGravityError = this.spaceGravityRuntime ? "" : this.spaceGravityError || "Space-physics definition unavailable.";
+          this.spaceAstrometricsRuntime = this.createSpaceAstrometricsRuntime(options);
+          this.spaceAstrometricsError = this.spaceAstrometricsRuntime ? "" : this.spaceAstrometricsError || "Space-astrometrics runtime unavailable.";
+          this.updateSpaceAstrometrics(0);
           this.characterAIRuntime = this.createCharacterAIRuntime(options);
           this.characterAIError = this.characterAIRuntime ? "" : this.characterAIError || "Character AI definition unavailable.";
           this.lastCharacterAIUiAt = -Infinity;
@@ -5857,6 +5862,41 @@
           }
         }
 
+        createSpaceUniverseRuntime(options = {}) {
+          const api = globalThis.MainComputerSpaceUniverseRuntime;
+          const definition = options.spaceUniverse
+            || options.project?.metadata?.spaceUniverse
+            || null;
+          const navigationDefinition = options.spaceNavigation
+            || options.project?.metadata?.spaceNavigation
+            || null;
+          if (!api?.create || !definition || !navigationDefinition) return null;
+          try {
+            const runtime = api.create(definition, {
+              projectId: options.projectId || options.project?.id || "game-project",
+              navigationDefinition
+            });
+            runtime.updateClock(this.spaceNavigationRuntime?.snapshot?.() || null, 0);
+            return runtime;
+          } catch (error) {
+            this.spaceUniverseError = error instanceof Error ? error.message : String(error || "Space-universe runtime failed.");
+            console.error("Space-universe runtime initialization failed", error);
+            return null;
+          }
+        }
+
+        updateSpaceUniverse(nowMs = this.lastFrameTime ?? performance.now(), deltaSeconds = 0) {
+          if (!this.spaceUniverseRuntime) return null;
+          const navigation = this.spaceNavigationRuntime?.snapshot?.(nowMs) || null;
+          this.spaceUniverseRuntime.updateClock(navigation, deltaSeconds);
+          return this.spaceUniverseRuntime.snapshot(navigation?.currentSystemId || "");
+        }
+
+        spaceUniverseSnapshot() {
+          const navigation = this.spaceNavigationRuntime?.snapshot?.() || null;
+          return this.spaceUniverseRuntime?.snapshot?.(navigation?.currentSystemId || "") || null;
+        }
+
         createSpaceGravityRuntime(options = {}) {
           const api = globalThis.MainComputerSpaceGravityRuntime;
           const definition = options.spacePhysics
@@ -5867,6 +5907,10 @@
             const runtime = api.create(definition, {projectId: options.projectId || options.project?.id || "game-project"});
             const navigation = this.spaceNavigationRuntime?.snapshot?.() || null;
             runtime.setActiveSystem(navigation?.currentSystemId || "");
+            const universeSeconds = this.spaceUniverseRuntime?.snapshot?.(navigation?.currentSystemId || "")?.universeSeconds;
+            if (!navigation?.travelling && Number.isFinite(Number(universeSeconds))) {
+              runtime.advanceToSimulationSeconds?.(Number(universeSeconds));
+            }
             return runtime;
           } catch (error) {
             this.spaceGravityError = error instanceof Error ? error.message : String(error || "Space-physics runtime failed.");
@@ -5875,16 +5919,45 @@
           }
         }
 
-        updateSpaceGravity(nowMs = this.lastFrameTime ?? performance.now(), deltaSeconds = 0) {
+        updateSpaceGravity(nowMs = this.lastFrameTime ?? performance.now(), _deltaSeconds = 0) {
           if (!this.spaceGravityRuntime) return null;
           const navigation = this.spaceNavigationRuntime?.snapshot?.(nowMs) || null;
           this.spaceGravityRuntime.setActiveSystem(navigation?.currentSystemId || "");
-          if (!navigation?.travelling) this.spaceGravityRuntime.advanceRealSeconds(deltaSeconds);
+          const universeSeconds = this.spaceUniverseRuntime?.snapshot?.(navigation?.currentSystemId || "")?.universeSeconds;
+          if (!navigation?.travelling && Number.isFinite(Number(universeSeconds))) {
+            this.spaceGravityRuntime.advanceToSimulationSeconds?.(Number(universeSeconds));
+          }
           return this.spaceGravityRuntime.snapshot();
         }
 
         spaceGravitySnapshot() {
           return this.spaceGravityRuntime?.snapshot?.() || null;
+        }
+
+        createSpaceAstrometricsRuntime(options = {}) {
+          const api = globalThis.MainComputerSpaceAstrometricsRuntime;
+          if (!api?.create || !this.spaceUniverseRuntime) return null;
+          try {
+            return api.create({
+              projectId: options.projectId || options.project?.id || "game-project",
+              universeRuntime: this.spaceUniverseRuntime
+            });
+          } catch (error) {
+            this.spaceAstrometricsError = error instanceof Error ? error.message : String(error || "Space-astrometrics runtime failed.");
+            console.error("Space-astrometrics runtime initialization failed", error);
+            return null;
+          }
+        }
+
+        updateSpaceAstrometrics(nowMs = this.lastFrameTime ?? performance.now()) {
+          if (!this.spaceAstrometricsRuntime) return null;
+          const navigationSnapshot = this.spaceNavigationRuntime?.snapshot?.(nowMs) || null;
+          const physicsSnapshot = this.spaceGravityRuntime?.snapshot?.() || null;
+          return this.spaceAstrometricsRuntime.observe({navigationSnapshot, physicsSnapshot});
+        }
+
+        astrometricSnapshot() {
+          return this.spaceAstrometricsRuntime?.snapshot?.() || null;
         }
 
         createCharacterAIRuntime(options = {}) {
@@ -7028,7 +7101,7 @@
 
         openingEnemyEncounterActive(nowMs = this.lastFrameTime ?? performance.now()) {
           const navigation = this.navigationSnapshot?.(nowMs) || {};
-          return Boolean(
+          const openingEncounterBaseState = Boolean(
             navigation.currentSystemId
             && navigation.currentSystemId === navigation.startSystemId
             && !navigation.travelling
@@ -7036,6 +7109,9 @@
             && !navigation.lastArrivalAtMs
             && Number(navigation.elapsedWorldTime || 0) === 0
           );
+          if (!openingEncounterBaseState) return false;
+          if (!this.enemyShipDisabled()) return true;
+          return Number(this.bridgeTacticalShotAgeMs(nowMs)) < 1900;
         }
 
         enemyShipHullPercent() {
@@ -8720,6 +8796,19 @@
             builder,
             prop,
             nowMs
+          );
+        }
+
+        appendAstrometricSystemDisplay(builder, prop, nowMs = 0, navigationState = null, astrometricState = null) {
+          return globalThis.MainComputerShuttle3DRendererModules?.call(
+            "viewscreens",
+            "appendAstrometricSystemDisplay",
+            this,
+            builder,
+            prop,
+            nowMs,
+            navigationState,
+            astrometricState
           );
         }
 
@@ -11195,7 +11284,9 @@
           const deltaSeconds = this.lastFrameTime === null ? 0 : Math.max(0, (frameTime - this.lastFrameTime) / 1000);
           this.lastFrameTime = frameTime;
           this.updateSpaceNavigation(frameTime);
+          this.updateSpaceUniverse(frameTime, deltaSeconds);
           this.updateSpaceGravity(frameTime, deltaSeconds);
+          this.updateSpaceAstrometrics(frameTime);
           this.syncVelaSubsurfaceScene?.();
           this.updateMovement(deltaSeconds);
           this.updateCharacterAI(frameTime, deltaSeconds);

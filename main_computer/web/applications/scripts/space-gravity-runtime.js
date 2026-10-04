@@ -267,6 +267,7 @@
       id: stringValue(system.id),
       epochSeconds: finiteNumber(system.epochSeconds, 0),
       simulationSeconds: 0,
+      targetSimulationSeconds: 0,
       bodies: [...resolved.values()].map(clone)
     };
   }
@@ -441,6 +442,18 @@
       return this.snapshot(this.activeSystemId);
     }
 
+    advanceToSimulationSeconds(targetSeconds, systemId = this.activeSystemId) {
+      const state = this.ensureSystem(systemId);
+      if (!state) return this.snapshot(systemId);
+      const target = Math.max(0, finiteNumber(targetSeconds, state.simulationSeconds));
+      state.targetSimulationSeconds = Math.max(state.targetSimulationSeconds || 0, target);
+      if (target <= state.simulationSeconds + 1e-9) return this.snapshot(systemId);
+      while (state.simulationSeconds + this.fixedStepSeconds <= target + 1e-9) {
+        velocityVerletStep(state, this.fixedStepSeconds, this.gravitationalConstant);
+      }
+      return this.snapshot(systemId);
+    }
+
     snapshot(systemId = this.activeSystemId) {
       const id = stringValue(systemId);
       const state = id ? this.ensureSystem(id) : null;
@@ -467,6 +480,8 @@
         bodyCount: state.bodies.length,
         epochSeconds: state.epochSeconds,
         simulationSeconds: state.simulationSeconds,
+        targetSimulationSeconds: Math.max(state.simulationSeconds, finiteNumber(state.targetSimulationSeconds, state.simulationSeconds)),
+        timeLagSeconds: Math.max(0, finiteNumber(state.targetSimulationSeconds, state.simulationSeconds) - state.simulationSeconds),
         bodies: clone(state.bodies),
         diagnostics: diagnostics(state, this.gravitationalConstant),
         validation: clone(this.report)

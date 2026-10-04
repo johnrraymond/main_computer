@@ -97,7 +97,9 @@ console.log('gravity-initializers-ok');
         self.assertIn("this.spaceGravityRuntime = this.createSpaceGravityRuntime(options)", viewer)
         self.assertIn("options.project?.metadata?.spacePhysics", viewer)
         self.assertIn("runtime.setActiveSystem(navigation?.currentSystemId || \"\")", viewer)
-        self.assertIn("if (!navigation?.travelling) this.spaceGravityRuntime.advanceRealSeconds(deltaSeconds)", viewer)
+        self.assertIn("this.spaceUniverseRuntime = this.createSpaceUniverseRuntime(options)", viewer)
+        self.assertIn("this.spaceGravityRuntime.advanceToSimulationSeconds?.(Number(universeSeconds))", viewer)
+        self.assertIn("this.updateSpaceUniverse(frameTime, deltaSeconds)", viewer)
         self.assertIn("this.updateSpaceGravity(frameTime, deltaSeconds)", viewer)
 
 

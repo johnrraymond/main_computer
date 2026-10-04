@@ -1037,6 +1037,7 @@ def _parser() -> argparse.ArgumentParser:
     release_node_add_replica_sync.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     release_node_add_replica_sync.add_argument("--baseline-max-age-seconds", type=int, default=86400)
     release_node_add_replica_sync.add_argument("--expires-in-seconds", type=int, default=300)
+    release_node_add_replica_sync.add_argument("--sync-mode", choices=["FULL", "SNAP"], default="SNAP")
     release_node_add_replica_sync.add_argument("--created-at")
     release_node_add_replica_sync.add_argument("--write-release", action="store_true")
 
@@ -6134,6 +6135,7 @@ def _cmd_release_node_add_replica_sync(args: argparse.Namespace, private_state) 
         transaction_max_age_seconds=args.transaction_max_age_seconds,
         baseline_max_age_seconds=args.baseline_max_age_seconds,
         expires_in_seconds=args.expires_in_seconds,
+        sync_mode=args.sync_mode,
         created_at=args.created_at,
     )
     if args.write_release:

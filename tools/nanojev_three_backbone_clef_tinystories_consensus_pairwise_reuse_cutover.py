@@ -43,7 +43,7 @@ smoke = source_train.smoke
 
 SCHEMA = "main-computer-three-backbone-clef-tinystories-consensus-pairwise-reuse-cutover-v1"
 DEFAULT_SOURCE_EXPERIMENT = Path(
-    r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_consensus_pairwise_reuse16_train_v1"
+    r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_consensus_pairwise_unique640_reuse4_train_v1"
 )
 DEFAULT_OUTPUT = Path(
     r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_consensus_pairwise_unique2560_stream1_cutover_v1"

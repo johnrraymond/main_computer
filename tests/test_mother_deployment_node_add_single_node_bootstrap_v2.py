@@ -21,23 +21,44 @@ from tests.test_mother_deployment_node_add_single_node_bootstrap import (
 
 
 class _ForcedDeployBootstrapOpener(_SingleNodeBootstrapOpener):
+    def __init__(self, *, deploy_status: str = "running:healthy", cleanup_scenario: str = "none") -> None:
+        super().__init__(deploy_status=deploy_status)
+        self.cleanup_scenario = cleanup_scenario
+        self.cleanup_get_count = 0
+        self.deploy_count = 0
+
+    def _cleanup_payload(self):
+        self.cleanup_get_count += 1
+        if self.cleanup_scenario == "none":
+            return []
+        if self.cleanup_scenario in {"first-overlap", "second-overlap"}:
+            if self.cleanup_get_count == 1:
+                return []
+            if self.cleanup_get_count == 2:
+                return [{"uuid": "cleanup-1", "status": "running"}]
+            if self.cleanup_scenario == "second-overlap" and self.cleanup_get_count >= 5:
+                return [
+                    {"uuid": "cleanup-1", "status": "completed", "finished_at": "2026-08-12T01:10:06Z"},
+                    {"uuid": "cleanup-2", "status": "running"},
+                ]
+            return [{"uuid": "cleanup-1", "status": "completed", "finished_at": "2026-08-12T01:10:06Z"}]
+        raise AssertionError(f"unknown cleanup scenario: {self.cleanup_scenario}")
+
     def open(self, request, timeout: float):  # noqa: ANN001
         parsed = urlsplit(request.full_url)
+        if request.get_method() == "GET" and parsed.path == "/api/v1/servers/server-a/docker-cleanup/executions":
+            self.requests.append({"method": "GET", "host": parsed.hostname, "path": parsed.path, "query": parsed.query, "body": None})
+            return _Response(self._cleanup_payload())
         if request.get_method() == "POST" and parsed.path == "/api/v1/deploy":
             body = json.loads(request.data.decode("utf-8"))
-            self.requests.append(
-                {
-                    "method": "POST",
-                    "host": parsed.hostname,
-                    "path": parsed.path,
-                    "query": parsed.query,
-                    "body": body,
-                }
-            )
-            assert parsed.hostname == "coolify-a.invalid"
-            assert parsed.query == ""
+            self.requests.append({"method": "POST", "host": parsed.hostname, "path": parsed.path, "query": parsed.query, "body": body})
             assert body == {"uuid": "svc-a1", "force": True}
-            self.service["status"] = self.deploy_status
+            self.deploy_count += 1
+            self.service["status"] = (
+                "exited"
+                if self.cleanup_scenario in {"first-overlap", "second-overlap"} and self.deploy_count == 1
+                else self.deploy_status
+            )
             return _Response({"deployment_uuid": "deploy-single-node-bootstrap-v2", "message": "deployment queued"})
 
         response = super().open(request, timeout)
@@ -86,6 +107,13 @@ def test_single_node_bootstrap_v2_release_forces_deploy_instead_of_start(tmp_pat
     assert mutations[1]["canonical_request_body"] == {"uuid": "svc-a1", "force": True}
     assert mutations[1]["body_sha256"]
     assert not any(item["endpoint"].endswith("/start") for item in mutations)
+    assert release["bootstrap_plan"]["cleanup_boundary"] == {
+        "server_uuid": "server-a",
+        "executions_endpoint": "/api/v1/servers/server-a/docker-cleanup/executions",
+        "checker_ttl_seconds": 180,
+        "max_deploy_attempts": 2,
+        "retry_only_on_cleanup_overlap": True,
+    }
 
     compose = release["bootstrap_plan"]["compose"]["canonical_text"]
     guardian = compose.split("  mother-genesis-proof-guardian:", 1)[1].split("\nvolumes:\n", 1)[0]
@@ -205,6 +233,8 @@ def test_single_node_bootstrap_v2_failed_deploy_writes_boundary_diagnostics(tmp_
 
     assert result["status"] == "failed"
     assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_NOT_HEALTHY"
+    assert result["cleanup_boundary_retry_receipts"] == []
+    assert len([request for request in opener.requests if request["method"] == "POST" and request["path"] == "/api/v1/deploy"]) == 1
     diagnostics = result["deploy_boundary_diagnostics"]
     assert diagnostics["boundary"] == "Coolify service Compose PATCH/forced deploy acknowledgement to container materialization"
     assert diagnostics["kind"] == "main_computer.mother.single_node_bootstrap.deploy_boundary_diagnostics.v2"
@@ -232,3 +262,67 @@ def test_single_node_bootstrap_v2_failed_deploy_writes_boundary_diagnostics(tmp_
     assert result["observations"][0]["service_detail_snapshot"]["service_status"] == "exited"
     assert result["summary"]["deploy_boundary_diagnostics_captured"] is True
     assert result["summary"]["host_manual_diagnostic_commands_available"] is True
+
+
+
+def test_single_node_bootstrap_v2_cleanup_overlap_retries_once(tmp_path: Path) -> None:
+    paths, private_state, release = _release(tmp_path)
+    release_path, release_sha = write_node_add_single_node_bootstrap_release(
+        paths, release, operation=_operation("write-v2-cleanup-overlap-release")
+    )
+    opener = _ForcedDeployBootstrapOpener(cleanup_scenario="first-overlap")
+    result = execute_node_add_single_node_bootstrap_release(
+        paths, private_state, release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900, identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400, add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400, transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400, timeout=1.0, max_wait_seconds=0.0,
+        poll_interval_seconds=0.0, opener=opener,
+        now=datetime(2026, 8, 12, 1, 11, 0, tzinfo=timezone.utc),
+        operation=_operation("execute-v2-cleanup-overlap-release"),
+    )
+    assert result["status"] == "pass"
+    assert len([r for r in opener.requests if r["method"] == "POST" and r["path"] == "/api/v1/deploy"]) == 2
+    assert [a["status"] for a in result["cleanup_boundary"]["attempts"]] == ["cleanup-overlap", "healthy"]
+    assert result["cleanup_boundary"]["retry_reason"] == "cleanup-boundary-crossed"
+    assert len(result["cleanup_boundary_retry_receipts"]) == 1
+    assert result["summary"]["cleanup_boundary_checker_proven"] is True
+    assert verify_node_add_single_node_bootstrap_evidence(
+        paths, private_state, Path(result["evidence"]["path"]),
+        max_age_seconds=86400, release_max_age_seconds=86400,
+        identity_max_age_seconds=86400, identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400, add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400, baseline_max_age_seconds=86400,
+        now=datetime(2026, 8, 12, 1, 11, 1, tzinfo=timezone.utc),
+    )["clean"] is True
+    assert verify_v1_evidence(
+        paths, private_state, Path(result["evidence"]["path"]),
+        max_age_seconds=86400, release_max_age_seconds=86400,
+        identity_max_age_seconds=86400, identity_release_max_age_seconds=86400,
+        add_do_max_age_seconds=86400, add_do_release_max_age_seconds=86400,
+        transaction_max_age_seconds=86400, baseline_max_age_seconds=86400,
+        now=datetime(2026, 8, 12, 1, 11, 1, tzinfo=timezone.utc),
+    )["clean"] is True
+
+
+def test_single_node_bootstrap_v2_second_cleanup_overlap_has_no_third_deploy(tmp_path: Path) -> None:
+    paths, private_state, release = _release(tmp_path)
+    release_path, release_sha = write_node_add_single_node_bootstrap_release(
+        paths, release, operation=_operation("write-v2-second-overlap-release")
+    )
+    opener = _ForcedDeployBootstrapOpener(cleanup_scenario="second-overlap")
+    result = execute_node_add_single_node_bootstrap_release(
+        paths, private_state, release_path,
+        acknowledged_release_sha256=release_sha,
+        max_age_seconds=900, identity_max_age_seconds=86400,
+        identity_release_max_age_seconds=86400, add_do_max_age_seconds=86400,
+        add_do_release_max_age_seconds=86400, transaction_max_age_seconds=86400,
+        baseline_max_age_seconds=86400, timeout=1.0, max_wait_seconds=0.0,
+        poll_interval_seconds=0.0, opener=opener,
+        now=datetime(2026, 8, 12, 1, 11, 0, tzinfo=timezone.utc),
+        operation=_operation("execute-v2-second-overlap-release"),
+    )
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_CLEANUP_RACE_RETRY_CONTAMINATED"
+    assert len([r for r in opener.requests if r["method"] == "POST" and r["path"] == "/api/v1/deploy"]) == 2
