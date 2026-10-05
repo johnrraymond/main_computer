@@ -1,0 +1,842 @@
+{
+  "calls": [
+    {
+      "actualChoice": "uncertain-threat",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "uncertain-threat",
+      "cleanChoiceScores": {
+        "immediate-threat": 2,
+        "low-threat": 4,
+        "uncertain-threat": 14
+      },
+      "decisionLayer": "appraisal",
+      "expectedChoice": "uncertain-threat",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "immediate-threat": 4,
+        "low-threat": 3,
+        "uncertain-threat": 13
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 0
+    },
+    {
+      "actualChoice": "uncertain-threat",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "uncertain-threat",
+      "cleanChoiceScores": {
+        "immediate-threat": 5,
+        "low-threat": 4,
+        "uncertain-threat": 11
+      },
+      "decisionLayer": "appraisal",
+      "expectedChoice": "uncertain-threat",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "immediate-threat": 5,
+        "low-threat": 6,
+        "uncertain-threat": 9
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 0
+    },
+    {
+      "actualChoice": "uncertain-threat",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "uncertain-threat",
+      "cleanChoiceScores": {
+        "immediate-threat": 6,
+        "low-threat": 6,
+        "uncertain-threat": 8
+      },
+      "decisionLayer": "appraisal",
+      "expectedChoice": "uncertain-threat",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "immediate-threat": 6,
+        "low-threat": 6,
+        "uncertain-threat": 8
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 0
+    },
+    {
+      "actualChoice": "protect",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "protect",
+      "cleanChoiceScores": {
+        "preserve": 6,
+        "press": 6,
+        "protect": 8
+      },
+      "decisionLayer": "priority",
+      "expectedChoice": "protect",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "preserve": 5,
+        "press": 5,
+        "protect": 10
+      },
+      "planCoherenceTarget": "protect",
+      "questionCount": 20,
+      "stepIndex": 1
+    },
+    {
+      "actualChoice": "press",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "press",
+      "cleanChoiceScores": {
+        "preserve": 6,
+        "press": 6,
+        "protect": 8
+      },
+      "decisionLayer": "priority",
+      "expectedChoice": "press",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "preserve": 6,
+        "press": 6,
+        "protect": 8
+      },
+      "planCoherenceTarget": "press",
+      "questionCount": 20,
+      "stepIndex": 1
+    },
+    {
+      "actualChoice": "preserve",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "preserve",
+      "cleanChoiceScores": {
+        "preserve": 9,
+        "press": 3,
+        "protect": 8
+      },
+      "decisionLayer": "priority",
+      "expectedChoice": "preserve",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "preserve": 9,
+        "press": 3,
+        "protect": 8
+      },
+      "planCoherenceTarget": "preserve",
+      "questionCount": 20,
+      "stepIndex": 1
+    },
+    {
+      "actualChoice": "guard",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "guard",
+      "cleanChoiceScores": {
+        "disengage": 7,
+        "guard": 11,
+        "pursue": 2
+      },
+      "decisionLayer": "posture",
+      "expectedChoice": "guard",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "disengage": 5,
+        "guard": 12,
+        "pursue": 3
+      },
+      "planCoherenceTarget": "guard",
+      "questionCount": 20,
+      "stepIndex": 2
+    },
+    {
+      "actualChoice": "pursue",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "pursue",
+      "cleanChoiceScores": {
+        "disengage": 6,
+        "guard": 8,
+        "pursue": 6
+      },
+      "decisionLayer": "posture",
+      "expectedChoice": "pursue",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "disengage": 6,
+        "guard": 8,
+        "pursue": 6
+      },
+      "planCoherenceTarget": "pursue",
+      "questionCount": 20,
+      "stepIndex": 2
+    },
+    {
+      "actualChoice": "disengage",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "disengage",
+      "cleanChoiceScores": {
+        "disengage": 8,
+        "guard": 8,
+        "pursue": 4
+      },
+      "decisionLayer": "posture",
+      "expectedChoice": "disengage",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "disengage": 8,
+        "guard": 8,
+        "pursue": 4
+      },
+      "planCoherenceTarget": "disengage",
+      "questionCount": 20,
+      "stepIndex": 2
+    },
+    {
+      "actualChoice": "maintain-range",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "maintain-range",
+      "cleanChoiceScores": {
+        "close-range": 4,
+        "maintain-range": 13,
+        "open-range": 3
+      },
+      "decisionLayer": "subgoal",
+      "expectedChoice": "maintain-range",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "close-range": 6,
+        "maintain-range": 12,
+        "open-range": 2
+      },
+      "planCoherenceTarget": "maintain-range",
+      "questionCount": 20,
+      "stepIndex": 3
+    },
+    {
+      "actualChoice": "close-range",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "close-range",
+      "cleanChoiceScores": {
+        "close-range": 5,
+        "maintain-range": 10,
+        "open-range": 5
+      },
+      "decisionLayer": "subgoal",
+      "expectedChoice": "close-range",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "close-range": 5,
+        "maintain-range": 8,
+        "open-range": 7
+      },
+      "planCoherenceTarget": "close-range",
+      "questionCount": 20,
+      "stepIndex": 3
+    },
+    {
+      "actualChoice": "open-range",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "open-range",
+      "cleanChoiceScores": {
+        "close-range": 3,
+        "maintain-range": 13,
+        "open-range": 4
+      },
+      "decisionLayer": "subgoal",
+      "expectedChoice": "open-range",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "close-range": 5,
+        "maintain-range": 12,
+        "open-range": 3
+      },
+      "planCoherenceTarget": "open-range",
+      "questionCount": 20,
+      "stepIndex": 3
+    },
+    {
+      "actualChoice": "hold",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "hold",
+      "cleanChoiceScores": {
+        "close": 3,
+        "hold": 14,
+        "withdraw": 3
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "hold",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "close": 4,
+        "hold": 12,
+        "withdraw": 4
+      },
+      "planCoherenceTarget": "hold",
+      "questionCount": 20,
+      "stepIndex": 4
+    },
+    {
+      "actualChoice": "close",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "close",
+      "cleanChoiceScores": {
+        "close": 6,
+        "hold": 10,
+        "withdraw": 4
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "close",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "close": 6,
+        "hold": 10,
+        "withdraw": 4
+      },
+      "planCoherenceTarget": "close",
+      "questionCount": 20,
+      "stepIndex": 4
+    },
+    {
+      "actualChoice": "withdraw",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "hold",
+      "cleanChoiceScores": {
+        "close": 3,
+        "hold": 14,
+        "withdraw": 3
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "withdraw",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "close": 4,
+        "hold": 12,
+        "withdraw": 4
+      },
+      "planCoherenceTarget": "withdraw",
+      "questionCount": 20,
+      "stepIndex": 4
+    },
+    {
+      "actualChoice": "continue-plan",
+      "assessmentAuthoritativeChoice": "continue-plan",
+      "assessmentGateVotesClean": {
+        "action-usable": {
+          "no": 0,
+          "source": "physics",
+          "yes": 1
+        },
+        "posture-valid": {
+          "no": 0,
+          "yes": 10
+        },
+        "subgoal-valid": {
+          "no": 10,
+          "yes": 0
+        }
+      },
+      "assessmentGateVotesNoisy": {
+        "action-usable": {
+          "no": 0,
+          "source": "physics",
+          "yes": 1
+        },
+        "posture-valid": {
+          "no": 1,
+          "yes": 9
+        },
+        "subgoal-valid": {
+          "no": 9,
+          "yes": 1
+        }
+      },
+      "cleanChoice": "continue-plan",
+      "cleanChoiceScores": {
+        "continue-plan": 20,
+        "revise-action": 0,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "decisionLayer": "assessment",
+      "expectedChoice": "continue-plan",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "continue-plan": 20,
+        "revise-action": 0,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 5
+    },
+    {
+      "actualChoice": "continue-plan",
+      "assessmentAuthoritativeChoice": "continue-plan",
+      "assessmentGateVotesClean": {
+        "action-usable": {
+          "no": 0,
+          "source": "physics",
+          "yes": 1
+        },
+        "posture-valid": {
+          "no": 0,
+          "yes": 10
+        },
+        "subgoal-valid": {
+          "no": 10,
+          "yes": 0
+        }
+      },
+      "assessmentGateVotesNoisy": {
+        "action-usable": {
+          "no": 0,
+          "source": "physics",
+          "yes": 1
+        },
+        "posture-valid": {
+          "no": 1,
+          "yes": 9
+        },
+        "subgoal-valid": {
+          "no": 9,
+          "yes": 1
+        }
+      },
+      "cleanChoice": "continue-plan",
+      "cleanChoiceScores": {
+        "continue-plan": 20,
+        "revise-action": 0,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "decisionLayer": "assessment",
+      "expectedChoice": "continue-plan",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "continue-plan": 20,
+        "revise-action": 0,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 5
+    },
+    {
+      "actualChoice": "continue-plan",
+      "assessmentAuthoritativeChoice": "continue-plan",
+      "assessmentGateVotesClean": {
+        "action-usable": {
+          "no": 0,
+          "source": "physics",
+          "yes": 1
+        },
+        "posture-valid": {
+          "no": 0,
+          "yes": 10
+        },
+        "subgoal-valid": {
+          "no": 10,
+          "yes": 0
+        }
+      },
+      "assessmentGateVotesNoisy": {
+        "action-usable": {
+          "no": 0,
+          "source": "physics",
+          "yes": 1
+        },
+        "posture-valid": {
+          "no": 1,
+          "yes": 9
+        },
+        "subgoal-valid": {
+          "no": 9,
+          "yes": 1
+        }
+      },
+      "cleanChoice": "continue-plan",
+      "cleanChoiceScores": {
+        "continue-plan": 20,
+        "revise-action": 0,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "decisionLayer": "assessment",
+      "expectedChoice": "continue-plan",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "continue-plan": 20,
+        "revise-action": 0,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 5
+    },
+    {
+      "actualChoice": "hold",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "hold",
+      "cleanChoiceScores": {
+        "close": 3,
+        "hold": 14,
+        "withdraw": 3
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "hold",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "close": 5,
+        "hold": 12,
+        "withdraw": 3
+      },
+      "planCoherenceTarget": "hold",
+      "questionCount": 20,
+      "stepIndex": 6
+    },
+    {
+      "actualChoice": "close",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "close",
+      "cleanChoiceScores": {
+        "close": 13,
+        "hold": 4,
+        "withdraw": 3
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "close",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "close": 13,
+        "hold": 4,
+        "withdraw": 3
+      },
+      "planCoherenceTarget": "close",
+      "questionCount": 20,
+      "stepIndex": 6
+    },
+    {
+      "actualChoice": "withdraw",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "withdraw",
+      "cleanChoiceScores": {
+        "close": 4,
+        "hold": 4,
+        "withdraw": 12
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "withdraw",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "close": 4,
+        "hold": 5,
+        "withdraw": 11
+      },
+      "planCoherenceTarget": "withdraw",
+      "questionCount": 20,
+      "stepIndex": 6
+    },
+    {
+      "actualChoice": "revise-action",
+      "assessmentAuthoritativeChoice": "revise-action",
+      "assessmentGateVotesClean": {
+        "action-usable": {
+          "no": 1,
+          "source": "physics",
+          "yes": 0
+        },
+        "posture-valid": {
+          "no": 0,
+          "yes": 10
+        },
+        "subgoal-valid": {
+          "no": 10,
+          "yes": 0
+        }
+      },
+      "assessmentGateVotesNoisy": {
+        "action-usable": {
+          "no": 1,
+          "source": "physics",
+          "yes": 0
+        },
+        "posture-valid": {
+          "no": 1,
+          "yes": 9
+        },
+        "subgoal-valid": {
+          "no": 9,
+          "yes": 1
+        }
+      },
+      "cleanChoice": "revise-action",
+      "cleanChoiceScores": {
+        "continue-plan": 0,
+        "revise-action": 20,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "decisionLayer": "assessment",
+      "expectedChoice": "revise-action",
+      "invalidatedLayers": [
+        "action"
+      ],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "continue-plan": 0,
+        "revise-action": 20,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 7
+    },
+    {
+      "actualChoice": "revise-action",
+      "assessmentAuthoritativeChoice": "revise-action",
+      "assessmentGateVotesClean": {
+        "action-usable": {
+          "no": 1,
+          "source": "physics",
+          "yes": 0
+        },
+        "posture-valid": {
+          "no": 0,
+          "yes": 10
+        },
+        "subgoal-valid": {
+          "no": 10,
+          "yes": 0
+        }
+      },
+      "assessmentGateVotesNoisy": {
+        "action-usable": {
+          "no": 1,
+          "source": "physics",
+          "yes": 0
+        },
+        "posture-valid": {
+          "no": 1,
+          "yes": 9
+        },
+        "subgoal-valid": {
+          "no": 9,
+          "yes": 1
+        }
+      },
+      "cleanChoice": "revise-action",
+      "cleanChoiceScores": {
+        "continue-plan": 0,
+        "revise-action": 20,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "decisionLayer": "assessment",
+      "expectedChoice": "revise-action",
+      "invalidatedLayers": [
+        "action"
+      ],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "continue-plan": 0,
+        "revise-action": 20,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 7
+    },
+    {
+      "actualChoice": "revise-action",
+      "assessmentAuthoritativeChoice": "revise-action",
+      "assessmentGateVotesClean": {
+        "action-usable": {
+          "no": 1,
+          "source": "physics",
+          "yes": 0
+        },
+        "posture-valid": {
+          "no": 0,
+          "yes": 10
+        },
+        "subgoal-valid": {
+          "no": 10,
+          "yes": 0
+        }
+      },
+      "assessmentGateVotesNoisy": {
+        "action-usable": {
+          "no": 1,
+          "source": "physics",
+          "yes": 0
+        },
+        "posture-valid": {
+          "no": 1,
+          "yes": 9
+        },
+        "subgoal-valid": {
+          "no": 9,
+          "yes": 1
+        }
+      },
+      "cleanChoice": "revise-action",
+      "cleanChoiceScores": {
+        "continue-plan": 0,
+        "revise-action": 20,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "decisionLayer": "assessment",
+      "expectedChoice": "revise-action",
+      "invalidatedLayers": [
+        "action"
+      ],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "continue-plan": 0,
+        "revise-action": 20,
+        "revise-posture": 0,
+        "revise-subgoal": 0
+      },
+      "planCoherenceTarget": null,
+      "questionCount": 20,
+      "stepIndex": 7
+    },
+    {
+      "actualChoice": "hold",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "hold",
+      "cleanChoiceScores": {
+        "close": 3,
+        "hold": 14,
+        "withdraw": 3
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "hold",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.guardian",
+      "noisyChoiceScores": {
+        "close": 3,
+        "hold": 14,
+        "withdraw": 3
+      },
+      "planCoherenceTarget": "hold",
+      "questionCount": 20,
+      "stepIndex": 8
+    },
+    {
+      "actualChoice": "close",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "close",
+      "cleanChoiceScores": {
+        "close": 13,
+        "hold": 4,
+        "withdraw": 3
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "close",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.hunter",
+      "noisyChoiceScores": {
+        "close": 11,
+        "hold": 6,
+        "withdraw": 3
+      },
+      "planCoherenceTarget": "close",
+      "questionCount": 20,
+      "stepIndex": 8
+    },
+    {
+      "actualChoice": "withdraw",
+      "assessmentAuthoritativeChoice": null,
+      "assessmentGateVotesClean": null,
+      "assessmentGateVotesNoisy": null,
+      "cleanChoice": "withdraw",
+      "cleanChoiceScores": {
+        "close": 4,
+        "hold": 4,
+        "withdraw": 12
+      },
+      "decisionLayer": "action",
+      "expectedChoice": "withdraw",
+      "invalidatedLayers": [],
+      "jacketId": "captain.jacket.survivor",
+      "noisyChoiceScores": {
+        "close": 5,
+        "hold": 5,
+        "withdraw": 10
+      },
+      "planCoherenceTarget": "withdraw",
+      "questionCount": 20,
+      "stepIndex": 8
+    }
+  ],
+  "checkpointId": "cycle-000068-reuse-002",
+  "checkpointSha256": "f9c1bc5a496b0fd20843c46869e946f4ac448c2ad08ac44606515a1936f6ed46",
+  "schema": "space.captainLiveReplayFixture.v1",
+  "source": "captains(4).txt"
+}

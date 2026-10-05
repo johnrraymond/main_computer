@@ -623,11 +623,19 @@ def test_dynamic_post_work_cleanup_substeps_are_mutation_gated(tmp_path: Path) -
 
 
 def test_preflight_paranoia_is_in_add_and_remove_before_mutation_planning() -> None:
-    assert harness.COMMON_STEPS[0:2] == ["detect-topology", "preflight-paranoia"]
+    assert harness.COMMON_STEPS[0:4] == [
+        "detect-topology",
+        "preflight-paranoia",
+        "preflight-paranoia-snap",
+        "reserve-identity",
+    ]
     assert harness.REMOVE_STEPS[0:2] == ["detect-topology", "preflight-paranoia"]
-    assert harness.COMMON_STEPS.index("preflight-paranoia") < harness.COMMON_STEPS.index("prep")
+    assert harness.COMMON_STEPS.index("preflight-paranoia") < harness.COMMON_STEPS.index("reserve-identity")
+    assert harness.COMMON_STEPS.index("preflight-paranoia-snap") < harness.COMMON_STEPS.index("reserve-identity")
+    assert harness.COMMON_STEPS.index("preflight-paranoia-snap") < harness.COMMON_STEPS.index("prep")
     assert harness.REMOVE_STEPS.index("preflight-paranoia") < harness.REMOVE_STEPS.index("remove-prep")
     assert "preflight-paranoia" not in harness.MUTATION_STEPS
+    assert "preflight-paranoia-snap" not in harness.MUTATION_STEPS
 
 
 def test_preflight_paranoia_cmd_uses_harness_selected_baseline(tmp_path: Path) -> None:
@@ -643,6 +651,79 @@ def test_preflight_paranoia_cmd_uses_harness_selected_baseline(tmp_path: Path) -
     assert argv[argv.index("--topology-evidence") + 1] == args.baseline_evidence
     assert argv[argv.index("--acknowledge-topology-evidence-sha256") + 1] == args.baseline_evidence_sha256
     assert argv[argv.index("--node") + 1] == "mainnetc-super2"
+
+
+def test_snap_preflight_cmd_uses_harness_selected_baseline(tmp_path: Path) -> None:
+    args = _parser_args(tmp_path)
+    args.baseline_evidence = str(tmp_path / "selected-topology.json")
+    args.baseline_evidence_sha256 = "b" * 64
+
+    instance = harness.Harness(args)
+    argv = instance.preflight_paranoia_snap_cmd()
+
+    assert argv[1].endswith("tools/mother/preflight_paranoia_snap.py")
+    assert argv[argv.index("--topology-evidence") + 1] == args.baseline_evidence
+    assert argv[argv.index("--acknowledge-topology-evidence-sha256") + 1] == args.baseline_evidence_sha256
+    assert argv[argv.index("--network") + 1] == "mainnet"
+
+
+def test_snap_preflight_skips_when_add_is_full(tmp_path: Path) -> None:
+    args = _parser_args(tmp_path)
+    args.sync_mode = "FULL"
+    instance = harness.Harness(args)
+
+    def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("FULL add must not invoke SNAP paranoia")
+
+    instance.run = unexpected_run
+    instance.step_preflight_paranoia_snap()
+
+    assert instance.state["preflight_paranoia_snap_status"] == "not-required"
+
+
+def test_snap_preflight_blocks_snap_add_on_nonpass_result(tmp_path: Path, capsys) -> None:
+    args = _parser_args(tmp_path)
+    args.sync_mode = "SNAP"
+    args.baseline_evidence = str(tmp_path / "selected-topology.json")
+    args.baseline_evidence_sha256 = "c" * 64
+    instance = harness.Harness(args)
+
+    def fake_run(step: str, argv: list[str], *, allow_failure: bool = False):
+        assert step == "preflight-paranoia-snap"
+        assert allow_failure is True
+        assert argv[1].endswith("tools/mother/preflight_paranoia_snap.py")
+        return {
+            "status": "blocked",
+            "safe_to_add_snap": False,
+            "manual_fix_commands": ["python manual-fix.py"],
+            "summary": {"blocker_count": 1, "manual_remediation_command_count": 1},
+        }
+
+    instance.run = fake_run
+
+    with pytest.raises(SystemExit) as exc:
+        instance.step_preflight_paranoia_snap()
+
+    assert exc.value.code == 3
+    assert instance.state["preflight_paranoia_snap_status"] == "blocked"
+    assert instance.state["preflight_paranoia_snap_safe"] is False
+    assert "MOTHER_MUTATE_HARNESS_PREFLIGHT_PARANOIA_SNAP_BLOCKED" in capsys.readouterr().out
+
+
+def test_resume_after_early_snap_gate_cannot_bypass_snap_preflight(tmp_path: Path) -> None:
+    args = _parser_args(tmp_path)
+    args.sync_mode = "SNAP"
+    args.start_at = "release-replica-sync"
+    instance = harness.Harness(args)
+    calls: list[object] = []
+
+    instance.step_preflight_paranoia_snap = lambda: calls.append("snap-preflight")
+    instance.run_steps = lambda steps, start_at: calls.append((tuple(steps), start_at))
+
+    instance.run_all()
+
+    assert calls[0] == "snap-preflight"
+    assert calls[1][1] == "release-replica-sync"
 
 
 def test_preflight_paranoia_blocks_with_fresh_cleanup_topology_command(tmp_path: Path, capsys) -> None:

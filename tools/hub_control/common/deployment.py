@@ -97,6 +97,7 @@ def deployment_target(
         "controller_id": placement.controller_id,
         "host_id": placement.host_id,
         "coolify": coords,
+        "environment_name": f"{network}-hubs",
         "application_name": placement.application_name,
         "legacy_application_name": f"main-computer-{network}-hub",
         "public_url": placement.public_url,
@@ -120,6 +121,102 @@ def _client(target: Mapping[str, Any], client_factory=legacy.CoolifyClient):
     return client_factory(str(coolify["url"]), str(coolify["api_token"]))
 
 
+
+def _application_environment_name(payload: object) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+    direct = str(payload.get("environment_name") or "").strip()
+    if direct:
+        return direct
+    environment = payload.get("environment")
+    if isinstance(environment, Mapping):
+        nested = str(environment.get("name") or environment.get("environment_name") or "").strip()
+        if nested:
+            return nested
+    application = payload.get("application")
+    if isinstance(application, Mapping):
+        return _application_environment_name(application)
+    return ""
+
+
+def _inspect_application_environment(client: Any, application_uuid: str, resolution: Mapping[str, Any] | None = None) -> str:
+    if isinstance(resolution, Mapping):
+        matches = resolution.get("matches")
+        if isinstance(matches, list) and len(matches) == 1:
+            from_match = _application_environment_name(matches[0])
+            if from_match:
+                return from_match
+    response = client.request("GET", f"/api/v1/applications/{urllib.parse.quote(application_uuid)}")
+    if response.ok:
+        return _application_environment_name(response.body)
+    return ""
+
+
+def _environment_mismatch(actual: str, desired: str) -> bool:
+    return bool(actual and desired and actual.strip().lower() != desired.strip().lower())
+
+
+def _ensure_coolify_environment(client: Any, target: Mapping[str, Any], tried: list[dict[str, Any]]) -> dict[str, Any]:
+    coolify = target["coolify"]
+    project_uuid = str(coolify["project_uuid"]).strip()
+    environment_name = str(
+        target.get("environment_name") or f"{str(target.get('network') or 'mainnet')}-hubs"
+    ).strip()
+    if not project_uuid:
+        raise HubControlError("HUB_COOLIFY_PROJECT_MISSING", "Hub deployment target has no Coolify project UUID")
+    if not environment_name:
+        raise HubControlError("HUB_COOLIFY_ENVIRONMENT_MISSING", "Hub deployment target has no Coolify environment name")
+
+    path = f"/api/v1/projects/{urllib.parse.quote(project_uuid)}/environments"
+
+    def resolve() -> tuple[str, list[dict[str, Any]]]:
+        response = client.request("GET", path)
+        tried.append({"operation": "inspect-environment", "status": response.status})
+        if not response.ok:
+            raise HubControlError(
+                "HUB_COOLIFY_ENVIRONMENT_INSPECT_FAILED",
+                f"Coolify environment inspection failed: HTTP {response.status}: {response.body}",
+            )
+        matches = [
+            item
+            for item in legacy.body_items(response.body, "environments")
+            if str(item.get("name") or "").strip() == environment_name
+        ]
+        if len(matches) > 1:
+            raise HubControlError(
+                "HUB_COOLIFY_ENVIRONMENT_AMBIGUOUS",
+                f"multiple Coolify environments named {environment_name!r} exist in project {project_uuid!r}",
+            )
+        return (legacy.item_uuid(matches[0]) if matches else ""), matches
+
+    environment_uuid, matches = resolve()
+    if environment_uuid or matches:
+        return {
+            "environment_name": environment_name,
+            "environment_uuid": environment_uuid or None,
+            "created": False,
+        }
+
+    response = client.request("POST", path, {"name": environment_name})
+    tried.append({"operation": "create-environment", "status": response.status})
+    if not response.ok and response.status not in {409, 422}:
+        raise HubControlError(
+            "HUB_COOLIFY_ENVIRONMENT_CREATE_FAILED",
+            f"Coolify environment create failed: HTTP {response.status}: {response.body}",
+        )
+
+    environment_uuid, matches = resolve()
+    if not environment_uuid and not matches:
+        raise HubControlError(
+            "HUB_COOLIFY_ENVIRONMENT_MISSING",
+            f"could not resolve Coolify environment {environment_name!r} after create",
+        )
+    return {
+        "environment_name": environment_name,
+        "environment_uuid": environment_uuid or None,
+        "created": bool(response.ok),
+    }
+
 def inspect_deployment(target: Mapping[str, Any], *, client_factory=legacy.CoolifyClient) -> dict[str, Any]:
     client = _client(target, client_factory)
     tried: list[dict[str, Any]] = []
@@ -131,7 +228,18 @@ def inspect_deployment(target: Mapping[str, Any], *, client_factory=legacy.Cooli
             tried=tried,
         )
         if uuid:
-            return {"application_uuid": uuid, "present": True, "resolution": {"source": "hub-control-name", **detail}}
+            resolution = {"source": "hub-control-name", **detail}
+            desired_environment = str(target.get("environment_name") or f"{str(target.get('network') or 'mainnet')}-hubs")
+            actual_environment = _inspect_application_environment(client, uuid, resolution)
+            mismatch = _environment_mismatch(actual_environment, desired_environment)
+            return {
+                "application_uuid": uuid,
+                "present": True,
+                "environment_name": actual_environment or None,
+                "desired_environment_name": desired_environment,
+                "placement_mismatch": mismatch,
+                "resolution": resolution,
+            }
         legacy_name = str(target.get("legacy_application_name") or "").strip()
         if legacy_name and legacy_name != str(target["application_name"]):
             legacy_uuid, legacy_detail = legacy.find_application(
@@ -141,11 +249,18 @@ def inspect_deployment(target: Mapping[str, Any], *, client_factory=legacy.Cooli
                 tried=tried,
             )
             if legacy_uuid:
+                resolution = {"source": "legacy-hub-application", "legacy_name": legacy_name, **legacy_detail}
+                desired_environment = str(target.get("environment_name") or f"{str(target.get('network') or 'mainnet')}-hubs")
+                actual_environment = _inspect_application_environment(client, legacy_uuid, resolution)
+                mismatch = _environment_mismatch(actual_environment, desired_environment)
                 return {
                     "application_uuid": legacy_uuid,
                     "present": True,
                     "migration_candidate": True,
-                    "resolution": {"source": "legacy-hub-application", "legacy_name": legacy_name, **legacy_detail},
+                    "environment_name": actual_environment or None,
+                    "desired_environment_name": desired_environment,
+                    "placement_mismatch": mismatch,
+                    "resolution": resolution,
                 }
     except Exception as exc:
         raise HubControlError("HUB_COOLIFY_INSPECT_FAILED", str(exc)) from exc
@@ -191,7 +306,7 @@ def _application_payload(target: Mapping[str, Any]) -> dict[str, Any]:
         "description": f"Main Computer {target['application_name']} Hub Control deployment",
         "project_uuid": str(coolify["project_uuid"]),
         "server_uuid": str(coolify["server_uuid"]),
-        "environment_name": str(target.get("network") or "mainnet"),
+        "environment_name": str(target.get("environment_name") or f"{str(target.get('network') or 'mainnet')}-hubs"),
         "git_repository": str(target["git_repository"]),
         "git_branch": str(target["git_branch"]),
         "build_pack": "dockerfile",
@@ -339,6 +454,14 @@ def apply_deployment(
         frozen_uuid = str(target.get("application_uuid") or "").strip()
         if frozen_uuid:
             app_uuid, _detail = frozen_uuid, {"source": "frozen-prep", "uuid": frozen_uuid}
+            desired_environment = str(target.get("environment_name") or f"{str(target.get('network') or 'mainnet')}-hubs")
+            actual_environment = _inspect_application_environment(client, app_uuid)
+            if _environment_mismatch(actual_environment, desired_environment):
+                raise HubControlError(
+                    "HUB_COOLIFY_ENVIRONMENT_MISMATCH",
+                    f"Hub application {app_uuid!r} is in Coolify environment {actual_environment!r}; "
+                    f"Hub Control requires {desired_environment!r}. Remove or explicitly migrate the misplaced application, then run prep again.",
+                )
         else:
             app_uuid, _detail = legacy.find_application(
                 client,
@@ -348,7 +471,9 @@ def apply_deployment(
             )
         payload = _application_payload(target)
         action = "migrated" if frozen_uuid and target.get("migration_candidate") else "updated"
+        environment_result: dict[str, Any] | None = None
         if not app_uuid:
+            environment_result = _ensure_coolify_environment(client, target, tried)
             response = client.request("POST", "/api/v1/applications/public", payload)
             if not response.ok:
                 raise HubControlError("HUB_COOLIFY_CREATE_FAILED", f"Hub application create failed: HTTP {response.status}: {response.body}")
@@ -423,6 +548,8 @@ def apply_deployment(
             "deployment_status": deployment_wait.get("status"),
             "deployment_commit": deployment_wait.get("commit") or None,
             "deployment_waited": bool(deployment_wait.get("waited")),
+            "environment_name": str(payload["environment_name"]),
+            "environment_created": bool(environment_result and environment_result.get("created")),
         }
     except HubControlError:
         raise

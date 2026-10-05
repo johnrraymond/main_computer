@@ -115,6 +115,8 @@ def test_add_hub_prep_from_unborn_discovers_both_dependency_contracts(tmp_path: 
     assert details["host_id"] == "coolify-a"
     assert details["fdb_contract"]["generation"] == 8
     assert details["chain_contract"]["generation"] == 12
+    op = require_operation(ctx, "mainnet", details["operation_id"])
+    assert op["target"]["environment_name"] == "mainnet-hubs"
     assert (ctx.fdb_state_root / "mainnet" / "consumer-contract.json").is_file()
     assert (ctx.chain_state_root / "mainnet" / "consumer-contract.json").is_file()
 
@@ -256,3 +258,27 @@ def test_add_hub_do_persists_actionable_runtime_failure_evidence(tmp_path: Path)
     assert operation["last_deployment_result"]["deployment_uuid"] == "dep-1"
     assert operation["last_verification"]["hub_running"] is True
     assert operation["last_verification"]["chain_adoption_verified"] is True
+
+
+def test_add_hub_prep_refuses_existing_application_in_chain_environment(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+
+    with pytest.raises(HubControlError) as exc_info:
+        add_hub.prep(
+            ctx,
+            "mainnet",
+            "mainneta-hub1",
+            chain_verifier=lambda _contract: {"verified": True, "reason": "test-chain-proof"},
+            deployment_inspector=lambda _target: {
+                "present": True,
+                "application_uuid": "app-wrong-env",
+                "environment_name": "mainnet",
+                "desired_environment_name": "mainnet-hubs",
+                "placement_mismatch": True,
+                "resolution": {"source": "hub-control-name"},
+            },
+        )
+
+    assert exc_info.value.code == "HUB_COOLIFY_ENVIRONMENT_MISMATCH"
+    assert "mainnet-hubs" in exc_info.value.message

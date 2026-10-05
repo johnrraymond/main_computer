@@ -275,6 +275,49 @@ def _dump_compose_for_coolify(compose: Mapping[str, Any]) -> str:
     )
 
 
+def _is_retired_genesis_init_shim(compose: Mapping[str, Any]) -> bool:
+    services = compose.get("services")
+    if not isinstance(services, Mapping):
+        return False
+    genesis_init = services.get("mother-genesis-init")
+    if not isinstance(genesis_init, Mapping):
+        return False
+    command = genesis_init.get("command")
+    if isinstance(command, str):
+        command_text = command
+    elif isinstance(command, list):
+        command_text = "\n".join(str(item) for item in command if isinstance(item, str))
+    else:
+        return False
+    return "mother-retired-helper-shim" in command_text and re.search(r"\bwhile\s+true\b", command_text) is not None
+
+
+def _drop_obsolete_retired_genesis_dependency(compose: Mapping[str, Any], node: str) -> bool:
+    """Remove only the impossible completed-successfully edge to a retired infinite shim."""
+
+    if not _is_retired_genesis_init_shim(compose):
+        return False
+    services = compose.get("services")
+    if not isinstance(services, Mapping):
+        return False
+    service = services.get(node)
+    if not isinstance(service, dict):
+        return False
+    depends_on = service.get("depends_on")
+    if not isinstance(depends_on, dict):
+        return False
+    genesis_dependency = depends_on.get("mother-genesis-init")
+    if not isinstance(genesis_dependency, Mapping):
+        return False
+    if str(genesis_dependency.get("condition") or "").strip() != "service_completed_successfully":
+        return False
+
+    del depends_on["mother-genesis-init"]
+    if not depends_on:
+        service.pop("depends_on", None)
+    return True
+
+
 def _rewrite_sync_mode(compose_text: str, node: str, requested_mode: str) -> tuple[str, str, int]:
     requested, requested_min_peers = _sync_profile(requested_mode)
     _assert_no_destructive_data_reset(compose_text)
@@ -301,6 +344,12 @@ def _rewrite_sync_mode(compose_text: str, node: str, requested_mode: str) -> tup
     if mode_rewrites != 1 or peers_rewrites != 1:
         raise SmokeError("target node command changed while rewriting sync profile")
     service["command"] = rewritten_command
+
+    # Established Mother services retire the one-shot genesis initializer into an
+    # infinite healthy shim.  A stale service_completed_successfully dependency on
+    # that shim can never become true after rematerialization, leaving Besu Created
+    # forever.  Remove only that exact obsolete edge.
+    _drop_obsolete_retired_genesis_dependency(compose, node)
 
     rewritten = _dump_compose_for_coolify(compose)
     _target_service(rewritten, node)
@@ -332,6 +381,9 @@ def _semantic_masked_sha(compose_text: str, node: str) -> str:
     if mode_changed != 1 or peers_changed != 1:
         raise SmokeError("target node service does not contain exactly one sync-mode and sync-min-peers flag")
     service["command"] = masked
+    # Normalize the one intentionally removable retired-helper dependency so the
+    # semantic guard still rejects every unrelated Compose change.
+    _drop_obsolete_retired_genesis_dependency(compose, node)
     return hashlib.sha256(canonical_json(compose)).hexdigest()
 
 
@@ -461,6 +513,450 @@ def _cleanup_active(receipt: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return active
 
 
+
+_CLEANUP_TERMINAL_STATUSES = {
+    "completed",
+    "complete",
+    "finished",
+    "success",
+    "successful",
+    "failed",
+    "error",
+    "cancelled",
+    "canceled",
+}
+
+
+def _cleanup_id(item: Mapping[str, Any]) -> str:
+    value = item.get("uuid")
+    return value if isinstance(value, str) else ""
+
+
+def _cleanup_terminal(item: Mapping[str, Any]) -> bool:
+    if item.get("finished_at"):
+        return True
+    return str(item.get("status") or "").strip().lower() in _CLEANUP_TERMINAL_STATUSES
+
+
+def _cleanup_succeeded(item: Mapping[str, Any]) -> bool:
+    return _cleanup_terminal(item) and str(item.get("status") or "").strip().lower() not in {
+        "failed",
+        "error",
+        "cancelled",
+        "canceled",
+    }
+
+
+def _cleanup_snapshot(
+    controller: Any,
+    endpoint: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+) -> tuple[Mapping[str, Any], list[Mapping[str, Any]]]:
+    receipt = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+    if receipt.get("ok") is not True:
+        raise SmokeError("could not observe Coolify cleanup execution boundary")
+    return receipt, _cleanup_items(receipt.get("payload"))
+
+
+def _wait_cleanup_clear(
+    controller: Any,
+    endpoint: str,
+    *,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+) -> set[str]:
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+    while True:
+        _receipt, items = _cleanup_snapshot(
+            controller,
+            endpoint,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+        )
+        if not any(not _cleanup_terminal(item) for item in items):
+            return {_cleanup_id(item) for item in items if _cleanup_id(item)}
+        if time.monotonic() >= deadline:
+            raise SmokeError("Coolify cleanup did not clear before the safe redeploy deadline")
+        time.sleep(max(0.0, poll_interval_seconds))
+
+
+def _wait_cleanup_terminal(
+    controller: Any,
+    endpoint: str,
+    cleanup_uuid: str,
+    *,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+) -> None:
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+    while True:
+        _receipt, items = _cleanup_snapshot(
+            controller,
+            endpoint,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+        )
+        item = next((item for item in items if _cleanup_id(item) == cleanup_uuid), None)
+        if item is not None and _cleanup_terminal(item):
+            if not _cleanup_succeeded(item):
+                raise SmokeError(f"cleanup execution {cleanup_uuid} crossed the redeploy boundary and failed")
+            return
+        if time.monotonic() >= deadline:
+            raise SmokeError(f"cleanup execution {cleanup_uuid} did not finish before the safe redeploy deadline")
+        time.sleep(max(0.0, poll_interval_seconds))
+
+
+def _watch_switch_attempt(
+    controller: Any,
+    *,
+    cleanup_endpoint: str,
+    cleanup_baseline_ids: set[str],
+    service_uuid: str,
+    node: str,
+    requested_mode: str,
+    requested_min_peers: int,
+    poll_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    log_lines: int,
+    max_response_bytes: int,
+    attempt: int,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + max(0.0, poll_seconds)
+    observations: list[dict[str, Any]] = []
+    final_detail: Mapping[str, Any] | None = None
+    final_compose: str | None = None
+    final_runtime: dict[str, Any] | None = None
+    final_log_attempts: list[dict[str, Any]] = []
+
+    while True:
+        detail_error: str | None = None
+        configured: str | None = None
+        configured_min_peers: int | None = None
+        runtime: dict[str, Any] = {}
+        service_status = ""
+        try:
+            detail = _detail(
+                controller,
+                service_uuid,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+            )
+            compose = _compose_text(detail)
+            _compose_obj, _service, configured, configured_min_peers = _target_service(compose, node)
+            logs, log_attempts = _logs_text(
+                controller,
+                service_uuid,
+                node,
+                lines=log_lines,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+            )
+            runtime = _runtime_facts_from_logs(logs)
+            service_status = _service_status(detail)
+            final_detail = detail
+            final_compose = compose
+            final_runtime = runtime
+            final_log_attempts = log_attempts
+        except SmokeError as exc:
+            detail_error = str(exc)
+
+        try:
+            _cleanup_receipt, cleanup_items = _cleanup_snapshot(
+                controller,
+                cleanup_endpoint,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+            )
+        except SmokeError as exc:
+            return {
+                "status": "cleanup-observation-failed",
+                "cleanup_uuid": None,
+                "observations": observations,
+                "detail": final_detail,
+                "compose": final_compose,
+                "runtime": final_runtime,
+                "log_attempts": final_log_attempts,
+                "error": str(exc),
+            }
+
+        overlap = next(
+            (
+                item
+                for item in cleanup_items
+                if _cleanup_id(item) and _cleanup_id(item) not in cleanup_baseline_ids
+            ),
+            None,
+        )
+        cleanup_uuid = _cleanup_id(overlap) if overlap is not None else None
+        observation = {
+            "attempt": attempt,
+            "observed_at": _timestamp(),
+            "service_status": service_status or None,
+            "configured_sync_mode": configured,
+            "configured_sync_min_peers": configured_min_peers,
+            "runtime_sync_mode": runtime.get("runtime_sync_mode"),
+            "runtime_sync_min_peers": runtime.get("runtime_sync_min_peers"),
+            "node_address": runtime.get("node_address"),
+            "highest_logged_block": runtime.get("highest_logged_block"),
+            "cleanup_boundary_crossed": overlap is not None,
+            "cleanup_execution_uuid": cleanup_uuid,
+        }
+        if detail_error is not None:
+            observation["error"] = detail_error
+        observations.append(observation)
+
+        # Match Mother's proven cleanup-boundary ordering: observe service state,
+        # then sample CleanupDocker, and only then accept running:healthy.
+        if overlap is not None:
+            return {
+                "status": "cleanup-overlap",
+                "cleanup_uuid": cleanup_uuid,
+                "observations": observations,
+                "detail": final_detail,
+                "compose": final_compose,
+                "runtime": final_runtime,
+                "log_attempts": final_log_attempts,
+            }
+
+        if (
+            detail_error is None
+            and service_status == "running:healthy"
+            and configured == requested_mode
+            and configured_min_peers == requested_min_peers
+            and runtime.get("runtime_sync_mode") == requested_mode
+            and runtime.get("runtime_sync_min_peers") == requested_min_peers
+        ):
+            return {
+                "status": "healthy",
+                "cleanup_uuid": None,
+                "observations": observations,
+                "detail": final_detail,
+                "compose": final_compose,
+                "runtime": final_runtime,
+                "log_attempts": final_log_attempts,
+            }
+
+        if time.monotonic() >= deadline:
+            return {
+                "status": "not-healthy",
+                "cleanup_uuid": None,
+                "observations": observations,
+                "detail": final_detail,
+                "compose": final_compose,
+                "runtime": final_runtime,
+                "log_attempts": final_log_attempts,
+            }
+        time.sleep(max(0.0, poll_interval_seconds))
+
+
+def _deploy_receipt(
+    controller: Any,
+    service_uuid: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+) -> Mapping[str, Any]:
+    return _http(
+        controller,
+        "POST",
+        "/api/v1/deploy",
+        body={"uuid": service_uuid, "force": True},
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+
+
+def _cleanup_safe_redeploy(
+    controller: Any,
+    *,
+    cleanup_endpoint: str,
+    service_uuid: str,
+    node: str,
+    requested_mode: str,
+    requested_min_peers: int,
+    poll_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    log_lines: int,
+    max_response_bytes: int,
+) -> dict[str, Any]:
+    deploy_receipts: list[dict[str, Any]] = []
+    boundary_attempts: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
+    retry_reason: str | None = None
+
+    baseline = _wait_cleanup_clear(
+        controller,
+        cleanup_endpoint,
+        max_wait_seconds=poll_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+    first_deploy = _deploy_receipt(
+        controller,
+        service_uuid,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+    deploy_receipts.append({"attempt": 1, "baseline_execution_ids": sorted(baseline), **_safe_receipt(first_deploy)})
+    if first_deploy.get("ok") is not True:
+        return {
+            "ok": False,
+            "status": "deploy-rejected",
+            "deploy_receipts": deploy_receipts,
+            "boundary_attempts": boundary_attempts,
+            "observations": observations,
+            "retry_reason": retry_reason,
+            "final": None,
+        }
+
+    first = _watch_switch_attempt(
+        controller,
+        cleanup_endpoint=cleanup_endpoint,
+        cleanup_baseline_ids=baseline,
+        service_uuid=service_uuid,
+        node=node,
+        requested_mode=requested_mode,
+        requested_min_peers=requested_min_peers,
+        poll_seconds=poll_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout=timeout,
+        log_lines=log_lines,
+        max_response_bytes=max_response_bytes,
+        attempt=1,
+    )
+    observations.extend(first["observations"])
+    boundary_attempts.append({
+        "attempt": 1,
+        "status": first["status"],
+        "cleanup_uuid": first.get("cleanup_uuid"),
+    })
+    if first["status"] == "healthy":
+        return {
+            "ok": True,
+            "status": "healthy",
+            "deploy_receipts": deploy_receipts,
+            "boundary_attempts": boundary_attempts,
+            "observations": observations,
+            "retry_reason": retry_reason,
+            "final": first,
+        }
+    if first["status"] != "cleanup-overlap":
+        return {
+            "ok": False,
+            "status": first["status"],
+            "deploy_receipts": deploy_receipts,
+            "boundary_attempts": boundary_attempts,
+            "observations": observations,
+            "retry_reason": retry_reason,
+            "final": first,
+        }
+
+    cleanup_uuid = str(first.get("cleanup_uuid") or "")
+    if not cleanup_uuid:
+        return {
+            "ok": False,
+            "status": "cleanup-overlap-unidentified",
+            "deploy_receipts": deploy_receipts,
+            "boundary_attempts": boundary_attempts,
+            "observations": observations,
+            "retry_reason": "cleanup-boundary-crossed",
+            "final": first,
+        }
+
+    retry_reason = "cleanup-boundary-crossed"
+    _wait_cleanup_terminal(
+        controller,
+        cleanup_endpoint,
+        cleanup_uuid,
+        max_wait_seconds=poll_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+    retry_baseline = _wait_cleanup_clear(
+        controller,
+        cleanup_endpoint,
+        max_wait_seconds=poll_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+    second_deploy = _deploy_receipt(
+        controller,
+        service_uuid,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+    deploy_receipts.append({"attempt": 2, "baseline_execution_ids": sorted(retry_baseline), **_safe_receipt(second_deploy)})
+    if second_deploy.get("ok") is not True:
+        return {
+            "ok": False,
+            "status": "cleanup-retry-deploy-rejected",
+            "deploy_receipts": deploy_receipts,
+            "boundary_attempts": boundary_attempts,
+            "observations": observations,
+            "retry_reason": retry_reason,
+            "final": first,
+        }
+
+    second = _watch_switch_attempt(
+        controller,
+        cleanup_endpoint=cleanup_endpoint,
+        cleanup_baseline_ids=retry_baseline,
+        service_uuid=service_uuid,
+        node=node,
+        requested_mode=requested_mode,
+        requested_min_peers=requested_min_peers,
+        poll_seconds=poll_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout=timeout,
+        log_lines=log_lines,
+        max_response_bytes=max_response_bytes,
+        attempt=2,
+    )
+    observations.extend(second["observations"])
+    boundary_attempts.append({
+        "attempt": 2,
+        "status": second["status"],
+        "cleanup_uuid": second.get("cleanup_uuid"),
+    })
+    if second["status"] == "cleanup-overlap":
+        return {
+            "ok": False,
+            "status": "cleanup-retry-contaminated",
+            "deploy_receipts": deploy_receipts,
+            "boundary_attempts": boundary_attempts,
+            "observations": observations,
+            "retry_reason": retry_reason,
+            "final": second,
+        }
+    return {
+        "ok": second["status"] == "healthy",
+        "status": "healthy" if second["status"] == "healthy" else second["status"],
+        "deploy_receipts": deploy_receipts,
+        "boundary_attempts": boundary_attempts,
+        "observations": observations,
+        "retry_reason": retry_reason,
+        "final": second,
+    }
+
+
 def _find_exact_service(
     controllers: list[Any],
     node: str,
@@ -577,7 +1073,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     ap.add_argument("--runtime-state-root", default=str((Path.cwd() / "runtime" / "state").resolve()))
-    ap.add_argument("--execute-mutations", action="store_true", help="PATCH the existing service and force-deploy it")
+    ap.add_argument("--execute-mutations", action="store_true", help="PATCH the existing service and perform a cleanup-safe redeploy")
     ap.add_argument("--poll-seconds", type=float, default=240.0)
     ap.add_argument("--poll-interval-seconds", type=float, default=5.0)
     ap.add_argument("--timeout", type=float, default=30.0)
@@ -672,9 +1168,20 @@ def main() -> int:
     )
     if cleanup_before.get("ok") is not True:
         raise SmokeError("could not establish Coolify cleanup-execution baseline")
-    if _cleanup_active(cleanup_before):
+    active_cleanup_before = _cleanup_active(cleanup_before)
+    if active_cleanup_before and not args.execute_mutations:
         raise SmokeError("Coolify cleanup is already active; rerun after it finishes so the smoke boundary is uncontaminated")
-    cleanup_baseline_ids = _cleanup_ids(cleanup_before)
+    if args.execute_mutations:
+        cleanup_baseline_ids = _wait_cleanup_clear(
+            controller,
+            cleanup_endpoint,
+            max_wait_seconds=args.poll_seconds,
+            poll_interval_seconds=args.poll_interval_seconds,
+            timeout=args.timeout,
+            max_response_bytes=args.max_response_bytes,
+        )
+    else:
+        cleanup_baseline_ids = _cleanup_ids(cleanup_before)
 
     result: dict[str, Any] = {
         "kind": "main_computer.mother.node_sync_mode_switch_smoke.v1",
@@ -707,7 +1214,9 @@ def main() -> int:
             "server_uuid": server_uuid,
             "endpoint": cleanup_endpoint,
             "baseline_execution_ids": sorted(cleanup_baseline_ids),
-            "active_before": False,
+            "active_before": bool(active_cleanup_before),
+            "policy": "wait-clear -> deploy -> detect overlap -> wait terminal -> one exact redeploy",
+            "max_deploy_attempts": 2,
         },
     }
 
@@ -739,99 +1248,55 @@ def main() -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
         return 2
 
-    deploy = _http(
+    redeploy = _cleanup_safe_redeploy(
         controller,
-        "POST",
-        "/api/v1/deploy",
-        body={"uuid": service_uuid, "force": True},
+        cleanup_endpoint=cleanup_endpoint,
+        service_uuid=service_uuid,
+        node=args.node,
+        requested_mode=requested_mode,
+        requested_min_peers=requested_min_peers,
+        poll_seconds=args.poll_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
         timeout=args.timeout,
+        log_lines=args.log_lines,
         max_response_bytes=args.max_response_bytes,
     )
-    result["deploy"] = _safe_receipt(deploy)
-    if deploy.get("ok") is not True:
-        result["ok"] = False
-        result["status"] = "deploy-rejected"
-        print(json.dumps(result, indent=2, sort_keys=True))
-        return 2
-
-    deadline = time.monotonic() + args.poll_seconds
-    observations: list[dict[str, Any]] = []
-    after_detail: Mapping[str, Any] | None = None
-    after_compose: str | None = None
-    after_runtime: dict[str, Any] | None = None
-    after_log_attempts: list[dict[str, Any]] = []
-    cleanup_crossed = False
-    new_cleanup_ids: set[str] = set()
-    while True:
-        current_cleanup = _http(
-            controller,
-            "GET",
-            cleanup_endpoint,
-            body=None,
-            timeout=args.timeout,
-            max_response_bytes=args.max_response_bytes,
+    result["deploy_attempts"] = redeploy["deploy_receipts"]
+    if redeploy["deploy_receipts"]:
+        result["cleanup_boundary"]["baseline_execution_ids"] = list(
+            redeploy["deploy_receipts"][0].get("baseline_execution_ids", [])
         )
-        if current_cleanup.get("ok") is True:
-            new_cleanup_ids = _cleanup_ids(current_cleanup) - cleanup_baseline_ids
-            if new_cleanup_ids:
-                cleanup_crossed = True
-        try:
-            detail = _detail(
-                controller,
-                service_uuid,
-                timeout=args.timeout,
-                max_response_bytes=args.max_response_bytes,
-            )
-            compose = _compose_text(detail)
-            _compose_obj, _service, configured, configured_min_peers = _target_service(compose, args.node)
-            logs, log_attempts = _logs_text(
-                controller,
-                service_uuid,
-                args.node,
-                lines=args.log_lines,
-                timeout=args.timeout,
-                max_response_bytes=args.max_response_bytes,
-            )
-            runtime = _runtime_facts_from_logs(logs)
-            observations.append(
-                {
-                    "observed_at": _timestamp(),
-                    "service_status": _service_status(detail),
-                    "configured_sync_mode": configured,
-                    "configured_sync_min_peers": configured_min_peers,
-                    "runtime_sync_mode": runtime.get("runtime_sync_mode"),
-                    "runtime_sync_min_peers": runtime.get("runtime_sync_min_peers"),
-                    "node_address": runtime.get("node_address"),
-                    "highest_logged_block": runtime.get("highest_logged_block"),
-                    "cleanup_boundary_crossed": cleanup_crossed,
-                }
-            )
-            after_detail = detail
-            after_compose = compose
-            after_runtime = runtime
-            after_log_attempts = log_attempts
-            if (
-                not cleanup_crossed
-                and _service_status(detail) == "running:healthy"
-                and configured == requested_mode
-                and configured_min_peers == requested_min_peers
-                and runtime.get("runtime_sync_mode") == requested_mode
-                and runtime.get("runtime_sync_min_peers") == requested_min_peers
-            ):
-                break
-        except SmokeError as exc:
-            observations.append({"observed_at": _timestamp(), "error": str(exc), "cleanup_boundary_crossed": cleanup_crossed})
-        if cleanup_crossed or time.monotonic() >= deadline:
-            break
-        time.sleep(args.poll_interval_seconds)
-
-    result["observations"] = observations
+        result["deploy"] = {
+            key: value
+            for key, value in redeploy["deploy_receipts"][0].items()
+            if key not in {"attempt", "baseline_execution_ids"}
+        }
+    result["observations"] = redeploy["observations"]
+    result["cleanup_boundary"]["attempts"] = redeploy["boundary_attempts"]
+    result["cleanup_boundary"]["retry_reason"] = redeploy["retry_reason"]
+    result["cleanup_boundary"]["retry_performed"] = len(redeploy["deploy_receipts"]) == 2
+    cleanup_crossed = any(
+        attempt.get("status") == "cleanup-overlap"
+        for attempt in redeploy["boundary_attempts"]
+    )
+    new_cleanup_ids = {
+        str(attempt.get("cleanup_uuid"))
+        for attempt in redeploy["boundary_attempts"]
+        if attempt.get("cleanup_uuid")
+    }
     result["cleanup_boundary"]["crossed"] = cleanup_crossed
     result["cleanup_boundary"]["new_execution_ids"] = sorted(new_cleanup_ids)
+    result["cleanup_boundary"]["safe_redeploy_status"] = redeploy["status"]
+
+    final_attempt = redeploy.get("final")
+    after_detail = final_attempt.get("detail") if isinstance(final_attempt, Mapping) else None
+    after_compose = final_attempt.get("compose") if isinstance(final_attempt, Mapping) else None
+    after_runtime = final_attempt.get("runtime") if isinstance(final_attempt, Mapping) else None
+    after_log_attempts = final_attempt.get("log_attempts", []) if isinstance(final_attempt, Mapping) else []
 
     if after_detail is None or after_compose is None or after_runtime is None:
         result["ok"] = False
-        result["status"] = "post-deploy-observation-missing"
+        result["status"] = str(redeploy.get("status") or "post-deploy-observation-missing")
         print(json.dumps(result, indent=2, sort_keys=True))
         return 2
 
@@ -856,7 +1321,7 @@ def main() -> int:
         "runtime_sync_mode_is_requested": after_runtime.get("runtime_sync_mode") == requested_mode,
         "runtime_sync_min_peers_is_requested": after_runtime.get("runtime_sync_min_peers") == requested_min_peers,
         "service_running_healthy": _service_status(after_detail) == "running:healthy",
-        "cleanup_boundary_not_crossed": not cleanup_crossed,
+        "cleanup_boundary_safe_redeploy_proven": redeploy.get("ok") is True,
         "node_address_preserved_when_observable": node_address_preserved is not False,
     }
     result["after"] = {
@@ -874,7 +1339,12 @@ def main() -> int:
         "runtime-node-address-and-volume-continuity" if before_address is not None else "volume-continuity-only-before-startup-address-not-in-log-window"
     )
     result["ok"] = all(acceptance.values())
-    result["status"] = "switch-proven" if result["ok"] else ("cleanup-contaminated" if cleanup_crossed else "switch-not-proven")
+    if result["ok"]:
+        result["status"] = "switch-proven"
+    elif str(redeploy.get("status") or "") not in {"", "healthy"}:
+        result["status"] = str(redeploy["status"])
+    else:
+        result["status"] = "switch-not-proven"
     result["completed_at"] = _timestamp()
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 2

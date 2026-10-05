@@ -48,8 +48,9 @@ from tools.mother.common.static_node_precleanup_gate import build_static_node_pr
 
 COMMON_STEPS = [
     "detect-topology",
-    "reserve-identity",
     "preflight-paranoia",
+    "preflight-paranoia-snap",
+    "reserve-identity",
     "prep",
     "verify-prep",
     "release-do",
@@ -1132,6 +1133,24 @@ class Harness:
             str(self.args.poll_interval_seconds),
         ]
 
+    def preflight_paranoia_snap_cmd(self) -> list[str]:
+        return [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother" / "preflight_paranoia_snap.py"),
+            "--runtime-state-root",
+            self.args.runtime_state_root,
+            "--network",
+            self.args.network,
+            "--topology-evidence",
+            require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256",
+            require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+            "--timeout",
+            str(self.args.timeout),
+            "--max-response-bytes",
+            str(self.args.preflight_paranoia_max_response_bytes),
+        ]
+
     def preflight_paranoia2_cmd(self) -> list[str]:
         return [
             sys.executable,
@@ -1528,6 +1547,43 @@ class Harness:
             print()
             print("Run this cleanup command before the mutation:")
             print(quote_command(cleanup2_argv))
+        raise SystemExit(3)
+
+    def step_preflight_paranoia_snap(self) -> None:
+        if self.args.operation != "add-node":
+            return
+
+        sync_mode = self.resolved_add_node_sync_mode()
+        self.state["resolved_add_node_sync_mode"] = sync_mode
+        if sync_mode != "SNAP":
+            self.state["preflight_paranoia_snap_status"] = "not-required"
+            self.state["preflight_paranoia_snap_safe"] = None
+            print(
+                "\n=== preflight-paranoia-snap skipped: "
+                f"resolved add-node sync mode is {sync_mode}, not SNAP ==="
+            )
+            return
+
+        obj = self.run(
+            "preflight-paranoia-snap",
+            self.preflight_paranoia_snap_cmd(),
+            allow_failure=True,
+        )
+        self.state["preflight_paranoia_snap_status"] = obj.get("status")
+        self.state["preflight_paranoia_snap_safe"] = obj.get("safe_to_add_snap")
+        self.state["preflight_paranoia_snap_summary"] = obj.get("summary")
+
+        if obj.get("status") == "pass" and obj.get("safe_to_add_snap") is True:
+            return
+
+        print(
+            "\nMOTHER_MUTATE_HARNESS_PREFLIGHT_PARANOIA_SNAP_BLOCKED: "
+            "SNAP foundation preflight did not pass."
+        )
+        print(
+            "The preflight above is read-only. Run any emitted manual remediation command(s), "
+            "then rerun the harness."
+        )
         raise SystemExit(3)
 
     def step_preflight_paranoia2(self) -> None:
@@ -2299,6 +2355,7 @@ class Harness:
             "detect-topology": self.step_detect_topology,
             "reserve-identity": self.step_reserve_identity,
             "preflight-paranoia": self.step_preflight_paranoia,
+            "preflight-paranoia-snap": self.step_preflight_paranoia_snap,
             "preflight-paranoia2": self.step_preflight_paranoia2,
             "preflight-rpc-paranoia": self.step_preflight_rpc_paranoia,
             "prep": self.step_prep,
@@ -2352,7 +2409,20 @@ class Harness:
             return "replica-admission"
         raise SystemExit(f"unsupported add-node next_phase after identity: {next_phase!r}")
 
+    def ensure_snap_preflight_for_resume(self) -> None:
+        """Prevent --start-at from bypassing the SNAP foundation gate."""
+
+        if self.args.operation != "add-node":
+            return
+        if self.args.start_at in COMMON_STEPS:
+            start_index = COMMON_STEPS.index(self.args.start_at)
+            gate_index = COMMON_STEPS.index("preflight-paranoia-snap")
+            if start_index <= gate_index:
+                return
+        self.step_preflight_paranoia_snap()
+
     def run_all(self) -> None:
+        self.ensure_snap_preflight_for_resume()
         if self.args.operation == "remove-node":
             if self.args.start_at not in REMOVE_STEPS:
                 raise SystemExit(f"start step {self.args.start_at!r} is not valid for remove-node")

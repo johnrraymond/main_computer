@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Train CLEF + TinyStories with decomposed consensus supervision.
 
-Qwen3-0.6B and Pythia-70M remain frozen. TinyStories-33M and the CLEF head are
-trainable. Ordinary tasks retain their existing objective. Each consensus state
+Qwen3-0.6B, Pythia-70M, TinyStories-33M, and the proven CLEF champion path remain
+frozen. Only zero-initialized TinyStories L1/L2 residual adapters are trainable.
+Ordinary tasks retain their existing objective. Each consensus state
 now trains three explicit binary SAME/DIFFERENT pair judgments (AB, AC, BC); the
 primary A/B/C/NONE answer is deterministically composed from those judgments.
 The old direct four-way consensus score is retained only as a small auxiliary
@@ -91,8 +92,33 @@ DEFAULT_WEIGHT_DECAY = 0.01
 DEFAULT_GRAD_CLIP = 1.0
 DEFAULT_KEEP_CHECKPOINTS = 3
 CONTINUITY_LOSS_TOLERANCE = 2e-3
-FROZEN_LABELS = ("qwen", "pythia")
 TRAINABLE_LABEL = "tinystories"
+# Under the residual-tap experiment all three language models are immutable.
+# TinyStories is still the source of the new evidence, but gradients stop at the
+# zero-initialized residual adapters inside the CLEF head.
+FROZEN_LABELS = ("qwen", "pythia", TRAINABLE_LABEL)
+TINYSTORIES_BASE_HIDDEN_SIZE = 768
+TINYSTORIES_RESIDUAL_LAYERS = (1, 2)
+TINYSTORIES_FINAL_LAYER = 4
+TINYSTORIES_TAPPED_LAYERS = (*TINYSTORIES_RESIDUAL_LAYERS, TINYSTORIES_FINAL_LAYER)
+TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE = (
+    TINYSTORIES_BASE_HIDDEN_SIZE * len(TINYSTORIES_RESIDUAL_LAYERS)
+)
+# Kept for recognizing/migrating the superseded concatenation checkpoints.
+TINYSTORIES_CONCAT_HIDDEN_SIZE = (
+    TINYSTORIES_BASE_HIDDEN_SIZE * len(TINYSTORIES_TAPPED_LAYERS)
+)
+TINYSTORIES_LAYER_TAP_SCHEMA_V1 = "tinystories-transformer-layers-1-2-4-concat-v1"
+TINYSTORIES_LAYER_TAP_SCHEMA_V2 = "tinystories-transformer-layers-1-2-4-concat-v2-shared-norm-adamw-migration"
+TINYSTORIES_LAYER_TAP_SCHEMA = "tinystories-layers-1-2-zero-residual-v3-frozen-anchor"
+TINYSTORIES_RESIDUAL_FIELDS = (
+    "memory",
+    "option_context",
+    "option_predictor",
+    "option_terminal",
+    "option_question",
+    "global",
+)
 CONSENSUS_PAIRWISE_TASK = "consensus_pairwise"
 CONSENSUS_PAIR_NAMES = ("ab", "ac", "bc")
 CONSENSUS_EXPECTED = {
@@ -764,39 +790,450 @@ def count_trainable(module) -> int:
 
 
 def configure_backbone_trainability(bundles) -> dict[str, int]:
+    """Freeze every language-model backbone for the residual-tap experiment."""
     counts: dict[str, int] = {}
     for label, bundle in bundles.items():
-        trainable = label == TRAINABLE_LABEL
         for parameter in bundle.lm.parameters():
-            parameter.requires_grad_(trainable)
-        # Keep all three LMs deterministic. eval() does not disable autograd.
+            parameter.requires_grad_(False)
+        # eval() keeps dropout disabled; autograd is unnecessary because every
+        # backbone is now an immutable evidence source.
         bundle.lm.eval()
         counts[label] = count_trainable(bundle.lm)
-    if counts["qwen"] != 0 or counts["pythia"] != 0:
-        raise RuntimeError(f"frozen backbone trainability drifted: {counts}")
-    if counts[TRAINABLE_LABEL] <= 0:
-        raise RuntimeError("TinyStories has no trainable parameters")
+    if any(counts.values()):
+        raise RuntimeError(f"backbone freeze invariant drifted: {counts}")
     return counts
 
 
+def layer_tap_hidden_sizes(hidden_sizes: dict[str, int]) -> dict[str, int]:
+    observed = int(hidden_sizes.get(TRAINABLE_LABEL, -1))
+    if observed != TINYSTORIES_BASE_HIDDEN_SIZE:
+        raise RuntimeError(
+            "TinyStories hidden size changed under the layer-tap contract: "
+            f"expected={TINYSTORIES_BASE_HIDDEN_SIZE} observed={observed}"
+        )
+    expanded = dict(hidden_sizes)
+    expanded[TRAINABLE_LABEL] = TINYSTORIES_CONCAT_HIDDEN_SIZE
+    return expanded
+
+
+def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: dict[str, Any] | None = None):
+    """Build an immutable legacy CLEF path plus trainable L1/L2 residual taps.
+
+    The proven final-layer path keeps the original 768-wide TinyStories input and
+    every pre-cutover parameter is frozen. Intermediate transformer layers 1 and
+    2 are exposed separately as a 1536-wide source for six zero-initialized
+    linear residual adapters. At initialization every adapter emits exact zero,
+    so this head is functionally identical to the committed champion.
+    """
+    BaseHead = smoke.build_head_class()
+    head_kwargs = dict(head_kwargs or {})
+
+    class ResidualLayerTapHead(BaseHead):
+        def __init__(self, sizes):
+            super().__init__(sizes, **head_kwargs)
+            self.tinystories_residual = torch.nn.ModuleDict({
+                field: torch.nn.Linear(
+                    TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
+                    TINYSTORIES_BASE_HIDDEN_SIZE,
+                    bias=False,
+                )
+                for field in TINYSTORIES_RESIDUAL_FIELDS
+            })
+            for module in self.tinystories_residual.values():
+                torch.nn.init.zeros_(module.weight)
+
+            # The entire proven champion is an immutable anchor. Only the new
+            # residual matrices are optimization variables in this phase.
+            for parameter in self.parameters():
+                parameter.requires_grad_(False)
+            for parameter in self.tinystories_residual.parameters():
+                parameter.requires_grad_(True)
+
+        @staticmethod
+        def _normalize_residual_source(value):
+            width = int(value.shape[-1])
+            if width != TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE:
+                raise RuntimeError(
+                    "unexpected TinyStories residual source width: "
+                    f"expected={TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE} observed={width}"
+                )
+            blocks = value.split(TINYSTORIES_BASE_HIDDEN_SIZE, dim=-1)
+            # Parameter-free normalization keeps the two intermediate layers on
+            # comparable scale without adding another trainable path.
+            normalized = [
+                torch.nn.functional.layer_norm(
+                    block, (TINYSTORIES_BASE_HIDDEN_SIZE,)
+                )
+                for block in blocks
+            ]
+            return torch.cat(normalized, dim=-1)
+
+        def forward(self, evidence: dict[str, dict[str, Any]]):
+            tiny = evidence.get(TRAINABLE_LABEL)
+            if tiny is None:
+                raise RuntimeError("TinyStories evidence missing from residual-tap head")
+            merged_tiny = dict(tiny)
+            for field in TINYSTORIES_RESIDUAL_FIELDS:
+                source_key = f"residual_source_{field}"
+                if source_key not in tiny:
+                    raise RuntimeError(f"TinyStories residual evidence missing: {source_key}")
+                base_value = tiny[field]
+                source = self._normalize_residual_source(tiny[source_key])
+                correction = self.tinystories_residual[field](source).to(
+                    device=base_value.device, dtype=base_value.dtype
+                )
+                merged_tiny[field] = base_value + correction
+                merged_tiny.pop(source_key, None)
+            merged = dict(evidence)
+            merged[TRAINABLE_LABEL] = merged_tiny
+            return super().forward(merged)
+
+    observed = int(hidden_sizes.get(TRAINABLE_LABEL, -1))
+    if observed != TINYSTORIES_BASE_HIDDEN_SIZE:
+        raise RuntimeError(
+            "TinyStories hidden size changed under residual-tap contract: "
+            f"expected={TINYSTORIES_BASE_HIDDEN_SIZE} observed={observed}"
+        )
+    head = ResidualLayerTapHead(dict(hidden_sizes))
+    return head, dict(hidden_sizes)
+
+def _build_v1_layer_tap_head_for_optimizer_layout(*, torch, hidden_sizes: dict[str, int]):
+    """Recreate the superseded v1 layer-tap parameter ordering for state repair."""
+    Head = smoke.build_head_class()
+    expanded = layer_tap_hidden_sizes(hidden_sizes)
+    head = Head(expanded)
+    tiny_module = head.backbone_modules[TRAINABLE_LABEL]
+
+    class TinyStoriesConcatNormV1(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer_norms = torch.nn.ModuleList([
+                torch.nn.LayerNorm(TINYSTORIES_BASE_HIDDEN_SIZE)
+                for _ in TINYSTORIES_TAPPED_LAYERS
+            ])
+            self.lexical_norm = torch.nn.LayerNorm(TINYSTORIES_BASE_HIDDEN_SIZE)
+
+        def forward(self, value):
+            width = int(value.shape[-1])
+            if width == TINYSTORIES_BASE_HIDDEN_SIZE:
+                return self.lexical_norm(value)
+            blocks = value.split(TINYSTORIES_BASE_HIDDEN_SIZE, dim=-1)
+            return torch.cat(
+                [norm(block) for norm, block in zip(self.layer_norms, blocks)],
+                dim=-1,
+            )
+
+    tiny_module.hidden_norm = TinyStoriesConcatNormV1()
+    tiny_module.option_lexical_projection = torch.nn.Linear(
+        TINYSTORIES_BASE_HIDDEN_SIZE,
+        int(head.width),
+        bias=False,
+    )
+    return head
+
+
+_TINYSTORIES_EXPANDED_PROJECTIONS = (
+    "memory_projection.weight",
+    "question_projection.weight",
+    "option_question_projection.weight",
+    "global_projection.weight",
+    "option_context_projection.weight",
+)
+
+
+def _tinystories_projection_slice() -> tuple[int, int]:
+    final_block = TINYSTORIES_TAPPED_LAYERS.index(TINYSTORIES_FINAL_LAYER)
+    start = final_block * TINYSTORIES_BASE_HIDDEN_SIZE
+    return start, start + TINYSTORIES_BASE_HIDDEN_SIZE
+
+
+def load_head_state_with_layer_taps(*, torch, head, state: dict[str, Any]) -> str:
+    """Load v3 directly or collapse an older checkpoint to its final-layer anchor.
+
+    v2/v1 concatenation checkpoints are safe to migrate because committed v2
+    champion anchors keep the intermediate projection slices at zero. The final
+    768-wide slice is copied back into the original projection shape; all new
+    residual adapters remain exactly zero.
+    """
+    current = head.state_dict()
+    if set(state) == set(current) and all(
+        tuple(state[name].shape) == tuple(current[name].shape) for name in current
+    ):
+        head.load_state_dict(state, strict=True)
+        return "native-zero-residual-v3"
+
+    prefix = f"backbone_modules.{TRAINABLE_LABEL}."
+    projection_probe = prefix + "memory_projection.weight"
+    if projection_probe not in state:
+        raise RuntimeError("source head checkpoint is missing TinyStories projection state")
+    source_width = int(state[projection_probe].shape[-1])
+    is_v1 = prefix + "hidden_norm.layer_norms.2.weight" in state
+    if is_v1:
+        source_layout = "v1-concat"
+    elif source_width == TINYSTORIES_CONCAT_HIDDEN_SIZE:
+        source_layout = "v2-concat"
+    elif source_width == TINYSTORIES_BASE_HIDDEN_SIZE:
+        source_layout = "legacy-final-layer"
+    else:
+        raise RuntimeError(
+            f"unsupported TinyStories source projection width: {source_width}"
+        )
+
+    migrated = {name: tensor.detach().clone() for name, tensor in current.items()}
+    final_start, final_end = _tinystories_projection_slice()
+    for target_name, target in current.items():
+        if target_name.startswith("tinystories_residual."):
+            # build_layer_tap_head initialized every new residual weight to zero.
+            continue
+        source_name = target_name
+        if is_v1 and target_name == prefix + "hidden_norm.weight":
+            source_name = prefix + "hidden_norm.layer_norms.2.weight"
+        elif is_v1 and target_name == prefix + "hidden_norm.bias":
+            source_name = prefix + "hidden_norm.layer_norms.2.bias"
+        if source_name not in state:
+            raise RuntimeError(
+                f"source head checkpoint missing tensor required by frozen anchor: {source_name}"
+            )
+        source_tensor = state[source_name]
+        local = target_name[len(prefix):] if target_name.startswith(prefix) else ""
+        if (
+            local in _TINYSTORIES_EXPANDED_PROJECTIONS
+            and int(source_tensor.shape[-1]) == TINYSTORIES_CONCAT_HIDDEN_SIZE
+            and int(target.shape[-1]) == TINYSTORIES_BASE_HIDDEN_SIZE
+        ):
+            discarded = source_tensor[:, :final_start]
+            if torch.count_nonzero(discarded).item() != 0:
+                raise RuntimeError(
+                    "refusing to collapse a trained concatenation checkpoint: "
+                    f"intermediate projection slices are nonzero for {target_name}"
+                )
+            collapsed = source_tensor[:, final_start:final_end]
+            if tuple(collapsed.shape) != tuple(target.shape):
+                raise RuntimeError(
+                    f"collapsed final-layer projection shape mismatch for {target_name}: "
+                    f"source={tuple(collapsed.shape)} target={tuple(target.shape)}"
+                )
+            migrated[target_name] = collapsed.detach().clone()
+            continue
+        if tuple(source_tensor.shape) != tuple(target.shape):
+            raise RuntimeError(
+                f"frozen-anchor shape mismatch for {target_name}: "
+                f"source={tuple(source_tensor.shape)} target={tuple(target.shape)}"
+            )
+        migrated[target_name] = source_tensor.detach().clone()
+
+    head.load_state_dict(migrated, strict=True)
+    return source_layout + "-to-zero-residual-v3"
+
+def _trainable_named_parameters(module) -> list[tuple[str, Any]]:
+    return [(name, parameter) for name, parameter in module.named_parameters() if parameter.requires_grad]
+
+
+def _source_head_parameter_names(*, torch, hidden_sizes: dict[str, int], source_layout: str) -> list[str]:
+    if source_layout == "legacy":
+        Head = smoke.build_head_class()
+        source_head = Head(hidden_sizes)
+    elif source_layout == "v1":
+        source_head = _build_v1_layer_tap_head_for_optimizer_layout(
+            torch=torch, hidden_sizes=hidden_sizes
+        )
+    else:
+        raise ValueError(f"unsupported optimizer source layout: {source_layout}")
+    return [name for name, _ in _trainable_named_parameters(source_head)]
+
+
+def _optimizer_state_tensor_for_expanded_projection(
+    *, torch, value, target_shape: tuple[int, ...], state_key: str,
+    source_layout: str, recovery_mode: str,
+):
+    """Expand Adam moments without giving new columns a cold-start shock."""
+    if source_layout == "v1":
+        if tuple(value.shape) != target_shape:
+            raise RuntimeError(
+                f"v1 optimizer tensor shape mismatch: observed={tuple(value.shape)} "
+                f"expected={target_shape}"
+            )
+        if recovery_mode == "variance-only" and state_key == "exp_avg":
+            return torch.zeros_like(value)
+        return value.detach().clone()
+
+    if len(target_shape) != 2 or tuple(value.shape) != (
+        target_shape[0], TINYSTORIES_BASE_HIDDEN_SIZE
+    ):
+        raise RuntimeError(
+            "legacy expanded optimizer tensor shape mismatch: "
+            f"observed={tuple(value.shape)} expected_old="
+            f"{(target_shape[0], TINYSTORIES_BASE_HIDDEN_SIZE)}"
+        )
+    final_start, final_end = _tinystories_projection_slice()
+    expanded = torch.zeros(target_shape, dtype=value.dtype, device=value.device)
+    if state_key == "exp_avg":
+        # Preserve directional momentum only on the mature final-layer slice.
+        expanded[:, final_start:final_end] = value
+    elif state_key in {"exp_avg_sq", "max_exp_avg_sq"}:
+        # Seed every new tap with the mature final-layer variance estimate. Adam
+        # therefore learns the new columns without treating millions of them as
+        # brand-new zero-variance parameters on the first update.
+        for block in range(len(TINYSTORIES_TAPPED_LAYERS)):
+            start = block * TINYSTORIES_BASE_HIDDEN_SIZE
+            expanded[:, start:start + TINYSTORIES_BASE_HIDDEN_SIZE] = value
+    else:
+        expanded[:, final_start:final_end] = value
+    return expanded
+
+
+def migrate_adamw_optimizer_state(
+    *, torch, optimizer, source_state: dict[str, Any], head, tinystories_lm,
+    hidden_sizes: dict[str, int], source_layout: str, recovery_mode: str = "full",
+) -> dict[str, Any]:
+    """Map AdamW state by parameter name across the TinyStories tap widening.
+
+    ``full`` preserves first/second moments for mature parameters. ``variance-only``
+    is the repair fallback for an already-contaminated v1 run: weights come from
+    the clean v1 cutover anchor, directional first moments are discarded, and only
+    second-moment scale estimates from a later v1 checkpoint are reused.
+    """
+    if recovery_mode not in {"full", "variance-only"}:
+        raise ValueError(f"unsupported optimizer recovery mode: {recovery_mode}")
+    source_groups = list(source_state.get("param_groups") or [])
+    if len(source_groups) != 2:
+        raise RuntimeError(f"expected two source optimizer groups, observed={len(source_groups)}")
+    source_head_names = _source_head_parameter_names(
+        torch=torch, hidden_sizes=hidden_sizes, source_layout=source_layout
+    )
+    source_head_ids = list(source_groups[0].get("params") or [])
+    source_tiny_ids = list(source_groups[1].get("params") or [])
+    source_tiny_names = [name for name, _ in _trainable_named_parameters(tinystories_lm)]
+    if len(source_head_ids) != len(source_head_names):
+        raise RuntimeError(
+            "source head optimizer parameter count mismatch: "
+            f"ids={len(source_head_ids)} names={len(source_head_names)}"
+        )
+    if len(source_tiny_ids) != len(source_tiny_names):
+        raise RuntimeError(
+            "source TinyStories optimizer parameter count mismatch: "
+            f"ids={len(source_tiny_ids)} names={len(source_tiny_names)}"
+        )
+
+    target = optimizer.state_dict()
+    target_groups = target["param_groups"]
+    target_head_names_and_params = _trainable_named_parameters(head)
+    target_tiny_names_and_params = _trainable_named_parameters(tinystories_lm)
+    target_head_ids = list(target_groups[0]["params"])
+    target_tiny_ids = list(target_groups[1]["params"])
+    if len(target_head_ids) != len(target_head_names_and_params):
+        raise RuntimeError("target head optimizer parameter count mismatch")
+    if len(target_tiny_ids) != len(target_tiny_names_and_params):
+        raise RuntimeError("target TinyStories optimizer parameter count mismatch")
+
+    source_head_by_name = dict(zip(source_head_names, source_head_ids))
+    source_tiny_by_name = dict(zip(source_tiny_names, source_tiny_ids))
+    source_states = source_state.get("state") or {}
+    migrated_states: dict[Any, dict[str, Any]] = {}
+    prefix = f"backbone_modules.{TRAINABLE_LABEL}."
+    final_block = TINYSTORIES_TAPPED_LAYERS.index(TINYSTORIES_FINAL_LAYER)
+    v1_norm_map = {
+        prefix + "hidden_norm.weight": prefix + f"hidden_norm.layer_norms.{final_block}.weight",
+        prefix + "hidden_norm.bias": prefix + f"hidden_norm.layer_norms.{final_block}.bias",
+    }
+
+    def migrate_one(*, source_id, target_id, target_name, target_param, expanded_projection=False):
+        old = source_states.get(source_id)
+        if not old:
+            return
+        row: dict[str, Any] = {}
+        for key, value in old.items():
+            if not torch.is_tensor(value):
+                row[key] = value
+                continue
+            if value.ndim == 0:
+                row[key] = value.detach().clone()
+                continue
+            if expanded_projection:
+                row[key] = _optimizer_state_tensor_for_expanded_projection(
+                    torch=torch,
+                    value=value,
+                    target_shape=tuple(target_param.shape),
+                    state_key=key,
+                    source_layout=source_layout,
+                    recovery_mode=recovery_mode,
+                )
+                continue
+            if tuple(value.shape) != tuple(target_param.shape):
+                raise RuntimeError(
+                    f"optimizer state shape mismatch for {target_name}/{key}: "
+                    f"source={tuple(value.shape)} target={tuple(target_param.shape)}"
+                )
+            if recovery_mode == "variance-only" and key == "exp_avg":
+                row[key] = torch.zeros_like(value)
+            else:
+                row[key] = value.detach().clone()
+        migrated_states[target_id] = row
+
+    for (target_name, target_param), target_id in zip(
+        target_head_names_and_params, target_head_ids
+    ):
+        source_name = (
+            v1_norm_map.get(target_name, target_name)
+            if source_layout == "v1" else target_name
+        )
+        if source_name not in source_head_by_name:
+            raise RuntimeError(f"optimizer migration missing source head parameter: {source_name}")
+        local = target_name[len(prefix):] if target_name.startswith(prefix) else ""
+        migrate_one(
+            source_id=source_head_by_name[source_name],
+            target_id=target_id,
+            target_name=target_name,
+            target_param=target_param,
+            expanded_projection=(
+                source_layout == "legacy" and local in _TINYSTORIES_EXPANDED_PROJECTIONS
+            ),
+        )
+
+    for (target_name, target_param), target_id in zip(
+        target_tiny_names_and_params, target_tiny_ids
+    ):
+        if target_name not in source_tiny_by_name:
+            raise RuntimeError(f"optimizer migration missing TinyStories parameter: {target_name}")
+        migrate_one(
+            source_id=source_tiny_by_name[target_name],
+            target_id=target_id,
+            target_name=f"tinystories.{target_name}",
+            target_param=target_param,
+        )
+
+    migrated_groups = []
+    for source_group, target_group in zip(source_groups, target_groups):
+        row = dict(target_group)
+        for key, value in source_group.items():
+            if key != "params" and key != "group_name":
+                row[key] = value
+        row["params"] = list(target_group["params"])
+        migrated_groups.append(row)
+    migrated = {"state": migrated_states, "param_groups": migrated_groups}
+    optimizer.load_state_dict(migrated)
+    base.optimizer_to_cuda(optimizer)
+    return {
+        "source_layout": source_layout,
+        "recovery_mode": recovery_mode,
+        "migrated_state_entries": len(migrated_states),
+    }
+
+
 def build_optimizer(*, torch, head, tinystories_lm, args):
-    head_params = [p for p in head.parameters() if p.requires_grad]
+    residual_params = [p for p in head.parameters() if p.requires_grad]
     tiny_params = [p for p in tinystories_lm.parameters() if p.requires_grad]
-    if not head_params or not tiny_params:
-        raise RuntimeError("joint optimizer requires trainable head and TinyStories parameters")
+    if not residual_params:
+        raise RuntimeError("residual-tap optimizer has no trainable head parameters")
+    if tiny_params:
+        raise RuntimeError("TinyStories must remain frozen during residual-tap training")
     return torch.optim.AdamW(
         [
             {
-                "params": head_params,
+                "params": residual_params,
                 "lr": float(args.head_lr),
                 "weight_decay": float(args.weight_decay),
-                "group_name": "clef_head",
-            },
-            {
-                "params": tiny_params,
-                "lr": float(args.tinystories_lr),
-                "weight_decay": float(args.weight_decay),
-                "group_name": "tinystories",
+                "group_name": "tinystories_residual_taps",
             },
         ],
         foreach=False,
@@ -835,13 +1272,207 @@ def _cuda_evidence(row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _continuation_predictor_mean(hidden, *, prompt_length: int, answer_length: int):
+    start = int(prompt_length)
+    count = int(answer_length)
+    if start <= 0 or count <= 0:
+        raise RuntimeError("continuation predictor requires nonempty prompt and answer")
+    predictors = hidden[start - 1 : start + count - 1]
+    if int(predictors.shape[0]) != count:
+        raise RuntimeError("continuation predictor span accounting mismatch")
+    return predictors.mean(dim=0)
+
+
+def extract_tinystories_layer_tap_evidence(
+    *, torch, bundle, question, path_batch: int,
+    max_prompt_tokens: int, max_answer_tokens: int,
+    prompt_evidence_tokens: int, answer_evidence_tokens: int,
+    track_grad: bool,
+):
+    """Extract immutable final-layer evidence plus L1/L2 residual sources.
+
+    The legacy/final TinyStories evidence stays 768-wide. Layers 1 and 2 are
+    concatenated into separate 1536-wide ``residual_source_*`` tensors consumed
+    only by zero-initialized residual adapters in the head. Backbone autograd is
+    forbidden in this phase.
+    """
+    if track_grad:
+        raise RuntimeError("TinyStories is frozen under the residual-tap contract")
+    rows, occurrence_count = smoke._model_sequences(
+        bundle,
+        question,
+        max_prompt_tokens=max_prompt_tokens,
+        max_answer_tokens=max_answer_tokens,
+    )
+    candidate_count = len(question.candidates)
+    memory_parts = []
+    residual_memory_parts = []
+    option_answer: list[list[Any]] = [[] for _ in range(candidate_count)]
+    residual_option_answer: list[list[Any]] = [[] for _ in range(candidate_count)]
+    option_predictor: list[list[Any]] = [[] for _ in range(candidate_count)]
+    residual_option_predictor: list[list[Any]] = [[] for _ in range(candidate_count)]
+    option_terminal: list[list[Any]] = [[] for _ in range(candidate_count)]
+    residual_option_terminal: list[list[Any]] = [[] for _ in range(candidate_count)]
+    option_prompt: list[list[Any]] = [[] for _ in range(candidate_count)]
+    residual_option_prompt: list[list[Any]] = [[] for _ in range(candidate_count)]
+    option_lexical: list[list[Any]] = [[] for _ in range(candidate_count)]
+    option_logp: list[list[Any]] = [[] for _ in range(candidate_count)]
+    device = bundle.output_weight.device
+    pad = int(bundle.tokenizer.pad_token_id)
+
+    for offset in range(0, len(rows), path_batch):
+        chunk = rows[offset: offset + path_batch]
+        lengths = [len(row["prompt_ids"]) + len(row["answer_ids"]) for row in chunk]
+        width = max(lengths)
+        tokens = torch.full((len(chunk), width), pad, dtype=torch.long, device=device)
+        attention = torch.zeros((len(chunk), width), dtype=torch.long, device=device)
+        for index, row in enumerate(chunk):
+            seq = row["prompt_ids"] + row["answer_ids"]
+            tokens[index, :len(seq)] = torch.tensor(seq, dtype=torch.long, device=device)
+            attention[index, :len(seq)] = 1
+
+        with torch.no_grad():
+            output = bundle.backbone(
+                input_ids=tokens,
+                attention_mask=attention,
+                use_cache=False,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            hidden_states = tuple(output.hidden_states or ())
+            transformer_layers = len(hidden_states) - 1
+            if transformer_layers < TINYSTORIES_FINAL_LAYER:
+                raise RuntimeError(
+                    "TinyStories layer-tap contract exceeds available transformer depth: "
+                    f"taps={TINYSTORIES_TAPPED_LAYERS} available={transformer_layers}"
+                )
+            final_hidden = output.last_hidden_state
+            residual_hidden = tuple(
+                hidden_states[layer] for layer in TINYSTORIES_RESIDUAL_LAYERS
+            )
+            if int(final_hidden.shape[-1]) != TINYSTORIES_BASE_HIDDEN_SIZE:
+                raise RuntimeError("TinyStories final hidden width drifted")
+            if any(
+                int(hidden.shape[-1]) != TINYSTORIES_BASE_HIDDEN_SIZE
+                for hidden in residual_hidden
+            ):
+                raise RuntimeError("TinyStories residual hidden width drifted")
+
+            for index, row in enumerate(chunk):
+                plen = len(row["prompt_ids"])
+                alen = len(row["answer_ids"])
+                prompt_idx = smoke.balanced_indices(0, plen, prompt_evidence_tokens)
+                answer_idx = smoke.balanced_indices(plen, plen + alen, answer_evidence_tokens)
+                evidence_idx = prompt_idx + answer_idx
+
+                final_tokens = final_hidden[index, evidence_idx].detach()
+                residual_tokens = torch.cat(
+                    [hidden[index, evidence_idx] for hidden in residual_hidden], dim=-1
+                ).detach()
+                memory_parts.append(final_tokens)
+                residual_memory_parts.append(residual_tokens)
+
+                path_logp, _legacy_predictor = smoke._continuation_mean_logp(
+                    torch=torch,
+                    hidden=final_hidden[index],
+                    tokens=tokens[index],
+                    prompt_length=plen,
+                    answer_length=alen,
+                    output_weight=bundle.output_weight,
+                )
+                prompt_mean = final_hidden[index, :plen].mean(dim=0).detach()
+                residual_prompt_mean = torch.cat([
+                    hidden[index, :plen].mean(dim=0) for hidden in residual_hidden
+                ], dim=-1).detach()
+                answer_mean = final_hidden[index, plen:plen + alen].mean(dim=0).detach()
+                residual_answer_mean = torch.cat([
+                    hidden[index, plen:plen + alen].mean(dim=0)
+                    for hidden in residual_hidden
+                ], dim=-1).detach()
+                predictor_mean = _continuation_predictor_mean(
+                    final_hidden[index], prompt_length=plen, answer_length=alen
+                ).detach()
+                residual_predictor_mean = torch.cat([
+                    _continuation_predictor_mean(
+                        hidden[index], prompt_length=plen, answer_length=alen
+                    )
+                    for hidden in residual_hidden
+                ], dim=-1).detach()
+                terminal = final_hidden[index, plen + alen - 1].detach()
+                residual_terminal = torch.cat([
+                    hidden[index, plen + alen - 1] for hidden in residual_hidden
+                ], dim=-1).detach()
+                answer_token_ids = tokens[index, plen:plen + alen]
+                lexical = bundle.output_weight[answer_token_ids].mean(dim=0).detach()
+                for candidate in row["candidates"]:
+                    option_prompt[candidate].append(prompt_mean)
+                    residual_option_prompt[candidate].append(residual_prompt_mean)
+                    option_answer[candidate].append(answer_mean)
+                    residual_option_answer[candidate].append(residual_answer_mean)
+                    option_predictor[candidate].append(predictor_mean)
+                    residual_option_predictor[candidate].append(residual_predictor_mean)
+                    option_terminal[candidate].append(terminal)
+                    residual_option_terminal[candidate].append(residual_terminal)
+                    option_lexical[candidate].append(lexical)
+                    option_logp[candidate].append(path_logp.detach())
+        del output, hidden_states, residual_hidden, final_hidden, tokens, attention
+
+    def stack_mean(groups, label: str):
+        values = []
+        for candidate, items in enumerate(groups):
+            if not items:
+                raise RuntimeError(
+                    f"{bundle.label} missing {label} evidence for candidate {candidate}"
+                )
+            values.append(torch.stack(items, dim=0).mean(dim=0))
+        return torch.stack(values, dim=0)
+
+    memory = torch.cat(memory_parts, dim=0)
+    residual_memory = torch.cat(residual_memory_parts, dim=0)
+    if int(memory.shape[-1]) != TINYSTORIES_BASE_HIDDEN_SIZE:
+        raise RuntimeError("TinyStories final memory width drifted")
+    if int(residual_memory.shape[-1]) != TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE:
+        raise RuntimeError("TinyStories residual memory width drifted")
+    return {
+        "memory": memory,
+        "residual_source_memory": residual_memory,
+        "option_context": stack_mean(option_answer, "answer"),
+        "residual_source_option_context": stack_mean(
+            residual_option_answer, "residual answer"
+        ),
+        "option_predictor": stack_mean(option_predictor, "predictor"),
+        "residual_source_option_predictor": stack_mean(
+            residual_option_predictor, "residual predictor"
+        ),
+        "option_terminal": stack_mean(option_terminal, "terminal"),
+        "residual_source_option_terminal": stack_mean(
+            residual_option_terminal, "residual terminal"
+        ),
+        "option_question": stack_mean(option_prompt, "prompt"),
+        "residual_source_option_question": stack_mean(
+            residual_option_prompt, "residual prompt"
+        ),
+        "option_lexical": stack_mean(option_lexical, "lexical"),
+        "option_logp": stack_mean(option_logp, "logp"),
+        "global": memory.mean(dim=0),
+        "residual_source_global": residual_memory.mean(dim=0),
+        "path_count": occurrence_count,
+        "unique_path_count": len(rows),
+        "memory_tokens": int(memory.shape[0]),
+    }
+
 def extract_one_bundle(*, torch, bundle, question, args, track_grad: bool):
     path_batch = (
         int(args.tinystories_path_batch)
         if track_grad and bundle.label == TRAINABLE_LABEL
         else int(args.path_batch)
     )
-    row = smoke.extract_bundle_evidence(
+    extractor = (
+        extract_tinystories_layer_tap_evidence
+        if bundle.label == TRAINABLE_LABEL
+        else smoke.extract_bundle_evidence
+    )
+    row = extractor(
         torch=torch,
         bundle=bundle,
         question=question,
@@ -858,6 +1489,31 @@ def extract_one_bundle(*, torch, bundle, question, args, track_grad: bool):
         "memory_tokens": int(row.pop("memory_tokens")),
     }
     return row, stats
+
+
+def extract_live_evidence(*, torch, bundles, question, args, logger: EventLog):
+    evidence: dict[str, dict[str, Any]] = {}
+    stats = {}
+    for label in ("qwen", "pythia", TRAINABLE_LABEL):
+        row, bundle_stats = extract_one_bundle(
+            torch=torch,
+            bundle=bundles[label],
+            question=question,
+            args=args,
+            track_grad=False,
+        )
+        evidence[label] = row
+        stats[label] = bundle_stats
+    logger.emit(
+        "clef_sized_live_evidence",
+        question_id=question.question_id,
+        task=question.task,
+        candidates=len(question.candidates),
+        backbone_stats=stats,
+        tinystories_layer_taps=list(TINYSTORIES_TAPPED_LAYERS),
+        memory=smoke.cuda_memory(torch, "after_live_backbones"),
+    )
+    return evidence
 
 
 def build_frozen_training_cache(
@@ -922,28 +1578,12 @@ def build_frozen_training_cache(
 def compose_training_evidence(
     *, torch, bundles, question, frozen_rows, args, logger: EventLog,
 ) -> dict[str, dict[str, Any]]:
-    evidence = {
-        label: _cuda_evidence(frozen_rows[label])
-        for label in FROZEN_LABELS
-    }
-    tiny_row, tiny_stats = extract_one_bundle(
-        torch=torch,
-        bundle=bundles[TRAINABLE_LABEL],
-        question=question,
-        args=args,
-        track_grad=True,
-    )
-    evidence[TRAINABLE_LABEL] = tiny_row
-    logger.emit(
-        "clef_tinystories_live_trainable_evidence",
-        question_id=question.question_id,
-        task=question.task,
-        backbone=TRAINABLE_LABEL,
-        **tiny_stats,
-        memory=smoke.cuda_memory(torch, "after_live_tinystories"),
-    )
-    return evidence
-
+    # All language-model evidence is immutable and cached. Gradients begin only
+    # at the zero-residual adapters in the CLEF head.
+    missing = [label for label in FROZEN_LABELS if label not in frozen_rows]
+    if missing:
+        raise RuntimeError(f"frozen training evidence missing backbones: {missing}")
+    return {label: _cuda_evidence(frozen_rows[label]) for label in FROZEN_LABELS}
 
 def metric_row(*, question, logits, loss, ce, brier) -> dict[str, Any]:
     probabilities = logits.detach().float().softmax(dim=-1)
@@ -980,7 +1620,7 @@ def evaluate_direct_population(
     rows = []
     for index, question in enumerate(questions, 1):
         with torch.no_grad():
-            evidence = smoke.extract_live_evidence(
+            evidence = extract_live_evidence(
                 torch=torch, bundles=bundles, question=question, args=args, logger=logger
             )
             logits = head(evidence)
@@ -1011,7 +1651,7 @@ def _evaluate_consensus_question(*, torch, head, bundles, question, args, logger
     pair_rows = []
     with torch.no_grad():
         for pair_name, pair_question in build_consensus_pairwise_questions(question):
-            evidence = smoke.extract_live_evidence(
+            evidence = extract_live_evidence(
                 torch=torch, bundles=bundles, question=pair_question, args=args, logger=logger
             )
             logits = head(evidence)
@@ -1026,7 +1666,7 @@ def _evaluate_consensus_question(*, torch, head, bundles, question, args, logger
             )
             del evidence, logits, loss, ce, brier
 
-        evidence = smoke.extract_live_evidence(
+        evidence = extract_live_evidence(
             torch=torch, bundles=bundles, question=question, args=args, logger=logger
         )
         logits = head(evidence)
@@ -1054,7 +1694,7 @@ def evaluate_population(
             )
         else:
             with torch.no_grad():
-                evidence = smoke.extract_live_evidence(
+                evidence = extract_live_evidence(
                     torch=torch, bundles=bundles, question=question, args=args, logger=logger
                 )
                 logits = head(evidence)
@@ -1068,10 +1708,10 @@ def evaluate_population(
     return {"summary": summarize_rows(rows), "rows": rows}
 
 def joint_parameters(head, tiny_lm):
-    return [
-        *[p for p in head.parameters() if p.requires_grad],
-        *[p for p in tiny_lm.parameters() if p.requires_grad],
-    ]
+    tiny = [p for p in tiny_lm.parameters() if p.requires_grad]
+    if tiny:
+        raise RuntimeError("TinyStories unexpectedly became trainable")
+    return [p for p in head.parameters() if p.requires_grad]
 
 
 def train_population(
@@ -1185,7 +1825,7 @@ def train_population(
 
         grad_norm = float(torch.nn.utils.clip_grad_norm_(params, float(args.grad_clip)).item())
         if not math.isfinite(grad_norm):
-            raise RuntimeError(f"non-finite joint gradient norm cycle={cycle}: {grad_norm}")
+            raise RuntimeError(f"non-finite residual gradient norm cycle={cycle}: {grad_norm}")
         maximum_grad_norm = max(maximum_grad_norm, grad_norm)
         optimizer.step()
         global_step += 1
@@ -1872,21 +2512,175 @@ def save_checkpoint(
     return final.resolve()
 
 
-def load_checkpoint(*, torch, head, tinystories_lm, optimizer, checkpoint: Path) -> dict[str, Any]:
+def _checkpoint_head_layout(checkpoint: Path) -> str:
+    from safetensors import safe_open
+
+    checkpoint = Path(checkpoint).resolve(strict=True)
+    prefix = f"backbone_modules.{TRAINABLE_LABEL}."
+    with safe_open(str(checkpoint / "head.safetensors"), framework="pt", device="cpu") as handle:
+        keys = set(handle.keys())
+        if "tinystories_residual.memory.weight" in keys:
+            return "v3"
+        if prefix + "hidden_norm.layer_norms.2.weight" in keys:
+            return "v1"
+        if prefix + "hidden_norm.weight" not in keys:
+            return "unknown"
+        shape = tuple(handle.get_slice(prefix + "memory_projection.weight").get_shape())
+    if shape[-1] == TINYSTORIES_BASE_HIDDEN_SIZE:
+        return "legacy"
+    if shape[-1] == TINYSTORIES_CONCAT_HIDDEN_SIZE:
+        return "v2"
+    return "unknown"
+
+
+def _checkpoint_cycle_number(path: Path) -> int:
+    name = Path(path).name
+    if not name.startswith("cycle-"):
+        return -1
+    try:
+        return int(name.split("-", 2)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
+def resolve_layer_tap_migration_sources(
+    *, torch, output_dir: Path, requested_checkpoint: Path, previous_schema: str | None,
+) -> dict[str, Any]:
+    """Resolve the committed champion used to seed the frozen residual anchor.
+
+    v3 never reuses the old optimizer because none of the old trainable
+    parameters remain trainable. Only the committed champion weights matter; the
+    fresh optimizer owns brand-new zero residual matrices exclusively.
+    """
+    requested_checkpoint = Path(requested_checkpoint).resolve(strict=True)
+    layout = _checkpoint_head_layout(requested_checkpoint)
+    allowed = {"legacy", "v1", "v2"}
+    if layout not in allowed:
+        raise RuntimeError(
+            "unsupported source checkpoint for residual-tap migration: "
+            f"layout={layout} checkpoint={requested_checkpoint}"
+        )
+    return {
+        "weight_checkpoint": requested_checkpoint,
+        "source_layout": layout,
+        "optimizer_recovery_mode": "new-residual-only",
+        "recovery_reason": (
+            "freeze-committed-champion-and-train-only-zero-initialized-residual-taps"
+        ),
+        "previous_schema": previous_schema,
+    }
+
+
+def save_layer_tap_cutover_checkpoint(
+    *, torch, output_dir: Path, head, tinystories_lm, optimizer,
+    boundary_cycle: int, global_step: int, source_checkpoint: Path,
+    optimizer_migration: dict[str, Any], experiment_meta: dict[str, Any], logger: EventLog,
+) -> Path:
+    """Persist one architecture-compatible champion anchor at the corrected cutover."""
+    from safetensors.torch import save_file
+
+    final = Path(output_dir) / "checkpoints" / (
+        f"cycle-{int(boundary_cycle):06d}-tinystories-layer-tap-residual-v3"
+    )
+    temp = final.with_name(final.name + ".tmp")
+    if final.exists():
+        meta = smoke.read_json(final / "meta.json")
+        metrics = meta.get("metrics") or {}
+        if metrics.get("tinystories_layer_tap_schema") != TINYSTORIES_LAYER_TAP_SCHEMA:
+            raise RuntimeError(f"existing layer-tap cutover checkpoint has wrong contract: {final}")
+        return final.resolve()
+    if temp.exists():
+        shutil.rmtree(temp)
+    temp.mkdir(parents=True, exist_ok=False)
+    try:
+        save_file(_module_state_cpu(head), str(temp / "head.safetensors"))
+        save_file(_module_state_cpu(tinystories_lm), str(temp / "tinystories.safetensors"))
+        torch.save(optimizer.state_dict(), temp / "optimizer.pt")
+        torch.save(
+            {
+                "python_random": random.getstate(),
+                "torch_cpu": torch.get_rng_state(),
+                "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+            },
+            temp / "rng_state.pt",
+        )
+        smoke.atomic_json(
+            temp / "meta.json",
+            {
+                "schema_version": SCHEMA,
+                "cycle": int(boundary_cycle),
+                "reuse_epoch": None,
+                "cycle_complete": True,
+                "global_step": int(global_step),
+                "head_parameters": int(experiment_meta["head_parameters"]),
+                "tinystories_parameters": int(experiment_meta["tinystories_parameters"]),
+                "trainable_parameters": int(experiment_meta["trainable_parameters"]),
+                "cutover_dir": experiment_meta["cutover_dir"],
+                "source_experiment": experiment_meta["source_experiment"],
+                "train_plan": experiment_meta["train_plan"],
+                "dev_plan": experiment_meta["dev_plan"],
+                "metrics": {
+                    "architecture_cutover": True,
+                    "source_checkpoint": str(Path(source_checkpoint).resolve()),
+                    "tinystories_layer_tap_schema": TINYSTORIES_LAYER_TAP_SCHEMA,
+                    "tinystories_tapped_layers": list(TINYSTORIES_TAPPED_LAYERS),
+                    "tinystories_evidence_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
+                    "tinystories_residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),
+                    "tinystories_residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
+                    "anchor_layer": TINYSTORIES_FINAL_LAYER,
+                    "anchor_frozen": True,
+                    "tinystories_frozen": True,
+                    "optimizer_reset": False,
+                    "optimizer_scope": "new-residual-parameters-only",
+                    "optimizer_migration": dict(optimizer_migration),
+                    "residual_initialization": "all-zero-linear-weights",
+                },
+            },
+        )
+        os.replace(temp, final)
+    except Exception:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise
+    logger.emit(
+        "clef_tinystories_layer_tap_cutover_checkpoint_saved",
+        boundary_cycle=int(boundary_cycle),
+        source_checkpoint=str(Path(source_checkpoint).resolve()),
+        checkpoint=str(final.resolve()),
+        tinystories_tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
+        tinystories_evidence_hidden_size=TINYSTORIES_BASE_HIDDEN_SIZE,
+        tinystories_residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
+        tinystories_residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
+        anchor_frozen=True,
+        tinystories_frozen=True,
+        optimizer_reset=False,
+        optimizer_migration=dict(optimizer_migration),
+    )
+    return final.resolve()
+
+
+def load_checkpoint(
+    *, torch, head, tinystories_lm, optimizer, checkpoint: Path,
+    allow_legacy_head: bool = False, load_optimizer: bool = True,
+) -> dict[str, Any]:
     from safetensors.torch import load_file
 
     checkpoint = Path(checkpoint).expanduser().resolve(strict=True)
     meta = smoke.read_json(checkpoint / "meta.json")
     if meta.get("schema_version") != SCHEMA:
         raise RuntimeError(f"unsupported checkpoint schema: {meta.get('schema_version')}")
-    head.load_state_dict(load_file(str(checkpoint / "head.safetensors"), device="cpu"), strict=True)
+    head_state = load_file(str(checkpoint / "head.safetensors"), device="cpu")
+    if allow_legacy_head:
+        load_head_state_with_layer_taps(torch=torch, head=head, state=head_state)
+    else:
+        head.load_state_dict(head_state, strict=True)
     tinystories_lm.load_state_dict(
         load_file(str(checkpoint / "tinystories.safetensors"), device="cpu"), strict=True
     )
-    optimizer.load_state_dict(
-        torch.load(checkpoint / "optimizer.pt", map_location="cpu", weights_only=False)
-    )
-    base.optimizer_to_cuda(optimizer)
+    if load_optimizer:
+        optimizer.load_state_dict(
+            torch.load(checkpoint / "optimizer.pt", map_location="cpu", weights_only=False)
+        )
+        base.optimizer_to_cuda(optimizer)
     rng = torch.load(checkpoint / "rng_state.pt", map_location="cpu", weights_only=False)
     random.setstate(rng["python_random"])
     torch.set_rng_state(rng["torch_cpu"])
@@ -2029,9 +2823,10 @@ def reconcile_resume_train_plan(
         "max_reuse_depth": requested_reuse,
         "reuse_schedule": "whole-population-1x-through-max-then-predev-select-best",
         "frozen_training_evidence_cache": (
-            "qwen+pythia-cpu-detached-per-stream-chunk-rebuilt-each-progressive-reuse-depth"
+            "qwen+pythia+tinystories-cpu-detached-per-stream-chunk-"
+            "rebuilt-each-progressive-reuse-depth"
         ),
-        "tinystories_training_evidence": "live-autograd-once-per-presentation",
+        "tinystories_training_evidence": "frozen-cached-final-plus-l1-l2-residual-sources",
     })
     updated["contract"] = contract
     smoke.atomic_json(experiment_path, updated)
@@ -2076,25 +2871,48 @@ def validate_resume_experiment(
 
 def select_fresh_selection_bank(*, factory, plan, seed: int, data_cycle_base: int,
                                 blocked_fingerprints: set[str], logger: EventLog):
-    for retry in range(0, base.MAX_TRAIN_DEV_SPLIT_RETRIES + 1):
-        data_cycle = int(data_cycle_base) + retry
-        questions = factory.generate_selection(
-            data_cycle=data_cycle,
-            selection_plan=plan,
-            seed=seed,
+    """Build one fresh selection bank without discarding already-valid work.
+
+    The old wrapper first generated a complete bank with no historical blocklist
+    and then discarded the *entire* bank if even one fingerprint overlapped.
+    That was tolerable for 48-question selection sets but pathological at 512:
+    one collision could trigger another full 512-question generation.
+
+    EfficientQuestionFactory already implements the correct deficit-repair
+    behavior. Feed the historical blocklist into that generator directly so
+    accepted questions are retained and only the missing per-task slots are
+    regenerated on later deterministic namespaces.
+    """
+    data_cycle = int(data_cycle_base)
+    questions, retry, rejected = factory._generate_filtered(
+        kind="eval",
+        plan={str(task): int(count) for task, count in plan.items()},
+        data_cycle=data_cycle,
+        seed=int(seed),
+        blocked_fingerprints=set(blocked_fingerprints),
+        event_prefix="selection",
+        generation_namespace=0,
+    )
+    fingerprints = {factory.question_fingerprint(question) for question in questions}
+    if len(fingerprints) != len(questions):
+        raise RuntimeError("fresh selection bank contains duplicate fingerprints")
+    overlap = sorted(fingerprints & set(blocked_fingerprints))
+    if overlap:
+        raise RuntimeError(
+            "fresh selection bank retained blocked fingerprints after deficit repair: "
+            f"{overlap[:5]}"
         )
-        fingerprints = {factory.question_fingerprint(question) for question in questions}
-        overlap = sorted(fingerprints & blocked_fingerprints)
-        if not overlap:
-            return questions, fingerprints, data_cycle, retry
+    if retry:
         logger.emit(
-            "clef_tinystories_selection_retry",
-            retry=retry + 1,
+            "clef_tinystories_selection_repaired",
+            retry=int(retry),
             data_cycle=data_cycle,
-            overlap_count=len(overlap),
-            overlap=overlap[:5],
+            retained_count=len(questions),
+            rejected_overlap_count=len(rejected),
+            rejected_overlap=list(rejected[:5]),
+            repair_strategy="retain-valid-refill-deficits",
         )
-    raise RuntimeError("could not generate a fresh selection bank disjoint from source continuity bank")
+    return questions, fingerprints, data_cycle, int(retry)
 
 
 def prepare_new_output(output_dir: Path) -> Path:
@@ -2322,6 +3140,9 @@ def run(args, logger: EventLog) -> None:
     legacy_progressive_migration = False
     dev_audit_migration = False
     predev_policy_migration = False
+    layer_tap_migration = False
+    previous_layer_tap_schema = None
+    layer_tap_migration_sources = None
     policy_migration = False
     if args.resume:
         experiment = smoke.read_json(experiment_path)
@@ -2360,10 +3181,15 @@ def run(args, logger: EventLog) -> None:
             or int(contract.get("predev_questions_per_iteration", 0))
             != int(args.predev_questions_per_cycle)
         )
+        previous_layer_tap_schema = contract.get("tinystories_layer_tap_schema")
+        layer_tap_migration = (
+            previous_layer_tap_schema != TINYSTORIES_LAYER_TAP_SCHEMA
+        )
         policy_migration = (
             legacy_progressive_migration
             or dev_audit_migration
             or predev_policy_migration
+            or layer_tap_migration
         )
         in_progress_cycle = state.get("in_progress_cycle")
         if policy_migration:
@@ -2389,6 +3215,19 @@ def run(args, logger: EventLog) -> None:
         best_selection_loss = float(
             state.get("predev_champ_loss", state.get("best_selection_loss", math.inf))
         )
+        if layer_tap_migration:
+            layer_tap_migration_sources = resolve_layer_tap_migration_sources(
+                torch=torch,
+                output_dir=output_dir,
+                requested_checkpoint=latest_checkpoint,
+                previous_schema=previous_layer_tap_schema,
+            )
+            latest_checkpoint = Path(
+                layer_tap_migration_sources["weight_checkpoint"]
+            ).resolve(strict=True)
+            best_checkpoint = latest_checkpoint
+            migration_meta = smoke.read_json(latest_checkpoint / "meta.json")
+            global_step = int(migration_meta["global_step"])
         create_db = False
     else:
         if experiment_path.exists() or state_path.exists():
@@ -2419,6 +3258,12 @@ def run(args, logger: EventLog) -> None:
         legacy_progressive_migration=legacy_progressive_migration,
         dev_audit_migration=dev_audit_migration,
         predev_policy_migration=predev_policy_migration,
+        layer_tap_migration=layer_tap_migration,
+        previous_layer_tap_schema=previous_layer_tap_schema,
+        layer_tap_recovery=(None if layer_tap_migration_sources is None else {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in layer_tap_migration_sources.items()
+        }),
         policy_migration=policy_migration,
         start_cycle=start_cycle,
         resume_reuse_depth=resume_reuse_depth,
@@ -2439,10 +3284,16 @@ def run(args, logger: EventLog) -> None:
         stream_chunk_questions=int(args.stream_chunk_questions),
         head_lr=float(args.head_lr),
         tinystories_lr=float(args.tinystories_lr),
+        tinystories_lr_effective=0.0,
         consensus_direct_aux_weight=float(args.consensus_direct_aux_weight),
         consensus_primary="pairwise-relations-then-deterministic-topology",
         frozen_backbones=list(FROZEN_LABELS),
-        trainable_backbone=TRAINABLE_LABEL,
+        trainable_backbone=None,
+        trainable_component="tinystories-residual-taps-only",
+        tinystories_tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
+        tinystories_residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
+        tinystories_evidence_hidden_size=TINYSTORIES_BASE_HIDDEN_SIZE,
+        tinystories_residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
         task_composition=smoke.TASK_COMPOSITION_VERSION,
         evidence_contract=smoke.EVIDENCE_CONTRACT_VERSION,
     )
@@ -2660,10 +3511,16 @@ def run(args, logger: EventLog) -> None:
         frozen_before = smoke.frozen_signatures(frozen_bundles)
 
         logger.set_stage("head_build")
-        Head = smoke.build_head_class()
         torch.manual_seed(args.seed + 17)
-        head = Head(hidden_sizes)
-        head.load_state_dict(load_file(str(cutover_head), device="cpu"), strict=True)
+        head, head_hidden_sizes = build_layer_tap_head(
+            torch=torch,
+            hidden_sizes=hidden_sizes,
+        )
+        cutover_head_load_mode = load_head_state_with_layer_taps(
+            torch=torch,
+            head=head,
+            state=load_file(str(cutover_head), device="cpu"),
+        )
         head = head.to(device="cuda", dtype=torch.bfloat16)
         head_params = smoke.count_parameters(head)
         tiny_params = smoke.count_parameters(bundles[TRAINABLE_LABEL].lm)
@@ -2674,11 +3531,17 @@ def run(args, logger: EventLog) -> None:
             tinystories_lm=bundles[TRAINABLE_LABEL].lm,
             args=args,
         )
+        optimizer_migration = {
+            "recovery_mode": "new-residual-only",
+            "migrated_state_entries": 0,
+            "anchor_parameters_frozen": True,
+            "tinystories_frozen": True,
+            "trainable_parameter_overlap_with_source": 0,
+        }
         if reuse_schedule_cutover and not args.resume:
-            optimizer.load_state_dict(
-                torch.load(cutover_optimizer, map_location="cpu", weights_only=False)
-            )
-            base.optimizer_to_cuda(optimizer)
+            # The only trainable tensors are brand-new zero residual matrices, so
+            # there is intentionally no legacy AdamW state to migrate. Preserve
+            # RNG lineage while keeping the proven champion path immutable.
             rng = torch.load(cutover_rng, map_location="cpu", weights_only=False)
             random.setstate(rng["python_random"])
             torch.set_rng_state(rng["torch_cpu"])
@@ -2692,23 +3555,130 @@ def run(args, logger: EventLog) -> None:
                 global_step=global_step,
                 next_cycle=start_cycle,
                 optimizer_reset=False,
+                optimizer_migration=optimizer_migration,
                 rng_reset=False,
+                architecture_cutover=TINYSTORIES_LAYER_TAP_SCHEMA,
             )
         resume_checkpoint_meta = None
         if latest_checkpoint is not None:
-            resume_checkpoint_meta = load_checkpoint(
-                torch=torch,
-                head=head,
-                tinystories_lm=bundles[TRAINABLE_LABEL].lm,
-                optimizer=optimizer,
-                checkpoint=latest_checkpoint,
-            )
+            if layer_tap_migration:
+                if layer_tap_migration_sources is None:
+                    raise RuntimeError("layer-tap migration source resolution is missing")
+                weight_checkpoint = Path(
+                    layer_tap_migration_sources["weight_checkpoint"]
+                ).resolve(strict=True)
+                resume_checkpoint_meta = load_checkpoint(
+                    torch=torch,
+                    head=head,
+                    tinystories_lm=bundles[TRAINABLE_LABEL].lm,
+                    optimizer=optimizer,
+                    checkpoint=weight_checkpoint,
+                    allow_legacy_head=True,
+                    load_optimizer=False,
+                )
+                optimizer_migration = {
+                    "source_layout": str(layer_tap_migration_sources["source_layout"]),
+                    "recovery_mode": "new-residual-only",
+                    "migrated_state_entries": 0,
+                    "anchor_parameters_frozen": True,
+                    "tinystories_frozen": True,
+                    "trainable_parameter_overlap_with_source": 0,
+                    "weight_checkpoint": str(weight_checkpoint),
+                    "recovery_reason": str(
+                        layer_tap_migration_sources["recovery_reason"]
+                    ),
+                }
+                migrated_anchor = save_layer_tap_cutover_checkpoint(
+                    torch=torch,
+                    output_dir=output_dir,
+                    head=head,
+                    tinystories_lm=bundles[TRAINABLE_LABEL].lm,
+                    optimizer=optimizer,
+                    boundary_cycle=start_cycle - 1,
+                    global_step=global_step,
+                    source_checkpoint=weight_checkpoint,
+                    optimizer_migration=optimizer_migration,
+                    experiment_meta={
+                        "head_parameters": head_params,
+                        "tinystories_parameters": tiny_params,
+                        "trainable_parameters": total_trainable,
+                        "cutover_dir": str(cutover_dir),
+                        "source_experiment": str(source_experiment),
+                        "train_plan": train_plan,
+                        "dev_plan": dev_plan,
+                    },
+                    logger=logger,
+                )
+                # Persist/reload the v3 anchor so crash recovery uses the exact
+                # zero-residual weights and residual-only optimizer state.
+                resume_checkpoint_meta = load_checkpoint(
+                    torch=torch,
+                    head=head,
+                    tinystories_lm=bundles[TRAINABLE_LABEL].lm,
+                    optimizer=optimizer,
+                    checkpoint=migrated_anchor,
+                )
+                latest_checkpoint = migrated_anchor
+                best_checkpoint = migrated_anchor
+                smoke.atomic_json(
+                    state_path,
+                    {
+                        "schema_version": SCHEMA,
+                        "cycle": start_cycle - 1,
+                        "global_step": global_step,
+                        "latest_checkpoint": str(migrated_anchor),
+                        "best_checkpoint": str(migrated_anchor),
+                        "best_selection_loss": best_selection_loss,
+                        "predev_champ_loss": best_selection_loss,
+                        "predev_start_cycle": predev_start_cycle,
+                        "predev_end_cycle": predev_end_cycle,
+                        "predev_data_cycle": int(predev_payload["data_cycle"]),
+                        "progressive_champion_gating": True,
+                        "architecture_cutover_pending_predev_baseline": True,
+                        "tinystories_layer_tap_schema": TINYSTORIES_LAYER_TAP_SCHEMA,
+                        "optimizer_migration": optimizer_migration,
+                        "updated_unix": time.time(),
+                    },
+                )
+                logger.emit(
+                    "clef_tinystories_layer_tap_cutover_applied",
+                    source_checkpoint=str(weight_checkpoint),
+                    cutover_checkpoint=str(migrated_anchor),
+                    start_cycle=start_cycle,
+                    optimizer_reset=False,
+                    optimizer_migration=optimizer_migration,
+                    rng_reset=False,
+                    tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
+                    residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
+                    anchor_layer=TINYSTORIES_FINAL_LAYER,
+                    anchor_frozen=True,
+                    tinystories_frozen=True,
+                    legacy_hidden_size=TINYSTORIES_BASE_HIDDEN_SIZE,
+                    residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
+                )
+            else:
+                resume_checkpoint_meta = load_checkpoint(
+                    torch=torch,
+                    head=head,
+                    tinystories_lm=bundles[TRAINABLE_LABEL].lm,
+                    optimizer=optimizer,
+                    checkpoint=latest_checkpoint,
+                )
         logger.emit(
             "clef_tinystories_models_ready",
             head_parameters=head_params,
             tinystories_parameters=tiny_params,
             trainable_parameters=total_trainable,
             trainable_by_backbone=trainable_by_backbone,
+            head_hidden_sizes=head_hidden_sizes,
+            cutover_head_load_mode=cutover_head_load_mode,
+            tinystories_layer_tap_schema=TINYSTORIES_LAYER_TAP_SCHEMA,
+            tinystories_tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
+            tinystories_residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
+            tinystories_anchor_layer=TINYSTORIES_FINAL_LAYER,
+            tinystories_anchor_frozen=True,
+            tinystories_frozen=True,
+            tinystories_residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
             optimizer_groups=optimizer_group_summary(optimizer),
             resumed_checkpoint=None if latest_checkpoint is None else str(latest_checkpoint),
             memory=smoke.cuda_memory(torch, "after_joint_model_load"),
@@ -2730,9 +3700,22 @@ def run(args, logger: EventLog) -> None:
             "hidden_holdout_role": "outside-promotion-loop",
             "failed_population_policy": "restore-incumbent-if-no-predev-depth-beats-incumbent",
             "frozen_training_evidence_cache": (
-                "qwen+pythia-cpu-detached-per-stream-chunk-rebuilt-each-progressive-reuse-depth"
+                "qwen+pythia+tinystories-cpu-detached-per-stream-chunk-"
+                "rebuilt-each-progressive-reuse-depth"
             ),
-            "tinystories_training_evidence": "live-autograd-once-per-presentation",
+            "tinystories_training_evidence": "frozen-cached-final-plus-l1-l2-residual-sources",
+            "tinystories_layer_tap_schema": TINYSTORIES_LAYER_TAP_SCHEMA,
+            "tinystories_tapped_layers": list(TINYSTORIES_TAPPED_LAYERS),
+            "tinystories_residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),
+            "tinystories_anchor_layer": TINYSTORIES_FINAL_LAYER,
+            "tinystories_layer_fusion": "zero-initialized-residual-correction-into-final-evidence",
+            "tinystories_base_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
+            "tinystories_evidence_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
+            "tinystories_residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
+            "tinystories_lexical_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
+            "tinystories_backprop": "none-backbone-frozen",
+            "clef_backprop": "residual-tap-adapters-only",
+            "champion_anchor": "immutable-final-layer-clef-plus-all-three-frozen-backbones",
             "training_evidence_reuse": max_reuse_depth > 1,
             "unique_stream_training": True,
             "stream_reuse_epochs": max_reuse_depth,
@@ -2776,9 +3759,34 @@ def run(args, logger: EventLog) -> None:
             experiment["stream_reuse_epochs"] = max_reuse_depth
             experiment["predev_plan"] = predev_plan
             experiment["selection_plan"] = predev_plan
+            experiment["head_parameters"] = head_params
+            experiment["tinystories_parameters"] = tiny_params
+            experiment["trainable_parameters"] = total_trainable
             contract = dict(experiment.get("contract") or {})
             contract.update(progressive_contract)
             experiment["contract"] = contract
+        if layer_tap_migration:
+            architecture_history = list(experiment.get("architecture_history") or [])
+            record = {
+                "created_unix": time.time(),
+                "effective_cycle": int(start_cycle),
+                "schema": TINYSTORIES_LAYER_TAP_SCHEMA,
+                "backbone": TRAINABLE_LABEL,
+                "tapped_layers": list(TINYSTORIES_TAPPED_LAYERS),
+                "residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),
+                "anchor_layer": TINYSTORIES_FINAL_LAYER,
+                "from_hidden_size": TINYSTORIES_CONCAT_HIDDEN_SIZE,
+                "to_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
+                "residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
+                "optimizer_reset": False,
+                "optimizer_migration": optimizer_migration,
+                "anchor_frozen": True,
+                "tinystories_frozen": True,
+                "initialization": "all-zero-residual-linear-weights",
+            }
+            if not any(row.get("schema") == TINYSTORIES_LAYER_TAP_SCHEMA for row in architecture_history):
+                architecture_history.append(record)
+            experiment["architecture_history"] = architecture_history
         predev_history = list(experiment.get("predev_bank_history") or [])
         current_predev_record = {
             "start_cycle": int(predev_start_cycle),
@@ -2990,11 +3998,14 @@ def run(args, logger: EventLog) -> None:
                 migrated_from_legacy=legacy_progressive_migration,
                 migrated_from_dev_gate=dev_audit_migration,
                 migrated_from_shared_predev=predev_policy_migration,
+                migrated_from_layer_tap=layer_tap_migration,
             )
 
         # Dev is a report-only audit on an independent five-iteration clock.
         # Pre-dev now rotates every iteration, so these windows must not be coupled.
-        if dev_audit_active_path.is_file() and not (legacy_progressive_migration or dev_audit_migration):
+        if dev_audit_active_path.is_file() and not (
+            legacy_progressive_migration or dev_audit_migration or layer_tap_migration
+        ):
             dev_audit_payload = smoke.read_json(dev_audit_active_path)
             dev_audit_start_cycle = int(dev_audit_payload.get("start_cycle", -1))
             dev_audit_end_cycle = int(dev_audit_payload.get("end_cycle", -1))
@@ -3255,7 +4266,7 @@ def run(args, logger: EventLog) -> None:
                 stream_generation_pending = True
 
 
-            tracked_head = head.backbone_modules["qwen"].memory_projection.weight
+            tracked_head = head.tinystories_residual["memory"].weight
             head_before = smoke.sampled_parameter_signature(tracked_head)
             tiny_name, tracked_tiny = next(
                 iter(bundles[TRAINABLE_LABEL].lm.named_parameters())
@@ -3705,15 +4716,18 @@ def run(args, logger: EventLog) -> None:
                 and not row["grad_present_any"]
                 for row in frozen.values()
             ):
-                raise RuntimeError(f"Qwen/Pythia frozen invariant failed: {frozen}")
+                raise RuntimeError(f"frozen backbone invariant failed: {frozen}")
             if maximum_head_delta <= 0.0:
-                raise RuntimeError(f"CLEF head did not change during cycle {cycle}")
-            if maximum_tiny_delta <= 0.0:
                 raise RuntimeError(
-                    f"TinyStories parameter {tiny_name} did not change during cycle {cycle}"
+                    f"TinyStories residual adapters did not change during cycle {cycle}"
+                )
+            if maximum_tiny_delta != 0.0:
+                raise RuntimeError(
+                    f"frozen TinyStories parameter {tiny_name} changed during cycle {cycle}: "
+                    f"delta={maximum_tiny_delta}"
                 )
             if cycle_max_grad <= 0.0:
-                raise RuntimeError(f"no nonzero joint gradient observed during cycle {cycle}")
+                raise RuntimeError(f"no nonzero residual gradient observed during cycle {cycle}")
 
             cycle_metrics = {
                 "cycle": cycle,
@@ -4000,16 +5014,37 @@ def run(args, logger: EventLog) -> None:
         )
 
 def self_test() -> dict[str, Any]:
+    import torch
+
     train = base.curriculum_plan(DEFAULT_TRAIN_QUESTIONS)
     predev = base.curriculum_plan(DEFAULT_PREDEV_QUESTIONS)
     dev = base.curriculum_plan(DEFAULT_DEV_QUESTIONS)
-    head_parameters = smoke.production_head_parameter_count()
+    head, head_hidden_sizes = build_layer_tap_head(
+        torch=torch,
+        hidden_sizes={"qwen": 1024, "pythia": 512, "tinystories": 768},
+    )
+    head_parameters = smoke.count_parameters(head)
+    trainable_parameters = count_trainable(head)
     return {
         "event": "clef_tinystories_train_self_test_passed",
         "schema_version": SCHEMA,
         "head_parameters": head_parameters,
+        "trainable_parameters": trainable_parameters,
+        "frozen_head_parameters": head_parameters - trainable_parameters,
+        "head_hidden_sizes": head_hidden_sizes,
         "frozen_backbones": list(FROZEN_LABELS),
-        "trainable_backbone": TRAINABLE_LABEL,
+        "trainable_backbone": None,
+        "trainable_component": "tinystories-residual-taps-only",
+        "tinystories_layer_tap_schema": TINYSTORIES_LAYER_TAP_SCHEMA,
+        "tinystories_tapped_layers": list(TINYSTORIES_TAPPED_LAYERS),
+        "tinystories_residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),
+        "tinystories_anchor_layer": TINYSTORIES_FINAL_LAYER,
+        "tinystories_evidence_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
+        "tinystories_residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
+        "tinystories_lexical_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
+        "tinystories_backprop": "none-backbone-frozen",
+        "clef_backprop": "residual-tap-adapters-only",
+        "residual_initialization": "all-zero-linear-weights",
         "reuse_epochs": DEFAULT_STREAM_REUSE_EPOCHS,
         "checkpoint_epochs_per_cycle": DEFAULT_EPOCHS_PER_CYCLE,
         "stream_reuse_epochs": DEFAULT_STREAM_REUSE_EPOCHS,
@@ -4037,6 +5072,7 @@ def self_test() -> dict[str, Any]:
         "maximum_example_presentations_per_cycle": DEFAULT_TRAIN_QUESTIONS * DEFAULT_STREAM_REUSE_EPOCHS,
         "head_lr": DEFAULT_HEAD_LR,
         "tinystories_lr": DEFAULT_TINYSTORIES_LR,
+        "tinystories_lr_effective": 0.0,
         "tinystories_path_batch": DEFAULT_TINYSTORIES_PATH_BATCH,
         "consensus_primary": "three_binary_pairwise_relations_then_deterministic_topology",
         "consensus_direct_aux_weight": DEFAULT_CONSENSUS_DIRECT_AUX_WEIGHT,

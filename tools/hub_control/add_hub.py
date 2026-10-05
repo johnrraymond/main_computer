@@ -74,6 +74,14 @@ def prep(
     )
     target.update({"network": network, "hub_id": hub_id})
     deployment = deployment_inspector(target)
+    if deployment.get("placement_mismatch"):
+        actual_environment = str(deployment.get("environment_name") or "unknown")
+        desired_environment = str(deployment.get("desired_environment_name") or target["environment_name"])
+        raise HubControlError(
+            "HUB_COOLIFY_ENVIRONMENT_MISMATCH",
+            f"Existing Hub application is in Coolify environment {actual_environment!r}; "
+            f"Hub Control requires {desired_environment!r}. Remove or explicitly migrate the misplaced application, then run prep again.",
+        )
     if deployment.get("application_uuid"):
         target["application_uuid"] = str(deployment["application_uuid"])
         target["migration_candidate"] = bool(deployment.get("migration_candidate"))

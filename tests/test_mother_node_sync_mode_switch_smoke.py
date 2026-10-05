@@ -55,6 +55,80 @@ def test_rewrite_full_to_snap_changes_only_sync_profile_semantics() -> None:
     assert mod._volume_fingerprint(rewritten, "mainneta-super1") == mod._volume_fingerprint(COMPOSE, "mainneta-super1")
 
 
+def test_rewrite_retired_genesis_shim_drops_only_impossible_completed_dependency() -> None:
+    compose = """name: mainneta-super1
+services:
+  mother-genesis-init:
+    image: alpine:3.20
+    command:
+      - sh
+      - -lc
+      - while true; do echo mother-retired-helper-shim >/tmp/mother-retired-helper-shim; sleep 30; done
+  mother-super-node-fdb:
+    image: foundationdb/foundationdb:7.4.6
+  mainneta-super1:
+    image: hyperledger/besu:latest
+    depends_on:
+      mother-genesis-init:
+        condition: service_completed_successfully
+        required: true
+    command:
+      - --data-path=/var/lib/besu
+      - --genesis-file=/config/genesis.json
+      - --sync-min-peers=2
+      - --sync-mode=SNAP
+      - --snapsync-server-enabled=true
+    volumes:
+      - mother-config:/config:ro
+      - mother-data:/var/lib/besu
+  mother-super-node-hub:
+    image: mainneta-super1-hub:test
+    depends_on:
+      mainneta-super1:
+        condition: service_started
+        required: true
+      mother-super-node-fdb:
+        condition: service_started
+        required: true
+volumes:
+  mother-config:
+  mother-data:
+"""
+
+    rewritten, current, current_min_peers = mod._rewrite_sync_mode(compose, "mainneta-super1", "FULL")
+    parsed = mod.yaml.safe_load(rewritten)
+
+    assert current == "SNAP"
+    assert current_min_peers == 2
+    assert "depends_on" not in parsed["services"]["mainneta-super1"]
+    assert parsed["services"]["mother-super-node-hub"]["depends_on"] == {
+        "mainneta-super1": {"condition": "service_started", "required": True},
+        "mother-super-node-fdb": {"condition": "service_started", "required": True},
+    }
+    assert mod._semantic_masked_sha(rewritten, "mainneta-super1") == mod._semantic_masked_sha(compose, "mainneta-super1")
+
+
+def test_rewrite_real_one_shot_genesis_init_keeps_completed_dependency() -> None:
+    compose = COMPOSE.replace(
+        "    image: hyperledger/besu:latest\n",
+        "    image: hyperledger/besu:latest\n"
+        "    depends_on:\n"
+        "      mother-genesis-init:\n"
+        "        condition: service_completed_successfully\n"
+        "        required: true\n",
+    )
+
+    rewritten, current, current_min_peers = mod._rewrite_sync_mode(compose, "mainneta-super1", "SNAP")
+    parsed = mod.yaml.safe_load(rewritten)
+
+    assert current == "FULL"
+    assert current_min_peers == 0
+    assert parsed["services"]["mainneta-super1"]["depends_on"]["mother-genesis-init"] == {
+        "condition": "service_completed_successfully",
+        "required": True,
+    }
+
+
 def test_rewrite_snap_to_full() -> None:
     snap = COMPOSE.replace("--sync-mode=FULL", "--sync-mode=SNAP").replace("--sync-min-peers=0", "--sync-min-peers=2")
     rewritten, current, current_min_peers = mod._rewrite_sync_mode(snap, "mainneta-super1", "FULL")
@@ -314,3 +388,213 @@ volumes:
     )
     assert "- |-" in rewritten or "- |" in rewritten
     assert '- "import hashlib, http.server' not in rewritten
+
+
+def _successful_deploy_receipt():
+    return {
+        "method": "POST",
+        "endpoint": "/api/v1/deploy",
+        "ok": True,
+        "status": 200,
+        "response_sha256": "deploy-sha",
+        "byte_length": 12,
+        "elapsed_ms": 3,
+    }
+
+
+def test_cleanup_safe_redeploy_uses_one_deploy_when_boundary_is_clean(monkeypatch) -> None:
+    deploy_calls = []
+    monkeypatch.setattr(mod, "_wait_cleanup_clear", lambda *_a, **_k: {"old-cleanup"})
+    monkeypatch.setattr(
+        mod,
+        "_deploy_receipt",
+        lambda *_a, **_k: deploy_calls.append(True) or _successful_deploy_receipt(),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_watch_switch_attempt",
+        lambda *_a, **_k: {
+            "status": "healthy",
+            "cleanup_uuid": None,
+            "observations": [{"attempt": 1}],
+            "detail": {"uuid": "service-uuid", "name": "mainneta-super1"},
+            "compose": COMPOSE,
+            "runtime": {"runtime_sync_mode": "SNAP", "runtime_sync_min_peers": 2},
+            "log_attempts": [],
+        },
+    )
+
+    result = mod._cleanup_safe_redeploy(
+        object(),
+        cleanup_endpoint="/cleanup",
+        service_uuid="service-uuid",
+        node="mainneta-super1",
+        requested_mode="SNAP",
+        requested_min_peers=2,
+        poll_seconds=1.0,
+        poll_interval_seconds=0.0,
+        timeout=1.0,
+        log_lines=5000,
+        max_response_bytes=1024,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "healthy"
+    assert len(deploy_calls) == 1
+    assert len(result["deploy_receipts"]) == 1
+    assert result["retry_reason"] is None
+    assert result["boundary_attempts"] == [{"attempt": 1, "status": "healthy", "cleanup_uuid": None}]
+
+
+def test_cleanup_safe_redeploy_waits_for_overlap_then_redeploys_once(monkeypatch) -> None:
+    baselines = iter([{"old-cleanup"}, {"old-cleanup", "cleanup-race"}])
+    deploy_calls = []
+    terminal_calls = []
+
+    monkeypatch.setattr(mod, "_wait_cleanup_clear", lambda *_a, **_k: next(baselines))
+    monkeypatch.setattr(
+        mod,
+        "_deploy_receipt",
+        lambda *_a, **_k: deploy_calls.append(True) or _successful_deploy_receipt(),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_wait_cleanup_terminal",
+        lambda *_a, **_k: terminal_calls.append(_a[2] if len(_a) > 2 else _k.get("cleanup_uuid")),
+    )
+
+    def watch(*_a, **kwargs):
+        if kwargs["attempt"] == 1:
+            return {
+                "status": "cleanup-overlap",
+                "cleanup_uuid": "cleanup-race",
+                "observations": [{"attempt": 1, "cleanup_boundary_crossed": True}],
+                "detail": None,
+                "compose": None,
+                "runtime": None,
+                "log_attempts": [],
+            }
+        return {
+            "status": "healthy",
+            "cleanup_uuid": None,
+            "observations": [{"attempt": 2, "cleanup_boundary_crossed": False}],
+            "detail": {"uuid": "service-uuid", "name": "mainneta-super1"},
+            "compose": COMPOSE,
+            "runtime": {"runtime_sync_mode": "SNAP", "runtime_sync_min_peers": 2},
+            "log_attempts": [],
+        }
+
+    monkeypatch.setattr(mod, "_watch_switch_attempt", watch)
+
+    result = mod._cleanup_safe_redeploy(
+        object(),
+        cleanup_endpoint="/cleanup",
+        service_uuid="service-uuid",
+        node="mainneta-super1",
+        requested_mode="SNAP",
+        requested_min_peers=2,
+        poll_seconds=1.0,
+        poll_interval_seconds=0.0,
+        timeout=1.0,
+        log_lines=5000,
+        max_response_bytes=1024,
+    )
+
+    assert result["ok"] is True
+    assert len(deploy_calls) == 2
+    assert terminal_calls == ["cleanup-race"]
+    assert result["retry_reason"] == "cleanup-boundary-crossed"
+    assert [item["status"] for item in result["boundary_attempts"]] == ["cleanup-overlap", "healthy"]
+
+
+def test_cleanup_safe_redeploy_second_overlap_refuses_third_deploy(monkeypatch) -> None:
+    baselines = iter([{"old-cleanup"}, {"old-cleanup", "cleanup-race-1"}])
+    deploy_calls = []
+    monkeypatch.setattr(mod, "_wait_cleanup_clear", lambda *_a, **_k: next(baselines))
+    monkeypatch.setattr(
+        mod,
+        "_deploy_receipt",
+        lambda *_a, **_k: deploy_calls.append(True) or _successful_deploy_receipt(),
+    )
+    monkeypatch.setattr(mod, "_wait_cleanup_terminal", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        mod,
+        "_watch_switch_attempt",
+        lambda *_a, **kwargs: {
+            "status": "cleanup-overlap",
+            "cleanup_uuid": f"cleanup-race-{kwargs['attempt']}",
+            "observations": [{"attempt": kwargs["attempt"], "cleanup_boundary_crossed": True}],
+            "detail": None,
+            "compose": None,
+            "runtime": None,
+            "log_attempts": [],
+        },
+    )
+
+    result = mod._cleanup_safe_redeploy(
+        object(),
+        cleanup_endpoint="/cleanup",
+        service_uuid="service-uuid",
+        node="mainneta-super1",
+        requested_mode="SNAP",
+        requested_min_peers=2,
+        poll_seconds=1.0,
+        poll_interval_seconds=0.0,
+        timeout=1.0,
+        log_lines=5000,
+        max_response_bytes=1024,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "cleanup-retry-contaminated"
+    assert len(deploy_calls) == 2
+    assert [item["status"] for item in result["boundary_attempts"]] == ["cleanup-overlap", "cleanup-overlap"]
+
+
+def test_watch_switch_attempt_does_not_accept_healthy_when_cleanup_crossed(monkeypatch) -> None:
+    controller = object()
+    snap_compose = COMPOSE.replace("--sync-mode=FULL", "--sync-mode=SNAP").replace("--sync-min-peers=0", "--sync-min-peers=2")
+    monkeypatch.setattr(
+        mod,
+        "_detail",
+        lambda *_a, **_k: {
+            "uuid": "service-uuid",
+            "name": "mainneta-super1",
+            "status": "running:healthy",
+            "docker_compose_raw": snap_compose,
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_logs_text",
+        lambda *_a, **_k: ("# Sync mode: Snap\n# Sync min peers: 2\n", []),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_cleanup_snapshot",
+        lambda *_a, **_k: (
+            {"ok": True},
+            [{"uuid": "cleanup-race", "status": "running", "finished_at": None}],
+        ),
+    )
+
+    result = mod._watch_switch_attempt(
+        controller,
+        cleanup_endpoint="/cleanup",
+        cleanup_baseline_ids={"old-cleanup"},
+        service_uuid="service-uuid",
+        node="mainneta-super1",
+        requested_mode="SNAP",
+        requested_min_peers=2,
+        poll_seconds=1.0,
+        poll_interval_seconds=0.0,
+        timeout=1.0,
+        log_lines=5000,
+        max_response_bytes=1024,
+        attempt=1,
+    )
+
+    assert result["status"] == "cleanup-overlap"
+    assert result["cleanup_uuid"] == "cleanup-race"
+    assert result["observations"][0]["service_status"] == "running:healthy"
+    assert result["observations"][0]["cleanup_boundary_crossed"] is True

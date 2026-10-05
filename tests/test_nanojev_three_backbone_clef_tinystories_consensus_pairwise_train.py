@@ -198,6 +198,22 @@ def test_pairwise_stage_defaults_use_fresh_512_predev_and_progressive_480_popula
     assert result["dev_audit_cycles"] == 5
     assert result["dev_role"] == "report-only-every-5-completed-populations"
     assert result["dev_affects_selection"] is False
+    assert result["tinystories_tapped_layers"] == [1, 2, 4]
+    assert result["tinystories_residual_layers"] == [1, 2]
+    assert result["tinystories_anchor_layer"] == 4
+    assert result["tinystories_evidence_hidden_size"] == 768
+    assert result["tinystories_residual_source_hidden_size"] == 1536
+    assert result["tinystories_lexical_hidden_size"] == 768
+    assert result["head_hidden_sizes"]["tinystories"] == 768
+    assert result["head_parameters"] == 128327175
+    assert result["trainable_parameters"] == 7_077_888
+    assert result["frozen_head_parameters"] == 121_249_287
+    assert result["tinystories_lr_effective"] == 0.0
+    assert result["frozen_backbones"] == ["qwen", "pythia", "tinystories"]
+    assert result["trainable_backbone"] is None
+    assert result["trainable_component"] == "tinystories-residual-taps-only"
+    assert result["tinystories_backprop"] == "none-backbone-frozen"
+    assert result["clef_backprop"] == "residual-tap-adapters-only"
     assert result["frozen_cache_reused_across_progressive_depths"] is False
     assert "predev-select-best" in result["reuse_schedule"]
     assert "restore-incumbent" in result["failed_population_policy"]
@@ -207,6 +223,54 @@ def test_pairwise_stage_defaults_use_fresh_512_predev_and_progressive_480_popula
     assert result["consensus_pairwise_questions_per_state"] == 3
     assert result["consensus_direct_aux_weight"] == pytest.approx(0.10)
     assert "pairwise" in result["consensus_primary"]
+
+
+def test_selection_bank_repairs_only_deficits_against_historical_blocklist():
+    class Question:
+        def __init__(self, fingerprint):
+            self.fingerprint = fingerprint
+
+    class Factory:
+        def __init__(self):
+            self.calls = []
+
+        def question_fingerprint(self, question):
+            return question.fingerprint
+
+        def _generate_filtered(self, **kwargs):
+            self.calls.append(kwargs)
+            assert kwargs["kind"] == "eval"
+            assert kwargs["plan"] == {"ast": 2, "consensus": 1}
+            assert kwargs["blocked_fingerprints"] == {"old-a", "old-b"}
+            assert kwargs["event_prefix"] == "selection"
+            # The efficient generator reports one internal deficit-repair retry,
+            # but the outer selection wrapper must be called only once.
+            return [Question("new-a"), Question("new-b"), Question("new-c")], 1, ["old-a"]
+
+    class Logger:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event, **fields):
+            self.events.append((event, fields))
+
+    factory = Factory()
+    logger = Logger()
+    questions, fingerprints, data_cycle, retry = m.select_fresh_selection_bank(
+        factory=factory,
+        plan={"ast": 2, "consensus": 1},
+        seed=123,
+        data_cycle_base=456,
+        blocked_fingerprints={"old-a", "old-b"},
+        logger=logger,
+    )
+    assert len(factory.calls) == 1
+    assert len(questions) == 3
+    assert fingerprints == {"new-a", "new-b", "new-c"}
+    assert data_cycle == 456
+    assert retry == 1
+    assert logger.events[0][0] == "clef_tinystories_selection_repaired"
+    assert logger.events[0][1]["repair_strategy"] == "retain-valid-refill-deficits"
 
 
 def test_predev_is_per_iteration_while_dev_audit_keeps_five_cycle_window():
@@ -1399,3 +1463,252 @@ def test_progress_telemetry_defaults_are_human_visible():
     args = m.parse_args(["--self-test"])
     assert args.progress_every_optimizer_steps == 10
     assert args.frozen_cache_progress_questions == 20
+
+
+def _head_evidence(torch, hidden_sizes: dict[str, int], *, candidates: int = 3):
+    rows = {}
+    for label, hidden in hidden_sizes.items():
+        rows[label] = {
+            "memory": torch.randn(5, hidden),
+            "option_context": torch.randn(candidates, hidden),
+            "option_predictor": torch.randn(candidates, hidden),
+            "option_terminal": torch.randn(candidates, hidden),
+            "option_question": torch.randn(candidates, hidden),
+            "option_lexical": torch.randn(candidates, hidden),
+            "option_logp": torch.randn(candidates),
+            "global": torch.randn(hidden),
+        }
+    return rows
+
+
+
+def _small_head_kwargs():
+    return {
+        "width": 32,
+        "routing_layers": 1,
+        "layers": 1,
+        "heads": 4,
+        "feedforward": 64,
+        "fusion_feedforward": 64,
+    }
+
+def _add_residual_sources(torch, evidence):
+    expanded = {label: dict(row) for label, row in evidence.items()}
+    tiny = expanded["tinystories"]
+    for field in m.TINYSTORIES_RESIDUAL_FIELDS:
+        tiny[f"residual_source_{field}"] = torch.randn(
+            *tiny[field].shape[:-1], m.TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE
+        )
+    return expanded
+
+
+def _v2_state_from_legacy(torch, legacy_state):
+    state = {name: value.detach().clone() for name, value in legacy_state.items()}
+    prefix = "backbone_modules.tinystories."
+    final_start = 2 * 768
+    final_end = 3 * 768
+    for local in m._TINYSTORIES_EXPANDED_PROJECTIONS:
+        name = prefix + local
+        old = legacy_state[name]
+        widened = torch.zeros(old.shape[0], 2304, dtype=old.dtype)
+        widened[:, final_start:final_end] = old
+        state[name] = widened
+    return state
+
+
+def test_residual_layer_tap_head_keeps_legacy_768_anchor_and_only_residuals_trainable():
+    torch = pytest.importorskip("torch")
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, observed = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
+
+    assert observed == hidden
+    assert head.backbone_modules["tinystories"].memory_projection.in_features == 768
+    assert m.TINYSTORIES_RESIDUAL_LAYERS == (1, 2)
+    assert m.TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE == 1536
+    residual_names = {
+        name for name, parameter in head.named_parameters() if parameter.requires_grad
+    }
+    assert residual_names
+    assert all(name.startswith("tinystories_residual.") for name in residual_names)
+    assert sum(p.numel() for p in head.parameters() if p.requires_grad) == 7_077_888
+    for module in head.tinystories_residual.values():
+        assert torch.count_nonzero(module.weight).item() == 0
+
+
+def test_v2_concat_champion_migrates_to_exact_frozen_anchor_with_zero_residuals():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(1234)
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    LegacyHead = m.smoke.build_head_class()
+    legacy = LegacyHead(hidden, **_small_head_kwargs()).eval()
+    legacy_state = {name: value.detach().clone() for name, value in legacy.state_dict().items()}
+    v2_state = _v2_state_from_legacy(torch, legacy_state)
+
+    migrated, _ = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
+    mode = m.load_head_state_with_layer_taps(torch=torch, head=migrated, state=v2_state)
+    migrated.eval()
+    assert mode == "v2-concat-to-zero-residual-v3"
+    for module in migrated.tinystories_residual.values():
+        assert torch.count_nonzero(module.weight).item() == 0
+
+    old_evidence = _head_evidence(torch, hidden)
+    new_evidence = _add_residual_sources(torch, old_evidence)
+    with torch.no_grad():
+        old_logits = legacy(old_evidence)
+        new_logits = migrated(new_evidence)
+    assert torch.equal(old_logits, new_logits)
+
+
+def test_v2_migration_refuses_nonzero_intermediate_projection_slices():
+    torch = pytest.importorskip("torch")
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    LegacyHead = m.smoke.build_head_class()
+    legacy = LegacyHead(hidden, **_small_head_kwargs())
+    v2_state = _v2_state_from_legacy(torch, legacy.state_dict())
+    v2_state["backbone_modules.tinystories.memory_projection.weight"][0, 0] = 1.0
+    migrated, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
+    with pytest.raises(RuntimeError, match="trained concatenation checkpoint"):
+        m.load_head_state_with_layer_taps(torch=torch, head=migrated, state=v2_state)
+
+
+def test_zero_residual_branch_gets_gradient_while_anchor_stays_frozen():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(4321)
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
+    evidence = _add_residual_sources(torch, _head_evidence(torch, hidden))
+    logits = head(evidence)
+    loss = logits.square().sum()
+    loss.backward()
+
+    residual_grads = [
+        p.grad for p in head.tinystories_residual.parameters() if p.requires_grad
+    ]
+    assert any(grad is not None and torch.count_nonzero(grad).item() > 0 for grad in residual_grads)
+    anchor_grads = [
+        p.grad for name, p in head.named_parameters()
+        if not name.startswith("tinystories_residual.")
+    ]
+    assert all(grad is None for grad in anchor_grads)
+
+
+def test_optimizer_contains_only_residual_parameters_and_tinystories_is_frozen():
+    torch = pytest.importorskip("torch")
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
+    tiny = torch.nn.Linear(3, 2)
+    for parameter in tiny.parameters():
+        parameter.requires_grad_(False)
+    args = SimpleNamespace(head_lr=1e-4, tinystories_lr=1e-5, weight_decay=0.01)
+    optimizer = m.build_optimizer(torch=torch, head=head, tinystories_lm=tiny, args=args)
+    assert len(optimizer.param_groups) == 1
+    assert optimizer.param_groups[0]["group_name"] == "tinystories_residual_taps"
+    assert sum(p.numel() for p in optimizer.param_groups[0]["params"]) == 7_077_888
+
+
+def test_v2_migration_source_uses_only_committed_champion_weights(tmp_path: Path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+    checkpoint = tmp_path / "run" / "checkpoints" / "cycle-000068-tinystories-layer-tap-cutover-v2"
+    checkpoint.mkdir(parents=True)
+    safetensors.save_file(
+        {
+            "backbone_modules.tinystories.hidden_norm.weight": torch.ones(768),
+            "backbone_modules.tinystories.memory_projection.weight": torch.zeros(1, 2304),
+        },
+        str(checkpoint / "head.safetensors"),
+    )
+    result = m.resolve_layer_tap_migration_sources(
+        torch=torch,
+        output_dir=tmp_path / "run",
+        requested_checkpoint=checkpoint,
+        previous_schema=m.TINYSTORIES_LAYER_TAP_SCHEMA_V2,
+    )
+    assert result["weight_checkpoint"] == checkpoint.resolve()
+    assert result["source_layout"] == "v2"
+    assert result["optimizer_recovery_mode"] == "new-residual-only"
+    assert "optimizer_checkpoint" not in result
+
+
+def test_tinystories_extractor_keeps_final_768_and_exposes_detached_l1_l2_sources(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    rows = [{
+        "prompt_ids": [1, 2],
+        "answer_ids": [3],
+        "candidates": [0, 1],
+    }]
+    monkeypatch.setattr(m.smoke, "_model_sequences", lambda *args, **kwargs: (rows, 2))
+
+    class FakeBackbone(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = torch.nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, *, input_ids, attention_mask, use_cache, output_hidden_states, return_dict):
+            assert output_hidden_states is True
+            batch, seq = input_ids.shape
+            shape = (batch, seq, 768)
+            layers = (
+                torch.zeros(shape) * self.scale,
+                torch.ones(shape) * self.scale,
+                torch.ones(shape) * (2.0 * self.scale),
+                torch.ones(shape) * (3.0 * self.scale),
+                torch.ones(shape) * (4.0 * self.scale),
+            )
+            return SimpleNamespace(hidden_states=layers, last_hidden_state=layers[-1])
+
+    backbone = FakeBackbone()
+    bundle = SimpleNamespace(
+        label="tinystories",
+        backbone=backbone,
+        tokenizer=SimpleNamespace(pad_token_id=0),
+        output_weight=torch.zeros(10, 768),
+    )
+    question = SimpleNamespace(candidates=(object(), object()), question_id="q")
+    evidence = m.extract_tinystories_layer_tap_evidence(
+        torch=torch,
+        bundle=bundle,
+        question=question,
+        path_batch=1,
+        max_prompt_tokens=16,
+        max_answer_tokens=8,
+        prompt_evidence_tokens=1,
+        answer_evidence_tokens=1,
+        track_grad=False,
+    )
+
+    assert evidence["memory"].shape[-1] == 768
+    assert evidence["option_context"].shape == (2, 768)
+    assert evidence["option_predictor"].shape == (2, 768)
+    assert evidence["option_terminal"].shape == (2, 768)
+    assert evidence["option_question"].shape == (2, 768)
+    assert evidence["global"].shape[-1] == 768
+    assert evidence["residual_source_memory"].shape[-1] == 1536
+    assert evidence["residual_source_option_context"].shape == (2, 1536)
+    assert evidence["residual_source_option_predictor"].shape == (2, 1536)
+    assert evidence["residual_source_option_terminal"].shape == (2, 1536)
+    assert evidence["residual_source_option_question"].shape == (2, 1536)
+    assert evidence["residual_source_global"].shape[-1] == 1536
+    assert torch.all(evidence["option_context"][:, 0] == 4.0)
+    assert torch.all(evidence["residual_source_option_context"][:, 0] == 1.0)
+    assert torch.all(evidence["residual_source_option_context"][:, 768] == 2.0)
+    assert not evidence["memory"].requires_grad
+    assert not evidence["residual_source_memory"].requires_grad
+    assert backbone.scale.grad is None
+
+    with pytest.raises(RuntimeError, match="TinyStories is frozen"):
+        m.extract_tinystories_layer_tap_evidence(
+            torch=torch,
+            bundle=bundle,
+            question=question,
+            path_batch=1,
+            max_prompt_tokens=16,
+            max_answer_tokens=8,
+            prompt_evidence_tokens=1,
+            answer_evidence_tokens=1,
+            track_grad=True,
+        )
+

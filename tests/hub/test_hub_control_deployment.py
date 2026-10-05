@@ -59,6 +59,7 @@ def test_application_payload_bootstraps_frozen_projection_before_launcher() -> N
     assert "main_computer_mainnet" not in command
     assert payload["health_check_enabled"] is False
     assert payload["health_check_path"] == "/api/hub/v1/health"
+    assert payload["environment_name"] == "mainnet-hubs"
 
 
 def test_hub_control_disables_coolify_rolling_health_gate() -> None:
@@ -168,3 +169,124 @@ def test_observer_reports_partial_dependency_state_instead_of_generic_timeout(mo
     assert result["chain_adoption_verified"] is True
     assert result["last_error"]["failed_checks"] == ["fdb_namespace"]
     assert result["endpoint_errors"] == {}
+
+
+def test_application_payload_honors_frozen_hub_environment() -> None:
+    target = {
+        "application_name": "testneta-hub1",
+        "network": "testnet",
+        "environment_name": "testnet-hubs",
+        "hub_bind_port": 8790,
+        "public_url": "https://testnet-hub.example.invalid",
+        "runtime_dir": "/data/main-computer/hub/testneta-hub1",
+        "cluster_file_path": "/data/main-computer/hub/testneta-hub1/fdb.cluster",
+        "topology_path": "/data/main-computer/hub/testneta-hub1/hub-topology.json",
+        "git_repository": "https://github.com/johnrraymond/main_computer",
+        "git_branch": "main",
+        "dockerfile_location": "/Dockerfile.hub.exp-fdb",
+        "coolify": {"project_uuid": "project", "server_uuid": "server"},
+    }
+
+    payload = deployment._application_payload(target)
+
+    assert payload["environment_name"] == "testnet-hubs"
+
+
+def _environment_target() -> dict[str, Any]:
+    return {
+        "network": "mainnet",
+        "environment_name": "mainnet-hubs",
+        "coolify": {
+            "project_uuid": "project-1",
+            "server_uuid": "server-1",
+        },
+    }
+
+
+def test_ensure_coolify_environment_is_read_then_create_then_verify() -> None:
+    path = "/api/v1/projects/project-1/environments"
+    client = SequenceClient(
+        [
+            _response(200, {"environments": []}, path=path),
+            _response(201, {"uuid": "env-1", "name": "mainnet-hubs"}, path=path),
+            _response(200, {"environments": [{"uuid": "env-1", "name": "mainnet-hubs"}]}, path=path),
+        ]
+    )
+    tried: list[dict[str, Any]] = []
+
+    result = deployment._ensure_coolify_environment(client, _environment_target(), tried)
+
+    assert result == {
+        "environment_name": "mainnet-hubs",
+        "environment_uuid": "env-1",
+        "created": True,
+    }
+    assert client.calls == [
+        ("GET", path, None),
+        ("POST", path, {"name": "mainnet-hubs"}),
+        ("GET", path, None),
+    ]
+    assert tried == [
+        {"operation": "inspect-environment", "status": 200},
+        {"operation": "create-environment", "status": 201},
+        {"operation": "inspect-environment", "status": 200},
+    ]
+
+
+def test_ensure_coolify_environment_is_idempotent_when_environment_exists() -> None:
+    path = "/api/v1/projects/project-1/environments"
+    client = SequenceClient(
+        [_response(200, {"environments": [{"uuid": "env-1", "name": "mainnet-hubs"}]}, path=path)]
+    )
+    tried: list[dict[str, Any]] = []
+
+    result = deployment._ensure_coolify_environment(client, _environment_target(), tried)
+
+    assert result == {
+        "environment_name": "mainnet-hubs",
+        "environment_uuid": "env-1",
+        "created": False,
+    }
+    assert client.calls == [("GET", path, None)]
+
+
+def test_ensure_coolify_environment_tolerates_concurrent_create_conflict() -> None:
+    path = "/api/v1/projects/project-1/environments"
+    client = SequenceClient(
+        [
+            _response(200, {"environments": []}, path=path),
+            _response(422, {"message": "Environment already exists"}, path=path),
+            _response(200, {"environments": [{"uuid": "env-1", "name": "mainnet-hubs"}]}, path=path),
+        ]
+    )
+
+    result = deployment._ensure_coolify_environment(client, _environment_target(), [])
+
+    assert result == {
+        "environment_name": "mainnet-hubs",
+        "environment_uuid": "env-1",
+        "created": False,
+    }
+
+
+def test_apply_deployment_refuses_frozen_application_in_chain_environment() -> None:
+    target = {
+        "application_uuid": "app-1",
+        "application_name": "mainneta-hub1",
+        "network": "mainnet",
+        "environment_name": "mainnet-hubs",
+        "coolify": {
+            "url": "https://coolify.example.invalid",
+            "api_token": "token",
+            "project_uuid": "project",
+            "server_uuid": "server",
+        },
+    }
+    client = SequenceClient([_response(200, {"uuid": "app-1", "environment_name": "mainnet"}, path="/api/v1/applications/app-1")])
+
+    with pytest.raises(HubControlError) as exc_info:
+        deployment.apply_deployment(target, client_factory=lambda *_args: client)
+
+    assert exc_info.value.code == "HUB_COOLIFY_ENVIRONMENT_MISMATCH"
+    assert "mainnet-hubs" in exc_info.value.message
+    assert client.calls == [("GET", "/api/v1/applications/app-1", None)]
