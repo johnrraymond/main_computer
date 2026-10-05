@@ -1537,6 +1537,13 @@ class _NodeRemoveDoOpener:
             "docker_compose_raw": item["compose"],
         }
         applications = [dict(app) for app in item.get("applications", [])]
+        if str(item.get("name") or "").startswith("mainnet") and "-super" in str(item.get("name") or ""):
+            applications.insert(0, {
+                "name": item["name"],
+                "uuid": f"primary-{uuid}",
+                "status": "running:healthy",
+                "image": "hyperledger/besu:latest",
+            })
         if guardian:
             application = {
                 "name": guardian,
@@ -1703,6 +1710,100 @@ def _write_remove_do_release_for_test(tmp_path: Path):
     )
     release_path, release_sha = write_node_remove_do_release(paths, release, operation=_operation("write-remove-do-release-helper"))
     return paths, private_state, release_path, release_sha
+
+
+def _write_remove_do_release_for_c2_test(tmp_path: Path):
+    _, paths, private_state = _install(tmp_path)
+    baseline_path, baseline_sha = _write_t3_baseline_for_remove_prep(paths, private_state)
+    prep = build_node_remove_prep_transaction(
+        paths,
+        private_state,
+        baseline_path,
+        network="mainnet",
+        target_node="mainnetc-super2",
+        mode="soft",
+        baseline_evidence_sha256=baseline_sha,
+        created_at="2026-08-11T19:20:00Z",
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 20, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    prep_path, prep_sha = write_node_remove_prep_transaction(
+        paths, prep, operation=_operation("write-remove-prep-do-c2-helper")
+    )
+    release = node_remove_do_v2_module.build_node_remove_do_release(
+        paths,
+        private_state,
+        prep_path,
+        acknowledged_prep_transaction_sha256=prep_sha,
+        created_at="2026-08-11T19:22:00Z",
+        expires_in_seconds=900,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 22, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+    release_path, release_sha = node_remove_do_v2_module.write_node_remove_do_release(
+        paths, release, operation=_operation("write-remove-do-release-c2-helper")
+    )
+    return paths, private_state, release_path, release_sha
+
+
+def _c2_remove_proof(voter: str) -> dict:
+    current = [
+        "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+        "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+    ]
+    desired = current[:2]
+    target = current[2]
+    request = {"jsonrpc": "2.0", "id": 1, "method": "qbft_proposeValidatorVote", "params": [target, False]}
+    proof = _node_remove_do_proof_for_test(voter)
+    proof.update({
+        "rpc_request_sha256": hashlib.sha256(canonical_json(request)).hexdigest(),
+        "target_validator": target,
+        "expected_current_validator_set": current,
+        "desired_validator_set": desired,
+        "final_validator_set": desired,
+        "latest_validator_set": desired,
+        "first_block_validator_set": desired,
+        "second_block_validator_set": desired,
+    })
+    return proof
+
+
+def _fake_remove_voter_cleanup(opener: "_NodeRemoveDoOpener"):
+    def cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        service_uuid = str(kwargs["service_uuid"])
+        item = opener.services[service_uuid]
+        document = __import__("yaml").safe_load(item["compose"])
+        services = document.get("services", {})
+        for name in list(services):
+            if str(name).startswith("mother-node-remove-voter-"):
+                services.pop(name, None)
+        item["compose"] = __import__("yaml").safe_dump(document, sort_keys=False)
+        opener.guardians.pop(service_uuid, None)
+        opener.pending_guardians.pop(service_uuid, None)
+        return {"status": "pass", "summary": {"clean": True, "complete": True}}
+    return cleanup
+
+
+def _install_remove_voter_boundary_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "_remove_voter_cleanup_boundary_config",
+        lambda *args, **kwargs: {"server_uuid": "server-test", "executions_endpoint": "/cleanup"},
+    )
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "_remove_voter_wait_cleanup_clear",
+        lambda *args, **kwargs: set(),
+    )
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "_remove_voter_new_cleanup_since_baseline",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "_remove_voter_wait_cleanup_terminal",
+        lambda *args, **kwargs: None,
+    )
 
 
 def test_remove_node_do_evidence_sensitive_failure_reports_redacted_path(tmp_path: Path) -> None:
@@ -3623,3 +3724,176 @@ def test_remove_node_do_post_proof_resume_skips_revote_and_deletes_exact_target(
     )
     assert finalized["status"] == "pass", finalized
     assert finalized["summary"]["complete"] is True
+
+
+def _fake_rpc_route_rewire(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return {"status": "pass", "target_node": kwargs.get("target_node")}
+
+
+def test_remove_node_do_v2_transactionally_cleans_injected_remove_voters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_c2_test(tmp_path)
+    opener = _NodeRemoveDoOpener(proof_factory=_c2_remove_proof)
+    _install_remove_voter_boundary_noop(monkeypatch)
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "execute_completed_mother_helper_cleanup",
+        _fake_remove_voter_cleanup(opener),
+    )
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "execute_shared_rpc_route_rewire",
+        _fake_rpc_route_rewire,
+    )
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-v2-transactional-cleanup"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "pass", result
+    assert {item["node"] for item in result["injected_remove_voters"]} == {"mainneta-super1", "mainnetc-super1"}
+    assert set(result["cleaned_remove_voters"]) == {"mainneta-super1", "mainnetc-super1"}
+    assert result["summary"]["remove_voter_cleanup_complete"] is True
+    assert result["summary"]["final_survivors_healthy"] is True
+    assert result["remove_voter_cleanup_failures"] == []
+    assert all(item["completed"] is True for item in result["final_survivor_health_checks"])
+    for uuid in ("svca1xxxx", "svcc1xxxx"):
+        assert "mother-node-remove-voter-" not in opener.services[uuid]["compose"]
+
+
+def test_remove_node_do_v2_cleanup_overlap_retries_exact_voter_restart_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_c2_test(tmp_path)
+    opener = _NodeRemoveDoOpener(proof_factory=_c2_remove_proof)
+    _install_remove_voter_boundary_noop(monkeypatch)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_completed_mother_helper_cleanup", _fake_remove_voter_cleanup(opener))
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_shared_rpc_route_rewire", _fake_rpc_route_rewire)
+
+    overlap_calls = {"count": 0}
+    def overlap_once(*args: Any, **kwargs: Any):
+        overlap_calls["count"] += 1
+        if overlap_calls["count"] == 2:
+            return {"uuid": "cleanup-crossed-first-restart", "status": "running"}
+        return None
+
+    restart_calls: list[dict[str, Any]] = []
+    def restart(private_state_arg: Any, **kwargs: Any) -> dict[str, Any]:
+        restart_calls.append(dict(kwargs))
+        return _service_line_restart_pass(private_state_arg, **kwargs)
+
+    monkeypatch.setattr(node_remove_do_v2_module, "_remove_voter_new_cleanup_since_baseline", overlap_once)
+    monkeypatch.setattr(node_remove_do_v2_module, "run_service_line_restart_helper", restart)
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-v2-one-cleanup-overlap"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "pass", result
+    assert len(restart_calls) == 3
+    assert [item["service_uuid"] for item in restart_calls].count("svca1xxxx") == 2
+    assert [item["service_uuid"] for item in restart_calls].count("svcc1xxxx") == 1
+    assert result["summary"]["cleanup_boundary_overlap_detected"] is True
+    assert result["summary"]["cleanup_boundary_retry_count"] == 1
+    assert result["summary"]["cleanup_boundary_second_overlap"] is False
+
+
+def test_remove_node_do_v2_second_cleanup_overlap_fails_without_third_restart_and_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_c2_test(tmp_path)
+    opener = _NodeRemoveDoOpener(proof_factory=_c2_remove_proof)
+    _install_remove_voter_boundary_noop(monkeypatch)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_completed_mother_helper_cleanup", _fake_remove_voter_cleanup(opener))
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_shared_rpc_route_rewire", _fake_rpc_route_rewire)
+
+    overlap_calls = {"count": 0}
+    def overlap_twice(*args: Any, **kwargs: Any):
+        overlap_calls["count"] += 1
+        if overlap_calls["count"] in {2, 3}:
+            return {"uuid": f"cleanup-{overlap_calls['count']}", "status": "running"}
+        return None
+
+    restart_calls: list[dict[str, Any]] = []
+    def restart(private_state_arg: Any, **kwargs: Any) -> dict[str, Any]:
+        restart_calls.append(dict(kwargs))
+        return _service_line_restart_pass(private_state_arg, **kwargs)
+
+    monkeypatch.setattr(node_remove_do_v2_module, "_remove_voter_new_cleanup_since_baseline", overlap_twice)
+    monkeypatch.setattr(node_remove_do_v2_module, "run_service_line_restart_helper", restart)
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-v2-second-cleanup-overlap"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_BOUNDARY_COLLISION"
+    assert len(restart_calls) == 2
+    assert set(result["cleaned_remove_voters"]) == {"mainneta-super1"}
+    assert result["summary"]["remove_voter_cleanup_complete"] is True
+    assert result["summary"]["cleanup_boundary_second_overlap"] is True
+    assert "mother-node-remove-voter-" not in opener.services["svca1xxxx"]["compose"]
+
+
+def test_remove_node_do_v2_cleanup_failure_is_blocking_and_finally_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_c2_test(tmp_path)
+    opener = _NodeRemoveDoOpener(proof_factory=_c2_remove_proof)
+    _install_remove_voter_boundary_noop(monkeypatch)
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_shared_rpc_route_rewire", _fake_rpc_route_rewire)
+
+    cleanup_calls: list[str] = []
+    def failed_cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        cleanup_calls.append(str(kwargs["node"]))
+        return {"status": "failed", "summary": {"clean": False, "complete": False}}
+
+    monkeypatch.setattr(node_remove_do_v2_module, "execute_completed_mother_helper_cleanup", failed_cleanup)
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-v2-cleanup-failure-blocking"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_FAILED"
+    assert set(cleanup_calls) == {"mainneta-super1", "mainnetc-super1"}
+    assert len(cleanup_calls) >= 4  # normal cleanup attempt plus finally rollback retry for both voters
+    assert result["remove_voter_cleanup_failures"]
+    assert result["summary"]["remove_voter_cleanup_complete"] is False

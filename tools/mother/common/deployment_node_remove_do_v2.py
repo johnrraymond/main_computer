@@ -35,6 +35,7 @@ from .coolify_state import (
     _DEFAULT_OPENER,
     resolve_coolify_controller,
 )
+from .deployment_coolify_context import load_controller_config
 from .deployment_completed_helper_cleanup import (
     MotherDeploymentCompletedHelperCleanupError,
     execute_completed_mother_helper_cleanup,
@@ -75,6 +76,11 @@ _NODE_REMOVE_DO_PROOF_FIELD = "node_remove_do_proof_payload"
 _NODE_REMOVE_DO_PROOF_SHA_FIELD = "node_remove_do_proof_sha256"
 _NODE_REMOVE_DO_PROOF_HTTP_PORT = 8798
 _NODE_REMOVE_DO_PROOF_PORT_OFFSET = 9100
+_REMOVE_VOTER_MAX_RESTART_ATTEMPTS = 2
+_REMOVE_VOTER_CLEANUP_TERMINAL_STATUSES = {
+    "completed", "complete", "finished", "success", "successful",
+    "failed", "error", "cancelled", "canceled",
+}
 _NODE_REMOVE_DO_REQUIRED_PROOF_FIELDS = (
     "node_remove_do_proof_contract",
     "voter_node",
@@ -1059,6 +1065,496 @@ def _safe_response(response: Mapping[str, Any]) -> dict[str, Any]:
         "byte_length": int(response.get("byte_length", 0)),
         "elapsed_ms": int(response.get("elapsed_ms", 0)),
     }
+
+
+
+def _remove_voter_cleanup_boundary_config(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+) -> dict[str, str]:
+    config = load_controller_config(
+        private_state,
+        network=network,
+        controller_id=controller_id,
+        allowed_controllers={controller_id},
+        error_factory=_fail,
+        rejected_code="MOTHER_DEPLOY_NODE_REMOVE_DO_CLEANUP_CONTROLLER_REJECTED",
+        invalid_code="MOTHER_DEPLOY_NODE_REMOVE_DO_CLEANUP_CONTROLLER_INVALID",
+        placement_description="remove-voter CleanupDocker boundary",
+    )
+    server_uuid = _identifier(config.get("server_uuid"), "Coolify server UUID")
+    return {
+        "server_uuid": server_uuid,
+        "executions_endpoint": (
+            f"/api/v1/servers/{urllib.parse.quote(server_uuid, safe='')}/docker-cleanup/executions"
+        ),
+    }
+
+
+def _remove_voter_cleanup_items(payload: Any) -> list[Mapping[str, Any]]:
+    items = payload
+    if isinstance(payload, Mapping):
+        for key in ("executions", "items", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                items = value
+                break
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, Mapping)]
+
+
+def _remove_voter_cleanup_id(item: Mapping[str, Any]) -> str:
+    value = item.get("uuid")
+    return value if isinstance(value, str) else ""
+
+
+def _remove_voter_cleanup_terminal(item: Mapping[str, Any]) -> bool:
+    if item.get("finished_at"):
+        return True
+    return str(item.get("status") or "").strip().lower() in _REMOVE_VOTER_CLEANUP_TERMINAL_STATUSES
+
+
+def _remove_voter_cleanup_succeeded(item: Mapping[str, Any]) -> bool:
+    return _remove_voter_cleanup_terminal(item) and str(item.get("status") or "").strip().lower() not in {
+        "failed", "error", "cancelled", "canceled",
+    }
+
+
+def _remove_voter_cleanup_snapshot(
+    controller: Any,
+    endpoint: str,
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> tuple[dict[str, Any], list[Mapping[str, Any]]]:
+    response = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if response.get("ok") is not True:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_CLEANUP_BOUNDARY_OBSERVATION_FAILED",
+            f"Coolify cleanup execution boundary GET failed with HTTP {response.get('status')}",
+        )
+    return response, _remove_voter_cleanup_items(response.get("payload"))
+
+
+def _remove_voter_wait_cleanup_clear(
+    controller: Any,
+    endpoint: str,
+    *,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> set[str]:
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+    while True:
+        _response, items = _remove_voter_cleanup_snapshot(
+            controller,
+            endpoint,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        if not any(not _remove_voter_cleanup_terminal(item) for item in items):
+            return {
+                _remove_voter_cleanup_id(item)
+                for item in items
+                if _remove_voter_cleanup_id(item)
+            }
+        if time.monotonic() >= deadline:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_DO_CLEANUP_WAIT_TIMEOUT",
+                "Coolify CleanupDocker did not become quiescent before the remove-voter mutation boundary",
+            )
+        time.sleep(max(0.0, poll_interval_seconds))
+
+
+def _remove_voter_wait_cleanup_terminal(
+    controller: Any,
+    endpoint: str,
+    cleanup_uuid: str,
+    *,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> None:
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+    while True:
+        _response, items = _remove_voter_cleanup_snapshot(
+            controller,
+            endpoint,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        item = next(
+            (item for item in items if _remove_voter_cleanup_id(item) == cleanup_uuid),
+            None,
+        )
+        if item is not None and _remove_voter_cleanup_terminal(item):
+            if not _remove_voter_cleanup_succeeded(item):
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_REMOVE_DO_CLEANUP_FAILED",
+                    f"CleanupDocker execution {cleanup_uuid} crossed the remove-voter boundary and failed",
+                )
+            return
+        if time.monotonic() >= deadline:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_DO_CLEANUP_WAIT_TIMEOUT",
+                f"CleanupDocker execution {cleanup_uuid} crossed the remove-voter boundary and did not finish",
+            )
+        time.sleep(max(0.0, poll_interval_seconds))
+
+
+def _remove_voter_new_cleanup_since_baseline(
+    controller: Any,
+    endpoint: str,
+    baseline_ids: set[str],
+    *,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> Mapping[str, Any] | None:
+    _response, items = _remove_voter_cleanup_snapshot(
+        controller,
+        endpoint,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    baseline = set(baseline_ids)
+    return next(
+        (
+            item
+            for item in items
+            if _remove_voter_cleanup_id(item)
+            and _remove_voter_cleanup_id(item) not in baseline
+        ),
+        None,
+    )
+
+
+def _remove_voter_definition_is_retired(definition: Mapping[str, Any]) -> bool:
+    labels_text = _labels_text(definition).lower().replace('"', "").replace("'", "")
+    return (
+        "main_computer.mother.retired_helper_mimic=true" in labels_text
+        and "main_computer.mother.post_work_shim=true" in labels_text
+    )
+
+
+def _remove_voter_active_in_compose(compose_text: str, guardian_service: str) -> bool:
+    definition = _compose_service_map(compose_text).get(guardian_service)
+    if definition is None:
+        return False
+    return not _remove_voter_definition_is_retired(definition)
+
+
+def _primary_validator_application_observation(
+    payload: Any,
+    *,
+    node: str,
+    service_uuid: str,
+) -> dict[str, Any]:
+    record = _find_service_record(payload, node=node, service_uuid=service_uuid)
+    candidates = [
+        item
+        for item in _records(payload)
+        if item is not record and str(item.get("name") or "") == node
+    ]
+    if not candidates:
+        candidates = [
+            item
+            for item in _records(payload)
+            if item is not record
+            and str(item.get("image") or "").strip().startswith("hyperledger/besu")
+        ]
+    application = candidates[0] if len(candidates) == 1 else None
+    status = str(application.get("status") or "").strip() if application else ""
+    healthy = status.lower() in {"running:healthy", "running (healthy)"}
+    return {
+        "node": node,
+        "service_uuid": service_uuid,
+        "parent_status": str(record.get("status") or ""),
+        "application_present": application is not None,
+        "application_uuid": str(application.get("uuid") or "") or None if application else None,
+        "application_name": str(application.get("name") or "") or None if application else None,
+        "application_image": str(application.get("image") or "") or None if application else None,
+        "application_status": status or None,
+        "healthy": healthy,
+        "reason": (
+            "primary-validator-running-healthy"
+            if healthy
+            else "primary-validator-application-missing"
+            if application is None
+            else "primary-validator-not-running-healthy"
+        ),
+    }
+
+
+def _final_survivor_primary_health_check(
+    controller: Any,
+    cleanup_endpoint: str,
+    *,
+    node: str,
+    service_uuid: str,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+    for attempt in range(1, _REMOVE_VOTER_MAX_RESTART_ATTEMPTS + 1):
+        baseline = _remove_voter_wait_cleanup_clear(
+            controller,
+            cleanup_endpoint,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        detail = _http(
+            controller,
+            "GET",
+            service_endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        observation: dict[str, Any]
+        if not detail.get("ok"):
+            observation = {
+                "node": node,
+                "service_uuid": service_uuid,
+                "healthy": False,
+                "reason": f"service-detail-http-{detail.get('status')}",
+            }
+        else:
+            observation = _primary_validator_application_observation(
+                detail.get("payload"),
+                node=node,
+                service_uuid=service_uuid,
+            )
+        overlap = _remove_voter_new_cleanup_since_baseline(
+            controller,
+            cleanup_endpoint,
+            baseline,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        cleanup_uuid = _remove_voter_cleanup_id(overlap) if overlap is not None else ""
+        attempts.append({
+            "attempt": attempt,
+            "cleanup_uuid": cleanup_uuid or None,
+            "observation": observation,
+        })
+        if overlap is None:
+            return {
+                "node": node,
+                "service_uuid": service_uuid,
+                "completed": bool(observation.get("healthy")),
+                "attempts": attempts,
+                "final_observation": observation,
+            }
+        _remove_voter_wait_cleanup_terminal(
+            controller,
+            cleanup_endpoint,
+            cleanup_uuid,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        _remove_voter_wait_cleanup_clear(
+            controller,
+            cleanup_endpoint,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+    return {
+        "node": node,
+        "service_uuid": service_uuid,
+        "completed": False,
+        "attempts": attempts,
+        "final_observation": attempts[-1]["observation"] if attempts else None,
+        "reason": "cleanup-crossed-final-health-boundary-twice",
+    }
+
+
+
+def _cleanup_injected_remove_voters(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    target_node: str,
+    controllers: Mapping[str, Any],
+    injected: Mapping[str, Mapping[str, Any]],
+    cleaned: set[str],
+    cleanup_receipts: list[dict[str, Any]],
+    cleanup_failures: list[dict[str, Any]],
+    phase: str,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    operation: OperationIdentity,
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for voter in sorted(injected):
+        if voter in cleaned:
+            continue
+        entry = injected[voter]
+        controller_id = str(entry["controller_id"])
+        service_uuid = str(entry["service_uuid"])
+        guardian_service = str(entry["guardian_service"])
+        cleanup_endpoint = str(entry["cleanup_endpoint"])
+        controller = controllers.get(controller_id)
+        if controller is None:
+            failure = {
+                "phase": phase,
+                "node": voter,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "guardian_service": guardian_service,
+                "code": "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_CONTROLLER_MISSING",
+                "message": "controller binding is unavailable during remove-voter rollback",
+            }
+            cleanup_failures.append(failure)
+            failures.append(failure)
+            continue
+        try:
+            cleanup_result = execute_completed_mother_helper_cleanup(
+                paths,
+                private_state,
+                network=network,
+                controller_id=controller_id,
+                service_uuid=service_uuid,
+                node=voter,
+                acknowledged_service_uuid=service_uuid,
+                required_component_names=(),
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                allow_nested_application_delete=True,
+                allow_compose_reconcile_refresh=True,
+                instant_deploy_compose_reconcile_refresh=False,
+                allow_service_redeploy_refresh=False,
+                force_service_redeploy_refresh=False,
+                allow_coolify_model_status_exclusion=True,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                operation=operation,
+            )
+            if cleanup_result.get("status") != "pass":
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_FAILED",
+                    f"completed-helper cleanup did not pass for {voter}",
+                )
+            _remove_voter_wait_cleanup_clear(
+                controller,
+                cleanup_endpoint,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+            detail = _http(
+                controller,
+                "GET",
+                service_endpoint,
+                body=None,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            service_missing = int(detail.get("status") or 0) == 404
+            active_after_cleanup = False
+            if not service_missing:
+                if not detail.get("ok"):
+                    raise _fail(
+                        "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
+                        f"service detail for {voter} failed with HTTP {detail.get('status')} after helper cleanup",
+                    )
+                record = _find_service_record(detail.get("payload"), node=voter, service_uuid=service_uuid)
+                active_after_cleanup = _remove_voter_active_in_compose(
+                    _compose_text(record),
+                    guardian_service,
+                )
+                if active_after_cleanup:
+                    raise _fail(
+                        "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
+                        f"remove-voter {guardian_service!r} is still active in {voter} Compose after helper cleanup",
+                    )
+            elif voter != target_node:
+                raise _fail(
+                    "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
+                    f"survivor service {voter!r} disappeared while cleaning its remove-voter helper",
+                )
+            cleaned.add(voter)
+            cleanup_receipts.append({
+                "phase": phase,
+                "node": voter,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "guardian_service": guardian_service,
+                "status": "pass",
+                "service_missing": service_missing,
+                "active_remove_voter_after_cleanup": active_after_cleanup,
+                "summary": cleanup_result.get("summary"),
+            })
+        except (MotherDeploymentCompletedHelperCleanupError, MotherDeploymentNodeRemoveDoError) as exc:
+            failure = {
+                "phase": phase,
+                "node": voter,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "guardian_service": guardian_service,
+                "code": getattr(exc, "code", "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_FAILED"),
+                "message": str(exc)[:512],
+            }
+            cleanup_receipts.append({**failure, "status": "failed"})
+            cleanup_failures.append(failure)
+            failures.append(failure)
+        except Exception as exc:  # pragma: no cover - rollback must retain the primary failure
+            failure = {
+                "phase": phase,
+                "node": voter,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "guardian_service": guardian_service,
+                "code": "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_UNEXPECTED_FAILURE",
+                "message": str(exc)[:512],
+            }
+            cleanup_receipts.append({**failure, "status": "failed"})
+            cleanup_failures.append(failure)
+            failures.append(failure)
+    return failures
 
 
 def _request_sha256(target_validator: str, proposal: bool) -> str:
@@ -2386,6 +2882,12 @@ def execute_node_remove_do_release(
     rpc_route_survivor: Mapping[str, Any] | None = None
     service_removal: dict[str, Any] | None = None
     failure: dict[str, str] | None = None
+    controllers: dict[str, Any] = {}
+    injected_remove_voters: dict[str, dict[str, Any]] = {}
+    cleaned_remove_voters: set[str] = set()
+    remove_voter_boundary_attempts: list[dict[str, Any]] = []
+    remove_voter_cleanup_failures: list[dict[str, Any]] = []
+    final_survivor_health_checks: list[dict[str, Any]] = []
 
     try:
         controller_ids = {release["target"]["controller_id"], *(item["controller_id"] for item in release["survivors"])}
@@ -2429,6 +2931,21 @@ def execute_node_remove_do_release(
             controller_id = _identifier(voter_service["controller_id"], "voter controller")
             service_uuid = str(voter_service["service_uuid"])
             controller = controllers[controller_id]
+            cleanup_boundary = _remove_voter_cleanup_boundary_config(
+                private_state,
+                network=release["network"],
+                controller_id=controller_id,
+            )
+            cleanup_endpoint = cleanup_boundary["executions_endpoint"]
+            pre_patch_cleanup_baseline = _remove_voter_wait_cleanup_clear(
+                controller,
+                cleanup_endpoint,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
             endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
             detail = _http(
                 controller,
@@ -2514,32 +3031,133 @@ def execute_node_remove_do_release(
             })
             if not patch_ok:
                 raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_MUTATION_FAILED", f"Coolify rejected {voter} guardian patch with HTTP {patch['status']}")
-            try:
-                restart_result = run_service_line_restart_helper(
-                    private_state,
-                    runtime_state_root=paths.root.parent,
-                    network=release["network"],
-                    mode="execute",
-                    controller_id=controller_id,
-                    service_uuid=service_uuid,
-                    service_line=guardian,
-                    delete_helper_after_exit=True,
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
+
+            injected_remove_voters[voter] = {
+                "node": voter,
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "guardian_service": guardian,
+                "cleanup_endpoint": cleanup_endpoint,
+                "is_survivor": any(str(item.get("node")) == voter for item in release["survivors"]),
+            }
+            patch_overlap = _remove_voter_new_cleanup_since_baseline(
+                controller,
+                cleanup_endpoint,
+                pre_patch_cleanup_baseline,
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+            )
+            if patch_overlap is not None:
+                cleanup_uuid = _remove_voter_cleanup_id(patch_overlap)
+                _remove_voter_wait_cleanup_terminal(
+                    controller,
+                    cleanup_endpoint,
+                    cleanup_uuid,
                     max_wait_seconds=max_wait_seconds,
                     poll_interval_seconds=poll_interval_seconds,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
                     opener=opener,
                 )
-            except MotherServiceLineRestartHelperError as exc:
-                restart_result = {
-                    "status": "failed",
-                    "reason": "service-line-restart-helper-error",
-                    "error_code": exc.code,
-                    "error": str(exc),
+                _remove_voter_wait_cleanup_clear(
+                    controller,
+                    cleanup_endpoint,
+                    max_wait_seconds=max_wait_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+
+            restart_result: dict[str, Any] = {
+                "status": "failed",
+                "reason": "service-line-restart-not-attempted",
+                "controller_id": controller_id,
+                "service_uuid": service_uuid,
+                "service_line": guardian,
+            }
+            for restart_attempt in range(1, _REMOVE_VOTER_MAX_RESTART_ATTEMPTS + 1):
+                restart_cleanup_baseline = _remove_voter_wait_cleanup_clear(
+                    controller,
+                    cleanup_endpoint,
+                    max_wait_seconds=max_wait_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                try:
+                    restart_result = run_service_line_restart_helper(
+                        private_state,
+                        runtime_state_root=paths.root.parent,
+                        network=release["network"],
+                        mode="execute",
+                        controller_id=controller_id,
+                        service_uuid=service_uuid,
+                        service_line=guardian,
+                        delete_helper_after_exit=True,
+                        timeout=timeout,
+                        max_response_bytes=max_response_bytes,
+                        max_wait_seconds=max_wait_seconds,
+                        poll_interval_seconds=poll_interval_seconds,
+                        opener=opener,
+                    )
+                except MotherServiceLineRestartHelperError as exc:
+                    restart_result = {
+                        "status": "failed",
+                        "reason": "service-line-restart-helper-error",
+                        "error_code": exc.code,
+                        "error": str(exc),
+                        "controller_id": controller_id,
+                        "service_uuid": service_uuid,
+                        "service_line": guardian,
+                    }
+                restart_overlap = _remove_voter_new_cleanup_since_baseline(
+                    controller,
+                    cleanup_endpoint,
+                    restart_cleanup_baseline,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                cleanup_uuid = _remove_voter_cleanup_id(restart_overlap) if restart_overlap is not None else ""
+                remove_voter_boundary_attempts.append({
+                    "node": voter,
                     "controller_id": controller_id,
                     "service_uuid": service_uuid,
-                    "service_line": guardian,
-                }
+                    "guardian_service": guardian,
+                    "attempt": restart_attempt,
+                    "restart_status": restart_result.get("status"),
+                    "cleanup_overlap": restart_overlap is not None,
+                    "cleanup_uuid": cleanup_uuid or None,
+                })
+                if restart_overlap is None:
+                    break
+                _remove_voter_wait_cleanup_terminal(
+                    controller,
+                    cleanup_endpoint,
+                    cleanup_uuid,
+                    max_wait_seconds=max_wait_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                _remove_voter_wait_cleanup_clear(
+                    controller,
+                    cleanup_endpoint,
+                    max_wait_seconds=max_wait_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
+                    timeout=timeout,
+                    max_response_bytes=max_response_bytes,
+                    opener=opener,
+                )
+                if restart_attempt >= _REMOVE_VOTER_MAX_RESTART_ATTEMPTS:
+                    raise _fail(
+                        "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_BOUNDARY_COLLISION",
+                        f"CleanupDocker crossed both remove-voter restart attempts for {voter}; refusing a third restart",
+                    )
             restart_ok = restart_result.get("status") == "pass"
             mutation_receipts.append({
                 "ordinal": len(mutation_receipts) + 1,
@@ -2919,36 +3537,30 @@ def execute_node_remove_do_release(
                 "blocking": False,
             }
 
-        for survivor in release["survivors"]:
-            voter = _identifier(survivor["node"], "survivor node")
-            controller_id = _identifier(survivor["controller_id"], "survivor controller")
-            service_uuid = str(survivor["service_uuid"])
-            try:
-                cleanup_result = execute_completed_mother_helper_cleanup(
-                    paths,
-                    private_state,
-                    network=release["network"],
-                    controller_id=controller_id,
-                    service_uuid=service_uuid,
-                    node=voter,
-                    acknowledged_service_uuid=service_uuid,
-                    required_component_names=(),
-                    max_wait_seconds=max_wait_seconds,
-                    poll_interval_seconds=poll_interval_seconds,
-                    allow_nested_application_delete=True,
-                    allow_compose_reconcile_refresh=True,
-                    instant_deploy_compose_reconcile_refresh=False,
-                    allow_service_redeploy_refresh=False,
-                    force_service_redeploy_refresh=False,
-                    allow_coolify_model_status_exclusion=True,
-                    timeout=timeout,
-                    max_response_bytes=max_response_bytes,
-                    opener=opener,
-                    operation=operation,
-                )
-                survivor_guardian_cleanup.append({"node": voter, "controller_id": controller_id, "service_uuid": service_uuid, "status": cleanup_result.get("status"), "summary": cleanup_result.get("summary")})
-            except MotherDeploymentCompletedHelperCleanupError as exc:
-                survivor_guardian_cleanup.append({"node": voter, "controller_id": controller_id, "service_uuid": service_uuid, "warning": {"code": exc.code, "message": str(exc)[:512]}})
+        normal_cleanup_failures = _cleanup_injected_remove_voters(
+            paths,
+            private_state,
+            network=release["network"],
+            target_node=str(release["target"]["node"]),
+            controllers=controllers,
+            injected=injected_remove_voters,
+            cleaned=cleaned_remove_voters,
+            cleanup_receipts=survivor_guardian_cleanup,
+            cleanup_failures=remove_voter_cleanup_failures,
+            phase="post-validator-removal-proof",
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            operation=operation,
+        )
+        if normal_cleanup_failures:
+            first_cleanup_failure = normal_cleanup_failures[0]
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_FAILED",
+                f"remove-voter cleanup failed after validator-removal proof: {first_cleanup_failure.get('message')}",
+            )
 
         if release["network"] == "mainnet":
             if not isinstance(rpc_route_survivor, Mapping):
@@ -3051,6 +3663,81 @@ def execute_node_remove_do_release(
         failure = {"code": exc.code, "message": str(exc)[:512]}
     except Exception as exc:  # pragma: no cover
         failure = {"code": "MOTHER_DEPLOY_NODE_REMOVE_DO_UNEXPECTED_FAILURE", "message": str(exc)[:512]}
+    finally:
+        rollback_failures = _cleanup_injected_remove_voters(
+            paths,
+            private_state,
+            network=release["network"],
+            target_node=str(release["target"]["node"]),
+            controllers=controllers,
+            injected=injected_remove_voters,
+            cleaned=cleaned_remove_voters,
+            cleanup_receipts=survivor_guardian_cleanup,
+            cleanup_failures=remove_voter_cleanup_failures,
+            phase="finally-rollback",
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            operation=operation,
+        )
+        if rollback_failures and failure is None:
+            failure = {
+                "code": "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_ROLLBACK_FAILED",
+                "message": str(rollback_failures[0].get("message") or "remove-voter rollback failed")[:512],
+            }
+
+        touched_survivor_entries = [
+            entry
+            for entry in injected_remove_voters.values()
+            if entry.get("is_survivor") is True
+        ]
+        for entry in sorted(touched_survivor_entries, key=lambda item: str(item.get("node") or "")):
+            controller = controllers.get(str(entry.get("controller_id") or ""))
+            if controller is None:
+                final_check = {
+                    "node": entry.get("node"),
+                    "service_uuid": entry.get("service_uuid"),
+                    "completed": False,
+                    "reason": "controller-binding-missing",
+                    "attempts": [],
+                }
+            else:
+                try:
+                    final_check = _final_survivor_primary_health_check(
+                        controller,
+                        str(entry.get("cleanup_endpoint") or ""),
+                        node=str(entry.get("node") or ""),
+                        service_uuid=str(entry.get("service_uuid") or ""),
+                        max_wait_seconds=max_wait_seconds,
+                        poll_interval_seconds=poll_interval_seconds,
+                        timeout=timeout,
+                        max_response_bytes=max_response_bytes,
+                        opener=opener,
+                    )
+                except MotherDeploymentNodeRemoveDoError as exc:
+                    final_check = {
+                        "node": entry.get("node"),
+                        "service_uuid": entry.get("service_uuid"),
+                        "completed": False,
+                        "reason": "final-primary-health-check-error",
+                        "error": {"code": exc.code, "message": str(exc)[:512]},
+                        "attempts": [],
+                    }
+            final_survivor_health_checks.append(final_check)
+
+        final_health_failures = [
+            item for item in final_survivor_health_checks if item.get("completed") is not True
+        ]
+        if final_health_failures and failure is None:
+            failure = {
+                "code": "MOTHER_DEPLOY_NODE_REMOVE_DO_SURVIVOR_FINAL_HEALTH_FAILED",
+                "message": (
+                    "one or more survivor validators were not running:healthy after remove-voter cleanup: "
+                    + ", ".join(str(item.get("node") or "unknown") for item in final_health_failures)
+                )[:512],
+            }
 
     completed = _timestamp(now=now)
     vote_required = bool(release.get("validator_removal_vote", {}).get("required", True))
@@ -3094,7 +3781,34 @@ def execute_node_remove_do_release(
         or any(item.get("live_write_acknowledged") is True for item in mutation_receipts)
         or service_deleted
     )
-    complete = failure is None and guardian_complete and bool(service_removal and service_removal.get("status") == "pass")
+    remove_voter_cleanup_complete = set(injected_remove_voters) <= cleaned_remove_voters
+    touched_survivor_nodes = {
+        str(item.get("node") or "")
+        for item in injected_remove_voters.values()
+        if item.get("is_survivor") is True
+    }
+    final_survivors_healthy = (
+        len(final_survivor_health_checks) == len(touched_survivor_nodes)
+        and all(item.get("completed") is True for item in final_survivor_health_checks)
+    )
+    cleanup_boundary_overlap_detected = any(
+        item.get("cleanup_overlap") is True for item in remove_voter_boundary_attempts
+    )
+    cleanup_boundary_retry_count = sum(
+        1 for item in remove_voter_boundary_attempts if int(item.get("attempt") or 0) > 1
+    )
+    cleanup_boundary_second_overlap = any(
+        item.get("cleanup_overlap") is True and int(item.get("attempt") or 0) >= 2
+        for item in remove_voter_boundary_attempts
+    )
+    complete = (
+        failure is None
+        and guardian_complete
+        and bool(service_removal and service_removal.get("status") == "pass")
+        and remove_voter_cleanup_complete
+        and not remove_voter_cleanup_failures
+        and final_survivors_healthy
+    )
     evidence: dict[str, Any] = {
         "kind": _EVIDENCE_KIND,
         "schema_version": 1,
@@ -3126,6 +3840,11 @@ def execute_node_remove_do_release(
         "static_node_precleanup": static_node_precleanup,
         "static_node_precleanup_warning": static_node_precleanup_warning,
         "survivor_guardian_cleanup": survivor_guardian_cleanup,
+        "injected_remove_voters": [dict(injected_remove_voters[key]) for key in sorted(injected_remove_voters)],
+        "cleaned_remove_voters": sorted(cleaned_remove_voters),
+        "remove_voter_boundary_attempts": remove_voter_boundary_attempts,
+        "remove_voter_cleanup_failures": remove_voter_cleanup_failures,
+        "final_survivor_health_checks": final_survivor_health_checks,
         "rpc_route_rewire": rpc_route_rewire,
         "service_removal": service_removal,
         "authority": {
@@ -3179,6 +3898,12 @@ def execute_node_remove_do_release(
             "validator_removal_vote_proven_by_proof_payload": proof_payload_vote_proven,
             "final_validator_set_verified_by_proof_payload": proof_payload_vote_proven,
             "validator_removal_proof_voters": sorted(validator_removal_proofs),
+            "remove_voter_cleanup_complete": remove_voter_cleanup_complete,
+            "remove_voter_cleanup_failure_count": len(remove_voter_cleanup_failures),
+            "cleanup_boundary_overlap_detected": cleanup_boundary_overlap_detected,
+            "cleanup_boundary_retry_count": cleanup_boundary_retry_count,
+            "cleanup_boundary_second_overlap": cleanup_boundary_second_overlap,
+            "final_survivors_healthy": final_survivors_healthy,
             "service_deletion_performed": service_deleted,
             "service_already_absent": service_already_absent,
             "static_node_precleanup_status": (

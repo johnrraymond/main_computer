@@ -29,10 +29,14 @@ def _calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _rank(scores: dict[str, float]) -> str:
+def _rank(scores: dict[str, float], coherence_target: str | None = None) -> str:
     if not scores:
         raise ValueError("cannot rank empty scores")
-    return sorted(scores, key=lambda option: (-float(scores[option]), option))[0]
+    best_score = max(float(value) for value in scores.values())
+    tied = [option for option, value in scores.items() if float(value) == best_score]
+    if coherence_target in tied:
+        return str(coherence_target)
+    return sorted(tied)[0]
 
 
 def _scores_from_choices(
@@ -81,7 +85,7 @@ def synthesize_vote_scores(
         + (coherence_weight if option == coherence_target else 0.0)
         for option, votes in scores.items()
     }
-    return _rank(adjusted), adjusted
+    return _rank(adjusted, coherence_target), adjusted
 
 
 def _system_choice(

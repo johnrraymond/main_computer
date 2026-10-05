@@ -547,7 +547,15 @@ function synthesizeChoice(answers, options, jacket, plan, layer) {
     const inherited = option === coherenceTarget ? 1 : 0;
     return [option, (1 - PLAN_COHERENCE_WEIGHT) * evidence + PLAN_COHERENCE_WEIGHT * inherited];
   }));
-  const ranked = Object.entries(adjustedScores).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const ranked = Object.entries(adjustedScores).sort((a, b) => {
+    const scoreDelta = b[1] - a[1];
+    if (scoreDelta !== 0) return scoreDelta;
+    if (coherenceTarget) {
+      if (a[0] === coherenceTarget && b[0] !== coherenceTarget) return -1;
+      if (b[0] === coherenceTarget && a[0] !== coherenceTarget) return 1;
+    }
+    return a[0].localeCompare(b[0]);
+  });
   return {
     choice: ranked[0][0],
     scores,

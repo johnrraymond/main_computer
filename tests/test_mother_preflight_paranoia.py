@@ -86,14 +86,15 @@ services:
         python_executable="python.exe",
     )
 
-    assert result["status"] == "cleanup-required"
+    assert result["status"] == "stranded-remove-voter-cleanup-required"
     assert result["cleanup_required"] is True
+    assert result["stranded_remove_voter_cleanup_required"] is True
     assert result["summary"]["active_cleanup_helper_count"] == 1
     assert result["summary"]["blocking_conflict_count"] == 1
     assert result["active_cleanup_helpers"][0]["helper_service"] == "mother-node-remove-voter-mainnetc_super1"
     assert "mother_helper_cleanup2_yagni.py execute" in result["cleanup_command"]
     assert f'--topology-evidence {topology_path}' in result["cleanup_command"]
-    assert "--acknowledge-topology-evidence-sha256 " + ("a" * 64) in result["cleanup_command"]
+    assert "--acknowledge-topology-evidence-sha256=" + ("a" * 64) in result["cleanup_command"]
     assert "--write-evidence" in result["cleanup_command"]
 
 
@@ -226,6 +227,7 @@ services:
     assert result["broken_validator_cleanup_target"] == "mainnetc-super1"
     assert "mother_broken_validator_cleanup.py --dry-run" in result["broken_validator_cleanup_command"]
     assert f"--topology-evidence {topology_path}" in result["broken_validator_cleanup_command"]
+    assert "--acknowledge-topology-evidence-sha256=" + ("a" * 64) in result["broken_validator_cleanup_command"]
 
 
 def test_preflight_cli_prints_recommended_broken_validator_cleanup_as_final_line(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -468,21 +470,17 @@ services:
         python_executable="python.exe",
     )
 
-    assert result["status"] == "broken-validator-recovery-required"
+    assert result["status"] == "stranded-remove-voter-cleanup-required"
     assert result["cleanup_required"] is True
-    assert result["cleanup_deferred_to_broken_validator_operation"] is True
-    assert result["cleanup_command"] is None
-    assert result["broken_validator_operation_precedence"] is True
+    assert result["stranded_remove_voter_cleanup_required"] is True
+    assert result["cleanup_deferred_to_broken_validator_operation"] is False
+    assert result["broken_validator_operation_precedence"] is False
     assert result["broken_validator_operation_bootstrap"] is False
     assert result["broken_validator_operation"]["operation_id"] == "mother-broken-validator-mainnet-mainnetc-super1-test"
-    command = result["broken_validator_cleanup_command"]
-    assert result["broken_validator_cleanup_mode"] == "execute"
-    assert "--execute" in command
+    assert result["broken_validator_cleanup_command"] is None
+    command = result["cleanup_command"]
+    assert "mother_helper_cleanup2_yagni.py execute" in command
     assert str(topology_path) in command
-    assert "C:\\stale-topology.json" not in command
-    assert str(assessment_path) in command
-    assert f"--acknowledge-assessment-evidence-sha256={assessment_sha}" in command
-    assert "--assessment-max-age-seconds" not in command
     assert result["topology_evidence"]["path"] == str(topology_path)
 
 
@@ -515,11 +513,12 @@ services:
         python_executable="python.exe",
     )
 
-    assert result["status"] == "broken-validator-recovery-required"
+    assert result["status"] == "stranded-remove-voter-cleanup-required"
     assert result["cleanup_required"] is True
-    assert result["cleanup_deferred_to_broken_validator_operation"] is True
-    assert result["cleanup_command"] is None
+    assert result["stranded_remove_voter_cleanup_required"] is True
+    assert result["cleanup_deferred_to_broken_validator_operation"] is False
     assert result["broken_validator_operation"] is None
     assert result["broken_validator_operation_bootstrap"] is True
-    assert result["broken_validator_operation_precedence"] is True
-    assert "mother_broken_validator_cleanup.py --dry-run" in result["broken_validator_cleanup_command"]
+    assert result["broken_validator_operation_precedence"] is False
+    assert result["broken_validator_cleanup_command"] is None
+    assert "mother_helper_cleanup2_yagni.py execute" in result["cleanup_command"]

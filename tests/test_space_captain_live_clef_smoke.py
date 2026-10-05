@@ -332,6 +332,14 @@ def test_live_wrapper_runs_call_time_characterization_contract() -> None:
     assert 'warmupExcludedMs' in source
     assert 'semanticResultsIgnored' in source
     assert 'prefixCacheVsFullBatchP95Ratio' in source
+    assert '"--speed-scaling"' in source
+    assert '"--speed-scaling-counts"' in source
+    assert '"--speed-scaling-repeats"' in source
+    assert '"--speed-scaling-modes"' in source
+    assert '"model": "T(x)=m*x+b"' in source
+    assert 'fixedInvocationMsEstimate' in source
+    assert 'slopeMsPerJudgment' in source
+    assert 'wallMeanCrossover' in source
 
     contract = CONTRACT_SMOKE.read_text(encoding="utf-8")
     assert "captainTemporalUnitIsOneModelCall" in contract
@@ -362,3 +370,39 @@ def test_speed_ab_timing_summary_uses_interpolated_quantiles() -> None:
     assert summary["p95Ms"] == 480.0
     assert summary["meanMs"] == 300.0
     assert summary["maxMs"] == 500.0
+
+def test_speed_scaling_linear_fit_recovers_fixed_and_per_judgment_cost() -> None:
+    live = _load_module("space_captain_live_speed_scaling_fit_test", LIVE_SMOKE)
+    fit = live.linear_fit([(1, 23.0), (2, 26.0), (4, 32.0), (8, 44.0), (20, 80.0)])
+    assert abs(fit["slopeMsPerJudgment"] - 3.0) < 1e-12
+    assert abs(fit["interceptMs"] - 20.0) < 1e-12
+    assert abs(fit["fixedInvocationMsEstimate"] - 20.0) < 1e-12
+    assert fit["rSquared"] == 1.0
+    assert fit["linearEnough"] is True
+
+
+def test_speed_scaling_probe_spans_one_to_twenty_judgments_and_preserves_contract() -> None:
+    live = _load_module("space_captain_live_speed_scaling_probe_test", LIVE_SMOKE)
+    counts = live.parse_speed_scaling_counts("20,1,4,2,8,12,16,20")
+    assert counts == [1, 2, 4, 8, 12, 16, 20]
+    health = {"checkpointId": "cycle-test", "checkpointSha256": "abc123"}
+    payload = live.speed_scaling_request(health=health, mode="prefix-cache", question_count=20)
+    assert payload["checkpoint"]["checkpointId"] == "cycle-test"
+    assert payload["execution"]["evidenceMode"] == "prefix-cache"
+    assert payload["semanticContext"]["mode"] == "compact-shared-context-v2"
+    assert len(payload["questions"]) == 20
+    assert all(row["semanticMode"] == "grounded-compact-pairwise-v2" for row in payload["questions"])
+    assert all(row["optionA"] != row["optionB"] for row in payload["questions"])
+
+
+def test_speed_scaling_decomposition_reports_fixed_and_variable_work() -> None:
+    live = _load_module("space_captain_live_speed_scaling_decomp_test", LIVE_SMOKE)
+    fit = {"interceptMs": 100.0, "slopeMsPerJudgment": 7.5}
+    decomposition = live.fit_decomposition(fit, 20)
+    assert decomposition["questions"] == 20
+    assert decomposition["fixedInvocationMs"] == 100.0
+    assert decomposition["variableJudgmentMs"] == 150.0
+    assert decomposition["predictedMs"] == 250.0
+    assert decomposition["fixedFraction"] == 0.4
+    assert decomposition["variableFraction"] == 0.6
+

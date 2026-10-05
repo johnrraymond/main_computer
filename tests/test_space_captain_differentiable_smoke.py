@@ -224,3 +224,26 @@ def test_three_eighths_plan_inertia_does_not_override_overwhelming_live_evidence
     )
     assert borderline == "withdraw"
     assert overwhelming == "hold"
+
+
+def test_exact_coherence_adjusted_tie_prefers_committed_plan_target() -> None:
+    replay = _load_replay_module()
+    choice, adjusted = replay.synthesize_vote_scores(
+        {"maintain-range": 14, "close-range": 4, "open-range": 2},
+        "open-range",
+        3.0 / 8.0,
+    )
+    assert adjusted["maintain-range"] == 0.4375
+    assert adjusted["open-range"] == 0.4375
+    assert choice == "open-range"
+
+
+def test_exact_tie_without_coherence_target_keeps_deterministic_lexical_fallback() -> None:
+    replay = _load_replay_module()
+    choice, adjusted = replay.synthesize_vote_scores(
+        {"beta": 10, "alpha": 10},
+        None,
+        3.0 / 8.0,
+    )
+    assert adjusted["alpha"] == adjusted["beta"]
+    assert choice == "alpha"

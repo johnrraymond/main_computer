@@ -2,7 +2,10 @@
 """Train CLEF + TinyStories with decomposed consensus supervision.
 
 Qwen3-0.6B, Pythia-70M, TinyStories-33M, and the proven CLEF champion path remain
-frozen. Only zero-initialized TinyStories L1/L2 residual adapters are trainable.
+frozen, including the already-trained TinyStories L1/L2 residual adapters. Only a
+new weight-tied recurrent CLEF CORE is trainable. The CORE repeatedly updates the
+latent decision state while being re-injected with the immutable integrated CLEF
+evidence and allowed to attend back to the original projected evidence memory.
 Ordinary tasks retain their existing objective. Each consensus state
 now trains three explicit binary SAME/DIFFERENT pair judgments (AB, AC, BC); the
 primary A/B/C/NONE answer is deterministically composed from those judgments.
@@ -77,6 +80,7 @@ DEFAULT_MAX_CYCLES = 20
 # reuse depth is controlled separately by --stream-reuse-epochs.
 DEFAULT_EPOCHS_PER_CYCLE = 1
 DEFAULT_STREAM_REUSE_EPOCHS = 4
+DEFAULT_CORE_STEPS = 3
 DEFAULT_PREDEV_ROTATION_CYCLES = 1
 DEFAULT_DEV_AUDIT_CYCLES = 5
 DEFAULT_STREAM_CHUNK_QUESTIONS = 160
@@ -93,9 +97,10 @@ DEFAULT_GRAD_CLIP = 1.0
 DEFAULT_KEEP_CHECKPOINTS = 3
 CONTINUITY_LOSS_TOLERANCE = 2e-3
 TRAINABLE_LABEL = "tinystories"
-# Under the residual-tap experiment all three language models are immutable.
-# TinyStories is still the source of the new evidence, but gradients stop at the
-# zero-initialized residual adapters inside the CLEF head.
+# Under the CORE experiment all three language models are immutable. TinyStories
+# remains the source of L1/L2 residual evidence, but the complete pre-CORE champion
+# (including those already-trained residual adapters) is frozen. Gradients begin
+# only inside the new recurrent CLEF CORE.
 FROZEN_LABELS = ("qwen", "pythia", TRAINABLE_LABEL)
 TINYSTORIES_BASE_HIDDEN_SIZE = 768
 TINYSTORIES_RESIDUAL_LAYERS = (1, 2)
@@ -110,7 +115,11 @@ TINYSTORIES_CONCAT_HIDDEN_SIZE = (
 )
 TINYSTORIES_LAYER_TAP_SCHEMA_V1 = "tinystories-transformer-layers-1-2-4-concat-v1"
 TINYSTORIES_LAYER_TAP_SCHEMA_V2 = "tinystories-transformer-layers-1-2-4-concat-v2-shared-norm-adamw-migration"
-TINYSTORIES_LAYER_TAP_SCHEMA = "tinystories-layers-1-2-zero-residual-v3-frozen-anchor"
+TINYSTORIES_LAYER_TAP_SCHEMA_V3 = "tinystories-layers-1-2-zero-residual-v3-frozen-anchor"
+TINYSTORIES_LAYER_TAP_SCHEMA = "tinystories-layers-1-2-residual-v4-frozen-anchor-clef-core"
+CLEF_CORE_SCHEMA = "clef-weight-tied-recurrent-core-v1"
+CHAMPION_SELECTION_ACCURACY_FIRST = "accuracy-first-loss-second-exact-tie-candidate"
+CHAMPION_SELECTION_LOSS_FIRST = "loss-first-accuracy-second-exact-tie-candidate"
 TINYSTORIES_RESIDUAL_FIELDS = (
     "memory",
     "option_context",
@@ -392,20 +401,47 @@ def dev_audit_generation_base(data_cycle_base: int, start_cycle: int) -> int:
     return int(data_cycle_base) + 80_000 + start * 100
 
 
+def champion_selection_policy(*, use_loss: bool) -> str:
+    return (
+        CHAMPION_SELECTION_LOSS_FIRST
+        if bool(use_loss)
+        else CHAMPION_SELECTION_ACCURACY_FIRST
+    )
+
+
 def champion_metric_prefers_candidate(
     *, candidate_accuracy: float, candidate_loss: float,
     incumbent_accuracy: float, incumbent_loss: float,
+    use_loss: bool = False,
 ) -> bool:
-    """Accuracy first, loss second; an exact metric tie advances the candidate."""
+    """Compare champion metrics under the requested adaptive selection surface.
+
+    Default behavior remains accuracy-first. ``use_loss=True`` deliberately
+    makes mean loss the primary boundary and uses accuracy only as a tie-breaker,
+    allowing a newly introduced trainable subsystem to improve calibration before
+    it is required to improve discrete accuracy. Exact metric ties still advance
+    the newer candidate.
+    """
     candidate_accuracy = float(candidate_accuracy)
     incumbent_accuracy = float(incumbent_accuracy)
+    candidate_loss = float(candidate_loss)
+    incumbent_loss = float(incumbent_loss)
+
+    if bool(use_loss):
+        if candidate_loss < incumbent_loss:
+            return True
+        if candidate_loss > incumbent_loss:
+            return False
+        if candidate_accuracy > incumbent_accuracy:
+            return True
+        if candidate_accuracy < incumbent_accuracy:
+            return False
+        return True
+
     if candidate_accuracy > incumbent_accuracy:
         return True
     if candidate_accuracy < incumbent_accuracy:
         return False
-
-    candidate_loss = float(candidate_loss)
-    incumbent_loss = float(incumbent_loss)
     if candidate_loss < incumbent_loss:
         return True
     if candidate_loss > incumbent_loss:
@@ -415,7 +451,7 @@ def champion_metric_prefers_candidate(
 
 def choose_predev_winner(
     *, incumbent_accuracy: float, incumbent_loss: float,
-    attempts: Sequence[dict[str, Any]],
+    attempts: Sequence[dict[str, Any]], use_loss: bool = False,
 ) -> dict[str, Any] | None:
     """Return the best trained depth that beats the incumbent on pre-dev.
 
@@ -439,6 +475,7 @@ def choose_predev_winner(
             candidate_loss=candidate_loss,
             incumbent_accuracy=best_accuracy,
             incumbent_loss=best_loss,
+            use_loss=use_loss,
         ):
             winner = attempt
             best_accuracy = candidate_accuracy
@@ -446,8 +483,10 @@ def choose_predev_winner(
     return winner
 
 
-def choose_best_predev_attempt(attempts: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
-    """Return the strongest evaluated trained depth, independent of incumbent."""
+def choose_best_predev_attempt(
+    attempts: Sequence[dict[str, Any]], *, use_loss: bool = False
+) -> dict[str, Any] | None:
+    """Return the strongest evaluated trained depth under the active comparator."""
     winner: dict[str, Any] | None = None
     best_accuracy = -math.inf
     best_loss = math.inf
@@ -464,6 +503,7 @@ def choose_best_predev_attempt(attempts: Sequence[dict[str, Any]]) -> dict[str, 
             candidate_loss=candidate_loss,
             incumbent_accuracy=best_accuracy,
             incumbent_loss=best_loss,
+            use_loss=use_loss,
         ):
             winner = attempt
             best_accuracy = candidate_accuracy
@@ -475,7 +515,7 @@ def predev_depth_result(
     *, reuse_depth: int, max_reuse_depth: int,
     candidate_accuracy: float, candidate_loss: float,
     incumbent_accuracy: float, incumbent_loss: float,
-    best_so_far: bool,
+    best_so_far: bool, use_loss: bool = False,
 ) -> dict[str, Any]:
     """Describe one depth without consulting dev or making an early promotion."""
     depth = int(reuse_depth)
@@ -487,12 +527,14 @@ def predev_depth_result(
         candidate_loss=candidate_loss,
         incumbent_accuracy=incumbent_accuracy,
         incumbent_loss=incumbent_loss,
+        use_loss=use_loss,
     )
     return {
         "reuse_depth": depth,
         "max_reuse_depth": maximum,
         "candidate_beats_incumbent": bool(beats_incumbent),
         "best_so_far": bool(best_so_far),
+        "champion_selection_policy": champion_selection_policy(use_loss=use_loss),
         "continue_reuse": depth < maximum,
         "selection_complete": depth >= maximum,
         "dev_checked": False,
@@ -816,17 +858,78 @@ def layer_tap_hidden_sizes(hidden_sizes: dict[str, int]) -> dict[str, int]:
     return expanded
 
 
-def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: dict[str, Any] | None = None):
-    """Build an immutable legacy CLEF path plus trainable L1/L2 residual taps.
+def build_layer_tap_head(
+    *, torch, hidden_sizes: dict[str, int], head_kwargs: dict[str, Any] | None = None,
+    core_steps: int = DEFAULT_CORE_STEPS,
+):
+    """Build the frozen v3 champion plus a trainable recurrent CLEF CORE.
 
-    The proven final-layer path keeps the original 768-wide TinyStories input and
-    every pre-cutover parameter is frozen. Intermediate transformer layers 1 and
-    2 are exposed separately as a 1536-wide source for six zero-initialized
-    linear residual adapters. At initialization every adapter emits exact zero,
-    so this head is functionally identical to the committed champion.
+    The proven 768-wide TinyStories L4 path and the learned L1/L2 residual adapters
+    are both retained exactly.  The entire pre-CORE champion is frozen.  A single
+    weight-tied CORE block then receives (a) the previous latent decision state,
+    (b) the immutable pre-CORE integrated field again on every recurrence, and
+    (c) the original projected evidence memory plus routed option vectors.
+
+    The CORE output projection is initialized to exact zero.  Therefore any number
+    of CORE iterations is function-preserving at the cutover boundary.
     """
     BaseHead = smoke.build_head_class()
     head_kwargs = dict(head_kwargs or {})
+    requested_core_steps = int(core_steps)
+    if requested_core_steps <= 0:
+        raise ValueError(f"CORE steps must be positive for training: {requested_core_steps}")
+    core_heads = int(head_kwargs.get("heads", 16))
+    core_feedforward = int(head_kwargs.get("feedforward", 4096))
+
+    class ClefRecurrentCore(torch.nn.Module):
+        def __init__(self, width: int):
+            super().__init__()
+            self.width = int(width)
+            self.state_norm = torch.nn.LayerNorm(width)
+            self.evidence_norm = torch.nn.LayerNorm(width)
+            self.input_projection = torch.nn.Linear(width * 2, width, bias=False)
+            self.query_norm = torch.nn.LayerNorm(width)
+            self.memory_norm = torch.nn.LayerNorm(width)
+            self.attention = torch.nn.MultiheadAttention(
+                width, core_heads, dropout=0.0, batch_first=True
+            )
+            self.ff_norm = torch.nn.LayerNorm(width)
+            self.ff = torch.nn.Sequential(
+                torch.nn.Linear(width, core_feedforward),
+                torch.nn.GELU(),
+                torch.nn.Linear(core_feedforward, width),
+            )
+            self.output_norm = torch.nn.LayerNorm(width)
+            self.output_projection = torch.nn.Linear(width, width, bias=False)
+            # Exact champion preservation: CORE initially contributes zero even
+            # though the upstream recurrent transform has ordinary initialization.
+            torch.nn.init.zeros_(self.output_projection.weight)
+
+        def forward(self, state, immutable_evidence, memory):
+            if state.ndim != 1 or immutable_evidence.ndim != 1:
+                raise RuntimeError(
+                    "CLEF CORE expects one latent state and one immutable evidence vector"
+                )
+            if int(state.shape[-1]) != self.width or int(immutable_evidence.shape[-1]) != self.width:
+                raise RuntimeError("CLEF CORE state/evidence width drifted")
+            if memory.ndim != 3 or int(memory.shape[0]) != 1 or int(memory.shape[-1]) != self.width:
+                raise RuntimeError("CLEF CORE memory shape drifted")
+
+            injected = self.input_projection(
+                torch.cat(
+                    [self.state_norm(state), self.evidence_norm(immutable_evidence)],
+                    dim=-1,
+                )
+            ).view(1, 1, self.width)
+            query = self.query_norm(injected)
+            normalized_memory = self.memory_norm(memory)
+            routed, _ = self.attention(
+                query, normalized_memory, normalized_memory, need_weights=False
+            )
+            latent = injected + routed
+            latent = latent + self.ff(self.ff_norm(latent))
+            delta = self.output_projection(self.output_norm(latent[0, 0]))
+            return state + delta.to(device=state.device, dtype=state.dtype)
 
     class ResidualLayerTapHead(BaseHead):
         def __init__(self, sizes):
@@ -841,13 +944,21 @@ def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: di
             })
             for module in self.tinystories_residual.values():
                 torch.nn.init.zeros_(module.weight)
+            self.clef_core = ClefRecurrentCore(self.width)
+            self.core_steps = requested_core_steps
 
-            # The entire proven champion is an immutable anchor. Only the new
-            # residual matrices are optimization variables in this phase.
+            # Freeze the complete proven champion, including the learned L1/L2
+            # residual adapters.  Only the newly introduced CORE is optimized.
             for parameter in self.parameters():
                 parameter.requires_grad_(False)
-            for parameter in self.tinystories_residual.parameters():
+            for parameter in self.clef_core.parameters():
                 parameter.requires_grad_(True)
+
+        def set_core_steps(self, steps: int) -> None:
+            steps = int(steps)
+            if steps < 0:
+                raise ValueError(f"CORE steps must be nonnegative: {steps}")
+            self.core_steps = steps
 
         @staticmethod
         def _normalize_residual_source(value):
@@ -858,8 +969,6 @@ def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: di
                     f"expected={TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE} observed={width}"
                 )
             blocks = value.split(TINYSTORIES_BASE_HIDDEN_SIZE, dim=-1)
-            # Parameter-free normalization keeps the two intermediate layers on
-            # comparable scale without adding another trainable path.
             normalized = [
                 torch.nn.functional.layer_norm(
                     block, (TINYSTORIES_BASE_HIDDEN_SIZE,)
@@ -868,7 +977,7 @@ def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: di
             ]
             return torch.cat(normalized, dim=-1)
 
-        def forward(self, evidence: dict[str, dict[str, Any]]):
+        def _merge_residual_evidence(self, evidence: dict[str, dict[str, Any]]):
             tiny = evidence.get(TRAINABLE_LABEL)
             if tiny is None:
                 raise RuntimeError("TinyStories evidence missing from residual-tap head")
@@ -886,7 +995,121 @@ def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: di
                 merged_tiny.pop(source_key, None)
             merged = dict(evidence)
             merged[TRAINABLE_LABEL] = merged_tiny
-            return super().forward(merged)
+            return merged
+
+        def forward(self, evidence: dict[str, dict[str, Any]]):
+            # This is the proven BaseHead forward path with exactly one insertion:
+            # after the mature integrated field is formed, CORE may recurrently
+            # update that field before the existing frozen scorer is evaluated.
+            evidence = self._merge_residual_evidence(evidence)
+            if set(evidence) != set(self.labels):
+                raise RuntimeError(
+                    f"head evidence labels mismatch: expected={self.labels} observed={tuple(evidence)}"
+                )
+            option_count = None
+            memory_parts = []
+            option_query_parts = []
+            field_parts = []
+            global_parts = []
+            lexical_parts = []
+            logp_prior_parts = []
+            for label in self.labels:
+                row = evidence[label]
+                module = self.backbone_modules[label]
+                memory_row = module.hidden_norm(row["memory"])
+                option_context = module.hidden_norm(row["option_context"])
+                option_predictor = module.hidden_norm(row["option_predictor"])
+                option_terminal = module.hidden_norm(row["option_terminal"])
+                option_question = module.hidden_norm(row["option_question"])
+                lexical = module.hidden_norm(row["option_lexical"])
+                global_vector = module.hidden_norm(row["global"])
+                option_logp = row["option_logp"].to(
+                    device=option_context.device, dtype=option_context.dtype
+                ).reshape(-1, 1)
+                centered_logp = option_logp - option_logp.mean(dim=0, keepdim=True)
+                if option_count is None:
+                    option_count = int(option_context.shape[0])
+                elif option_count != int(option_context.shape[0]):
+                    raise RuntimeError("backbone evidence disagrees on candidate count")
+                embed = self.model_embeddings[label]
+                memory_parts.append(module.memory_projection(memory_row) + embed)
+                option_query_parts.append(
+                    module.option_context_projection(
+                        (option_context + option_predictor + option_terminal)
+                        / math.sqrt(3.0)
+                    )
+                    + module.option_lexical_projection(lexical)
+                    + module.option_question_projection(option_question)
+                    + module.option_logp_projection(centered_logp)
+                )
+                field_parts.append(module.question_projection(option_question.mean(dim=0)))
+                global_parts.append(module.global_projection(global_vector))
+                lexical_parts.append(module.option_lexical_projection(lexical))
+                logp_prior_parts.append(module.option_logp_scalar(centered_logp).squeeze(-1))
+
+            scale = 1.0 / math.sqrt(float(len(self.labels)))
+            memory = torch.cat(memory_parts, dim=0).unsqueeze(0)
+            options = torch.stack(option_query_parts, dim=0).sum(dim=0) * scale
+            lexical = torch.stack(lexical_parts, dim=0).sum(dim=0) * scale
+            logp_prior = torch.stack(logp_prior_parts, dim=0).sum(dim=0) * scale
+            base_field = torch.stack(field_parts, dim=0).sum(dim=0) * scale
+            global_vector = torch.stack(global_parts, dim=0).sum(dim=0) * scale
+
+            routed = options.unsqueeze(0)
+            for layer in self.evidence_layers:
+                routed = layer(routed, memory)
+            routed = routed[0]
+            routing_weights = torch.softmax(
+                torch.matmul(routed, base_field) / math.sqrt(float(self.width)), dim=0
+            )
+            option_summary = torch.sum(routing_weights.unsqueeze(-1) * routed, dim=0)
+            field = base_field + self.option_summary_norm(option_summary) + global_vector
+            field = field + self.type_embedding.weight[1]
+            field = field + self.fusion_ff(self.fusion_norm(field))
+            target = field.view(1, 1, -1)
+            for layer in self.layers:
+                target = layer(target, memory)
+            field = self.field_norm(target[0, 0])
+
+            immutable_field = field
+            # In addition to the original evidence memory, expose the mature
+            # routed option vectors as immutable candidate evidence on every step.
+            core_memory = torch.cat([memory, routed.unsqueeze(0)], dim=1)
+            state = immutable_field
+            for _ in range(int(self.core_steps)):
+                state = self.clef_core(state, immutable_field, core_memory)
+            field = state
+
+            lexical_prior = torch.nn.functional.cosine_similarity(
+                torch.nn.functional.normalize(lexical, dim=-1),
+                torch.nn.functional.normalize(
+                    field.unsqueeze(0).expand_as(lexical), dim=-1
+                ),
+                dim=-1,
+            )
+            prior_scale = self.prior_logit_scale.clamp(max=math.log(100.0)).exp()
+            option_values = self.option_norm(routed)
+            repeated_field = field.unsqueeze(0).expand_as(option_values)
+            cosine = torch.nn.functional.cosine_similarity(
+                repeated_field, option_values, dim=-1
+            )
+            features = torch.cat(
+                [
+                    repeated_field,
+                    option_values,
+                    repeated_field * option_values,
+                    torch.abs(repeated_field - option_values),
+                ],
+                dim=-1,
+            )
+            residual = self.residual_scorer(features).squeeze(-1)
+            joint_scale = self.joint_logit_scale.clamp(max=math.log(100.0)).exp()
+            joint = joint_scale * cosine + residual
+            return (
+                prior_scale * lexical_prior
+                + logp_prior
+                + torch.sigmoid(self.residual_gate) * joint
+            )
 
     observed = int(hidden_sizes.get(TRAINABLE_LABEL, -1))
     if observed != TINYSTORIES_BASE_HIDDEN_SIZE:
@@ -948,19 +1171,43 @@ def _tinystories_projection_slice() -> tuple[int, int]:
 
 
 def load_head_state_with_layer_taps(*, torch, head, state: dict[str, Any]) -> str:
-    """Load v3 directly or collapse an older checkpoint to its final-layer anchor.
+    """Load v4 directly or migrate a committed pre-CORE champion exactly.
 
-    v2/v1 concatenation checkpoints are safe to migrate because committed v2
-    champion anchors keep the intermediate projection slices at zero. The final
-    768-wide slice is copied back into the original projection shape; all new
-    residual adapters remain exactly zero.
+    A v3 residual champion is copied in full, including its learned L1/L2 residual
+    adapters; only the new CORE tensors retain their fresh initialization.  Older
+    v1/v2/legacy checkpoints still collapse to the proven final-layer anchor and
+    keep both residual adapters and CORE at their function-preserving defaults.
     """
     current = head.state_dict()
     if set(state) == set(current) and all(
         tuple(state[name].shape) == tuple(current[name].shape) for name in current
     ):
         head.load_state_dict(state, strict=True)
-        return "native-zero-residual-v3"
+        return "native-core-v4"
+
+    has_v3_residual = "tinystories_residual.memory.weight" in state
+    has_core = "clef_core.output_projection.weight" in state
+    if has_core:
+        raise RuntimeError("unsupported non-native CORE checkpoint layout")
+
+    if has_v3_residual:
+        migrated = {name: tensor.detach().clone() for name, tensor in current.items()}
+        for target_name, target in current.items():
+            if target_name.startswith("clef_core."):
+                continue
+            if target_name not in state:
+                raise RuntimeError(
+                    f"v3 champion checkpoint missing frozen tensor: {target_name}"
+                )
+            source_tensor = state[target_name]
+            if tuple(source_tensor.shape) != tuple(target.shape):
+                raise RuntimeError(
+                    f"v3 champion shape mismatch for {target_name}: "
+                    f"source={tuple(source_tensor.shape)} target={tuple(target.shape)}"
+                )
+            migrated[target_name] = source_tensor.detach().clone()
+        head.load_state_dict(migrated, strict=True)
+        return "v3-residual-to-core-v4"
 
     prefix = f"backbone_modules.{TRAINABLE_LABEL}."
     projection_probe = prefix + "memory_projection.weight"
@@ -982,8 +1229,7 @@ def load_head_state_with_layer_taps(*, torch, head, state: dict[str, Any]) -> st
     migrated = {name: tensor.detach().clone() for name, tensor in current.items()}
     final_start, final_end = _tinystories_projection_slice()
     for target_name, target in current.items():
-        if target_name.startswith("tinystories_residual."):
-            # build_layer_tap_head initialized every new residual weight to zero.
+        if target_name.startswith("tinystories_residual.") or target_name.startswith("clef_core."):
             continue
         source_name = target_name
         if is_v1 and target_name == prefix + "hidden_norm.weight":
@@ -1023,7 +1269,7 @@ def load_head_state_with_layer_taps(*, torch, head, state: dict[str, Any]) -> st
         migrated[target_name] = source_tensor.detach().clone()
 
     head.load_state_dict(migrated, strict=True)
-    return source_layout + "-to-zero-residual-v3"
+    return source_layout + "-to-core-v4"
 
 def _trainable_named_parameters(module) -> list[tuple[str, Any]]:
     return [(name, parameter) for name, parameter in module.named_parameters() if parameter.requires_grad]
@@ -1221,24 +1467,26 @@ def migrate_adamw_optimizer_state(
 
 
 def build_optimizer(*, torch, head, tinystories_lm, args):
-    residual_params = [p for p in head.parameters() if p.requires_grad]
+    trainable = _trainable_named_parameters(head)
     tiny_params = [p for p in tinystories_lm.parameters() if p.requires_grad]
-    if not residual_params:
-        raise RuntimeError("residual-tap optimizer has no trainable head parameters")
+    if not trainable:
+        raise RuntimeError("CLEF CORE optimizer has no trainable head parameters")
+    leaked = [name for name, _ in trainable if not name.startswith("clef_core.")]
+    if leaked:
+        raise RuntimeError(f"pre-CORE champion unexpectedly trainable: {leaked[:5]}")
     if tiny_params:
-        raise RuntimeError("TinyStories must remain frozen during residual-tap training")
+        raise RuntimeError("TinyStories must remain frozen during CORE training")
     return torch.optim.AdamW(
         [
             {
-                "params": residual_params,
+                "params": [parameter for _name, parameter in trainable],
                 "lr": float(args.head_lr),
                 "weight_decay": float(args.weight_decay),
-                "group_name": "tinystories_residual_taps",
+                "group_name": "clef_recurrent_core",
             },
         ],
         foreach=False,
     )
-
 
 def optimizer_group_summary(optimizer) -> list[dict[str, Any]]:
     return [
@@ -1825,7 +2073,7 @@ def train_population(
 
         grad_norm = float(torch.nn.utils.clip_grad_norm_(params, float(args.grad_clip)).item())
         if not math.isfinite(grad_norm):
-            raise RuntimeError(f"non-finite residual gradient norm cycle={cycle}: {grad_norm}")
+            raise RuntimeError(f"non-finite CORE gradient norm cycle={cycle}: {grad_norm}")
         maximum_grad_norm = max(maximum_grad_norm, grad_norm)
         optimizer.step()
         global_step += 1
@@ -2519,6 +2767,8 @@ def _checkpoint_head_layout(checkpoint: Path) -> str:
     prefix = f"backbone_modules.{TRAINABLE_LABEL}."
     with safe_open(str(checkpoint / "head.safetensors"), framework="pt", device="cpu") as handle:
         keys = set(handle.keys())
+        if "clef_core.output_projection.weight" in keys:
+            return "v4"
         if "tinystories_residual.memory.weight" in keys:
             return "v3"
         if prefix + "hidden_norm.layer_norms.2.weight" in keys:
@@ -2548,24 +2798,24 @@ def resolve_layer_tap_migration_sources(
 ) -> dict[str, Any]:
     """Resolve the committed champion used to seed the frozen residual anchor.
 
-    v3 never reuses the old optimizer because none of the old trainable
+    v4 never reuses the old optimizer because none of the pre-CORE trainable
     parameters remain trainable. Only the committed champion weights matter; the
-    fresh optimizer owns brand-new zero residual matrices exclusively.
+    fresh optimizer owns the brand-new recurrent CORE exclusively.
     """
     requested_checkpoint = Path(requested_checkpoint).resolve(strict=True)
     layout = _checkpoint_head_layout(requested_checkpoint)
-    allowed = {"legacy", "v1", "v2"}
+    allowed = {"legacy", "v1", "v2", "v3"}
     if layout not in allowed:
         raise RuntimeError(
-            "unsupported source checkpoint for residual-tap migration: "
+            "unsupported source checkpoint for CORE migration: "
             f"layout={layout} checkpoint={requested_checkpoint}"
         )
     return {
         "weight_checkpoint": requested_checkpoint,
         "source_layout": layout,
-        "optimizer_recovery_mode": "new-residual-only",
+        "optimizer_recovery_mode": "new-core-only",
         "recovery_reason": (
-            "freeze-committed-champion-and-train-only-zero-initialized-residual-taps"
+            "freeze-committed-champion-including-residual-taps-and-train-only-new-core"
         ),
         "previous_schema": previous_schema,
     }
@@ -2580,7 +2830,7 @@ def save_layer_tap_cutover_checkpoint(
     from safetensors.torch import save_file
 
     final = Path(output_dir) / "checkpoints" / (
-        f"cycle-{int(boundary_cycle):06d}-tinystories-layer-tap-residual-v3"
+        f"cycle-{int(boundary_cycle):06d}-clef-recurrent-core-v4"
     )
     temp = final.with_name(final.name + ".tmp")
     if final.exists():
@@ -2631,9 +2881,14 @@ def save_layer_tap_cutover_checkpoint(
                     "anchor_frozen": True,
                     "tinystories_frozen": True,
                     "optimizer_reset": False,
-                    "optimizer_scope": "new-residual-parameters-only",
+                    "optimizer_scope": "new-clef-core-parameters-only",
                     "optimizer_migration": dict(optimizer_migration),
-                    "residual_initialization": "all-zero-linear-weights",
+                    "residual_initialization": "preserved-from-committed-champion",
+                    "clef_core_schema": CLEF_CORE_SCHEMA,
+                    "clef_core_steps": int(head.core_steps),
+                    "clef_core_weight_tied": True,
+                    "clef_core_input": "previous-state+immutable-field+evidence-memory+routed-options",
+                    "clef_core_initialization": "zero-output-projection",
                 },
             },
         )
@@ -2642,7 +2897,7 @@ def save_layer_tap_cutover_checkpoint(
         shutil.rmtree(temp, ignore_errors=True)
         raise
     logger.emit(
-        "clef_tinystories_layer_tap_cutover_checkpoint_saved",
+        "clef_tinystories_core_cutover_checkpoint_saved",
         boundary_cycle=int(boundary_cycle),
         source_checkpoint=str(Path(source_checkpoint).resolve()),
         checkpoint=str(final.resolve()),
@@ -2762,8 +3017,17 @@ def reconcile_resume_train_plan(
     experiment_path: Path,
     logger: EventLog,
     requested_stream_reuse_epochs: int | None = None,
+    allow_in_progress_regeneration: bool = False,
+    regeneration_reason: str | None = None,
 ) -> dict[str, Any]:
-    """Record a fresh-data/replay schedule change at a committed boundary only."""
+    """Record a fresh-data/replay schedule change at a safe resume boundary.
+
+    A schedule-only edit may never splice into an acknowledged in-progress cycle.
+    An independent policy/architecture migration is different: that migration already
+    requires the unfinished population to be discarded and regenerated from the last
+    committed champion.  In that case the new schedule can become effective on the
+    regenerated cycle, but the caller must opt in explicitly.
+    """
     observed = experiment.get("train_plan")
     requested = {str(k): int(v) for k, v in requested_train_plan.items()}
     observed_reuse = int(experiment.get("stream_reuse_epochs", 1))
@@ -2778,7 +3042,7 @@ def reconcile_resume_train_plan(
         return experiment
 
     in_progress_cycle = state.get("in_progress_cycle")
-    if in_progress_cycle is not None:
+    if in_progress_cycle is not None and not allow_in_progress_regeneration:
         raise RuntimeError(
             "cannot change the training schedule while a cycle is in progress; "
             f"finish/recover cycle {in_progress_cycle} under its existing schedule first"
@@ -2791,6 +3055,7 @@ def reconcile_resume_train_plan(
     observed_normalized = {str(k): int(v) for k, v in observed.items()}
     from_unique = sum(observed_normalized.values())
     to_unique = sum(requested.values())
+    forced_regeneration = in_progress_cycle is not None
     transition = {
         "created_unix": time.time(),
         "effective_cycle": int(state["cycle"]) + 1,
@@ -2802,9 +3067,19 @@ def reconcile_resume_train_plan(
         "to_example_presentations_per_cycle": to_unique * requested_reuse,
         "from_train_plan": observed_normalized,
         "to_train_plan": requested,
-        "mode": "completed-cycle-boundary",
-        "reason": "fresh-data-vs-progressive-whole-population-reuse-tuning",
+        "mode": (
+            "policy-migration-forced-regeneration"
+            if forced_regeneration
+            else "completed-cycle-boundary"
+        ),
+        "reason": (
+            str(regeneration_reason or "policy-or-architecture-migration")
+            if forced_regeneration
+            else "fresh-data-vs-progressive-whole-population-reuse-tuning"
+        ),
     }
+    if forced_regeneration:
+        transition["discarded_in_progress_cycle"] = int(in_progress_cycle)
     history = list(experiment.get("training_schedule_history") or [])
     history.append(transition)
     updated = dict(experiment)
@@ -3134,12 +3409,18 @@ def run(args, logger: EventLog) -> None:
     dev_audit_dir = output_dir / "dev_audit"
     dev_audit_active_path = dev_audit_dir / "active.json"
     max_reuse_depth = effective_stream_reuse_epochs(args)
+    core_steps = int(args.core_steps)
+    selection_policy = champion_selection_policy(use_loss=bool(args.use_loss))
 
     resume_reuse_depth = 0
     resume_pending_champ_check = False
     legacy_progressive_migration = False
     dev_audit_migration = False
     predev_policy_migration = False
+    selection_policy_migration = False
+    previous_selection_policy = None
+    previous_core_steps = None
+    core_steps_migration = False
     layer_tap_migration = False
     previous_layer_tap_schema = None
     layer_tap_migration_sources = None
@@ -3155,22 +3436,12 @@ def run(args, logger: EventLog) -> None:
             dev_plan=dev_plan,
             stream_reuse_epochs=int(experiment.get("stream_reuse_epochs", 1)),
         )
-        experiment = reconcile_resume_train_plan(
-            experiment,
-            state,
-            requested_train_plan=train_plan,
-            requested_stream_reuse_epochs=max_reuse_depth,
-            experiment_path=experiment_path,
-            logger=logger,
-        )
-        validate_resume_experiment(
-            experiment,
-            cutover_dir=cutover_dir,
-            args=args,
-            train_plan=train_plan,
-            dev_plan=dev_plan,
-            stream_reuse_epochs=max_reuse_depth,
-        )
+
+        # Determine policy/architecture migration *before* reconciling the replay
+        # schedule.  A CORE/layer/policy cutover deliberately invalidates any
+        # unfinished population and restarts from the last committed champion, so
+        # it is safe for a requested replay-depth change to take effect on that
+        # regenerated cycle.  A schedule-only mid-cycle edit remains forbidden.
         contract = dict(experiment.get("contract") or {})
         legacy_progressive_migration = not bool(
             contract.get("progressive_champion_gating")
@@ -3181,15 +3452,59 @@ def run(args, logger: EventLog) -> None:
             or int(contract.get("predev_questions_per_iteration", 0))
             != int(args.predev_questions_per_cycle)
         )
+        previous_selection_policy = str(
+            contract.get("champion_selection_policy")
+            or CHAMPION_SELECTION_ACCURACY_FIRST
+        )
+        selection_policy_migration = previous_selection_policy != selection_policy
         previous_layer_tap_schema = contract.get("tinystories_layer_tap_schema")
+        previous_core_steps = contract.get("clef_core_steps")
         layer_tap_migration = (
             previous_layer_tap_schema != TINYSTORIES_LAYER_TAP_SCHEMA
+        )
+        core_steps_migration = (
+            not layer_tap_migration
+            and (previous_core_steps is None or int(previous_core_steps) != core_steps)
         )
         policy_migration = (
             legacy_progressive_migration
             or dev_audit_migration
             or predev_policy_migration
+            or selection_policy_migration
+            or core_steps_migration
             or layer_tap_migration
+        )
+        migration_reasons = [
+            name
+            for name, active in (
+                ("progressive-champion-contract", legacy_progressive_migration),
+                ("dev-audit-contract", dev_audit_migration),
+                ("fresh-predev-contract", predev_policy_migration),
+                ("champion-selection-policy", selection_policy_migration),
+                ("clef-core-steps", core_steps_migration),
+                ("tinystories-layer-tap-schema", layer_tap_migration),
+            )
+            if active
+        ]
+        experiment = reconcile_resume_train_plan(
+            experiment,
+            state,
+            requested_train_plan=train_plan,
+            requested_stream_reuse_epochs=max_reuse_depth,
+            experiment_path=experiment_path,
+            logger=logger,
+            allow_in_progress_regeneration=bool(policy_migration),
+            regeneration_reason=(
+                "+".join(migration_reasons) if migration_reasons else None
+            ),
+        )
+        validate_resume_experiment(
+            experiment,
+            cutover_dir=cutover_dir,
+            args=args,
+            train_plan=train_plan,
+            dev_plan=dev_plan,
+            stream_reuse_epochs=max_reuse_depth,
         )
         in_progress_cycle = state.get("in_progress_cycle")
         if policy_migration:
@@ -3258,6 +3573,14 @@ def run(args, logger: EventLog) -> None:
         legacy_progressive_migration=legacy_progressive_migration,
         dev_audit_migration=dev_audit_migration,
         predev_policy_migration=predev_policy_migration,
+        selection_policy_migration=selection_policy_migration,
+        previous_champion_selection_policy=previous_selection_policy,
+        core_steps_migration=core_steps_migration,
+        previous_core_steps=previous_core_steps,
+        clef_core_steps=core_steps,
+        clef_core_schema=CLEF_CORE_SCHEMA,
+        champion_selection_policy=selection_policy,
+        use_loss=bool(args.use_loss),
         layer_tap_migration=layer_tap_migration,
         previous_layer_tap_schema=previous_layer_tap_schema,
         layer_tap_recovery=(None if layer_tap_migration_sources is None else {
@@ -3289,7 +3612,7 @@ def run(args, logger: EventLog) -> None:
         consensus_primary="pairwise-relations-then-deterministic-topology",
         frozen_backbones=list(FROZEN_LABELS),
         trainable_backbone=None,
-        trainable_component="tinystories-residual-taps-only",
+        trainable_component="clef-recurrent-core-only",
         tinystories_tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
         tinystories_residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
         tinystories_evidence_hidden_size=TINYSTORIES_BASE_HIDDEN_SIZE,
@@ -3508,13 +3831,13 @@ def run(args, logger: EventLog) -> None:
                 f"unexpected backbone hidden sizes: expected={expected_hidden} observed={hidden_sizes}"
             )
         frozen_bundles = {label: bundles[label] for label in FROZEN_LABELS}
-        frozen_before = smoke.frozen_signatures(frozen_bundles)
 
         logger.set_stage("head_build")
         torch.manual_seed(args.seed + 17)
         head, head_hidden_sizes = build_layer_tap_head(
             torch=torch,
             hidden_sizes=hidden_sizes,
+            core_steps=int(args.core_steps),
         )
         cutover_head_load_mode = load_head_state_with_layer_taps(
             torch=torch,
@@ -3532,16 +3855,16 @@ def run(args, logger: EventLog) -> None:
             args=args,
         )
         optimizer_migration = {
-            "recovery_mode": "new-residual-only",
+            "recovery_mode": "new-core-only",
             "migrated_state_entries": 0,
             "anchor_parameters_frozen": True,
             "tinystories_frozen": True,
             "trainable_parameter_overlap_with_source": 0,
         }
         if reuse_schedule_cutover and not args.resume:
-            # The only trainable tensors are brand-new zero residual matrices, so
-            # there is intentionally no legacy AdamW state to migrate. Preserve
-            # RNG lineage while keeping the proven champion path immutable.
+            # The only trainable tensors are brand-new CORE parameters, so there
+            # is intentionally no legacy AdamW state to migrate. Preserve RNG
+            # lineage while keeping the complete proven champion immutable.
             rng = torch.load(cutover_rng, map_location="cpu", weights_only=False)
             random.setstate(rng["python_random"])
             torch.set_rng_state(rng["torch_cpu"])
@@ -3558,6 +3881,8 @@ def run(args, logger: EventLog) -> None:
                 optimizer_migration=optimizer_migration,
                 rng_reset=False,
                 architecture_cutover=TINYSTORIES_LAYER_TAP_SCHEMA,
+                clef_core_schema=CLEF_CORE_SCHEMA,
+                clef_core_steps=core_steps,
             )
         resume_checkpoint_meta = None
         if latest_checkpoint is not None:
@@ -3578,7 +3903,7 @@ def run(args, logger: EventLog) -> None:
                 )
                 optimizer_migration = {
                     "source_layout": str(layer_tap_migration_sources["source_layout"]),
-                    "recovery_mode": "new-residual-only",
+                    "recovery_mode": "new-core-only",
                     "migrated_state_entries": 0,
                     "anchor_parameters_frozen": True,
                     "tinystories_frozen": True,
@@ -3609,8 +3934,8 @@ def run(args, logger: EventLog) -> None:
                     },
                     logger=logger,
                 )
-                # Persist/reload the v3 anchor so crash recovery uses the exact
-                # zero-residual weights and residual-only optimizer state.
+                # Persist/reload the v4 anchor so crash recovery uses the exact
+                # committed champion plus the fresh CORE-only optimizer state.
                 resume_checkpoint_meta = load_checkpoint(
                     torch=torch,
                     head=head,
@@ -3641,13 +3966,17 @@ def run(args, logger: EventLog) -> None:
                     },
                 )
                 logger.emit(
-                    "clef_tinystories_layer_tap_cutover_applied",
+                    "clef_tinystories_core_cutover_applied",
                     source_checkpoint=str(weight_checkpoint),
                     cutover_checkpoint=str(migrated_anchor),
                     start_cycle=start_cycle,
                     optimizer_reset=False,
                     optimizer_migration=optimizer_migration,
                     rng_reset=False,
+                    clef_core_schema=CLEF_CORE_SCHEMA,
+                    clef_core_steps=core_steps,
+                    clef_core_weight_tied=True,
+                    clef_core_initialization="zero-output-projection",
                     tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
                     residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
                     anchor_layer=TINYSTORIES_FINAL_LAYER,
@@ -3664,6 +3993,14 @@ def run(args, logger: EventLog) -> None:
                     optimizer=optimizer,
                     checkpoint=latest_checkpoint,
                 )
+        # Capture the frozen-backbone authority only after every resume/migration
+        # checkpoint load has completed.  In particular, TinyStories is frozen for
+        # residual-v3 training, but its committed champion weights can legitimately
+        # differ from the initial cutover/base file loaded above.  Snapshotting before
+        # load_checkpoint() therefore creates a false `unchanged=False` invariant even
+        # though requires_grad is false and no gradient ever touched the backbone.
+        frozen_before = smoke.frozen_signatures(frozen_bundles)
+
         logger.emit(
             "clef_tinystories_models_ready",
             head_parameters=head_params,
@@ -3679,6 +4016,11 @@ def run(args, logger: EventLog) -> None:
             tinystories_anchor_frozen=True,
             tinystories_frozen=True,
             tinystories_residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
+            tinystories_residual_frozen=True,
+            clef_core_schema=CLEF_CORE_SCHEMA,
+            clef_core_steps=core_steps,
+            clef_core_weight_tied=True,
+            clef_core_initialization="zero-output-projection",
             optimizer_groups=optimizer_group_summary(optimizer),
             resumed_checkpoint=None if latest_checkpoint is None else str(latest_checkpoint),
             memory=smoke.cuda_memory(torch, "after_joint_model_load"),
@@ -3708,14 +4050,23 @@ def run(args, logger: EventLog) -> None:
             "tinystories_tapped_layers": list(TINYSTORIES_TAPPED_LAYERS),
             "tinystories_residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),
             "tinystories_anchor_layer": TINYSTORIES_FINAL_LAYER,
-            "tinystories_layer_fusion": "zero-initialized-residual-correction-into-final-evidence",
+            "tinystories_layer_fusion": "committed-residual-correction-into-final-evidence",
             "tinystories_base_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
             "tinystories_evidence_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
             "tinystories_residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
             "tinystories_lexical_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
             "tinystories_backprop": "none-backbone-frozen",
-            "clef_backprop": "residual-tap-adapters-only",
-            "champion_anchor": "immutable-final-layer-clef-plus-all-three-frozen-backbones",
+            "clef_backprop": "recurrent-core-only",
+            "tinystories_residual_adapters": "frozen-committed-champion-state",
+            "champion_anchor": "immutable-pre-core-clef-champion-plus-all-three-frozen-backbones",
+            "clef_core_schema": CLEF_CORE_SCHEMA,
+            "clef_core_steps": core_steps,
+            "clef_core_weight_tied": True,
+            "clef_core_reinjects_immutable_evidence_each_step": True,
+            "clef_core_memory": "projected-evidence-memory+routed-options",
+            "clef_core_initialization": "zero-output-projection",
+            "champion_selection_policy": selection_policy,
+            "use_loss_selection": bool(args.use_loss),
             "training_evidence_reuse": max_reuse_depth > 1,
             "unique_stream_training": True,
             "stream_reuse_epochs": max_reuse_depth,
@@ -3782,7 +4133,12 @@ def run(args, logger: EventLog) -> None:
                 "optimizer_migration": optimizer_migration,
                 "anchor_frozen": True,
                 "tinystories_frozen": True,
-                "initialization": "all-zero-residual-linear-weights",
+                "residual_adapters_frozen": True,
+                "clef_core_schema": CLEF_CORE_SCHEMA,
+                "clef_core_steps": core_steps,
+                "clef_core_weight_tied": True,
+                "clef_core_reinjects_immutable_evidence_each_step": True,
+                "initialization": "zero-output-projection-core-over-committed-champion",
             }
             if not any(row.get("schema") == TINYSTORIES_LAYER_TAP_SCHEMA for row in architecture_history):
                 architecture_history.append(record)
@@ -4266,8 +4622,10 @@ def run(args, logger: EventLog) -> None:
                 stream_generation_pending = True
 
 
-            tracked_head = head.tinystories_residual["memory"].weight
+            tracked_head = head.clef_core.output_projection.weight
             head_before = smoke.sampled_parameter_signature(tracked_head)
+            tracked_residual = head.tinystories_residual["memory"].weight
+            residual_before = smoke.sampled_parameter_signature(tracked_residual)
             tiny_name, tracked_tiny = next(
                 iter(bundles[TRAINABLE_LABEL].lm.named_parameters())
             )
@@ -4277,6 +4635,7 @@ def run(args, logger: EventLog) -> None:
             attempts: list[dict[str, Any]] = []
             cycle_max_grad = 0.0
             maximum_head_delta = 0.0
+            maximum_residual_delta = 0.0
             maximum_tiny_delta = 0.0
             if resume_this_cycle and resume_checkpoint_meta is not None:
                 prior_metrics = resume_checkpoint_meta.get("metrics") or {}
@@ -4284,6 +4643,9 @@ def run(args, logger: EventLog) -> None:
                 cycle_max_grad = float(prior_metrics.get("maximum_grad_norm", 0.0))
                 maximum_head_delta = float(
                     prior_metrics.get("tracked_head_max_abs_delta", 0.0)
+                )
+                maximum_residual_delta = float(
+                    prior_metrics.get("tracked_residual_max_abs_delta", 0.0)
                 )
                 maximum_tiny_delta = float(
                     prior_metrics.get("tracked_tinystories_max_abs_delta", 0.0)
@@ -4413,12 +4775,17 @@ def run(args, logger: EventLog) -> None:
                         )
                     cycle_max_grad = max(cycle_max_grad, float(depth_grad))
                     head_now = smoke.sampled_parameter_signature(tracked_head)
+                    residual_now = smoke.sampled_parameter_signature(
+                        tracked_residual, len(residual_before)
+                    )
                     tiny_now = smoke.sampled_parameter_signature(
                         tracked_tiny, len(tiny_before)
                     )
                     head_delta = float((head_now - head_before).abs().max().item())
+                    residual_delta = float((residual_now - residual_before).abs().max().item())
                     tiny_delta = float((tiny_now - tiny_before).abs().max().item())
                     maximum_head_delta = max(maximum_head_delta, head_delta)
+                    maximum_residual_delta = max(maximum_residual_delta, residual_delta)
                     maximum_tiny_delta = max(maximum_tiny_delta, tiny_delta)
                     attempt = {
                         "reuse_depth": reuse_depth,
@@ -4473,6 +4840,8 @@ def run(args, logger: EventLog) -> None:
                         "attempts": attempts,
                         "maximum_grad_norm": cycle_max_grad,
                         "tracked_head_max_abs_delta": maximum_head_delta,
+                        "tracked_core_max_abs_delta": maximum_head_delta,
+                        "tracked_residual_max_abs_delta": maximum_residual_delta,
                         "tracked_tinystories_parameter": tiny_name,
                         "tracked_tinystories_max_abs_delta": maximum_tiny_delta,
                     }
@@ -4566,6 +4935,7 @@ def run(args, logger: EventLog) -> None:
                     incumbent_accuracy=cycle_incumbent_predev_accuracy,
                     incumbent_loss=cycle_incumbent_predev_loss,
                     attempts=attempts[:-1],
+                    use_loss=bool(args.use_loss),
                 )
                 previous_best_accuracy = cycle_incumbent_predev_accuracy
                 previous_best_loss = cycle_incumbent_predev_loss
@@ -4578,6 +4948,7 @@ def run(args, logger: EventLog) -> None:
                     candidate_loss=selection_loss,
                     incumbent_accuracy=previous_best_accuracy,
                     incumbent_loss=previous_best_loss,
+                    use_loss=bool(args.use_loss),
                 )
                 decision = predev_depth_result(
                     reuse_depth=reuse_depth,
@@ -4587,6 +4958,7 @@ def run(args, logger: EventLog) -> None:
                     incumbent_accuracy=cycle_incumbent_predev_accuracy,
                     incumbent_loss=cycle_incumbent_predev_loss,
                     best_so_far=best_so_far,
+                    use_loss=bool(args.use_loss),
                 )
                 attempts[-1]["decision"] = decision
                 if best_so_far:
@@ -4608,6 +4980,8 @@ def run(args, logger: EventLog) -> None:
                     "attempts": attempts,
                     "maximum_grad_norm": cycle_max_grad,
                     "tracked_head_max_abs_delta": maximum_head_delta,
+                    "tracked_core_max_abs_delta": maximum_head_delta,
+                    "tracked_residual_max_abs_delta": maximum_residual_delta,
                     "tracked_tinystories_parameter": tiny_name,
                     "tracked_tinystories_max_abs_delta": maximum_tiny_delta,
                 }
@@ -4628,6 +5002,8 @@ def run(args, logger: EventLog) -> None:
                     candidate_beats_incumbent=decision["candidate_beats_incumbent"],
                     best_so_far=decision["best_so_far"],
                     continue_reuse=decision["continue_reuse"],
+                    champion_selection_policy=selection_policy,
+                    use_loss=bool(args.use_loss),
                     dev_checked=False,
                     dev_affects_selection=False,
                 )
@@ -4677,10 +5053,13 @@ def run(args, logger: EventLog) -> None:
                 incumbent_accuracy=cycle_incumbent_predev_accuracy,
                 incumbent_loss=cycle_incumbent_predev_loss,
                 attempts=attempts,
+                use_loss=bool(args.use_loss),
             )
             if winning_attempt is None:
                 rip_population = True
-                best_failed_attempt = choose_best_predev_attempt(attempts)
+                best_failed_attempt = choose_best_predev_attempt(
+                    attempts, use_loss=bool(args.use_loss)
+                )
                 if best_failed_attempt is None:
                     raise RuntimeError("cycle ended without any evaluated pre-dev candidate")
                 final_selection_summary = best_failed_attempt["predev"]
@@ -4718,8 +5097,11 @@ def run(args, logger: EventLog) -> None:
             ):
                 raise RuntimeError(f"frozen backbone invariant failed: {frozen}")
             if maximum_head_delta <= 0.0:
+                raise RuntimeError(f"CLEF CORE did not change during cycle {cycle}")
+            if maximum_residual_delta != 0.0:
                 raise RuntimeError(
-                    f"TinyStories residual adapters did not change during cycle {cycle}"
+                    f"frozen committed TinyStories residual adapter changed during cycle {cycle}: "
+                    f"delta={maximum_residual_delta}"
                 )
             if maximum_tiny_delta != 0.0:
                 raise RuntimeError(
@@ -4727,13 +5109,15 @@ def run(args, logger: EventLog) -> None:
                     f"delta={maximum_tiny_delta}"
                 )
             if cycle_max_grad <= 0.0:
-                raise RuntimeError(f"no nonzero residual gradient observed during cycle {cycle}")
+                raise RuntimeError(f"no nonzero CORE gradient observed during cycle {cycle}")
 
             cycle_metrics = {
                 "cycle": cycle,
                 "data_cycle": data_cycle,
                 "global_step": global_step,
                 "progressive_champion_gating": True,
+                "champion_selection_policy": selection_policy,
+                "use_loss": bool(args.use_loss),
                 "max_reuse_depth": max_reuse_depth,
                 "actual_reuse_depth": int(attempts[-1]["reuse_depth"]),
                 "winning_reuse_depth": winning_reuse_depth,
@@ -4755,6 +5139,8 @@ def run(args, logger: EventLog) -> None:
                 "dev_affects_selection": False,
                 "maximum_grad_norm": cycle_max_grad,
                 "tracked_head_max_abs_delta": maximum_head_delta,
+                "tracked_core_max_abs_delta": maximum_head_delta,
+                "tracked_residual_max_abs_delta": maximum_residual_delta,
                 "tracked_tinystories_parameter": tiny_name,
                 "tracked_tinystories_max_abs_delta": maximum_tiny_delta,
                 "frozen_backbones": frozen,
@@ -4779,7 +5165,10 @@ def run(args, logger: EventLog) -> None:
                     selection_accuracy=final_selection_summary["overall"]["accuracy"],
                     selection_loss=best_selection_loss,
                     checkpoint=str(best_checkpoint),
-                    selected_by="predev-only",
+                    selected_by=(
+                        "predev-loss-first" if args.use_loss else "predev-accuracy-first"
+                    ),
+                    champion_selection_policy=selection_policy,
                 )
             else:
                 logger.emit(
@@ -4788,6 +5177,7 @@ def run(args, logger: EventLog) -> None:
                     max_reuse_depth=max_reuse_depth,
                     restored_checkpoint=str(best_checkpoint),
                     incumbent_predev_loss=best_selection_loss,
+                    champion_selection_policy=selection_policy,
                 )
 
             dev_audit_report = None
@@ -4963,6 +5353,8 @@ def run(args, logger: EventLog) -> None:
                 cycle=cycle,
                 global_step=global_step,
                 progressive_champion_gating=True,
+                champion_selection_policy=selection_policy,
+                use_loss=bool(args.use_loss),
                 max_reuse_depth=max_reuse_depth,
                 actual_reuse_depth=int(attempts[-1]["reuse_depth"]),
                 winning_reuse_depth=winning_reuse_depth,
@@ -4996,6 +5388,9 @@ def run(args, logger: EventLog) -> None:
             legacy_progressive_migration = False
             dev_audit_migration = False
             predev_policy_migration = False
+            selection_policy_migration = False
+            core_steps_migration = False
+            layer_tap_migration = False
             policy_migration = False
 
         logger.set_stage("complete", final_cycle=cycle - 1, global_step=global_step)
@@ -5010,6 +5405,8 @@ def run(args, logger: EventLog) -> None:
             dev_audit_cycles=DEFAULT_DEV_AUDIT_CYCLES,
             dev_affects_selection=False,
             progressive_champion_gating=True,
+            champion_selection_policy=selection_policy,
+            use_loss=bool(args.use_loss),
             hidden_holdout_required=True,
         )
 
@@ -5022,6 +5419,7 @@ def self_test() -> dict[str, Any]:
     head, head_hidden_sizes = build_layer_tap_head(
         torch=torch,
         hidden_sizes={"qwen": 1024, "pythia": 512, "tinystories": 768},
+        core_steps=DEFAULT_CORE_STEPS,
     )
     head_parameters = smoke.count_parameters(head)
     trainable_parameters = count_trainable(head)
@@ -5034,7 +5432,7 @@ def self_test() -> dict[str, Any]:
         "head_hidden_sizes": head_hidden_sizes,
         "frozen_backbones": list(FROZEN_LABELS),
         "trainable_backbone": None,
-        "trainable_component": "tinystories-residual-taps-only",
+        "trainable_component": "clef-recurrent-core-only",
         "tinystories_layer_tap_schema": TINYSTORIES_LAYER_TAP_SCHEMA,
         "tinystories_tapped_layers": list(TINYSTORIES_TAPPED_LAYERS),
         "tinystories_residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),
@@ -5043,8 +5441,15 @@ def self_test() -> dict[str, Any]:
         "tinystories_residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
         "tinystories_lexical_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
         "tinystories_backprop": "none-backbone-frozen",
-        "clef_backprop": "residual-tap-adapters-only",
-        "residual_initialization": "all-zero-linear-weights",
+        "clef_backprop": "recurrent-core-only",
+        "residual_initialization": "preserved-from-committed-champion",
+        "tinystories_residual_frozen": True,
+        "clef_core_schema": CLEF_CORE_SCHEMA,
+        "clef_core_steps": int(head.core_steps),
+        "clef_core_weight_tied": True,
+        "clef_core_reinjects_immutable_evidence_each_step": True,
+        "clef_core_input": "previous-state+immutable-field+evidence-memory+routed-options",
+        "clef_core_initialization": "zero-output-projection",
         "reuse_epochs": DEFAULT_STREAM_REUSE_EPOCHS,
         "checkpoint_epochs_per_cycle": DEFAULT_EPOCHS_PER_CYCLE,
         "stream_reuse_epochs": DEFAULT_STREAM_REUSE_EPOCHS,
@@ -5055,7 +5460,9 @@ def self_test() -> dict[str, Any]:
         "stream_chunks_per_cycle": (DEFAULT_TRAIN_QUESTIONS + DEFAULT_STREAM_CHUNK_QUESTIONS - 1) // DEFAULT_STREAM_CHUNK_QUESTIONS,
         "intentional_training_reuse": DEFAULT_STREAM_REUSE_EPOCHS > 1,
         "progressive_champion_gating": True,
-        "champion_selection_policy": "accuracy-first-loss-second-exact-tie-candidate",
+        "champion_selection_policy": CHAMPION_SELECTION_ACCURACY_FIRST,
+        "loss_first_champion_selection_policy": CHAMPION_SELECTION_LOSS_FIRST,
+        "use_loss_supported": True,
         "fresh_predev_each_iteration": True,
         "predev_questions_per_iteration": DEFAULT_PREDEV_QUESTIONS,
         "incumbent_rebaseline_each_iteration": True,
@@ -5102,6 +5509,10 @@ def parse_args(argv: Sequence[str] | None = None):
         "--stream-reuse-epochs", type=int, default=DEFAULT_STREAM_REUSE_EPOCHS,
         help="maximum whole-population depth; pre-dev selects the best depth after all are evaluated",
     )
+    parser.add_argument(
+        "--core-steps", type=int, default=DEFAULT_CORE_STEPS,
+        help="weight-tied CLEF CORE recurrence steps per forward pass (default: 3)",
+    )
     parser.add_argument("--stream-chunk-questions", type=int, default=DEFAULT_STREAM_CHUNK_QUESTIONS)
     parser.add_argument("--grad-accumulation", type=int, default=DEFAULT_GRAD_ACCUMULATION)
     parser.add_argument(
@@ -5133,6 +5544,14 @@ def parse_args(argv: Sequence[str] | None = None):
     parser.add_argument("--tinystories-path-batch", type=int, default=DEFAULT_TINYSTORIES_PATH_BATCH)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
+        "--use-loss",
+        action="store_true",
+        help=(
+            "select/promote on pre-dev mean loss first and use accuracy only as "
+            "the tie-breaker; default remains accuracy first, loss second"
+        ),
+    )
+    parser.add_argument(
         "--verbose-events",
         action="store_true",
         help="print per-question/per-backbone/per-step events to the console; they are always retained in events.jsonl",
@@ -5152,6 +5571,8 @@ def parse_args(argv: Sequence[str] | None = None):
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.max_cycles < 0:
         parser.error("--max-cycles must be nonnegative")
+    if int(args.core_steps) <= 0:
+        parser.error("--core-steps must be positive")
     if int(args.epochs_per_cycle) != 1:
         parser.error("stream training keeps one internal checkpoint epoch; use --stream-reuse-epochs for progressive whole-population reuse")
     for name in ("head_lr", "tinystories_lr", "grad_clip", "continuity_loss_tolerance"):

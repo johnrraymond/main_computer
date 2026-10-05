@@ -108,6 +108,93 @@ def _install_assessment_fakes(monkeypatch, *, current_count: int = 3):
     )
 
 
+
+def test_topology_staleness_is_warning_only(tmp_path: Path, capsys) -> None:
+    topology = tmp_path / "topology.json"
+    topology.write_text(
+        '{"completed_at":"2026-10-05T00:04:16Z"}',
+        encoding="utf-8",
+    )
+
+    result = broken._assert_topology_fresh(
+        topology,
+        max_age_seconds=900,
+        now=datetime(2026, 10, 5, 1, 6, 56, tzinfo=timezone.utc),
+    )
+
+    captured = capsys.readouterr()
+    assert result["age_seconds"] == 3760
+    assert result["max_age_seconds"] == 900
+    assert result["stale"] is True
+    assert "MOTHER_BROKEN_VALIDATOR_CLEANUP_TOPOLOGY_STALE_WARNING" in captured.err
+    assert "age_seconds=3760" in captured.err
+    assert "max_age_seconds=900" in captured.err
+    assert "continuing" in captured.err
+
+
+def test_topology_timestamp_too_far_in_future_still_blocks(tmp_path: Path) -> None:
+    topology = tmp_path / "topology.json"
+    topology.write_text(
+        '{"completed_at":"2026-10-05T01:07:30Z"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(broken.MotherBrokenValidatorCleanupError) as excinfo:
+        broken._assert_topology_fresh(
+            topology,
+            max_age_seconds=900,
+            now=datetime(2026, 10, 5, 1, 6, 56, tzinfo=timezone.utc),
+        )
+
+    assert excinfo.value.code == "MOTHER_BROKEN_VALIDATOR_CLEANUP_TOPOLOGY_TIME_INVALID"
+
+
+def test_dry_run_assessment_continues_with_stale_topology_warning(monkeypatch, tmp_path: Path, capsys) -> None:
+    topology = tmp_path / "topology.json"
+    topology.write_text(
+        '{"completed_at":"2026-10-05T00:04:16Z"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(broken, "_private_state", lambda *args, **kwargs: (object(), object()))
+    monkeypatch.setattr(
+        broken,
+        "run_preflight_paranoia",
+        lambda **kwargs: _preflight(survivor_count=2),
+    )
+    monkeypatch.setattr(
+        broken,
+        "run_preflight_rpc_paranoia",
+        lambda **kwargs: {"status": "pass", "summary": {"clean": True}},
+    )
+    monkeypatch.setattr(
+        broken,
+        "build_node_remove_prep_transaction",
+        lambda *args, **kwargs: _prep(current_count=3),
+    )
+
+    result = broken._assess_consensus_safety(
+        runtime_state_root=tmp_path,
+        network="mainnet",
+        node=TARGET,
+        topology_evidence=topology,
+        acknowledged_topology_evidence_sha256="a" * 64,
+        topology_max_age_seconds=900,
+        timeout=30,
+        max_response_bytes=1024,
+        max_wait_seconds=300,
+        poll_interval_seconds=5,
+        rpc_will_work_post_remove=False,
+        python_executable="python.exe",
+        now=datetime(2026, 10, 5, 1, 6, 56, tzinfo=timezone.utc),
+    )
+
+    captured = capsys.readouterr()
+    assert result["status"] == "pass"
+    assert result["consensus_safety"]["safe_to_execute"] is True
+    assert result["topology_evidence"]["age_seconds"] == 3760
+    assert "MOTHER_BROKEN_VALIDATOR_CLEANUP_TOPOLOGY_STALE_WARNING" in captured.err
+
+
 def test_dry_run_assessment_allows_three_to_two_with_broken_target(monkeypatch, tmp_path: Path) -> None:
     _install_assessment_fakes(monkeypatch, current_count=3)
 

@@ -191,6 +191,8 @@ def test_pairwise_stage_defaults_use_fresh_512_predev_and_progressive_480_popula
     assert result["intentional_training_reuse"] is True
     assert result["progressive_champion_gating"] is True
     assert result["champion_selection_policy"] == "accuracy-first-loss-second-exact-tie-candidate"
+    assert result["loss_first_champion_selection_policy"] == "loss-first-accuracy-second-exact-tie-candidate"
+    assert result["use_loss_supported"] is True
     assert result["fresh_predev_each_iteration"] is True
     assert result["predev_questions_per_iteration"] == 512
     assert result["incumbent_rebaseline_each_iteration"] is True
@@ -205,15 +207,21 @@ def test_pairwise_stage_defaults_use_fresh_512_predev_and_progressive_480_popula
     assert result["tinystories_residual_source_hidden_size"] == 1536
     assert result["tinystories_lexical_hidden_size"] == 768
     assert result["head_hidden_sizes"]["tinystories"] == 768
-    assert result["head_parameters"] == 128327175
-    assert result["trainable_parameters"] == 7_077_888
-    assert result["frozen_head_parameters"] == 121_249_287
+    assert result["head_parameters"] == 144077319
+    assert result["trainable_parameters"] == 15_750_144
+    assert result["frozen_head_parameters"] == 128_327_175
     assert result["tinystories_lr_effective"] == 0.0
     assert result["frozen_backbones"] == ["qwen", "pythia", "tinystories"]
     assert result["trainable_backbone"] is None
-    assert result["trainable_component"] == "tinystories-residual-taps-only"
+    assert result["trainable_component"] == "clef-recurrent-core-only"
     assert result["tinystories_backprop"] == "none-backbone-frozen"
-    assert result["clef_backprop"] == "residual-tap-adapters-only"
+    assert result["clef_backprop"] == "recurrent-core-only"
+    assert result["tinystories_residual_frozen"] is True
+    assert result["clef_core_schema"] == "clef-weight-tied-recurrent-core-v1"
+    assert result["clef_core_steps"] == 3
+    assert result["clef_core_weight_tied"] is True
+    assert result["clef_core_reinjects_immutable_evidence_each_step"] is True
+    assert result["clef_core_initialization"] == "zero-output-projection"
     assert result["frozen_cache_reused_across_progressive_depths"] is False
     assert "predev-select-best" in result["reuse_schedule"]
     assert "restore-incumbent" in result["failed_population_policy"]
@@ -316,6 +324,31 @@ def test_champion_metric_is_accuracy_first_loss_second_and_candidate_wins_exact_
     ) is True
 
 
+def test_champion_metric_use_loss_is_loss_first_accuracy_second():
+    # This is the intended residual burn-in case: accept better calibration even
+    # when discrete accuracy is temporarily a few examples worse.
+    assert m.champion_metric_prefers_candidate(
+        candidate_accuracy=0.91796875,
+        candidate_loss=0.2693281227614286,
+        incumbent_accuracy=0.923828125,
+        incumbent_loss=0.29151756481433316,
+        use_loss=True,
+    ) is True
+    assert m.champion_metric_prefers_candidate(
+        candidate_accuracy=0.99, candidate_loss=0.32,
+        incumbent_accuracy=0.90, incumbent_loss=0.31,
+        use_loss=True,
+    ) is False
+    assert m.champion_metric_prefers_candidate(
+        candidate_accuracy=0.92, candidate_loss=0.30,
+        incumbent_accuracy=0.91, incumbent_loss=0.30,
+        use_loss=True,
+    ) is True
+    assert m.champion_selection_policy(use_loss=True) == (
+        "loss-first-accuracy-second-exact-tie-candidate"
+    )
+
+
 def _attempt(depth, accuracy, loss):
     return {
         "reuse_depth": depth,
@@ -366,6 +399,21 @@ def test_predev_selects_best_depth_after_all_reuse_attempts():
     )
     assert winner is attempts[2]
     assert winner["reuse_depth"] == 3
+
+
+def test_predev_use_loss_selects_lower_loss_depth_even_with_lower_accuracy():
+    attempts = [
+        _attempt(1, 0.91796875, 0.2693281227614286),
+        _attempt(2, 0.91015625, 0.31764118294593185),
+    ]
+    winner = m.choose_predev_winner(
+        incumbent_accuracy=0.923828125,
+        incumbent_loss=0.29151756481433316,
+        attempts=attempts,
+        use_loss=True,
+    )
+    assert winner is attempts[0]
+    assert winner["reuse_depth"] == 1
 
 
 def test_predev_rips_only_when_no_depth_beats_incumbent():
@@ -443,6 +491,20 @@ def test_recovery_checkpoint_schedule_always_includes_cycle_end():
     assert m.reuse_checkpoint_epochs(32) == [16, 32]
     assert m.reuse_checkpoint_due(4, 4) is True
     assert m.reuse_checkpoint_due(3, 4) is False
+
+
+def test_use_loss_cli_switches_only_the_selection_comparator():
+    default = m.parse_args(["--self-test"])
+    loss_first = m.parse_args(["--self-test", "--use-loss"])
+    assert default.use_loss is False
+    assert loss_first.use_loss is True
+    assert default.core_steps == 3
+    assert m.champion_selection_policy(use_loss=default.use_loss) == (
+        "accuracy-first-loss-second-exact-tie-candidate"
+    )
+    assert m.champion_selection_policy(use_loss=loss_first.use_loss) == (
+        "loss-first-accuracy-second-exact-tie-candidate"
+    )
 
 
 def test_pairwise_aux_weight_validation():
@@ -1405,6 +1467,41 @@ def test_resume_schedule_change_records_960x1_to_480x2(tmp_path: Path):
 
 
 
+def test_resume_schedule_change_can_follow_policy_migration_by_regenerating_midcycle(tmp_path: Path):
+    experiment_path = tmp_path / "experiment.json"
+    plan = m.base.curriculum_plan(480)
+    experiment = {"train_plan": plan, "stream_reuse_epochs": 4}
+    state = {"cycle": 75, "in_progress_cycle": 76}
+
+    class Logger:
+        def __init__(self):
+            self.events = []
+        def emit(self, event, **payload):
+            self.events.append((event, payload))
+
+    logger = Logger()
+    updated = m.reconcile_resume_train_plan(
+        experiment,
+        state,
+        requested_train_plan=plan,
+        requested_stream_reuse_epochs=5,
+        experiment_path=experiment_path,
+        logger=logger,
+        allow_in_progress_regeneration=True,
+        regeneration_reason="clef-core-steps",
+    )
+
+    transition = updated["training_schedule_history"][-1]
+    assert transition["effective_cycle"] == 76
+    assert transition["from_stream_reuse_epochs"] == 4
+    assert transition["to_stream_reuse_epochs"] == 5
+    assert transition["mode"] == "policy-migration-forced-regeneration"
+    assert transition["reason"] == "clef-core-steps"
+    assert transition["discarded_in_progress_cycle"] == 76
+    assert updated["stream_reuse_epochs"] == 5
+    assert logger.events[-1][0] == "clef_tinystories_training_schedule_transition"
+
+
 def test_resume_schedule_change_records_480x2_to_480x4(tmp_path: Path):
     experiment_path = tmp_path / "experiment.json"
     plan = m.base.curriculum_plan(480)
@@ -1516,21 +1613,25 @@ def _v2_state_from_legacy(torch, legacy_state):
     return state
 
 
-def test_residual_layer_tap_head_keeps_legacy_768_anchor_and_only_residuals_trainable():
+def test_core_cutover_keeps_legacy_768_anchor_and_residuals_frozen_core_only_trainable():
     torch = pytest.importorskip("torch")
     hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
-    head, observed = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
+    head, observed = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
 
     assert observed == hidden
     assert head.backbone_modules["tinystories"].memory_projection.in_features == 768
     assert m.TINYSTORIES_RESIDUAL_LAYERS == (1, 2)
     assert m.TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE == 1536
-    residual_names = {
+    trainable_names = {
         name for name, parameter in head.named_parameters() if parameter.requires_grad
     }
-    assert residual_names
-    assert all(name.startswith("tinystories_residual.") for name in residual_names)
-    assert sum(p.numel() for p in head.parameters() if p.requires_grad) == 7_077_888
+    assert trainable_names
+    assert all(name.startswith("clef_core.") for name in trainable_names)
+    assert all(not p.requires_grad for p in head.tinystories_residual.parameters())
+    assert all(p.requires_grad for p in head.clef_core.parameters())
+    assert torch.count_nonzero(head.clef_core.output_projection.weight).item() == 0
     for module in head.tinystories_residual.values():
         assert torch.count_nonzero(module.weight).item() == 0
 
@@ -1547,7 +1648,7 @@ def test_v2_concat_champion_migrates_to_exact_frozen_anchor_with_zero_residuals(
     migrated, _ = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
     mode = m.load_head_state_with_layer_taps(torch=torch, head=migrated, state=v2_state)
     migrated.eval()
-    assert mode == "v2-concat-to-zero-residual-v3"
+    assert mode == "v2-concat-to-core-v4"
     for module in migrated.tinystories_residual.values():
         assert torch.count_nonzero(module.weight).item() == 0
 
@@ -1573,39 +1674,42 @@ def test_v2_migration_refuses_nonzero_intermediate_projection_slices():
         m.load_head_state_with_layer_taps(torch=torch, head=migrated, state=v2_state)
 
 
-def test_zero_residual_branch_gets_gradient_while_anchor_stays_frozen():
+def test_zero_output_core_gets_gradient_while_pre_core_champion_stays_frozen():
     torch = pytest.importorskip("torch")
     torch.manual_seed(4321)
     hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
-    head, _ = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
     evidence = _add_residual_sources(torch, _head_evidence(torch, hidden))
     logits = head(evidence)
     loss = logits.square().sum()
     loss.backward()
 
-    residual_grads = [
-        p.grad for p in head.tinystories_residual.parameters() if p.requires_grad
+    assert head.clef_core.output_projection.weight.grad is not None
+    assert torch.count_nonzero(head.clef_core.output_projection.weight.grad).item() > 0
+    frozen_grads = [
+        p.grad for name, p in head.named_parameters() if not name.startswith("clef_core.")
     ]
-    assert any(grad is not None and torch.count_nonzero(grad).item() > 0 for grad in residual_grads)
-    anchor_grads = [
-        p.grad for name, p in head.named_parameters()
-        if not name.startswith("tinystories_residual.")
-    ]
-    assert all(grad is None for grad in anchor_grads)
+    assert all(grad is None for grad in frozen_grads)
 
 
-def test_optimizer_contains_only_residual_parameters_and_tinystories_is_frozen():
+def test_optimizer_contains_only_core_parameters_and_tinystories_is_frozen():
     torch = pytest.importorskip("torch")
     hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
-    head, _ = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
     tiny = torch.nn.Linear(3, 2)
     for parameter in tiny.parameters():
         parameter.requires_grad_(False)
     args = SimpleNamespace(head_lr=1e-4, tinystories_lr=1e-5, weight_decay=0.01)
     optimizer = m.build_optimizer(torch=torch, head=head, tinystories_lm=tiny, args=args)
     assert len(optimizer.param_groups) == 1
-    assert optimizer.param_groups[0]["group_name"] == "tinystories_residual_taps"
-    assert sum(p.numel() for p in optimizer.param_groups[0]["params"]) == 7_077_888
+    assert optimizer.param_groups[0]["group_name"] == "clef_recurrent_core"
+    expected = sum(p.numel() for p in head.clef_core.parameters())
+    assert sum(p.numel() for p in optimizer.param_groups[0]["params"]) == expected
+    assert all(not p.requires_grad for p in head.tinystories_residual.parameters())
 
 
 def test_v2_migration_source_uses_only_committed_champion_weights(tmp_path: Path):
@@ -1628,8 +1732,92 @@ def test_v2_migration_source_uses_only_committed_champion_weights(tmp_path: Path
     )
     assert result["weight_checkpoint"] == checkpoint.resolve()
     assert result["source_layout"] == "v2"
-    assert result["optimizer_recovery_mode"] == "new-residual-only"
+    assert result["optimizer_recovery_mode"] == "new-core-only"
     assert "optimizer_checkpoint" not in result
+
+
+def test_v3_residual_champion_migrates_exactly_and_core_starts_as_noop():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(9876)
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    source, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs(), core_steps=3
+    )
+    with torch.no_grad():
+        for module in source.tinystories_residual.values():
+            module.weight.normal_(mean=0.0, std=0.01)
+    source.set_core_steps(0)
+    v3_state = {
+        name: value.detach().clone()
+        for name, value in source.state_dict().items()
+        if not name.startswith("clef_core.")
+    }
+
+    migrated, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs(), core_steps=4
+    )
+    mode = m.load_head_state_with_layer_taps(torch=torch, head=migrated, state=v3_state)
+    assert mode == "v3-residual-to-core-v4"
+    assert torch.count_nonzero(migrated.clef_core.output_projection.weight).item() == 0
+    assert all(not p.requires_grad for p in migrated.tinystories_residual.parameters())
+    assert all(p.requires_grad for p in migrated.clef_core.parameters())
+    for name, value in v3_state.items():
+        assert torch.equal(migrated.state_dict()[name], value)
+
+    evidence = _add_residual_sources(torch, _head_evidence(torch, hidden))
+    source.eval()
+    migrated.eval()
+    with torch.no_grad():
+        old_logits = source(evidence)
+        new_logits = migrated(evidence)
+    assert torch.equal(old_logits, new_logits)
+
+
+def test_core_upstream_transform_starts_learning_after_zero_output_projection_moves():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(2468)
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs(), core_steps=3
+    )
+    evidence = _add_residual_sources(torch, _head_evidence(torch, hidden))
+    optimizer = torch.optim.AdamW(
+        [p for p in head.parameters() if p.requires_grad], lr=1e-2
+    )
+    upstream = head.clef_core.input_projection.weight
+    before = upstream.detach().clone()
+
+    for _ in range(2):
+        optimizer.zero_grad(set_to_none=True)
+        logits = head(evidence)
+        logits.square().sum().backward()
+        optimizer.step()
+
+    assert torch.count_nonzero(head.clef_core.output_projection.weight).item() > 0
+    assert not torch.equal(upstream.detach(), before)
+
+
+def test_v3_checkpoint_is_accepted_as_core_cutover_source(tmp_path: Path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+    checkpoint = tmp_path / "run" / "checkpoints" / "cycle-000074-reuse-003"
+    checkpoint.mkdir(parents=True)
+    safetensors.save_file(
+        {
+            "tinystories_residual.memory.weight": torch.zeros(768, 1536),
+            "backbone_modules.tinystories.memory_projection.weight": torch.zeros(1, 768),
+        },
+        str(checkpoint / "head.safetensors"),
+    )
+    result = m.resolve_layer_tap_migration_sources(
+        torch=torch,
+        output_dir=tmp_path / "run",
+        requested_checkpoint=checkpoint,
+        previous_schema=m.TINYSTORIES_LAYER_TAP_SCHEMA_V3,
+    )
+    assert result["source_layout"] == "v3"
+    assert result["optimizer_recovery_mode"] == "new-core-only"
+    assert result["weight_checkpoint"] == checkpoint.resolve()
 
 
 def test_tinystories_extractor_keeps_final_768_and_exposes_detached_l1_l2_sources(monkeypatch):
@@ -1712,3 +1900,23 @@ def test_tinystories_extractor_keeps_final_768_and_exposes_detached_l1_l2_source
             track_grad=True,
         )
 
+
+
+def test_frozen_backbone_signature_is_captured_after_checkpoint_restore():
+    source = TRAIN_TOOL.read_text(encoding="utf-8")
+    signature = "frozen_before = smoke.frozen_signatures(frozen_bundles)"
+    assert source.count(signature) == 1
+    signature_pos = source.index(signature)
+    checkpoint_restore_pos = source.index("if latest_checkpoint is not None:")
+    models_ready_pos = source.index('"clef_tinystories_models_ready"')
+    assert checkpoint_restore_pos < signature_pos < models_ready_pos
+
+
+def test_frozen_backbone_signature_is_not_captured_immediately_after_base_load():
+    source = TRAIN_TOOL.read_text(encoding="utf-8")
+    frozen_bundle_pos = source.index(
+        "frozen_bundles = {label: bundles[label] for label in FROZEN_LABELS}"
+    )
+    head_build_pos = source.index('logger.set_stage("head_build")', frozen_bundle_pos)
+    between = source[frozen_bundle_pos:head_build_pos]
+    assert "frozen_signatures" not in between

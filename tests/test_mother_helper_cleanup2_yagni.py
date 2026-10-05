@@ -91,10 +91,14 @@ class _ServiceLineRestartRunner:
         self.opener = opener
         self.status = status
         self.returncode = returncode
+        self.cleanup_reads_at_calls: list[int | None] = []
 
     def __call__(self, argv, **kwargs):  # noqa: ANN001
         argv = list(argv)
         self.calls.append({"argv": argv, "kwargs": dict(kwargs)})
+        self.cleanup_reads_at_calls.append(
+            getattr(self.opener, "cleanup_execution_reads", None) if self.opener is not None else None
+        )
         controller_id = argv[argv.index("--controller-id") + 1]
         service_uuid = argv[argv.index("--service-uuid") + 1]
         service_line = argv[argv.index("--service-line") + 1]
@@ -275,6 +279,7 @@ class _Cleanup2Opener:
         service_detail_as_json_string: bool = False,
         service_detail_status: int = 200,
         cleanup_delete_visibility_lag: int = 0,
+        cleanup_execution_sequence: list[list[dict]] | None = None,
     ) -> None:
         self.requests: list[dict] = []
         self.patched_compose: str | None = None
@@ -284,6 +289,8 @@ class _Cleanup2Opener:
         self.service_detail_status = service_detail_status
         self.cleanup_delete_visibility_lag = cleanup_delete_visibility_lag
         self.cleanup_inventory_reads_after_delete = 0
+        self.cleanup_execution_sequence = cleanup_execution_sequence or [[]]
+        self.cleanup_execution_reads = 0
 
     def _parent_service_payload(self):
         payload = {
@@ -355,6 +362,11 @@ class _Cleanup2Opener:
         assert request.headers.get("Authorization") == f"Bearer {TOKEN_C}"
         assert timeout > 0
 
+        if method == "GET" and path == "/api/v1/servers/server-c/docker-cleanup/executions":
+            index = min(self.cleanup_execution_reads, len(self.cleanup_execution_sequence) - 1)
+            payload = self.cleanup_execution_sequence[index]
+            self.cleanup_execution_reads += 1
+            return _Response(payload)
         if method == "GET" and path == f"/api/v1/services/{SERVICE_UUID}":
             if self.service_detail_status == 404:
                 return _Response({"message": "Service not found"}, status=404)
@@ -1259,6 +1271,226 @@ def test_cleanup2_yagni_skips_missing_topology_service_404(tmp_path: Path) -> No
     assert [(item["method"], item["path"]) for item in opener.requests] == [
         ("GET", f"/api/v1/services/{SERVICE_UUID}")
     ]
+
+
+
+class _Cleanup2PrimaryUnhealthyAfterCleanupDeleteOpener(_Cleanup2Opener):
+    def _parent_service_payload(self):
+        payload = super()._parent_service_payload()
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if any(item["method"] == "DELETE" for item in self.requests):
+            payload["status"] = "degraded:unhealthy"
+            for record in payload.get("applications", []):
+                if record.get("name") == "mainnetc-super2":
+                    record["status"] = "exited"
+                    record["exclude_from_status"] = True
+        if self.service_detail_as_json_string:
+            return json.dumps(payload)
+        return payload
+
+
+def _primary_restart_calls(runner: _ServiceLineRestartRunner) -> list[dict]:
+    return [
+        call
+        for call in runner.calls
+        if call["argv"][call["argv"].index("--service-line") + 1] == "mainnetc-super2"
+    ]
+
+
+def test_cleanup2_yagni_waits_for_active_cleanup_before_primary_restart(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2Opener(
+        cleanup_execution_sequence=[
+            [{"uuid": "cleanup-active", "status": "running", "finished_at": None}],
+            [{"uuid": "cleanup-active", "status": "completed", "finished_at": "2026-10-05T00:00:01Z"}],
+        ]
+    )
+    block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
+    sleeps: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=5,
+        poll_interval_seconds=1,
+        opener=opener,
+        sleeper=sleeps.append,
+        block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
+    )
+
+    assert result["status"] == "pass"
+    primary_calls = _primary_restart_calls(service_line_restart)
+    assert len(primary_calls) == 1
+    primary_index = service_line_restart.calls.index(primary_calls[0])
+    assert service_line_restart.cleanup_reads_at_calls[primary_index] >= 2
+    first_attempt = result["cleanup_boundary_attempts"][0]["attempts"][0]
+    assert first_attempt["pre_restart_cleanup_clear"]["completed"] is True
+    assert len(first_attempt["pre_restart_cleanup_clear"]["checks"]) == 2
+    assert 1 in sleeps
+
+
+def test_cleanup2_yagni_cleanup_overlap_retries_primary_restart_once(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2Opener(
+        cleanup_execution_sequence=[
+            [],
+            [{"uuid": "cleanup-race-1", "status": "running", "finished_at": None}],
+            [{"uuid": "cleanup-race-1", "status": "completed", "finished_at": "2026-10-05T00:00:02Z"}],
+            [{"uuid": "cleanup-race-1", "status": "completed", "finished_at": "2026-10-05T00:00:02Z"}],
+            [{"uuid": "cleanup-race-1", "status": "completed", "finished_at": "2026-10-05T00:00:02Z"}],
+        ]
+    )
+    block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=5,
+        poll_interval_seconds=1,
+        opener=opener,
+        sleeper=lambda _seconds: None,
+        block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
+    )
+
+    assert result["status"] == "pass"
+    assert len(_primary_restart_calls(service_line_restart)) == 2
+    assert result["summary"]["cleanup_boundary_overlap_detected"] is True
+    assert result["summary"]["cleanup_boundary_retry_count"] == 1
+    assert result["summary"]["cleanup_boundary_restart_attempt_count"] == 2
+    assert result["summary"]["cleanup_boundary_second_overlap"] is False
+    assert result["summary"]["cleanup_boundary_all_passed"] is True
+    attempts = result["cleanup_boundary_attempts"][0]["attempts"]
+    assert attempts[0]["boundary_wait"]["reason"] == "cleanup-overlap"
+    assert attempts[0]["cleanup_terminal_wait"]["completed"] is True
+    assert attempts[1]["boundary_wait"]["completed"] is True
+    assert len(block_waiter.calls) == 1
+
+
+def test_cleanup2_yagni_second_cleanup_overlap_has_no_third_primary_restart(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2Opener(
+        cleanup_execution_sequence=[
+            [],
+            [{"uuid": "cleanup-race-1", "status": "running", "finished_at": None}],
+            [{"uuid": "cleanup-race-1", "status": "completed", "finished_at": "2026-10-05T00:00:02Z"}],
+            [{"uuid": "cleanup-race-1", "status": "completed", "finished_at": "2026-10-05T00:00:02Z"}],
+            [
+                {"uuid": "cleanup-race-1", "status": "completed", "finished_at": "2026-10-05T00:00:02Z"},
+                {"uuid": "cleanup-race-2", "status": "running", "finished_at": None},
+            ],
+        ]
+    )
+    block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=5,
+        poll_interval_seconds=1,
+        opener=opener,
+        sleeper=lambda _seconds: None,
+        block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
+    )
+
+    assert result["status"] == "failed"
+    assert len(_primary_restart_calls(service_line_restart)) == 2
+    assert len(block_waiter.calls) == 0
+    assert result["summary"]["cleanup_boundary_restart_attempt_count"] == 2
+    assert result["summary"]["cleanup_boundary_retry_count"] == 1
+    assert result["summary"]["cleanup_boundary_second_overlap"] is True
+    assert result["summary"]["cleanup_boundary_all_passed"] is False
+
+
+def test_cleanup2_yagni_waits_for_cleanup_triggered_after_block_waiter(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2Opener(
+        cleanup_execution_sequence=[
+            [],
+            [],
+            [{"uuid": "cleanup-after-block", "status": "running", "finished_at": None}],
+            [{"uuid": "cleanup-after-block", "status": "completed", "finished_at": "2026-10-05T00:00:04Z"}],
+        ]
+    )
+    block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
+    sleeps: list[float] = []
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=5,
+        poll_interval_seconds=1,
+        opener=opener,
+        sleeper=sleeps.append,
+        block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["post_block_cleanup_quiescent"] is True
+    assert len(result["post_block_cleanup_quiescence"]) == 1
+    assert len(result["post_block_cleanup_quiescence"][0]["checks"]) == 2
+    assert result["summary"]["final_primary_applications_all_running"] is True
+    assert len(result["final_primary_application_checks"]) == 1
+    assert 1 in sleeps
+
+
+def test_cleanup2_yagni_final_primary_health_fails_after_cleanup_on_clean_boundary(tmp_path: Path) -> None:
+    runtime, private_state, topology_path = _install(tmp_path)
+    opener = _Cleanup2PrimaryUnhealthyAfterCleanupDeleteOpener(
+        cleanup_execution_sequence=[
+            [],
+            [],
+            [],
+            [{"uuid": "cleanup-after-delete", "status": "running", "finished_at": None}],
+            [{"uuid": "cleanup-after-delete", "status": "completed", "finished_at": "2026-10-05T00:00:05Z"}],
+        ]
+    )
+    block_waiter = _BlockAdvanceWaiterRunner()
+    service_line_restart = _ServiceLineRestartRunner(opener=opener)
+
+    result = run_helper_cleanup2_yagni(
+        private_state,
+        runtime_state_root=runtime,
+        network="mainnet",
+        topology_evidence=topology_path,
+        mode="execute",
+        max_wait_seconds=5,
+        poll_interval_seconds=1,
+        opener=opener,
+        sleeper=lambda _seconds: None,
+        block_advance_waiter_runner=block_waiter,
+        service_line_restart_helper_runner=service_line_restart,
+        cleanup_on_clean=True,
+    )
+
+    assert result["status"] == "failed"
+    assert result["summary"]["cleanup_on_clean_all_deleted"] is True
+    assert result["summary"]["post_cleanup_on_clean_quiescent"] is True
+    assert len(result["post_cleanup_on_clean_quiescence"]) == 1
+    assert result["summary"]["final_primary_applications_all_running"] is False
+    assert len(result["final_primary_application_checks"]) == 1
+    assert result["final_primary_application_checks"][0]["completed"] is False
+    assert result["final_primary_application_checks"][0]["reason"] == "primary-application-terminal-after-parent-restart"
 
 
 def test_cleanup2_yagni_parser_accepts_cleanup_on_clean() -> None:

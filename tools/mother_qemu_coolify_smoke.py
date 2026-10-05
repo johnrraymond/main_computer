@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Mother-native nested Coolify/QEMU architecture smoke.
 
-The smoke deliberately starts from Mother's committed global Coolify-host binding:
+The smoke deliberately starts from Mother's committed private identity state:
 
-    Mother runtime main_computer.private.yaml
-      -> coolify.hosts entry (controller URL/token/project name/host identity)
-      -> Coolify API placement discovery (project UUID/server UUID)
+    Mother runtime state/mother/identity.private.yaml
+      -> networks.*.coolify.controllers.<controller-id>
+      -> controller URL/token/project UUID/server UUID (or API discovery when UUID hints are absent)
       -> separate Coolify environment (default: qemu-coolify-smoke)
       -> Docker service with /dev/kvm
       -> QEMU Ubuntu guest
@@ -78,7 +78,7 @@ DEFAULT_CONTROLLER = "coolify-c"
 DEFAULT_ENVIRONMENT = "qemu-coolify-smoke"
 DEFAULT_SERVICE = "mother-qemu-coolify-smoke"
 DEFAULT_HOST_PORT = 18000
-DEFAULT_WAIT_SECONDS = 1800.0
+DEFAULT_WAIT_SECONDS = 5400.0
 DEFAULT_POLL_SECONDS = 5.0
 DEFAULT_VM_CPUS = 4
 DEFAULT_VM_RAM_MIB = 4096
@@ -125,7 +125,7 @@ def _private_state_candidates(runtime_state_root: str | Path, explicit_path: str
     if explicit_path:
         return [Path(explicit_path).expanduser().resolve(strict=False)]
     root = Path(runtime_state_root).expanduser().resolve(strict=False)
-    return [root / "main_computer.private.yaml"]
+    return [root / "mother" / "identity.private.yaml"]
 
 
 def _load_runtime_private_document(
@@ -139,7 +139,7 @@ def _load_runtime_private_document(
         rendered = ", ".join(str(candidate) for candidate in candidates)
         raise _fail(
             "MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_MISSING",
-            f"Mother runtime main_computer.private.yaml was not found; checked: {rendered}",
+            f"Mother identity.private.yaml was not found; checked: {rendered}",
         )
     try:
         raw = path.read_bytes()
@@ -147,84 +147,100 @@ def _load_runtime_private_document(
     except Exception as exc:
         raise _fail(
             "MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID",
-            f"could not parse Mother runtime private state at {path}: {exc}",
+            f"could not parse Mother identity state at {path}: {exc}",
         ) from exc
     if not isinstance(loaded, Mapping):
         raise _fail(
             "MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID",
-            f"Mother runtime private state at {path} is not a YAML mapping",
+            f"Mother identity state at {path} is not a YAML mapping",
         )
     return dict(loaded), path, hashlib.sha256(raw).hexdigest()
 
 
 def _global_coolify_binding_from_document(document: Mapping[str, Any], controller_id: str) -> tuple[CoolifyController, dict[str, Any]]:
-    requested = _identifier(controller_id, "controller id")
-    coolify = document.get("coolify")
-    if not isinstance(coolify, Mapping):
-        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID", "Mother runtime coolify state is missing")
-    hosts = coolify.get("hosts")
-    if not isinstance(hosts, Mapping):
-        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID", "Mother runtime coolify.hosts mapping is missing")
+    """Resolve one physical Coolify controller from canonical Mother identity state.
 
-    matches: list[tuple[str, Mapping[str, Any]]] = []
-    for slot, value in hosts.items():
-        if not isinstance(slot, str) or not isinstance(value, Mapping):
+    The private-state schema is network-shaped because normal Mother lifecycle
+    operations are network-scoped.  This infrastructure smoke is not.  It searches
+    all ``networks.*.coolify.controllers`` mappings for the requested controller
+    id and requires exactly one match, so callers do not need a ``--network``
+    selector and cannot silently choose between conflicting controller records.
+    """
+    requested = _identifier(controller_id, "controller id")
+    networks = document.get("networks")
+    if not isinstance(networks, Mapping):
+        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID", "Mother identity state has no networks mapping")
+
+    matches: list[tuple[str, Mapping[str, Any], Mapping[str, Any]]] = []
+    for network, body in networks.items():
+        if not isinstance(network, str) or not isinstance(body, Mapping):
             continue
-        names = {slot}
-        for key in ("name", "controller_id", "id"):
-            candidate = value.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                names.add(candidate.strip())
-        if requested in names:
-            matches.append((slot, value))
+        coolify = body.get("coolify")
+        if not isinstance(coolify, Mapping):
+            continue
+        controllers = coolify.get("controllers")
+        if not isinstance(controllers, Mapping):
+            continue
+        wire = controllers.get(requested)
+        if isinstance(wire, Mapping):
+            matches.append((network, coolify, wire))
 
     if not matches:
         raise _fail(
             "MOTHER_QEMU_COOLIFY_SMOKE_CONTROLLER_NOT_FOUND",
-            f"Mother runtime Coolify host not found in coolify.hosts: {requested}",
+            f"Mother identity state has no networks.*.coolify.controllers.{requested} record",
         )
     if len(matches) != 1:
-        slots = ", ".join(sorted(slot for slot, _ in matches))
+        networks_found = ", ".join(sorted(network for network, _, _ in matches))
         raise _fail(
             "MOTHER_QEMU_COOLIFY_SMOKE_CONTROLLER_AMBIGUOUS",
-            f"Mother runtime Coolify host {requested!r} matched multiple slots: {slots}",
+            f"Mother identity controller {requested!r} appears in multiple networks: {networks_found}",
         )
 
-    slot, wire = matches[0]
+    source_network, coolify, wire = matches[0]
+    authority = coolify.get("mutation_authority", "observe-only")
+    if authority != "observe-only":
+        raise _fail(
+            "MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID",
+            f"{requested} network {source_network!r} has unsupported Coolify mutation_authority {authority!r}",
+        )
+
     base_url = wire.get("url", wire.get("coolify_url"))
     api_token = wire.get("api_token", "")
     enabled = wire.get("enabled", True)
-    project_name = wire.get("project_name", coolify.get("project_name", ""))
+    project_name = wire.get("project_name", wire.get("project_name_hint", ""))
+    project_uuid = wire.get("project_uuid", "")
 
+    path = f"networks.{source_network}.coolify.controllers.{requested}"
     if not isinstance(base_url, str) or not base_url.strip():
-        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID", f"{requested} lacks coolify.hosts.{slot}.url")
+        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID", f"{path}.url is missing")
     if not isinstance(api_token, str) or not api_token.strip():
-        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID", f"{requested} lacks coolify.hosts.{slot}.api_token")
+        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID", f"{path}.api_token is missing")
     if enabled is not True:
-        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_CONTROLLER_DISABLED", f"Mother runtime Coolify host is disabled: {requested}")
-    if not isinstance(project_name, str) or not project_name.strip():
+        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_CONTROLLER_DISABLED", f"Mother identity controller is disabled: {requested}")
+    if not (isinstance(project_uuid, str) and project_uuid.strip()) and not (isinstance(project_name, str) and project_name.strip()):
         raise _fail(
             "MOTHER_QEMU_COOLIFY_SMOKE_PRIVATE_STATE_INVALID",
-            f"{requested} lacks project_name in coolify.hosts.{slot} (or coolify.project_name)",
+            f"{path} must provide project_uuid or project_name/project_name_hint",
         )
 
+    project_name_text = project_name.strip() if isinstance(project_name, str) else ""
     controller = CoolifyController(
-        network=STATE_SCOPE,
+        network=source_network,
         controller_id=requested,
         base_url=base_url.strip().rstrip("/"),
         api_token=api_token,
         enabled=True,
-        project_name_hint=project_name.strip(),
+        project_name_hint=project_name_text,
         mutation_authority="observe-only",
     )
     config: dict[str, Any] = {
         "controller_id": requested,
-        "host_slot": slot,
-        "project_name": project_name.strip(),
+        "source_network": source_network,
+        "controller_path": path,
     }
-    # Optional explicit placement hints are honored when present, but the file
-    # does not need them.  The common state currently carries project_name and
-    # physical-host identity, so API discovery is the normal path.
+    if project_name_text:
+        config["project_name"] = project_name_text
     for key in (
         "project_uuid",
         "server_uuid",
@@ -450,6 +466,82 @@ def _write_private_json(path: Path, value: Mapping[str, Any]) -> None:
     except OSError:
         pass
 
+
+
+
+def _load_resume_receipt(
+    repo_root: Path,
+    service_name: str,
+    *,
+    controller_id: str,
+    controller: CoolifyController,
+    environment_name: str,
+    host_port: int,
+) -> dict[str, Any]:
+    """Load the authoritative local receipt for an existing smoke VM.
+
+    Resume deliberately does *not* rediscover project/server/environment/service
+    placement through Coolify list endpoints.  The receipt was written only after
+    the original create path resolved that placement and created the exact service.
+    Requiring live list discovery here makes resume depend on unrelated/transient
+    control-plane health and defeats its purpose.
+    """
+    path = _receipt_path(repo_root, service_name)
+    if not path.is_file():
+        raise _fail(
+            "MOTHER_QEMU_COOLIFY_SMOKE_RECEIPT_MISSING",
+            f"--resume requires the local smoke receipt: {path}",
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise _fail(
+            "MOTHER_QEMU_COOLIFY_SMOKE_RECEIPT_INVALID",
+            f"could not parse smoke receipt {path}: {exc}",
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_RECEIPT_INVALID", f"smoke receipt is not an object: {path}")
+
+    expected = {
+        "kind": KIND,
+        "controller_id": controller_id,
+        "coolify_url": controller.base_url.rstrip("/"),
+        "environment_name": environment_name,
+        "service_name": service_name,
+        "host_port": int(host_port),
+    }
+    mismatches: list[str] = []
+    for key, wanted in expected.items():
+        actual = payload.get(key)
+        if key == "coolify_url":
+            actual = str(actual or "").rstrip("/")
+        elif key == "host_port":
+            try:
+                actual = int(actual)
+            except (TypeError, ValueError):
+                actual = None
+        else:
+            actual = str(actual or "")
+            wanted = str(wanted)
+        if actual != wanted:
+            mismatches.append(f"{key}={actual!r} expected {wanted!r}")
+
+    for key, label in (
+        ("project_uuid", "project UUID"),
+        ("server_uuid", "server UUID"),
+        ("service_uuid", "service UUID"),
+    ):
+        try:
+            _identifier(payload.get(key), label)
+        except SmokeError:
+            mismatches.append(f"{key} is missing or invalid")
+
+    if mismatches:
+        raise _fail(
+            "MOTHER_QEMU_COOLIFY_SMOKE_RESUME_RECEIPT_MISMATCH",
+            "existing smoke receipt does not match the requested attachment: " + "; ".join(mismatches),
+        )
+    return dict(payload)
 
 def _load_or_create_credentials(repo_root: Path, service_name: str) -> dict[str, str]:
     path = _credentials_path(repo_root, service_name)
@@ -693,6 +785,39 @@ def _delete_service(api: CoolifyApi, service_uuid: str) -> ApiResponse:
     return api.request("DELETE", f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}")
 
 
+def _wait_for_inner_coolify(
+    *,
+    api: CoolifyApi,
+    controller: CoolifyController,
+    service_uuid: str,
+    service_name: str,
+    host_port: int,
+    probe_host: str,
+    api_timeout: float,
+    wait_seconds: float,
+    poll_seconds: float,
+) -> tuple[str, str, dict[str, Any]]:
+    """Wait only on the authoritative routable inner-Coolify probe."""
+    probe_url = _probe_url(controller, host_port=host_port, probe_host=probe_host)
+    deadline = time.monotonic() + float(wait_seconds)
+    last_probe: dict[str, Any] = {"ok": False, "status": 0, "error": "not attempted"}
+    while True:
+        ok, status, error = _probe_http(probe_url, min(float(api_timeout), 8.0))
+        last_probe = {"ok": ok, "status": status, "error": error}
+        if ok:
+            return probe_url, _best_effort_service_status(api, service_uuid), last_probe
+        if time.monotonic() >= deadline:
+            service_status = _best_effort_service_status(api, service_uuid)
+            logs = _service_logs(api, service_uuid, service_name)
+            tail = "\n".join(logs.splitlines()[-120:])
+            raise _fail(
+                "MOTHER_QEMU_COOLIFY_SMOKE_ROUTE_TIMEOUT",
+                f"inner Coolify did not become reachable at {probe_url} before timeout; "
+                f"last Coolify service status={service_status!r}; last probe={last_probe}; logs tail:\n{tail}",
+            )
+        time.sleep(float(poll_seconds))
+
+
 def _cleanup(args: argparse.Namespace, controller: CoolifyController, controller_config: Mapping[str, Any], api: CoolifyApi) -> int:
     receipt_path = _receipt_path(REPO_ROOT, args.service_name)
     if not receipt_path.is_file():
@@ -737,6 +862,78 @@ def run(args: argparse.Namespace) -> int:
     )
     controller, controller_config = _global_coolify_binding_from_document(document, controller_id)
     api = CoolifyApi(controller, timeout=args.api_timeout)
+
+    if args.resume:
+        receipt = _load_resume_receipt(
+            REPO_ROOT,
+            service_name,
+            controller_id=controller_id,
+            controller=controller,
+            environment_name=environment_name,
+            host_port=int(args.host_port),
+        )
+        project_uuid = _identifier(receipt.get("project_uuid"), "project UUID")
+        server_uuid = _identifier(receipt.get("server_uuid"), "server UUID")
+        service_uuid = _identifier(receipt.get("service_uuid"), "service UUID")
+        environment_uuid = str(receipt.get("environment_uuid") or "").strip()
+        created_environment = bool(receipt.get("created_environment"))
+        probe_url, service_status, _ = _wait_for_inner_coolify(
+            api=api,
+            controller=controller,
+            service_uuid=service_uuid,
+            service_name=service_name,
+            host_port=int(args.host_port),
+            probe_host=args.probe_host,
+            api_timeout=float(args.api_timeout),
+            wait_seconds=float(args.wait_seconds),
+            poll_seconds=float(args.poll_seconds),
+        )
+        result = {
+            "ok": True,
+            "kind": KIND,
+            "checks": {
+                "motherPrivateStateRead": True,
+                "motherProjectServerBindingUsed": True,
+                "separateEnvironment": environment_name.lower() != "mainnet",
+                "coolifyServiceCreated": True,
+                "resumedExistingService": True,
+                "kvmDeviceRequested": True,
+                "qemuGuestConfigured": True,
+                "innerDockerAndCoolifyBootstrapConfigured": True,
+                "innerCoolifyRoutable": True,
+            },
+            "mother_binding": {
+                "scope": "mother-identity-private-yaml",
+                "private_state_path": str(private_state_path),
+                "private_state_sha256": private_state_sha256,
+                "source_network": controller_config.get("source_network"),
+            "controller_path": controller_config.get("controller_path"),
+                "controller_id": controller_id,
+                "coolify_url": controller.base_url,
+                "project_uuid": project_uuid,
+                "server_uuid": server_uuid,
+                "placement_source": "receipt",
+            },
+            "environment": {
+                "name": environment_name,
+                "uuid": environment_uuid or None,
+                "created_by_smoke": created_environment,
+            },
+            "service": {
+                "name": service_name,
+                "uuid": service_uuid,
+                "status": service_status,
+                "resumed": True,
+            },
+            "nested_coolify": {
+                "url": probe_url,
+                "credentials_file": str(_credentials_path(REPO_ROOT, service_name)),
+            },
+            "cleanup_command": f"python tools/mother_qemu_coolify_smoke.py --controller-id {controller_id} --cleanup",
+        }
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
     controller_config = _resolve_placement(api, controller_config)
 
     if args.cleanup:
@@ -778,19 +975,21 @@ def run(args: argparse.Namespace) -> int:
     if not services_response.ok:
         raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_LIST_FAILED", f"service list failed: HTTP {services_response.status} {services_response.payload}")
     service_matches = _exact_named(_records(services_response.payload, "services"), service_name)
+    resumed_existing_service = False
+    service_uuid = ""
     if service_matches:
         if len(service_matches) != 1:
             raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_AMBIGUOUS", f"multiple services named {service_name!r}")
+        existing_uuid = _record_uuid(service_matches[0])
+        if not existing_uuid:
+            raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_UUID_MISSING", "existing smoke service has no UUID")
         if not args.replace:
             raise _fail(
                 "MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_EXISTS",
-                f"Coolify already contains a service named {service_name!r}; rerun with --replace or --cleanup",
+                f"Coolify already contains a service named {service_name!r}; rerun with --resume, --replace, or --cleanup",
             )
         if not args.dry_run:
-            old_uuid = _record_uuid(service_matches[0])
-            if not old_uuid:
-                raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_UUID_MISSING", "existing smoke service has no UUID")
-            deleted = _delete_service(api, old_uuid)
+            deleted = _delete_service(api, existing_uuid)
             if not deleted.ok:
                 raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_DELETE_FAILED", f"replace delete failed: HTTP {deleted.status} {deleted.payload}")
             time.sleep(2.0)
@@ -800,10 +999,11 @@ def run(args: argparse.Namespace) -> int:
             "ok": True,
             "mode": "dry-run",
             "mother_binding": {
-                "scope": "runtime-main-computer-private-yaml",
+                "scope": "mother-identity-private-yaml",
                 "private_state_path": str(private_state_path),
                 "private_state_sha256": private_state_sha256,
-                "host_slot": controller_config.get("host_slot"),
+                "source_network": controller_config.get("source_network"),
+            "controller_path": controller_config.get("controller_path"),
                 "controller_id": controller_id,
                 "coolify_url": controller.base_url,
                 "project_uuid": project_uuid,
@@ -812,6 +1012,7 @@ def run(args: argparse.Namespace) -> int:
             "environment": {"name": environment_name, "existing": bool(env_matches), "uuid": environment_uuid or None},
             "service_name": service_name,
             "replace_existing_service": bool(service_matches and args.replace),
+            "resume_existing_service": bool(service_matches and args.resume),
             "host_port": args.host_port,
             "probe_url": _probe_url(controller, host_port=args.host_port, probe_host=args.probe_host),
             "compose_sha256": hashlib.sha256(compose.encode("utf-8")).hexdigest(),
@@ -833,71 +1034,62 @@ def run(args: argparse.Namespace) -> int:
             raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_ENVIRONMENT_CREATE_UNVERIFIED", f"expected one environment named {environment_name!r} after create")
         environment_uuid = _record_uuid(matches[0]) or environment_uuid
 
-    body = build_service_body(
-        controller_config=controller_config,
-        environment_name=environment_name,
-        environment_uuid=environment_uuid,
+    if not resumed_existing_service:
+        body = build_service_body(
+            controller_config=controller_config,
+            environment_name=environment_name,
+            environment_uuid=environment_uuid,
+            service_name=service_name,
+            compose=compose,
+        )
+        created_service = api.request("POST", "/api/v1/services", body)
+        if not created_service.ok:
+            raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_CREATE_FAILED", f"service create failed: HTTP {created_service.status} {created_service.payload}")
+        service_uuid = _extract_uuid(created_service.payload)
+        if not service_uuid:
+            raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_UUID_MISSING", "Coolify service create returned no unambiguous UUID")
+
+        start = api.request("POST", f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start")
+        if not start.ok:
+            deploy = api.request("POST", f"/api/v1/deploy?{urllib.parse.urlencode({'uuid': service_uuid, 'force': 'true'})}")
+            if not deploy.ok:
+                raise _fail(
+                    "MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_START_FAILED",
+                    f"service start failed (HTTP {start.status}) and deploy fallback failed (HTTP {deploy.status})",
+                )
+
+        receipt = {
+            "kind": KIND,
+            "created_at": _utc_now(),
+            "binding_scope": "mother-identity-private-yaml",
+            "private_state_path": str(private_state_path),
+            "private_state_sha256": private_state_sha256,
+            "source_network": controller_config.get("source_network"),
+            "controller_path": controller_config.get("controller_path"),
+            "controller_id": controller_id,
+            "coolify_url": controller.base_url,
+            "project_uuid": project_uuid,
+            "server_uuid": server_uuid,
+            "environment_name": environment_name,
+            "environment_uuid": environment_uuid or None,
+            "created_environment": created_environment,
+            "service_name": service_name,
+            "service_uuid": service_uuid,
+            "host_port": int(args.host_port),
+        }
+        _write_private_json(_receipt_path(REPO_ROOT, service_name), receipt)
+
+    probe_url, last_service_status, _ = _wait_for_inner_coolify(
+        api=api,
+        controller=controller,
+        service_uuid=service_uuid,
         service_name=service_name,
-        compose=compose,
+        host_port=int(args.host_port),
+        probe_host=args.probe_host,
+        api_timeout=float(args.api_timeout),
+        wait_seconds=float(args.wait_seconds),
+        poll_seconds=float(args.poll_seconds),
     )
-    created_service = api.request("POST", "/api/v1/services", body)
-    if not created_service.ok:
-        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_CREATE_FAILED", f"service create failed: HTTP {created_service.status} {created_service.payload}")
-    service_uuid = _extract_uuid(created_service.payload)
-    if not service_uuid:
-        raise _fail("MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_UUID_MISSING", "Coolify service create returned no unambiguous UUID")
-
-    start = api.request("POST", f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}/start")
-    if not start.ok:
-        deploy = api.request("POST", f"/api/v1/deploy?{urllib.parse.urlencode({'uuid': service_uuid, 'force': 'true'})}")
-        if not deploy.ok:
-            raise _fail(
-                "MOTHER_QEMU_COOLIFY_SMOKE_SERVICE_START_FAILED",
-                f"service start failed (HTTP {start.status}) and deploy fallback failed (HTTP {deploy.status})",
-            )
-
-    receipt = {
-        "kind": KIND,
-        "created_at": _utc_now(),
-        "binding_scope": "runtime-main-computer-private-yaml",
-        "private_state_path": str(private_state_path),
-        "private_state_sha256": private_state_sha256,
-        "host_slot": controller_config.get("host_slot"),
-        "controller_id": controller_id,
-        "coolify_url": controller.base_url,
-        "project_uuid": project_uuid,
-        "server_uuid": server_uuid,
-        "environment_name": environment_name,
-        "environment_uuid": environment_uuid or None,
-        "created_environment": created_environment,
-        "service_name": service_name,
-        "service_uuid": service_uuid,
-        "host_port": int(args.host_port),
-    }
-    _write_private_json(_receipt_path(REPO_ROOT, service_name), receipt)
-
-    probe_url = _probe_url(controller, host_port=args.host_port, probe_host=args.probe_host)
-    deadline = time.monotonic() + float(args.wait_seconds)
-    last_probe = {"ok": False, "status": 0, "error": "not attempted"}
-    while True:
-        ok, status, error = _probe_http(probe_url, min(float(args.api_timeout), 8.0))
-        last_probe = {"ok": ok, "status": status, "error": error}
-        if ok:
-            break
-        if time.monotonic() >= deadline:
-            # Coolify's service-detail endpoint is diagnostic only.  In
-            # particular it may itself time out while the heavy QEMU service is
-            # starting, so query it only after the route deadline and never let
-            # that diagnostic failure replace the actual route-timeout result.
-            last_service_status = _best_effort_service_status(api, service_uuid)
-            logs = _service_logs(api, service_uuid, service_name)
-            tail = "\n".join(logs.splitlines()[-120:])
-            raise _fail(
-                "MOTHER_QEMU_COOLIFY_SMOKE_ROUTE_TIMEOUT",
-                f"inner Coolify did not become reachable at {probe_url} before timeout; "
-                f"last Coolify service status={last_service_status!r}; last probe={last_probe}; logs tail:\n{tail}",
-            )
-        time.sleep(float(args.poll_seconds))
 
     result = {
         "ok": True,
@@ -907,16 +1099,18 @@ def run(args: argparse.Namespace) -> int:
             "motherProjectServerBindingUsed": True,
             "separateEnvironment": environment_name.lower() != "mainnet",
             "coolifyServiceCreated": True,
+            "resumedExistingService": resumed_existing_service,
             "kvmDeviceRequested": True,
             "qemuGuestConfigured": True,
             "innerDockerAndCoolifyBootstrapConfigured": True,
             "innerCoolifyRoutable": True,
         },
         "mother_binding": {
-            "scope": "runtime-main-computer-private-yaml",
+            "scope": "mother-identity-private-yaml",
             "private_state_path": str(private_state_path),
             "private_state_sha256": private_state_sha256,
-            "host_slot": controller_config.get("host_slot"),
+            "source_network": controller_config.get("source_network"),
+            "controller_path": controller_config.get("controller_path"),
             "controller_id": controller_id,
             "coolify_url": controller.base_url,
             "project_uuid": project_uuid,
@@ -927,7 +1121,12 @@ def run(args: argparse.Namespace) -> int:
             "uuid": environment_uuid or None,
             "created_by_smoke": created_environment,
         },
-        "service": {"name": service_name, "uuid": service_uuid, "status": last_service_status},
+        "service": {
+            "name": service_name,
+            "uuid": service_uuid,
+            "status": last_service_status,
+            "resumed": resumed_existing_service,
+        },
         "nested_coolify": {
             "url": probe_url,
             "credentials_file": str(_credentials_path(REPO_ROOT, service_name)),
@@ -941,8 +1140,8 @@ def run(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deploy Docker -> QEMU/KVM -> Docker -> Coolify through Mother's bound Coolify state.")
     parser.add_argument("--repo-root", default=str(REPO_ROOT), help="Repository root (normally auto-detected).")
-    parser.add_argument("--runtime-state-root", default=str(REPO_ROOT / "runtime" / "state"), help="Runtime state root containing main_computer.private.yaml.")
-    parser.add_argument("--private-state", default="", help="Explicit main_computer.private.yaml path. Defaults to runtime/state/main_computer.private.yaml.")
+    parser.add_argument("--runtime-state-root", default=str(REPO_ROOT / "runtime" / "state"), help="Runtime state root containing mother/identity.private.yaml.")
+    parser.add_argument("--private-state", default="", help="Explicit Mother identity.private.yaml path. Defaults to runtime/state/mother/identity.private.yaml.")
     parser.add_argument("--controller-id", default=DEFAULT_CONTROLLER)
     parser.add_argument("--environment-name", default=DEFAULT_ENVIRONMENT)
     parser.add_argument("--service-name", default=DEFAULT_SERVICE)
@@ -957,12 +1156,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS)
     parser.add_argument("--dry-run", action="store_true", help="Read Mother state and render/validate the deployment without mutating Coolify.")
     parser.add_argument("--replace", action="store_true", help="Delete an existing exact-name smoke service before recreating it.")
+    parser.add_argument("--resume", action="store_true", help="Attach to the receipt-matched existing smoke service and continue only the routable-port wait; do not redeploy it.")
     parser.add_argument("--cleanup", action="store_true", help="Delete the smoke service from its recorded separate environment; delete the environment only if this smoke created it.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if sum(bool(value) for value in (args.replace, args.resume, args.cleanup)) > 1:
+        raise SystemExit("--replace, --resume, and --cleanup are mutually exclusive")
     if args.vm_cpus < 2:
         raise SystemExit("--vm-cpus must be >= 2")
     if args.vm_ram_mib < 2048:

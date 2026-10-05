@@ -548,8 +548,7 @@ def _cleanup_command(
         str(network),
         "--topology-evidence",
         str(topology_path),
-        "--acknowledge-topology-evidence-sha256",
-        str(topology_sha256),
+        f"--acknowledge-topology-evidence-sha256={topology_sha256}",
         "--timeout",
         str(float(timeout)),
         "--max-response-bytes",
@@ -587,8 +586,7 @@ def _broken_validator_cleanup_command(
         str(node),
         "--topology-evidence",
         str(topology_path),
-        "--acknowledge-topology-evidence-sha256",
-        str(topology_sha256),
+        f"--acknowledge-topology-evidence-sha256={topology_sha256}",
         "--topology-max-age-seconds",
         "900",
         "--timeout",
@@ -632,8 +630,7 @@ def _broken_validator_resume_command(
         str(node),
         "--topology-evidence",
         str(topology_path),
-        "--acknowledge-topology-evidence-sha256",
-        str(topology_sha256),
+        f"--acknowledge-topology-evidence-sha256={topology_sha256}",
         "--assessment-evidence",
         assessment_path,
         f"--acknowledge-assessment-evidence-sha256={assessment_sha256}",
@@ -836,6 +833,9 @@ def run_preflight_paranoia(
     broken_validator_operation_bootstrap = False
     broken_validator_operation_precedence = False
     broken_validator_cleanup_mode = None
+    stranded_remove_voter_cleanup_required = bool(
+        cleanup_required and _remove_voter_only_cleanup_state(active_helpers)
+    )
 
     if required_validator_unhealthy and len(required_validator_health_failures) == 1:
         broken_validator_cleanup_target = str(required_validator_health_failures[0]["node"])
@@ -850,10 +850,23 @@ def run_preflight_paranoia(
             and _remove_voter_only_cleanup_state(active_helpers)
         )
         broken_validator_operation_precedence = bool(
-            broken_validator_operation is not None or broken_validator_operation_bootstrap
+            (broken_validator_operation is not None or broken_validator_operation_bootstrap)
+            and not stranded_remove_voter_cleanup_required
         )
 
-    if broken_validator_operation_precedence:
+    if stranded_remove_voter_cleanup_required:
+        command = _cleanup_command(
+            python_executable=python_executable or sys.executable,
+            runtime_state_root=runtime_state_root,
+            network=network_name,
+            topology_path=topology_path,
+            topology_sha256=topology_sha256,
+            timeout=float(timeout),
+            max_response_bytes=int(max_response_bytes),
+            max_wait_seconds=float(max_wait_seconds),
+            poll_interval_seconds=float(poll_interval_seconds),
+        )
+    elif broken_validator_operation_precedence:
         if broken_validator_operation is not None:
             broken_validator_command = _broken_validator_resume_command(
                 python_executable=python_executable or sys.executable,
@@ -909,7 +922,9 @@ def run_preflight_paranoia(
         "kind": KIND,
         "schema_version": 1,
         "status": (
-            "broken-validator-recovery-required"
+            "stranded-remove-voter-cleanup-required"
+            if stranded_remove_voter_cleanup_required
+            else "broken-validator-recovery-required"
             if broken_validator_operation_precedence
             else "cleanup-required"
             if cleanup_required
@@ -923,6 +938,7 @@ def run_preflight_paranoia(
         "target_validator": target_validator,
         "read_only": True,
         "cleanup_required": cleanup_required,
+        "stranded_remove_voter_cleanup_required": stranded_remove_voter_cleanup_required,
         "cleanup_deferred_to_broken_validator_operation": bool(cleanup_required and broken_validator_operation_precedence),
         "required_validator_unhealthy": required_validator_unhealthy,
         "cleanup_command": command,
@@ -954,6 +970,7 @@ def run_preflight_paranoia(
             "broken_validator_cleanup_command_emitted": broken_validator_command is not None,
             "broken_validator_operation_precedence": broken_validator_operation_precedence,
             "broken_validator_operation_bootstrap": broken_validator_operation_bootstrap,
+            "stranded_remove_voter_cleanup_required": stranded_remove_voter_cleanup_required,
             "current_topology_marker_accepted": bool(topology.get("current_topology_marker_accepted")),
             "empty_topology_accepted_for_add_node": bool(topology.get("empty_topology_accepted_for_add_node")),
             "network_mutation_performed": False,
@@ -1002,11 +1019,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if result["cleanup_required"] and not result.get("cleanup_deferred_to_broken_validator_operation"):
-        print(
-            "MOTHER_PREFLIGHT_PARANOIA_CLEANUP_REQUIRED: "
-            f"{result['summary']['active_cleanup_helper_count']} active cleanup2-supported helper(s) "
-            f"found before {result['operation']}."
-        )
+        if result.get("stranded_remove_voter_cleanup_required"):
+            print(
+                "MOTHER_PREFLIGHT_PARANOIA_STRANDED_REMOVE_VOTER_CLEANUP_REQUIRED: "
+                "unfinished remove-voter helpers must be cleaned before broken-validator resume or any new mutation."
+            )
+        else:
+            print(
+                "MOTHER_PREFLIGHT_PARANOIA_CLEANUP_REQUIRED: "
+                f"{result['summary']['active_cleanup_helper_count']} active cleanup2-supported helper(s) "
+                f"found before {result['operation']}."
+            )
         if result["blocking_conflicts"]:
             print(
                 "MOTHER_PREFLIGHT_PARANOIA_BLOCKING_CONFLICTS: "

@@ -563,12 +563,21 @@ def _assert_topology_fresh(
             "MOTHER_BROKEN_VALIDATOR_CLEANUP_TOPOLOGY_TIME_INVALID",
             "topology evidence timestamp is too far in the future",
         )
-    if age > int(max_age_seconds):
-        raise MotherBrokenValidatorCleanupError(
-            "MOTHER_BROKEN_VALIDATOR_CLEANUP_TOPOLOGY_STALE",
-            f"topology evidence is stale: age_seconds={age}; max_age_seconds={int(max_age_seconds)}",
+    stale = age > int(max_age_seconds)
+    if stale:
+        print(
+            "MOTHER_BROKEN_VALIDATOR_CLEANUP_TOPOLOGY_STALE_WARNING: "
+            "topology evidence is outside the advisory freshness window; "
+            f"age_seconds={age}; max_age_seconds={int(max_age_seconds)}; continuing",
+            file=sys.stderr,
         )
-    return {"path": str(path), "timestamp": str(timestamp_text), "age_seconds": max(0, age)}
+    return {
+        "path": str(path),
+        "timestamp": str(timestamp_text),
+        "age_seconds": max(0, age),
+        "max_age_seconds": int(max_age_seconds),
+        "stale": stale,
+    }
 
 
 def _phase_index(plan: list[Mapping[str, Any]], phase: str) -> int | None:

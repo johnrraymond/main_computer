@@ -120,58 +120,103 @@ def test_probe_url_uses_mother_controller_host_by_default() -> None:
     assert smoke._probe_url(controller, host_port=18000, probe_host="10.9.8.7") == "http://10.9.8.7:18000/"
 
 
-def test_default_private_state_candidate_is_runtime_state_main_computer_private_yaml() -> None:
+
+
+class TimeoutApiPlaceholder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def request(self, method: str, endpoint: str, body=None):
+        self.calls.append((method, endpoint))
+        raise AssertionError("explicit identity UUIDs must avoid live placement discovery")
+
+
+def test_default_private_state_candidate_is_mother_identity_private_yaml() -> None:
     args = smoke.build_parser().parse_args([])
     expected_root = smoke.REPO_ROOT / "runtime" / "state"
     assert args.runtime_state_root == str(expected_root)
     candidates = smoke._private_state_candidates(args.runtime_state_root, args.private_state)
-    assert candidates == [expected_root / "main_computer.private.yaml"]
+    assert candidates == [expected_root / "mother" / "identity.private.yaml"]
 
 
-def test_load_runtime_private_document_reads_runtime_state_main_computer_private_yaml(tmp_path: Path) -> None:
-    target = tmp_path / "main_computer.private.yaml"
+def test_load_runtime_private_document_reads_mother_identity_private_yaml(tmp_path: Path) -> None:
+    target = tmp_path / "mother" / "identity.private.yaml"
+    target.parent.mkdir(parents=True)
     target.write_text(
-        yaml.safe_dump({"coolify": {"hosts": {"B": {"name": "coolify-b"}}}}),
+        yaml.safe_dump({
+            "schema_version": 1,
+            "kind": "main_computer.mother.private_state.v1",
+            "networks": {"mainnet": {"coolify": {"controllers": {}}}},
+        }),
         encoding="utf-8",
     )
     document, path, digest = smoke._load_runtime_private_document(tmp_path)
     assert path == target
-    assert document["coolify"]["hosts"]["B"]["name"] == "coolify-b"
+    assert "mainnet" in document["networks"]
     assert len(digest) == 64
 
 
-def test_global_controller_binding_matches_real_runtime_yaml_shape_without_network_or_uuids() -> None:
+def test_global_controller_binding_uses_canonical_mother_network_controller_record_without_network_selector() -> None:
     controller, config = smoke._global_coolify_binding_from_document(
         {
-            "coolify": {
-                "hosts": {
-                    "B": {
-                        "name": "coolify-b",
-                        "droplet_hostname": "coolify",
-                        "public_ip": "203.0.113.22",
-                        "vpn_ip": "10.124.0.3",
-                        "url": "https://coolify-b.example.test",
-                        "api_token": "1|test-token",
-                        "project_name": "My first project",
-                        "api_reachable": True,
+            "schema_version": 1,
+            "kind": "main_computer.mother.private_state.v1",
+            "networks": {
+                "mainnet": {
+                    "coolify": {
+                        "mutation_authority": "observe-only",
+                        "controllers": {
+                            "coolify-c": {
+                                "url": "https://coolify-c.example.test/",
+                                "api_token": "1|test-token",
+                                "enabled": True,
+                                "project_uuid": "project-c",
+                                "server_uuid": "server-c",
+                            }
+                        },
                     }
                 }
             },
-            "networks": {"mainnet": {"coolify": {"controllers": {}}}},
+        },
+        "coolify-c",
+    )
+    assert controller.controller_id == "coolify-c"
+    assert controller.network == "mainnet"
+    assert controller.base_url == "https://coolify-c.example.test"
+    assert config == {
+        "controller_id": "coolify-c",
+        "source_network": "mainnet",
+        "controller_path": "networks.mainnet.coolify.controllers.coolify-c",
+        "project_uuid": "project-c",
+        "server_uuid": "server-c",
+    }
+
+
+def test_controller_binding_can_use_project_name_when_project_uuid_is_absent() -> None:
+    controller, config = smoke._global_coolify_binding_from_document(
+        {
+            "networks": {
+                "bootstrap": {
+                    "coolify": {
+                        "mutation_authority": "observe-only",
+                        "controllers": {
+                            "coolify-b": {
+                                "url": "https://coolify-b.example.test",
+                                "api_token": "1|test-token",
+                                "project_name": "My first project",
+                                "server_uuid": "server-b",
+                            }
+                        },
+                    }
+                }
+            }
         },
         "coolify-b",
     )
-    assert controller.controller_id == "coolify-b"
-    assert controller.network == smoke.STATE_SCOPE
-    assert controller.base_url == "https://coolify-b.example.test"
-    assert config == {
-        "controller_id": "coolify-b",
-        "host_slot": "B",
-        "project_name": "My first project",
-        "droplet_hostname": "coolify",
-        "public_ip": "203.0.113.22",
-        "vpn_ip": "10.124.0.3",
-    }
+    assert controller.network == "bootstrap"
+    assert controller.project_name_hint == "My first project"
+    assert config["project_name"] == "My first project"
+    assert config["server_uuid"] == "server-b"
 
 
 def test_project_uuid_is_discovered_by_exact_project_name() -> None:
@@ -188,7 +233,22 @@ def test_project_uuid_is_discovered_by_exact_project_name() -> None:
     assert smoke._resolve_project_uuid(api, {"project_name": "My first project"}) == "project-b"
 
 
-def test_server_uuid_matches_physical_host_identity_from_runtime_yaml() -> None:
+def test_identity_project_and_server_uuid_hints_require_no_live_discovery() -> None:
+    api = TimeoutApiPlaceholder()
+    resolved = smoke._resolve_placement(
+        api,
+        {
+            "controller_id": "coolify-c",
+            "project_uuid": "project-c",
+            "server_uuid": "server-c",
+        },
+    )
+    assert resolved["project_uuid"] == "project-c"
+    assert resolved["server_uuid"] == "server-c"
+    assert api.calls == []
+
+
+def test_server_uuid_matches_physical_host_identity_from_identity_record() -> None:
     api = FakeApi(
         {
             "/api/v1/servers": response(
@@ -213,52 +273,63 @@ def test_server_uuid_infers_only_server_when_identity_fields_do_not_match() -> N
     assert smoke._resolve_server_uuid(api, {"controller_id": "coolify-b"}) == "server-only"
 
 
-def test_global_controller_binding_does_not_fall_back_to_network_controller() -> None:
+def test_controller_binding_fails_when_controller_is_absent_from_identity_networks() -> None:
     with pytest.raises(smoke.SmokeError) as exc:
         smoke._global_coolify_binding_from_document(
-            {
-                "coolify": {"hosts": {}},
-                "networks": {
-                    "mainnet": {
-                        "coolify": {
-                            "controllers": {
-                                "coolify-b": {
-                                    "url": "https://wrong-network-coupled.example.test",
-                                    "api_token": "1|network-token",
-                                }
-                            }
-                        }
-                    }
-                },
-            },
+            {"networks": {"mainnet": {"coolify": {"mutation_authority": "observe-only", "controllers": {}}}}},
             "coolify-b",
         )
     assert exc.value.code == "MOTHER_QEMU_COOLIFY_SMOKE_CONTROLLER_NOT_FOUND"
 
 
+def test_controller_binding_fails_closed_when_same_controller_id_appears_in_multiple_networks() -> None:
+    record = {
+        "url": "https://coolify-c.example.test",
+        "api_token": "1|test-token",
+        "project_uuid": "project-c",
+        "server_uuid": "server-c",
+    }
+    with pytest.raises(smoke.SmokeError) as exc:
+        smoke._global_coolify_binding_from_document(
+            {
+                "networks": {
+                    "mainnet": {"coolify": {"mutation_authority": "observe-only", "controllers": {"coolify-c": record}}},
+                    "testnet": {"coolify": {"mutation_authority": "observe-only", "controllers": {"coolify-c": record}}},
+                }
+            },
+            "coolify-c",
+        )
+    assert exc.value.code == "MOTHER_QEMU_COOLIFY_SMOKE_CONTROLLER_AMBIGUOUS"
+
+
 def test_parser_has_no_network_selector() -> None:
-    args = smoke.build_parser().parse_args(["--controller-id", "coolify-b", "--dry-run"])
-    assert args.controller_id == "coolify-b"
+    args = smoke.build_parser().parse_args(["--controller-id", "coolify-c", "--dry-run"])
+    assert args.controller_id == "coolify-c"
     assert not hasattr(args, "network")
 
 
-def test_global_controller_binding_strips_trailing_slash_from_runtime_url() -> None:
+def test_controller_binding_strips_trailing_slash_from_identity_url() -> None:
     controller, _ = smoke._global_coolify_binding_from_document(
         {
-            "coolify": {
-                "hosts": {
-                    "B": {
-                        "name": "coolify-b",
-                        "url": "https://coolify-b.example.test/",
-                        "api_token": "1|test-token",
-                        "project_name": "My first project",
+            "networks": {
+                "mainnet": {
+                    "coolify": {
+                        "mutation_authority": "observe-only",
+                        "controllers": {
+                            "coolify-c": {
+                                "url": "https://coolify-c.example.test/",
+                                "api_token": "1|test-token",
+                                "project_uuid": "project-c",
+                                "server_uuid": "server-c",
+                            }
+                        },
                     }
                 }
             }
         },
-        "coolify-b",
+        "coolify-c",
     )
-    assert controller.base_url == "https://coolify-b.example.test"
+    assert controller.base_url == "https://coolify-c.example.test"
 
 
 class TimeoutApi:
@@ -279,3 +350,145 @@ def test_service_logs_timeout_is_diagnostic_only() -> None:
     logs = smoke._service_logs(TimeoutApi(), "service-uuid", "mother-qemu-coolify-smoke")
     assert logs.startswith("[Coolify logs unavailable: MOTHER_QEMU_COOLIFY_SMOKE_REQUEST_FAILED:")
     assert "timed out" in logs
+
+
+def test_default_wait_allows_slow_first_boot() -> None:
+    args = smoke.build_parser().parse_args([])
+    assert args.wait_seconds == 5400.0
+
+
+def test_parser_supports_receipt_gated_resume() -> None:
+    args = smoke.build_parser().parse_args(["--controller-id", "coolify-b", "--resume"])
+    assert args.resume is True
+    assert args.replace is False
+    assert args.cleanup is False
+
+
+def test_resume_receipt_requires_exact_existing_smoke_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(smoke, "REPO_ROOT", tmp_path)
+    service_name = "mother-qemu-coolify-smoke"
+    controller = smoke.CoolifyController(
+        network=smoke.STATE_SCOPE,
+        controller_id="coolify-b",
+        base_url="https://coolify-b.example.test",
+        api_token="1|test-token",
+        enabled=True,
+        project_name_hint="My first project",
+        mutation_authority="observe-only",
+    )
+    smoke._write_private_json(
+        smoke._receipt_path(tmp_path, service_name),
+        {
+            "kind": smoke.KIND,
+            "controller_id": "coolify-b",
+            "coolify_url": "https://coolify-b.example.test/",
+            "project_uuid": "project-b",
+            "server_uuid": "server-b",
+            "environment_name": "qemu-coolify-smoke",
+            "service_name": service_name,
+            "service_uuid": "service-b",
+            "host_port": 18000,
+            "created_environment": True,
+        },
+    )
+    receipt = smoke._load_resume_receipt(
+        tmp_path,
+        service_name,
+        controller_id="coolify-b",
+        controller=controller,
+        environment_name="qemu-coolify-smoke",
+        host_port=18000,
+    )
+    assert receipt["service_uuid"] == "service-b"
+    assert receipt["created_environment"] is True
+
+
+def test_resume_receipt_rejects_missing_stored_service_uuid(tmp_path: Path) -> None:
+    service_name = "mother-qemu-coolify-smoke"
+    controller = smoke.CoolifyController(
+        network=smoke.STATE_SCOPE,
+        controller_id="coolify-b",
+        base_url="https://coolify-b.example.test",
+        api_token="1|test-token",
+        enabled=True,
+        project_name_hint="My first project",
+        mutation_authority="observe-only",
+    )
+    smoke._write_private_json(
+        smoke._receipt_path(tmp_path, service_name),
+        {
+            "kind": smoke.KIND,
+            "controller_id": "coolify-b",
+            "coolify_url": "https://coolify-b.example.test",
+            "project_uuid": "project-b",
+            "server_uuid": "server-b",
+            "environment_name": "qemu-coolify-smoke",
+            "service_name": service_name,
+            "service_uuid": "",
+            "host_port": 18000,
+        },
+    )
+    with pytest.raises(smoke.SmokeError) as exc:
+        smoke._load_resume_receipt(
+            tmp_path,
+            service_name,
+            controller_id="coolify-b",
+            controller=controller,
+            environment_name="qemu-coolify-smoke",
+            host_port=18000,
+        )
+    assert exc.value.code == "MOTHER_QEMU_COOLIFY_SMOKE_RESUME_RECEIPT_MISMATCH"
+
+
+def test_run_resume_uses_receipt_before_live_placement_discovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(smoke, "REPO_ROOT", tmp_path)
+    controller = smoke.CoolifyController(
+        network=smoke.STATE_SCOPE,
+        controller_id="coolify-b",
+        base_url="https://coolify-b.example.test",
+        api_token="1|test-token",
+        enabled=True,
+        project_name_hint="My first project",
+        mutation_authority="observe-only",
+    )
+    smoke._write_private_json(
+        smoke._receipt_path(tmp_path, "mother-qemu-coolify-smoke"),
+        {
+            "kind": smoke.KIND,
+            "controller_id": "coolify-b",
+            "coolify_url": "https://coolify-b.example.test",
+            "project_uuid": "project-b",
+            "server_uuid": "server-b",
+            "environment_name": "qemu-coolify-smoke",
+            "environment_uuid": "environment-b",
+            "created_environment": True,
+            "service_name": "mother-qemu-coolify-smoke",
+            "service_uuid": "service-b",
+            "host_port": 18000,
+        },
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_load_runtime_private_document",
+        lambda *args, **kwargs: ({"networks": {}}, tmp_path / "mother" / "identity.private.yaml", "a" * 64),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_global_coolify_binding_from_document",
+        lambda document, controller_id: (controller, {"controller_id": "coolify-b", "source_network": "mainnet", "controller_path": "networks.mainnet.coolify.controllers.coolify-b"}),
+    )
+
+    def forbidden_resolve(*args, **kwargs):
+        raise AssertionError("resume must not call live project/server placement discovery")
+
+    monkeypatch.setattr(smoke, "_resolve_placement", forbidden_resolve)
+    monkeypatch.setattr(
+        smoke,
+        "_wait_for_inner_coolify",
+        lambda **kwargs: ("http://203.0.113.22:18000/", "running:healthy", {"ok": True, "status": 200, "error": ""}),
+    )
+    args = smoke.build_parser().parse_args(["--controller-id", "coolify-b", "--resume"])
+    assert smoke.run(args) == 0
+    output = capsys.readouterr().out
+    assert '"placement_source": "receipt"' in output
+    assert '"uuid": "service-b"' in output

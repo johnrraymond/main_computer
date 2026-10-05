@@ -128,6 +128,20 @@ BLOCK_ADVANCE_WAITER_SCRIPT = "tools/mother_wait_for_block_advance.py"
 BLOCK_ADVANCE_WAITER_MAX_WAIT_SECONDS = 1200.0
 BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS = 1320.0
 BLOCK_ADVANCE_WAITER_WAIT_FOREVER_TOPOLOGY_NODE_COUNT = 2
+CLEANUP_BOUNDARY_MAX_RESTART_ATTEMPTS = 2
+CLEANUP_TERMINAL_STATUSES = frozenset(
+    {
+        "completed",
+        "complete",
+        "finished",
+        "success",
+        "successful",
+        "failed",
+        "error",
+        "cancelled",
+        "canceled",
+    }
+)
 
 class MotherHelperCleanup2YagniError(RuntimeError):
     """Cleanup2 could not produce a trustworthy result."""
@@ -1382,6 +1396,255 @@ def _patch_parent_compose(
 
 
 
+def _cleanup_boundary_endpoint(
+    private_state: PrivateStateReadResult,
+    *,
+    network: str,
+    controller_id: str,
+) -> str:
+    config = _controller_config(
+        private_state,
+        network=_identifier(network, "network"),
+        controller_id=_identifier(controller_id, "controller_id"),
+    )
+    server_uuid = _uuid(config.get("server_uuid"), "Coolify server UUID")
+    return f"/api/v1/servers/{urllib.parse.quote(server_uuid, safe='')}/docker-cleanup/executions"
+
+
+def _cleanup_execution_items(payload: Any) -> list[dict[str, Any]]:
+    items: Any = payload
+    if isinstance(payload, Mapping):
+        for key in ("executions", "items", "data"):
+            if isinstance(payload.get(key), list):
+                items = payload[key]
+                break
+    if not isinstance(items, list):
+        return []
+    return [dict(item) for item in items if isinstance(item, Mapping)]
+
+
+def _cleanup_execution_id(item: Mapping[str, Any]) -> str:
+    value = item.get("uuid")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _cleanup_execution_terminal(item: Mapping[str, Any]) -> bool:
+    if item.get("finished_at"):
+        return True
+    return str(item.get("status") or "").strip().lower() in CLEANUP_TERMINAL_STATUSES
+
+
+def _cleanup_execution_succeeded(item: Mapping[str, Any]) -> bool:
+    return _cleanup_execution_terminal(item) and str(item.get("status") or "").strip().lower() not in {
+        "failed",
+        "error",
+        "cancelled",
+        "canceled",
+    }
+
+
+def _cleanup_snapshot(
+    controller: CoolifyController,
+    endpoint: str,
+    *,
+    controller_id: str,
+    phase: str,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+    http_observations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    response = _http(
+        controller,
+        "GET",
+        endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    receipt = {
+        "method": "GET",
+        "endpoint": endpoint,
+        "status": response.get("status"),
+        "ok": response.get("ok"),
+        "response_sha256": response.get("response_sha256"),
+        "byte_length": response.get("byte_length"),
+        "elapsed_ms": response.get("elapsed_ms"),
+        "controller_id": controller_id,
+        "phase": phase,
+    }
+    http_observations.append(receipt)
+    if response.get("ok") is not True:
+        raise MotherHelperCleanup2YagniError(
+            "MOTHER_HELPER_CLEANUP2_YAGNI_CLEANUP_BOUNDARY_QUERY_FAILED",
+            f"Coolify cleanup query failed for {controller_id} with HTTP {response.get('status')}",
+        )
+    return _cleanup_execution_items(response.get("payload")), receipt
+
+
+def _wait_cleanup_clear(
+    controller: CoolifyController,
+    endpoint: str,
+    *,
+    controller_id: str,
+    phase: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    sleeper: Callable[[float], None],
+    http_observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    wait_limit = _nonnegative(max_wait_seconds, "cleanup_boundary_max_wait_seconds")
+    poll_interval = _nonnegative(poll_interval_seconds, "cleanup_boundary_poll_interval_seconds")
+    started = time.monotonic()
+    checks: list[dict[str, Any]] = []
+    while True:
+        items, _receipt = _cleanup_snapshot(
+            controller,
+            endpoint,
+            controller_id=controller_id,
+            phase=phase,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            http_observations=http_observations,
+        )
+        active = [item for item in items if not _cleanup_execution_terminal(item)]
+        checks.append(
+            {
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "execution_ids": sorted(_cleanup_execution_id(item) for item in items if _cleanup_execution_id(item)),
+                "active_execution_ids": sorted(_cleanup_execution_id(item) for item in active if _cleanup_execution_id(item)),
+            }
+        )
+        if not active:
+            return {
+                "completed": True,
+                "reason": "cleanup-clear",
+                "controller_id": controller_id,
+                "endpoint": endpoint,
+                "baseline_execution_ids": sorted(
+                    _cleanup_execution_id(item) for item in items if _cleanup_execution_id(item)
+                ),
+                "checks": checks,
+            }
+        elapsed = time.monotonic() - started
+        if elapsed >= wait_limit:
+            return {
+                "completed": False,
+                "reason": "cleanup-active-timeout",
+                "controller_id": controller_id,
+                "endpoint": endpoint,
+                "baseline_execution_ids": sorted(
+                    _cleanup_execution_id(item) for item in items if _cleanup_execution_id(item)
+                ),
+                "active_execution_ids": sorted(
+                    _cleanup_execution_id(item) for item in active if _cleanup_execution_id(item)
+                ),
+                "checks": checks,
+            }
+        sleep_seconds = min(poll_interval, max(0.0, wait_limit - elapsed)) if poll_interval > 0 else 0.0
+        if sleep_seconds <= 0:
+            return {
+                "completed": False,
+                "reason": "cleanup-active-without-poll-interval",
+                "controller_id": controller_id,
+                "endpoint": endpoint,
+                "baseline_execution_ids": sorted(
+                    _cleanup_execution_id(item) for item in items if _cleanup_execution_id(item)
+                ),
+                "active_execution_ids": sorted(
+                    _cleanup_execution_id(item) for item in active if _cleanup_execution_id(item)
+                ),
+                "checks": checks,
+            }
+        sleeper(sleep_seconds)
+
+
+def _new_cleanup_since_baseline(items: list[dict[str, Any]], baseline_ids: set[str]) -> dict[str, Any] | None:
+    return next(
+        (
+            item
+            for item in items
+            if _cleanup_execution_id(item) and _cleanup_execution_id(item) not in baseline_ids
+        ),
+        None,
+    )
+
+
+def _wait_cleanup_terminal(
+    controller: CoolifyController,
+    endpoint: str,
+    cleanup_uuid: str,
+    *,
+    controller_id: str,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    sleeper: Callable[[float], None],
+    http_observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    wait_limit = _nonnegative(max_wait_seconds, "cleanup_boundary_max_wait_seconds")
+    poll_interval = _nonnegative(poll_interval_seconds, "cleanup_boundary_poll_interval_seconds")
+    started = time.monotonic()
+    checks: list[dict[str, Any]] = []
+    while True:
+        items, _receipt = _cleanup_snapshot(
+            controller,
+            endpoint,
+            controller_id=controller_id,
+            phase="cleanup-boundary-wait-terminal",
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+            http_observations=http_observations,
+        )
+        item = next((candidate for candidate in items if _cleanup_execution_id(candidate) == cleanup_uuid), None)
+        checks.append(
+            {
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "found": item is not None,
+                "status": item.get("status") if isinstance(item, Mapping) else None,
+                "finished_at": item.get("finished_at") if isinstance(item, Mapping) else None,
+            }
+        )
+        if item is not None and _cleanup_execution_terminal(item):
+            return {
+                "completed": _cleanup_execution_succeeded(item),
+                "reason": "cleanup-finished" if _cleanup_execution_succeeded(item) else "cleanup-failed",
+                "controller_id": controller_id,
+                "endpoint": endpoint,
+                "cleanup_uuid": cleanup_uuid,
+                "checks": checks,
+            }
+        elapsed = time.monotonic() - started
+        if elapsed >= wait_limit:
+            return {
+                "completed": False,
+                "reason": "cleanup-terminal-timeout",
+                "controller_id": controller_id,
+                "endpoint": endpoint,
+                "cleanup_uuid": cleanup_uuid,
+                "checks": checks,
+            }
+        sleep_seconds = min(poll_interval, max(0.0, wait_limit - elapsed)) if poll_interval > 0 else 0.0
+        if sleep_seconds <= 0:
+            return {
+                "completed": False,
+                "reason": "cleanup-terminal-without-poll-interval",
+                "controller_id": controller_id,
+                "endpoint": endpoint,
+                "cleanup_uuid": cleanup_uuid,
+                "checks": checks,
+            }
+        sleeper(sleep_seconds)
+
+
 def _cleanup_on_clean_prefixes(controller_id: str) -> tuple[str, str]:
     controller = _identifier(controller_id, "controller_id")
     return (
@@ -1616,6 +1879,8 @@ def _wait_for_parent_service_running_healthy(
     opener: Any,
     sleeper: Callable[[float], None],
     http_observations: list[dict[str, Any]],
+    cleanup_endpoint: str | None = None,
+    cleanup_baseline_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     service = _uuid(service_uuid, "service_uuid")
     settle_seconds = _nonnegative(initial_settle_seconds, "initial_settle_seconds")
@@ -1657,6 +1922,43 @@ def _wait_for_parent_service_running_healthy(
             )
             primary_boundary_observations.append(primary_boundary)
         observed_statuses.append(status)
+
+        if cleanup_endpoint is not None and cleanup_baseline_ids is not None:
+            cleanup_items, _cleanup_receipt = _cleanup_snapshot(
+                controller,
+                cleanup_endpoint,
+                controller_id=controller_id,
+                phase="post-parent-restart-cleanup-boundary-poll",
+                timeout=timeout,
+                max_response_bytes=max_response_bytes,
+                opener=opener,
+                http_observations=http_observations,
+            )
+            overlap = _new_cleanup_since_baseline(cleanup_items, cleanup_baseline_ids)
+            if overlap is not None:
+                return {
+                    "completed": False,
+                    "reason": "cleanup-overlap",
+                    "service_uuid": service,
+                    "node": node,
+                    "controller_id": controller_id,
+                    "initial_settle_seconds": settle_seconds,
+                    "final_status": status,
+                    "observed_statuses": observed_statuses,
+                    "observation_count": len(observed_statuses),
+                    "wait_milliseconds_after_settle": int((time.monotonic() - started) * 1000),
+                    "receipts": observed_receipts,
+                    "primary_application_boundary": primary_boundary,
+                    "primary_application_observations": primary_boundary_observations,
+                    "primary_application_boundary_ok": (
+                        primary_boundary.get("boundary_ok") is True
+                        if isinstance(primary_boundary, Mapping)
+                        else None
+                    ),
+                    "cleanup_boundary_crossed": True,
+                    "cleanup_execution_uuid": _cleanup_execution_id(overlap),
+                    "cleanup_execution_status": overlap.get("status"),
+                }
 
         if primary_boundary is not None and primary_boundary.get("boundary_ok") is True:
             result = {
@@ -3210,6 +3512,180 @@ def _run_service_line_restart_helper(
     return receipt
 
 
+def _cleanup_safe_primary_restart(
+    private_state: PrivateStateReadResult,
+    controller: CoolifyController,
+    *,
+    network: str,
+    controller_id: str,
+    node: str,
+    service_uuid: str,
+    runtime_state_root: str | Path,
+    timeout: float,
+    max_response_bytes: int,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    opener: Any,
+    sleeper: Callable[[float], None],
+    http_observations: list[dict[str, Any]],
+    restart_runner: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    cleanup_endpoint = _cleanup_boundary_endpoint(
+        private_state,
+        network=network,
+        controller_id=controller_id,
+    )
+    attempts: list[dict[str, Any]] = []
+    for attempt_number in range(1, CLEANUP_BOUNDARY_MAX_RESTART_ATTEMPTS + 1):
+        pre_clear = _wait_cleanup_clear(
+            controller,
+            cleanup_endpoint,
+            controller_id=controller_id,
+            phase="pre-primary-restart-cleanup-clear",
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            sleeper=sleeper,
+            http_observations=http_observations,
+        )
+        attempt: dict[str, Any] = {
+            "attempt": attempt_number,
+            "pre_restart_cleanup_clear": pre_clear,
+            "cleanup_endpoint": cleanup_endpoint,
+        }
+        attempts.append(attempt)
+        if pre_clear.get("completed") is not True:
+            return {
+                "completed": False,
+                "reason": "cleanup-not-clear-before-primary-restart",
+                "attempts": attempts,
+                "retry_count": attempt_number - 1,
+                "second_overlap": False,
+                "final_restart_receipt": None,
+                "final_wait": None,
+            }
+
+        baseline_ids = set(pre_clear.get("baseline_execution_ids") or [])
+        restart_receipt = _run_service_line_restart_helper(
+            network=network,
+            controller_id=controller_id,
+            service_uuid=service_uuid,
+            service_line=node,
+            runtime_state_root=runtime_state_root,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            runner=restart_runner,
+        )
+        restart_receipt["controller_id"] = controller_id
+        restart_receipt["node"] = node
+        restart_receipt["restart_role"] = "primary-node"
+        restart_receipt["cleanup_boundary_attempt"] = attempt_number
+        attempt["restart_receipt"] = restart_receipt
+        if restart_receipt.get("ok") is not True:
+            return {
+                "completed": False,
+                "reason": "primary-restart-helper-failed",
+                "attempts": attempts,
+                "retry_count": attempt_number - 1,
+                "second_overlap": False,
+                "final_restart_receipt": restart_receipt,
+                "final_wait": None,
+            }
+
+        wait_result = _wait_for_parent_service_running_healthy(
+            controller,
+            controller_id=controller_id,
+            node=node,
+            service_uuid=service_uuid,
+            initial_settle_seconds=PARENT_RESTART_SETTLE_SECONDS,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            sleeper=sleeper,
+            http_observations=http_observations,
+            cleanup_endpoint=cleanup_endpoint,
+            cleanup_baseline_ids=baseline_ids,
+        )
+        wait_result["cleanup_boundary_attempt"] = attempt_number
+        attempt["boundary_wait"] = wait_result
+        if wait_result.get("completed") is True:
+            return {
+                "completed": True,
+                "reason": "primary-restart-clean-boundary",
+                "attempts": attempts,
+                "retry_count": attempt_number - 1,
+                "second_overlap": False,
+                "final_restart_receipt": restart_receipt,
+                "final_wait": wait_result,
+            }
+
+        if wait_result.get("reason") != "cleanup-overlap":
+            return {
+                "completed": False,
+                "reason": str(wait_result.get("reason") or "primary-restart-boundary-failed"),
+                "attempts": attempts,
+                "retry_count": attempt_number - 1,
+                "second_overlap": False,
+                "final_restart_receipt": restart_receipt,
+                "final_wait": wait_result,
+            }
+
+        cleanup_uuid = str(wait_result.get("cleanup_execution_uuid") or "")
+        if attempt_number >= CLEANUP_BOUNDARY_MAX_RESTART_ATTEMPTS:
+            return {
+                "completed": False,
+                "reason": "cleanup-overlap-on-second-primary-restart",
+                "attempts": attempts,
+                "retry_count": attempt_number - 1,
+                "second_overlap": True,
+                "final_restart_receipt": restart_receipt,
+                "final_wait": wait_result,
+            }
+        if not cleanup_uuid:
+            return {
+                "completed": False,
+                "reason": "cleanup-overlap-without-execution-uuid",
+                "attempts": attempts,
+                "retry_count": attempt_number - 1,
+                "second_overlap": False,
+                "final_restart_receipt": restart_receipt,
+                "final_wait": wait_result,
+            }
+
+        terminal_wait = _wait_cleanup_terminal(
+            controller,
+            cleanup_endpoint,
+            cleanup_uuid,
+            controller_id=controller_id,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            max_wait_seconds=max_wait_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            opener=opener,
+            sleeper=sleeper,
+            http_observations=http_observations,
+        )
+        attempt["cleanup_terminal_wait"] = terminal_wait
+        if terminal_wait.get("completed") is not True:
+            return {
+                "completed": False,
+                "reason": str(terminal_wait.get("reason") or "cleanup-overlap-did-not-finish"),
+                "attempts": attempts,
+                "retry_count": attempt_number - 1,
+                "second_overlap": False,
+                "final_restart_receipt": restart_receipt,
+                "final_wait": wait_result,
+            }
+
+    raise AssertionError("cleanup-safe primary restart exhausted without returning")
+
+
 def run_helper_cleanup2_yagni(
     private_state: PrivateStateReadResult,
     *,
@@ -3262,6 +3738,12 @@ def run_helper_cleanup2_yagni(
     service_line_restart_receipts: list[dict[str, Any]] = []
     parent_restart_waits: list[dict[str, Any]] = []
     block_advance_waits: list[dict[str, Any]] = []
+    cleanup_boundary_attempts: list[dict[str, Any]] = []
+    post_block_cleanup_quiescence: list[dict[str, Any]] = []
+    post_cleanup_on_clean_quiescence: list[dict[str, Any]] = []
+    final_primary_application_checks: list[dict[str, Any]] = []
+    final_cleanup_baseline_ids_by_controller: dict[str, set[str]] = {}
+    cleanup_boundary_failed = False
 
     for service_record in services:
         node = _identifier(service_record["node"], "topology node")
@@ -3609,65 +4091,33 @@ def run_helper_cleanup2_yagni(
             if stop_restart_sequence:
                 break
             controller = _controller(private_state, network=network_id, controller_id=controller_id)
+            cleanup_endpoint = _cleanup_boundary_endpoint(
+                private_state,
+                network=network_id,
+                controller_id=controller_id,
+            )
             for target in cleanup2_targets_by_controller[controller_id]:
                 node = str(target.get("node") or "")
                 service_uuid = str(target.get("service_uuid") or "")
                 _emit_progress(
                     progress,
                     "cleanup2",
-                    "restarting primary service line after cleanup2",
+                    "restarting primary service line after cleanup2 with cleanup boundary",
                     node=node,
                     controller_id=controller_id,
                     service_uuid=service_uuid,
                     service_line=node,
                     delegated_script=SERVICE_LINE_RESTART_HELPER_SCRIPT,
+                    max_restart_attempts=CLEANUP_BOUNDARY_MAX_RESTART_ATTEMPTS,
                 )
-                restart_receipt = _run_service_line_restart_helper(
+                safe_restart = _cleanup_safe_primary_restart(
+                    private_state,
+                    controller,
                     network=network_id,
                     controller_id=controller_id,
+                    node=node,
                     service_uuid=service_uuid,
-                    service_line=node,
                     runtime_state_root=runtime_state_root,
-                    timeout=request_timeout,
-                    max_response_bytes=response_limit,
-                    max_wait_seconds=wait_limit,
-                    poll_interval_seconds=poll_interval,
-                    runner=service_line_restart_helper_runner,
-                )
-                restart_receipt["controller_id"] = controller_id
-                restart_receipt["node"] = node
-                restart_receipt["restart_role"] = "primary-node"
-                service_line_restart_receipts.append(restart_receipt)
-                if restart_receipt.get("ok") is not True:
-                    _emit_progress(
-                        progress,
-                        "cleanup2",
-                        "primary service line restart helper failed before boundary wait",
-                        node=node,
-                        controller_id=controller_id,
-                        service_uuid=service_uuid,
-                        reason=restart_receipt.get("reason"),
-                        helper_status=restart_receipt.get("helper_status"),
-                    )
-                    stop_restart_sequence = True
-                    break
-
-                _emit_progress(
-                    progress,
-                    "cleanup2",
-                    "waiting before service-line restart status check",
-                    node=node,
-                    controller_id=controller_id,
-                    service_uuid=service_uuid,
-                    service_line=node,
-                    settle_seconds=PARENT_RESTART_SETTLE_SECONDS,
-                )
-                wait_result = _wait_for_parent_service_running_healthy(
-                    controller,
-                    controller_id=controller_id,
-                    node=node,
-                    service_uuid=service_uuid,
-                    initial_settle_seconds=PARENT_RESTART_SETTLE_SECONDS,
                     timeout=request_timeout,
                     max_response_bytes=response_limit,
                     max_wait_seconds=wait_limit,
@@ -3675,19 +4125,35 @@ def run_helper_cleanup2_yagni(
                     opener=opener,
                     sleeper=sleeper,
                     http_observations=http_observations,
+                    restart_runner=service_line_restart_helper_runner,
                 )
-                parent_restart_waits.append(wait_result)
-                if wait_result.get("completed") is not True:
+                cleanup_boundary_attempts.append(
+                    {
+                        "node": node,
+                        "controller_id": controller_id,
+                        "service_uuid": service_uuid,
+                        **safe_restart,
+                    }
+                )
+                final_restart_receipt = safe_restart.get("final_restart_receipt")
+                final_wait = safe_restart.get("final_wait")
+                if isinstance(final_restart_receipt, Mapping):
+                    service_line_restart_receipts.append(dict(final_restart_receipt))
+                if isinstance(final_wait, Mapping):
+                    parent_restart_waits.append(dict(final_wait))
+
+                if safe_restart.get("completed") is not True:
+                    cleanup_boundary_failed = True
                     _emit_progress(
                         progress,
                         "cleanup2",
-                        "service-line restart boundary failed before block waiter",
+                        "cleanup-safe primary restart failed before block waiter",
                         node=node,
                         controller_id=controller_id,
                         service_uuid=service_uuid,
-                        reason=wait_result.get("reason"),
-                        final_status=wait_result.get("final_status"),
-                        primary_application_boundary=wait_result.get("primary_application_boundary"),
+                        reason=safe_restart.get("reason"),
+                        retry_count=safe_restart.get("retry_count"),
+                        second_overlap=safe_restart.get("second_overlap"),
                     )
                     stop_restart_sequence = True
                     break
@@ -3695,7 +4161,7 @@ def run_helper_cleanup2_yagni(
                 _emit_progress(
                     progress,
                     "cleanup2",
-                    "waiting for block advance after service-line restart",
+                    "waiting for block advance after cleanup-safe service-line restart",
                     node=node,
                     controller_id=controller_id,
                     service_uuid=service_uuid,
@@ -3742,12 +4208,53 @@ def run_helper_cleanup2_yagni(
                     stop_restart_sequence = True
                     break
 
+                post_block_clear = _wait_cleanup_clear(
+                    controller,
+                    cleanup_endpoint,
+                    controller_id=controller_id,
+                    phase="post-block-wait-cleanup-clear",
+                    timeout=request_timeout,
+                    max_response_bytes=response_limit,
+                    max_wait_seconds=wait_limit,
+                    poll_interval_seconds=poll_interval,
+                    opener=opener,
+                    sleeper=sleeper,
+                    http_observations=http_observations,
+                )
+                post_block_clear.update(
+                    {
+                        "node": node,
+                        "service_uuid": service_uuid,
+                    }
+                )
+                post_block_cleanup_quiescence.append(post_block_clear)
+                if post_block_clear.get("completed") is True:
+                    final_cleanup_baseline_ids_by_controller[controller_id] = set(
+                        post_block_clear.get("baseline_execution_ids") or []
+                    )
+                if post_block_clear.get("completed") is not True:
+                    cleanup_boundary_failed = True
+                    stop_restart_sequence = True
+                    break
+
     patch_ok = all(step["status"] in {"patched", "would-patch", "no-op", "skipped"} for step in patch_steps)
     cleanup2_ok = mode_name == "inspect" or all(step.get("status") == "pass" for step in cleanup2_steps)
     mimic_service_line_restart_ok = mode_name == "inspect" or all(
         receipt.get("ok") is True for receipt in mimic_service_line_restart_receipts
     )
-    service_line_restart_ok = mode_name == "inspect" or all(receipt.get("ok") is True for receipt in service_line_restart_receipts)
+    expected_primary_restart_count = (
+        sum(len(items) for items in cleanup2_targets_by_controller.values())
+        if mode_name == "execute"
+        else 0
+    )
+    cleanup_restart_boundary_ok = mode_name == "inspect" or (
+        cleanup_boundary_failed is False
+        and len(cleanup_boundary_attempts) == expected_primary_restart_count
+        and all(item.get("completed") is True for item in cleanup_boundary_attempts)
+    )
+    service_line_restart_ok = mode_name == "inspect" or all(
+        receipt.get("ok") is True for receipt in service_line_restart_receipts
+    )
     parent_restart_boundary_ok = mode_name == "inspect" or (
         (
             service_line_restart_ok
@@ -3758,6 +4265,10 @@ def run_helper_cleanup2_yagni(
         else True
     )
     parent_restart_ok = service_line_restart_ok and parent_restart_boundary_ok
+    post_block_cleanup_quiescence_ok = mode_name == "inspect" or (
+        len(post_block_cleanup_quiescence) == len(block_advance_waits)
+        and all(item.get("completed") is True for item in post_block_cleanup_quiescence)
+    )
     expected_block_advance_wait_count = len(service_line_restart_receipts)
     block_advance_waiter_ok = mode_name == "inspect" or (
         len(block_advance_waits) == expected_block_advance_wait_count
@@ -3785,6 +4296,8 @@ def run_helper_cleanup2_yagni(
         and mimic_service_line_restart_ok
         and parent_restart_ok
         and block_advance_waiter_ok
+        and cleanup_restart_boundary_ok
+        and post_block_cleanup_quiescence_ok
         else "failed"
     )
     cleanup_on_clean_sweeps: list[dict[str, Any]] = []
@@ -3912,9 +4425,86 @@ def run_helper_cleanup2_yagni(
         else None
     )
 
-    status = base_status
-    if cleanup_on_clean and cleanup_on_clean_eligible and cleanup_on_clean_sweep_ok is not True:
-        status = "failed"
+    cleanup_on_clean_status_ok = not cleanup_on_clean or (
+        cleanup_on_clean_eligible and cleanup_on_clean_sweep_ok is True
+    )
+
+    if mode_name == "execute" and base_status == "pass" and cleanup_on_clean_status_ok and cleanup_on_clean:
+        for controller_id in sorted(cleanup2_targets_by_controller):
+            controller = _controller(private_state, network=network_id, controller_id=controller_id)
+            cleanup_endpoint = _cleanup_boundary_endpoint(
+                private_state,
+                network=network_id,
+                controller_id=controller_id,
+            )
+            post_cleanup_clear = _wait_cleanup_clear(
+                controller,
+                cleanup_endpoint,
+                controller_id=controller_id,
+                phase="post-cleanup-on-clean-quiescence",
+                timeout=request_timeout,
+                max_response_bytes=response_limit,
+                max_wait_seconds=wait_limit,
+                poll_interval_seconds=poll_interval,
+                opener=opener,
+                sleeper=sleeper,
+                http_observations=http_observations,
+            )
+            post_cleanup_on_clean_quiescence.append(post_cleanup_clear)
+            if post_cleanup_clear.get("completed") is True:
+                final_cleanup_baseline_ids_by_controller[controller_id] = set(
+                    post_cleanup_clear.get("baseline_execution_ids") or []
+                )
+
+    post_cleanup_on_clean_quiescence_ok = mode_name == "inspect" or not cleanup_on_clean or (
+        cleanup_on_clean_status_ok
+        and len(post_cleanup_on_clean_quiescence) == len(cleanup2_targets_by_controller)
+        and all(item.get("completed") is True for item in post_cleanup_on_clean_quiescence)
+    )
+
+    pre_final_status = (
+        "pass"
+        if base_status == "pass"
+        and cleanup_on_clean_status_ok
+        and post_cleanup_on_clean_quiescence_ok
+        else "failed"
+    )
+
+    if mode_name == "execute" and pre_final_status == "pass":
+        for controller_id in sorted(cleanup2_targets_by_controller):
+            controller = _controller(private_state, network=network_id, controller_id=controller_id)
+            for target in cleanup2_targets_by_controller[controller_id]:
+                node = str(target.get("node") or "")
+                service_uuid = str(target.get("service_uuid") or "")
+                cleanup_endpoint = _cleanup_boundary_endpoint(
+                    private_state,
+                    network=network_id,
+                    controller_id=controller_id,
+                )
+                final_check = _wait_for_parent_service_running_healthy(
+                    controller,
+                    controller_id=controller_id,
+                    node=node,
+                    service_uuid=service_uuid,
+                    initial_settle_seconds=0.0,
+                    timeout=request_timeout,
+                    max_response_bytes=response_limit,
+                    max_wait_seconds=wait_limit,
+                    poll_interval_seconds=poll_interval,
+                    opener=opener,
+                    sleeper=sleeper,
+                    http_observations=http_observations,
+                    cleanup_endpoint=cleanup_endpoint,
+                    cleanup_baseline_ids=set(final_cleanup_baseline_ids_by_controller.get(controller_id, set())),
+                )
+                final_check["phase"] = "final-primary-application-check"
+                final_primary_application_checks.append(final_check)
+
+    final_primary_applications_ok = mode_name == "inspect" or (
+        len(final_primary_application_checks) == expected_primary_restart_count
+        and all(item.get("completed") is True for item in final_primary_application_checks)
+    )
+    status = "pass" if pre_final_status == "pass" and final_primary_applications_ok else "failed"
 
     target_count = sum(len(item["helper_names"]) for items in cleanup2_targets_by_controller.values() for item in items)
     return {
@@ -3946,6 +4536,10 @@ def run_helper_cleanup2_yagni(
         "parent_restart_waits": parent_restart_waits,
         "block_advance_waits": block_advance_waits,
         "block_advance_waiter": block_advance_waiter,
+        "cleanup_boundary_attempts": cleanup_boundary_attempts,
+        "post_block_cleanup_quiescence": post_block_cleanup_quiescence,
+        "post_cleanup_on_clean_quiescence": post_cleanup_on_clean_quiescence,
+        "final_primary_application_checks": final_primary_application_checks,
         "cleanup_on_clean": {
             "requested": bool(cleanup_on_clean),
             "eligible": cleanup_on_clean_eligible,
@@ -4026,6 +4620,29 @@ def run_helper_cleanup2_yagni(
             "service_line_restart_count": len(service_line_restart_receipts),
             "service_line_restart_all_passed": service_line_restart_ok,
             "service_line_restart_helper_script": SERVICE_LINE_RESTART_HELPER_SCRIPT,
+            "cleanup_boundary_max_restart_attempts": CLEANUP_BOUNDARY_MAX_RESTART_ATTEMPTS,
+            "cleanup_boundary_restart_attempt_count": sum(
+                len(item.get("attempts") or []) for item in cleanup_boundary_attempts
+            ),
+            "cleanup_boundary_overlap_detected": any(
+                any(
+                    isinstance(attempt.get("boundary_wait"), Mapping)
+                    and attempt["boundary_wait"].get("reason") == "cleanup-overlap"
+                    for attempt in item.get("attempts") or []
+                )
+                for item in cleanup_boundary_attempts
+            ),
+            "cleanup_boundary_retry_count": sum(
+                int(item.get("retry_count") or 0) for item in cleanup_boundary_attempts
+            ),
+            "cleanup_boundary_second_overlap": any(
+                item.get("second_overlap") is True for item in cleanup_boundary_attempts
+            ),
+            "cleanup_boundary_all_passed": cleanup_restart_boundary_ok,
+            "post_block_cleanup_quiescent": post_block_cleanup_quiescence_ok,
+            "post_cleanup_on_clean_quiescent": post_cleanup_on_clean_quiescence_ok,
+            "final_primary_application_check_count": len(final_primary_application_checks),
+            "final_primary_applications_all_running": final_primary_applications_ok,
             "parent_restart_performed": False,
             "parent_restart_request_count": len(service_line_restart_receipts),
             "parent_restart_request_all_accepted": service_line_restart_ok,
