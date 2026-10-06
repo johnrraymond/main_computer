@@ -119,14 +119,31 @@ def evaluate_target_node_service_rows(
         is_primary_target = str(hint.get("uuid") or "") == target_uuid
         unexpected_hints = sorted({item for item in node_hints if item not in expected})
         advertises_target = target_node in node_hints
-        post_remove_target_poison = bool(live and advertises_target and not is_primary_target)
-        current_topology_poison = bool(live and unexpected_hints)
 
-        if not advertises_target and not current_topology_poison:
+        # Topology authority is intentionally narrower than broad node hints.
+        # Helper/service metadata may mention a Mother node without being that
+        # node's primary service row.  Only an exact live service-name match can
+        # survive as a primary node after the target row is deleted.
+        service_name = str(hint.get("name") or "").strip()
+        exact_primary_node = service_name if service_name in node_hints else None
+        topology_authoritative_primary = bool(live and exact_primary_node)
+        post_remove_target_poison = bool(
+            topology_authoritative_primary
+            and exact_primary_node == target_node
+            and not is_primary_target
+        )
+        current_topology_poison = bool(
+            topology_authoritative_primary
+            and exact_primary_node not in expected
+        )
+
+        if not advertises_target and not unexpected_hints and not current_topology_poison:
             continue
 
         hint["live_by_topology_detector"] = live
         hint["is_primary_target_service"] = is_primary_target
+        hint["exact_primary_node"] = exact_primary_node
+        hint["topology_authoritative_primary"] = topology_authoritative_primary
         hint["unexpected_node_hints"] = unexpected_hints
         hint["would_survive_primary_target_deletion"] = not is_primary_target
         hint["would_poison_current_topology"] = current_topology_poison

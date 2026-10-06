@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -23,6 +25,14 @@ FDB_CONTRACT_ENV = "MAIN_COMPUTER_HUB_CONTROL_FDB_CONTRACT_SHA256"
 CHAIN_CONTRACT_ENV = "MAIN_COMPUTER_HUB_CONTROL_CHAIN_CONTRACT_SHA256"
 BOOTSTRAP_FDB_ENV = "MCF"
 BOOTSTRAP_TOPOLOGY_ENV = "MCT"
+PROGRESS_ENV = "MAIN_COMPUTER_HUB_PROGRESS"
+
+
+def _progress(message: str) -> None:
+    raw = str(os.environ.get(PROGRESS_ENV) or "").strip().lower()
+    if raw in {"", "0", "false", "no", "off"}:
+        return
+    print(f"HUB_PROGRESS: {message}", file=sys.stderr, flush=True)
 
 
 def render_runtime_topology(
@@ -170,6 +180,7 @@ def _ensure_coolify_environment(client: Any, target: Mapping[str, Any], tried: l
     path = f"/api/v1/projects/{urllib.parse.quote(project_uuid)}/environments"
 
     def resolve() -> tuple[str, list[dict[str, Any]]]:
+        _progress(f"Coolify environment: inspect {environment_name!r}")
         response = client.request("GET", path)
         tried.append({"operation": "inspect-environment", "status": response.status})
         if not response.ok:
@@ -191,12 +202,16 @@ def _ensure_coolify_environment(client: Any, target: Mapping[str, Any], tried: l
 
     environment_uuid, matches = resolve()
     if environment_uuid or matches:
+        _progress(
+            f"Coolify environment: ready name={environment_name!r} uuid={environment_uuid or 'unreported'}"
+        )
         return {
             "environment_name": environment_name,
             "environment_uuid": environment_uuid or None,
             "created": False,
         }
 
+    _progress(f"Coolify environment: create {environment_name!r}")
     response = client.request("POST", path, {"name": environment_name})
     tried.append({"operation": "create-environment", "status": response.status})
     if not response.ok and response.status not in {409, 422}:
@@ -211,6 +226,10 @@ def _ensure_coolify_environment(client: Any, target: Mapping[str, Any], tried: l
             "HUB_COOLIFY_ENVIRONMENT_MISSING",
             f"could not resolve Coolify environment {environment_name!r} after create",
         )
+    _progress(
+        f"Coolify environment: ready name={environment_name!r} uuid={environment_uuid or 'unreported'} "
+        f"created={'yes' if response.ok else 'no'}"
+    )
     return {
         "environment_name": environment_name,
         "environment_uuid": environment_uuid or None,
@@ -220,7 +239,14 @@ def _ensure_coolify_environment(client: Any, target: Mapping[str, Any], tried: l
 def inspect_deployment(target: Mapping[str, Any], *, client_factory=legacy.CoolifyClient) -> dict[str, Any]:
     client = _client(target, client_factory)
     tried: list[dict[str, Any]] = []
+    _progress(
+        "deployment inspection: begin "
+        f"hub={target.get('hub_id') or target.get('application_name')} "
+        f"application={target.get('application_name')} "
+        f"environment={target.get('environment_name')}"
+    )
     try:
+        _progress(f"deployment inspection: resolve application name={target['application_name']!r}")
         uuid, detail = legacy.find_application(
             client,
             service_name=str(target["application_name"]),
@@ -242,6 +268,7 @@ def inspect_deployment(target: Mapping[str, Any], *, client_factory=legacy.Cooli
             }
         legacy_name = str(target.get("legacy_application_name") or "").strip()
         if legacy_name and legacy_name != str(target["application_name"]):
+            _progress(f"deployment inspection: resolve legacy application name={legacy_name!r}")
             legacy_uuid, legacy_detail = legacy.find_application(
                 client,
                 service_name=legacy_name,
@@ -399,18 +426,30 @@ def _wait_for_coolify_deployment(
 
     clean_uuid = str(deployment_uuid or "").strip()
     if not clean_uuid:
+        _progress("Coolify deployment: no deployment UUID returned; exact deployment wait skipped")
         return {"waited": False, "status": "unknown", "reason": "deployment-uuid-unavailable"}
-    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    started = time.monotonic()
+    deadline = started + max(0.0, float(timeout_s))
     last_payload: dict[str, Any] = {}
+    last_reported_status = ""
+    last_report_at = -1.0
     success_states = {"finished", "success", "succeeded", "completed", "complete"}
     failure_states = {"failed", "failure", "error", "cancelled", "canceled"}
+    _progress(
+        f"Coolify deployment: waiting uuid={clean_uuid} timeout={int(timeout_s)}s poll={float(poll_s):g}s"
+    )
     while True:
         path = f"/api/v1/deployments/{urllib.parse.quote(clean_uuid)}"
         response = client.request("GET", path)
+        now = time.monotonic()
+        elapsed = max(0.0, now - started)
+        report_status = "not-found-yet" if response.status == 404 else f"http-{response.status}"
         if response.ok and isinstance(response.body, Mapping):
             last_payload = dict(response.body)
             status = _deployment_state(last_payload)
+            report_status = status or "unknown"
             if status in success_states:
+                _progress(f"Coolify deployment: finished status={status} elapsed={int(elapsed)}s")
                 return {
                     "waited": True,
                     "deployment_uuid": clean_uuid,
@@ -419,6 +458,7 @@ def _wait_for_coolify_deployment(
                     "updated_at": last_payload.get("updated_at"),
                 }
             if status in failure_states:
+                _progress(f"Coolify deployment: terminal failure status={status} elapsed={int(elapsed)}s")
                 tail = _deployment_log_tail(last_payload)
                 detail = f"Coolify deployment {clean_uuid} ended with status {status!r}"
                 if tail:
@@ -429,7 +469,11 @@ def _wait_for_coolify_deployment(
                 "HUB_COOLIFY_DEPLOYMENT_INSPECT_FAILED",
                 f"could not inspect Coolify deployment {clean_uuid}: HTTP {response.status}: {response.body}",
             )
-        if time.monotonic() >= deadline:
+        if report_status != last_reported_status or last_report_at < 0 or elapsed - last_report_at >= 30.0:
+            _progress(f"Coolify deployment: status={report_status} elapsed={int(elapsed)}s")
+            last_reported_status = report_status
+            last_report_at = elapsed
+        if now >= deadline:
             status = _deployment_state(last_payload) or "unknown"
             tail = _deployment_log_tail(last_payload)
             detail = f"Coolify deployment {clean_uuid} did not complete within {int(timeout_s)} seconds; last status={status!r}"
@@ -450,9 +494,16 @@ def apply_deployment(
     target.setdefault("network", str(target.get("chain_contract", {}).get("network") or "mainnet"))
     client = _client(target, client_factory)
     tried: list[dict[str, Any]] = []
+    _progress(
+        "deployment: begin "
+        f"hub={target.get('hub_id') or target.get('application_name')} "
+        f"application={target.get('application_name')} "
+        f"environment={target.get('environment_name')}"
+    )
     try:
         frozen_uuid = str(target.get("application_uuid") or "").strip()
         if frozen_uuid:
+            _progress(f"deployment: inspect frozen application uuid={frozen_uuid}")
             app_uuid, _detail = frozen_uuid, {"source": "frozen-prep", "uuid": frozen_uuid}
             desired_environment = str(target.get("environment_name") or f"{str(target.get('network') or 'mainnet')}-hubs")
             actual_environment = _inspect_application_environment(client, app_uuid)
@@ -463,6 +514,7 @@ def apply_deployment(
                     f"Hub Control requires {desired_environment!r}. Remove or explicitly migrate the misplaced application, then run prep again.",
                 )
         else:
+            _progress(f"deployment: resolve existing application name={target['application_name']!r}")
             app_uuid, _detail = legacy.find_application(
                 client,
                 service_name=str(target["application_name"]),
@@ -473,7 +525,9 @@ def apply_deployment(
         action = "migrated" if frozen_uuid and target.get("migration_candidate") else "updated"
         environment_result: dict[str, Any] | None = None
         if not app_uuid:
+            _progress("deployment: application absent; preparing dedicated Hub environment")
             environment_result = _ensure_coolify_environment(client, target, tried)
+            _progress(f"deployment: create application name={target['application_name']!r}")
             response = client.request("POST", "/api/v1/applications/public", payload)
             if not response.ok:
                 raise HubControlError("HUB_COOLIFY_CREATE_FAILED", f"Hub application create failed: HTTP {response.status}: {response.body}")
@@ -483,7 +537,9 @@ def apply_deployment(
             if not app_uuid:
                 raise HubControlError("HUB_COOLIFY_CREATE_FAILED", "Hub application create succeeded without returning a UUID")
             action = "created"
+            _progress(f"deployment: application created uuid={app_uuid}")
         else:
+            _progress(f"deployment: update application uuid={app_uuid}")
             update = {k: v for k, v in payload.items() if k not in {"project_uuid", "server_uuid", "environment_name", "git_repository"}}
             response = client.request("PATCH", f"/api/v1/applications/{urllib.parse.quote(app_uuid)}", update)
             if not response.ok and response.status not in {405}:
@@ -493,7 +549,9 @@ def apply_deployment(
                 if not response.ok:
                     raise HubControlError("HUB_COOLIFY_UPDATE_FAILED", f"Hub application update failed: HTTP {response.status}: {response.body}")
 
+        _progress(f"deployment: ensure persistent storage application={app_uuid}")
         _ensure_storage(client, target, app_uuid, tried)
+        _progress("deployment: persistent storage ready")
         topology_b64 = base64.b64encode(canonical_bytes(target["topology"])).decode("ascii")
         env_values = {
             # Long-form projection values remain the canonical launcher contract.
@@ -530,15 +588,23 @@ def apply_deployment(
             "MAIN_COMPUTER_HUB_CONTROL_FDB_NAMESPACE": str(target["fdb_contract"]["namespace"]),
             "MAIN_COMPUTER_HUB_CONTROL_FDB_API_VERSION": str(target["fdb_contract"].get("api_version", 740)),
         }
-        for key, value in env_values.items():
+        _progress(f"deployment: synchronize {len(env_values)} environment variables")
+        for index, (key, value) in enumerate(env_values.items(), start=1):
+            _progress(f"deployment: env {index}/{len(env_values)} key={key}")
             legacy.sync_application_env_var(client, application_uuid=app_uuid, key=key, value=value, tried=tried)
+        _progress(f"deployment: trigger forced deploy application={app_uuid}")
         deploy_trigger = legacy.trigger_deploy(client, application_uuid=app_uuid, force=True, tried=tried)
         deployment_uuid = _deployment_uuid_from_trigger(deploy_trigger)
+        _progress(f"deployment: deploy queued uuid={deployment_uuid or 'unavailable'}")
         deployment_wait = _wait_for_coolify_deployment(
             client,
             deployment_uuid,
             timeout_s=deployment_wait_timeout_s,
             poll_s=deployment_poll_s,
+        )
+        _progress(
+            f"deployment: materialization complete application={app_uuid} "
+            f"status={deployment_wait.get('status')}"
         )
         return {
             "application_uuid": app_uuid,
@@ -568,10 +634,18 @@ def _get_json(url: str, *, timeout_s: float) -> dict[str, Any]:
 
 def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, request_timeout_s: float = 12.0) -> dict[str, Any]:
     base = str(target["public_url"]).rstrip("/")
-    deadline = time.monotonic() + max(0.0, wait_timeout_s)
+    started = time.monotonic()
+    deadline = started + max(0.0, wait_timeout_s)
     last_error: object = None
     last_observation: dict[str, Any] = {}
+    last_report_signature: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+    last_report_at = -1.0
+    attempt = 0
+    _progress(
+        f"runtime verification: begin hub={target.get('hub_id')} url={base} timeout={int(wait_timeout_s)}s"
+    )
     while True:
+        attempt += 1
         health: dict[str, Any] | None = None
         identity: dict[str, Any] | None = None
         status: dict[str, Any] | None = None
@@ -626,6 +700,8 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
             "status": status,
         }
         if all(checks.values()):
+            elapsed = max(0.0, time.monotonic() - started)
+            _progress(f"runtime verification: verified attempt={attempt} elapsed={int(elapsed)}s")
             return {
                 "verified": True,
                 "reason": "hub-fdb-and-chain-consumption-verified",
@@ -639,7 +715,25 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
             "failed_checks": failed_checks,
             "endpoint_errors": endpoint_errors,
         }
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        elapsed = max(0.0, now - started)
+        signature = (tuple(failed_checks), tuple(sorted(endpoint_errors)))
+        if signature != last_report_signature or last_report_at < 0 or elapsed - last_report_at >= 30.0:
+            errors = ",".join(sorted(endpoint_errors)) or "none"
+            failed = ",".join(failed_checks) or "none"
+            _progress(
+                f"runtime verification: pending attempt={attempt} elapsed={int(elapsed)}s "
+                f"failed={failed} endpoint_errors={errors}"
+            )
+            last_report_signature = signature
+            last_report_at = elapsed
+        if now >= deadline:
+            _progress(
+                f"runtime verification: timeout elapsed={int(elapsed)}s "
+                f"hub_running={'yes' if hub_running else 'no'} "
+                f"fdb={'verified' if fdb_verified else 'not-verified'} "
+                f"chain={'verified' if chain_verified else 'not-verified'}"
+            )
             return {
                 "verified": False,
                 "reason": "hub-runtime-verification-timeout",

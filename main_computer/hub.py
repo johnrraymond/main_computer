@@ -63,6 +63,7 @@ DEFAULT_HUB_WORKER_PORT = 8771
 HUB_WORKER_CHAT_PATH = "/api/hub/worker/chat"
 HUB_WORKER_SESSION_START_PATH = "/api/hub/worker/sessions/start"
 HUB_WORKER_SESSION_CHAT_PATH = "/api/hub/worker/sessions/chat"
+DEFAULT_HUB_STATUS_SLOW_LOG_SECONDS = 2.0
 
 ALLFATHER_HUB_REMOTE_MANIFEST_PATH = Path(__file__).resolve().parent / "config" / "allfather_hub_remote_manifest.json"
 
@@ -1688,13 +1689,21 @@ class _JsonHandler(BaseHTTPRequestHandler):
             raise ValueError("Expected a JSON object.")
         return data
 
-    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> bool:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(int(status))
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(int(status))
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Health/status observers and reverse proxies are allowed to abandon a
+            # response after their own timeout. Treat that as a transport outcome,
+            # not as an unhandled Hub request failure that dumps a traceback.
+            self.close_connection = True
+            return False
 
     def _send_bytes(
         self,
@@ -1703,13 +1712,55 @@ class _JsonHandler(BaseHTTPRequestHandler):
         content_type: str,
         status: HTTPStatus = HTTPStatus.OK,
         cache_control: str = "no-store",
+    ) -> bool:
+        try:
+            self.send_response(int(status))
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", cache_control)
+            self.end_headers()
+            self.wfile.write(payload)
+            return True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+            return False
+
+    def _hub_status_slow_log_seconds(self) -> float:
+        raw = str(os.environ.get("HUB_STATUS_SLOW_LOG_SECONDS", DEFAULT_HUB_STATUS_SLOW_LOG_SECONDS)).strip()
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            return DEFAULT_HUB_STATUS_SLOW_LOG_SECONDS
+
+    def _log_hub_status_timing(
+        self,
+        *,
+        path: str,
+        started_at: float,
+        exact_payouts: bool,
+        response_written: bool,
     ) -> None:
-        self.send_response(int(status))
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", cache_control)
-        self.end_headers()
-        self.wfile.write(payload)
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        threshold_ms = self._hub_status_slow_log_seconds() * 1000.0
+        slow = elapsed_ms >= threshold_ms
+        disconnected = not response_written
+        if not slow and not disconnected:
+            return
+        payload = {
+            "event": "hub.status.request",
+            "path": path,
+            "elapsed_ms": round(elapsed_ms, 3),
+            "slow_threshold_ms": round(threshold_ms, 3),
+            "slow": slow,
+            "client_disconnected": disconnected,
+            "exact_payouts": bool(exact_payouts),
+            "client": self.client_address[0] if self.client_address else "",
+        }
+        port = getattr(self.server, "server_port", "")
+        try:
+            print(f"[hub-status:{port}] {json.dumps(payload, sort_keys=True)}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
 
     def _send_jsonl_payload(self, payload: dict[str, Any]) -> None:
         self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
@@ -3468,6 +3519,7 @@ class HubServerHandler(_JsonHandler):
             )
             return
         if path in {"/api/hub/status", "/api/hub/v1/status"}:
+            status_started_at = time.perf_counter()
             status = self.server.registry.status()
             status["api_version"] = "v1" if path.startswith("/api/hub/v1/") else "legacy"
             status["serving_hub"] = serving_hub_identity_for_server(self.server)
@@ -3511,7 +3563,13 @@ class HubServerHandler(_JsonHandler):
             }
             exact_payouts = self._exact_payouts_requested(query)
             status["energy"] = self.server.energy_ledger.status(exact=exact_payouts)
-            self._send_json(status)
+            response_written = self._send_json(status)
+            self._log_hub_status_timing(
+                path=path,
+                started_at=status_started_at,
+                exact_payouts=exact_payouts,
+                response_written=response_written,
+            )
             return
         if path == "/api/hub/v1/metrics":
             self._send_json(self.server.dispatcher.metrics())

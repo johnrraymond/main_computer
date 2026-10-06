@@ -10,13 +10,14 @@ from types import SimpleNamespace
 import pytest
 
 
-def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
+def test_exp_fdb_hub_entrypoint_is_deployable_and_declares_fdb_options() -> None:
     repo = Path(__file__).resolve().parents[1]
     entrypoint = (repo / "exp-fdb-hub.py").read_text(encoding="utf-8")
     module = (repo / "main_computer" / "exp_fdb_hub.py").read_text(encoding="utf-8")
 
     assert "main_computer.exp_fdb_hub" in entrypoint
-    assert "Manual-only" in module
+    assert "Hub Control deployable FoundationDB runtime." in module
+    assert "Manual-only" not in module
     assert "--cluster-file" in module
     assert "--runtime-env-file" in module
     assert "--namespace" in module

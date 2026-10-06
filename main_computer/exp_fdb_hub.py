@@ -2348,7 +2348,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
 
 
 class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
-    """Manual-only Hub clone that keeps shared hub state in FoundationDB."""
+    """Hub runtime that keeps shared Hub state in FoundationDB."""
 
     def __init__(
         self,
@@ -2740,11 +2740,16 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
     fdb_health = server.credit_ledger.health_check()
     state_health = server.fdb_state.health_check()
 
-    print(f"Experimental FDB hub server: http://{args.host}:{server.server_port}")
-    print("Manual-only: this entry point is not part of normal Main Computer startup.")
+    print(f"FoundationDB Hub server: http://{args.host}:{server.server_port}")
+    print("Hub runtime mode: Hub Control deployable FoundationDB runtime.")
     print(f"Hub runtime: {server.hub_root}")
     print(f"Hub admin/control site: http://{args.host}:{server.server_port}/admin")
-    print(f"Hub security: high-security={config.hub_high_security} profile={HUB_SECURITY_PROFILE}; local experimental mode allows insecure dev network")
+    transport_note = (
+        "insecure development-network transport override enabled"
+        if config.hub_allow_insecure_dev_network
+        else "TLS or loopback transport required"
+    )
+    print(f"Hub security: high-security={config.hub_high_security} profile={HUB_SECURITY_PROFILE}; {transport_note}")
     print(f"Worker route diagnostics: {'on' if server.worker_route_diagnostics else 'off'} (set HUB_WORKER_ROUTE_DIAGNOSTICS=1 to enable per-stage logging)")
     print(f"FDB cluster file: {fdb_config.cluster_file}")
     print(f"FDB namespace: {fdb_config.namespace}")
@@ -3231,7 +3236,7 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
             thread = threading.Thread(target=server.serve_forever, name=f"exp-fdb-hub-{server.server_port}", daemon=True)
             thread.start()
             threads.append(thread)
-        print(f"Experimental FDB hub ports listening: {', '.join(str(port) for port in live_ports)}")
+        print(f"FoundationDB Hub ports listening: {', '.join(str(port) for port in live_ports)}")
         print(f"Multi-session auth required: {'yes' if getattr(args, 'require_multisession_auth', False) else 'no'}")
         if args.docker:
             _ensure_scheduler_lab_run_id(args)
@@ -3256,7 +3261,7 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
             while True:
                 time.sleep(3600)
         except KeyboardInterrupt:
-            print("\nExperimental FDB hub stopped.")
+            print("\nFoundationDB Hub stopped.")
             return 0
     finally:
         if docker_process is not None and docker_process.poll() is None:

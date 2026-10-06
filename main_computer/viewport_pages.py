@@ -13,6 +13,7 @@ from pathlib import Path
 _WEB_DIR = Path(__file__).with_name("web")
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _INCLUDE_RE = re.compile(r"^[ \t]*<!--\s*@include\s+([^>]+?)\s*-->", re.MULTILINE)
+_GAME_BUNDLE_RE = re.compile(r"^[ \t]*<!--\s*@game-bundle\s+([A-Za-z0-9._-]+)\s*-->", re.MULTILINE)
 
 _PAGE_FILES = {
     "TEXT_INDEX_HTML": "text.html",
@@ -43,7 +44,15 @@ def _expand_includes(text: str, base_dir: Path, seen: tuple[Path, ...] = ()) -> 
         include_text = include_path.read_text(encoding="utf-8")
         return _expand_includes(include_text, base_dir, (*seen, include_path))
 
-    return _INCLUDE_RE.sub(replace, text)
+    expanded = _INCLUDE_RE.sub(replace, text)
+
+    def replace_game_bundle(match: re.Match[str]) -> str:
+        from main_computer.game_web_loader import read_game_bundle
+
+        slot = match.group(1).strip()
+        return read_game_bundle(_REPOSITORY_ROOT, slot)
+
+    return _GAME_BUNDLE_RE.sub(replace_game_bundle, expanded)
 
 
 def _load_page(name: str) -> str:

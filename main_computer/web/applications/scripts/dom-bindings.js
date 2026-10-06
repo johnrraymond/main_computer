@@ -19,7 +19,6 @@
     <!-- @include applications/scripts/dom-bindings/wallet.js -->
     <!-- @include applications/scripts/dom-bindings/aider.js -->
     <!-- @include applications/scripts/dom-bindings/navigation.js -->
-    <!-- @include applications/scripts/dom-bindings/webgl-state.js -->
     <!-- @include applications/scripts/dom-bindings/runtime-state.js -->
     <!-- @include applications/scripts/dom-bindings/document-spreadsheet-state.js -->
     <!-- @include applications/scripts/dom-bindings/file-explorer-state.js -->

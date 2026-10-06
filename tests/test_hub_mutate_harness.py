@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -217,6 +219,8 @@ def test_final_inspect_accepts_added_hub_on_frozen_host(tmp_path: Path) -> None:
             "target_generation": 5,
             "target_hub_count": 2,
             "resolved_host": "coolify-c",
+            "fdb_contract": {"generation": 8, "sha256": "fdbhash"},
+            "chain_contract": {"generation": 12, "sha256": "chainhash"},
         }
     )
     harness._validate_step(
@@ -226,12 +230,133 @@ def test_final_inspect_accepts_added_hub_on_frozen_host(tmp_path: Path) -> None:
             "accepted_generation": 5,
             "hubs": [
                 {"hub_id": "mainneta-hub1", "host_id": "coolify-a"},
-                {"hub_id": "mainnetc-hub1", "host_id": "coolify-c"},
+                {
+                    "hub_id": "mainnetc-hub1",
+                    "host_id": "coolify-c",
+                    "fdb_contract": {"generation": 8, "sha256": "fdbhash"},
+                    "chain_contract": {"generation": 12, "sha256": "chainhash"},
+                },
             ],
             "topology_verification": {"verified": True},
         },
     )
 
+
+
+def test_final_inspect_accepts_post_finalize_chain_drift_as_rectification(tmp_path: Path) -> None:
+    harness = Harness(_args(tmp_path, "add-hub", hub="mainneta-hub1"))
+    harness.state.update(
+        {
+            "starting_generation": 0,
+            "target_generation": 1,
+            "target_hub_count": 1,
+            "resolved_host": "coolify-a",
+            "fdb_contract": {"generation": 8, "sha256": "fdb8"},
+            "chain_contract": {"generation": 5, "sha256": "chain5"},
+        }
+    )
+    harness._validate_step(
+        "final-inspect",
+        {
+            "status": "accepted",
+            "accepted_generation": 1,
+            "fdb_contract": {"generation": 8, "sha256": "fdb8", "status": "current"},
+            "chain_contract": {"generation": 6, "sha256": "chain6", "status": "current"},
+            "hubs": [
+                {
+                    "hub_id": "mainneta-hub1",
+                    "host_id": "coolify-a",
+                    "fdb_contract": {"generation": 8, "sha256": "fdb8"},
+                    "chain_contract": {"generation": 5, "sha256": "chain5"},
+                    "fdb_status": "current",
+                    "chain_status": "stale-or-unverified",
+                    "verification": {
+                        "verified": False,
+                        "reason": "hub-dependency-contract-stale",
+                        "fdb_adoption_verified": True,
+                        "chain_adoption_verified": False,
+                    },
+                }
+            ],
+            "topology_verification": {
+                "verified": False,
+                "reason": "one-or-more-accepted-hubs-unverified",
+            },
+        },
+    )
+    assert harness.state["dependency_rectification_required"] == [
+        {
+            "hub_id": "mainneta-hub1",
+            "dependency": "chain",
+            "adopted_generation": 5,
+            "adopted_sha256": "chain5",
+            "current_generation": 6,
+            "current_sha256": "chain6",
+        }
+    ]
+
+
+def test_final_inspect_rejects_non_drift_verification_failure(tmp_path: Path) -> None:
+    harness = Harness(_args(tmp_path, "add-hub", hub="mainneta-hub1"))
+    harness.state.update(
+        {
+            "starting_generation": 0,
+            "target_hub_count": 1,
+            "resolved_host": "coolify-a",
+            "fdb_contract": {"generation": 8, "sha256": "fdb8"},
+            "chain_contract": {"generation": 5, "sha256": "chain5"},
+        }
+    )
+    with pytest.raises(MODULE.HarnessError, match="could not independently verify"):
+        harness._validate_step(
+            "final-inspect",
+            {
+                "status": "accepted",
+                "accepted_generation": 1,
+                "fdb_contract": {"generation": 8, "sha256": "fdb8", "status": "current"},
+                "chain_contract": {"generation": 5, "sha256": "chain5", "status": "current"},
+                "hubs": [
+                    {
+                        "hub_id": "mainneta-hub1",
+                        "host_id": "coolify-a",
+                        "fdb_contract": {"generation": 8, "sha256": "fdb8"},
+                        "chain_contract": {"generation": 5, "sha256": "chain5"},
+                        "verification": {"verified": False, "reason": "hub-health-unverified"},
+                    }
+                ],
+                "topology_verification": {"verified": False},
+            },
+        )
+
+
+def test_final_inspect_rejects_accepted_hub_contract_that_differs_from_frozen_target(tmp_path: Path) -> None:
+    harness = Harness(_args(tmp_path, "add-hub", hub="mainneta-hub1"))
+    harness.state.update(
+        {
+            "starting_generation": 0,
+            "target_hub_count": 1,
+            "resolved_host": "coolify-a",
+            "fdb_contract": {"generation": 8, "sha256": "fdb8"},
+            "chain_contract": {"generation": 5, "sha256": "chain5"},
+        }
+    )
+    with pytest.raises(MODULE.HarnessError, match="differs from frozen prep target"):
+        harness._validate_step(
+            "final-inspect",
+            {
+                "status": "accepted",
+                "accepted_generation": 1,
+                "hubs": [
+                    {
+                        "hub_id": "mainneta-hub1",
+                        "host_id": "coolify-a",
+                        "fdb_contract": {"generation": 8, "sha256": "fdb8"},
+                        "chain_contract": {"generation": 6, "sha256": "chain6"},
+                    }
+                ],
+                "topology_verification": {"verified": True},
+            },
+        )
 
 def test_final_inspect_accepts_guarded_full_deletion(tmp_path: Path) -> None:
     harness = Harness(
@@ -308,7 +433,7 @@ def test_internal_command_is_saved_but_not_printed(
     def fake_run(*_args, **_kwargs):
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(payload), stderr="")
 
-    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    monkeypatch.setattr(MODULE, "_run_with_live_stderr", fake_run)
     harness._run_step("pre-inspect", harness.inspect_cmd())
     stdout = capsys.readouterr().out
     assert "tools.hub_control" not in stdout
@@ -390,3 +515,53 @@ def test_do_summary_reports_exact_coolify_deployment_identity(
     assert "deployment commit:    abc123" in stdout
     assert "FDB adoption:         verified" in stdout
     assert "Chain adoption:       verified" in stdout
+
+
+def test_run_step_enables_hub_progress_for_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = Harness(_args(tmp_path, "add-hub"))
+    payload = {
+        "ok": True,
+        "result": {
+            "status": "accepted",
+            "accepted_generation": 4,
+            "hubs": [],
+            "topology_verification": {"verified": True},
+        },
+    }
+    seen_env: dict[str, str] = {}
+
+    def fake_run(*_args, **kwargs):
+        seen_env.update(kwargs["env"])
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(MODULE, "_run_with_live_stderr", fake_run)
+    harness._run_step("pre-inspect", harness.inspect_cmd())
+
+    assert seen_env["MAIN_COMPUTER_HUB_PROGRESS"] == "1"
+    assert seen_env["PYTHONUNBUFFERED"] == "1"
+
+
+def test_live_stderr_runner_tees_diagnostics_and_captures_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script = (
+        "import json,sys; "
+        "print('progress-one', file=sys.stderr, flush=True); "
+        "print(json.dumps({'ok': True, 'result': {'status': 'done'}}))"
+    )
+
+    proc = MODULE._run_with_live_stderr(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+    )
+
+    captured = capsys.readouterr()
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["result"]["status"] == "done"
+    assert proc.stderr == "progress-one\n"
+    assert captured.out == "progress-one\n"

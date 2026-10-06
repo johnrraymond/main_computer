@@ -1963,6 +1963,13 @@ def build_live_current_topology_evidence(
         raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_DUPLICATE", "expected topology contains duplicate nodes or validators")
 
     live_node_hints = [_identifier(item, "live node hint") for item in detection.get("observed_live_node_hints", [])]
+    live_primary_nodes_raw = detection.get("observed_live_primary_nodes")
+    if isinstance(live_primary_nodes_raw, list):
+        live_primary_nodes = [_identifier(item, "live primary node") for item in live_primary_nodes_raw]
+    else:
+        # Backward-compatible fallback for older detector payloads that did not
+        # expose exact primary nodes separately from broad helper/name hints.
+        live_primary_nodes = list(live_node_hints)
     operator_actual_nodes = [_identifier(item, "actual node") for item in actual_nodes if str(item or "").strip()]
     if len(set(operator_actual_nodes)) != len(operator_actual_nodes):
         raise _fail("MOTHER_DEPLOY_LIVE_TOPOLOGY_SEAL_ACTUAL_NODE_INVALID", "--actual-node contains duplicates")
@@ -1970,8 +1977,8 @@ def build_live_current_topology_evidence(
     source_nodes = list(nodes)
     source_validators = list(validators)
     source_validator_by_node = {node: source_validators[index] for index, node in enumerate(source_nodes)}
-    live_node_set = set(live_node_hints)
-    ignored_non_primary_live_node_hints: list[str] = []
+    live_node_set = set(live_primary_nodes)
+    ignored_non_primary_live_node_hints: list[str] = sorted(set(live_node_hints) - live_node_set)
 
     if operator_actual_nodes:
         actual_node_set = set(operator_actual_nodes)
@@ -2124,6 +2131,7 @@ def build_live_current_topology_evidence(
             "present_expected_nodes": list(detection.get("present_expected_nodes") or []),
             "missing_expected_nodes": list(detection.get("missing_expected_nodes") or []),
             "observed_live_node_hints": list(detection.get("observed_live_node_hints") or []),
+            "observed_live_primary_nodes": list(detection.get("observed_live_primary_nodes") or []),
             "operator_declared_actual_nodes": list(operator_actual_nodes),
             "operator_ignored_non_primary_live_node_hints": list(ignored_non_primary_live_node_hints),
             "unexpected_live_nodes": list(detection.get("unexpected_live_nodes") or []),

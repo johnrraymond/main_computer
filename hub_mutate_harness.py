@@ -22,6 +22,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,53 @@ def quote_command(argv: list[str]) -> str:
     if os.name == "nt":
         return " ".join(subprocess.list2cmdline([arg]) for arg in argv)
     return " ".join(shlex.quote(arg) for arg in argv)
+
+
+def _run_with_live_stderr(
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Capture JSON stdout while teeing child diagnostics to the operator live."""
+
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=1,
+        env=env,
+    )
+    if proc.stdout is None or proc.stderr is None:
+        raise HarnessError("could not open Hub Control child pipes")
+
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+
+    def drain_stdout() -> None:
+        stdout_parts.append(proc.stdout.read())
+
+    def drain_stderr() -> None:
+        for line in proc.stderr:
+            stderr_parts.append(line)
+            print(line, end="", flush=True)
+
+    stdout_thread = threading.Thread(target=drain_stdout, name="hub-control-stdout", daemon=True)
+    stderr_thread = threading.Thread(target=drain_stderr, name="hub-control-stderr", daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    returncode = proc.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+
+    return subprocess.CompletedProcess(
+        args=argv,
+        returncode=returncode,
+        stdout="".join(stdout_parts),
+        stderr="".join(stderr_parts),
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -124,6 +172,7 @@ class Harness:
             "resolved_host": None,
             "fdb_contract": None,
             "chain_contract": None,
+            "dependency_rectification_required": [],
             "last_completed_step": None,
         }
         self._write_state()
@@ -274,12 +323,13 @@ class Harness:
         prefix = self.run_dir / f"{index:02d}-{step}"
         prefix.with_suffix(".command.txt").write_text(quote_command(argv) + "\n", encoding="utf-8")
         print(f"\n=== {step} ===")
-        proc = subprocess.run(
+        child_env = os.environ.copy()
+        child_env["MAIN_COMPUTER_HUB_PROGRESS"] = "1"
+        child_env["PYTHONUNBUFFERED"] = "1"
+        proc = _run_with_live_stderr(
             argv,
             cwd=self.repo_root,
-            text=True,
-            capture_output=True,
-            check=False,
+            env=child_env,
         )
         prefix.with_suffix(".stdout.txt").write_text(proc.stdout, encoding="utf-8")
         prefix.with_suffix(".stderr.txt").write_text(proc.stderr, encoding="utf-8")
@@ -386,8 +436,12 @@ class Harness:
                 verification = result.get("empty_topology_verification")
                 if not isinstance(verification, dict) or verification.get("verified") is not True:
                     raise HarnessError(f"final-inspect did not verify accepted-empty Hub state: {verification}")
-            else:
-                self._require_accepted_verified(result, label="final-inspect")
+                self.state["dependency_rectification_required"] = []
+            elif result.get("status") != "accepted":
+                raise HarnessError(
+                    f"final-inspect requires accepted Hub authority; observed status={result.get('status')!r}"
+                )
+
             expected = int(self._required_state("starting_generation")) + 1
             if result.get("accepted_generation") != expected:
                 raise HarnessError(
@@ -400,15 +454,114 @@ class Harness:
             if self.operation == "add-hub":
                 if len(matches) != 1:
                     raise HarnessError(f"final inspect did not contain exactly one added Hub {self.hub!r}")
-                if self.state.get("resolved_host") and matches[0].get("host_id") != self.state.get("resolved_host"):
+                accepted_hub = matches[0]
+                if self.state.get("resolved_host") and accepted_hub.get("host_id") != self.state.get("resolved_host"):
                     raise HarnessError("final accepted Hub host differs from prepared host")
+                self._require_frozen_contract_reference(
+                    accepted_hub.get("fdb_contract"),
+                    self.state.get("fdb_contract"),
+                    label="FDB",
+                )
+                self._require_frozen_contract_reference(
+                    accepted_hub.get("chain_contract"),
+                    self.state.get("chain_contract"),
+                    label="Chain",
+                )
             elif matches:
                 raise HarnessError(f"removed Hub {self.hub!r} is still accepted")
             if self.state.get("target_hub_count") is not None and len(hubs) != self.state.get("target_hub_count"):
                 raise HarnessError(
                     f"final Hub count differs from frozen target: expected {self.state.get('target_hub_count')}, got {len(hubs)}"
                 )
+
+            if not full_deletion:
+                verification = result.get("topology_verification")
+                if isinstance(verification, dict) and verification.get("verified") is True:
+                    self.state["dependency_rectification_required"] = []
+                else:
+                    drift = self._dependency_drift_only(result)
+                    if not drift:
+                        raise HarnessError(
+                            f"final-inspect could not independently verify accepted Hub state: {verification}"
+                        )
+                    self.state["dependency_rectification_required"] = drift
             return
+
+
+    def _require_frozen_contract_reference(
+        self,
+        accepted_value: object,
+        frozen_value: object,
+        *,
+        label: str,
+    ) -> None:
+        accepted = _mapping(accepted_value, f"final accepted Hub {label} contract")
+        frozen = _mapping(frozen_value, f"frozen {label} contract")
+        for key in ("generation", "sha256"):
+            if accepted.get(key) != frozen.get(key):
+                raise HarnessError(
+                    f"final accepted Hub {label} contract differs from frozen prep target: "
+                    f"accepted {key}={accepted.get(key)!r}, frozen {key}={frozen.get(key)!r}"
+                )
+
+    def _dependency_drift_only(self, result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return dependency drift evidence iff every final-inspect failure is stale-contract drift.
+
+        Hub membership operations freeze dependency contracts at prep. If FDB or Chain
+        authority advances after that freeze, the accepted Hub may immediately become
+        stale without invalidating the already-proven membership mutation. Such drift is
+        owned by the dependency rectifiers, not add/remove-Hub.
+        """
+        hubs = result.get("hubs")
+        if not isinstance(hubs, list):
+            return []
+        current_contracts = {
+            "fdb": result.get("fdb_contract"),
+            "chain": result.get("chain_contract"),
+        }
+        drift: list[dict[str, Any]] = []
+        saw_unverified = False
+        for item in hubs:
+            if not isinstance(item, dict):
+                return []
+            verification = item.get("verification")
+            if not isinstance(verification, dict):
+                return []
+            if verification.get("verified") is True:
+                continue
+            saw_unverified = True
+            if verification.get("reason") != "hub-dependency-contract-stale":
+                return []
+            hub_id = str(item.get("hub_id") or "")
+            item_drift = False
+            for dependency, adoption_key in (
+                ("fdb", "fdb_adoption_verified"),
+                ("chain", "chain_adoption_verified"),
+            ):
+                if verification.get(adoption_key) is True:
+                    continue
+                adopted = item.get(f"{dependency}_contract")
+                current = current_contracts[dependency]
+                if not isinstance(adopted, dict) or not isinstance(current, dict):
+                    return []
+                adopted_sha = str(adopted.get("sha256") or "")
+                current_sha = str(current.get("sha256") or "")
+                if not adopted_sha or not current_sha or adopted_sha == current_sha:
+                    return []
+                drift.append(
+                    {
+                        "hub_id": hub_id,
+                        "dependency": dependency,
+                        "adopted_generation": adopted.get("generation"),
+                        "adopted_sha256": adopted_sha,
+                        "current_generation": current.get("generation"),
+                        "current_sha256": current_sha,
+                    }
+                )
+                item_drift = True
+            if not item_drift:
+                return []
+        return drift if saw_unverified and drift else []
 
     def _require_accepted_verified(self, result: dict[str, Any], *, label: str) -> None:
         if result.get("status") != "accepted":
@@ -476,6 +629,14 @@ class Harness:
         )
         if isinstance(verification, dict):
             print(f"verification:         {'verified' if verification.get('verified') is True else 'not verified'}")
+        if self.state.get("dependency_rectification_required"):
+            print("membership result:    verified against frozen mutation target")
+            for item in self.state["dependency_rectification_required"]:
+                dependency = str(item.get("dependency") or "dependency").upper()
+                print(
+                    f"rectification:        {item.get('hub_id')} {dependency} "
+                    f"generation {item.get('adopted_generation')} -> {item.get('current_generation')} required"
+                )
 
     def _print_inspection(self, result: dict[str, Any]) -> None:
         print("=== Hub inspection ===")
@@ -571,6 +732,8 @@ class Harness:
         if self.state.get("rebirth"):
             print("first-Hub rebirth:    yes")
         print("accepted state:       verified")
+        if self.state.get("dependency_rectification_required"):
+            print("dependency adoption:  rectification required")
 
     def _required_state(self, key: str) -> str:
         value = self.state.get(key)

@@ -10,6 +10,7 @@ exactly the same boundary.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import hashlib
 import inspect
 import importlib.util
@@ -29,6 +30,11 @@ TOOLS = ROOT / "tools"
 DEFAULT_RUN = Path(
     r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_structured_supervision_train_v1"
 )
+
+
+def emit_diagnostic(event: str, **fields: Any) -> None:
+    payload = {"event": event, **fields}
+    print(json.dumps(payload, separators=(",", ":"), default=str), file=sys.stderr, flush=True)
 
 
 def load_local_module(name: str, path: Path):
@@ -1003,7 +1009,28 @@ class CaptainClefModel:
             + torch.sigmoid(head.residual_gate) * joint
         )
 
-    def evaluate_request(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def evaluate_request(
+        self,
+        payload: dict[str, Any],
+        transport_diagnostics: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        transport_diagnostics = dict(transport_diagnostics or {})
+        request_id = str(transport_diagnostics.get("requestId") or "captain-unknown")
+        evaluate_started = time.perf_counter()
+        stage_timings_ms: dict[str, float] = {}
+
+        def stage_start(event: str, **fields: Any) -> float:
+            emit_diagnostic(event, requestId=request_id, **fields)
+            return time.perf_counter()
+
+        def stage_end(event: str, started_at: float, stage_name: str, **fields: Any) -> float:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+            stage_timings_ms[stage_name] = float(elapsed_ms)
+            emit_diagnostic(
+                event, requestId=request_id, elapsedMs=float(elapsed_ms), **fields
+            )
+            return elapsed_ms
+
         checkpoint = dict(payload.get("checkpoint") or {})
         requested_id = str(checkpoint.get("checkpointId") or "")
         requested_sha = str(checkpoint.get("sha256") or "")
@@ -1032,10 +1059,19 @@ class CaptainClefModel:
         if len(question_rows) > 64:
             raise ValueError("captain request exceeds 64-question live smoke bound")
         questions = [self._question(row, shared_context) for row in question_rows]
+        emit_diagnostic(
+            "captain_evaluate_validated",
+            requestId=request_id,
+            captainId=str((payload.get("battle") or {}).get("captainId") or ""),
+            questionCount=len(questions),
+            evidenceExecutionMode=evidence_execution_mode,
+        )
 
         torch = self.torch
+        presync_started = stage_start("captain_cuda_presync_start")
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        stage_end("captain_cuda_presync_complete", presync_started, "cudaPreSync")
         started = time.perf_counter()
         by_label = {}
         evidence_stats = {}
@@ -1046,6 +1082,9 @@ class CaptainClefModel:
         backbone_forward_batches = 0
         with torch.inference_mode():
             for label, bundle in self.bundles.items():
+                backbone_started = stage_start(
+                    "captain_backbone_start", backbone=label, questionCount=len(questions)
+                )
                 (
                     rows,
                     stats,
@@ -1058,18 +1097,35 @@ class CaptainClefModel:
                     bundle, questions, evidence_execution_mode=evidence_execution_mode
                 )
                 by_label[label] = self._pack_evidence_batch(rows)
+                stage_end(
+                    "captain_backbone_complete",
+                    backbone_started,
+                    f"backbone.{label}",
+                    backbone=label,
+                    forwardBatchCount=int(forward_batches),
+                    prefixCacheUsed=bool(prefix_cache_used),
+                )
                 evidence_stats[label] = stats
                 prefix_cache_by_label[label] = bool(prefix_cache_used)
                 shared_prefix_tokens_by_label[label] = int(shared_prefix_tokens)
                 prefix_cache_candidate_tokens_by_label[label] = int(prefix_cache_candidate_tokens)
                 prefix_cache_failure_by_label[label] = prefix_cache_failure_reason
                 backbone_forward_batches += int(forward_batches)
+            head_started = stage_start(
+                "captain_clef_head_start", questionCount=len(questions)
+            )
             logits = self._batched_head_forward(by_label)
             probabilities = logits.detach().float().softmax(dim=-1).cpu()
+            stage_end(
+                "captain_clef_head_complete", head_started, "clefHead", questionCount=len(questions)
+            )
+        postsync_started = stage_start("captain_cuda_postsync_start")
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        stage_end("captain_cuda_postsync_complete", postsync_started, "cudaPostSync")
         total_ms = (time.perf_counter() - started) * 1000.0
 
+        answer_started = stage_start("captain_answer_assembly_start", questionCount=len(questions))
         answers = []
         for index, question in enumerate(questions):
             candidate_ids = [str(candidate.candidate_id) for candidate in question.candidates]
@@ -1086,6 +1142,9 @@ class CaptainClefModel:
                 "probabilities": [float(value) for value in row_probabilities],
                 "margin": float(margin),
             })
+        stage_end(
+            "captain_answer_assembly_complete", answer_started, "answerAssembly", answerCount=len(answers)
+        )
 
         if prefix_cache_by_label and all(prefix_cache_by_label.values()):
             evidence_execution_mode_actual = "prefix-cache"
@@ -1095,6 +1154,21 @@ class CaptainClefModel:
             evidence_execution_mode_actual = "mixed"
 
         del by_label, logits
+        evaluate_total_ms = (time.perf_counter() - evaluate_started) * 1000.0
+        server_diagnostics = {
+            **transport_diagnostics,
+            "evaluateTotalMs": float(evaluate_total_ms),
+            "modelMeasuredMs": float(total_ms),
+            "stageTimingsMs": dict(stage_timings_ms),
+        }
+        emit_diagnostic(
+            "captain_evaluate_complete",
+            requestId=request_id,
+            elapsedMs=float(evaluate_total_ms),
+            modelMeasuredMs=float(total_ms),
+            questionCount=len(answers),
+            stageTimingsMs=stage_timings_ms,
+        )
         return {
             "schema": "game.captainDecisionResponse.v6",
             "checkpointId": self.checkpoint_id,
@@ -1118,6 +1192,7 @@ class CaptainClefModel:
             "sharedPrefixTokensByBackbone": shared_prefix_tokens_by_label,
             "sharedPrefixCandidateTokensByBackbone": prefix_cache_candidate_tokens_by_label,
             "sharedPrefixCacheFailureByBackbone": prefix_cache_failure_by_label,
+            "serverDiagnostics": server_diagnostics,
             "answers": answers,
             "evidenceStats": evidence_stats,
         }
@@ -1151,15 +1226,83 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/captain/evaluate":
             self._json(404, {"ok": False, "error": "not found"})
             return
+
+        handler_started = time.perf_counter()
+        handler_enter_unix_ns = time.time_ns()
+        request_id = str(self.headers.get("x-main-computer-request-id") or "captain-unknown")
+        client_send_raw = str(self.headers.get("x-main-computer-client-send-unix-ns") or "").strip()
+        try:
+            client_send_unix_ns = int(client_send_raw) if client_send_raw else None
+        except ValueError:
+            client_send_unix_ns = None
+        queue_admission_ms = (
+            (handler_enter_unix_ns - client_send_unix_ns) / 1_000_000.0
+            if client_send_unix_ns is not None
+            else None
+        )
+        emit_diagnostic(
+            "captain_http_request_received",
+            requestId=request_id,
+            clientSendUnixNs=client_send_unix_ns,
+            serverHandlerEnterUnixNs=handler_enter_unix_ns,
+            queueAdmissionMs=queue_admission_ms,
+        )
+
+        body_started = time.perf_counter()
+        trace_armed = False
         try:
             length = int(self.headers.get("content-length", "0"))
             if length <= 0 or length > 2_000_000:
                 raise ValueError("invalid captain request content length")
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            response = self.server.model.evaluate_request(payload)
+            raw = self.rfile.read(length)
+            body_read_ms = (time.perf_counter() - body_started) * 1000.0
+            emit_diagnostic(
+                "captain_http_body_read",
+                requestId=request_id,
+                contentLength=length,
+                elapsedMs=float(body_read_ms),
+            )
+            payload = json.loads(raw.decode("utf-8"))
+            payload_request_id = str(
+                ((payload.get("diagnostics") or {}).get("clientRequestId") or request_id)
+            )
+            if request_id == "captain-unknown":
+                request_id = payload_request_id
+            transport_diagnostics = {
+                "requestId": request_id,
+                "clientSendUnixNs": client_send_unix_ns,
+                "serverHandlerEnterUnixNs": handler_enter_unix_ns,
+                "queueAdmissionMs": queue_admission_ms,
+                "httpBodyReadMs": float(body_read_ms),
+            }
+            emit_diagnostic(
+                "captain_stall_trace_armed", requestId=request_id, afterSeconds=10.0, repeat=True
+            )
+            faulthandler.dump_traceback_later(10.0, repeat=True, file=sys.stderr)
+            trace_armed = True
+            response = self.server.model.evaluate_request(payload, transport_diagnostics)
+            response_write_started = time.perf_counter()
             self._json(200, response)
+            response_write_ms = (time.perf_counter() - response_write_started) * 1000.0
+            emit_diagnostic(
+                "captain_http_response_sent",
+                requestId=request_id,
+                responseWriteMs=float(response_write_ms),
+                handlerTotalMs=float((time.perf_counter() - handler_started) * 1000.0),
+            )
         except Exception as exc:
+            emit_diagnostic(
+                "captain_evaluate_error",
+                requestId=request_id,
+                errorType=type(exc).__name__,
+                error=str(exc),
+                handlerElapsedMs=float((time.perf_counter() - handler_started) * 1000.0),
+            )
             self._json(400, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            if trace_armed:
+                faulthandler.cancel_dump_traceback_later()
+                emit_diagnostic("captain_stall_trace_cancelled", requestId=request_id)
 
 
 def main() -> int:

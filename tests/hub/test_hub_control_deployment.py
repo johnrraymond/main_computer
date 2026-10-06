@@ -290,3 +290,44 @@ def test_apply_deployment_refuses_frozen_application_in_chain_environment() -> N
     assert exc_info.value.code == "HUB_COOLIFY_ENVIRONMENT_MISMATCH"
     assert "mainnet-hubs" in exc_info.value.message
     assert client.calls == [("GET", "/api/v1/applications/app-1", None)]
+
+
+def test_progress_is_silent_by_default(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.delenv(deployment.PROGRESS_ENV, raising=False)
+
+    deployment._progress("hidden")
+
+    assert capsys.readouterr().err == ""
+
+
+def test_progress_goes_to_stderr_when_enabled(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv(deployment.PROGRESS_ENV, "1")
+
+    deployment._progress("deployment: example")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "HUB_PROGRESS: deployment: example\n"
+
+
+def test_wait_reports_status_transitions_when_progress_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = SequenceClient(
+        [
+            _response(200, {"status": "queued"}),
+            _response(200, {"status": "in_progress"}),
+            _response(200, {"status": "finished", "commit": "abc123"}),
+        ]
+    )
+    monkeypatch.setenv(deployment.PROGRESS_ENV, "1")
+    monkeypatch.setattr(deployment.time, "sleep", lambda _seconds: None)
+
+    deployment._wait_for_coolify_deployment(client, "dep-1", timeout_s=30, poll_s=0)
+
+    stderr = capsys.readouterr().err
+    assert "HUB_PROGRESS: Coolify deployment: waiting uuid=dep-1" in stderr
+    assert "status=queued" in stderr
+    assert "status=in_progress" in stderr
+    assert "finished status=finished" in stderr

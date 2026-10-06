@@ -1755,3 +1755,45 @@ def test_mutate_harness_reseal_prefers_exact_live_primary_nodes_over_broad_hints
     assert argv.count("--node") == 1
     assert argv[argv.index("--node") + 1] == A_NODE
     assert C1_NODE not in argv
+
+
+def test_seal_live_current_topology_default_ignores_extra_helper_only_node_hint(
+    tmp_path: Path,
+) -> None:
+    """Post-work seals must use exact primary rows, not stale helper node hints."""
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_validator_admission_topology_evidence(paths, private_state)
+
+    result = seal_live_current_topology(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        use_live_topology=True,
+        max_age_seconds=864000,
+        write_evidence=True,
+        now=datetime(2026, 10, 6, 0, 42, 40, tzinfo=timezone.utc),
+        opener=_ControllerScopedServicesOpener(
+            {
+                "coolify-a": {
+                    "live-a-service": (A_NODE, "running:healthy"),
+                },
+                "coolify-c": {
+                    "live-c1-service": (C1_NODE, "running:healthy"),
+                    "stale-c2-voter-helper": (
+                        f"mother-add-node-validator-admission-voter-{C2_NODE}-20261006t003706",
+                        "running:unhealthy:excluded",
+                    ),
+                },
+            }
+        ),
+        operation=_operation("seal-live-current-topology-default-helper-hint"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["mode"] == "read-only-live-current-topology-seal"
+    assert set(result["final_topology"]["nodes"]) == {A_NODE, C1_NODE}
+    assert result["staleness_detection"]["observed_live_primary_nodes"] == [A_NODE, C1_NODE]
+    assert C2_NODE in result["staleness_detection"]["observed_live_node_hints"]
+    assert C2_NODE in result["summary"]["operator_ignored_non_primary_live_node_hints"]

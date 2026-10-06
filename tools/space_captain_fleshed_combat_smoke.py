@@ -40,11 +40,21 @@ def _get_json(url: str, timeout: float = 1.0) -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+def _post_json(
+    url: str,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    request_id: str = "",
+    client_send_unix_ns: int | None = None,
+) -> dict[str, Any]:
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    request = urllib.request.Request(
-        url, data=raw, headers={"content-type": "application/json"}, method="POST"
-    )
+    headers = {"content-type": "application/json"}
+    if request_id:
+        headers["x-main-computer-request-id"] = request_id
+    if client_send_unix_ns is not None:
+        headers["x-main-computer-client-send-unix-ns"] = str(int(client_send_unix_ns))
+    request = urllib.request.Request(url, data=raw, headers=headers, method="POST")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -199,10 +209,13 @@ class LiveActionDriver:
                 raise RuntimeError(
                     f"spooling live-action surface must contain exactly 3 matched warp pairs, got {strategic_pairs}"
                 )
+        client_request_id = f"{ship.id}-{int(round(smoke.time * 1000)):08d}-{self.launch_count + 1:06d}"
+        payload["diagnostics"] = {"clientRequestId": client_request_id}
         meta = {
             "captainId": ship.id,
             "trigger": trigger,
             "launchSimulationSeconds": smoke.time,
+            "clientRequestId": client_request_id,
             "questionCount": len(questions),
             "candidateLookup": candidate_lookup,
             "candidateIds": candidate_ids,
@@ -215,11 +228,20 @@ class LiveActionDriver:
 
     def _provider_call(self, payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
-        response = _post_json(self.evaluate_url, payload, timeout=self.request_timeout_seconds)
+        client_send_unix_ns = time.time_ns()
+        request_id = str(meta.get("clientRequestId") or "")
+        response = _post_json(
+            self.evaluate_url,
+            payload,
+            timeout=self.request_timeout_seconds,
+            request_id=request_id,
+            client_send_unix_ns=client_send_unix_ns,
+        )
         completed = time.perf_counter()
         return {
             "response": response,
             "wallLatencyMs": (completed - started) * 1000.0,
+            "clientSendUnixNs": client_send_unix_ns,
             "completedWallMonotonic": completed,
             **meta,
         }
@@ -343,9 +365,12 @@ class LiveActionDriver:
         chosen_at_decision = dict(chosen)
         wall_ms = float(result["wallLatencyMs"])
         model_ms = float(response.get("modelLatencyMs") or 0.0)
+        server_diagnostics = dict(response.get("serverDiagnostics") or {})
         diagnostics = {
             "captainId": ship.id,
             "trigger": result["trigger"],
+            "clientRequestId": result.get("clientRequestId"),
+            "clientSendUnixNs": result.get("clientSendUnixNs"),
             "launchSimulationSeconds": result["launchSimulationSeconds"],
             "publishSimulationSeconds": smoke.time,
             "wallLatencyMs": wall_ms,
@@ -358,6 +383,10 @@ class LiveActionDriver:
             "selectionMode": selection_mode,
             "winningStrategicBranch": winning_strategic_branch,
             "chosenCandidateId": winner_id,
+            "serverQueueAdmissionMs": server_diagnostics.get("queueAdmissionMs"),
+            "serverHttpBodyReadMs": server_diagnostics.get("httpBodyReadMs"),
+            "serverEvaluateTotalMs": server_diagnostics.get("evaluateTotalMs"),
+            "serverStageTimingsMs": dict(server_diagnostics.get("stageTimingsMs") or {}),
         }
         self.completion_count += 1
         self.call_count += 1
