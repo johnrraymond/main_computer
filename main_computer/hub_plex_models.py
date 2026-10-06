@@ -768,6 +768,9 @@ class HubRequestStatus:
             if isinstance(request_metadata.get("selected_offer"), dict)
             else {}
         )
+        bridge_deposit_id = str(request_metadata.get("bridge_deposit_id") or "").strip()
+        if bridge_deposit_id:
+            data["bridge_deposit_id"] = bridge_deposit_id
         if quote:
             data["quote_id"] = str(quote.get("quote_id", ""))
             quoted_credit_wei = _credit_wei_from_payload(

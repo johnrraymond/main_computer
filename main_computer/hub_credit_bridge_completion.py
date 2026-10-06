@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +25,10 @@ _DEFAULT_RPC_USER_AGENT = "main-computer-chain-rpc/1.0 (+https://greatlibrary.io
 _DEPOSIT_RECORD_SELECTOR = "546fcf39"
 _COMPLETED_DEPOSIT_UNITS_SELECTOR = "861064f2"
 _COMPLETE_DEPOSIT_SELECTOR = "8c503dc4"
+_RECTIFY_SPEND_SELECTOR = "da9db3e3"
+_RELEASE_WITHDRAWAL_SELECTOR = "36cb7bf6"
+_IS_BRIDGE_CONTROLLER_SELECTOR = "fbe5c12e"
+_BRIDGE_SIGNER_BUNDLE_SCHEMA = "main-computer.bridge-signer.v1"
 
 _HEX_CHARS = set("0123456789abcdefABCDEF")
 
@@ -125,6 +131,19 @@ def _encode_bytes32(value: str) -> str:
 
 def _encode_address(value: str) -> str:
     return normalize_evm_address(value)[2:].rjust(64, "0")
+
+
+def _encode_uint256(value: int) -> str:
+    amount = int(value)
+    if amount < 0:
+        raise ValueError("uint256 value cannot be negative.")
+    return f"{amount:064x}"
+
+
+def _encode_string_tail(value: str) -> str:
+    raw = str(value or "").encode("utf-8")
+    padded = ((len(raw) + 31) // 32) * 32
+    return _encode_uint256(len(raw)) + raw.hex().ljust(padded * 2, "0")
 
 
 def _decode_word_bool(word: str) -> bool:
@@ -254,6 +273,12 @@ class HubCreditBridgeContractClient:
             self.admin_private_key = "0x" + self.admin_private_key
         self.admin_address = normalize_evm_address(admin_address, field_name="admin_address")
         self.receipt_timeout_s = max(1.0, float(receipt_timeout_s or 30.0))
+        # The Hub HTTP server is threaded.  A bridge controller is one EOA, so
+        # nonce selection/sign/send must be serialized inside this process.
+        # Waiting for receipts stays outside the lock; once eth_sendRawTransaction
+        # accepts a transaction, the RPC pending nonce is authoritative for the
+        # next sender.
+        self._send_lock = threading.Lock()
 
     def deposit_record(self, deposit_id: str) -> DepositRecord:
         clean_deposit_id = normalize_bytes32(deposit_id)
@@ -278,12 +303,53 @@ class HubCreditBridgeContractClient:
         words = _split_words(result, min_words=1)
         return _decode_word_uint(words[0])
 
+    def is_bridge_controller(self, address: str) -> bool:
+        result = self.rpc.eth_call(
+            to=self.contract_address,
+            data="0x" + _IS_BRIDGE_CONTROLLER_SELECTOR + _encode_address(address),
+        )
+        words = _split_words(result, min_words=1)
+        return _decode_word_bool(words[0])
+
     def complete_deposit(self, deposit_id: str) -> dict[str, Any]:
         clean_deposit_id = normalize_bytes32(deposit_id)
         data = "0x" + _COMPLETE_DEPOSIT_SELECTOR + _encode_bytes32(clean_deposit_id)
-        return self._send_contract_transaction(data=data)
+        return self._send_contract_transaction(data=data, action="completeDeposit")
 
-    def _send_contract_transaction(self, *, data: str) -> dict[str, Any]:
+    def rectify_spend(self, account: str, amount_units: int, rectification_id: str, memo: str) -> dict[str, Any]:
+        clean_id = normalize_bytes32(rectification_id, field_name="rectification_id")
+        tail = _encode_string_tail(memo)
+        head = (
+            _encode_address(account)
+            + _encode_uint256(positive_int(amount_units))
+            + _encode_bytes32(clean_id)
+            + _encode_uint256(4 * 32)
+        )
+        data = "0x" + _RECTIFY_SPEND_SELECTOR + head + tail
+        return self._send_contract_transaction(data=data, action="rectifySpend")
+
+    def release_withdrawal(
+        self,
+        *,
+        account: str,
+        recipient: str,
+        amount_units: int,
+        withdrawal_id: str,
+        memo: str,
+    ) -> dict[str, Any]:
+        clean_id = normalize_bytes32(withdrawal_id, field_name="withdrawal_id")
+        tail = _encode_string_tail(memo)
+        head = (
+            _encode_address(account)
+            + _encode_address(recipient)
+            + _encode_uint256(positive_int(amount_units))
+            + _encode_bytes32(clean_id)
+            + _encode_uint256(5 * 32)
+        )
+        data = "0x" + _RELEASE_WITHDRAWAL_SELECTOR + head + tail
+        return self._send_contract_transaction(data=data, action="releaseWithdrawal")
+
+    def _send_contract_transaction(self, *, data: str, action: str) -> dict[str, Any]:
         try:
             from eth_account import Account  # type: ignore
         except ImportError as exc:
@@ -315,34 +381,35 @@ class HubCreditBridgeContractClient:
         except Exception:
             gas = 250_000
 
-        tx = {
-            "chainId": chain_id,
-            "nonce": self.rpc.get_transaction_count(signing_admin_address),
-            "to": signing_contract_address,
-            "value": 0,
-            "data": data,
-            "gas": gas,
-            "gasPrice": self.rpc.gas_price(),
-        }
-        signed = Account.sign_transaction(tx, self.admin_private_key)
-        raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction", None)
-        if raw_tx is None:
-            raise RuntimeError("eth-account did not return a raw transaction.")
-        tx_hash = self.rpc.send_raw_transaction(raw_tx)
-        receipt = self.wait_for_receipt(tx_hash)
-        return {"tx_hash": tx_hash, "receipt": receipt}
+        with self._send_lock:
+            tx = {
+                "chainId": chain_id,
+                "nonce": self.rpc.get_transaction_count(signing_admin_address),
+                "to": signing_contract_address,
+                "value": 0,
+                "data": data,
+                "gas": gas,
+                "gasPrice": self.rpc.gas_price(),
+            }
+            signed = Account.sign_transaction(tx, self.admin_private_key)
+            raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction", None)
+            if raw_tx is None:
+                raise RuntimeError("eth-account did not return a raw transaction.")
+            tx_hash = self.rpc.send_raw_transaction(raw_tx)
+        receipt = self.wait_for_receipt(tx_hash, action=action)
+        return {"tx_hash": tx_hash, "receipt": receipt, "action": action}
 
-    def wait_for_receipt(self, tx_hash: str) -> dict[str, Any]:
+    def wait_for_receipt(self, tx_hash: str, *, action: str = "bridge transaction") -> dict[str, Any]:
         deadline = time.time() + self.receipt_timeout_s
         while time.time() <= deadline:
             receipt = self.rpc.transaction_receipt(tx_hash)
             if isinstance(receipt, dict):
                 status = receipt.get("status")
                 if isinstance(status, str) and status.lower() == "0x0":
-                    raise RuntimeError(f"completeDeposit transaction failed: {tx_hash}")
+                    raise RuntimeError(f"{action} transaction failed: {tx_hash}")
                 return receipt
             time.sleep(0.5)
-        raise TimeoutError(f"Timed out waiting for completeDeposit receipt: {tx_hash}")
+        raise TimeoutError(f"Timed out waiting for {action} receipt: {tx_hash}")
 
 
 def _repo_root_for_deployment_manifest(path: Path) -> Path:
@@ -471,10 +538,50 @@ def load_bridge_deployment(config: MainComputerConfig | None = None, *, deployme
             escrow = get_contract_record(contract_source, "hub_credit_bridge_escrow")
             if not escrow:
                 escrow = get_contract_record(payload, "hub_credit_bridge_escrow")
-            hub_admin = payload.get("hub_admin") if isinstance(payload.get("hub_admin"), dict) else {}
             chain = payload.get("chain") if isinstance(payload.get("chain"), dict) else {}
 
             contract_address = normalize_evm_address(escrow.get("address"), field_name="contracts.hub_credit_bridge_escrow.address")
+
+            if str(payload.get("schema") or "").strip() == _BRIDGE_SIGNER_BUNDLE_SCHEMA:
+                signer = payload.get("bridge_controller") if isinstance(payload.get("bridge_controller"), dict) else {}
+                signer_address = normalize_evm_address(signer.get("address"), field_name="bridge_controller.address")
+                contract_controller_raw = str(escrow.get("bridge_controller_address") or "").strip()
+                if contract_controller_raw:
+                    contract_controller = normalize_evm_address(
+                        contract_controller_raw, field_name="contracts.hub_credit_bridge_escrow.bridge_controller_address"
+                    )
+                    if contract_controller != signer_address:
+                        raise ValueError(
+                            f"bridge signer address {signer_address} does not match contract controller {contract_controller}."
+                        )
+                chain_id = positive_int(
+                    payload.get("chain_id")
+                    or escrow.get("chain_id")
+                    or contract_source.get("chain_id")
+                    or (config.energy_chain_id if config else 0)
+                )
+                if chain_id <= 0:
+                    raise ValueError("bridge signer bundle chain id is missing.")
+                rpc_url = str(
+                    payload.get("chain_rpc_url")
+                    or contract_source.get("chain_rpc_url")
+                    or (config.energy_chain_rpc_url if config else "")
+                    or ""
+                ).strip()
+                if not rpc_url:
+                    raise ValueError("bridge signer bundle RPC URL is missing.")
+                return BridgeDeployment(
+                    chain_id=chain_id,
+                    rpc_url=rpc_url,
+                    contract_address=contract_address,
+                    bridge_controller_address=signer_address,
+                    hub_admin_address=signer_address,
+                    hub_admin_wallet_path=path,
+                    deployment_manifest_path=path,
+                    contracts_path=contract_path,
+                )
+
+            hub_admin = payload.get("hub_admin") if isinstance(payload.get("hub_admin"), dict) else {}
             controller = normalize_evm_address(
                 escrow.get("bridge_controller_address") or hub_admin.get("address"),
                 field_name="contracts.hub_credit_bridge_escrow.bridge_controller_address",
@@ -533,10 +640,15 @@ def load_hub_admin_private_key(deployment: BridgeDeployment) -> str:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Hub admin wallet file must contain a JSON object.")
-    address = normalize_evm_address(payload.get("address"), field_name="hub admin wallet address")
+    if str(payload.get("schema") or "").strip() == _BRIDGE_SIGNER_BUNDLE_SCHEMA:
+        signer = payload.get("bridge_controller") if isinstance(payload.get("bridge_controller"), dict) else {}
+        address = normalize_evm_address(signer.get("address"), field_name="bridge controller address")
+        private_key = str(signer.get("private_key") or "").strip()
+    else:
+        address = normalize_evm_address(payload.get("address"), field_name="hub admin wallet address")
+        private_key = str(payload.get("private_key") or "").strip()
     if address != deployment.hub_admin_address:
         raise ValueError(f"Hub admin wallet address {address} does not match deployment {deployment.hub_admin_address}.")
-    private_key = str(payload.get("private_key") or "").strip()
     if not private_key:
         raise ValueError("Hub admin wallet private_key is missing.")
     if not private_key.startswith("0x"):
@@ -638,6 +750,166 @@ class HubCreditBridgeCompletionService:
             "completion_tx_hash": tx_hash,
             "deployment": deployment.as_public_dict(),
             **ledger_result,
+        }
+
+    def execute_bridge_reconciliation(
+        self,
+        payload: dict[str, Any],
+        *,
+        request_status: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Reconcile one terminal Hub request with its bound bridge deposit.
+
+        This method deliberately does not trust client-supplied refund amounts,
+        recipients, or transaction ids.  The request must be terminal; its
+        account and bridge_deposit_id are taken from Hub-owned request state; the
+        deposit amount/account come from the escrow contract; and the charged
+        amount comes from the Hub credit ledger.  The Hub signer therefore cannot
+        be used as a generic withdrawal oracle.
+        """
+
+        if not isinstance(payload, dict):
+            raise ValueError("bridge reconciliation payload must be a JSON object.")
+        if not isinstance(request_status, dict):
+            raise ValueError("trusted request_status is required for bridge reconciliation.")
+
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("request_id is required for bridge reconciliation.")
+        observed_request_id = str(request_status.get("request_id") or "").strip()
+        if observed_request_id != request_id:
+            raise ValueError(
+                f"request_status does not match reconciliation request: {observed_request_id!r} != {request_id!r}"
+            )
+        request_state = str(request_status.get("state") or "").strip().lower()
+        if request_state not in {"completed", "failed", "cancelled", "expired"}:
+            raise ValueError(f"bridge reconciliation requires a terminal request; observed state={request_state!r}.")
+
+        deposit_id = normalize_bytes32(payload.get("deposit_id"))
+        bound_deposit_id = str(request_status.get("bridge_deposit_id") or "").strip().lower()
+        if not bound_deposit_id:
+            raise ValueError(f"Hub request {request_id} is not bound to a bridge deposit.")
+        if normalize_bytes32(bound_deposit_id) != deposit_id:
+            raise ValueError(
+                f"bridge deposit does not match Hub request binding: request={bound_deposit_id}, supplied={deposit_id}"
+            )
+
+        deployment = self._deployment or load_bridge_deployment(self.config)
+        client = self._client or self._build_client(deployment)
+        deposit = client.deposit_record(deposit_id)
+        if not deposit.exists:
+            raise ValueError(f"Unknown bridge deposit: {deposit_id}")
+        if not deposit.completed:
+            raise ValueError(f"Bridge deposit {deposit_id} is not completed.")
+        if deposit.amount_units <= 0:
+            raise ValueError(f"Bridge deposit {deposit_id} has zero amount.")
+
+        account = normalize_evm_address(deposit.account, field_name="deposit.account")
+        request_account = normalize_evm_address(request_status.get("account_id"), field_name="request.account_id")
+        if request_account != account:
+            raise ValueError(
+                f"Hub request account does not match bridge deposit account: request={request_account}, deposit={account}"
+            )
+        requested_wallet = str(payload.get("wallet_address") or "").strip()
+        if requested_wallet and normalize_evm_address(requested_wallet, field_name="wallet_address") != account:
+            raise ValueError("wallet_address does not match the request/deposit account.")
+
+        charges = list(self.ledger.list_charges(request_id=request_id, limit=500))
+        charged_units = 0
+        for charge in charges:
+            if normalize_evm_address(charge.account_id, field_name="charge.account_id") != account:
+                raise ValueError(
+                    f"Hub request {request_id} has a charge for a different account: {charge.account_id}"
+                )
+            charged_units += max(0, int(charge.charged_credit_wei) - int(charge.released_credit_wei))
+
+        rectified_units = min(charged_units, int(deposit.amount_units))
+        withdrawn_units = max(0, int(deposit.amount_units) - rectified_units)
+
+        # Client-calculated values are assertions only.  Reject disagreement so a
+        # stale/buggy CLI cannot silently reconcile a different amount, but never
+        # use these values to authorize the signer.
+        expected_bridge = payload.get("expected_bridge_credit_wei")
+        if expected_bridge not in (None, "") and positive_int(expected_bridge) != int(deposit.amount_units):
+            raise ValueError(
+                f"client bridge amount disagrees with on-chain deposit: client={expected_bridge}, chain={deposit.amount_units}"
+            )
+        expected_charged = payload.get("expected_charged_credit_wei")
+        if expected_charged not in (None, "") and positive_int(expected_charged) != charged_units:
+            raise ValueError(
+                f"client charged amount disagrees with Hub ledger: client={expected_charged}, ledger={charged_units}"
+            )
+
+        def action_id(kind: str, amount_units: int) -> str:
+            material = f"{kind}|{deployment.chain_id}|{deployment.contract_address}|{request_id}|{deposit_id}|{account}|{amount_units}"
+            return "0x" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+        rectification_id = action_id("rectify-spend", rectified_units) if rectified_units > 0 else ""
+        withdrawal_id = action_id("release-withdrawal", withdrawn_units) if withdrawn_units > 0 else ""
+        memo = f"hub request bridge reconciliation {request_id}"
+
+        rectification: dict[str, Any] | None = None
+        withdrawal: dict[str, Any] | None = None
+        if rectified_units > 0:
+            rectification = client.rectify_spend(account, rectified_units, rectification_id, memo)
+        if withdrawn_units > 0:
+            withdrawal = client.release_withdrawal(
+                account=account,
+                recipient=account,
+                amount_units=withdrawn_units,
+                withdrawal_id=withdrawal_id,
+                memo=memo,
+            )
+
+        record_rectified = rectified_units // COMPUTE_CREDIT_BASE_UNITS
+        record_withdrawn = withdrawn_units // COMPUTE_CREDIT_BASE_UNITS
+        ledger_result: dict[str, Any] | None = None
+        if record_rectified > 0 or record_withdrawn > 0:
+            metadata = dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {}
+            metadata.update(
+                {
+                    "mode": "hub-signed-bridge-reconciliation-v2",
+                    "request_id": request_id,
+                    "request_state": request_state,
+                    "deposit_id": deposit_id,
+                    "deposit_amount_units": str(deposit.amount_units),
+                    "charged_credit_wei": str(charged_units),
+                    "rectified_credit_wei": str(rectified_units),
+                    "withdrawn_credit_wei": str(withdrawn_units),
+                    "rectification_tx_hash": str((rectification or {}).get("tx_hash") or ""),
+                    "withdrawal_tx_hash": str((withdrawal or {}).get("tx_hash") or ""),
+                }
+            )
+            ledger_result = self.ledger.record_bridge_reconciliation(
+                account_id=account,
+                rectified_credits=record_rectified,
+                withdrawn_credits=record_withdrawn,
+                rectification_id=rectification_id,
+                withdrawal_id=withdrawal_id,
+                recipient_address=account,
+                memo=memo,
+                metadata=metadata,
+            )
+
+        return {
+            "ok": True,
+            "mode": HUB_CREDIT_BRIDGE_COMPLETION_MODE,
+            "signing_mode": "hub-bridge-controller",
+            "request_id": request_id,
+            "request_state": request_state,
+            "deposit_id": deposit_id,
+            "wallet_address": account,
+            "recipient_address": account,
+            "bridge_credit_wei": str(deposit.amount_units),
+            "charged_credit_wei": str(charged_units),
+            "rectified_credit_wei": str(rectified_units),
+            "refund_credit_wei": str(withdrawn_units),
+            "withdrawn_credit_wei": str(withdrawn_units),
+            "rectification_id": rectification_id,
+            "withdrawal_id": withdrawal_id,
+            "rectification": rectification,
+            "withdrawal": withdrawal,
+            "ledger_record": ledger_result,
         }
 
     def _build_client(self, deployment: BridgeDeployment) -> HubCreditBridgeContractClient:

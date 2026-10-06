@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -11,7 +12,9 @@ from main_computer.dev_chain_bridge import (
     DevChainBridgeAdapter,
     DevChainBridgeError,
     DevChainBridgeMovement,
+    bytes32_from_text,
 )
+from main_computer.hub_credit_bridge_completion import HubCreditBridgeContractClient
 
 
 class HubBridgeBackendError(RuntimeError):
@@ -92,7 +95,7 @@ class ContractOnlyHubBridgeBackend:
 
 
 class BridgeSignerHubBridgeBackend:
-    """Non-smoke bridge signer backend for real testnet payout writes.
+    """Non-smoke bridge signer backend for deployed Hub bridge writes.
 
     This mode loads only the bridge controller signer.  It deliberately does not
     load smoke_client metadata or fabricate requester deposits.  Deposit
@@ -102,8 +105,16 @@ class BridgeSignerHubBridgeBackend:
 
     name = "dev-chain"
 
-    def __init__(self, adapter: DevChainBridgeAdapter) -> None:
+    def __init__(
+        self,
+        adapter: DevChainBridgeAdapter,
+        contract_client: HubCreditBridgeContractClient,
+        *,
+        bridge_controller_authorized: bool,
+    ) -> None:
         self.adapter = adapter
+        self.contract_client = contract_client
+        self.bridge_controller_authorized = bool(bridge_controller_authorized)
 
     @classmethod
     def from_signer_bundle(
@@ -123,7 +134,32 @@ class BridgeSignerHubBridgeBackend:
             )
         except DevChainBridgeError as exc:
             raise HubBridgeBackendError(str(exc)) from exc
-        return cls(adapter)
+        wallet = adapter.bridge_controller_wallet
+        if wallet is None:
+            raise HubBridgeBackendError("bridge signer bundle did not load a bridge-controller wallet")
+        try:
+            bundle = json.loads(Path(signer_path).read_text(encoding="utf-8"))
+            chain_id = int(bundle.get("chain_id") or 0) if isinstance(bundle, dict) else 0
+            contract_client = HubCreditBridgeContractClient(
+                rpc_url=adapter.rpc_url,
+                contract_address=adapter.escrow_address,
+                chain_id=chain_id,
+                admin_private_key=wallet.private_key,
+                admin_address=wallet.address,
+            )
+            # Production signer bundles carry a frozen chain id.  When present,
+            # prove against the live contract that this signer is actually an
+            # authorized bridge controller before the Hub can advertise writes.
+            authorized = True
+            if chain_id > 0:
+                authorized = contract_client.is_bridge_controller(wallet.address)
+                if not authorized:
+                    raise ValueError(
+                        f"bridge controller {wallet.address} is not authorized by HubCreditBridgeEscrow {adapter.escrow_address}"
+                    )
+        except Exception as exc:
+            raise HubBridgeBackendError(f"could not initialize Hub bridge transaction signer: {exc}") from exc
+        return cls(adapter, contract_client, bridge_controller_authorized=authorized)
 
     @property
     def escrow_address(self) -> str:
@@ -148,7 +184,8 @@ class BridgeSignerHubBridgeBackend:
             "requester_wallet_address": None,
             "smoke_client_wallet_address": None,
             "smoke_bridge_enabled": False,
-            "write_operations_enabled": self.signer_configured,
+            "write_operations_enabled": self.signer_configured and self.bridge_controller_authorized,
+            "bridge_controller_authorized": self.bridge_controller_authorized,
         }
 
     def deposit_confirmation_metadata(self, deposit: dict[str, Any]) -> dict[str, Any]:
@@ -162,17 +199,47 @@ class BridgeSignerHubBridgeBackend:
         worker_wallet_address = _required_text(payout, "wallet_address")
         source_account_wallet_address = _source_account_wallet_address_from_payout(payout)
         amount_units = _amount_units_from_bridge_payload(payout)
+        contract_id = bytes32_from_text(f"hub-payout:{payout_id}")
         try:
-            movement = self.adapter.record_worker_payout(
-                source_account_wallet_address=source_account_wallet_address,
-                worker_wallet_address=worker_wallet_address,
+            sent = self.contract_client.release_withdrawal(
+                account=source_account_wallet_address,
+                recipient=worker_wallet_address,
                 amount_units=amount_units,
-                payout_id=payout_id,
+                withdrawal_id=contract_id,
                 memo=f"hub bridge-signer payout {payout_id}",
             )
-        except DevChainBridgeError as exc:
+        except Exception as exc:
             raise HubBridgeBackendError(str(exc)) from exc
-        return _movement_metadata(self.name, movement, operation="payout_confirmation")
+        tx_hash = str(sent.get("tx_hash") or "").strip()
+        movement = {
+            "external_id": payout_id,
+            "contract_id": contract_id,
+            "amount_units": amount_units,
+            "contract_address": self.escrow_address,
+            "transactions": [
+                {
+                    "action": "releaseWithdrawal",
+                    "transaction_hash": tx_hash,
+                    "contract_address": self.escrow_address,
+                    "from_address": self.bridge_controller_address,
+                    "amount_units": amount_units,
+                    "external_id": payout_id,
+                    "contract_id": contract_id,
+                    "command": [],
+                }
+            ],
+            "transaction_hashes": [tx_hash] if tx_hash else [],
+        }
+        return {
+            "bridge_backend": self.name,
+            "bridge_backend_operation": "payout_confirmation",
+            "dev_chain": {
+                "movement": movement,
+                "transaction_hashes": movement["transaction_hashes"],
+                "contract_id": contract_id,
+                "contract_address": self.escrow_address,
+            },
+        }
 
 
 class DevChainHubBridgeBackend:

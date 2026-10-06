@@ -4652,6 +4652,31 @@ class HubServerHandler(_JsonHandler):
                 body = self._read_json()
                 self._send_json(self.server.credit_indexer.import_deposit(body))
                 return
+            if path == "/api/hub/v1/credits/bridge-reconciliation/execute":
+                body = self._read_json()
+                request_id = str(body.get("request_id") or "").strip()
+                if not request_id:
+                    raise ValueError("request_id is required for bridge reconciliation.")
+                request_status = self.server.dispatcher.get_request_status(request_id)
+                request_state = str(request_status.get("state") or "").strip().lower()
+                if request_state not in {"completed", "failed", "cancelled", "expired"}:
+                    self._send_json(
+                        {
+                            "ok": False,
+                            "error": "bridge reconciliation requires a terminal Hub request",
+                            "request_id": request_id,
+                            "request_state": request_state,
+                        },
+                        status=HTTPStatus.CONFLICT,
+                    )
+                    return
+                self._send_json(
+                    self.server.credit_bridge_completion.execute_bridge_reconciliation(
+                        body,
+                        request_status=request_status,
+                    )
+                )
+                return
             if path == "/api/hub/v1/credits/bridge-reconciliation/record":
                 body = self._read_json()
                 result = self.server.credit_ledger.record_bridge_reconciliation(

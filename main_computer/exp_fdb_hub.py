@@ -2457,9 +2457,14 @@ BRIDGE_SIGNER_BUNDLE_SCHEMA = "main-computer.bridge-signer.v1"
 
 
 def _materialize_bridge_signer_bundle_from_env(path: Path | None) -> bool:
-    """Decode a synced bridge signer bundle into ``path`` when the file is absent."""
+    """Decode the authoritative synced bridge signer bundle into ``path``.
 
-    if path is None or path.exists():
+    When Coolify supplies a bundle it wins over any persisted prior signer file,
+    so signer rotation/redeployment cannot silently keep stale signing material.
+    If no bundle is supplied, an existing on-disk signer remains untouched.
+    """
+
+    if path is None:
         return False
     encoded = str(os.environ.get(BRIDGE_SIGNER_BUNDLE_ENV_KEY) or "").strip()
     if not encoded:
