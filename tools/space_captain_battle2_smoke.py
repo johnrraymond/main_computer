@@ -1118,6 +1118,47 @@ class Battle:
                 "wallLatencyMs": float(result.get("wallLatencyMs", 0.0)),
             }
 
+    def drain_generation_thoughts(self) -> dict[str, Any]:
+        """Harvest already-launched cognition after the physics horizon for corpus measurements only.
+
+        This deliberately does not publish actions, launch new thoughts, or advance simulation time.
+        The live battle result is therefore frozen at its normal horizon while generation can wait
+        a bounded amount of additional wall time for outstanding model calls to finish.
+        """
+        budget = max(0.0, float(getattr(self.args, "generation_drain_seconds", 60.0) or 0.0))
+        started = time.perf_counter()
+        outstanding_at_start = sum(1 for captain in self.captains.values() if captain.thought is not None)
+        completed_before = sum(
+            1 for row in self.generation_rows if row["measurement"]["status"] == "completed"
+        )
+        deadline = started + budget
+        while any(captain.thought is not None for captain in self.captains.values()):
+            for captain in self.captains.values():
+                self.harvest_completed(captain)
+            if not any(captain.thought is not None for captain in self.captains.values()):
+                break
+            if time.perf_counter() >= deadline:
+                break
+            time.sleep(min(0.01, max(0.0, deadline - time.perf_counter())))
+        for captain in self.captains.values():
+            self.harvest_completed(captain)
+        completed_after = sum(
+            1 for row in self.generation_rows if row["measurement"]["status"] == "completed"
+        )
+        return {
+            "enabled": True,
+            "budgetSeconds": budget,
+            "elapsedSeconds": time.perf_counter() - started,
+            "outstandingThoughtsAtStart": outstanding_at_start,
+            "outstandingThoughtsAtEnd": sum(1 for captain in self.captains.values() if captain.thought is not None),
+            "completedMeasurementsBefore": completed_before,
+            "completedMeasurementsAfter": completed_after,
+            "completedMeasurementsAdded": completed_after - completed_before,
+            "physicsAdvancedDuringDrain": False,
+            "actionsPublishedDuringDrain": False,
+            "newThoughtsLaunchedDuringDrain": False,
+        }
+
     def write_generation_artifacts(self, result: dict[str, Any]) -> dict[str, Any]:
         output_dir_raw = str(getattr(self.args, "generation_output_dir", "") or "").strip()
         if not self.generate_samples or not output_dir_raw:
@@ -1151,6 +1192,7 @@ class Battle:
             "completedMeasurements": sum(
                 1 for row in self.generation_rows if row["measurement"]["status"] == "completed"
             ),
+            "generationDrain": dict(result.get("generationDrain") or {}),
             "paths": {
                 "states": str(states_path),
                 "training": str(training_path),
@@ -1174,15 +1216,33 @@ class Battle:
             (9, 5), (6, 9), (0, 7), (8, 2),
         ]
         rows: list[dict[str, Any]] = []
+        option_text = {control_id: self.control_option_text(captain, control_id) for control_id in ids}
         for index, (a_index, b_index) in enumerate(tactical_pairs):
             a = ids[a_index]
             b = ids[b_index]
+            if option_text[a] == option_text[b]:
+                # Symbolically distinct controls can collapse to the same physical package in
+                # particular geometries (for example intercept-fire and brake-fire when the
+                # optimal intercept acceleration already points exactly opposite relative
+                # motion).  A pairwise judgment must compare distinct reachable futures, so
+                # deterministically rotate B to the next physically distinct candidate.
+                replacement = None
+                for offset in range(1, len(ids)):
+                    candidate = ids[(b_index + offset) % len(ids)]
+                    if candidate != a and option_text[candidate] != option_text[a]:
+                        replacement = candidate
+                        break
+                if replacement is None:
+                    raise RuntimeError(
+                        f"captain {captain.id} has no physically distinct tactical alternative for {a!r}"
+                    )
+                b = replacement
             rows.append({
                 "id": f"battle.tactical.q{index + 1:02d}",
                 "optionA": a,
                 "optionB": b,
-                "optionAText": self.control_option_text(captain, a),
-                "optionBText": self.control_option_text(captain, b),
+                "optionAText": option_text[a],
+                "optionBText": option_text[b],
                 "semanticMode": "machine-grounded-tactical-control-v1",
                 "text": "From your own priorities, which complete physical control package produces the better reachable future?",
             })
@@ -1474,6 +1534,19 @@ class Battle:
             self.viewport_ticks_while_thoughts_in_flight += 1
         _ = self.predict_from_anchor(min(float(self.args.duration_seconds), wall_now - self.start_wall))
 
+    def process_timeline_through(self, through_time: float, next_boundary: float, control_dt: float) -> float:
+        # Preserve chronological authority when wall time jumps across one or more
+        # control boundaries. Impacts after a pending boundary must not advance
+        # authoritative physics past that boundary before the boundary executes.
+        through = float(through_time)
+        boundary = float(next_boundary)
+        while boundary <= through + 1e-9:
+            self.process_due_impacts(boundary)
+            self.process_boundary(boundary)
+            boundary += control_dt
+        self.process_due_impacts(through)
+        return boundary
+
     def run(self) -> dict[str, Any]:
         # The only non-Impact cognition trigger after bootstrap is Impact itself.
         for captain in self.captains.values():
@@ -1490,11 +1563,7 @@ class Battle:
             wall_now = time.perf_counter()
             elapsed = wall_now - self.start_wall
             through = min(duration, elapsed)
-            self.process_due_impacts(through)
-            while next_boundary <= through + 1e-9:
-                self.process_due_impacts(next_boundary)
-                self.process_boundary(next_boundary)
-                next_boundary += control_dt
+            next_boundary = self.process_timeline_through(through, next_boundary, control_dt)
             while next_viewport_wall <= wall_now + 1e-9 and next_viewport_wall - self.start_wall <= duration + 1e-9:
                 self.tick_viewport(next_viewport_wall)
                 next_viewport_wall += viewport_dt
@@ -1593,6 +1662,19 @@ class Battle:
             )
             for captain in self.captains.values()
         )
+        initial_thoughts_still_in_flight_at_end = all(
+            captain.thought is not None
+            and captain.thought_meta is not None
+            and captain.thought_meta.get("trigger") == "initial"
+            and captain.completed_result is None
+            for captain in self.captains.values()
+        )
+        timing_diagnostic_check_names = {
+            "ImpactIsOnlyRethinkTriggerAfterInitialThought",
+            "ImpactActuallyProducesRethink",
+            "ImpactRethinkSnapshotsQueuedMailbox",
+        } if initial_thoughts_still_in_flight_at_end else set()
+
         checks = {
             "twoCaptainsShareOneBattlePhysicsWorld": True,
             "bothCaptainsCanReceiveImpactFromOpponent": both_impacted,
@@ -1622,7 +1704,15 @@ class Battle:
             "captainCheckpointPinnedAcrossBattle": response_contract,
             "captainResponseContractPreserved": response_contract,
         }
-        failed = [name for name, value in checks.items() if not value]
+        failed = [
+            name
+            for name, value in checks.items()
+            if not value and name not in timing_diagnostic_check_names
+        ]
+        timing_diagnostics = {
+            name: checks[name]
+            for name in sorted(timing_diagnostic_check_names)
+        }
         frame_gaps = self.viewport_frame_gaps_ms
         metrics = {
             "battleDurationSeconds": duration,
@@ -1659,9 +1749,11 @@ class Battle:
             "finalSimulationSeconds": self.sim_time,
             "finalShips": self.snapshot_ships(),
         }
-        return {
+        result = {
             "ok": not failed,
             "timingReadinessIsDiagnostic": True,
+            "timingReadinessBlockedByInitialThoughts": initial_thoughts_still_in_flight_at_end,
+            "timingDiagnosticChecks": timing_diagnostics,
             "semanticsIgnored": True,
             "contract": {
                 "battleMode": "two-captain-live-physics",
@@ -1679,6 +1771,9 @@ class Battle:
             "projectiles": self.projectiles,
             "impacts": self.impacts,
         }
+        if self.generate_samples:
+            result["generationDrain"] = self.drain_generation_thoughts()
+        return result
 
 
 def main() -> int:
@@ -1702,6 +1797,15 @@ def main() -> int:
     parser.add_argument("--overload-window-seconds", type=float, default=1.0)
     parser.add_argument("--overload-lock-seconds", type=float, default=0.75)
     parser.add_argument("--generate-samples", action="store_true")
+    parser.add_argument(
+        "--generation-drain-seconds",
+        type=float,
+        default=60.0,
+        help=(
+            "Generation-only wall-time budget for harvesting already-launched captain thoughts "
+            "after the battle horizon without advancing physics or publishing actions (default: 60)."
+        ),
+    )
     parser.add_argument("--generation-output-dir", default="")
     parser.add_argument("--simulation-id", default="battle-2")
     parser.add_argument("--simulation-seed", type=int, default=0)
@@ -1718,6 +1822,8 @@ def main() -> int:
             raise SystemExit(f"--{name.replace('_', '-')} must be positive")
     if args.overload_impact_count < 2:
         raise SystemExit("--overload-impact-count must be at least 2")
+    if float(args.generation_drain_seconds) < 0:
+        raise SystemExit("--generation-drain-seconds must be non-negative")
 
     battle = Battle(args)
     try:

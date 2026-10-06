@@ -876,6 +876,38 @@ def test_detect_topology_marks_unexpected_live_nodes_stale_split_topology(tmp_pa
 
 
 
+def test_detect_topology_ignores_unexpected_node_hint_from_non_primary_helper(tmp_path: Path) -> None:
+    _runtime, paths, private_state = _install(tmp_path)
+    evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
+
+    result = detect_topology_staleness(
+        paths,
+        private_state,
+        evidence_path,
+        network="mainnet",
+        acknowledged_topology_evidence_sha256=evidence_sha,
+        now=datetime(2026, 8, 12, 20, 25, 0, tzinfo=timezone.utc),
+        opener=_PresentServiceWithInventoryOpener(
+            service_uuid="stale-service-uuid",
+            services=[
+                {"uuid": "stale-service-uuid", "name": A_NODE, "status": "running:healthy"},
+                {
+                    "uuid": "helper-c1",
+                    "name": f"mother-add-node-validator-admission-voter-{C1_NODE}-20261005t224016",
+                    "description": f"Ephemeral helper for {C1_NODE}",
+                    "status": "running:unhealthy:excluded",
+                },
+            ],
+        ),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["topology_current"] is True
+    assert result["observed_live_node_hints"] == [A_NODE, C1_NODE]
+    assert result["observed_live_primary_nodes"] == [A_NODE]
+    assert result["unexpected_live_nodes"] == []
+
+
 def test_detect_topology_ignores_unexpected_exited_service_as_non_live_inventory(tmp_path: Path) -> None:
     _runtime, paths, private_state = _install(tmp_path)
     evidence_path, evidence_sha = _write_single_node_topology_evidence(paths, private_state)
@@ -1669,3 +1701,57 @@ def test_mutate_harness_rejects_current_topology_with_unexpected_live_nodes(tmp_
     with pytest.raises(SystemExit) as exc:
         harness.step_detect_topology()
     assert exc.value.code == 3
+
+
+def test_mutate_harness_reseal_prefers_exact_live_primary_nodes_over_broad_hints(tmp_path: Path, monkeypatch) -> None:
+    import mother_mutate_harness
+
+    args = mother_mutate_harness.build_parser().parse_args(
+        [
+            "add-node",
+            "--runtime-state-root",
+            str(tmp_path),
+            "--baseline-evidence",
+            "current.json",
+            "--baseline-evidence-sha256",
+            "c" * 64,
+        ]
+    )
+    harness = mother_mutate_harness.Harness(args)
+
+    split = {
+        "status": "manual-review-required",
+        "summary": {
+            "topology_current": False,
+            "topology_stale": True,
+            "rectification_required": False,
+            "manual_review_required": True,
+            "unexpected_live_nodes": [C1_NODE],
+            "unexpected_live_node_count": 1,
+        },
+        "present_expected_nodes": [A_NODE],
+        "observed_live_node_hints": [A_NODE, C1_NODE],
+        "observed_live_primary_nodes": [A_NODE],
+        "unexpected_live_nodes": [C1_NODE],
+    }
+    captured = {}
+
+    def fake_run(step, argv, allow_failure=False):  # noqa: ANN001
+        if step == "detect-topology":
+            return split
+        if step == "topology-split-build-reseal-input":
+            captured["argv"] = argv
+            raise SystemExit(9)
+        raise AssertionError(step)
+
+    monkeypatch.setattr(harness, "run", fake_run)
+
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        harness.step_detect_topology()
+    assert exc.value.code == 9
+    argv = captured["argv"]
+    assert argv.count("--node") == 1
+    assert argv[argv.index("--node") + 1] == A_NODE
+    assert C1_NODE not in argv

@@ -42,6 +42,7 @@ def args(**overrides):
         overload_window_seconds=1.0,
         overload_lock_seconds=0.75,
         generate_samples=False,
+        generation_drain_seconds=60.0,
         generation_output_dir="",
         simulation_id="battle-2-test",
         simulation_seed=0,
@@ -71,6 +72,31 @@ def test_impact_policy_ready_times_keep_reconsideration_separate_from_impact():
     assert module.policy_ready_time("defer-one-second", 10.0, 10.25) == 11.25
     assert module.policy_ready_time("commit-two-seconds", 10.0, 10.25) == 12.0
 
+
+
+
+def test_delayed_timeline_processing_keeps_impacts_and_control_boundaries_chronological():
+    module = load_module()
+    battle = module.Battle(args(duration_seconds=2.0, initial_separation_m=4000.0, projectile_speed_mps=6000.0))
+    try:
+        alpha = battle.captains["captain.alpha"]
+        # The opening shot arrives at about 0.667s: after the 0.5s control
+        # boundary but before a delayed loop iteration catches up through 1.0s.
+        battle.schedule_fire(alpha, 0.0)
+        next_boundary = battle.process_timeline_through(1.0, 0.5, 0.5)
+
+        assert next_boundary == 1.5
+        assert battle.sim_time == 1.0
+        assert any(float(row["simulationSeconds"]) > 0.5 for row in battle.impacts)
+        assert [row["toSeconds"] for row in battle.physics_segments] == sorted(
+            row["toSeconds"] for row in battle.physics_segments
+        )
+        assert all(
+            float(row["fromSeconds"]) <= float(row["toSeconds"])
+            for row in battle.physics_segments
+        )
+    finally:
+        battle.close()
 
 def test_repeated_impacts_create_availability_lock_without_changing_voluntary_policy():
     module = load_module()
@@ -437,6 +463,9 @@ def test_batch_generation_orchestrates_requested_simulations_and_aggregates(monk
     assert [row["simulationSeed"] for row in result["simulations"]] == [40, 41]
     assert len(calls) == 2
     assert all("--generate-samples" in command for command in calls)
+    assert all("--generation-drain-seconds" in command for command in calls)
+    assert result["generationDrainSeconds"] == 60.0
+    assert result["defaultSimulationCount"] == 4
     assert (tmp_path / "states.jsonl").read_text(encoding="utf-8").count("\n") == 2
     assert (tmp_path / "training.jsonl").read_text(encoding="utf-8").count("\n") == 2
     assert (tmp_path / "manifest.json").is_file()

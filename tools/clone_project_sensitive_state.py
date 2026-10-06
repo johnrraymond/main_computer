@@ -30,6 +30,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -42,17 +43,31 @@ from typing import Iterable
 # State roots
 # ---------------------------------------------------------------------------
 
-# These directories are copied recursively because their contents are
-# operational state/evidence, not merely files that "look secret".
-STATE_ROOTS = (
-    Path("runtime/state/mother"),
+# Mother is intentionally allowlisted rather than copied as one recursive root.
+# runtime/state/mother also contains large transient execution history such as
+# harness-runs and twiddles; those are not part of this archive contract.
+MOTHER_EVIDENCE_ROOT = Path("runtime/state/mother/evidence")
+
+# These are compact, irreplaceable Mother state trees and are copied in full.
+MOTHER_STATE_ROOTS = (
+    Path("runtime/state/mother/private-recovery"),
+    Path("runtime/state/mother/reseal-inputs"),
+    Path("runtime/state/mother/secrets"),
 )
 
-# Debug/transient Mother material that is not authoritative state and can grow
-# very large. These are intentionally excluded even though they live beneath
-# runtime/state/mother.
-EXCLUDED_STATE_SUBTREES = (
-    Path("runtime/state/mother/twiddles"),
+# Evidence is intentionally retained sparsely: every receipt explicitly
+# referenced by current state plus the newest receipt in each immediate
+# evidence category. Historical unreferenced receipts are not cloned.
+CURRENT_STATE_REFERENCE_DIRS = (
+    Path("runtime/state"),
+    Path("runtime/state/mother"),
+)
+CURRENT_STATE_REFERENCE_SUFFIXES = {".json", ".yaml", ".yml", ".txt"}
+CURRENT_STATE_REFERENCE_MAX_BYTES = 4 * 1024 * 1024
+
+MOTHER_STATE_FILES = (
+    Path("runtime/state/mother/identity.private.yaml"),
+    Path("runtime/state/mother/identity.private.meta.json"),
 )
 
 
@@ -76,6 +91,22 @@ SECRET_EXACT_NAMES = {
     "credentials.yml",
     "credentials.txt",
     "api-token.txt",
+    "local.secrets",
+    ".git-credentials",
+    "git-credentials",
+    "git-credentials.txt",
+    "git-token",
+    "git-token.txt",
+    "github-token",
+    "github-token.txt",
+    "gitlab-token",
+    "gitlab-token.txt",
+    "gitea-token",
+    "gitea-token.txt",
+    "deploy-key",
+    "deploy-key.txt",
+    "deploy_key",
+    "deploy_key.txt",
 }
 
 # Filename fragments used only inside the bounded secret-bearing roots below.
@@ -100,6 +131,8 @@ SECRET_SUFFIXES = {
 # identity but are not all beneath Mother state.
 EXPLICIT_SECRET_FILES = (
     Path(".env"),
+    Path("local.secrets"),
+    Path(".git-credentials"),
     Path("runtime/deployment/.env"),
     Path("runtime/state/main_computer.private.yaml"),
     Path("runtime/state/mother-bootstrap.private.yaml"),
@@ -122,8 +155,8 @@ SECRET_SCAN_ROOTS = (
     Path("runtime/git-tools"),
 )
 
-# Mother state is copied authoritatively by STATE_ROOTS and must not be scanned
-# again by the filename-based secret pass.  state_clones are outputs and must
+# Mother state is selected by the explicit allowlist above and must not be scanned
+# again by the filename-based secret pass. state_clones are outputs and must
 # never become inputs to later clones.
 EXCLUDED_SECRET_SCAN_ROOTS = (
     Path("runtime/state/mother"),
@@ -221,13 +254,6 @@ def is_same_or_under(path: Path, parent: Path) -> bool:
         return False
 
 
-def is_excluded_state_path(path: Path, repo_root: Path) -> bool:
-    return any(
-        is_same_or_under(path, repo_root / rel_root)
-        for rel_root in EXCLUDED_STATE_SUBTREES
-    )
-
-
 def is_excluded_secret_scan_path(path: Path, repo_root: Path) -> bool:
     return any(
         is_same_or_under(path, repo_root / rel_root)
@@ -306,22 +332,161 @@ def looks_like_secret(path: Path) -> bool:
     return False
 
 
+def evidence_category(path: Path, evidence_root: Path) -> str:
+    rel = path.relative_to(evidence_root)
+    return rel.parts[0] if len(rel.parts) > 1 else "__root__"
+
+
+def evidence_recency_key(path: Path) -> tuple[str, int, str]:
+    # Evidence filenames conventionally begin with UTC timestamps.  Lexical
+    # ordering is chronological for YYYYMMDDTHHMMSSZ.  Fall back to mtime for
+    # categories whose receipts use another naming scheme.
+    match = re.search(r"(\d{8}T\d{6}Z)", path.name, flags=re.IGNORECASE)
+    timestamp = match.group(1).upper() if match else ""
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    return (timestamp, mtime_ns, path.name.lower())
+
+
+def iter_current_state_reference_files(repo_root: Path) -> Iterable[Path]:
+    """Yield bounded current-state text files that may point at evidence."""
+    seen: set[Path] = set()
+
+    # Explicit private/current files are always reference sources when present.
+    for rel_path in (*MOTHER_STATE_FILES, *EXPLICIT_SECRET_FILES):
+        path = repo_root / rel_path
+        if path.is_file() and path not in seen:
+            seen.add(path)
+            yield path
+
+    # Also inspect only files directly in runtime/state and runtime/state/mother.
+    # Do not recurse into evidence, recovery history, harness runs, etc.
+    for rel_dir in CURRENT_STATE_REFERENCE_DIRS:
+        root = repo_root / rel_dir
+        if not root.is_dir():
+            continue
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            continue
+        for path in children:
+            if path in seen or not path.is_file():
+                continue
+            if path.suffix.lower() not in CURRENT_STATE_REFERENCE_SUFFIXES:
+                continue
+            try:
+                if path.stat().st_size > CURRENT_STATE_REFERENCE_MAX_BYTES:
+                    continue
+            except OSError:
+                continue
+            seen.add(path)
+            yield path
+
+
+def current_state_reference_text(repo_root: Path) -> tuple[str, int]:
+    chunks: list[str] = []
+    count = 0
+    for path in iter_current_state_reference_files(repo_root):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # Normalize Windows paths so one comparison works for both separators.
+        chunks.append(text.replace("\\", "/").lower())
+        count += 1
+    return "\n".join(chunks), count
+
+
+def evidence_reference_tokens(path: Path, repo_root: Path, evidence_root: Path) -> tuple[str, ...]:
+    rel_repo = relative_to_repo(path, repo_root).as_posix().lower()
+    rel_evidence = path.relative_to(evidence_root).as_posix().lower()
+    basename = path.name.lower()
+    tokens = [rel_repo, rel_evidence, basename]
+
+    # Evidence filenames frequently end with a SHA prefix.  Current state may
+    # retain only the SHA rather than the complete path, so preserve on a
+    # sufficiently long digest token as well.
+    match = re.search(r"-([0-9a-fA-F]{12,64})(?:\.[^.]+)?$", path.name)
+    if match:
+        tokens.append(match.group(1).lower())
+    return tuple(tokens)
+
+
+def select_evidence_files(repo_root: Path) -> list[tuple[Path, str]]:
+    evidence_root = repo_root / MOTHER_EVIDENCE_ROOT
+    if not evidence_root.is_dir():
+        return []
+
+    candidates: list[Path] = []
+    for current_root, dirs, files in os.walk(evidence_root):
+        current = Path(current_root)
+        dirs[:] = [d for d in dirs if d.lower() != "twiddles"]
+        for filename in files:
+            path = current / filename
+            if path.is_file() or path.is_symlink():
+                candidates.append(path)
+
+    reference_text, reference_source_count = current_state_reference_text(repo_root)
+    referenced: set[Path] = set()
+    latest_by_category: dict[str, Path] = {}
+
+    for path in candidates:
+        category = evidence_category(path, evidence_root)
+        previous = latest_by_category.get(category)
+        if previous is None or evidence_recency_key(path) > evidence_recency_key(previous):
+            latest_by_category[category] = path
+
+        if reference_text and any(
+            token and token in reference_text
+            for token in evidence_reference_tokens(path, repo_root, evidence_root)
+        ):
+            referenced.add(path)
+
+    selected: dict[Path, str] = {}
+    for path in referenced:
+        selected[path] = "mother-evidence-referenced"
+    for category, path in latest_by_category.items():
+        selected.setdefault(path, f"mother-evidence-latest:{category}")
+
+    print(f"evidence_candidates={len(candidates)}", flush=True)
+    print(f"evidence_categories={len(latest_by_category)}", flush=True)
+    print(f"evidence_reference_sources={reference_source_count}", flush=True)
+    print(f"evidence_referenced_selected={len(referenced)}", flush=True)
+    print(f"evidence_selected_total={len(selected)}", flush=True)
+
+    return sorted(selected.items(), key=lambda item: relative_to_repo(item[0], repo_root).as_posix())
+
+
 def iter_state_root_files(
     repo_root: Path,
     destination: Path,
 ) -> Iterable[tuple[Path, str]]:
-    for rel_root in STATE_ROOTS:
-        root = repo_root / rel_root
-
-        if not root.exists():
+    # Explicit canonical Mother files.
+    for rel_path in MOTHER_STATE_FILES:
+        source = repo_root / rel_path
+        if not source.exists() and not source.is_symlink():
             continue
+        if is_excluded_path(source, repo_root=repo_root, destination=destination):
+            continue
+        if source.is_file() or source.is_symlink():
+            yield source, "mother-state-file"
 
+    # Evidence uses retention, not full-history copying.
+    for source, reason in select_evidence_files(repo_root):
+        if is_excluded_path(source, repo_root=repo_root, destination=destination):
+            continue
+        yield source, reason
+
+    # Compact canonical Mother trees remain complete.
+    for rel_root in MOTHER_STATE_ROOTS:
+        root = repo_root / rel_root
         if not root.is_dir():
             continue
 
         for current_root, dirs, files in os.walk(root):
             current = Path(current_root)
-
             dirs[:] = [
                 d
                 for d in dirs
@@ -330,22 +495,18 @@ def iter_state_root_files(
                     repo_root=repo_root,
                     destination=destination,
                 )
-                and not is_excluded_state_path(current / d, repo_root)
+                and d.lower() != "twiddles"
             ]
 
             for filename in files:
                 source = current / filename
-
-                if is_excluded_state_path(source, repo_root):
+                if "twiddles" in {part.lower() for part in relative_to_repo(source, repo_root).parts}:
                     continue
-
                 if source.is_symlink():
-                    # Symlinks are handled, but don't follow them while walking.
-                    yield source, f"state-root:{rel_root.as_posix()}"
+                    yield source, f"mother-state-root:{rel_root.as_posix()}"
                     continue
-
                 if source.is_file():
-                    yield source, f"state-root:{rel_root.as_posix()}"
+                    yield source, f"mother-state-root:{rel_root.as_posix()}"
 
 
 def iter_discovered_secret_files(
@@ -397,10 +558,10 @@ def collect_files(
     repo_root: Path,
     destination: Path,
 ) -> list[dict]:
-    """Merge authoritative Mother state and bounded secret discovery."""
+    """Merge allowlisted canonical Mother state and bounded secret discovery."""
     selected: dict[str, dict] = {}
 
-    print("discovery_phase=mother_state", flush=True)
+    print("discovery_phase=allowlisted_mother_state", flush=True)
     for source, reason in iter_state_root_files(repo_root, destination):
         rel = relative_to_repo(source, repo_root).as_posix()
         if rel in selected:
@@ -616,14 +777,16 @@ def clone_state(
         return 0
 
     manifest = {
-        "schema": "main-computer-sensitive-state-clone-v2",
+        "schema": "main-computer-sensitive-state-clone-v3",
         "created_at": utc_now().isoformat(),
         "repo_root": str(repo_root),
         "destination": str(destination),
         "file_count": len(manifest_entries),
         "total_file_bytes": total_bytes,
-        "state_roots": [p.as_posix() for p in STATE_ROOTS],
-        "excluded_state_subtrees": [p.as_posix() for p in EXCLUDED_STATE_SUBTREES],
+        "mother_evidence_root": MOTHER_EVIDENCE_ROOT.as_posix(),
+        "mother_evidence_retention": "referenced-by-current-state-plus-latest-per-category",
+        "mother_state_roots": [p.as_posix() for p in MOTHER_STATE_ROOTS],
+        "mother_state_files": [p.as_posix() for p in MOTHER_STATE_FILES],
         "explicit_secret_files": [p.as_posix() for p in EXPLICIT_SECRET_FILES],
         "secret_scan_roots": [p.as_posix() for p in SECRET_SCAN_ROOTS],
         "excluded_secret_scan_roots": [p.as_posix() for p in EXCLUDED_SECRET_SCAN_ROOTS],

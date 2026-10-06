@@ -13,7 +13,7 @@ BACKEND = ROOT / "tools" / "space_captain_clef_backend.py"
 LIVE_SMOKE = ROOT / "tools" / "space_captain_live_clef_smoke.py"
 CONTRACT_SMOKE = ROOT / "tools" / "space_captain_differentiable_smoke.py"
 CLEF_SMOKE = ROOT / "tools" / "nanojev_three_backbone_clef_sized_live_train_smoke.py"
-TRAIN_SCRIPT = ROOT / "tools" / "nanojev_three_backbone_clef_tinystories_consensus_pairwise_train.py"
+TRAIN_SCRIPT = ROOT / "tools" / "nanojev_three_backbone_clef_tinystories_structured_supervision_train.py"
 
 
 def _load_module(name: str, path: Path):
@@ -39,7 +39,7 @@ def test_live_clef_tools_have_help_without_loading_cuda() -> None:
 
 def test_live_backend_batches_independent_judgments_in_one_model_call() -> None:
     source = BACKEND.read_text(encoding="utf-8")
-    assert "nanojev_three_backbone_clef_tinystories_consensus_pairwise_train.py" in source
+    assert "nanojev_three_backbone_clef_tinystories_structured_supervision_train.py" in source
     assert '"head.safetensors"' in source
     assert '"tinystories.safetensors"' in source
     assert 'task="captain_pairwise"' in source
@@ -56,6 +56,8 @@ def test_live_backend_batches_independent_judgments_in_one_model_call() -> None:
     assert "_batched_head_forward" in source
     assert "key_padding_mask=~memory_valid" in source
     assert '"provider": "live-tinystories-clef"' in source
+    assert '"trainerScript"' in source
+    assert '"structuredSupervisionSchema"' in source
     assert '"captainModelCallCount": 1' in source
     assert '"clefHeadForwardCount": 1' in source
     assert '"batchingMode": "independent-pairwise-questions"' in source
@@ -165,6 +167,81 @@ def test_live_backend_hides_symbolic_planner_ids_from_model_choice_prompt() -> N
     assert question.candidates[0].paths[0].answer == " A"
     assert question.candidates[1].paths[0].answer == " B"
 
+
+
+def test_live_backend_accepts_machine_grounded_battle2_pairwise_questions() -> None:
+    backend = _load_module("space_captain_backend_tactical_contract_test", BACKEND)
+
+    class ObjectPath:
+        def __init__(self, prompt, answer):
+            self.prompt = prompt
+            self.answer = answer
+
+    class ObjectCandidate:
+        def __init__(self, candidate_id, paths):
+            self.candidate_id = candidate_id
+            self.paths = paths
+
+    class ObjectQuestion:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class ObjectiveApi:
+        pass
+
+    ObjectiveApi.ObjectPath = ObjectPath
+    ObjectiveApi.ObjectCandidate = ObjectCandidate
+    ObjectiveApi.ObjectQuestion = ObjectQuestion
+
+    model = object.__new__(backend.CaptainClefModel)
+    model.objective_api = ObjectiveApi
+    shared_context = (
+        "Doctrine: preserve the captain personality while choosing reachable physical futures. "
+        "State: range=4000m; closing=25m/s; crossing=0m/s."
+    )
+
+    tactical = model._question({
+        "id": "battle.tactical.q01",
+        "optionA": "intercept-fire",
+        "optionB": "pressure-port-fire",
+        "optionAText": (
+            "Apply acceleration (+25.00,+0.00) m/s^2 for 0.50s with fire authorized; "
+            "projected shot time=0.663s and acceleration-only miss=5.49m."
+        ),
+        "optionBText": (
+            "Apply acceleration (+20.53,+14.27) m/s^2 for 0.50s with fire authorized; "
+            "projected shot time=0.663s and acceleration-only miss=5.50m."
+        ),
+        "semanticMode": "machine-grounded-tactical-control-v1",
+        "text": (
+            "From your own priorities, which complete physical control package produces "
+            "the better reachable future?"
+        ),
+    }, shared_context)
+    assert [candidate.candidate_id for candidate in tactical.candidates] == [
+        "intercept-fire",
+        "pressure-port-fire",
+    ]
+    tactical_prompt = tactical.candidates[0].paths[0].prompt
+    assert "Apply acceleration (+25.00,+0.00)" in tactical_prompt
+    assert "Apply acceleration (+20.53,+14.27)" in tactical_prompt
+
+    impact = model._question({
+        "id": "battle.impact-policy.q01",
+        "optionA": "rethink-on-impact",
+        "optionB": "defer-one-second",
+        "optionAText": "Re-evaluate the physical control immediately after an Impact event.",
+        "optionBText": "Hold the current physical control for one additional second after Impact.",
+        "semanticMode": "machine-grounded-impact-policy-v1",
+        "text": (
+            "From your own priorities, which Impact-response commitment should govern "
+            "the chosen physical control?"
+        ),
+    }, shared_context)
+    assert [candidate.candidate_id for candidate in impact.candidates] == [
+        "rethink-on-impact",
+        "defer-one-second",
+    ]
 
 
 def test_shared_prefix_cache_helpers_are_batch_safe() -> None:
@@ -406,3 +483,14 @@ def test_speed_scaling_decomposition_reports_fixed_and_variable_work() -> None:
     assert decomposition["fixedFraction"] == 0.4
     assert decomposition["variableFraction"] == 0.6
 
+
+
+def test_space_captain_defaults_to_structured_supervision_run_and_module() -> None:
+    backend = _load_module("space_captain_backend_structured_default_test", BACKEND)
+    live = _load_module("space_captain_live_structured_default_test", LIVE_SMOKE)
+    expected = Path(r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_structured_supervision_train_v1")
+    assert backend.DEFAULT_RUN == expected
+    assert live.DEFAULT_RUN == expected
+    source = BACKEND.read_text(encoding="utf-8")
+    assert "nanojev_three_backbone_clef_tinystories_structured_supervision_train.py" in source
+    assert "three_backbone_clef_tinystories_structured_supervision_*train_v1" in source

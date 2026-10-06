@@ -47,6 +47,7 @@ from tools.mother.common.static_node_precleanup_gate import build_static_node_pr
 
 
 COMMON_STEPS = [
+    "preflight-paranoia-validator-set",
     "detect-topology",
     "preflight-paranoia",
     "preflight-paranoia-snap",
@@ -93,6 +94,7 @@ REPLICA_ADMISSION_STEPS = [
 ]
 
 REMOVE_STEPS = [
+    "preflight-paranoia-validator-set",
     "detect-topology",
     "preflight-paranoia",
     "preflight-paranoia2",
@@ -1108,6 +1110,24 @@ class Harness:
             argv.append("--execute")
         return argv
 
+    def preflight_paranoia_validator_set_cmd(self) -> list[str]:
+        return [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_preflight_paranoia_validator_set.py"),
+            "--runtime-state-root",
+            self.args.runtime_state_root,
+            "--network",
+            self.args.network,
+            "--topology-evidence",
+            require("--baseline-evidence", self.state["baseline_evidence"]),
+            "--acknowledge-topology-evidence-sha256",
+            require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"]),
+            "--timeout",
+            str(self.args.timeout),
+            "--max-response-bytes",
+            str(self.args.preflight_paranoia_max_response_bytes),
+        ]
+
     def preflight_paranoia_cmd(self) -> list[str]:
         return [
             sys.executable,
@@ -1419,9 +1439,14 @@ class Harness:
             print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_SPLIT_LIVE: live Coolify inventory contains nodes outside the supplied Mother topology evidence.")
             print(json.dumps(short_summary("detect-topology", obj), indent=2, sort_keys=True))
 
+            reseal_source_nodes = (
+                obj.get("observed_live_primary_nodes")
+                or obj.get("observed_live_node_hints")
+                or []
+            )
             reseal_nodes = [
                 str(node)
-                for node in (obj.get("observed_live_node_hints") or [])
+                for node in reseal_source_nodes
                 if isinstance(node, str) and node
             ]
             reseal_nodes = list(dict.fromkeys(reseal_nodes))
@@ -1457,9 +1482,14 @@ class Harness:
         if manual_review_required and (not topology_current or topology_stale):
             print("\nMOTHER_MUTATE_HARNESS_TOPOLOGY_MANUAL_REVIEW_REQUIRED: supplied topology evidence does not match the live non-empty topology.")
             print(json.dumps(short_summary("detect-topology", obj), indent=2, sort_keys=True))
+            observed_live_source_nodes = (
+                obj.get("observed_live_primary_nodes")
+                or obj.get("observed_live_node_hints")
+                or []
+            )
             observed_live_nodes = sorted({
                 str(node)
-                for node in (obj.get("observed_live_node_hints") or [])
+                for node in observed_live_source_nodes
                 if isinstance(node, str) and node
             })
             if observed_live_nodes:
@@ -1509,6 +1539,39 @@ class Harness:
                 "refreshed_topology_evidence_sha256",
                 refreshed_sha,
             )
+
+    def step_preflight_paranoia_validator_set(self) -> None:
+        obj = self.run(
+            "preflight-paranoia-validator-set",
+            self.preflight_paranoia_validator_set_cmd(),
+            allow_failure=True,
+        )
+        self.state["preflight_paranoia_validator_set_status"] = obj.get("status")
+        self.state["preflight_paranoia_validator_set_summary"] = obj.get("summary")
+
+        if obj.get("status") == "pass" and pick(obj, "summary.clean") is True:
+            return
+
+        print(
+            "\nMOTHER_MUTATE_HARNESS_PREFLIGHT_PARANOIA_VALIDATOR_SET_BLOCKED: "
+            "canonical Mother validators do not agree with live QBFT/live primary topology."
+        )
+        print(json.dumps(short_summary("preflight-paranoia-validator-set", obj), indent=2, sort_keys=True))
+        print("No live mutation was performed by validator-set preflight.")
+
+        manual_cleanup_command = obj.get("manual_cleanup_command")
+        rectification_command = obj.get("rectification_command")
+        if manual_cleanup_command:
+            print("\nManual live-service cleanup is required first. Run:")
+            print(str(manual_cleanup_command))
+            print("Then rerun the harness; validator-set paranoia will re-check QBFT before allowing mutation.")
+        elif rectification_command:
+            print("\nLive primary services agree with live QBFT. Rectify Mother evidence with:")
+            print(str(rectification_command))
+            print("Then rerun the harness so the new canonical evidence is selected.")
+        else:
+            print("\nNo safe automatic remediation command is available. Review the validator-set preflight output above.")
+        raise SystemExit(3)
 
     def step_preflight_paranoia(self) -> None:
         if self.args.skip_preflight_paranoia:
@@ -2353,6 +2416,7 @@ class Harness:
     def methods(self) -> dict[str, Any]:
         return {
             "detect-topology": self.step_detect_topology,
+            "preflight-paranoia-validator-set": self.step_preflight_paranoia_validator_set,
             "reserve-identity": self.step_reserve_identity,
             "preflight-paranoia": self.step_preflight_paranoia,
             "preflight-paranoia-snap": self.step_preflight_paranoia_snap,
@@ -2409,6 +2473,18 @@ class Harness:
             return "replica-admission"
         raise SystemExit(f"unsupported add-node next_phase after identity: {next_phase!r}")
 
+    def ensure_validator_set_preflight_for_resume(self) -> None:
+        """Prevent --start-at from bypassing the canonical-vs-live validator gate."""
+
+        gate = "preflight-paranoia-validator-set"
+        route_steps = REMOVE_STEPS if self.args.operation == "remove-node" else COMMON_STEPS
+        if self.args.start_at in route_steps:
+            start_index = route_steps.index(self.args.start_at)
+            gate_index = route_steps.index(gate)
+            if start_index <= gate_index:
+                return
+        self.step_preflight_paranoia_validator_set()
+
     def ensure_snap_preflight_for_resume(self) -> None:
         """Prevent --start-at from bypassing the SNAP foundation gate."""
 
@@ -2422,6 +2498,7 @@ class Harness:
         self.step_preflight_paranoia_snap()
 
     def run_all(self) -> None:
+        self.ensure_validator_set_preflight_for_resume()
         self.ensure_snap_preflight_for_resume()
         if self.args.operation == "remove-node":
             if self.args.start_at not in REMOVE_STEPS:

@@ -1229,6 +1229,105 @@ def test_node_remove_v2_voter_guardian_is_durable_and_restarted() -> None:
     assert parsed["services"][name]["volumes"] == ["mother-config:/config:ro", "mother-node-remove-do-proof:/proof"]
 
 
+
+def test_node_remove_v2_voter_guardian_ensures_and_reasserts_local_removal_vote() -> None:
+    script = node_remove_do_v2_module._removal_voter_script(
+        voter="mainnetc-super1",
+        target_validator="0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        current_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+            "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        ],
+        desired_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        chain_id=42424240,
+        genesis_sha256="d" * 64,
+        request_sha256="e" * 64,
+    )
+
+    compile(script, "<node-remove-v2-voter>", "exec")
+    assert "def target_removal_vote_installed():" in script
+    assert "proposal is False" in script
+    assert "if rpc(REQUEST['method'], REQUEST['params']) is not True:" in script
+    assert (
+        "if TARGET_VALIDATOR in validators() and not target_removal_vote_installed():"
+        in script
+    )
+    assert (
+        "validator-removal vote missing after submission"
+        in script
+    )
+    assert (
+        "if TARGET_VALIDATOR in final and not target_removal_vote_installed():"
+        in script
+    )
+    assert "validator-removal vote reassertion rejected" in script
+    assert "validator-removal vote missing after reassertion" in script
+
+
+def test_node_remove_v2_voter_guardian_does_not_require_pending_vote_after_desired_set() -> None:
+    script = node_remove_do_v2_module._removal_voter_script(
+        voter="mainnetc-super1",
+        target_validator="0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        current_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+            "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        ],
+        desired_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        chain_id=42424240,
+        genesis_sha256="d" * 64,
+        request_sha256="e" * 64,
+    )
+
+    desired_break = "if same_set(final, EXPECTED_DESIRED): break"
+    reassert_guard = "if TARGET_VALIDATOR in final and not target_removal_vote_installed():"
+    assert script.index(desired_break) < script.index(reassert_guard)
+    assert (
+        "if not same_set(latest_validators, EXPECTED_DESIRED): "
+        "raise RuntimeError('latest validator set mismatch')"
+        in script
+    )
+    assert (
+        "if TARGET_VALIDATOR in latest_validators: "
+        "raise RuntimeError('target validator still present')"
+        in script
+    )
+
+
+def test_node_remove_v2_voter_guardian_skips_initial_vote_when_already_desired() -> None:
+    script = node_remove_do_v2_module._removal_voter_script(
+        voter="mainnetc-super1",
+        target_validator="0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        current_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+            "0xb612f95e8a2bdb3af3e7c9ddd2eeb19490508876",
+        ],
+        desired_validators=[
+            "0x9b809f05f8d68da17e697cd6ab040d4320494611",
+            "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
+        ],
+        chain_id=42424240,
+        genesis_sha256="d" * 64,
+        request_sha256="e" * 64,
+    )
+
+    assert (
+        script.index("if not same_set(current, EXPECTED_DESIRED):")
+        < script.index("if rpc(REQUEST['method'], REQUEST['params']) is not True:")
+    )
+    assert (
+        script.index("if same_set(final, EXPECTED_DESIRED): break")
+        < script.index("if TARGET_VALIDATOR in final and not target_removal_vote_installed():")
+    )
+
 def test_remove_node_cli_routes_do_phase_to_v2_executor() -> None:
     assert mother_deploy.execute_node_remove_do_release is node_remove_do_v2_module.execute_node_remove_do_release
     assert mother_deploy.build_node_remove_do_release is node_remove_do_v2_module.build_node_remove_do_release
@@ -1659,6 +1758,16 @@ class _NodeRemoveDoOpener:
                 assert body["name"] == item["name"]
                 assert "instant_deploy" not in body
                 decoded = __import__("base64").b64decode(body["docker_compose_raw"]).decode("utf-8")
+                decoded_document = __import__("yaml").safe_load(decoded) or {}
+                decoded_services = decoded_document.get("services", {}) if isinstance(decoded_document, dict) else {}
+                active_remove_voters = [
+                    str(name) for name in decoded_services if str(name).startswith("mother-node-remove-voter-")
+                ] if isinstance(decoded_services, dict) else []
+                if not active_remove_voters and uuid in self.guardians:
+                    item["compose"] = decoded
+                    self.guardians.pop(uuid, None)
+                    self.pending_guardians.pop(uuid, None)
+                    return _Response({"message": "patched"}, status=200)
                 assert "node-remove-do" in decoded
                 assert "8798/tcp" in decoded
                 item["compose"] = decoded
@@ -1769,6 +1878,7 @@ def _c2_remove_proof(voter: str) -> dict:
 
 def _fake_remove_voter_cleanup(opener: "_NodeRemoveDoOpener"):
     def cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        assert kwargs["allow_compose_rewrite"] is True
         service_uuid = str(kwargs["service_uuid"])
         item = opener.services[service_uuid]
         document = __import__("yaml").safe_load(item["compose"])
@@ -1776,6 +1886,32 @@ def _fake_remove_voter_cleanup(opener: "_NodeRemoveDoOpener"):
         for name in list(services):
             if str(name).startswith("mother-node-remove-voter-"):
                 services.pop(name, None)
+        item["compose"] = __import__("yaml").safe_dump(document, sort_keys=False)
+        opener.guardians.pop(service_uuid, None)
+        opener.pending_guardians.pop(service_uuid, None)
+        return {"status": "pass", "summary": {"clean": True, "complete": True}}
+    return cleanup
+
+
+def _fake_remove_voter_retire_to_canonical_shim(opener: "_NodeRemoveDoOpener"):
+    def cleanup(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        service_uuid = str(kwargs["service_uuid"])
+        item = opener.services[service_uuid]
+        document = __import__("yaml").safe_load(item["compose"])
+        services = document.get("services", {})
+        for name, definition in list(services.items()):
+            if not str(name).startswith("mother-node-remove-voter-"):
+                continue
+            services[name] = {
+                "image": "alpine:3.20",
+                "command": [
+                    "sh",
+                    "-lc",
+                    "while true; do echo mother-retired-helper-shim >/tmp/mother-retired-helper-shim; sleep 30; done",
+                ],
+                "healthcheck": {"test": ["CMD-SHELL", "echo ok"]},
+                "restart": "unless-stopped",
+            }
         item["compose"] = __import__("yaml").safe_dump(document, sort_keys=False)
         opener.guardians.pop(service_uuid, None)
         opener.pending_guardians.pop(service_uuid, None)
@@ -2401,6 +2537,7 @@ def test_remove_node_do_deployment_readiness_uses_verified_proof_payload_not_end
             return _Response(self.detail_payload)
 
     guardian = "mother-node-remove-voter-mainnetc_super1"
+    progress_events: list[dict[str, Any]] = []
     service_observation = node_remove_do_v2_module._observe_removal_guardian_deployment(
         controller=controller,
         endpoint="/api/v1/services/svcc1xxxx",
@@ -2409,6 +2546,8 @@ def test_remove_node_do_deployment_readiness_uses_verified_proof_payload_not_end
         guardian=guardian,
         proof_endpoint=proof_endpoint,
         release=release,
+        max_wait_seconds=1,
+        poll_interval_seconds=0,
         timeout=1,
         max_response_bytes=131072,
         opener=_ProofPayloadButNoEndpointOpener(
@@ -2433,11 +2572,19 @@ def test_remove_node_do_deployment_readiness_uses_verified_proof_payload_not_end
                 ],
             }
         ),
+        progress=progress_events.append,
     )
 
     assert service_observation["verified"] is True
     assert service_observation["guardian_proof_payload_verified"] is True
     assert service_observation["proof_endpoint_reachable"] is True
+    assert [item["event"] for item in progress_events] == [
+        "guardian-observe-service-detail-start",
+        "guardian-observe-service-detail-done",
+        "guardian-proof-endpoint-probe-start",
+        "guardian-proof-endpoint-probe-done",
+        "guardian-observe-result",
+    ]
 
     borrowed = "mother-add-node-validator-admission-voter-mainnetc-super1"
     borrowed_observation = node_remove_do_v2_module._observe_borrowed_removal_guardian_deployment(
@@ -3771,6 +3918,45 @@ def test_remove_node_do_v2_transactionally_cleans_injected_remove_voters(
         assert "mother-node-remove-voter-" not in opener.services[uuid]["compose"]
 
 
+def test_remove_node_do_v2_accepts_canonical_retired_remove_voter_shim_as_clean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, private_state, release_path, release_sha = _write_remove_do_release_for_c2_test(tmp_path)
+    opener = _NodeRemoveDoOpener(proof_factory=_c2_remove_proof)
+    _install_remove_voter_boundary_noop(monkeypatch)
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "execute_completed_mother_helper_cleanup",
+        _fake_remove_voter_retire_to_canonical_shim(opener),
+    )
+    monkeypatch.setattr(
+        node_remove_do_v2_module,
+        "execute_shared_rpc_route_rewire",
+        _fake_rpc_route_rewire,
+    )
+
+    result = node_remove_do_v2_module.execute_node_remove_do_release(
+        paths,
+        private_state,
+        release_path,
+        acknowledged_release_sha256=release_sha,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        operation=_operation("execute-remove-do-v2-retired-shim-clean"),
+        opener=opener,
+        now=__import__("datetime").datetime(2026, 8, 11, 19, 23, 0, tzinfo=__import__("datetime").timezone.utc),
+    )
+
+    assert result["status"] == "pass", result
+    assert result["remove_voter_cleanup_failures"] == []
+    assert result["summary"]["remove_voter_cleanup_complete"] is True
+    for uuid in ("svca1xxxx", "svcc1xxxx"):
+        compose = opener.services[uuid]["compose"]
+        assert "mother-node-remove-voter-" in compose
+        assert "mother-retired-helper-shim" in compose
+
+
 def test_remove_node_do_v2_cleanup_overlap_retries_exact_voter_restart_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3897,3 +4083,94 @@ def test_remove_node_do_v2_cleanup_failure_is_blocking_and_finally_retries(
     assert len(cleanup_calls) >= 4  # normal cleanup attempt plus finally rollback retry for both voters
     assert result["remove_voter_cleanup_failures"]
     assert result["summary"]["remove_voter_cleanup_complete"] is False
+
+
+def test_remove_voter_authoritative_compose_cleanup_removes_exact_active_helper() -> None:
+    guardian = "mother-node-remove-voter-mainneta_super2"
+    service_uuid = "pncnlnrvbnrgstodfhyqxhb6"
+    compose = {
+        "services": {
+            "mainneta-super2": {"image": "hyperledger/besu:latest"},
+            guardian: {"image": "python:3.12-alpine", "command": ["python", "/runner.py"]},
+        }
+    }
+    state = {"compose": __import__("yaml").safe_dump(compose, sort_keys=False)}
+    requests: list[str] = []
+
+    class Opener:
+        def open(self, request, timeout: float):  # noqa: ANN001
+            parsed = urlsplit(request.full_url)
+            method = request.get_method()
+            requests.append(method)
+            assert parsed.path == f"/api/v1/services/{service_uuid}"
+            if method == "GET":
+                return _Response({
+                    "uuid": service_uuid,
+                    "name": "mainneta-super2",
+                    "status": "running:healthy",
+                    "docker_compose_raw": state["compose"],
+                })
+            if method == "PATCH":
+                body = json.loads(request.data.decode("utf-8"))
+                assert body["name"] == "mainneta-super2"
+                cleaned = __import__("base64").b64decode(body["docker_compose_raw"]).decode("utf-8")
+                services = __import__("yaml").safe_load(cleaned)["services"]
+                assert guardian not in services
+                assert "mainneta-super2" in services
+                state["compose"] = cleaned
+                return _Response({"message": "patched"}, status=200)
+            raise AssertionError(f"unexpected request {method} {parsed.path}")
+
+    controller = type("Controller", (), {"base_url": "https://coolify-a.invalid", "api_token": TOKEN_A})()
+    result = node_remove_do_v2_module._remove_voter_from_authoritative_compose(
+        controller,
+        service_uuid=service_uuid,
+        node="mainneta-super2",
+        guardian_service=guardian,
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        timeout=30.0,
+        max_response_bytes=1024 * 1024,
+        opener=Opener(),
+    )
+
+    assert result["status"] == "pass"
+    assert result["compose_patch_performed"] is True
+    assert requests == ["GET", "PATCH", "GET"]
+    assert guardian not in __import__("yaml").safe_load(state["compose"])["services"]
+
+
+def test_remove_voter_authoritative_compose_cleanup_is_noop_when_helper_absent() -> None:
+    service_uuid = "pncnlnrvbnrgstodfhyqxhb6"
+    compose = "services:\n  mainneta-super2:\n    image: hyperledger/besu:latest\n"
+    requests: list[str] = []
+
+    class Opener:
+        def open(self, request, timeout: float):  # noqa: ANN001
+            parsed = urlsplit(request.full_url)
+            method = request.get_method()
+            requests.append(method)
+            assert method == "GET"
+            return _Response({
+                "uuid": service_uuid,
+                "name": "mainneta-super2",
+                "status": "running:healthy",
+                "docker_compose_raw": compose,
+            })
+
+    controller = type("Controller", (), {"base_url": "https://coolify-a.invalid", "api_token": TOKEN_A})()
+    result = node_remove_do_v2_module._remove_voter_from_authoritative_compose(
+        controller,
+        service_uuid=service_uuid,
+        node="mainneta-super2",
+        guardian_service="mother-node-remove-voter-mainneta_super2",
+        max_wait_seconds=0.0,
+        poll_interval_seconds=0.0,
+        timeout=30.0,
+        max_response_bytes=1024 * 1024,
+        opener=Opener(),
+    )
+
+    assert result["status"] == "pass"
+    assert result["compose_patch_performed"] is False
+    assert requests == ["GET"]

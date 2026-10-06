@@ -1904,7 +1904,7 @@ def execute_completed_mother_helper_cleanup(
     nested_delete_ok = bool(nested_delete_receipts) and all(item["ok"] for item in nested_delete_receipts)
 
     compose_rewrite: dict[str, Any] | None = None
-    if delete_receipts and not (delete_ok or nested_delete_ok) and allow_compose_rewrite:
+    if delete_receipts and allow_compose_rewrite:
         helper_names = tuple(
             item.get("name", "")
             for item in initial["completed_helper_candidates"]
@@ -1955,21 +1955,22 @@ def execute_completed_mother_helper_cleanup(
                 )
 
         if best_candidate is None:
-            compose_rewrite = {
-                "method": "PATCH",
-                "endpoint": f"/api/v1/services/{service}",
-                "status": None,
-                "ok": False,
-                "service_uuid": service,
-                "instant_deploy": bool(instant_deploy_compose_rewrite),
-                "error_code": "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_NO_MATCH",
-                "error_message": "no completed helper service names were present in any Coolify compose field",
-                "compose_source_attempts": compose_attempts,
-                "removed_service_names": [],
-                "removed_helper_names": [],
-                "removed_service_count": 0,
-                "removed_helper_count": 0,
-            }
+            if not (delete_ok or nested_delete_ok):
+                compose_rewrite = {
+                    "method": "PATCH",
+                    "endpoint": f"/api/v1/services/{service}",
+                    "status": None,
+                    "ok": False,
+                    "service_uuid": service,
+                    "instant_deploy": bool(instant_deploy_compose_rewrite),
+                    "error_code": "MOTHER_DEPLOY_COMPLETED_HELPER_CLEANUP_COMPOSE_NO_MATCH",
+                    "error_message": "no completed helper service names were present in any Coolify compose field",
+                    "compose_source_attempts": compose_attempts,
+                    "removed_service_names": [],
+                    "removed_helper_names": [],
+                    "removed_service_count": 0,
+                    "removed_helper_count": 0,
+                }
         else:
             cleaned_compose, compose_source_field, compose_source_encoding, removed_services, removed_helpers = best_candidate
             patch_receipt = _patch_service_compose(

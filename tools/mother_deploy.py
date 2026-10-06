@@ -6511,6 +6511,14 @@ def _cmd_verify_node_remove_do_release(args: argparse.Namespace, private_state) 
 def _cmd_remove_node_do(args: argparse.Namespace, private_state) -> int:
     if not args.execute:
         raise RuntimeError("--execute is required for remove-node do")
+
+    def progress(event: dict[str, Any]) -> None:
+        print(
+            "MOTHER_REMOVE_NODE_DO_PROGRESS " + json.dumps(dict(event), sort_keys=True, separators=(",", ":")),
+            file=sys.stderr,
+            flush=True,
+        )
+
     result = execute_node_remove_do_release(
         _paths(args),
         private_state,
@@ -6524,6 +6532,7 @@ def _cmd_remove_node_do(args: argparse.Namespace, private_state) -> int:
         poll_interval_seconds=args.poll_interval_seconds,
         allow_missing_service=args.allow_missing_service,
         preserve_static_node_precleanup_services=args.preserve_static_node_precleanup_services,
+        progress=progress,
         operation=_operation("execute-node-remove-do", args.network, args.operation_id),
     )
     print(json.dumps(result, indent=2, sort_keys=True))

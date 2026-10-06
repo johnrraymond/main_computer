@@ -13,7 +13,7 @@ stage that must consume the evidence written here.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 import base64
 import hashlib
@@ -861,6 +861,18 @@ def _node_remove_do_host_helper_launch_wait_seconds(max_wait_seconds: float) -> 
     return max(30.0, min(wait, 180.0))
 
 
+def _emit_progress(progress: Callable[[Mapping[str, Any]], None] | None, event: str, **fields: Any) -> None:
+    if progress is None:
+        return
+    payload: dict[str, Any] = {"event": event}
+    payload.update(fields)
+    try:
+        progress(payload)
+    except Exception:
+        # Progress reporting is diagnostic-only and must never alter mutation behavior.
+        return
+
+
 def _observe_removal_guardian_deployment(
     *,
     controller: Any,
@@ -870,10 +882,14 @@ def _observe_removal_guardian_deployment(
     guardian: str,
     proof_endpoint: Mapping[str, Any],
     release: Mapping[str, Any],
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
     timeout: float,
     max_response_bytes: int,
     opener: Any,
+    progress: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    _emit_progress(progress, "guardian-observe-service-detail-start", node=voter, service_uuid=service_uuid)
     detail = _http(
         controller,
         "GET",
@@ -883,6 +899,7 @@ def _observe_removal_guardian_deployment(
         max_response_bytes=max_response_bytes,
         opener=opener,
     )
+    _emit_progress(progress, "guardian-observe-service-detail-done", node=voter, service_uuid=service_uuid, http_status=detail.get("status"), ok=bool(detail.get("ok")), elapsed_ms=detail.get("elapsed_ms"))
     observation: dict[str, Any] = {
         "node": voter,
         "service_uuid": service_uuid,
@@ -910,12 +927,14 @@ def _observe_removal_guardian_deployment(
 
     proof_payload = _guardian_component_node_remove_do_proof(record, guardian_name=guardian)
     proof_payload_source = "coolify-component-detail" if isinstance(proof_payload, Mapping) else "missing"
+    _emit_progress(progress, "guardian-proof-endpoint-probe-start", node=voter, service_uuid=service_uuid, host_port=proof_endpoint.get("host_port"))
     fetched_payload, proof_fetch_summary = _fetch_node_remove_do_proof_payload(
         proof_endpoint,
         timeout=timeout,
         max_response_bytes=max_response_bytes,
         opener=opener,
     )
+    _emit_progress(progress, "guardian-proof-endpoint-probe-done", node=voter, service_uuid=service_uuid, http_status=(proof_fetch_summary or {}).get("status"), reachable=_node_remove_do_proof_endpoint_reachable(proof_fetch_summary, fetched_payload))
     if isinstance(fetched_payload, Mapping) and _node_remove_do_proof_payload_verified(
         fetched_payload,
         voter=voter,
@@ -930,6 +949,7 @@ def _observe_removal_guardian_deployment(
     log_proof_payload: Mapping[str, Any] | None = None
     log_proof_summary: dict[str, Any] | None = None
     if not proof_payload_verified:
+        _emit_progress(progress, "guardian-log-proof-probe-start", node=voter, service_uuid=service_uuid, guardian_service=guardian)
         log_proof_payload, log_proof_summary = _fetch_node_remove_do_guardian_log_proof(
             controller,
             service_uuid=service_uuid,
@@ -946,6 +966,7 @@ def _observe_removal_guardian_deployment(
                 voter=voter,
                 release=release,
             )
+        _emit_progress(progress, "guardian-log-proof-probe-done", node=voter, service_uuid=service_uuid, verified=bool(proof_payload_verified), http_status=(log_proof_summary or {}).get("status"))
     endpoint_reachable = _node_remove_do_proof_endpoint_reachable(proof_fetch_summary, fetched_payload)
 
     compose_installed = guardian in compose_text
@@ -977,6 +998,16 @@ def _observe_removal_guardian_deployment(
             observation["reason"] = "removal guardian component is not visible in exact survivor service detail"
         else:
             observation["reason"] = "removal guardian deployment was not verified"
+    _emit_progress(
+        progress,
+        "guardian-observe-result",
+        node=voter,
+        service_uuid=service_uuid,
+        verified=bool(observation.get("verified")),
+        component_status=observation.get("guardian_component_status"),
+        proof_endpoint_reachable=bool(observation.get("proof_endpoint_reachable")),
+        reason=observation.get("reason"),
+    )
     return observation
 
 
@@ -1250,10 +1281,17 @@ def _remove_voter_new_cleanup_since_baseline(
 
 def _remove_voter_definition_is_retired(definition: Mapping[str, Any]) -> bool:
     labels_text = _labels_text(definition).lower().replace('"', "").replace("'", "")
-    return (
+    retired_by_labels = (
         "main_computer.mother.retired_helper_mimic=true" in labels_text
         and "main_computer.mother.post_work_shim=true" in labels_text
     )
+    command_text = _definition_text(definition.get("command")).lower()
+    retired_by_canonical_command = (
+        str(definition.get("image") or "").strip().lower() == "alpine:3.20"
+        and "mother-retired-helper-shim" in command_text
+        and re.search(r"\bwhile\s+true\b", command_text) is not None
+    )
+    return retired_by_labels or retired_by_canonical_command
 
 
 def _remove_voter_active_in_compose(compose_text: str, guardian_service: str) -> bool:
@@ -1261,6 +1299,131 @@ def _remove_voter_active_in_compose(compose_text: str, guardian_service: str) ->
     if definition is None:
         return False
     return not _remove_voter_definition_is_retired(definition)
+
+
+def _remove_voter_from_authoritative_compose(
+    controller: Any,
+    *,
+    service_uuid: str,
+    node: str,
+    guardian_service: str,
+    max_wait_seconds: float,
+    poll_interval_seconds: float,
+    timeout: float,
+    max_response_bytes: int,
+    opener: Any,
+) -> dict[str, Any]:
+    service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
+    before = _http(
+        controller,
+        "GET",
+        service_endpoint,
+        body=None,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if int(before.get("status") or 0) == 404:
+        return {
+            "status": "pass",
+            "service_missing": True,
+            "compose_patch_performed": False,
+            "guardian_service": guardian_service,
+        }
+    if not before.get("ok"):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_COMPOSE_FETCH_FAILED",
+            f"service detail for {node} failed with HTTP {before.get('status')} before authoritative remove-voter cleanup",
+        )
+
+    record = _find_service_record(before.get("payload"), node=node, service_uuid=service_uuid)
+    compose_text = _compose_text(record)
+    try:
+        document = yaml.safe_load(compose_text)
+    except yaml.YAMLError as exc:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_COMPOSE_INVALID",
+            f"{node} Compose cannot be parsed during authoritative remove-voter cleanup",
+        ) from exc
+    if not isinstance(document, dict) or not isinstance(document.get("services"), dict):
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_COMPOSE_INVALID",
+            f"{node} Compose has no services mapping during authoritative remove-voter cleanup",
+        )
+
+    services = document["services"]
+    definition = services.get(guardian_service)
+    if definition is None:
+        return {
+            "status": "pass",
+            "service_missing": False,
+            "compose_patch_performed": False,
+            "guardian_service": guardian_service,
+        }
+
+    del services[guardian_service]
+    cleaned_compose = yaml.safe_dump(document, sort_keys=False)
+    patch_body = {
+        "docker_compose_raw": base64.b64encode(cleaned_compose.encode("utf-8")).decode("ascii"),
+        "name": str(record.get("name") or node),
+    }
+    patch = _http(
+        controller,
+        "PATCH",
+        service_endpoint,
+        body=patch_body,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+        opener=opener,
+    )
+    if int(patch.get("status") or 0) not in {200, 201, 202}:
+        raise _fail(
+            "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_COMPOSE_PATCH_FAILED",
+            f"Coolify rejected authoritative remove-voter Compose cleanup for {node} with HTTP {patch.get('status')}",
+        )
+
+    deadline = time.monotonic() + max(0.0, float(max_wait_seconds))
+    verification_attempts = 0
+    while True:
+        verification_attempts += 1
+        after = _http(
+            controller,
+            "GET",
+            service_endpoint,
+            body=None,
+            timeout=timeout,
+            max_response_bytes=max_response_bytes,
+            opener=opener,
+        )
+        if int(after.get("status") or 0) == 404:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
+                f"survivor service {node!r} disappeared during authoritative remove-voter Compose cleanup",
+            )
+        if not after.get("ok"):
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
+                f"service detail for {node} failed with HTTP {after.get('status')} after authoritative remove-voter cleanup",
+            )
+        after_record = _find_service_record(after.get("payload"), node=node, service_uuid=service_uuid)
+        if guardian_service not in _compose_service_map(_compose_text(after_record)):
+            break
+        if time.monotonic() >= deadline:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
+                f"remove-voter {guardian_service!r} is still present in {node} Compose after authoritative cleanup patch",
+            )
+        time.sleep(max(0.0, float(poll_interval_seconds)))
+
+    return {
+        "status": "pass",
+        "service_missing": False,
+        "compose_patch_performed": True,
+        "guardian_service": guardian_service,
+        "patch_status": patch.get("status"),
+        "verification_attempts": verification_attempts,
+        "compose_sha256": hashlib.sha256(cleaned_compose.encode("utf-8")).hexdigest(),
+    }
 
 
 def _primary_validator_application_observation(
@@ -1459,6 +1622,7 @@ def _cleanup_injected_remove_voters(
                 max_wait_seconds=max_wait_seconds,
                 poll_interval_seconds=poll_interval_seconds,
                 allow_nested_application_delete=True,
+                allow_compose_rewrite=True,
                 allow_compose_reconcile_refresh=True,
                 instant_deploy_compose_reconcile_refresh=False,
                 allow_service_redeploy_refresh=False,
@@ -1483,35 +1647,20 @@ def _cleanup_injected_remove_voters(
                 max_response_bytes=max_response_bytes,
                 opener=opener,
             )
-            service_endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
-            detail = _http(
+            authoritative_cleanup = _remove_voter_from_authoritative_compose(
                 controller,
-                "GET",
-                service_endpoint,
-                body=None,
+                service_uuid=service_uuid,
+                node=voter,
+                guardian_service=guardian_service,
+                max_wait_seconds=max_wait_seconds,
+                poll_interval_seconds=poll_interval_seconds,
                 timeout=timeout,
                 max_response_bytes=max_response_bytes,
                 opener=opener,
             )
-            service_missing = int(detail.get("status") or 0) == 404
+            service_missing = bool(authoritative_cleanup.get("service_missing"))
             active_after_cleanup = False
-            if not service_missing:
-                if not detail.get("ok"):
-                    raise _fail(
-                        "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
-                        f"service detail for {voter} failed with HTTP {detail.get('status')} after helper cleanup",
-                    )
-                record = _find_service_record(detail.get("payload"), node=voter, service_uuid=service_uuid)
-                active_after_cleanup = _remove_voter_active_in_compose(
-                    _compose_text(record),
-                    guardian_service,
-                )
-                if active_after_cleanup:
-                    raise _fail(
-                        "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
-                        f"remove-voter {guardian_service!r} is still active in {voter} Compose after helper cleanup",
-                    )
-            elif voter != target_node:
+            if service_missing and voter != target_node:
                 raise _fail(
                     "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_CLEANUP_VERIFY_FAILED",
                     f"survivor service {voter!r} disappeared while cleaning its remove-voter helper",
@@ -1526,6 +1675,7 @@ def _cleanup_injected_remove_voters(
                 "status": "pass",
                 "service_missing": service_missing,
                 "active_remove_voter_after_cleanup": active_after_cleanup,
+                "authoritative_compose_cleanup": authoritative_cleanup,
                 "summary": cleanup_result.get("summary"),
             })
         except (MotherDeploymentCompletedHelperCleanupError, MotherDeploymentNodeRemoveDoError) as exc:
@@ -1619,6 +1769,10 @@ def _removal_voter_script(
         "def pending_votes():",
         "    try: return rpc('qbft_getPendingVotes', [])",
         "    except Exception: return {'unavailable': True}",
+        "def target_removal_vote_installed():",
+        "    votes = pending_votes()",
+        "    if not isinstance(votes, dict): return False",
+        "    return any(str(candidate).lower() == TARGET_VALIDATOR and proposal is False for candidate, proposal in votes.items())",
         "def same_set(left, right): return sorted(left) == sorted(right)",
         "def write_json(path, payload):",
         "    tmp = path + '.tmp'",
@@ -1660,12 +1814,17 @@ def _removal_voter_script(
         "        if not same_set(current, EXPECTED_CURRENT): raise RuntimeError('unexpected pre-vote validator set')",
         "        if rpc(REQUEST['method'], REQUEST['params']) is not True: raise RuntimeError('validator-removal vote rejected')",
         "        vote_submitted = True",
+        "        if TARGET_VALIDATOR in validators() and not target_removal_vote_installed(): raise RuntimeError('validator-removal vote missing after submission')",
         "    deadline = time.time() + 120",
         "    final = validators()",
         "    while time.time() < deadline:",
         "        final = validators()",
         "        if same_set(final, EXPECTED_DESIRED): break",
         "        if not same_set(final, EXPECTED_CURRENT): raise RuntimeError('unexpected validator transition')",
+        "        if TARGET_VALIDATOR in final and not target_removal_vote_installed():",
+        "            if rpc(REQUEST['method'], REQUEST['params']) is not True: raise RuntimeError('validator-removal vote reassertion rejected')",
+        "            vote_submitted = True",
+        "            if TARGET_VALIDATOR in validators() and not target_removal_vote_installed(): raise RuntimeError('validator-removal vote missing after reassertion')",
         "        time.sleep(2)",
         "    if not same_set(final, EXPECTED_DESIRED): raise RuntimeError('desired validator set not reached')",
         "    first = int(rpc('eth_blockNumber', []), 16)",
@@ -2828,6 +2987,7 @@ def execute_node_remove_do_release(
     max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
     opener: Any = _DEFAULT_OPENER,
     now: datetime | None = None,
+    progress: Callable[[Mapping[str, Any]], None] | None = None,
     operation: OperationIdentity,
 ) -> dict[str, Any]:
     inspected = inspect_node_remove_do_release(
@@ -2840,6 +3000,7 @@ def execute_node_remove_do_release(
         baseline_max_age_seconds=baseline_max_age_seconds,
         now=now,
     )
+    _emit_progress(progress, "release-verified", network=inspected.get("network"), target_node=inspected.get("target_node"), survivor_count=len(inspected.get("survivor_nodes") or []))
     if inspected["release_already_claimed"]:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_ALREADY_CONSUMED", "this node-removal do release is already claimed")
     release, _, _ = _canonical_under(paths, Path(inspected["release_path"]), _RELEASE_DIRECTORY, "node-removal do release")
@@ -2859,6 +3020,7 @@ def execute_node_remove_do_release(
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_ALREADY_CONSUMED", "this node-removal do release is already claimed")
     atomic_files.durable_create(claim_path, canonical_json(claim), operation=operation)
     _secure_private_path(claim_path, is_directory=False, operation=operation)
+    _emit_progress(progress, "execution-claim-written", target_node=inspected.get("target_node"))
 
     started = _timestamp(now=now)
     routing_receipts = [
@@ -2895,6 +3057,7 @@ def execute_node_remove_do_release(
             controller_id: resolve_coolify_controller(private_state, release["network"], controller_id)
             for controller_id in sorted(controller_ids)
         }
+        _emit_progress(progress, "controllers-resolved", controller_ids=sorted(controller_ids))
         if release["network"] == "mainnet":
             target_controller_id = str(release["target"]["controller_id"])
             local_rpc_survivors = sorted(
@@ -2928,6 +3091,7 @@ def execute_node_remove_do_release(
             voter_services.append(release["target"])
         for voter_service in voter_services:
             voter = _identifier(voter_service["node"], "voter node")
+            _emit_progress(progress, "voter-start", node=voter)
             controller_id = _identifier(voter_service["controller_id"], "voter controller")
             service_uuid = str(voter_service["service_uuid"])
             controller = controllers[controller_id]
@@ -2937,6 +3101,7 @@ def execute_node_remove_do_release(
                 controller_id=controller_id,
             )
             cleanup_endpoint = cleanup_boundary["executions_endpoint"]
+            _emit_progress(progress, "cleanup-boundary-wait-start", node=voter, phase="pre-patch")
             pre_patch_cleanup_baseline = _remove_voter_wait_cleanup_clear(
                 controller,
                 cleanup_endpoint,
@@ -2946,6 +3111,7 @@ def execute_node_remove_do_release(
                 max_response_bytes=max_response_bytes,
                 opener=opener,
             )
+            _emit_progress(progress, "cleanup-boundary-clear", node=voter, phase="pre-patch")
             endpoint = f"/api/v1/services/{urllib.parse.quote(service_uuid, safe='')}"
             detail = _http(
                 controller,
@@ -3003,6 +3169,7 @@ def execute_node_remove_do_release(
                 "name": voter,
             }
             body_sha = hashlib.sha256(canonical_json(body)).hexdigest()
+            _emit_progress(progress, "guardian-compose-patch-start", node=voter, service_uuid=service_uuid, guardian_service=guardian)
             patch = _http(
                 controller,
                 "PATCH",
@@ -3013,6 +3180,7 @@ def execute_node_remove_do_release(
                 opener=opener,
             )
             patch_ok = patch["status"] in {200, 201, 202}
+            _emit_progress(progress, "guardian-compose-patch-done", node=voter, service_uuid=service_uuid, http_status=patch.get("status"), ok=patch_ok, elapsed_ms=patch.get("elapsed_ms"))
             mutation_receipts.append({
                 "ordinal": len(mutation_receipts) + 1,
                 "phase": "remove-qbft-validator",
@@ -3088,6 +3256,7 @@ def execute_node_remove_do_release(
                     opener=opener,
                 )
                 try:
+                    _emit_progress(progress, "guardian-restart-helper-start", node=voter, service_uuid=service_uuid, attempt=restart_attempt, guardian_service=guardian)
                     restart_result = run_service_line_restart_helper(
                         private_state,
                         runtime_state_root=paths.root.parent,
@@ -3113,6 +3282,7 @@ def execute_node_remove_do_release(
                         "service_uuid": service_uuid,
                         "service_line": guardian,
                     }
+                _emit_progress(progress, "guardian-restart-helper-done", node=voter, service_uuid=service_uuid, attempt=restart_attempt, status=restart_result.get("status"), reason=restart_result.get("reason"))
                 restart_overlap = _remove_voter_new_cleanup_since_baseline(
                     controller,
                     cleanup_endpoint,
@@ -3181,7 +3351,10 @@ def execute_node_remove_do_release(
             })
 
             launch_deadline = time.monotonic() + min(max(float(max_wait_seconds), 0.0), 60.0)
+            launch_observation_attempt = 0
             while True:
+                launch_observation_attempt += 1
+                _emit_progress(progress, "guardian-readiness-poll-start", node=voter, service_uuid=service_uuid, attempt=launch_observation_attempt)
                 readiness = _observe_removal_guardian_deployment(
                     controller=controller,
                     endpoint=endpoint,
@@ -3190,10 +3363,14 @@ def execute_node_remove_do_release(
                     guardian=guardian,
                     proof_endpoint=proof_endpoint,
                     release=release,
+                    max_wait_seconds=max_wait_seconds,
+                    poll_interval_seconds=poll_interval_seconds,
                     timeout=timeout,
                     max_response_bytes=max_response_bytes,
                     opener=opener,
+                    progress=progress,
                 )
+                _emit_progress(progress, "guardian-readiness-poll-done", node=voter, service_uuid=service_uuid, attempt=launch_observation_attempt, verified=bool(readiness.get("verified")), component_status=readiness.get("guardian_component_status"), reason=readiness.get("reason"))
                 readiness["observed_at"] = _timestamp(now=now)
                 health_observations.append({
                     "node": voter,
@@ -3218,6 +3395,7 @@ def execute_node_remove_do_release(
                 host_setup_error: dict[str, str] | None = None
                 host_helper_name = f"{guardian}-{service_uuid}"
                 try:
+                    _emit_progress(progress, "host-helper-fallback-start", node=voter, service_uuid=service_uuid, helper_name=host_helper_name)
                     host_setup_result = setup_node_remove_helper(
                         private_state=private_state,
                         network=str(release["network"]),
@@ -3249,6 +3427,7 @@ def execute_node_remove_do_release(
                     }
                     host_setup_result = {"status": "failed", "failure": host_setup_error}
 
+                _emit_progress(progress, "host-helper-fallback-done", node=voter, service_uuid=service_uuid, status=(host_setup_result or {}).get("status"), failure=(host_setup_result or {}).get("failure"))
                 host_helper_guardians[voter] = dict(host_setup_result)
                 for receipt_key, mutation_suffix in (
                     ("runner_create", "create-host-docker-node-removal-vote-guardian-runner"),
@@ -3537,6 +3716,7 @@ def execute_node_remove_do_release(
                 "blocking": False,
             }
 
+        _emit_progress(progress, "remove-voter-cleanup-start", injected_count=len(injected_remove_voters))
         normal_cleanup_failures = _cleanup_injected_remove_voters(
             paths,
             private_state,
@@ -3555,6 +3735,7 @@ def execute_node_remove_do_release(
             opener=opener,
             operation=operation,
         )
+        _emit_progress(progress, "remove-voter-cleanup-done", failure_count=len(normal_cleanup_failures), cleaned_count=len(cleaned_remove_voters))
         if normal_cleanup_failures:
             first_cleanup_failure = normal_cleanup_failures[0]
             raise _fail(
@@ -3569,6 +3750,7 @@ def execute_node_remove_do_release(
                     "mainnet RPC route survivor was not resolved before service deletion",
                 )
             try:
+                _emit_progress(progress, "rpc-route-rewire-start", target_node=release["target"]["node"], replacement_node=rpc_route_survivor["node"])
                 rpc_route_rewire = execute_shared_rpc_route_rewire(
                     private_state,
                     controller_id=str(release["target"]["controller_id"]),
@@ -3584,6 +3766,7 @@ def execute_node_remove_do_release(
                     "MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ROUTE_REWIRE_FAILED",
                     f"{exc.code}: {str(exc)[:400]}",
                 ) from exc
+            _emit_progress(progress, "rpc-route-rewire-done", target_node=release["target"]["node"], replacement_node=rpc_route_survivor["node"], status=(rpc_route_rewire or {}).get("status"))
             routing_receipts.append({
                 "ordinal": 2,
                 "phase": "withdraw-rpc-routing",
@@ -3605,6 +3788,7 @@ def execute_node_remove_do_release(
                 "source": "source_baseline_evidence",
             })
 
+        _emit_progress(progress, "target-service-delete-start", target_node=release["target"]["node"], service_uuid=release["target"]["service_uuid"])
         service_removal = execute_node_removal(
             private_state,
             network=release["network"],
@@ -3620,6 +3804,7 @@ def execute_node_remove_do_release(
             operation=operation,
             opener=opener,
         )
+        _emit_progress(progress, "target-service-delete-done", target_node=release["target"]["node"], status=(service_removal or {}).get("status"))
         if service_removal and service_removal.get("status") == "pass":
             for voter, borrowed in borrowed_guardians.items():
                 controller = controllers[str(borrowed["controller_id"])]
@@ -3659,11 +3844,15 @@ def execute_node_remove_do_release(
 
     except MotherDeploymentNodeRemoveDoError as exc:
         failure = {"code": exc.code, "message": str(exc)[:512]}
+        _emit_progress(progress, "failure", code=exc.code, message=str(exc)[:512])
     except MotherDeploymentNodeRemoveError as exc:
         failure = {"code": exc.code, "message": str(exc)[:512]}
+        _emit_progress(progress, "failure", code=exc.code, message=str(exc)[:512])
     except Exception as exc:  # pragma: no cover
         failure = {"code": "MOTHER_DEPLOY_NODE_REMOVE_DO_UNEXPECTED_FAILURE", "message": str(exc)[:512]}
+        _emit_progress(progress, "failure", code="MOTHER_DEPLOY_NODE_REMOVE_DO_UNEXPECTED_FAILURE", message=str(exc)[:512])
     finally:
+        _emit_progress(progress, "rollback-cleanup-start", injected_count=len(injected_remove_voters), already_cleaned_count=len(cleaned_remove_voters))
         rollback_failures = _cleanup_injected_remove_voters(
             paths,
             private_state,
@@ -3682,6 +3871,7 @@ def execute_node_remove_do_release(
             opener=opener,
             operation=operation,
         )
+        _emit_progress(progress, "rollback-cleanup-done", failure_count=len(rollback_failures), cleaned_count=len(cleaned_remove_voters))
         if rollback_failures and failure is None:
             failure = {
                 "code": "MOTHER_DEPLOY_NODE_REMOVE_DO_REMOVE_VOTER_ROLLBACK_FAILED",
@@ -3694,6 +3884,7 @@ def execute_node_remove_do_release(
             if entry.get("is_survivor") is True
         ]
         for entry in sorted(touched_survivor_entries, key=lambda item: str(item.get("node") or "")):
+            _emit_progress(progress, "final-survivor-health-start", node=entry.get("node"), service_uuid=entry.get("service_uuid"))
             controller = controllers.get(str(entry.get("controller_id") or ""))
             if controller is None:
                 final_check = {
@@ -3726,6 +3917,7 @@ def execute_node_remove_do_release(
                         "attempts": [],
                     }
             final_survivor_health_checks.append(final_check)
+            _emit_progress(progress, "final-survivor-health-done", node=entry.get("node"), service_uuid=entry.get("service_uuid"), completed=bool(final_check.get("completed")), reason=final_check.get("reason"))
 
         final_health_failures = [
             item for item in final_survivor_health_checks if item.get("completed") is not True

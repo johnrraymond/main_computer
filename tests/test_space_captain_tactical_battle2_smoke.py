@@ -41,6 +41,7 @@ def args(**overrides):
         overload_window_seconds=1.0,
         overload_lock_seconds=0.75,
         generate_samples=False,
+        generation_drain_seconds=60.0,
         generation_output_dir="",
         simulation_id="battle-2-tactical-test",
         simulation_seed=0,
@@ -81,6 +82,35 @@ def test_live_questions_compare_complete_tactical_futures_not_split_maneuver_and
         assert not any(row["id"].startswith("battle.weapon.") for row in rows)
         assert "acceleration" in tactical[0]["optionAText"]
         assert "Projected range" in tactical[0]["optionAText"]
+    finally:
+        battle.close()
+
+
+
+
+def test_seeded_tactical_questions_never_compare_identical_physical_futures():
+    module = load_module()
+    for seed in range(1, 21):
+        battle = module.Battle(args(simulation_seed=seed))
+        try:
+            rows = battle.question_rows(battle.captains["captain.alpha"])
+            tactical = [row for row in rows if row["id"].startswith("battle.tactical.")]
+            assert len(tactical) == 16
+            assert all(row["optionA"] != row["optionB"] for row in tactical)
+            assert all(row["optionAText"] != row["optionBText"] for row in tactical)
+        finally:
+            battle.close()
+
+
+def test_seed_7_repairs_degenerate_brake_vs_intercept_pair():
+    module = load_module()
+    battle = module.Battle(args(simulation_seed=7))
+    try:
+        rows = battle.question_rows(battle.captains["captain.alpha"])
+        q08 = next(row for row in rows if row["id"] == "battle.tactical.q08")
+        assert q08["optionA"] == "brake-fire"
+        assert q08["optionB"] != "intercept-fire"
+        assert q08["optionAText"] != q08["optionBText"]
     finally:
         battle.close()
 
@@ -149,5 +179,75 @@ def test_generated_state_and_counterfactuals_are_two_dimensional():
         assert cf["schema"].endswith(".v2")
         assert abs(cf_fields["proposed_own_accel_y_mps2"]) > 1.0
         assert cf_fields["proposed_fire_enabled"] == 1.0
+    finally:
+        battle.close()
+
+
+def test_slow_initial_thoughts_make_impact_rethink_readiness_diagnostic_only():
+    module = load_module()
+    battle = module.Battle(args(duration_seconds=2.0, viewport_hz=120.0))
+    original_provider_call = battle._provider_call
+
+    def slow_provider_call(captain_id, payload, meta):
+        import time
+
+        time.sleep(3.0)
+        return original_provider_call(captain_id, payload, meta)
+
+    battle._provider_call = slow_provider_call
+    try:
+        result = battle.run()
+        assert result["ok"] is True
+        assert result["timingReadinessIsDiagnostic"] is True
+        assert result["timingReadinessBlockedByInitialThoughts"] is True
+        assert result["timingDiagnosticChecks"] == {
+            "ImpactActuallyProducesRethink": False,
+            "ImpactIsOnlyRethinkTriggerAfterInitialThought": False,
+            "ImpactRethinkSnapshotsQueuedMailbox": False,
+        }
+        assert result["failedChecks"] == []
+        assert result["metrics"]["impactTriggeredThoughtLaunches"] == 0
+        assert all(row["thoughtInFlightAtEnd"] for row in result["captains"].values())
+    finally:
+        battle.close()
+
+
+def test_generation_drain_harvests_slow_initial_thoughts_without_advancing_battle(tmp_path):
+    module = load_module()
+    battle = module.Battle(args(
+        duration_seconds=2.0,
+        viewport_hz=120.0,
+        generate_samples=True,
+        generation_drain_seconds=1.0,
+        generation_output_dir=str(tmp_path),
+        simulation_id="simulation-slow-drain",
+    ))
+    original_provider_call = battle._provider_call
+
+    def slow_provider_call(captain_id, payload, meta):
+        import time
+
+        time.sleep(2.2)
+        return original_provider_call(captain_id, payload, meta)
+
+    battle._provider_call = slow_provider_call
+    try:
+        result = battle.run()
+        assert result["ok"] is True
+        assert result["timingReadinessBlockedByInitialThoughts"] is True
+        assert result["metrics"]["finalSimulationSeconds"] == 2.0
+        assert result["metrics"]["actionPublicationCount"] == 0
+        drain = result["generationDrain"]
+        assert drain["outstandingThoughtsAtStart"] == 2
+        assert drain["outstandingThoughtsAtEnd"] == 0
+        assert drain["completedMeasurementsBefore"] == 0
+        assert drain["completedMeasurementsAfter"] == 40
+        assert drain["completedMeasurementsAdded"] == 40
+        assert drain["physicsAdvancedDuringDrain"] is False
+        assert drain["actionsPublishedDuringDrain"] is False
+        assert drain["newThoughtsLaunchedDuringDrain"] is False
+        manifest = battle.write_generation_artifacts(result)
+        assert manifest["completedMeasurements"] == 40
+        assert manifest["generationDrain"]["completedMeasurementsAdded"] == 40
     finally:
         battle.close()

@@ -1236,6 +1236,50 @@ def _patch_readback_diagnostic(
         }
 
 
+def _retired_mimic_already_quiescent(
+    readback: Mapping[str, Any] | None,
+    helper_name: str,
+) -> bool:
+    if not isinstance(readback, Mapping) or readback.get("ok") is not True:
+        return False
+
+    parent_payload = readback.get("parent_payload")
+    if not isinstance(parent_payload, Mapping):
+        return False
+    if str(parent_payload.get("parent_status") or "").strip().lower() != "running:healthy":
+        return False
+
+    helper = _helper_name(helper_name)
+    definitions = parent_payload.get("helper_definitions")
+    definition = next(
+        (
+            item
+            for item in definitions
+            if isinstance(item, Mapping) and str(item.get("helper_name") or "") == helper
+        ),
+        None,
+    ) if isinstance(definitions, list) else None
+    if not isinstance(definition, Mapping) or definition.get("is_cleanup2_mimic_definition") is not True:
+        return False
+
+    applications = parent_payload.get("helper_application_records")
+    application = next(
+        (
+            item
+            for item in applications
+            if isinstance(item, Mapping) and str(item.get("name") or "") == helper
+        ),
+        None,
+    ) if isinstance(applications, list) else None
+    if not isinstance(application, Mapping):
+        return False
+    if not _truthy(application.get("exclude_from_status")):
+        return False
+
+    status = str(application.get("status") or "").strip().lower()
+    return status.startswith("exited")
+
+
 def _mimic_service(
     service_uuid: str,
     helper_name: str,
@@ -4041,28 +4085,60 @@ def run_helper_cleanup2_yagni(
                     if key in seen_mimic_restarts:
                         continue
                     seen_mimic_restarts.add(key)
-                    _emit_progress(
-                        progress,
-                        "cleanup2",
-                        "restarting rewritten helper mimic service line after cleanup2",
-                        node=node,
-                        controller_id=controller_id,
-                        service_uuid=service_uuid,
-                        service_line=service_line,
-                        delegated_script=SERVICE_LINE_RESTART_HELPER_SCRIPT,
+                    readback = next(
+                        (
+                            item
+                            for item in post_cleanup_readbacks
+                            if isinstance(item.get("parent_payload"), Mapping)
+                            and str(item["parent_payload"].get("service_uuid") or "") == service_uuid
+                        ),
+                        None,
                     )
-                    mimic_restart_receipt = _run_service_line_restart_helper(
-                        network=network_id,
-                        controller_id=controller_id,
-                        service_uuid=service_uuid,
-                        service_line=service_line,
-                        runtime_state_root=runtime_state_root,
-                        timeout=request_timeout,
-                        max_response_bytes=response_limit,
-                        max_wait_seconds=wait_limit,
-                        poll_interval_seconds=poll_interval,
-                        runner=service_line_restart_helper_runner,
-                    )
+                    if _retired_mimic_already_quiescent(readback, service_line):
+                        _emit_progress(
+                            progress,
+                            "cleanup2",
+                            "retired helper mimic already quiescent; skipping service line restart",
+                            node=node,
+                            controller_id=controller_id,
+                            service_uuid=service_uuid,
+                            service_line=service_line,
+                        )
+                        mimic_restart_receipt = {
+                            "status": "pass",
+                            "ok": True,
+                            "reason": "retired-mimic-already-quiescent",
+                            "restart_performed": False,
+                            "controller_id": controller_id,
+                            "node": node,
+                            "service_uuid": service_uuid,
+                            "service_line": service_line,
+                            "helper_name": service_line,
+                            "restart_role": "helper-mimic",
+                        }
+                    else:
+                        _emit_progress(
+                            progress,
+                            "cleanup2",
+                            "restarting rewritten helper mimic service line after cleanup2",
+                            node=node,
+                            controller_id=controller_id,
+                            service_uuid=service_uuid,
+                            service_line=service_line,
+                            delegated_script=SERVICE_LINE_RESTART_HELPER_SCRIPT,
+                        )
+                        mimic_restart_receipt = _run_service_line_restart_helper(
+                            network=network_id,
+                            controller_id=controller_id,
+                            service_uuid=service_uuid,
+                            service_line=service_line,
+                            runtime_state_root=runtime_state_root,
+                            timeout=request_timeout,
+                            max_response_bytes=response_limit,
+                            max_wait_seconds=wait_limit,
+                            poll_interval_seconds=poll_interval,
+                            runner=service_line_restart_helper_runner,
+                        )
                     mimic_restart_receipt["controller_id"] = controller_id
                     mimic_restart_receipt["node"] = node
                     mimic_restart_receipt["service_uuid"] = service_uuid

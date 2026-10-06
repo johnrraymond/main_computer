@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Train CLEF + TinyStories with decomposed consensus supervision.
+"""Experimental residual-v3 fork with training-only deep supervision.
 
-Qwen3-0.6B, Pythia-70M, TinyStories-33M, and the proven CLEF champion path remain
-frozen. Only zero-initialized TinyStories L1/L2 residual adapters are trainable.
-Ordinary tasks retain their existing objective. Each consensus state
-now trains three explicit binary SAME/DIFFERENT pair judgments (AB, AC, BC); the
-primary A/B/C/NONE answer is deterministically composed from those judgments.
-The old direct four-way consensus score is retained only as a small auxiliary
-loss/diagnostic so it cannot dominate the relational objective.
+This script NEVER mutates the production residual-v3 run. On first --resume it
+forks the last committed champion, optimizer, lexical DB, and retired evaluation
+history from --source-run-dir into a distinct output directory. Inference topology
+is unchanged: Qwen3-0.6B, Pythia-70M, TinyStories-33M, the mature CLEF path, and
+TinyStories L1/L2 residual adapters are exactly the residual-v3 architecture.
+
+The experiment changes only the training signal. In addition to the existing
+final-answer objective, training supervises two already-computed internal decision
+surfaces: evidence-routing logits and final field/option cosine alignment. These
+auxiliary losses add no inference parameters and are not used for PREDEV/DEV
+selection.
 """
 from __future__ import annotations
 
@@ -50,12 +54,16 @@ base = load_local_module(
 smoke = base.smoke
 CUTOVER_SCHEMA = "main-computer-three-backbone-clef-tinystories-consensus-pairwise-cutover-v1"
 REUSE_CUTOVER_SCHEMA = "main-computer-three-backbone-clef-tinystories-consensus-pairwise-reuse-cutover-v1"
-SCHEMA = "main-computer-three-backbone-clef-tinystories-consensus-pairwise-train-v1"
+SCHEMA = "main-computer-three-backbone-clef-tinystories-structured-supervision-train-v1"
+RESIDUAL_V3_CHECKPOINT_SCHEMA = "main-computer-three-backbone-clef-tinystories-consensus-pairwise-train-v1"
 DEFAULT_CUTOVER_DIR = Path(
     r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_consensus_pairwise_unique2560_stream1_cutover_v1"
 )
-DEFAULT_OUTPUT = Path(
+DEFAULT_SOURCE_RUN = Path(
     r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_consensus_pairwise_unique2560_stream1_train_v1"
+)
+DEFAULT_OUTPUT = Path(
+    r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_structured_supervision_train_v1"
 )
 DEFAULT_BOOTSTRAP_SOURCE_EXPERIMENT = Path(
     r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_consensus_pairwise_unique640_reuse4_train_v1"
@@ -85,17 +93,28 @@ DEFAULT_GRAD_ACCUMULATION = 4
 DEFAULT_PROGRESS_OPTIMIZER_STEPS = 10
 DEFAULT_FROZEN_CACHE_PROGRESS_QUESTIONS = 20
 DEFAULT_HEAD_LR = 1e-4
+DEFAULT_CLEF_HEAD_LR = 1e-6
 DEFAULT_TINYSTORIES_LR = 1e-5
 DEFAULT_TINYSTORIES_PATH_BATCH = 1
 DEFAULT_CONSENSUS_DIRECT_AUX_WEIGHT = 0.10
+DEFAULT_ROUTING_SUPERVISION_WEIGHT = 0.25
+DEFAULT_FIELD_SUPERVISION_WEIGHT = 0.25
+DEFAULT_TRAIN_ENGLISH_CODE_PERCENT = 5.0
+BASELINE_ENGLISH_CODE_PERCENT = (
+    100.0 * float(base.TASK_WEIGHTS["english_code"]) / sum(float(v) for v in base.TASK_WEIGHTS.values())
+)
+TRAIN_TASK_REBALANCE_TARGETS = ("mutation", "consensus", "triad")
+TRAINING_TASK_MIX_SCHEMA = "english-code-5pct-hard-task-rebalance-v1"
+STRUCTURED_SUPERVISION_SCHEMA = "clef-routing-and-field-deep-supervision-v1"
+CLEF_BACKPROP_MODE = "full-clef-head-plus-residual-tap-adapters"
 DEFAULT_WEIGHT_DECAY = 0.01
 DEFAULT_GRAD_CLIP = 1.0
 DEFAULT_KEEP_CHECKPOINTS = 3
 CONTINUITY_LOSS_TOLERANCE = 2e-3
 TRAINABLE_LABEL = "tinystories"
-# Under the residual-tap experiment all three language models are immutable.
-# TinyStories is still the source of the new evidence, but gradients stop at the
-# zero-initialized residual adapters inside the CLEF head.
+# All three language models remain immutable. TinyStories still supplies the
+# final-layer anchor plus L1/L2 residual-source evidence, while structured
+# supervision now trains the entire CLEF head, including the residual adapters.
 FROZEN_LABELS = ("qwen", "pythia", TRAINABLE_LABEL)
 TINYSTORIES_BASE_HIDDEN_SIZE = 768
 TINYSTORIES_RESIDUAL_LAYERS = (1, 2)
@@ -336,6 +355,24 @@ def summarize_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "mean_pairwise_loss": sum(float(row["pairwise_mean_loss"]) for row in consensus) / n,
             "mean_direct_aux_loss": sum(float(row["direct_loss"]) for row in consensus) / n,
         }
+    supervised = [row for row in rows if "structured_supervision_loss" in row]
+    if supervised:
+        n = len(supervised)
+        summary["structured_supervision"] = {
+            "questions": n,
+            "mean_structured_supervision_loss": sum(
+                float(row["structured_supervision_loss"]) for row in supervised
+            ) / n,
+            "mean_routing_supervision_loss": sum(
+                float(row["routing_supervision_loss"]) for row in supervised
+            ) / n,
+            "mean_field_supervision_loss": sum(
+                float(row["field_supervision_loss"]) for row in supervised
+            ) / n,
+            "mean_optimization_loss": sum(
+                float(row["optimization_loss"]) for row in supervised
+            ) / n,
+        }
     return summary
 
 
@@ -350,6 +387,7 @@ def training_summary_telemetry(summary: dict[str, Any]) -> dict[str, Any]:
         "mean_gold_margin": overall.get("mean_gold_margin"),
         "by_task": summary.get("by_task") or {},
         "consensus_composition": summary.get("consensus_composition"),
+        "structured_supervision": summary.get("structured_supervision"),
     }
 
 
@@ -534,6 +572,86 @@ def predev_depth_result(
         "dev_checked": False,
         "dev_affects_selection": False,
     }
+
+
+def training_task_weights(
+    english_code_percent: float = DEFAULT_TRAIN_ENGLISH_CODE_PERCENT,
+) -> dict[str, float]:
+    """Return training-only task weights with English/code reduced safely.
+
+    Evaluation keeps using ``base.curriculum_plan`` and therefore retains the
+    historical task distribution. Only the training population is rebalanced.
+    Removed English/code mass is redirected to the three currently hard tasks
+    (mutation, consensus, triad) in their original relative proportions.
+    """
+    english_code_percent = float(english_code_percent)
+    if not math.isfinite(english_code_percent):
+        raise ValueError("training English/code percent must be finite")
+    if not (0.0 < english_code_percent <= BASELINE_ENGLISH_CODE_PERCENT):
+        raise ValueError(
+            "training English/code percent must be positive and no greater than "
+            f"the canonical baseline {BASELINE_ENGLISH_CODE_PERCENT:.12g}; "
+            f"observed={english_code_percent}"
+        )
+
+    total_weight = sum(float(v) for v in base.TASK_WEIGHTS.values())
+    weights = {
+        task: 100.0 * float(base.TASK_WEIGHTS[task]) / total_weight
+        for task in base.TASKS
+    }
+    freed = float(weights["english_code"]) - english_code_percent
+    hard_total = sum(float(base.TASK_WEIGHTS[task]) for task in TRAIN_TASK_REBALANCE_TARGETS)
+    for task in TRAIN_TASK_REBALANCE_TARGETS:
+        weights[task] += freed * float(base.TASK_WEIGHTS[task]) / hard_total
+    weights["english_code"] = english_code_percent
+    return weights
+
+
+def training_curriculum_plan(
+    total_questions: int,
+    *,
+    english_code_percent: float = DEFAULT_TRAIN_ENGLISH_CODE_PERCENT,
+) -> dict[str, int]:
+    """Allocate a training-only population while preserving native task units."""
+    total_questions = int(total_questions)
+    if total_questions <= 0:
+        raise ValueError("population size must be positive")
+    if total_questions < sum(int(v) for v in base.TASK_UNITS.values()):
+        raise ValueError(
+            f"population size {total_questions} is too small to exercise every task; "
+            f"minimum={sum(int(v) for v in base.TASK_UNITS.values())}"
+        )
+    weights = training_task_weights(english_code_percent)
+    total_weight = sum(weights.values())
+    targets = {
+        task: total_questions * float(weights[task]) / total_weight
+        for task in base.TASKS
+    }
+    counts = {task: int(base.TASK_UNITS[task]) for task in base.TASKS}
+    while sum(counts.values()) < total_questions:
+        used = sum(counts.values())
+        candidates: list[tuple[float, str]] = []
+        for task in base.TASKS:
+            unit = int(base.TASK_UNITS[task])
+            if used + unit > total_questions:
+                continue
+            proposed = dict(counts)
+            proposed[task] += unit
+            score = sum(
+                ((proposed[name] - targets[name]) ** 2) / max(1.0, targets[name])
+                for name in base.TASKS
+            )
+            candidates.append((score, task))
+        if not candidates:
+            raise RuntimeError(
+                f"cannot allocate exact training population size {total_questions}: {counts}"
+            )
+        _score, task = min(
+            candidates, key=lambda row: (row[0], base.TASKS.index(row[1]))
+        )
+        counts[task] += int(base.TASK_UNITS[task])
+    base.validate_plan(counts, expected_total=total_questions)
+    return counts
 
 
 def generation_cycle_namespace(*, data_cycle: int, namespace: int, attempt: int) -> int:
@@ -730,6 +848,7 @@ def _generate_train_chunk_worker(payload: dict[str, Any]) -> dict[str, Any]:
 
 def partition_stream_plan(
     plan: dict[str, int], *, chunk_size: int, seed: int, cycle: int,
+    english_code_percent: float = DEFAULT_TRAIN_ENGLISH_CODE_PERCENT,
 ) -> list[dict[str, int]]:
     """Split the exact curriculum into legal native-unit streaming chunks.
 
@@ -743,7 +862,9 @@ def partition_stream_plan(
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be positive: {chunk_size}")
     total = sum(int(v) for v in plan.values())
-    expected = base.curriculum_plan(total)
+    expected = training_curriculum_plan(
+        total, english_code_percent=float(english_code_percent)
+    )
     if dict(plan) != expected:
         raise RuntimeError(
             f"stream plan must be the canonical curriculum plan: expected={expected} observed={plan}"
@@ -758,7 +879,9 @@ def partition_stream_plan(
     chunks: list[dict[str, int]] = []
     boundary = min(chunk_size, total)
     while boundary <= total:
-        cumulative = base.curriculum_plan(boundary)
+        cumulative = training_curriculum_plan(
+            boundary, english_code_percent=float(english_code_percent)
+        )
         chunk = {
             task: int(cumulative[task]) - int(previous[task])
             for task in base.TASKS
@@ -853,13 +976,14 @@ def layer_tap_hidden_sizes(hidden_sizes: dict[str, int]) -> dict[str, int]:
 
 
 def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: dict[str, Any] | None = None):
-    """Build an immutable legacy CLEF path plus trainable L1/L2 residual taps.
+    """Build the residual-v3 CLEF head with the full head trainable.
 
-    The proven final-layer path keeps the original 768-wide TinyStories input and
-    every pre-cutover parameter is frozen. Intermediate transformer layers 1 and
-    2 are exposed separately as a 1536-wide source for six zero-initialized
-    linear residual adapters. At initialization every adapter emits exact zero,
-    so this head is functionally identical to the committed champion.
+    The final-layer path keeps the original 768-wide TinyStories input.
+    Intermediate transformer layers 1 and 2 are exposed separately as a
+    1536-wide source for six residual adapters. Existing checkpoint weights are
+    loaded exactly; structured supervision then updates both the mature CLEF
+    parameters and the residual adapters while every language-model backbone
+    remains frozen.
     """
     BaseHead = smoke.build_head_class()
     head_kwargs = dict(head_kwargs or {})
@@ -878,11 +1002,10 @@ def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: di
             for module in self.tinystories_residual.values():
                 torch.nn.init.zeros_(module.weight)
 
-            # The entire proven champion is an immutable anchor. Only the new
-            # residual matrices are optimization variables in this phase.
+            # Structured supervision trains the complete CLEF head. The
+            # language-model backbones are frozen separately by
+            # configure_backbone_trainability().
             for parameter in self.parameters():
-                parameter.requires_grad_(False)
-            for parameter in self.tinystories_residual.parameters():
                 parameter.requires_grad_(True)
 
         @staticmethod
@@ -904,7 +1027,7 @@ def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: di
             ]
             return torch.cat(normalized, dim=-1)
 
-        def forward(self, evidence: dict[str, dict[str, Any]]):
+        def _merge_residual_evidence(self, evidence: dict[str, dict[str, Any]]):
             tiny = evidence.get(TRAINABLE_LABEL)
             if tiny is None:
                 raise RuntimeError("TinyStories evidence missing from residual-tap head")
@@ -922,7 +1045,124 @@ def build_layer_tap_head(*, torch, hidden_sizes: dict[str, int], head_kwargs: di
                 merged_tiny.pop(source_key, None)
             merged = dict(evidence)
             merged[TRAINABLE_LABEL] = merged_tiny
-            return super().forward(merged)
+            return merged
+
+        def _forward_merged(self, evidence, *, return_supervision: bool):
+            # This is intentionally a byte-for-byte mathematical transcription of
+            # the released CLEF forward path. The only difference is that two
+            # logits already computed by that path are optionally returned for
+            # training-only deep supervision.
+            if set(evidence) != set(self.labels):
+                raise RuntimeError(
+                    f"head evidence labels mismatch: expected={self.labels} observed={tuple(evidence)}"
+                )
+            option_count = None
+            memory_parts = []
+            option_query_parts = []
+            field_parts = []
+            global_parts = []
+            lexical_parts = []
+            logp_prior_parts = []
+            for label in self.labels:
+                row = evidence[label]
+                module = self.backbone_modules[label]
+                memory = module.hidden_norm(row["memory"])
+                option_context = module.hidden_norm(row["option_context"])
+                option_predictor = module.hidden_norm(row["option_predictor"])
+                option_terminal = module.hidden_norm(row["option_terminal"])
+                option_question = module.hidden_norm(row["option_question"])
+                lexical = module.hidden_norm(row["option_lexical"])
+                global_vector = module.hidden_norm(row["global"])
+                option_logp = row["option_logp"].to(
+                    device=option_context.device, dtype=option_context.dtype
+                ).reshape(-1, 1)
+                centered_logp = option_logp - option_logp.mean(dim=0, keepdim=True)
+                if option_count is None:
+                    option_count = int(option_context.shape[0])
+                elif option_count != int(option_context.shape[0]):
+                    raise RuntimeError("backbone evidence disagrees on candidate count")
+                embed = self.model_embeddings[label]
+                memory_parts.append(module.memory_projection(memory) + embed)
+                option_query_parts.append(
+                    module.option_context_projection(
+                        (option_context + option_predictor + option_terminal) / math.sqrt(3.0)
+                    )
+                    + module.option_lexical_projection(lexical)
+                    + module.option_question_projection(option_question)
+                    + module.option_logp_projection(centered_logp)
+                )
+                field_parts.append(module.question_projection(option_question.mean(dim=0)))
+                global_parts.append(module.global_projection(global_vector))
+                lexical_parts.append(module.option_lexical_projection(lexical))
+                logp_prior_parts.append(module.option_logp_scalar(centered_logp).squeeze(-1))
+
+            scale = 1.0 / math.sqrt(float(len(self.labels)))
+            memory = torch.cat(memory_parts, dim=0).unsqueeze(0)
+            options = torch.stack(option_query_parts, dim=0).sum(dim=0) * scale
+            lexical = torch.stack(lexical_parts, dim=0).sum(dim=0) * scale
+            logp_prior = torch.stack(logp_prior_parts, dim=0).sum(dim=0) * scale
+            base_field = torch.stack(field_parts, dim=0).sum(dim=0) * scale
+            global_vector = torch.stack(global_parts, dim=0).sum(dim=0) * scale
+
+            routed = options.unsqueeze(0)
+            for layer in self.evidence_layers:
+                routed = layer(routed, memory)
+            routed = routed[0]
+            routing_logits = torch.matmul(routed, base_field) / math.sqrt(float(self.width))
+            routing_weights = torch.softmax(routing_logits, dim=0)
+            option_summary = torch.sum(routing_weights.unsqueeze(-1) * routed, dim=0)
+            field = base_field + self.option_summary_norm(option_summary) + global_vector
+            field = field + self.type_embedding.weight[1]
+            field = field + self.fusion_ff(self.fusion_norm(field))
+            target = field.view(1, 1, -1)
+            for layer in self.layers:
+                target = layer(target, memory)
+            field = self.field_norm(target[0, 0])
+
+            lexical_prior = torch.nn.functional.cosine_similarity(
+                torch.nn.functional.normalize(lexical, dim=-1),
+                torch.nn.functional.normalize(field.unsqueeze(0).expand_as(lexical), dim=-1),
+                dim=-1,
+            )
+            prior_scale = self.prior_logit_scale.clamp(max=math.log(100.0)).exp()
+            option_values = self.option_norm(routed)
+            repeated_field = field.unsqueeze(0).expand_as(option_values)
+            field_alignment_logits = torch.nn.functional.cosine_similarity(
+                repeated_field, option_values, dim=-1
+            )
+            features = torch.cat(
+                [
+                    repeated_field,
+                    option_values,
+                    repeated_field * option_values,
+                    torch.abs(repeated_field - option_values),
+                ],
+                dim=-1,
+            )
+            residual = self.residual_scorer(features).squeeze(-1)
+            joint_scale = self.joint_logit_scale.clamp(max=math.log(100.0)).exp()
+            joint = joint_scale * field_alignment_logits + residual
+            logits = (
+                prior_scale * lexical_prior
+                + logp_prior
+                + torch.sigmoid(self.residual_gate) * joint
+            )
+            if return_supervision:
+                return logits, {
+                    "routing_logits": routing_logits,
+                    "field_alignment_logits": field_alignment_logits,
+                }
+            return logits
+
+        def forward_with_supervision(self, evidence: dict[str, dict[str, Any]]):
+            return self._forward_merged(
+                self._merge_residual_evidence(evidence), return_supervision=True
+            )
+
+        def forward(self, evidence: dict[str, dict[str, Any]]):
+            return self._forward_merged(
+                self._merge_residual_evidence(evidence), return_supervision=False
+            )
 
     observed = int(hidden_sizes.get(TRAINABLE_LABEL, -1))
     if observed != TINYSTORIES_BASE_HIDDEN_SIZE:
@@ -1275,15 +1515,36 @@ def migrate_adamw_optimizer_state(
     }
 
 
+def _head_optimizer_parameters(head):
+    mature = []
+    residual = []
+    for name, parameter in head.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if name.startswith("tinystories_residual."):
+            residual.append(parameter)
+        else:
+            mature.append(parameter)
+    return mature, residual
+
+
 def build_optimizer(*, torch, head, tinystories_lm, args):
-    residual_params = [p for p in head.parameters() if p.requires_grad]
+    mature_params, residual_params = _head_optimizer_parameters(head)
     tiny_params = [p for p in tinystories_lm.parameters() if p.requires_grad]
+    if not mature_params:
+        raise RuntimeError("full-head optimizer has no trainable mature CLEF parameters")
     if not residual_params:
-        raise RuntimeError("residual-tap optimizer has no trainable head parameters")
+        raise RuntimeError("full-head optimizer has no trainable residual-tap parameters")
     if tiny_params:
-        raise RuntimeError("TinyStories must remain frozen during residual-tap training")
+        raise RuntimeError("TinyStories must remain frozen during CLEF-head training")
     return torch.optim.AdamW(
         [
+            {
+                "params": mature_params,
+                "lr": float(args.clef_head_lr),
+                "weight_decay": float(args.weight_decay),
+                "group_name": "clef_mature_head",
+            },
             {
                 "params": residual_params,
                 "lr": float(args.head_lr),
@@ -1292,6 +1553,92 @@ def build_optimizer(*, torch, head, tinystories_lm, args):
             },
         ],
         foreach=False,
+    )
+
+
+def _load_optimizer_state_with_unfrozen_head_compat(*, torch, optimizer, source_state):
+    """Load optimizer state while preserving the currently requested group LRs.
+
+    Structured-supervision checkpoints created before the full-head cutover have
+    one AdamW group containing only TinyStories residual adapters. Preserve those
+    moments exactly, initialize the newly unfrozen mature CLEF parameters with
+    fresh AdamW state, and keep the checkpoint weights/RNG unchanged. Checkpoint
+    Adam moments may be reused, but the caller's configured learning rates are
+    authoritative so a safe LR migration cannot be overwritten by resume state.
+    """
+    source_groups = list(source_state.get("param_groups") or [])
+    requested_group_lrs = {
+        str(group.get("group_name")): float(group["lr"])
+        for group in optimizer.param_groups
+    }
+    target_state = optimizer.state_dict()
+    target_groups = list(target_state.get("param_groups") or [])
+
+    def restore_requested_lrs():
+        for group in optimizer.param_groups:
+            name = str(group.get("group_name"))
+            if name in requested_group_lrs:
+                group["lr"] = float(requested_group_lrs[name])
+
+    # Normal resume after the cutover.
+    if (
+        len(source_groups) == len(target_groups)
+        and [len(g.get("params") or []) for g in source_groups]
+        == [len(g.get("params") or []) for g in target_groups]
+    ):
+        optimizer.load_state_dict(source_state)
+        restore_requested_lrs()
+        base.optimizer_to_cuda(optimizer)
+        return {
+            "mode": "exact-full-head",
+            "migrated_state_entries": len(source_state.get("state") or {}),
+            "fresh_mature_parameters": 0,
+        }
+
+    # One-time compatibility with checkpoints from the residual-only structured
+    # supervision run. Target group 0 is mature CLEF; group 1 is residual taps.
+    if len(source_groups) == 1 and len(target_groups) == 2:
+        source_group = source_groups[0]
+        residual_target = target_groups[1]
+        if source_group.get("group_name") != "tinystories_residual_taps":
+            raise RuntimeError(
+                "cannot expand legacy optimizer: expected residual-only source group, "
+                f"observed={source_group.get('group_name')!r}"
+            )
+        source_ids = list(source_group.get("params") or [])
+        target_ids = list(residual_target.get("params") or [])
+        if len(source_ids) != len(target_ids):
+            raise RuntimeError(
+                "cannot expand legacy optimizer: residual parameter count mismatch: "
+                f"source={len(source_ids)} target={len(target_ids)}"
+            )
+        source_states = source_state.get("state") or {}
+        migrated_states = {
+            target_id: source_states[source_id]
+            for source_id, target_id in zip(source_ids, target_ids)
+            if source_id in source_states
+        }
+        migrated_groups = [dict(group) for group in target_groups]
+        residual_row = migrated_groups[1]
+        for key, value in source_group.items():
+            if key not in {"params", "group_name"}:
+                residual_row[key] = value
+        residual_row["params"] = target_ids
+        residual_row["group_name"] = "tinystories_residual_taps"
+        migrated = {"state": migrated_states, "param_groups": migrated_groups}
+        optimizer.load_state_dict(migrated)
+        restore_requested_lrs()
+        base.optimizer_to_cuda(optimizer)
+        return {
+            "mode": "expanded-from-residual-only",
+            "migrated_state_entries": len(migrated_states),
+            "fresh_mature_parameters": len(target_groups[0].get("params") or []),
+        }
+
+    raise RuntimeError(
+        "unsupported optimizer layout for full-head structured supervision: "
+        f"source_groups={[(g.get('group_name'), len(g.get('params') or [])) for g in source_groups]} "
+        f"target_groups={[(g.get('group_name'), len(g.get('params') or [])) for g in target_groups]}"
     )
 
 
@@ -1665,6 +2012,38 @@ def metric_row(*, question, logits, loss, ce, brier) -> dict[str, Any]:
     }
 
 
+def structured_supervision_loss(*, torch, supervision, gold_index: int, args):
+    routing_loss, routing_ce, routing_brier = smoke.loss_parts(
+        torch, supervision["routing_logits"], gold_index
+    )
+    field_loss, field_ce, field_brier = smoke.loss_parts(
+        torch, supervision["field_alignment_logits"], gold_index
+    )
+    routing_weight = float(args.routing_supervision_weight)
+    field_weight = float(args.field_supervision_weight)
+    total = routing_weight * routing_loss + field_weight * field_loss
+    return {
+        "loss": total,
+        "routing_loss": routing_loss,
+        "routing_cross_entropy": routing_ce,
+        "routing_brier": routing_brier,
+        "field_loss": field_loss,
+        "field_cross_entropy": field_ce,
+        "field_brier": field_brier,
+        "routing_weight": routing_weight,
+        "field_weight": field_weight,
+    }
+
+
+def add_structured_training_metrics(row: dict[str, Any], supervision_parts, *, final_loss) -> None:
+    row["structured_supervision_loss"] = float(supervision_parts["loss"].detach().item())
+    row["routing_supervision_loss"] = float(supervision_parts["routing_loss"].detach().item())
+    row["field_supervision_loss"] = float(supervision_parts["field_loss"].detach().item())
+    row["optimization_loss"] = float(
+        (final_loss + supervision_parts["loss"]).detach().item()
+    )
+
+
 
 def evaluate_direct_population(
     *, torch, head, bundles, questions, args, logger: EventLog, phase: str,
@@ -1809,8 +2188,12 @@ def train_population(
                         torch=torch, bundles=bundles, question=pair_question,
                         frozen_rows=frozen_rows, args=args, logger=logger,
                     )
-                    logits = head(evidence)
+                    logits, supervision = head.forward_with_supervision(evidence)
                     loss, ce, brier = smoke.loss_parts(torch, logits, pair_question.gold_index)
+                    supervision_parts = structured_supervision_loss(
+                        torch=torch, supervision=supervision,
+                        gold_index=pair_question.gold_index, args=args,
+                    )
                     if not bool(torch.isfinite(loss).item()):
                         raise RuntimeError(
                             f"non-finite consensus pair loss cycle={cycle} epoch={epoch} "
@@ -1819,22 +2202,29 @@ def train_population(
                     row = metric_row(
                         question=pair_question, logits=logits, loss=loss, ce=ce, brier=brier
                     )
+                    add_structured_training_metrics(
+                        row, supervision_parts, final_loss=loss
+                    )
                     pair_rows.append((pair_name, pair_question, row))
-                    (loss * pair_primary / (3.0 * len(group))).backward()
+                    ((loss + supervision_parts["loss"]) * pair_primary / (3.0 * len(group))).backward()
                     emit_consensus_pair_event(
                         logger, "clef_tinystories_consensus_pair_train",
                         consensus_question_id=question.question_id, pair=pair_name, row=row,
                         cycle=cycle, epoch=epoch,
                     )
-                    del evidence, logits, loss, ce, brier
+                    del evidence, logits, supervision, supervision_parts, loss, ce, brier
 
                 evidence = compose_training_evidence(
                     torch=torch, bundles=bundles, question=question,
                     frozen_rows=cache_item["direct"], args=args, logger=logger,
                 )
-                logits = head(evidence)
+                logits, direct_supervision = head.forward_with_supervision(evidence)
                 direct_loss, direct_ce, direct_brier = smoke.loss_parts(
                     torch, logits, question.gold_index
+                )
+                direct_supervision_parts = structured_supervision_loss(
+                    torch=torch, supervision=direct_supervision,
+                    gold_index=question.gold_index, args=args,
                 )
                 if not bool(torch.isfinite(direct_loss).item()):
                     raise RuntimeError(
@@ -1845,28 +2235,63 @@ def train_population(
                     question=question, logits=logits, loss=direct_loss,
                     ce=direct_ce, brier=direct_brier,
                 )
+                add_structured_training_metrics(
+                    direct_row, direct_supervision_parts, final_loss=direct_loss
+                )
                 if direct_aux > 0.0:
-                    (direct_loss * direct_aux / len(group)).backward()
+                    ((direct_loss + direct_supervision_parts["loss"]) * direct_aux / len(group)).backward()
                 row = consensus_metric_row(
                     question=question, pair_rows=pair_rows, direct_row=direct_row,
                     aux_weight=float(args.consensus_direct_aux_weight),
                 )
-                del evidence, logits, direct_loss, direct_ce, direct_brier
+                pair_structured = sum(
+                    float(pair_row["structured_supervision_loss"])
+                    for _, _, pair_row in pair_rows
+                ) / 3.0
+                pair_routing = sum(
+                    float(pair_row["routing_supervision_loss"])
+                    for _, _, pair_row in pair_rows
+                ) / 3.0
+                pair_field = sum(
+                    float(pair_row["field_supervision_loss"])
+                    for _, _, pair_row in pair_rows
+                ) / 3.0
+                row["structured_supervision_loss"] = (
+                    pair_primary * pair_structured
+                    + direct_aux * float(direct_row["structured_supervision_loss"])
+                )
+                row["routing_supervision_loss"] = (
+                    pair_primary * pair_routing
+                    + direct_aux * float(direct_row["routing_supervision_loss"])
+                )
+                row["field_supervision_loss"] = (
+                    pair_primary * pair_field
+                    + direct_aux * float(direct_row["field_supervision_loss"])
+                )
+                row["optimization_loss"] = float(row["loss"]) + float(
+                    row["structured_supervision_loss"]
+                )
+                del evidence, logits, direct_supervision, direct_supervision_parts, direct_loss, direct_ce, direct_brier
             else:
                 evidence = compose_training_evidence(
                     torch=torch, bundles=bundles, question=question,
                     frozen_rows=cache_item["direct"], args=args, logger=logger,
                 )
-                logits = head(evidence)
+                logits, supervision = head.forward_with_supervision(evidence)
                 loss, ce, brier = smoke.loss_parts(torch, logits, question.gold_index)
+                supervision_parts = structured_supervision_loss(
+                    torch=torch, supervision=supervision,
+                    gold_index=question.gold_index, args=args,
+                )
                 if not bool(torch.isfinite(loss).item()):
                     raise RuntimeError(
                         f"non-finite loss cycle={cycle} epoch={epoch} "
                         f"question={question.question_id}: {float(loss.item())}"
                     )
                 row = metric_row(question=question, logits=logits, loss=loss, ce=ce, brier=brier)
-                (loss / len(group)).backward()
-                del evidence, logits, loss, ce, brier
+                add_structured_training_metrics(row, supervision_parts, final_loss=loss)
+                ((loss + supervision_parts["loss"]) / len(group)).backward()
+                del evidence, logits, supervision, supervision_parts, loss, ce, brier
 
             row.update({
                 "cycle": int(cycle), "epoch": int(epoch),
@@ -2116,7 +2541,11 @@ def train_generated_unique_stream(
         raise RuntimeError(f"stream reuse pass offset must be nonnegative: {reuse_pass_offset}")
     chunk_size = int(args.stream_chunk_questions)
     chunk_plans = partition_stream_plan(
-        train_plan, chunk_size=chunk_size, seed=int(args.seed), cycle=int(cycle)
+        train_plan,
+        chunk_size=chunk_size,
+        seed=int(args.seed),
+        cycle=int(cycle),
+        english_code_percent=float(args.train_english_code_percent),
     )
     if not chunk_plans:
         raise RuntimeError("generated unique stream has no chunks")
@@ -2739,10 +3168,10 @@ def save_layer_tap_cutover_checkpoint(
                     "tinystories_residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),
                     "tinystories_residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
                     "anchor_layer": TINYSTORIES_FINAL_LAYER,
-                    "anchor_frozen": True,
+                    "anchor_frozen": False,
                     "tinystories_frozen": True,
                     "optimizer_reset": bool(optimizer_migration.get("optimizer_reset", False)),
-                    "optimizer_scope": "residual-parameters-only",
+                    "optimizer_scope": "full-clef-head-plus-residual-adapters",
                     "optimizer_migration": dict(optimizer_migration),
                     "residual_initialization": "all-zero-linear-weights",
                 },
@@ -2761,7 +3190,7 @@ def save_layer_tap_cutover_checkpoint(
         tinystories_evidence_hidden_size=TINYSTORIES_BASE_HIDDEN_SIZE,
         tinystories_residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
         tinystories_residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
-        anchor_frozen=True,
+        anchor_frozen=False,
         tinystories_frozen=True,
         optimizer_reset=bool(optimizer_migration.get("optimizer_reset", False)),
         optimizer_migration=dict(optimizer_migration),
@@ -2777,8 +3206,14 @@ def load_checkpoint(
 
     checkpoint = Path(checkpoint).expanduser().resolve(strict=True)
     meta = smoke.read_json(checkpoint / "meta.json")
-    if meta.get("schema_version") != SCHEMA:
-        raise RuntimeError(f"unsupported checkpoint schema: {meta.get('schema_version')}")
+    observed_schema = meta.get("schema_version")
+    legacy_fork_boundary = (
+        observed_schema == RESIDUAL_V3_CHECKPOINT_SCHEMA
+        and checkpoint.name.startswith("fork-source-cycle-")
+        and _checkpoint_head_layout(checkpoint) == "v3"
+    )
+    if observed_schema != SCHEMA and not legacy_fork_boundary:
+        raise RuntimeError(f"unsupported checkpoint schema: {observed_schema}")
     head_state = load_file(str(checkpoint / "head.safetensors"), device="cpu")
     if allow_legacy_head:
         load_head_state_with_layer_taps(torch=torch, head=head, state=head_state)
@@ -2787,17 +3222,24 @@ def load_checkpoint(
     tinystories_lm.load_state_dict(
         load_file(str(checkpoint / "tinystories.safetensors"), device="cpu"), strict=True
     )
+    optimizer_load = None
     if load_optimizer:
-        optimizer.load_state_dict(
-            torch.load(checkpoint / "optimizer.pt", map_location="cpu", weights_only=False)
+        optimizer_load = _load_optimizer_state_with_unfrozen_head_compat(
+            torch=torch,
+            optimizer=optimizer,
+            source_state=torch.load(
+                checkpoint / "optimizer.pt", map_location="cpu", weights_only=False
+            ),
         )
-        base.optimizer_to_cuda(optimizer)
     rng = torch.load(checkpoint / "rng_state.pt", map_location="cpu", weights_only=False)
     random.setstate(rng["python_random"])
     torch.set_rng_state(rng["torch_cpu"])
     if torch.cuda.is_available() and rng.get("torch_cuda"):
         torch.cuda.set_rng_state_all(rng["torch_cuda"])
-    return meta
+    result = dict(meta)
+    if optimizer_load is not None:
+        result["_optimizer_load"] = optimizer_load
+    return result
 
 
 def prune_checkpoints_preserving(
@@ -2862,6 +3304,8 @@ def training_hyperparameters(args) -> dict[str, Any]:
         "path_batch": int(args.path_batch),
         "tinystories_path_batch": int(args.tinystories_path_batch),
         "consensus_direct_aux_weight": float(args.consensus_direct_aux_weight),
+        "routing_supervision_weight": float(args.routing_supervision_weight),
+        "field_supervision_weight": float(args.field_supervision_weight),
     }
 
 
@@ -3142,8 +3586,157 @@ def quarantine_uncommitted_first_launch_output(output_dir: Path) -> Path:
     return quarantine
 
 
+
+def fork_structured_supervision_run(args) -> Path:
+    """Create an isolated experiment from the last committed residual-v3 champion."""
+    source_run = Path(args.source_run_dir).expanduser().resolve(strict=True)
+    output_dir = Path(args.output_dir).expanduser()
+    if _normalized_path(source_run) == _normalized_path(output_dir):
+        raise RuntimeError("structured-supervision output must differ from --source-run-dir")
+
+    source_experiment_path = source_run / "experiment.json"
+    source_state_path = source_run / "training_state.json"
+    source_db = source_run / "training_lexical.db"
+    for required in (source_experiment_path, source_state_path, source_db):
+        if not required.is_file():
+            raise FileNotFoundError(f"structured-supervision fork source is incomplete: {required}")
+
+    source_experiment = smoke.read_json(source_experiment_path)
+    source_state = smoke.read_json(source_state_path)
+    source_contract = dict(source_experiment.get("contract") or {})
+    source_layer_schema = source_contract.get("tinystories_layer_tap_schema")
+    if source_layer_schema != TINYSTORIES_LAYER_TAP_SCHEMA:
+        raise RuntimeError(
+            "structured-supervision fork requires the residual-v3 source run after CORE rollback; "
+            f"observed tinystories_layer_tap_schema={source_layer_schema!r}"
+        )
+
+    source_best = Path(str(source_state.get("best_checkpoint") or "")).expanduser().resolve(strict=True)
+    if _checkpoint_head_layout(source_best) != "v3":
+        raise RuntimeError(
+            "structured-supervision fork requires a committed residual-v3 champion checkpoint: "
+            f"{source_best}"
+        )
+
+    output_dir = prepare_new_output(output_dir)
+    smoke.clone_sqlite(source_db, output_dir / "training_lexical.db")
+
+    source_cycle = int(source_state["cycle"])
+    fork_checkpoint = output_dir / "checkpoints" / f"fork-source-cycle-{source_cycle:06d}"
+    shutil.copytree(source_best, fork_checkpoint)
+    # Normalize the copied champion into this experiment's checkpoint namespace.
+    # The tensor/optimizer/RNG payload is unchanged; only ownership metadata is
+    # rewritten. load_checkpoint also recognizes older already-created forks so
+    # a failed first launch can resume in place after this patch.
+    fork_meta_path = fork_checkpoint / "meta.json"
+    fork_meta = smoke.read_json(fork_meta_path)
+    source_checkpoint_schema = fork_meta.get("schema_version")
+    if source_checkpoint_schema != RESIDUAL_V3_CHECKPOINT_SCHEMA:
+        raise RuntimeError(
+            "structured-supervision fork expected residual-v3 checkpoint schema; "
+            f"observed {source_checkpoint_schema!r} at {source_best}"
+        )
+    fork_meta.update({
+        "schema_version": SCHEMA,
+        "fork_source_schema_version": source_checkpoint_schema,
+        "fork_source_checkpoint": str(source_best),
+        "structured_supervision_schema": STRUCTURED_SUPERVISION_SCHEMA,
+        "forked_from_residual_v3": True,
+    })
+    smoke.atomic_json(fork_meta_path, fork_meta)
+
+    # Carry only retired evaluation history. The source active PREDEV is retired
+    # because it has already been exposed; the fork always creates a fresh bank.
+    source_predev = source_run / "predev_champ"
+    target_predev = output_dir / "predev_champ"
+    target_predev.mkdir(parents=True, exist_ok=True)
+    if source_predev.is_dir():
+        for history_path in sorted(source_predev.glob("bank-*.json")):
+            shutil.copy2(history_path, target_predev / history_path.name)
+        active = source_predev / "active.json"
+        if active.is_file():
+            payload = smoke.read_json(active)
+            start = int(payload.get("start_cycle", source_cycle + 1))
+            end = int(payload.get("end_cycle", start))
+            retired = dict(payload)
+            retired["retired_reason"] = "structured-supervision-fork-source-exposure"
+            retired["retired_unix"] = time.time()
+            smoke.atomic_json(
+                target_predev / f"bank-{start:06d}-{end:06d}-fork-source-retired.json",
+                retired,
+            )
+
+    source_dev = source_run / "dev_audit"
+    target_dev = output_dir / "dev_audit"
+    target_dev.mkdir(parents=True, exist_ok=True)
+    if source_dev.is_dir():
+        for report_path in sorted(source_dev.glob("report-*.json")):
+            shutil.copy2(report_path, target_dev / report_path.name)
+
+    source_selection = source_run / "selection_questions.json"
+    if source_selection.is_file():
+        shutil.copy2(source_selection, output_dir / source_selection.name)
+
+    experiment = dict(source_experiment)
+    experiment.update({
+        "schema_version": SCHEMA,
+        "created_unix": time.time(),
+        "fork_source_run": str(source_run),
+        "fork_source_cycle": source_cycle,
+        "fork_source_checkpoint": str(source_best),
+        "stream_reuse_epochs": int(args.stream_reuse_epochs),
+        "hyperparameters": training_hyperparameters(args),
+    })
+    contract = dict(experiment.get("contract") or {})
+    contract.update({
+        "structured_supervision_schema": STRUCTURED_SUPERVISION_SCHEMA,
+        "structured_supervision_training_only": True,
+        "structured_supervision_affects_inference": False,
+        "routing_supervision_weight": float(args.routing_supervision_weight),
+        "field_supervision_weight": float(args.field_supervision_weight),
+        "forked_from_residual_v3": True,
+    })
+    experiment["contract"] = contract
+    smoke.atomic_json(output_dir / "experiment.json", experiment)
+
+    state = dict(source_state)
+    state.update({
+        "cycle": source_cycle,
+        "global_step": int(source_state["global_step"]),
+        "latest_checkpoint": str(fork_checkpoint.resolve()),
+        "best_checkpoint": str(fork_checkpoint.resolve()),
+        "in_progress_cycle": None,
+        "completed_reuse_epoch": 0,
+        "pending_champ_check": False,
+        "fork_source_run": str(source_run),
+        "fork_source_checkpoint": str(source_best),
+        "fork_source_cycle": source_cycle,
+    })
+    smoke.atomic_json(output_dir / "training_state.json", state)
+    smoke.atomic_json(
+        output_dir / "fork_source.json",
+        {
+            "schema_version": SCHEMA,
+            "source_run": str(source_run),
+            "source_cycle": source_cycle,
+            "source_checkpoint": str(source_best),
+            "fork_checkpoint": str(fork_checkpoint.resolve()),
+            "created_unix": time.time(),
+        },
+    )
+    print(json.dumps({
+        "event": "clef_structured_supervision_fork_created",
+        "source_run": str(source_run),
+        "source_cycle": source_cycle,
+        "source_checkpoint": str(source_best),
+        "output_dir": str(output_dir),
+        "fork_checkpoint": str(fork_checkpoint.resolve()),
+    }, sort_keys=True), flush=True)
+    return output_dir
+
+
 def prepare_launch(args) -> tuple[Path, bool]:
-    """Resolve resume/new-launch semantics and return (output_dir, bootstrapped)."""
+    """Resume the isolated experiment, or fork it from the production residual-v3 run."""
     output_dir = Path(args.output_dir).expanduser()
     if not args.resume:
         return prepare_new_output(output_dir), False
@@ -3155,9 +3748,9 @@ def prepare_launch(args) -> tuple[Path, bool]:
             return output_dir.resolve(strict=True), False
         if any(output_dir.iterdir()):
             quarantine_uncommitted_first_launch_output(output_dir)
-    ensure_first_launch_cutover(args)
-    args.resume = False
-    return prepare_new_output(output_dir), True
+    forked = fork_structured_supervision_run(args)
+    args.resume = True
+    return forked, True
 
 
 def run(args, logger: EventLog) -> None:
@@ -3221,7 +3814,10 @@ def run(args, logger: EventLog) -> None:
         cutover_optimizer = None
         cutover_rng = None
 
-    train_plan = base.curriculum_plan(int(args.train_questions_per_cycle))
+    train_plan = training_curriculum_plan(
+        int(args.train_questions_per_cycle),
+        english_code_percent=float(args.train_english_code_percent),
+    )
     predev_plan = base.curriculum_plan(int(args.predev_questions_per_cycle))
     dev_plan = base.curriculum_plan(int(args.dev_questions_per_cycle))
     output_dir = logger.output_dir
@@ -3246,6 +3842,13 @@ def run(args, logger: EventLog) -> None:
     layer_tap_migration = False
     previous_layer_tap_schema = None
     layer_tap_migration_sources = None
+    head_trainability_migration = False
+    previous_clef_backprop = None
+    clef_head_lr_migration = False
+    previous_clef_head_lr = None
+    training_task_mix_migration = False
+    previous_training_task_mix_schema = None
+    previous_train_english_code_percent = None
     policy_migration = False
     if args.resume:
         experiment = smoke.read_json(experiment_path)
@@ -3277,12 +3880,34 @@ def run(args, logger: EventLog) -> None:
         layer_tap_migration = (
             previous_layer_tap_schema != TINYSTORIES_LAYER_TAP_SCHEMA
         )
+        previous_clef_backprop = contract.get("clef_backprop")
+        head_trainability_migration = previous_clef_backprop != CLEF_BACKPROP_MODE
+        previous_clef_head_lr = float(
+            contract.get(
+                "clef_mature_head_lr",
+                (experiment.get("hyperparameters") or {}).get("head_lr", args.head_lr),
+            )
+        )
+        clef_head_lr_migration = previous_clef_head_lr != float(args.clef_head_lr)
+        previous_training_task_mix_schema = contract.get("training_task_mix_schema")
+        previous_train_english_code_percent = float(
+            contract.get("train_english_code_percent", BASELINE_ENGLISH_CODE_PERCENT)
+        )
+        training_task_mix_migration = (
+            previous_training_task_mix_schema != TRAINING_TASK_MIX_SCHEMA
+            or previous_train_english_code_percent != float(args.train_english_code_percent)
+            or {str(k): int(v) for k, v in dict(experiment.get("train_plan") or {}).items()}
+            != {str(k): int(v) for k, v in train_plan.items()}
+        )
         policy_migration = (
             legacy_progressive_migration
             or dev_audit_migration
             or predev_policy_migration
             or selection_policy_migration
             or layer_tap_migration
+            or head_trainability_migration
+            or clef_head_lr_migration
+            or training_task_mix_migration
         )
         migration_reasons = [
             name
@@ -3292,6 +3917,9 @@ def run(args, logger: EventLog) -> None:
                 ("fresh-predev-contract", predev_policy_migration),
                 ("champion-selection-policy", selection_policy_migration),
                 ("tinystories-layer-tap-schema", layer_tap_migration),
+                ("clef-head-trainability", head_trainability_migration),
+                ("clef-head-learning-rate", clef_head_lr_migration),
+                ("training-task-mix", training_task_mix_migration),
             )
             if active
         ]
@@ -3385,6 +4013,13 @@ def run(args, logger: EventLog) -> None:
         selection_policy_migration=selection_policy_migration,
         previous_champion_selection_policy=previous_selection_policy,
         champion_selection_policy=selection_policy,
+        training_task_mix_migration=training_task_mix_migration,
+        previous_training_task_mix_schema=previous_training_task_mix_schema,
+        previous_train_english_code_percent=previous_train_english_code_percent,
+        training_task_mix_schema=TRAINING_TASK_MIX_SCHEMA,
+        train_english_code_percent=float(args.train_english_code_percent),
+        train_task_weights=training_task_weights(float(args.train_english_code_percent)),
+        evaluation_task_mix="canonical-base-curriculum-unchanged",
         use_loss=bool(args.use_loss),
         layer_tap_migration=layer_tap_migration,
         previous_layer_tap_schema=previous_layer_tap_schema,
@@ -3412,13 +4047,24 @@ def run(args, logger: EventLog) -> None:
         ),
         stream_chunk_questions=int(args.stream_chunk_questions),
         head_lr=float(args.head_lr),
+        clef_head_lr=float(args.clef_head_lr),
         tinystories_lr=float(args.tinystories_lr),
         tinystories_lr_effective=0.0,
         consensus_direct_aux_weight=float(args.consensus_direct_aux_weight),
+        structured_supervision_schema=STRUCTURED_SUPERVISION_SCHEMA,
+        routing_supervision_weight=float(args.routing_supervision_weight),
+        field_supervision_weight=float(args.field_supervision_weight),
+        structured_supervision_training_only=True,
+        structured_supervision_affects_inference=False,
         consensus_primary="pairwise-relations-then-deterministic-topology",
         frozen_backbones=list(FROZEN_LABELS),
         trainable_backbone=None,
-        trainable_component="tinystories-residual-taps-only",
+        trainable_component="clef-full-head-plus-tinystories-residual-taps",
+        clef_backprop=CLEF_BACKPROP_MODE,
+        head_trainability_migration=head_trainability_migration,
+        previous_clef_backprop=previous_clef_backprop,
+        clef_head_lr_migration=clef_head_lr_migration,
+        previous_clef_head_lr=previous_clef_head_lr,
         tinystories_tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
         tinystories_residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
         tinystories_evidence_hidden_size=TINYSTORIES_BASE_HIDDEN_SIZE,
@@ -3660,11 +4306,11 @@ def run(args, logger: EventLog) -> None:
             args=args,
         )
         optimizer_migration = {
-            "recovery_mode": "new-residual-only",
+            "recovery_mode": "full-head-fresh-or-resume-compatible",
             "migrated_state_entries": 0,
-            "anchor_parameters_frozen": True,
+            "anchor_parameters_frozen": False,
             "tinystories_frozen": True,
-            "trainable_parameter_overlap_with_source": 0,
+            "trainable_parameter_overlap_with_source": head_params - 7_077_888,
         }
         if reuse_schedule_cutover and not args.resume:
             # The only trainable tensors are brand-new zero residual matrices, so
@@ -3714,9 +4360,10 @@ def run(args, logger: EventLog) -> None:
                         map_location="cpu",
                         weights_only=False,
                     )
-                    optimizer.load_state_dict(optimizer_state)
-                    base.optimizer_to_cuda(optimizer)
-                    migrated_state_entries = len(optimizer_state.get("state") or {})
+                    optimizer_load = _load_optimizer_state_with_unfrozen_head_compat(
+                        torch=torch, optimizer=optimizer, source_state=optimizer_state
+                    )
+                    migrated_state_entries = int(optimizer_load["migrated_state_entries"])
                 optimizer_migration = {
                     "source_layout": str(layer_tap_migration_sources["source_layout"]),
                     "recovery_mode": str(
@@ -3756,8 +4403,8 @@ def run(args, logger: EventLog) -> None:
                     },
                     logger=logger,
                 )
-                # Persist/reload the v3 anchor so crash recovery uses the exact
-                # zero-residual weights and residual-only optimizer state.
+                # Persist/reload the v3-compatible checkpoint so crash recovery
+                # uses the exact weights and the full-head optimizer layout.
                 resume_checkpoint_meta = load_checkpoint(
                     torch=torch,
                     head=head,
@@ -3801,7 +4448,7 @@ def run(args, logger: EventLog) -> None:
                     tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
                     residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
                     anchor_layer=TINYSTORIES_FINAL_LAYER,
-                    anchor_frozen=True,
+                    anchor_frozen=False,
                     tinystories_frozen=True,
                     legacy_hidden_size=TINYSTORIES_BASE_HIDDEN_SIZE,
                     residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
@@ -3834,10 +4481,15 @@ def run(args, logger: EventLog) -> None:
             tinystories_tapped_layers=list(TINYSTORIES_TAPPED_LAYERS),
             tinystories_residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
             tinystories_anchor_layer=TINYSTORIES_FINAL_LAYER,
-            tinystories_anchor_frozen=True,
+            tinystories_anchor_frozen=False,
+            clef_full_head_trainable=True,
             tinystories_frozen=True,
             tinystories_residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
             optimizer_groups=optimizer_group_summary(optimizer),
+            optimizer_load=(
+                None if resume_checkpoint_meta is None
+                else resume_checkpoint_meta.get("_optimizer_load")
+            ),
             resumed_checkpoint=None if latest_checkpoint is None else str(latest_checkpoint),
             memory=smoke.cuda_memory(torch, "after_joint_model_load"),
         )
@@ -3872,8 +4524,10 @@ def run(args, logger: EventLog) -> None:
             "tinystories_residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
             "tinystories_lexical_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
             "tinystories_backprop": "none-backbone-frozen",
-            "clef_backprop": "residual-tap-adapters-only",
-            "champion_anchor": "immutable-final-layer-clef-plus-all-three-frozen-backbones",
+            "clef_backprop": CLEF_BACKPROP_MODE,
+            "clef_mature_head_lr": float(args.clef_head_lr),
+            "residual_tap_lr": float(args.head_lr),
+            "champion_anchor": "all-three-language-model-backbones-frozen-clef-head-trainable",
             "champion_selection_policy": selection_policy,
             "use_loss_selection": bool(args.use_loss),
             "training_evidence_reuse": max_reuse_depth > 1,
@@ -3881,6 +4535,10 @@ def run(args, logger: EventLog) -> None:
             "stream_reuse_epochs": max_reuse_depth,
             "stream_chunk_questions": int(args.stream_chunk_questions),
             "source_continuity_bank": True,
+            "training_task_mix_schema": TRAINING_TASK_MIX_SCHEMA,
+            "train_english_code_percent": float(args.train_english_code_percent),
+            "train_task_weights": training_task_weights(float(args.train_english_code_percent)),
+            "evaluation_task_mix": "canonical-base-curriculum-unchanged",
             "task_composition": smoke.TASK_COMPOSITION_VERSION,
             "evidence_contract": smoke.EVIDENCE_CONTRACT_VERSION,
             "consensus_primary_objective": (
@@ -3888,6 +4546,11 @@ def run(args, logger: EventLog) -> None:
             ),
             "consensus_direct_four_way_role": "auxiliary_transfer_only",
             "consensus_direct_aux_weight": float(args.consensus_direct_aux_weight),
+            "structured_supervision_schema": STRUCTURED_SUPERVISION_SCHEMA,
+            "structured_supervision_training_only": True,
+            "structured_supervision_affects_inference": False,
+            "routing_supervision_weight": float(args.routing_supervision_weight),
+            "field_supervision_weight": float(args.field_supervision_weight),
         }
         if experiment is None:
             experiment = {
@@ -3955,7 +4618,7 @@ def run(args, logger: EventLog) -> None:
                 "residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
                 "optimizer_reset": bool(optimizer_migration.get("optimizer_reset", False)),
                 "optimizer_migration": optimizer_migration,
-                "anchor_frozen": True,
+                "anchor_frozen": False,
                 "tinystories_frozen": True,
                 "rollback_from_schema": previous_layer_tap_schema,
                 "removed_component": (
@@ -5223,7 +5886,10 @@ def run(args, logger: EventLog) -> None:
 def self_test() -> dict[str, Any]:
     import torch
 
-    train = base.curriculum_plan(DEFAULT_TRAIN_QUESTIONS)
+    train = training_curriculum_plan(
+        DEFAULT_TRAIN_QUESTIONS,
+        english_code_percent=DEFAULT_TRAIN_ENGLISH_CODE_PERCENT,
+    )
     predev = base.curriculum_plan(DEFAULT_PREDEV_QUESTIONS)
     dev = base.curriculum_plan(DEFAULT_DEV_QUESTIONS)
     head, head_hidden_sizes = build_layer_tap_head(
@@ -5241,7 +5907,7 @@ def self_test() -> dict[str, Any]:
         "head_hidden_sizes": head_hidden_sizes,
         "frozen_backbones": list(FROZEN_LABELS),
         "trainable_backbone": None,
-        "trainable_component": "tinystories-residual-taps-only",
+        "trainable_component": "clef-full-head-plus-tinystories-residual-taps",
         "tinystories_layer_tap_schema": TINYSTORIES_LAYER_TAP_SCHEMA,
         "tinystories_tapped_layers": list(TINYSTORIES_TAPPED_LAYERS),
         "tinystories_residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),
@@ -5250,7 +5916,7 @@ def self_test() -> dict[str, Any]:
         "tinystories_residual_source_hidden_size": TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
         "tinystories_lexical_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
         "tinystories_backprop": "none-backbone-frozen",
-        "clef_backprop": "residual-tap-adapters-only",
+        "clef_backprop": CLEF_BACKPROP_MODE,
         "residual_initialization": "all-zero-linear-weights",
         "reuse_epochs": DEFAULT_STREAM_REUSE_EPOCHS,
         "checkpoint_epochs_per_cycle": DEFAULT_EPOCHS_PER_CYCLE,
@@ -5258,6 +5924,10 @@ def self_test() -> dict[str, Any]:
         "reuse_checkpoint_interval": min(DEFAULT_REUSE_CHECKPOINT_INTERVAL, DEFAULT_EPOCHS_PER_CYCLE),
         "reuse_checkpoint_epochs": reuse_checkpoint_epochs(DEFAULT_EPOCHS_PER_CYCLE),
         "unique_train_questions_per_cycle": DEFAULT_TRAIN_QUESTIONS,
+        "training_task_mix_schema": TRAINING_TASK_MIX_SCHEMA,
+        "train_english_code_percent": DEFAULT_TRAIN_ENGLISH_CODE_PERCENT,
+        "train_task_weights": training_task_weights(DEFAULT_TRAIN_ENGLISH_CODE_PERCENT),
+        "evaluation_task_mix": "canonical-base-curriculum-unchanged",
         "stream_chunk_questions": DEFAULT_STREAM_CHUNK_QUESTIONS,
         "stream_chunks_per_cycle": (DEFAULT_TRAIN_QUESTIONS + DEFAULT_STREAM_CHUNK_QUESTIONS - 1) // DEFAULT_STREAM_CHUNK_QUESTIONS,
         "intentional_training_reuse": DEFAULT_STREAM_REUSE_EPOCHS > 1,
@@ -5280,6 +5950,7 @@ def self_test() -> dict[str, Any]:
         "minimum_example_presentations_per_cycle": DEFAULT_TRAIN_QUESTIONS,
         "maximum_example_presentations_per_cycle": DEFAULT_TRAIN_QUESTIONS * DEFAULT_STREAM_REUSE_EPOCHS,
         "head_lr": DEFAULT_HEAD_LR,
+        "clef_head_lr": DEFAULT_CLEF_HEAD_LR,
         "tinystories_lr": DEFAULT_TINYSTORIES_LR,
         "tinystories_lr_effective": 0.0,
         "tinystories_path_batch": DEFAULT_TINYSTORIES_PATH_BATCH,
@@ -5295,10 +5966,20 @@ def self_test() -> dict[str, Any]:
 def parse_args(argv: Sequence[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cutover-dir", default=str(DEFAULT_CUTOVER_DIR))
+    parser.add_argument("--source-run-dir", default=str(DEFAULT_SOURCE_RUN), help="residual-v3 production run to fork on first --resume")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--data-cycle-base", type=int, default=DEFAULT_DATA_CYCLE_BASE)
     parser.add_argument("--train-questions-per-cycle", type=int, default=DEFAULT_TRAIN_QUESTIONS)
+    parser.add_argument(
+        "--train-english-code-percent",
+        type=float,
+        default=DEFAULT_TRAIN_ENGLISH_CODE_PERCENT,
+        help=(
+            "training-only English/code target percent; removed mass is redirected "
+            "to mutation/consensus/triad while PREDEV/DEV remain canonical"
+        ),
+    )
     parser.add_argument(
         "--predev-questions-per-cycle", "--predev-questions-per-iteration",
         dest="predev_questions_per_cycle", type=int, default=DEFAULT_PREDEV_QUESTIONS,
@@ -5325,10 +6006,25 @@ def parse_args(argv: Sequence[str] | None = None):
         default=DEFAULT_FROZEN_CACHE_PROGRESS_QUESTIONS,
         help="emit unsuppressed frozen-evidence cache progress every N questions",
     )
-    parser.add_argument("--head-lr", type=float, default=DEFAULT_HEAD_LR)
+    parser.add_argument(
+        "--head-lr", type=float, default=DEFAULT_HEAD_LR,
+        help="learning rate for the TinyStories L1/L2 residual-tap adapters",
+    )
+    parser.add_argument(
+        "--clef-head-lr", type=float, default=DEFAULT_CLEF_HEAD_LR,
+        help="learning rate for the already-mature CLEF head (kept much smaller than --head-lr)",
+    )
     parser.add_argument("--tinystories-lr", type=float, default=DEFAULT_TINYSTORIES_LR)
     parser.add_argument(
         "--consensus-direct-aux-weight", type=float, default=DEFAULT_CONSENSUS_DIRECT_AUX_WEIGHT
+    )
+    parser.add_argument(
+        "--routing-supervision-weight", type=float, default=DEFAULT_ROUTING_SUPERVISION_WEIGHT,
+        help="training-only weight on the evidence-routing gold-candidate objective",
+    )
+    parser.add_argument(
+        "--field-supervision-weight", type=float, default=DEFAULT_FIELD_SUPERVISION_WEIGHT,
+        help="training-only weight on the final field/option alignment objective",
     )
     parser.add_argument("--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY)
     parser.add_argument("--grad-clip", type=float, default=DEFAULT_GRAD_CLIP)
@@ -5371,7 +6067,7 @@ def parse_args(argv: Sequence[str] | None = None):
         parser.error("--max-cycles must be nonnegative")
     if int(args.epochs_per_cycle) != 1:
         parser.error("stream training keeps one internal checkpoint epoch; use --stream-reuse-epochs for progressive whole-population reuse")
-    for name in ("head_lr", "tinystories_lr", "grad_clip", "continuity_loss_tolerance"):
+    for name in ("head_lr", "clef_head_lr", "tinystories_lr", "grad_clip", "continuity_loss_tolerance"):
         value = float(getattr(args, name))
         if not math.isfinite(value) or value <= 0:
             parser.error(f"--{name.replace('_', '-')} must be finite and positive")
@@ -5379,7 +6075,24 @@ def parse_args(argv: Sequence[str] | None = None):
         parser.error("--weight-decay must be finite and nonnegative")
     if not math.isfinite(args.consensus_direct_aux_weight) or not (0.0 <= args.consensus_direct_aux_weight <= 1.0):
         parser.error("--consensus-direct-aux-weight must be finite and between 0 and 1")
-    base.curriculum_plan(args.train_questions_per_cycle)
+    for name in ("routing_supervision_weight", "field_supervision_weight"):
+        value = float(getattr(args, name))
+        if not math.isfinite(value) or value < 0.0:
+            parser.error(f"--{name.replace('_', '-')} must be finite and nonnegative")
+    if float(args.routing_supervision_weight) + float(args.field_supervision_weight) <= 0.0:
+        parser.error("at least one structured-supervision weight must be positive")
+    if (
+        not math.isfinite(float(args.train_english_code_percent))
+        or not (0.0 < float(args.train_english_code_percent) <= BASELINE_ENGLISH_CODE_PERCENT)
+    ):
+        parser.error(
+            "--train-english-code-percent must be positive and no greater than "
+            f"the canonical baseline {BASELINE_ENGLISH_CODE_PERCENT:.6f}"
+        )
+    training_curriculum_plan(
+        args.train_questions_per_cycle,
+        english_code_percent=float(args.train_english_code_percent),
+    )
     base.curriculum_plan(args.dev_questions_per_cycle)
     return args
 
@@ -5412,12 +6125,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger = EventLog(output_dir, verbose_console=bool(args.verbose_events))
         if bootstrap_from_resume:
             logger.emit(
-                "clef_tinystories_first_launch_bootstrap",
+                "clef_structured_supervision_first_launch_fork",
                 output_dir=str(output_dir),
-                cutover_dir=str(Path(args.cutover_dir).expanduser()),
-                source_training_experiment=str(DEFAULT_BOOTSTRAP_SOURCE_EXPERIMENT),
+                source_run_dir=str(Path(args.source_run_dir).expanduser()),
                 requested_resume=True,
-                effective_resume=False,
+                effective_resume=True,
             )
         run(args, logger)
         return 0

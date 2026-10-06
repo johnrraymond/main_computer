@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-TRAIN_TOOL = ROOT / "tools" / "nanojev_three_backbone_clef_tinystories_consensus_pairwise_train.py"
+TRAIN_TOOL = ROOT / "tools" / "nanojev_three_backbone_clef_tinystories_structured_supervision_train.py"
 CUTOVER_TOOL = ROOT / "tools" / "nanojev_three_backbone_clef_tinystories_consensus_pairwise_cutover.py"
 
 
@@ -208,19 +209,32 @@ def test_pairwise_stage_defaults_use_fresh_512_predev_and_progressive_480_popula
     assert result["tinystories_lexical_hidden_size"] == 768
     assert result["head_hidden_sizes"]["tinystories"] == 768
     assert result["head_parameters"] == 128327175
-    assert result["trainable_parameters"] == 7_077_888
-    assert result["frozen_head_parameters"] == 121_249_287
+    assert result["trainable_parameters"] == 128_327_175
+    assert result["frozen_head_parameters"] == 0
     assert result["tinystories_lr_effective"] == 0.0
     assert result["frozen_backbones"] == ["qwen", "pythia", "tinystories"]
     assert result["trainable_backbone"] is None
-    assert result["trainable_component"] == "tinystories-residual-taps-only"
+    assert result["trainable_component"] == "clef-full-head-plus-tinystories-residual-taps"
     assert result["tinystories_backprop"] == "none-backbone-frozen"
-    assert result["clef_backprop"] == "residual-tap-adapters-only"
+    assert result["clef_backprop"] == m.CLEF_BACKPROP_MODE
     assert result["frozen_cache_reused_across_progressive_depths"] is False
     assert "predev-select-best" in result["reuse_schedule"]
     assert "restore-incumbent" in result["failed_population_policy"]
     assert sum(result["train_plan"].values()) == 480
+    assert result["training_task_mix_schema"] == m.TRAINING_TASK_MIX_SCHEMA
+    assert result["train_english_code_percent"] == pytest.approx(5.0)
+    assert result["train_plan"] == {
+        "legacy": 29,
+        "mutation": 70,
+        "ast": 112,
+        "consensus": 104,
+        "triad": 70,
+        "dictionary_definition": 71,
+        "english_code": 24,
+    }
     assert sum(result["predev_plan"].values()) == 512
+    assert result["predev_plan"] == m.base.curriculum_plan(512)
+    assert result["predev_plan"]["english_code"] != result["train_plan"]["english_code"]
     assert sum(result["dev_plan"].values()) == 48
     assert result["consensus_pairwise_questions_per_state"] == 3
     assert result["consensus_direct_aux_weight"] == pytest.approx(0.10)
@@ -617,7 +631,7 @@ def test_reuse16_cutover_requires_recovery_boundary(tmp_path: Path):
     reuse_cutover_tool = ROOT / "tools" / "nanojev_three_backbone_clef_tinystories_consensus_pairwise_reuse_cutover.py"
     rc = load("clef_tiny_consensus_pairwise_reuse_cutover_validation_test_target", reuse_cutover_tool)
     experiment = {
-        "schema_version": m.SCHEMA,
+        "schema_version": 'main-computer-three-backbone-clef-tinystories-consensus-pairwise-train-v1',
         "hyperparameters": {"epochs_per_cycle": 32},
         "contract": {
             "consensus_primary_objective": "three_binary_pairwise_relations_then_deterministic_topology",
@@ -626,7 +640,7 @@ def test_reuse16_cutover_requires_recovery_boundary(tmp_path: Path):
         },
     }
     checkpoint = {
-        "schema_version": m.SCHEMA,
+        "schema_version": 'main-computer-three-backbone-clef-tinystories-consensus-pairwise-train-v1',
         "cycle": 2,
         "reuse_epoch": 16,
         "cycle_complete": False,
@@ -650,7 +664,7 @@ def test_reuse_cutover_accepts_completed_cycle_for_unique2560_stream1(tmp_path: 
     reuse_cutover_tool = ROOT / "tools" / "nanojev_three_backbone_clef_tinystories_consensus_pairwise_reuse_cutover.py"
     rc = load("clef_tiny_unique2560_stream1_cutover_validation_test_target", reuse_cutover_tool)
     experiment = {
-        "schema_version": m.SCHEMA,
+        "schema_version": 'main-computer-three-backbone-clef-tinystories-consensus-pairwise-train-v1',
         "hyperparameters": {"epochs_per_cycle": 16},
         "contract": {
             "consensus_primary_objective": "three_binary_pairwise_relations_then_deterministic_topology",
@@ -659,7 +673,7 @@ def test_reuse_cutover_accepts_completed_cycle_for_unique2560_stream1(tmp_path: 
         },
     }
     checkpoint = {
-        "schema_version": m.SCHEMA,
+        "schema_version": 'main-computer-three-backbone-clef-tinystories-consensus-pairwise-train-v1',
         "cycle": 9,
         "reuse_epoch": 16,
         "cycle_complete": True,
@@ -678,7 +692,7 @@ def test_reuse_cutover_resolves_latest_completed_checkpoint(tmp_path: Path):
         checkpoint.mkdir(parents=True)
         (checkpoint / "meta.json").write_text(
             __import__("json").dumps({
-                "schema_version": m.SCHEMA,
+                "schema_version": 'main-computer-three-backbone-clef-tinystories-consensus-pairwise-train-v1',
                 "cycle": cycle,
                 "reuse_epoch": 16,
                 "cycle_complete": complete,
@@ -770,23 +784,23 @@ def test_unique_stream_cutover_defaults_to_proven_unique640_reuse4_source():
     assert m.DEFAULT_BOOTSTRAP_SOURCE_EXPERIMENT == rc.DEFAULT_SOURCE_EXPERIMENT
 
 
-def test_resume_missing_unique_stream_output_becomes_first_launch(monkeypatch, tmp_path: Path):
-    output = tmp_path / "unique2560"
-    cutover = tmp_path / "cutover"
+def test_resume_missing_structured_output_forks_source(monkeypatch, tmp_path: Path):
+    output = tmp_path / "structured"
     args = m.parse_args([
-        "--self-test",
-        "--resume",
-        "--output-dir", str(output),
-        "--cutover-dir", str(cutover),
+        "--self-test", "--resume", "--output-dir", str(output),
+        "--source-run-dir", str(tmp_path / "source"),
     ])
 
     called = []
-    monkeypatch.setattr(m, "ensure_first_launch_cutover", lambda args: called.append(args.cutover_dir) or {})
-    resolved, bootstrapped = m.prepare_launch(args)
+    def fake_fork(args):
+        called.append(args.source_run_dir)
+        return m.prepare_new_output(output)
+    monkeypatch.setattr(m, "fork_structured_supervision_run", fake_fork)
+    resolved, forked = m.prepare_launch(args)
 
-    assert bootstrapped is True
-    assert args.resume is False
-    assert called == [str(cutover)]
+    assert forked is True
+    assert args.resume is True
+    assert called == [str(tmp_path / "source")]
     assert resolved == output.resolve()
     assert (resolved / "cycles").is_dir()
     assert (resolved / "checkpoints").is_dir()
@@ -807,34 +821,32 @@ def test_resume_existing_unique_stream_output_stays_resume(monkeypatch, tmp_path
     assert resolved == output.resolve()
 
 
-def test_resume_uncommitted_default_unique_stream_output_is_quarantined(monkeypatch, tmp_path: Path):
-    output = tmp_path / "unique2560"
+def test_resume_uncommitted_default_structured_output_is_quarantined(monkeypatch, tmp_path: Path):
+    output = tmp_path / "structured"
     output.mkdir()
     (output / "error.json").write_text("{}", encoding="utf-8")
     (output / "cycles").mkdir()
-    cutover = tmp_path / "cutover"
 
     monkeypatch.setattr(m, "DEFAULT_OUTPUT", output)
-    called = []
-    monkeypatch.setattr(m, "ensure_first_launch_cutover", lambda args: called.append(args.cutover_dir) or {})
     args = m.parse_args([
-        "--self-test",
-        "--resume",
-        "--output-dir", str(output),
-        "--cutover-dir", str(cutover),
+        "--self-test", "--resume", "--output-dir", str(output),
+        "--source-run-dir", str(tmp_path / "source"),
     ])
+    called = []
+    def fake_fork(args):
+        called.append(args.source_run_dir)
+        return m.prepare_new_output(output)
+    monkeypatch.setattr(m, "fork_structured_supervision_run", fake_fork)
 
-    resolved, bootstrapped = m.prepare_launch(args)
+    resolved, forked = m.prepare_launch(args)
 
-    quarantine = tmp_path / "unique2560.uncommitted"
+    quarantine = tmp_path / "structured.uncommitted"
     assert quarantine.is_dir()
     assert (quarantine / "error.json").is_file()
-    assert bootstrapped is True
-    assert args.resume is False
-    assert called == [str(cutover)]
+    assert forked is True
+    assert args.resume is True
+    assert called == [str(tmp_path / "source")]
     assert resolved == output.resolve()
-    assert (resolved / "cycles").is_dir()
-    assert (resolved / "checkpoints").is_dir()
 
 
 def test_resume_uncommitted_custom_output_remains_strict(monkeypatch, tmp_path: Path):
@@ -876,7 +888,7 @@ def test_resume_reconciles_uncommitted_unique_stream_cycle(tmp_path: Path):
     (cycle_dir / "metrics.json").write_text("{}", encoding="utf-8")
     checkpoint = output / "checkpoints" / f"cycle-{cycle:06d}-reuse-001"
     checkpoint.mkdir(parents=True)
-    (checkpoint / "meta.json").write_text("{}", encoding="utf-8")
+    (checkpoint / "meta.json").write_text(json.dumps({"schema_version": m.RESIDUAL_V3_CHECKPOINT_SCHEMA}), encoding="utf-8")
 
     reused, removed = m.reconcile_uncommitted_resume_cycle(
         output_dir=output,
@@ -1172,9 +1184,11 @@ def test_retry_request_formula_preserves_native_units(task, deficit, expansion, 
 
 
 def test_stream_plan_partitions_480_exactly_into_three_mixed_chunks():
-    plan = m.base.curriculum_plan(480)
+    plan = m.training_curriculum_plan(480)
     chunks = m.partition_stream_plan(plan, chunk_size=160, seed=20261003, cycle=52)
 
+    assert plan["english_code"] == 24
+    assert [chunk["english_code"] for chunk in chunks] == [8, 8, 8]
     assert len(chunks) == 3
     assert all(sum(chunk.values()) == 160 for chunk in chunks)
     assert all(
@@ -1187,6 +1201,39 @@ def test_stream_plan_partitions_480_exactly_into_three_mixed_chunks():
         reconstructed.update(chunk)
     assert dict(reconstructed) == plan
 
+
+
+def test_training_curriculum_rebalances_only_training_and_preserves_eval_ruler():
+    train = m.training_curriculum_plan(480, english_code_percent=5.0)
+    predev = m.base.curriculum_plan(512)
+    dev = m.base.curriculum_plan(48)
+
+    assert train == {
+        "legacy": 29,
+        "mutation": 70,
+        "ast": 112,
+        "consensus": 104,
+        "triad": 70,
+        "dictionary_definition": 71,
+        "english_code": 24,
+    }
+    assert predev == m.base.curriculum_plan(512)
+    assert dev == m.base.curriculum_plan(48)
+    assert train["english_code"] == 24
+    assert train["mutation"] > m.base.curriculum_plan(480)["mutation"]
+    assert train["consensus"] > m.base.curriculum_plan(480)["consensus"]
+    assert train["triad"] > m.base.curriculum_plan(480)["triad"]
+
+
+def test_train_english_code_percent_cli_defaults_to_five_and_rejects_above_baseline():
+    args = m.parse_args(["--self-test"])
+    assert args.train_english_code_percent == pytest.approx(5.0)
+    with pytest.raises(SystemExit):
+        m.parse_args([
+            "--self-test",
+            "--train-english-code-percent",
+            str(m.BASELINE_ENGLISH_CODE_PERCENT + 0.01),
+        ])
 
 
 def test_generation_namespace_changes_objective_cycle_across_retries_and_chunks(monkeypatch):
@@ -1605,7 +1652,7 @@ def _v2_state_from_legacy(torch, legacy_state):
     return state
 
 
-def test_residual_layer_tap_head_keeps_legacy_768_anchor_and_only_residuals_trainable():
+def test_residual_layer_tap_head_keeps_legacy_768_layout_and_full_head_trainable():
     torch = pytest.importorskip("torch")
     hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
     head, observed = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
@@ -1614,12 +1661,18 @@ def test_residual_layer_tap_head_keeps_legacy_768_anchor_and_only_residuals_trai
     assert head.backbone_modules["tinystories"].memory_projection.in_features == 768
     assert m.TINYSTORIES_RESIDUAL_LAYERS == (1, 2)
     assert m.TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE == 1536
-    residual_names = {
+    trainable_names = {
         name for name, parameter in head.named_parameters() if parameter.requires_grad
     }
+    residual_names = {
+        name for name in trainable_names if name.startswith("tinystories_residual.")
+    }
+    mature_names = trainable_names - residual_names
     assert residual_names
-    assert all(name.startswith("tinystories_residual.") for name in residual_names)
-    assert sum(p.numel() for p in head.parameters() if p.requires_grad) == 7_077_888
+    assert mature_names
+    assert sum(p.numel() for p in head.parameters() if p.requires_grad) == sum(
+        p.numel() for p in head.parameters()
+    )
     for module in head.tinystories_residual.values():
         assert torch.count_nonzero(module.weight).item() == 0
 
@@ -1662,7 +1715,7 @@ def test_v2_migration_refuses_nonzero_intermediate_projection_slices():
         m.load_head_state_with_layer_taps(torch=torch, head=migrated, state=v2_state)
 
 
-def test_zero_residual_branch_gets_gradient_while_anchor_stays_frozen():
+def test_zero_residual_branch_and_mature_clef_both_get_gradients():
     torch = pytest.importorskip("torch")
     torch.manual_seed(4321)
     hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
@@ -1676,25 +1729,32 @@ def test_zero_residual_branch_gets_gradient_while_anchor_stays_frozen():
         p.grad for p in head.tinystories_residual.parameters() if p.requires_grad
     ]
     assert any(grad is not None and torch.count_nonzero(grad).item() > 0 for grad in residual_grads)
-    anchor_grads = [
+    mature_grads = [
         p.grad for name, p in head.named_parameters()
         if not name.startswith("tinystories_residual.")
     ]
-    assert all(grad is None for grad in anchor_grads)
+    assert any(
+        grad is not None and torch.count_nonzero(grad).item() > 0
+        for grad in mature_grads
+    )
 
 
-def test_optimizer_contains_only_residual_parameters_and_tinystories_is_frozen():
+def test_optimizer_contains_mature_clef_and_residual_groups_while_tinystories_is_frozen():
     torch = pytest.importorskip("torch")
     hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
     head, _ = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
     tiny = torch.nn.Linear(3, 2)
     for parameter in tiny.parameters():
         parameter.requires_grad_(False)
-    args = SimpleNamespace(head_lr=1e-4, tinystories_lr=1e-5, weight_decay=0.01)
+    args = SimpleNamespace(head_lr=1e-4, clef_head_lr=1e-6, tinystories_lr=1e-5, weight_decay=0.01)
     optimizer = m.build_optimizer(torch=torch, head=head, tinystories_lm=tiny, args=args)
-    assert len(optimizer.param_groups) == 1
-    assert optimizer.param_groups[0]["group_name"] == "tinystories_residual_taps"
-    assert sum(p.numel() for p in optimizer.param_groups[0]["params"]) == 7_077_888
+    assert len(optimizer.param_groups) == 2
+    assert optimizer.param_groups[0]["group_name"] == "clef_mature_head"
+    assert optimizer.param_groups[1]["group_name"] == "tinystories_residual_taps"
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(1e-6)
+    assert optimizer.param_groups[1]["lr"] == pytest.approx(1e-4)
+    assert sum(p.numel() for p in optimizer.param_groups[0]["params"]) > 0
+    assert sum(p.numel() for p in optimizer.param_groups[1]["params"]) == 7_077_888
 
 
 def test_v2_migration_source_uses_only_committed_champion_weights(tmp_path: Path):
@@ -1911,3 +1971,262 @@ def test_frozen_backbone_signature_is_not_captured_immediately_after_base_load()
     head_build_pos = source.index('logger.set_stage("head_build")', frozen_bundle_pos)
     between = source[frozen_bundle_pos:head_build_pos]
     assert "frozen_signatures" not in between
+
+
+def test_structured_supervision_forward_preserves_inference_logits_exactly():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(2468)
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
+    evidence = _add_residual_sources(torch, _head_evidence(torch, hidden))
+    with torch.no_grad():
+        ordinary = head(evidence)
+        supervised, stages = head.forward_with_supervision(evidence)
+    assert torch.equal(ordinary, supervised)
+    assert set(stages) == {"routing_logits", "field_alignment_logits"}
+    assert stages["routing_logits"].shape == ordinary.shape
+    assert stages["field_alignment_logits"].shape == ordinary.shape
+
+
+def test_structured_supervision_loss_reaches_mature_clef_and_residual_adapters():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(97531)
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
+    evidence = _add_residual_sources(torch, _head_evidence(torch, hidden))
+    _logits, stages = head.forward_with_supervision(evidence)
+    args = SimpleNamespace(routing_supervision_weight=0.25, field_supervision_weight=0.25)
+    parts = m.structured_supervision_loss(
+        torch=torch, supervision=stages, gold_index=0, args=args
+    )
+    parts["loss"].backward()
+    residual_gradients = [p.grad for p in head.tinystories_residual.parameters()]
+    mature_gradients = [
+        p.grad for name, p in head.named_parameters()
+        if not name.startswith("tinystories_residual.")
+    ]
+    assert any(
+        g is not None and torch.count_nonzero(g).item() > 0
+        for g in residual_gradients
+    )
+    assert any(
+        g is not None and torch.count_nonzero(g).item() > 0
+        for g in mature_gradients
+    )
+
+
+def test_residual_only_optimizer_state_expands_to_full_head_without_losing_residual_moments():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(314159)
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
+    tiny = torch.nn.Linear(3, 2)
+    for parameter in tiny.parameters():
+        parameter.requires_grad_(False)
+
+    residual_params = list(head.tinystories_residual.parameters())
+    old_optimizer = torch.optim.AdamW(
+        [{
+            "params": residual_params,
+            "lr": 1e-4,
+            "weight_decay": 0.01,
+            "group_name": "tinystories_residual_taps",
+        }],
+        foreach=False,
+    )
+    old_optimizer.zero_grad(set_to_none=True)
+    sum(parameter.sum() for parameter in residual_params).backward()
+    old_optimizer.step()
+    old_state = old_optimizer.state_dict()
+
+    args = SimpleNamespace(head_lr=1e-4, clef_head_lr=1e-6, tinystories_lr=1e-5, weight_decay=0.01)
+    optimizer = m.build_optimizer(
+        torch=torch, head=head, tinystories_lm=tiny, args=args
+    )
+    result = m._load_optimizer_state_with_unfrozen_head_compat(
+        torch=torch, optimizer=optimizer, source_state=old_state
+    )
+    assert result["mode"] == "expanded-from-residual-only"
+    assert result["migrated_state_entries"] == len(old_state["state"])
+    assert result["fresh_mature_parameters"] == len(optimizer.param_groups[0]["params"])
+    assert not any(parameter in optimizer.state for parameter in optimizer.param_groups[0]["params"])
+    assert all(parameter in optimizer.state for parameter in optimizer.param_groups[1]["params"])
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(1e-6)
+    assert optimizer.param_groups[1]["lr"] == pytest.approx(1e-4)
+
+
+def test_full_head_optimizer_resume_keeps_requested_group_learning_rates():
+    torch = pytest.importorskip("torch")
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
+    tiny = torch.nn.Linear(3, 2)
+    for parameter in tiny.parameters():
+        parameter.requires_grad_(False)
+
+    old_args = SimpleNamespace(
+        head_lr=1e-4, clef_head_lr=1e-4, tinystories_lr=1e-5, weight_decay=0.01
+    )
+    old_optimizer = m.build_optimizer(
+        torch=torch, head=head, tinystories_lm=tiny, args=old_args
+    )
+    old_state = old_optimizer.state_dict()
+
+    requested_args = SimpleNamespace(
+        head_lr=1e-4, clef_head_lr=1e-6, tinystories_lr=1e-5, weight_decay=0.01
+    )
+    optimizer = m.build_optimizer(
+        torch=torch, head=head, tinystories_lm=tiny, args=requested_args
+    )
+    result = m._load_optimizer_state_with_unfrozen_head_compat(
+        torch=torch, optimizer=optimizer, source_state=old_state
+    )
+    assert result["mode"] == "exact-full-head"
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(1e-6)
+    assert optimizer.param_groups[1]["lr"] == pytest.approx(1e-4)
+
+
+def test_structured_supervision_defaults_are_isolated_from_production_run():
+    args = m.parse_args(["--self-test"])
+    assert m.DEFAULT_SOURCE_RUN != m.DEFAULT_OUTPUT
+    assert "structured_supervision" in str(m.DEFAULT_OUTPUT)
+    assert args.routing_supervision_weight == pytest.approx(0.25)
+    assert args.field_supervision_weight == pytest.approx(0.25)
+    assert args.clef_head_lr == pytest.approx(1e-6)
+    assert args.head_lr == pytest.approx(1e-4)
+    assert m.STRUCTURED_SUPERVISION_SCHEMA.endswith("deep-supervision-v1")
+
+
+def test_fork_copies_only_committed_champion_and_retires_active_predev(tmp_path: Path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+    import json
+    import sqlite3
+
+    source = tmp_path / "source"
+    checkpoint = source / "checkpoints" / "cycle-000010-reuse-003"
+    checkpoint.mkdir(parents=True)
+    safetensors.save_file(
+        {"tinystories_residual.memory.weight": torch.zeros(1, 1)},
+        str(checkpoint / "head.safetensors"),
+    )
+    safetensors.save_file({"dummy": torch.zeros(1)}, str(checkpoint / "tinystories.safetensors"))
+    torch.save({"state": {}, "param_groups": []}, checkpoint / "optimizer.pt")
+    torch.save({}, checkpoint / "rng_state.pt")
+    (checkpoint / "meta.json").write_text(
+        json.dumps({"schema_version": m.RESIDUAL_V3_CHECKPOINT_SCHEMA}), encoding="utf-8"
+    )
+
+    experiment = {
+        "schema_version": "main-computer-three-backbone-clef-tinystories-consensus-pairwise-train-v1",
+        "cutover_dir": str(tmp_path / "cutover"),
+        "seed": m.DEFAULT_SEED,
+        "data_cycle_base": m.DEFAULT_DATA_CYCLE_BASE,
+        "train_plan": m.base.curriculum_plan(m.DEFAULT_TRAIN_QUESTIONS),
+        "dev_plan": m.base.curriculum_plan(m.DEFAULT_DEV_QUESTIONS),
+        "stream_reuse_epochs": 4,
+        "hyperparameters": {},
+        "contract": {"tinystories_layer_tap_schema": m.TINYSTORIES_LAYER_TAP_SCHEMA},
+    }
+    state = {
+        "cycle": 10,
+        "global_step": 123,
+        "best_checkpoint": str(checkpoint),
+        "latest_checkpoint": str(checkpoint),
+        "in_progress_cycle": 11,
+        "completed_reuse_epoch": 2,
+        "pending_champ_check": True,
+        "predev_champ_loss": 0.3,
+    }
+    (source / "experiment.json").write_text(json.dumps(experiment), encoding="utf-8")
+    (source / "training_state.json").write_text(json.dumps(state), encoding="utf-8")
+    db = sqlite3.connect(source / "training_lexical.db")
+    db.execute("create table marker(x integer)")
+    db.commit()
+    db.close()
+    predev = source / "predev_champ"
+    predev.mkdir()
+    (predev / "active.json").write_text(
+        json.dumps({"start_cycle": 11, "end_cycle": 11, "questions": []}), encoding="utf-8"
+    )
+
+    output = tmp_path / "structured"
+    args = m.parse_args([
+        "--self-test", "--resume",
+        "--source-run-dir", str(source),
+        "--output-dir", str(output),
+    ])
+    resolved = m.fork_structured_supervision_run(args)
+    fork_state = m.smoke.read_json(resolved / "training_state.json")
+    fork_exp = m.smoke.read_json(resolved / "experiment.json")
+    assert fork_state["cycle"] == 10
+    assert fork_state["in_progress_cycle"] is None
+    assert fork_state["completed_reuse_epoch"] == 0
+    assert fork_state["pending_champ_check"] is False
+    assert Path(fork_state["best_checkpoint"]).is_dir()
+    assert Path(fork_state["best_checkpoint"]).parent == resolved / "checkpoints"
+    fork_meta = m.smoke.read_json(Path(fork_state["best_checkpoint"]) / "meta.json")
+    assert fork_meta["schema_version"] == m.SCHEMA
+    assert fork_meta["fork_source_schema_version"] == m.RESIDUAL_V3_CHECKPOINT_SCHEMA
+    assert fork_meta["structured_supervision_schema"] == m.STRUCTURED_SUPERVISION_SCHEMA
+    assert fork_exp["schema_version"] == m.SCHEMA
+    assert fork_exp["contract"]["structured_supervision_schema"] == m.STRUCTURED_SUPERVISION_SCHEMA
+    assert not (resolved / "predev_champ" / "active.json").exists()
+    assert list((resolved / "predev_champ").glob("*fork-source-retired.json"))
+    assert (source / "training_state.json").is_file()
+
+
+def test_load_checkpoint_accepts_only_explicit_legacy_fork_boundary(tmp_path: Path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+    import json
+
+    class DummyHead(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.tinystories_residual = torch.nn.ModuleDict({
+                "memory": torch.nn.Linear(1, 1, bias=False),
+            })
+
+    class DummyTiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dummy = torch.nn.Parameter(torch.zeros(1), requires_grad=False)
+
+    def make_checkpoint(name: str):
+        checkpoint = tmp_path / name
+        checkpoint.mkdir()
+        head = DummyHead()
+        tiny = DummyTiny()
+        optimizer = torch.optim.AdamW(head.parameters(), lr=1e-4)
+        safetensors.save_file(head.state_dict(), str(checkpoint / "head.safetensors"))
+        safetensors.save_file(tiny.state_dict(), str(checkpoint / "tinystories.safetensors"))
+        torch.save(optimizer.state_dict(), checkpoint / "optimizer.pt")
+        torch.save({
+            "python_random": __import__("random").getstate(),
+            "torch_cpu": torch.get_rng_state(),
+            "torch_cuda": [],
+        }, checkpoint / "rng_state.pt")
+        (checkpoint / "meta.json").write_text(json.dumps({
+            "schema_version": m.RESIDUAL_V3_CHECKPOINT_SCHEMA,
+        }), encoding="utf-8")
+        return checkpoint, head, tiny, optimizer
+
+    checkpoint, head, tiny, optimizer = make_checkpoint("fork-source-cycle-000097")
+    meta = m.load_checkpoint(
+        torch=torch, head=head, tinystories_lm=tiny, optimizer=optimizer, checkpoint=checkpoint
+    )
+    assert meta["schema_version"] == m.RESIDUAL_V3_CHECKPOINT_SCHEMA
+
+    ordinary, head2, tiny2, optimizer2 = make_checkpoint("cycle-000097-reuse-002")
+    with pytest.raises(RuntimeError, match="unsupported checkpoint schema"):
+        m.load_checkpoint(
+            torch=torch, head=head2, tinystories_lm=tiny2, optimizer=optimizer2, checkpoint=ordinary
+        )

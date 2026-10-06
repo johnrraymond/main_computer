@@ -366,6 +366,59 @@ def test_completed_helper_cleanup_rewrites_service_compose_when_nested_applicati
     assert ("PATCH", f"/api/v1/services/{SERVICE_UUID}") in opener.requests
 
 
+class _SuccessfulDeleteComposeRewriteCleanupOpener(_CleanupOpener):
+    def __init__(self) -> None:
+        super().__init__()
+        self.patch_bodies: list[dict] = []
+
+    def open(self, request, timeout: float):  # noqa: ANN001
+        parsed = urlsplit(request.full_url)
+        method = request.get_method()
+        path = parsed.path
+        if method == "PATCH" and path == f"/api/v1/services/{SERVICE_UUID}":
+            self.requests.append((method, path))
+            body = json.loads((request.data or b"{}").decode("utf-8"))
+            decoded = base64.b64decode(body["docker_compose_raw"]).decode("utf-8")
+            assert "mother-validator-admission-guardian" not in decoded
+            assert "mother-genesis-proof-guardian" not in decoded
+            assert "mother-genesis-init" not in decoded
+            assert "mother-superseded-service-cleanup" not in decoded
+            assert "mainneta-super1" in decoded
+            self.patch_bodies.append(body)
+            return _Response({"uuid": SERVICE_UUID})
+        return super().open(request, timeout)
+
+
+def test_completed_helper_cleanup_rewrites_compose_even_when_application_deletes_succeed(
+    tmp_path: Path,
+) -> None:
+    paths, private_state = _install(tmp_path)
+    opener = _SuccessfulDeleteComposeRewriteCleanupOpener()
+
+    result = execute_completed_mother_helper_cleanup(
+        paths,
+        private_state,
+        network="mainnet",
+        controller_id="coolify-a",
+        service_uuid=SERVICE_UUID,
+        node="mainneta-super1",
+        acknowledged_service_uuid=SERVICE_UUID,
+        max_wait_seconds=0,
+        poll_interval_seconds=0,
+        allow_compose_rewrite=True,
+        opener=opener,
+        operation=_operation("completed-helper-cleanup-compose-rewrite-after-delete-success"),
+    )
+
+    assert result["status"] == "pass"
+    assert result["summary"]["application_delete_success_count"] == 4
+    assert result["summary"]["service_compose_rewrite_count"] == 1
+    assert result["summary"]["service_compose_rewrite_succeeded"] is True
+    assert result["service_compose_rewrite"]["removed_service_count"] == 4
+    assert opener.patch_bodies
+    assert ("PATCH", f"/api/v1/services/{SERVICE_UUID}") in opener.requests
+
+
 class _SplitComposeCleanupOpener(_ComposeRewriteCleanupOpener):
     def _payload(self) -> dict:
         payload = super()._payload()

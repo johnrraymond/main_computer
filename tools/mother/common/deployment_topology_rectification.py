@@ -1361,7 +1361,20 @@ def detect_topology_staleness(
             for node in hint.get("node_hints", [])
         )
     )
-    unexpected_live_nodes = [node for node in live_node_hints if node not in set(nodes)]
+    # Broad node hints are diagnostic only. Helper/service descriptions can mention
+    # Mother node names without representing a live primary node. Only an exact,
+    # non-terminal top-level service row whose name is itself a Mother node may
+    # establish unexpected live topology.
+    live_primary_nodes = sorted(
+        {
+            str(hint.get("name"))
+            for hint in inventory_hints
+            if _service_hint_is_live(hint)
+            and isinstance(hint.get("name"), str)
+            and str(hint.get("name")) in set(hint.get("node_hints", []))
+        }
+    )
+    unexpected_live_nodes = [node for node in live_primary_nodes if node not in set(nodes)]
     inventory_errors = [hint for hint in inventory_hints if hint.get("error")]
     all_expected_absent = bool(nodes) and len(missing_expected) == len(nodes) and not present_expected and not unknown_expected
     no_expected_nodes = not nodes
@@ -1422,6 +1435,7 @@ def detect_topology_staleness(
         "validator_route_bindings": validator_route_bindings,
         "expected_service_observations": service_results,
         "observed_live_node_hints": live_node_hints,
+        "observed_live_primary_nodes": live_primary_nodes,
         "unexpected_live_nodes": unexpected_live_nodes,
         "observed_service_hints": inventory_hints,
         "present_expected_nodes": present_expected,
@@ -1456,6 +1470,7 @@ def detect_topology_staleness(
             "present_expected_node_count": len(present_expected),
             "missing_expected_node_count": len(missing_expected),
             "observed_live_node_hints": live_node_hints,
+            "observed_live_primary_nodes": live_primary_nodes,
             "unexpected_live_nodes": unexpected_live_nodes,
             "unexpected_live_node_count": len(unexpected_live_nodes),
             "observed_inventory_error_count": len(inventory_errors),

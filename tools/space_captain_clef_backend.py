@@ -27,7 +27,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 DEFAULT_RUN = Path(
-    r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_consensus_pairwise_unique2560_stream1_train_v1"
+    r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_structured_supervision_train_v1"
 )
 
 
@@ -72,7 +72,7 @@ def resolve_run_dir(requested: str | None) -> Path:
     runs = Path.home() / "NanoJev" / "runs"
     candidates = []
     if runs.is_dir():
-        for candidate in runs.glob("three_backbone_clef_tinystories_consensus_pairwise_*train_v1"):
+        for candidate in runs.glob("three_backbone_clef_tinystories_structured_supervision_*train_v1"):
             if (candidate / "training_state.json").is_file() and (candidate / "experiment.json").is_file():
                 candidates.append(candidate)
     if not candidates:
@@ -126,9 +126,14 @@ class CaptainClefModel:
 
         self.train = load_local_module(
             "space_captain_live_clef_train",
-            TOOLS / "nanojev_three_backbone_clef_tinystories_consensus_pairwise_train.py",
+            TOOLS / "nanojev_three_backbone_clef_tinystories_structured_supervision_train.py",
         )
         self.smoke = self.train.smoke
+        self.trainer_script = "nanojev_three_backbone_clef_tinystories_structured_supervision_train.py"
+        self.structured_supervision_schema = str(
+            (experiment.get("contract") or {}).get("structured_supervision_schema")
+            or getattr(self.train, "STRUCTURED_SUPERVISION_SCHEMA", "")
+        )
         self.objective_api = load_local_module(
             "space_captain_live_objective_api", TOOLS / "nanojev_objective_api.py"
         )
@@ -193,6 +198,8 @@ class CaptainClefModel:
             "ok": True,
             "schema": "game.captainClefHealth.v1",
             "provider": "live-tinystories-clef",
+            "trainerScript": self.trainer_script,
+            "structuredSupervisionSchema": self.structured_supervision_schema,
             "runDir": str(self.run_dir),
             "checkpointPath": str(self.checkpoint),
             "checkpointId": self.checkpoint_id,
@@ -220,6 +227,11 @@ class CaptainClefModel:
         option_a_text = str(row.get("optionAText") or "").strip()
         option_b_text = str(row.get("optionBText") or "").strip()
         semantic_mode = str(row.get("semanticMode") or "").strip()
+        accepted_semantic_modes = {
+            "grounded-compact-pairwise-v2",
+            "machine-grounded-tactical-control-v1",
+            "machine-grounded-impact-policy-v1",
+        }
         if (
             not question_id
             or not prompt
@@ -229,7 +241,7 @@ class CaptainClefModel:
             or not option_a_text
             or not option_b_text
             or option_a_text == option_b_text
-            or semantic_mode != "grounded-compact-pairwise-v2"
+            or semantic_mode not in accepted_semantic_modes
         ):
             raise ValueError(f"invalid captain pairwise question: {row}")
         for option in (option_a, option_b):

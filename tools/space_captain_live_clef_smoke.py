@@ -23,7 +23,7 @@ BATTLE2_SMOKE = ROOT / "tools" / "space_captain_battle2_smoke.py"
 GENERATION_ROOT = ROOT / "runtime" / "captain_generation"
 _BATTLE2_PROMPT_MODULE = None
 DEFAULT_RUN = Path(
-    r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_consensus_pairwise_unique2560_stream1_train_v1"
+    r"C:\Users\subsi\NanoJev\runs\three_backbone_clef_tinystories_structured_supervision_train_v1"
 )
 
 
@@ -1280,6 +1280,7 @@ def run_battle2_generation(*, evaluate_url: str, health: dict, args) -> dict:
         command = _battle2_command(evaluate_url=evaluate_url, health=health, args=args)
         command.extend([
             "--generate-samples",
+            "--generation-drain-seconds", str(float(getattr(args, "generate_drain_seconds", 60.0))),
             "--generation-output-dir", str(simulation_dir),
             "--simulation-id", simulation_id,
             "--simulation-seed", str(simulation_seed),
@@ -1313,8 +1314,12 @@ def run_battle2_generation(*, evaluate_url: str, health: dict, args) -> dict:
             "simulationSeed": simulation_seed,
             "ok": bool(battle.get("ok")),
             "returnCode": proc.returncode,
+            "error": battle.get("error"),
+            "stdoutTail": battle.get("stdoutTail"),
+            "stderrTail": battle.get("stderrTail") or (proc.stderr[-8000:] if proc.stderr else ""),
             "failedChecks": list(battle.get("failedChecks") or []),
             "metrics": dict(battle.get("metrics") or {}),
+            "providerDiagnostics": dict(battle.get("providerDiagnostics") or {}),
             "generation": generation,
         })
 
@@ -1324,8 +1329,9 @@ def run_battle2_generation(*, evaluate_url: str, health: dict, args) -> dict:
         "mode": "battle-2",
         "simulationCountRequested": count,
         "simulationCountCompleted": len(simulations),
-        "defaultSimulationCount": 20,
+        "defaultSimulationCount": 4,
         "baseSeed": int(args.generate_seed),
+        "generationDrainSeconds": float(getattr(args, "generate_drain_seconds", 60.0)),
         "checkpointId": str(health["checkpointId"]),
         "checkpointSha256": str(health["checkpointSha256"]),
         "stateRows": state_rows,
@@ -1414,8 +1420,8 @@ def main() -> int:
     parser.add_argument(
         "--battle-2-duration-seconds",
         type=float,
-        default=6.0,
-        help="Wall/simulation duration for --battle-2 (default: 6 seconds).",
+        default=24.0,
+        help="Wall/simulation duration for --battle-2 (default: 24 seconds).",
     )
     parser.add_argument(
         "--battle-2-control-interval-seconds",
@@ -1440,14 +1446,23 @@ def main() -> int:
     parser.add_argument(
         "--generate-count",
         type=int,
-        default=20,
-        help="Complete battle simulations produced by --battle-2 --generate (default: 20).",
+        default=4,
+        help="Complete battle simulations produced by --battle-2 --generate (default: 4).",
     )
     parser.add_argument(
         "--generate-seed",
         type=int,
         default=1,
         help="Base deterministic simulation seed for --generate (default: 1).",
+    )
+    parser.add_argument(
+        "--generate-drain-seconds",
+        type=float,
+        default=60.0,
+        help=(
+            "Per-simulation generation-only wall-time budget for harvesting already-launched "
+            "captain cognition after the battle physics horizon (default: 60)."
+        ),
     )
     parser.add_argument(
         "--generate-output-dir",
@@ -1575,6 +1590,8 @@ def main() -> int:
         raise SystemExit("--generate is an additive modifier for --battle-2; pass --battle-2 --generate")
     if args.generate_count < 1:
         raise SystemExit("--generate-count must be at least 1")
+    if float(args.generate_drain_seconds) < 0:
+        raise SystemExit("--generate-drain-seconds must be non-negative")
     if args.async_game_loop_viewport_hz <= 0:
         raise SystemExit("--async-game-loop-viewport-hz must be positive")
     if args.battle_2_duration_seconds <= 0:

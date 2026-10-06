@@ -19,6 +19,7 @@ from tools.mother_helper_cleanup2_yagni import (
     BLOCK_ADVANCE_WAITER_SUBPROCESS_TIMEOUT_SECONDS,
     BLOCK_ADVANCE_WAITER_WAIT_FOREVER_TOPOLOGY_NODE_COUNT,
     SERVICE_LINE_RESTART_HELPER_SCRIPT,
+    _retired_mimic_already_quiescent,
     _run_block_advance_waiter,
     _run_service_line_restart_helper,
     run_helper_cleanup2_yagni,
@@ -217,6 +218,84 @@ def _compose() -> str:
   mother-node-remove-voter-mainnetc_super1:
     image: python:3.12-alpine
 """
+
+
+def test_cleanup2_retired_mimic_exited_excluded_with_healthy_parent_is_already_quiescent() -> None:
+    helper = "mother-node-remove-voter-mainnetc_super1"
+    readback = {
+        "ok": True,
+        "parent_payload": {
+            "service_uuid": SERVICE_UUID,
+            "parent_status": "running:healthy",
+            "helper_definitions": [
+                {
+                    "helper_name": helper,
+                    "is_cleanup2_mimic_definition": True,
+                }
+            ],
+            "helper_application_records": [
+                {
+                    "name": helper,
+                    "status": "exited",
+                    "exclude_from_status": True,
+                }
+            ],
+        },
+    }
+
+    assert _retired_mimic_already_quiescent(readback, helper) is True
+
+
+def test_cleanup2_retired_mimic_running_still_requires_restart() -> None:
+    helper = "mother-node-remove-voter-mainnetc_super1"
+    readback = {
+        "ok": True,
+        "parent_payload": {
+            "service_uuid": SERVICE_UUID,
+            "parent_status": "running:healthy",
+            "helper_definitions": [
+                {
+                    "helper_name": helper,
+                    "is_cleanup2_mimic_definition": True,
+                }
+            ],
+            "helper_application_records": [
+                {
+                    "name": helper,
+                    "status": "running:healthy",
+                    "exclude_from_status": True,
+                }
+            ],
+        },
+    }
+
+    assert _retired_mimic_already_quiescent(readback, helper) is False
+
+
+def test_cleanup2_exited_helper_without_exclusion_is_not_already_quiescent() -> None:
+    helper = "mother-node-remove-voter-mainnetc_super1"
+    readback = {
+        "ok": True,
+        "parent_payload": {
+            "service_uuid": SERVICE_UUID,
+            "parent_status": "running:healthy",
+            "helper_definitions": [
+                {
+                    "helper_name": helper,
+                    "is_cleanup2_mimic_definition": True,
+                }
+            ],
+            "helper_application_records": [
+                {
+                    "name": helper,
+                    "status": "exited",
+                    "exclude_from_status": False,
+                }
+            ],
+        },
+    }
+
+    assert _retired_mimic_already_quiescent(readback, helper) is False
 
 
 def test_cleanup2_service_line_restart_helper_invocation_parses_pass() -> None:
