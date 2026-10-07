@@ -345,6 +345,96 @@ function Copy-RepoPayload {
     Copy-DirectoryFiltered -SourceDir $RepoRoot -DestinationDir $PayloadRoot -RepoRoot $RepoRoot
 }
 
+function Invoke-SplitExportComposition {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$CompositionRoot
+    )
+
+    $exportScript = Join-Path $RepoRoot "export-main-computer-test.ps1"
+    if (-not (Test-Path -LiteralPath $exportScript -PathType Leaf)) {
+        Fail "Split export script is missing: $exportScript"
+    }
+
+    if (Test-Path -LiteralPath $CompositionRoot) {
+        Remove-DirectoryLongPath -Path $CompositionRoot
+    }
+    New-DirectoryLongPath -Path $CompositionRoot
+
+    Write-Host "Creating fresh Main Computer + Game exports for installer composition..."
+    $exportOutput = @(& $exportScript `
+        -SourceRoot $RepoRoot `
+        -InstallerReHome `
+        -InstallerReHomeRoot $CompositionRoot)
+
+    $composedRepoRoot = $null
+    foreach ($value in $exportOutput) {
+        if ($value -is [string] -and (Test-Path -LiteralPath $value -PathType Container)) {
+            $candidate = Resolve-FullPath $value
+            if ((Split-Path -Leaf $candidate) -eq "main_computer_test") {
+                $composedRepoRoot = $candidate
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($composedRepoRoot)) {
+        Fail "Split exporter did not return the composed main_computer_test repository root."
+    }
+
+    $extractRoot = Split-Path -Parent $composedRepoRoot
+    $runRoot = Split-Path -Parent $extractRoot
+    $zipRoot = Join-Path $runRoot "z"
+
+    $mainArchives = @(
+        Get-ChildItem -LiteralPath $zipRoot -File -Filter "main_computer_test-*.zip" |
+            Where-Object { $_.Name -notlike "main_computer_test-game-*" }
+    )
+    $gameArchives = @(
+        Get-ChildItem -LiteralPath $zipRoot -File -Filter "main_computer_test-game-*.zip"
+    )
+
+    if ($mainArchives.Count -ne 1) {
+        Fail "Installer composition expected exactly one fresh main export ZIP under $zipRoot; found $($mainArchives.Count)."
+    }
+    if ($gameArchives.Count -ne 1) {
+        Fail "Installer composition expected exactly one fresh game export ZIP under $zipRoot; found $($gameArchives.Count)."
+    }
+
+    $requiredComposedPaths = @(
+        "main_computer/game_web_loader.py",
+        "game_projects/webgl-demo/game.json",
+        "game_projects/webgl-demo/web/apps/webgl.html"
+    )
+    foreach ($relativePath in $requiredComposedPaths) {
+        $nativeRelative = $relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $candidate = Join-Path $composedRepoRoot $nativeRelative
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            Fail "Split export composition is incomplete; missing $relativePath from composed installer source."
+        }
+    }
+
+    $legacyGamesRoot = Join-Path $composedRepoRoot "games"
+    if (Test-Path -LiteralPath $legacyGamesRoot) {
+        Fail "Split export composition unexpectedly contains legacy top-level games/. game_projects/ must be the only game root."
+    }
+
+    $mainHash = (Get-FileHash -LiteralPath $mainArchives[0].FullName -Algorithm SHA256).Hash
+    $gameHash = (Get-FileHash -LiteralPath $gameArchives[0].FullName -Algorithm SHA256).Hash
+
+    Write-Host "Installer split export composition ready:"
+    Write-Host "  main: $($mainArchives[0].FullName) sha256=$mainHash"
+    Write-Host "  game: $($gameArchives[0].FullName) sha256=$gameHash"
+    Write-Host "  composed root: $composedRepoRoot"
+
+    return [pscustomobject]@{
+        RepoRoot = $composedRepoRoot
+        MainArchive = $mainArchives[0].FullName
+        MainArchiveSha256 = $mainHash
+        GameArchive = $gameArchives[0].FullName
+        GameArchiveSha256 = $gameHash
+    }
+}
+
 function Assert-PayloadFileStagedFromRepo {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -439,8 +529,24 @@ function Assert-RepoPayloadStagingIntegrity {
             )
         },
         @{
+            RelativePath = "main_computer/game_web_loader.py"
+            RequiredMarkers = @(
+                'repository_root / "game_projects" / game_id',
+                'GAME_MANIFEST_SCHEMA = "main-computer-game-web.v1"'
+            )
+        },
+        @{
+            RelativePath = "game_projects/webgl-demo/game.json"
+            RequiredMarkers = @(
+                '"schema": "main-computer-game-web.v1"',
+                '"gameId": "webgl-demo"',
+                '"web": {'
+            )
+        },
+        @{
             RelativePath = "scripts/windows/build-main-computer-nsis-installer.experimental-v7.ps1"
             RequiredMarkers = @(
+                "Invoke-SplitExportComposition",
                 "Assert-RepoPayloadStagingIntegrity",
                 "NSIS payload staging mismatch",
                 "The installer would package stale payload. Aborting."
@@ -1634,8 +1740,16 @@ if (Test-Path -LiteralPath $stageRootFull) {
 New-DirectoryLongPath -Path $stageRootFull
 New-DirectoryLongPath -Path $outputRootFull
 
-Copy-RepoPayload -RepoRoot $repoRoot -PayloadRoot $payloadRoot
-$payloadIntegrity = Assert-RepoPayloadStagingIntegrity -RepoRoot $repoRoot -PayloadRoot $payloadRoot
+$splitCompositionRoot = Join-Path $stageRootFull "split-export-composition"
+$splitComposition = Invoke-SplitExportComposition -RepoRoot $repoRoot -CompositionRoot $splitCompositionRoot
+
+Copy-RepoPayload -RepoRoot $splitComposition.RepoRoot -PayloadRoot $payloadRoot
+$payloadIntegrity = Assert-RepoPayloadStagingIntegrity -RepoRoot $splitComposition.RepoRoot -PayloadRoot $payloadRoot
+
+# The composed repository has now been copied into the NSIS payload. Remove the
+# temporary split-export workspace so only the installer payload is compiled.
+Remove-DirectoryLongPath -Path $splitCompositionRoot
+
 Write-PackageWrapper -WrapperPath $wrapperPath
 Write-NsisDefinition -NsiPath $nsiDefinition
 
@@ -1648,6 +1762,17 @@ $packageJson = [ordered]@{
     nsisCompiler = $compiler.Path
     nsisVersion = $compiler.Version
     payloadRoot = "payload/main_computer_test"
+    payloadSource = "fresh-split-export-composition"
+    componentExports = [ordered]@{
+        main = [ordered]@{
+            fileName = [System.IO.Path]::GetFileName($splitComposition.MainArchive)
+            sha256 = $splitComposition.MainArchiveSha256
+        }
+        game = [ordered]@{
+            fileName = [System.IO.Path]::GetFileName($splitComposition.GameArchive)
+            sha256 = $splitComposition.GameArchiveSha256
+        }
+    }
     payloadIntegrityVerified = $payloadIntegrity
     hostRequirementsPolicy = [ordered]@{
         containerRuntime = "required; installer shows a separate required Docker Desktop or Podman choice page; setup-maker environment variables are ignored; fail with runtime-specific install guidance when unusable"

@@ -3,9 +3,9 @@
 
 This smoke intentionally does not prove the new game tree is runnable yet. Its job is
 narrower: while the legacy locations remain authoritative, every file copied into
-``games/webgl-demo`` must be present and byte-identical to the source recorded in the
-relocation map. That gives the following loader patch a trustworthy game-owned tree
-without changing current runtime behavior.
+``game_projects/webgl-demo`` is now the canonical merged game root. This smoke accepts
+the post-merge state: each relocated destination must exist there and match the recorded
+relocation hash; legacy source files are compared only when they still exist.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import json
 from pathlib import Path
 import sys
 
-MAP_RELATIVE = Path("games/webgl-demo/relocation-source-map.json")
-GAME_ROOT = Path("games/webgl-demo")
+MAP_RELATIVE = Path("game_projects/webgl-demo/relocation-source-map.json")
+GAME_ROOT = Path("game_projects/webgl-demo")
 EXPECTED_SCHEMA = "main-computer-game-additive-relocation-map.v1"
 EXPECTED_GAME_ID = "webgl-demo"
 
@@ -57,10 +57,9 @@ def main() -> int:
         failures.append({"check": "relocationMapSchema", "actual": mapping.get("schema")})
     if mapping.get("gameId") != EXPECTED_GAME_ID:
         failures.append({"check": "gameId", "actual": mapping.get("gameId")})
-    if mapping.get("mode") != "additive-copy":
-        failures.append({"check": "modeIsAdditiveCopy", "actual": mapping.get("mode")})
-    if mapping.get("sourceFilesRemainAuthoritative") is not True:
-        failures.append({"check": "legacySourcesRemainAuthoritative"})
+    # The relocation map was created during the additive-copy phase. After the canonical
+    # root merge, it remains provenance rather than a declaration that legacy sources
+    # are still authoritative.
 
     files = mapping.get("files")
     if not isinstance(files, list) or not files:
@@ -89,33 +88,35 @@ def main() -> int:
         if source_rel.is_absolute() or destination_rel.is_absolute() or ".." in source_rel.parts or ".." in destination_rel.parts:
             failures.append({"check": "mappingPathsAreRepositoryRelative", "source": source_text, "destination": destination_text})
             continue
-        if destination_rel.parts[:2] != ("games", "webgl-demo"):
-            failures.append({"check": "destinationInsideGameRoot", "destination": destination_text})
+        canonical_destination_rel = destination_rel
+        if destination_rel.parts[:2] == ("games", "webgl-demo"):
+            canonical_destination_rel = Path("game_projects", "webgl-demo", *destination_rel.parts[2:])
+        if canonical_destination_rel.parts[:2] != ("game_projects", "webgl-demo"):
+            failures.append({"check": "destinationInsideCanonicalGameRoot", "destination": destination_text})
         if destination_text in seen_destinations:
             failures.append({"check": "destinationUnique", "destination": destination_text})
         seen_destinations.add(destination_text)
 
         source = repo / source_rel
-        destination = repo / destination_rel
-        if not source.is_file():
-            failures.append({"check": "legacySourceExists", "source": source_text})
-            continue
+        destination = repo / canonical_destination_rel
         if not destination.is_file():
             failures.append({"check": "relocatedCopyExists", "destination": destination_text})
             continue
 
-        source_size = source.stat().st_size
         destination_size = destination.stat().st_size
-        source_hash = sha256_file(source)
         destination_hash = sha256_file(destination)
-        if source_size != destination_size:
-            failures.append({"check": "byteCountMatchesSource", "source": source_text, "destination": destination_text, "sourceBytes": source_size, "destinationBytes": destination_size})
-        if source_hash != destination_hash:
-            failures.append({"check": "sha256MatchesSource", "source": source_text, "destination": destination_text, "sourceSha256": source_hash, "destinationSha256": destination_hash})
-        if isinstance(expected_bytes, int) and source_size != expected_bytes:
-            failures.append({"check": "sourceStillMatchesRelocationSnapshotBytes", "source": source_text, "expectedBytes": expected_bytes, "actualBytes": source_size})
-        if isinstance(expected_hash, str) and source_hash != expected_hash:
-            failures.append({"check": "sourceStillMatchesRelocationSnapshotSha256", "source": source_text, "expectedSha256": expected_hash, "actualSha256": source_hash})
+        if isinstance(expected_bytes, int) and destination_size != expected_bytes:
+            failures.append({"check": "canonicalDestinationMatchesRelocationSnapshotBytes", "destination": canonical_destination_rel.as_posix(), "expectedBytes": expected_bytes, "actualBytes": destination_size})
+        if isinstance(expected_hash, str) and destination_hash != expected_hash:
+            failures.append({"check": "canonicalDestinationMatchesRelocationSnapshotSha256", "destination": canonical_destination_rel.as_posix(), "expectedSha256": expected_hash, "actualSha256": destination_hash})
+
+        if source.is_file() and source.resolve() != destination.resolve():
+            source_size = source.stat().st_size
+            source_hash = sha256_file(source)
+            if source_size != destination_size:
+                failures.append({"check": "byteCountMatchesRemainingLegacySource", "source": source_text, "destination": canonical_destination_rel.as_posix(), "sourceBytes": source_size, "destinationBytes": destination_size})
+            if source_hash != destination_hash:
+                failures.append({"check": "sha256MatchesRemainingLegacySource", "source": source_text, "destination": canonical_destination_rel.as_posix(), "sourceSha256": source_hash, "destinationSha256": destination_hash})
 
         if source_text.startswith("game_projects/webgl-demo/"):
             project_files += 1
@@ -133,8 +134,8 @@ def main() -> int:
         "ok": not failures,
         "schema": "game.webRelocationCopySmoke.v1",
         "gameId": EXPECTED_GAME_ID,
-        "mode": "additive-copy",
-        "legacyRuntimeUntouched": True,
+        "mode": "canonical-root-merged",
+        "canonicalGameRoot": "game_projects/webgl-demo",
         "checkedFiles": checked,
         "checkedBytes": bytes_checked,
         "existingGameProjectFiles": project_files,
@@ -152,7 +153,7 @@ def main() -> int:
         print(f"checkedBytes={bytes_checked}")
         print(f"existingGameProjectFiles={project_files}")
         print(f"embeddedWebFiles={embedded_web_files}")
-        print("legacyRuntimeUntouched=true")
+        print("canonicalGameRoot=game_projects/webgl-demo")
         for failure in failures:
             print("failure=" + json.dumps(failure, sort_keys=True))
 

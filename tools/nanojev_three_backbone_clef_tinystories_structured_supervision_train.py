@@ -7,11 +7,12 @@ history from --source-run-dir into a distinct output directory. Inference topolo
 is unchanged: Qwen3-0.6B, Pythia-70M, TinyStories-33M, the mature CLEF path, and
 TinyStories L1/L2 residual adapters are exactly the residual-v3 architecture.
 
-The experiment changes only the training signal. In addition to the existing
-final-answer objective, training supervises two already-computed internal decision
-surfaces: evidence-routing logits and final field/option cosine alignment. These
-auxiliary losses add no inference parameters and are not used for PREDEV/DEV
-selection.
+The experiment keeps the inference topology unchanged while allowing training-policy
+phases. The current phase starts from the last committed champion, freezes every CLEF
+parameter that can change the evidence-routing logits, rebuilds AdamW over the remaining
+downstream field/composition/scoring parameters, and continues the same PREDEV/DEV
+champion-selection loop. Structured supervision remains training-only and adds no
+inference parameters.
 """
 from __future__ import annotations
 
@@ -106,7 +107,10 @@ BASELINE_ENGLISH_CODE_PERCENT = (
 TRAIN_TASK_REBALANCE_TARGETS = ("mutation", "consensus", "triad")
 TRAINING_TASK_MIX_SCHEMA = "english-code-5pct-hard-task-rebalance-v1"
 STRUCTURED_SUPERVISION_SCHEMA = "clef-routing-and-field-deep-supervision-v1"
-CLEF_BACKPROP_MODE = "full-clef-head-plus-residual-tap-adapters"
+TRAINING_PHASE = "routing-frozen-v1"
+ROUTING_FREEZE_SCHEMA = "clef-routing-logit-producers-frozen-v1"
+FROZEN_PARAMETER_GROUPS = ("routing",)
+CLEF_BACKPROP_MODE = "routing-frozen-downstream-clef-plus-global-residual"
 DEFAULT_WEIGHT_DECAY = 0.01
 DEFAULT_GRAD_CLIP = 1.0
 DEFAULT_KEEP_CHECKPOINTS = 3
@@ -140,6 +144,13 @@ TINYSTORIES_RESIDUAL_FIELDS = (
     "option_terminal",
     "option_question",
     "global",
+)
+ROUTING_RESIDUAL_FIELDS = (
+    "memory",
+    "option_context",
+    "option_predictor",
+    "option_terminal",
+    "option_question",
 )
 CONSENSUS_PAIRWISE_TASK = "consensus_pairwise"
 CONSENSUS_PAIR_NAMES = ("ab", "ac", "bc")
@@ -946,6 +957,104 @@ def sha256_file(path: Path) -> str:
 
 def count_trainable(module) -> int:
     return sum(int(p.numel()) for p in module.parameters() if p.requires_grad)
+
+
+def is_routing_parameter_name(name: str) -> bool:
+    """Return whether a CLEF parameter can change the pre-summary routing logits.
+
+    Routing is not only ``evidence_layers``. The logits are a dot product between
+    ``routed`` candidate vectors and ``base_field``; therefore every learned path
+    that can alter memory, candidate queries, or base_field belongs to the frozen
+    routing group. Downstream field/composition/scoring parameters deliberately do
+    not.
+    """
+    name = str(name)
+    if name.startswith("model_embeddings.") or name.startswith("evidence_layers."):
+        return True
+    if name.startswith("backbone_modules."):
+        routing_components = (
+            ".hidden_norm.",
+            ".memory_projection.",
+            ".question_projection.",
+            ".option_context_projection.",
+            ".option_question_projection.",
+            ".option_lexical_projection.",
+            ".option_logp_projection.",
+        )
+        return any(component in name for component in routing_components)
+    if name.startswith("tinystories_residual."):
+        parts = name.split(".", 2)
+        return len(parts) >= 2 and parts[1] in ROUTING_RESIDUAL_FIELDS
+    return False
+
+
+def configure_routing_freeze(head) -> dict[str, Any]:
+    """Freeze the complete routing-logit producer and leave downstream CLEF trainable."""
+    frozen_names: list[str] = []
+    trainable_names: list[str] = []
+    frozen_parameters = 0
+    trainable_parameters = 0
+    for name, parameter in head.named_parameters():
+        if is_routing_parameter_name(name):
+            parameter.requires_grad_(False)
+            frozen_names.append(name)
+            frozen_parameters += int(parameter.numel())
+        else:
+            parameter.requires_grad_(True)
+            trainable_names.append(name)
+            trainable_parameters += int(parameter.numel())
+    if not frozen_names:
+        raise RuntimeError("routing freeze matched no CLEF parameters")
+    if not trainable_names:
+        raise RuntimeError("routing freeze left no downstream CLEF parameters trainable")
+    unexpected_trainable = [
+        name for name, parameter in head.named_parameters()
+        if is_routing_parameter_name(name) and parameter.requires_grad
+    ]
+    if unexpected_trainable:
+        raise RuntimeError(
+            f"routing freeze invariant left trainable routing parameters: {unexpected_trainable}"
+        )
+    expected_downstream = "tinystories_residual.global.weight"
+    named = dict(head.named_parameters())
+    if expected_downstream not in named or not named[expected_downstream].requires_grad:
+        raise RuntimeError(
+            "routing freeze must leave the TinyStories global residual adapter trainable"
+        )
+    return {
+        "schema": ROUTING_FREEZE_SCHEMA,
+        "training_phase": TRAINING_PHASE,
+        "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
+        "frozen_parameter_tensors": len(frozen_names),
+        "frozen_parameters": frozen_parameters,
+        "trainable_parameter_tensors": len(trainable_names),
+        "trainable_parameters": trainable_parameters,
+        "frozen_names": frozen_names,
+        "trainable_names": trainable_names,
+    }
+
+
+def routing_freeze_migration_required(
+    contract: dict[str, Any] | None,
+    *,
+    state: dict[str, Any] | None = None,
+    latest_checkpoint_meta: dict[str, Any] | None = None,
+) -> bool:
+    contract = dict(contract or {})
+    if (
+        contract.get("training_phase") != TRAINING_PHASE
+        or contract.get("routing_freeze_schema") != ROUTING_FREEZE_SCHEMA
+        or list(contract.get("frozen_parameter_groups") or []) != list(FROZEN_PARAMETER_GROUPS)
+    ):
+        return True
+    if state is not None and state.get("training_phase") != TRAINING_PHASE:
+        return True
+    if (
+        latest_checkpoint_meta is not None
+        and latest_checkpoint_meta.get("training_phase") != TRAINING_PHASE
+    ):
+        return True
+    return False
 
 
 def configure_backbone_trainability(bundles) -> dict[str, int]:
@@ -2977,6 +3086,16 @@ def save_checkpoint(
                 "source_experiment": experiment_meta["source_experiment"],
                 "train_plan": experiment_meta["train_plan"],
                 "dev_plan": experiment_meta["dev_plan"],
+                "training_phase": experiment_meta.get("training_phase", TRAINING_PHASE),
+                "routing_freeze_schema": experiment_meta.get(
+                    "routing_freeze_schema", ROUTING_FREEZE_SCHEMA
+                ),
+                "frozen_parameter_groups": list(
+                    experiment_meta.get("frozen_parameter_groups", FROZEN_PARAMETER_GROUPS)
+                ),
+                "routing_frozen_parameters": int(
+                    experiment_meta.get("routing_frozen_parameters", 0)
+                ),
                 "metrics": cycle_metrics,
             },
         )
@@ -3159,6 +3278,16 @@ def save_layer_tap_cutover_checkpoint(
                 "source_experiment": experiment_meta["source_experiment"],
                 "train_plan": experiment_meta["train_plan"],
                 "dev_plan": experiment_meta["dev_plan"],
+                "training_phase": experiment_meta.get("training_phase", TRAINING_PHASE),
+                "routing_freeze_schema": experiment_meta.get(
+                    "routing_freeze_schema", ROUTING_FREEZE_SCHEMA
+                ),
+                "frozen_parameter_groups": list(
+                    experiment_meta.get("frozen_parameter_groups", FROZEN_PARAMETER_GROUPS)
+                ),
+                "routing_frozen_parameters": int(
+                    experiment_meta.get("routing_frozen_parameters", 0)
+                ),
                 "metrics": {
                     "architecture_cutover": True,
                     "source_checkpoint": str(Path(source_checkpoint).resolve()),
@@ -3171,7 +3300,7 @@ def save_layer_tap_cutover_checkpoint(
                     "anchor_frozen": False,
                     "tinystories_frozen": True,
                     "optimizer_reset": bool(optimizer_migration.get("optimizer_reset", False)),
-                    "optimizer_scope": "full-clef-head-plus-residual-adapters",
+                    "optimizer_scope": CLEF_BACKPROP_MODE,
                     "optimizer_migration": dict(optimizer_migration),
                     "residual_initialization": "all-zero-linear-weights",
                 },
@@ -3224,13 +3353,27 @@ def load_checkpoint(
     )
     optimizer_load = None
     if load_optimizer:
-        optimizer_load = _load_optimizer_state_with_unfrozen_head_compat(
-            torch=torch,
-            optimizer=optimizer,
-            source_state=torch.load(
-                checkpoint / "optimizer.pt", map_location="cpu", weights_only=False
-            ),
-        )
+        source_training_phase = meta.get("training_phase")
+        if source_training_phase != TRAINING_PHASE:
+            # A pre-phase champion is still a valid model incumbent, but its AdamW
+            # state includes routing parameters that are frozen now. Restoring the
+            # weights/RNG is correct; restoring those optimizer moments is not.
+            optimizer.state.clear()
+            optimizer_load = {
+                "mode": "routing-freeze-phase-reset",
+                "source_training_phase": source_training_phase,
+                "target_training_phase": TRAINING_PHASE,
+                "migrated_state_entries": 0,
+                "optimizer_reset": True,
+            }
+        else:
+            optimizer_load = _load_optimizer_state_with_unfrozen_head_compat(
+                torch=torch,
+                optimizer=optimizer,
+                source_state=torch.load(
+                    checkpoint / "optimizer.pt", map_location="cpu", weights_only=False
+                ),
+            )
     rng = torch.load(checkpoint / "rng_state.pt", map_location="cpu", weights_only=False)
     random.setstate(rng["python_random"])
     torch.set_rng_state(rng["torch_cpu"])
@@ -3849,6 +3992,8 @@ def run(args, logger: EventLog) -> None:
     training_task_mix_migration = False
     previous_training_task_mix_schema = None
     previous_train_english_code_percent = None
+    routing_freeze_migration = False
+    previous_training_phase = None
     policy_migration = False
     if args.resume:
         experiment = smoke.read_json(experiment_path)
@@ -3862,6 +4007,14 @@ def run(args, logger: EventLog) -> None:
             stream_reuse_epochs=int(experiment.get("stream_reuse_epochs", 1)),
         )
         contract = dict(experiment.get("contract") or {})
+        previous_training_phase = contract.get("training_phase")
+        state_latest_checkpoint = Path(
+            str(state.get("latest_checkpoint") or state["best_checkpoint"])
+        ).resolve(strict=True)
+        state_latest_meta = smoke.read_json(state_latest_checkpoint / "meta.json")
+        routing_freeze_migration = routing_freeze_migration_required(
+            contract, state=state, latest_checkpoint_meta=state_latest_meta
+        )
         legacy_progressive_migration = not bool(
             contract.get("progressive_champion_gating")
         )
@@ -3908,6 +4061,7 @@ def run(args, logger: EventLog) -> None:
             or head_trainability_migration
             or clef_head_lr_migration
             or training_task_mix_migration
+            or routing_freeze_migration
         )
         migration_reasons = [
             name
@@ -3920,6 +4074,7 @@ def run(args, logger: EventLog) -> None:
                 ("clef-head-trainability", head_trainability_migration),
                 ("clef-head-learning-rate", clef_head_lr_migration),
                 ("training-task-mix", training_task_mix_migration),
+                ("routing-freeze-phase", routing_freeze_migration),
             )
             if active
         ]
@@ -3960,6 +4115,12 @@ def run(args, logger: EventLog) -> None:
             resume_pending_champ_check = bool(state.get("pending_champ_check", False))
         global_step = int(state["global_step"])
         best_checkpoint = Path(str(state["best_checkpoint"])).resolve(strict=True)
+        if routing_freeze_migration:
+            # The killed/in-progress cycle is not part of the new phase. Restore
+            # step/RNG/weights from the same committed champion authority rather
+            # than carrying abandoned optimizer progress forward in telemetry.
+            champion_meta = smoke.read_json(best_checkpoint / "meta.json")
+            global_step = int(champion_meta["global_step"])
         if policy_migration:
             latest_checkpoint = best_checkpoint
         else:
@@ -4029,6 +4190,11 @@ def run(args, logger: EventLog) -> None:
             for key, value in layer_tap_migration_sources.items()
         }),
         policy_migration=policy_migration,
+        training_phase=TRAINING_PHASE,
+        previous_training_phase=previous_training_phase,
+        routing_freeze_migration=routing_freeze_migration,
+        routing_freeze_schema=ROUTING_FREEZE_SCHEMA,
+        frozen_parameter_groups=list(FROZEN_PARAMETER_GROUPS),
         start_cycle=start_cycle,
         resume_reuse_depth=resume_reuse_depth,
         resume_pending_champ_check=resume_pending_champ_check,
@@ -4059,7 +4225,7 @@ def run(args, logger: EventLog) -> None:
         consensus_primary="pairwise-relations-then-deterministic-topology",
         frozen_backbones=list(FROZEN_LABELS),
         trainable_backbone=None,
-        trainable_component="clef-full-head-plus-tinystories-residual-taps",
+        trainable_component="clef-downstream-after-frozen-routing",
         clef_backprop=CLEF_BACKPROP_MODE,
         head_trainability_migration=head_trainability_migration,
         previous_clef_backprop=previous_clef_backprop,
@@ -4296,6 +4462,7 @@ def run(args, logger: EventLog) -> None:
             state=load_file(str(cutover_head), device="cpu"),
         )
         head = head.to(device="cuda", dtype=torch.bfloat16)
+        routing_freeze = configure_routing_freeze(head)
         head_params = smoke.count_parameters(head)
         tiny_params = smoke.count_parameters(bundles[TRAINABLE_LABEL].lm)
         total_trainable = count_trainable(head) + count_trainable(bundles[TRAINABLE_LABEL].lm)
@@ -4310,7 +4477,10 @@ def run(args, logger: EventLog) -> None:
             "migrated_state_entries": 0,
             "anchor_parameters_frozen": False,
             "tinystories_frozen": True,
-            "trainable_parameter_overlap_with_source": head_params - 7_077_888,
+            "routing_frozen": True,
+            "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+            "routing_frozen_parameters": int(routing_freeze["frozen_parameters"]),
+            "trainable_parameter_overlap_with_source": int(routing_freeze["trainable_parameters"]),
         }
         if reuse_schedule_cutover and not args.resume:
             # The only trainable tensors are brand-new zero residual matrices, so
@@ -4355,22 +4525,26 @@ def run(args, logger: EventLog) -> None:
                 migrated_state_entries = 0
                 if optimizer_checkpoint is not None:
                     optimizer_checkpoint = Path(optimizer_checkpoint).resolve(strict=True)
-                    optimizer_state = torch.load(
-                        optimizer_checkpoint / "optimizer.pt",
-                        map_location="cpu",
-                        weights_only=False,
-                    )
-                    optimizer_load = _load_optimizer_state_with_unfrozen_head_compat(
-                        torch=torch, optimizer=optimizer, source_state=optimizer_state
-                    )
-                    migrated_state_entries = int(optimizer_load["migrated_state_entries"])
+                    if not routing_freeze_migration:
+                        optimizer_state = torch.load(
+                            optimizer_checkpoint / "optimizer.pt",
+                            map_location="cpu",
+                            weights_only=False,
+                        )
+                        optimizer_load = _load_optimizer_state_with_unfrozen_head_compat(
+                            torch=torch, optimizer=optimizer, source_state=optimizer_state
+                        )
+                        migrated_state_entries = int(optimizer_load["migrated_state_entries"])
                 optimizer_migration = {
                     "source_layout": str(layer_tap_migration_sources["source_layout"]),
                     "recovery_mode": str(
                         layer_tap_migration_sources["optimizer_recovery_mode"]
                     ),
-                    "optimizer_reset": optimizer_reset,
+                    "optimizer_reset": bool(optimizer_reset or routing_freeze_migration),
                     "migrated_state_entries": migrated_state_entries,
+                    "routing_freeze_optimizer_reset": bool(routing_freeze_migration),
+                    "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                    "routing_frozen_parameters": int(routing_freeze["frozen_parameters"]),
                     "anchor_parameters_frozen": True,
                     "tinystories_frozen": True,
                     "trainable_parameter_overlap_with_source": 0,
@@ -4400,11 +4574,15 @@ def run(args, logger: EventLog) -> None:
                         "source_experiment": str(source_experiment),
                         "train_plan": train_plan,
                         "dev_plan": dev_plan,
+                        "training_phase": TRAINING_PHASE,
+                        "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                        "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
+                        "routing_frozen_parameters": int(routing_freeze["frozen_parameters"]),
                     },
                     logger=logger,
                 )
                 # Persist/reload the v3-compatible checkpoint so crash recovery
-                # uses the exact weights and the full-head optimizer layout.
+                # uses the exact weights and the current training-phase optimizer layout.
                 resume_checkpoint_meta = load_checkpoint(
                     torch=torch,
                     head=head,
@@ -4418,6 +4596,9 @@ def run(args, logger: EventLog) -> None:
                     state_path,
                     {
                         "schema_version": SCHEMA,
+                        "training_phase": TRAINING_PHASE,
+                        "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                        "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
                         "cycle": start_cycle - 1,
                         "global_step": global_step,
                         "latest_checkpoint": str(migrated_anchor),
@@ -4453,6 +4634,45 @@ def run(args, logger: EventLog) -> None:
                     legacy_hidden_size=TINYSTORIES_BASE_HIDDEN_SIZE,
                     residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
                 )
+            elif routing_freeze_migration:
+                # Phase transition: the committed champion is the sole weight/RNG
+                # authority. Its AdamW layout contains now-frozen routing tensors,
+                # so intentionally discard those moments and start a fresh optimizer
+                # over the remaining downstream parameters.
+                if Path(latest_checkpoint).resolve() != Path(best_checkpoint).resolve():
+                    raise RuntimeError(
+                        "routing-freeze migration must start from the committed champion"
+                    )
+                resume_checkpoint_meta = load_checkpoint(
+                    torch=torch,
+                    head=head,
+                    tinystories_lm=bundles[TRAINABLE_LABEL].lm,
+                    optimizer=optimizer,
+                    checkpoint=best_checkpoint,
+                    load_optimizer=False,
+                )
+                latest_checkpoint = best_checkpoint
+                optimizer_migration = {
+                    "mode": "routing-freeze-fresh-optimizer-from-champion",
+                    "optimizer_reset": True,
+                    "source_checkpoint": str(Path(best_checkpoint).resolve()),
+                    "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                    "routing_frozen_parameters": int(routing_freeze["frozen_parameters"]),
+                    "trainable_parameters": int(routing_freeze["trainable_parameters"]),
+                }
+                logger.emit(
+                    "clef_tinystories_routing_freeze_activated",
+                    source_checkpoint=str(Path(best_checkpoint).resolve()),
+                    start_cycle=start_cycle,
+                    training_phase=TRAINING_PHASE,
+                    routing_freeze_schema=ROUTING_FREEZE_SCHEMA,
+                    frozen_parameter_groups=list(FROZEN_PARAMETER_GROUPS),
+                    frozen_parameter_tensors=int(routing_freeze["frozen_parameter_tensors"]),
+                    frozen_parameters=int(routing_freeze["frozen_parameters"]),
+                    trainable_parameter_tensors=int(routing_freeze["trainable_parameter_tensors"]),
+                    trainable_parameters=int(routing_freeze["trainable_parameters"]),
+                    optimizer_reset=True,
+                )
             else:
                 resume_checkpoint_meta = load_checkpoint(
                     torch=torch,
@@ -4482,7 +4702,15 @@ def run(args, logger: EventLog) -> None:
             tinystories_residual_layers=list(TINYSTORIES_RESIDUAL_LAYERS),
             tinystories_anchor_layer=TINYSTORIES_FINAL_LAYER,
             tinystories_anchor_frozen=False,
-            clef_full_head_trainable=True,
+            clef_full_head_trainable=False,
+            clef_routing_frozen=True,
+            training_phase=TRAINING_PHASE,
+            routing_freeze_schema=ROUTING_FREEZE_SCHEMA,
+            frozen_parameter_groups=list(FROZEN_PARAMETER_GROUPS),
+            routing_frozen_parameter_tensors=int(routing_freeze["frozen_parameter_tensors"]),
+            routing_frozen_parameters=int(routing_freeze["frozen_parameters"]),
+            downstream_trainable_parameter_tensors=int(routing_freeze["trainable_parameter_tensors"]),
+            downstream_trainable_parameters=int(routing_freeze["trainable_parameters"]),
             tinystories_frozen=True,
             tinystories_residual_source_hidden_size=TINYSTORIES_RESIDUAL_SOURCE_HIDDEN_SIZE,
             optimizer_groups=optimizer_group_summary(optimizer),
@@ -4525,9 +4753,14 @@ def run(args, logger: EventLog) -> None:
             "tinystories_lexical_hidden_size": TINYSTORIES_BASE_HIDDEN_SIZE,
             "tinystories_backprop": "none-backbone-frozen",
             "clef_backprop": CLEF_BACKPROP_MODE,
+            "training_phase": TRAINING_PHASE,
+            "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+            "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
+            "routing_frozen_parameters": int(routing_freeze["frozen_parameters"]),
+            "downstream_trainable_parameters": int(routing_freeze["trainable_parameters"]),
             "clef_mature_head_lr": float(args.clef_head_lr),
             "residual_tap_lr": float(args.head_lr),
-            "champion_anchor": "all-three-language-model-backbones-frozen-clef-head-trainable",
+            "champion_anchor": "all-language-model-backbones-and-clef-routing-frozen",
             "champion_selection_policy": selection_policy,
             "use_loss_selection": bool(args.use_loss),
             "training_evidence_reuse": max_reuse_depth > 1,
@@ -4759,6 +4992,10 @@ def run(args, logger: EventLog) -> None:
                     "source_experiment": str(source_experiment),
                     "train_plan": train_plan,
                     "dev_plan": dev_plan,
+                    "training_phase": TRAINING_PHASE,
+                    "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                    "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
+                    "routing_frozen_parameters": int(routing_freeze["frozen_parameters"]),
                 },
                 cycle_metrics=baseline_metrics,
                 logger=logger,
@@ -4773,6 +5010,9 @@ def run(args, logger: EventLog) -> None:
                 state_path,
                 {
                     "schema_version": SCHEMA,
+                    "training_phase": TRAINING_PHASE,
+                    "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                    "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
                     "cycle": baseline_cycle,
                     "global_step": global_step,
                     "latest_checkpoint": str(latest_checkpoint),
@@ -4825,6 +5065,9 @@ def run(args, logger: EventLog) -> None:
                 state_path,
                 {
                     "schema_version": SCHEMA,
+                    "training_phase": TRAINING_PHASE,
+                    "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                    "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
                     "cycle": start_cycle - 1,
                     "global_step": global_step,
                     "latest_checkpoint": str(best_checkpoint),
@@ -5004,6 +5247,9 @@ def run(args, logger: EventLog) -> None:
                     state_path,
                     {
                         "schema_version": SCHEMA,
+                        "training_phase": TRAINING_PHASE,
+                        "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                        "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
                         "cycle": cycle - 1,
                         "global_step": global_step,
                         "latest_checkpoint": str(best_checkpoint),
@@ -5352,6 +5598,10 @@ def run(args, logger: EventLog) -> None:
                             "train_plan": train_plan,
                             "predev_plan": predev_plan,
                             "dev_plan": dev_plan,
+                            "training_phase": TRAINING_PHASE,
+                            "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                            "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
+                            "routing_frozen_parameters": int(routing_freeze["frozen_parameters"]),
                         },
                         cycle_metrics=recovery_metrics,
                         logger=logger,
@@ -5363,6 +5613,9 @@ def run(args, logger: EventLog) -> None:
                         state_path,
                         {
                             "schema_version": SCHEMA,
+                            "training_phase": TRAINING_PHASE,
+                            "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                            "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
                             "cycle": cycle - 1,
                             "in_progress_cycle": cycle,
                             "completed_reuse_epoch": reuse_depth,
@@ -5496,6 +5749,9 @@ def run(args, logger: EventLog) -> None:
                     state_path,
                     {
                         "schema_version": SCHEMA,
+                        "training_phase": TRAINING_PHASE,
+                        "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                        "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
                         "cycle": cycle - 1,
                         "in_progress_cycle": cycle,
                         "completed_reuse_epoch": reuse_depth,
@@ -5783,6 +6039,9 @@ def run(args, logger: EventLog) -> None:
                 state_path,
                 {
                     "schema_version": SCHEMA,
+                    "training_phase": TRAINING_PHASE,
+                    "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+                    "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
                     "cycle": cycle,
                     "data_cycle": data_cycle,
                     "global_step": global_step,
@@ -5897,6 +6156,7 @@ def self_test() -> dict[str, Any]:
         hidden_sizes={"qwen": 1024, "pythia": 512, "tinystories": 768},
     )
     head_parameters = smoke.count_parameters(head)
+    routing_freeze = configure_routing_freeze(head)
     trainable_parameters = count_trainable(head)
     return {
         "event": "clef_tinystories_train_self_test_passed",
@@ -5907,7 +6167,13 @@ def self_test() -> dict[str, Any]:
         "head_hidden_sizes": head_hidden_sizes,
         "frozen_backbones": list(FROZEN_LABELS),
         "trainable_backbone": None,
-        "trainable_component": "clef-full-head-plus-tinystories-residual-taps",
+        "trainable_component": "clef-downstream-after-frozen-routing",
+        "training_phase": TRAINING_PHASE,
+        "routing_freeze_schema": ROUTING_FREEZE_SCHEMA,
+        "frozen_parameter_groups": list(FROZEN_PARAMETER_GROUPS),
+        "routing_frozen_parameter_tensors": int(routing_freeze["frozen_parameter_tensors"]),
+        "routing_frozen_parameters": int(routing_freeze["frozen_parameters"]),
+        "downstream_trainable_parameter_tensors": int(routing_freeze["trainable_parameter_tensors"]),
         "tinystories_layer_tap_schema": TINYSTORIES_LAYER_TAP_SCHEMA,
         "tinystories_tapped_layers": list(TINYSTORIES_TAPPED_LAYERS),
         "tinystories_residual_layers": list(TINYSTORIES_RESIDUAL_LAYERS),

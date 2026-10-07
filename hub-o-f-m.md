@@ -46,7 +46,7 @@ main_computer/stable_hub_topology.py
 
 `add_hub.py` owns `prep/do/operation-inspect/finalize` for the first live birth path. `deployment.py` is the neutral Coolify/application adapter and public Hub observer. `run-exp-fdb-hub.py` is extended only to materialize the frozen Hub Control projection before executing the existing Hub runtime. `stable_hub_topology.py` permits a single concrete Hub so `0 -> 1` is representable.
 
-`remove-hub` remains behind the frozen surface but is not implemented by this slice.
+`remove-hub` is implemented behind the same frozen surface, including ordinary contraction and explicit `--allow-full-deletion` protection for the final `1 -> 0` transition.
 
 ## 1. Purpose and authority
 

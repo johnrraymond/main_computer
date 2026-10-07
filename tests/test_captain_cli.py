@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from main_computer.config import MainComputerConfig
 
@@ -24,6 +25,7 @@ from main_computer.captain_cli import (
     parse_captain_invocation,
     resolve_captain_wallet,
     run_captain,
+    send_captain_bridge_refund,
 )
 
 
@@ -651,3 +653,48 @@ def test_missing_bridge_completion_metadata_detector_is_narrow() -> None:
     assert not _is_missing_bridge_completion_metadata_error(
         CaptainCliError("Hub request failed for /api/hub/v1/requests/quote with HTTP 400: hub_credit_bridge_escrow metadata")
     )
+
+
+def test_captain_bridge_refund_is_signed_by_hub_not_local_controller(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post(hub_url: str, path: str, payload: dict[str, object], *, timeout_s: float) -> dict[str, object]:
+        assert hub_url == "https://mainnet-hub.greatlibrary.io"
+        assert timeout_s == 30.0
+        calls.append((path, payload))
+        return {"ok": True, "signing_mode": "hub-bridge-controller"}
+
+    monkeypatch.setattr("main_computer.captain_cli._post_hub_json", fake_post)
+    runtime = SimpleNamespace(
+        wallet=SimpleNamespace(address="0x1111111111111111111111111111111111111111"),
+        config=SimpleNamespace(hub_url="https://mainnet-hub.greatlibrary.io"),
+    )
+
+    result = send_captain_bridge_refund(
+        runtime,
+        bridge_credit_wei=2 * 10**18,
+        charged_credit_wei=10**18,
+        smoke_id="0x" + "ab" * 32,
+        request_id="request-1",
+        deposit_id="0x" + "cd" * 32,
+        controller_private_key="0x" + "99" * 32,
+        timeout_s=30.0,
+    )
+
+    assert result["ok"] is True
+    assert result["signing_mode"] == "hub-bridge-controller"
+    assert len(calls) == 1
+    path, payload = calls[0]
+    assert path == "/api/hub/v1/credits/bridge-reconciliation/execute"
+    assert payload["request_id"] == "request-1"
+    assert payload["deposit_id"] == "0x" + "cd" * 32
+    assert payload["wallet_address"] == runtime.wallet.address
+    assert payload["expected_bridge_credit_wei"] == str(2 * 10**18)
+    assert payload["expected_charged_credit_wei"] == str(10**18)
+    assert "rectified_credit_wei" not in payload
+    assert "withdrawn_credit_wei" not in payload
+    assert "recipient_address" not in payload
+    assert "rectification_id" not in payload
+    assert "withdrawal_id" not in payload
+    assert "private_key" not in payload
+    assert "99" * 32 not in json.dumps(payload)

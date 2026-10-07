@@ -215,10 +215,30 @@ def test_v7_verifies_critical_payload_staging_integrity_before_compile() -> None
     assert '"win-sshproxy.exe"' in text
     assert 'RelativePath = "scripts/windows/build-main-computer-nsis-installer.experimental-v7.ps1"' in text
 
-    copy_order = text.index("Copy-RepoPayload -RepoRoot $repoRoot -PayloadRoot $payloadRoot")
+    compose_order = text.index("$splitComposition = Invoke-SplitExportComposition")
+    copy_order = text.index("Copy-RepoPayload -RepoRoot $splitComposition.RepoRoot -PayloadRoot $payloadRoot")
     verify_order = text.index("$payloadIntegrity = Assert-RepoPayloadStagingIntegrity")
     wrapper_order = text.index("Write-PackageWrapper -WrapperPath $wrapperPath")
     compile_order = text.index('Write-Section "Compiling experimental NSIS setup EXE (v7)"')
 
-    assert copy_order < verify_order < wrapper_order < compile_order
+    assert compose_order < copy_order < verify_order < wrapper_order < compile_order
+
+
+def test_v7_composes_fresh_main_and_game_exports_before_nsis_staging() -> None:
+    text = read_builder()
+
+    assert "Invoke-SplitExportComposition" in text
+    assert 'Join-Path $RepoRoot "export-main-computer-test.ps1"' in text
+    assert "-InstallerReHome" in text
+    assert "-InstallerReHomeRoot $CompositionRoot" in text
+    assert 'Get-ChildItem -LiteralPath $zipRoot -File -Filter "main_computer_test-*.zip"' in text
+    assert 'Get-ChildItem -LiteralPath $zipRoot -File -Filter "main_computer_test-game-*.zip"' in text
+    assert '"main_computer/game_web_loader.py"' in text
+    assert '"game_projects/webgl-demo/game.json"' in text
+    assert '"game_projects/webgl-demo/web/apps/webgl.html"' in text
+    assert 'Join-Path $composedRepoRoot "games"' in text
+    assert 'payloadSource = "fresh-split-export-composition"' in text
+    assert "componentExports = [ordered]@{" in text
+    assert "MainArchiveSha256" in text
+    assert "GameArchiveSha256" in text
 

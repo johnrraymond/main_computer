@@ -1,0 +1,611 @@
+# Mother Ship Feature Patch Series
+
+> **Door rule:** Mother-ship doors are never progression locks. Doors may have labels, status lights, terminals, or story prompts, but the player route remains open.
+
+Contract: `game.mother-ship-feature-patch-series.v1`
+
+This document breaks the mother-ship expansion into a practical sequence of implementation patches. Each patch should be built from the latest uploaded snapshot, packaged as replacement files for `new_patch.py`, and kept small enough that runtime defects can be isolated quickly.
+
+## Current baseline
+
+The current game surface includes:
+
+```text
+shuttle cockpit
+→ boarding defense
+→ console hover + E pilot mode
+→ W/S shuttle flight to the mother ship
+→ docking cutscene
+→ mother-ship shuttle-bay handoff
+→ in-game Shuttle Bay Twiddle System
+```
+
+The next patches should not rework that path unless a defect blocks progression. The first expansion goal is to let the player leave the shuttle bay, explore connected ship spaces, interact with ship systems, and understand the next objective.
+
+
+## Architecture rework track
+
+The game has outgrown the one-renderer-knows-everything model. Before large new room or system additions, use this architecture track to make future ship features data-driven and easier to verify.
+
+| Patch | Purpose | Runtime behavior change |
+| --- | --- | --- |
+| A. Architecture docs and schema | Add runtime architecture docs, patch-aware content design, and `game-definition.v1` schema | None |
+| B. State defaults extraction | Move mother-ship runtime defaults into one definition object | Should preserve behavior |
+| C. Rooms and movement extraction | Move room ids, names, bounds, exits, and spawns into data | Should preserve behavior |
+| D. Interactable extraction | Move terminals, prompts, radii, and objective targets into data | Should preserve behavior |
+| E. Interaction registry | Route E-key handling through named safe handlers | Should preserve behavior with cleaner dispatch |
+| F. Definition validators | Add tests for reachability, prompt handlers, objective targets, and spawn placement | No gameplay change |
+| G. Renderer decomposition | Split drawing primitives from gameplay state and interaction logic | Should preserve behavior |
+| H. Content props render pass | Render non-interactive ship signage, route markers, beacons, and status panels from `motherShipInterior.props` | Should preserve behavior while making visual content data-first |
+| I. Content marker extraction | Move repeated Bay Ops, department, bridge access, and viewscreen map markers into `motherShipInterior.props` | Should preserve behavior while removing one-off marker draw calls |
+| J. Prop target validation | Validate that content prop `target` values resolve to known rooms, terminals, doors, interactables, objectives, or supported runtime systems | No gameplay change |
+| K. Interactable hotspot render pass | Render visible E-key affordances from `motherShipInterior.interactables` so prompts match physical hotspots | Should preserve behavior while making interactions clearer |
+| L. Interactable visual metadata | Normalize per-interactable hotspot visual hints so terminal/access/door affordances can be styled from content data | Should preserve behavior while making hotspot presentation data-first |
+| M. Terminal console props | Render visible terminal/console bodies from `motherShipInterior.props` | Should preserve behavior while making console presentation data-first |
+| N. Room visual metadata | Render room boundary and wayfinding affordances from `motherShipInterior.rooms[].visual` | Should preserve behavior while making room presentation data-first |
+| O. Room geometry extraction | Render structural shells, walls, openings, panels, and beams from `motherShipInterior.rooms[].geometry` | Should preserve behavior while making room structure data-first |
+| O.1. Docking handoff void guard | Suppress held shuttle-flight movement keys after docking and add data-defined corridor trunk rails | Corrective only; no locked-door progression |
+| P. Content-defined viewscreens/displays | Render bridge viewscreen display from `motherShipInterior.props` using `kind: "viewscreen"` and `display: "enemyShipTactical"` | Should preserve bridge tracking/combat while making display presentation data-first |
+| Q. Interaction effect metadata | Add `changesState`, `successStatus`, and `nextObjective` expectations to safe interaction definitions | Should preserve behavior while making E-key results easier to validate |
+| R. Validator test harness | Add direct project-JSON tests for room reachability, prompt handlers/effects, terminal visibility, objective/display targets, and placement | No gameplay change |
+| S. Renderer module split | Move selected shuttle-3D renderer passes out of `scene-viewer.js` into browser-safe registered script modules | Should preserve behavior while reducing renderer file size |
+| T. Save/migration model | Add explicit mother-ship definition/state versions and load-time compatibility defaults for legacy or partially edited projects | No gameplay change; current-format runtime input becomes predictable |
+
+Each architecture patch should be built from the latest uploaded snapshot, packaged for `new_patch.py`, and verified with exact dry-run when possible.
+
+Patch B implementation note: mother-ship state defaults now flow through `shuttle3dMotherShipInteriorStateDefaults()`, `stateDefaults`, and `createShipStateFromDefaults()`.
+
+Patch C implementation note: mother-ship rooms, movement bounds, exits, and the shuttle-bay arrival spawn now flow through `shuttle3dMotherShipInteriorLevelDefaults()` and project `motherShipInterior.rooms` / `movement` / `spawns` data. Later patches should not reintroduce hardcoded room-coordinate chains.
+
+Patch D implementation note: terminals, prompts, ranges, and action ids now flow through `motherShipInterior.interactables` and `shuttle3dNormalizeMotherShipInteractables()`.
+
+Patch E implementation note: action ids now flow through `motherShipInterior.interactions`, `shuttle3dNormalizeMotherShipInteractions()`, and `createShipInteractionRegistry()` before invoking safe runtime handlers.
+
+Patch F implementation note: mother-ship definitions now produce `validationRules`, `validationReport`, and `this.shipDefinitionValidation` through `shuttle3dValidateMotherShipInteriorConfig()`, checking reachability, prompts, handlers, objective targets, spawn placement, and the no-locked-door rule.
+
+Patch G implementation note: renderer bootstrapping now has named initialization seams through `initializeRendererFrameState()`, `initializeGameplaySubsystems()`, `initializeCombatRuntimeState()`, `initializeGeometryBuffers()`, and `initializeCanvasLifecycle()`.
+
+Patch H implementation note: non-interactive mother-ship visual content now flows through `motherShipInterior.props`, `shuttle3dNormalizeMotherShipProps()`, and `appendMotherShipInteriorProps(builder, nowMs)`, with `requireRenderableProps` validation.
+
+Patch I implementation note: repeated Bay Ops, department, bridge access, and bridge viewscreen markers now use data-defined `map-marker` props.
+
+Patch J implementation note: data-defined props with `target` now flow through `requirePropTargets` validation so map markers and status panels cannot point at missing content.
+
+Patch K implementation note: every data-defined E-key target now also flows through `appendMotherShipInteractableHotspots(builder, nowMs)`, giving terminals, doors, and access points a visible in-world hotspot derived from `motherShipInterior.interactables`.
+
+Patch L implementation note: interactable hotspots now use normalized `visual` metadata through `shuttle3dNormalizeMotherShipInteractableVisual()`, so hotspot colors, radius scaling, height, base size, terminal panels, and route beams can be authored in content data.
+
+## Patch series overview
+
+| Patch | Working name | Player-facing result |
+| --- | --- | --- |
+| 1 | Interior State Scaffold | The game has a real mother-ship interior state model behind the bay. |
+| 2 | Bay Ops Terminal + Inner Door | The player can use a bay terminal to open the first ship door. |
+| 3 | Security Checkpoint + Corridor Hub | The player can leave the bay and walk into a connected corridor hub. |
+| 4 | Reusable Door/Terminal System | Doors and terminals share one consistent hover/E-key interaction path. |
+| 5 | Engineering Access + Emergency Power | The player restores partial ship power from Engineering Access. |
+| 6 | Ship Signage + Objective Guidance | The ship becomes readable through signs, HUD location, and objective prompts. |
+| 7 | Medbay and Science/Ops Stubs | Side destinations exist with simple interactions and future depth. |
+| 8 | Bridge Route + Command Context | The player can reach the bridge door and learn why command is still available. |
+| 9 | Threat Return in Controlled Spaces | Boarders or hazards can return outside the shuttle bay without breaking exploration. |
+| 10 | Ship State Persistence Hooks | Door, terminal, power, and objective state can be serialized for later editor/save work. |
+| 11 | Renderer Decomposition | Mother-ship helpers move out of the fragile monolithic scene path where safe. |
+| 12 | Playable Slice Polish | The full bay-to-engineering-to-bridge-gate slice is smoothed and regression-tested. |
+
+## Patch 1: Interior State Scaffold
+
+Purpose:
+- add a stable runtime model for mother-ship interior gameplay before adding more geometry.
+
+Expected changes:
+- add `scene.metadata.shuttle3d.motherShipInterior` defaults to project JSON;
+- add renderer fallback defaults when project metadata is absent;
+- add `shipState` with location, power, security, doors, terminals, objectives, and flags;
+- add a small HUD/status line for ship location and objective;
+- keep the existing Shuttle Bay Twiddle System visible and functional.
+
+Primary files:
+- `game_projects/webgl-demo/web/scripts/scene-viewer.js`
+- `main_computer/viewport_routes_game.py`
+- `game_projects/webgl-demo/project.json`
+- `game_projects/starter-game/project.json`
+- `game_projects/new-game/project.json`
+- game-related tests
+
+Acceptance checks:
+- old projects without `motherShipInterior` still render;
+- new default projects expose interior metadata;
+- after docking, runtime state says the player is in `bay.shuttle`;
+- no existing shuttle/docking control path regresses.
+
+## Patch 2: Bay Ops Terminal + Inner Door
+
+Purpose:
+- establish the first non-shuttle in-world interaction.
+
+Expected changes:
+- draw a Bay Operations alcove in the shuttle bay;
+- add a Bay Ops terminal interaction target;
+- add the inner bay door as a visible stateful object;
+- pressing E at the terminal activates or opens the inner door;
+- objective changes from `Use Bay Operations` to `Enter Main Corridor`.
+
+Primary files:
+- `scene-viewer.js`
+- game project JSON files if terminal/door metadata is authored there;
+- tests that assert Bay Ops terminal, inner door, and objective text exist.
+
+Acceptance checks:
+- hovering the terminal shows an E-key prompt;
+- pressing E changes door state;
+- collision keeps players in modeled halls while door status remains non-blocking;
+- boarders remain paused in the bay.
+
+## Patch 3: Security Checkpoint + Corridor Hub
+
+Purpose:
+- turn the post-docking game from one room into a connected ship.
+
+Expected changes:
+- add a short security checkpoint beyond the bay inner door;
+- add a main corridor hub with clear forward/left/right destinations;
+- add simple region bounds that update HUD location;
+- add collision so the player cannot walk outside the corridor shell;
+- allow returning to the shuttle bay.
+
+Primary files:
+- `scene-viewer.js`
+- tests for region labels and bounds definitions;
+- optionally project JSON if region metadata is authored.
+
+Acceptance checks:
+- crossing the door updates location from `Mother Ship Shuttle Bay` to `Security Checkpoint`;
+- walking farther updates location to `Main Corridor Hub`;
+- hub signs point toward Engineering, Medbay, Science/Ops, Bridge, and Shuttle Bay;
+- player can return to the bay without re-entering the cutscene.
+
+## Patch 4: Reusable Door/Terminal System
+
+Purpose:
+- reduce future scope bugs by consolidating repeated interaction logic.
+
+Expected changes:
+- centralize hover target selection for consoles, doors, terminals, and diagnostic/twiddle controls;
+- add a reusable interaction result structure;
+- make prompt text derive from the active target instead of hand-coded branches;
+- preserve current shuttle console behavior.
+
+Primary files:
+- `scene-viewer.js`
+- focused tests for no duplicate E-key interaction paths.
+
+Acceptance checks:
+- shuttle consoles still enter pilot mode;
+- Bay Ops terminal still opens the inner door;
+- status-only doors show reasons;
+- E-key never triggers a shuttle console after the player has left the shuttle.
+
+## Patch 5: Engineering Access + Emergency Power
+
+Purpose:
+- add the first real ship-system objective.
+
+Expected changes:
+- add Engineering Access geometry reachable from the corridor hub;
+- add an Engineering Power console;
+- add `shipPower: "emergency" | "partial"` state;
+- after using the console, change lighting/status lines and update the objective.
+
+Primary files:
+- `scene-viewer.js`
+- project JSON if the console/objective is metadata-driven;
+- tests for power state and objective text.
+
+Acceptance checks:
+- the Engineering Access area is reachable from the hub;
+- pressing E at the console changes power to `partial`;
+- HUD confirms partial power;
+- Bridge route remains visible but the bridge status reason changes after power is restored.
+
+## Patch 6: Ship Signage + Objective Guidance
+
+Purpose:
+- make the ship readable without requiring the player to guess where to go.
+
+Expected changes:
+- add text/sign blocks or HUD labels for each major destination;
+- add objective hints when the player enters each region;
+- add available-door explanations for future areas;
+- include short “return to shuttle bay” guidance.
+
+Primary files:
+- `scene-viewer.js`
+- CSS only if additional overlay styling is needed;
+- tests for core label strings.
+
+Acceptance checks:
+- the player can identify each branch in the hub;
+- all status-only doors explain their door state;
+- current objective changes when the player completes Bay Ops and Engineering tasks.
+
+## Patch 7: Medbay and Science/Ops Stubs
+
+Purpose:
+- create believable destinations without expanding scope into full subsystems yet.
+
+Expected changes:
+- add visible medbay and science/ops entrances off the hub;
+- allow short entry vestibules or status-only doors with clear explanations;
+- add one safe interaction per side destination, such as a medbay status panel or science sensor note.
+
+Primary files:
+- `scene-viewer.js`
+- tests for stub locations and prompts.
+
+Acceptance checks:
+- each side branch feels intentional, not like missing geometry;
+- the player can inspect at least one object in each branch;
+- no branch traps the player.
+
+## Patch 8: Bridge Route + Command Context
+
+Purpose:
+- set the next story target while keeping the bridge interior for a later feature.
+
+Expected changes:
+- add the bridge access door beyond the corridor hub;
+- add a command context prompt;
+- make the status reason depend on prior objectives, such as power restored but command authorization missing;
+- add a clear “next patch” hook.
+
+Primary files:
+- `scene-viewer.js`
+- project JSON/objective tests if metadata-driven.
+
+Acceptance checks:
+- the bridge door is reachable;
+- pressing E explains the route status;
+- after restoring partial power, the explanation changes;
+- the player is directed toward a future command authorization objective.
+
+## Patch 9: Threat Return in Controlled Spaces
+
+Purpose:
+- reintroduce danger without invalidating the safe arrival/bay-control work.
+
+Expected changes:
+- keep shuttle bay safe after docking;
+- add hazards or limited attackers in specific non-bay regions;
+- make combat pausable or bounded so interactions remain usable;
+- keep Twiddle controls able to recover the player.
+
+Primary files:
+- `scene-viewer.js`
+- tests for safe bay and threat-enabled regions.
+
+Acceptance checks:
+- no attacker spawns in `bay.shuttle`;
+- threats only activate in configured regions;
+- interacting with terminals remains reliable;
+- player damage/health behavior is visible in the HUD.
+
+## Patch 10: Ship State Persistence Hooks
+
+Purpose:
+- prepare for editor/save support without requiring full persistence immediately.
+
+Expected changes:
+- isolate serializable interior state from render-only transient state;
+- define a compact save payload for location, doors, terminals, power, security, and objectives;
+- expose a safe reset path for tests and twiddle recovery;
+- do not add browser storage unless explicitly scoped.
+
+Primary files:
+- `scene-viewer.js`
+- `viewport_routes_game.py` only if emitted project data changes;
+- tests for state initialization/reset.
+
+Acceptance checks:
+- resetting the game resets interior state predictably;
+- serializable state excludes canvas-only objects/functions;
+- default projects still load cleanly.
+
+## Patch 11: Renderer Decomposition
+
+Purpose:
+- reduce the risk of more scope errors in `scene-viewer.js`.
+
+Expected changes:
+- move mother-ship constants/helpers into a separate script only if the app already supports loading it safely;
+- otherwise create clear helper sections inside `scene-viewer.js`;
+- keep all public behavior unchanged.
+
+Primary files:
+- `scene-viewer.js`
+- possibly a new `main_computer/web/applications/scripts/shuttle-mother-ship.js` if loader wiring is proven safe;
+- tests to ensure the WebGL app includes any new script.
+
+Acceptance checks:
+- no behavior changes beyond refactor;
+- all previous feature tests still pass;
+- script load order is explicit and tested.
+
+## Patch 12: Playable Slice Polish
+
+Purpose:
+- stabilize the first full mother-ship slice as a stable demo.
+
+Expected changes:
+- tune movement bounds, camera height, prompts, and objective text;
+- improve visual separation between bay, checkpoint, hub, engineering, and bridge gate;
+- remove temporary debug-only wording while keeping the in-game Twiddle recovery system available;
+- add a concise README or design note for the playable slice.
+
+Primary files:
+- `scene-viewer.js`
+- CSS if HUD/prompt polish is needed;
+- game tests and docs.
+
+Acceptance checks:
+- a fresh player can complete: dock → exit shuttle → open bay door → reach hub → restore partial power → inspect bridge access;
+- no hidden browser-console helper is needed;
+- `node --check`, targeted game tests, and `new_patch.py --dry-run` pass.
+
+## Recommended patch order
+
+Build the next implementation patches in this order:
+
+```text
+1. Interior State Scaffold
+2. Bay Ops Terminal + Inner Door
+3. Security Checkpoint + Corridor Hub
+4. Reusable Door/Terminal System
+5. Engineering Access + Emergency Power
+6. Ship Signage + Objective Guidance
+7. Medbay and Science/Ops Stubs
+8. Bridge Route + Command Context
+9. Threat Return in Controlled Spaces
+10. Ship State Persistence Hooks
+11. Renderer Decomposition
+12. Playable Slice Polish
+```
+
+If a runtime bug appears, insert a narrow corrective patch immediately after the bug is observed. Do not stack broad feature work on top of a broken baseline.
+
+## Standard verification for every patch
+
+Run these checks when feasible:
+
+```bash
+node --check game_projects/webgl-demo/web/scripts/scene-viewer.js
+python -m py_compile main_computer/viewport_routes_game.py
+python -m pytest tests/test_game_editor_functional.py tests/test_viewport_babylon_surface.py tests/test_viewport_game_editor.py
+python new_patch.py <patch.zip> --dry-run
+```
+
+When a known unrelated test is deselected, record the exact deselection and reason in the patch response.
+
+## Packaging rule
+
+Each implementation patch should be a replacement-file artifact that assumes the latest uploaded snapshot as its source state. Raw snapshot mode does not infer deletions from omitted files, so deletion semantics must be explicit if a future patch removes a file.
+
+
+## Bridge-route implementation addendum
+
+For bridge-reaching work, use the focused route document:
+
+```text
+game_projects/webgl-demo/requirements/game-mother-ship-bridge-route-plan.md
+```
+
+That route turns the broad patch series into this concrete player path:
+
+```text
+bay.shuttle
+→ bay.ops
+→ security.checkpoint
+→ corridor.main
+→ engineering.access
+→ corridor.main
+→ bridge.access
+→ bridge.deck
+```
+
+### Bridge Route Patch BR-1: Security-to-hub visibility
+
+Purpose:
+- make the corridor beyond Bay Operations visibly connect to Security Checkpoint and the Main Corridor Hub.
+
+Acceptance checks:
+- the player never walks into a black void;
+- every walkable position has modeled floor, walls, and ceiling framing;
+- prompts only appear in the correct location.
+
+### Bridge Route Patch BR-2: Hub signage and branches
+
+Purpose:
+- make the Main Corridor Hub readable before adding more objectives.
+
+Acceptance checks:
+- signs clearly point to Shuttle Bay, Engineering, Medbay, Science/Ops, and Bridge;
+- the Bridge direction is visible and reachable;
+- Engineering is clearly the active route.
+
+### Bridge Route Patch BR-3: Engineering activates bridge
+
+Purpose:
+- make Engineering Access the required action that enables bridge access.
+
+Acceptance checks:
+- Engineering Power Console changes ship power state;
+- objective updates to return to the Bridge Command Door;
+- Bridge Command Door state changes from available to open/available.
+
+### Bridge Route Patch BR-4: Bridge access vestibule
+
+Purpose:
+- replace the current bridge placeholder with a real approach room.
+
+Acceptance checks:
+- `bridge.access` remains compatible or aliases to `bridge.access`;
+- the player can stand in a modeled vestibule outside the bridge;
+- bridge prompts do not appear from the hub unless the player is near the door.
+
+### Bridge Route Patch BR-5: Bridge deck
+
+Purpose:
+- create the final walkable bridge destination.
+
+Acceptance checks:
+- `bridge.deck` exists as a new region;
+- entering it updates the HUD to `Bridge Deck`;
+- a Bridge Command Console interaction completes or advances the objective.
+
+### Bridge Route Patch BR-6: Side-room polish
+
+Purpose:
+- make Medbay and Science/Ops feel intentional without blocking the bridge route.
+
+Acceptance checks:
+- both side rooms have basic modeling and one simple interaction;
+- route-to-bridge completion still works if the player ignores side rooms unless a later objective explicitly requires them.
+
+Patch G implementation note: renderer bootstrapping now has behavior-preserving seams (`initializeRendererFrameState`, `initializeGameplaySubsystems`, `initializeCombatRuntimeState`, `initializeGeometryBuffers`, and `initializeCanvasLifecycle`) so later patches can move gameplay, geometry, and lifecycle systems out of the monolithic renderer safely.
+
+Patch I implementation note: repeated mother-ship room/terminal map markers now flow through `motherShipInterior.props` using `kind: "map-marker"` and `appendMotherShipInteriorProps(builder, nowMs)`.
+
+Patch M implementation note: terminal console bodies now flow through `motherShipInterior.props` with `kind: "terminal-console"`, while prompts and actions remain in interactables/interactions.
+
+Patch N implementation note: room boundary and wayfinding affordances now flow through `rooms[].visual`, `shuttle3dNormalizeMotherShipRoomVisual()`, and `appendMotherShipRoomVisuals(builder, nowMs)`.
+
+Patch O implementation note: mother-ship room shell, wall, opening, door-panel, and core corridor-throat geometry now flows through `rooms[].geometry`, `shuttle3dNormalizeMotherShipRoomGeometry()`, and `appendMotherShipRoomGeometry(builder, nowMs)`.
+
+Patch O.1 corrective note: docking handoff now suppresses movement keys held from shuttle flight until release, and `corridor.trunk.geometry` carries data-defined rails/guide strips/beams so a fast post-docking walk no longer reads as empty space. The no-locked-door rule remains unchanged.
+
+Patch P implementation note: bridge viewscreen rendering now flows through `motherShipInterior.props` with `kind: "viewscreen"` and `display: "enemyShipTactical"`. The renderer resolves the display through `appendMotherShipViewscreenDisplay(builder, prop, nowMs)` and validates authored display ids against supported display programs.
+
+Patch Q implementation note: E-key actions still resolve through the safe interaction registry, but each authored interaction now carries effect expectations through `changesState`, `successStatus`, and `nextObjective`. Validation checks that declared next objectives exist and warns when an interaction has no observable success metadata. This is meant to catch “prompt appeared but E did nothing” defects earlier without granting project data arbitrary script execution.
+
+Patch R implementation note: a direct Python project-JSON validator harness now loads `webgl-demo`, `starter-game`, and `new-game` and checks mother-ship room reachability, prompt handler/effect metadata, terminal prop/hotspot coverage, objective targets, display targets, and room-bound placement before runtime. The harness also corrected the Science/Ops door hotspot so it sits inside the corridor trunk alias it declares.
+
+Patch S implementation note: `applications.html` now includes a shuttle-3D renderer module registry plus extracted room-geometry and viewscreen render modules before `scene-viewer.js`. The renderer class keeps `appendMotherShipRoomGeometry`, `appendMotherShipViewscreenDisplay`, and `appendEnemyShipTacticalDisplay` as delegating seams so gameplay call sites stay stable while implementation code moves out of the monolithic file.
+
+
+Patch T implementation note: mother-ship definitions now declare `schema`,
+`definitionVersion`, and `stateVersion`. Runtime loading passes definitions through
+`shuttle3dMigrateMotherShipInteriorDefinition(...)` before validators, renderer
+passes, or interaction code read them. The game-editor project read route mirrors
+this behavior for legacy project JSON by applying safe defaults from the current
+default project without writing those defaults back to disk.
+
+
+Patch U implementation note: the shuttle-3D surface now supports a held polygon/object annotation shortcut. Holding `P` and clicking the WebGL surface raycasts against stable data-defined targets such as `rooms[].geometry`, `motherShipInterior.props`, `motherShipInterior.interactables`, and `shuttle3d.pilotStations`. Saving the dialog writes `metadata.shuttle3d.polygonAnnotations` and notifies the Game Editor so the active project becomes dirty without changing normal gameplay controls.
+
+
+## Patch U.1. Annotation rendered primitive fallback
+
+Corrective tooling patch after Patch U.
+
+Purpose:
+
+```text
+Keep hold-P annotation stable-target-first, but add a rendered-primitive fallback
+so visible one-off bars/beams can be selected before they are promoted to data.
+```
+
+Acceptance:
+
+```text
+P+click opens annotations for visible runtime beams/bars
+data-defined targets remain preferred
+misses show a clear hint
+normal gameplay controls are unchanged when P is not held
+```
+
+
+## Patch U.2. Annotation modal input guard
+
+Corrective tooling patch after Patch U.1.
+
+Purpose:
+
+```text
+When the annotation dialog is open, suspend gameplay keyboard capture so notes,
+labels, and tags can be typed normally.
+```
+
+Acceptance:
+
+```text
+opening the modal clears active movement keys
+W/A/S/D typed in dialog fields are not consumed by movement controls
+gameplay keydown/keyup handling is skipped while the dialog is open
+closing the dialog restores normal gameplay controls
+```
+
+
+## Patch U.3. Annotation disk autosave
+
+Corrective tooling patch after Patch U.2.
+
+Purpose:
+
+```text
+Make the annotation dialog's Save annotation action persist the active project
+to project.json immediately instead of only marking the editor dirty.
+```
+
+Acceptance:
+
+```text
+annotation metadata is merged into the active scene
+the project write route is called immediately
+annotation writes are serialized to avoid content-hash races
+successful saves update the content hash and clear dirty state
+failed saves remain dirty and report an editor error
+```
+
+
+## Patch U.4. Explicit annotation save callback and disk receipt
+
+Corrective tooling patch after Patch U.3.
+
+Purpose:
+
+```text
+Route Save annotation directly into the active Game Editor save function and
+prove the annotation exists in project.json before closing the modal.
+```
+
+Acceptance:
+
+```text
+the editor passes an explicit save callback into the WebGL renderer
+the annotation dialog awaits that callback
+the project write request identifies the annotation to verify
+the server rereads project.json and returns annotation_verified
+save failures leave the dialog open with an actionable error
+the legacy window event remains fallback-only
+```
+
+
+## Patch U.5. Standalone WebGL annotation disk persistence
+
+Corrective tooling patch after Patch U.4.
+
+Purpose:
+
+```text
+Give the standalone WebGL game surface its own direct annotation save callback
+and merge one annotation into the latest project.json on disk.
+```
+
+Acceptance:
+
+```text
+WebGL Save annotation calls the annotation-specific write route
+current disk project state is preserved
+saved annotation is reread and verified
+exact write path and content hash are returned
+stale browser hashes are merged safely instead of overwriting the project
+```

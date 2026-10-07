@@ -336,6 +336,12 @@ From the repository root:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\build-main-computer-nsis-installer.experimental-v7.ps1
 ```
 
+The installer builder creates fresh Main Computer and Game component exports through
+`export-main-computer-test.ps1 -InstallerReHome`, overlays those two exports into one
+installer staging tree, verifies that the game loader and `game_projects/webgl-demo`
+payload are present, and then compiles the combined payload into `setup.exe`. You do
+not need to manually merge the two export ZIPs before building the installer.
+
 If `makensis.exe` is not on `PATH` or in the standard NSIS install directory, pass the compiler path explicitly:
 
 ```bat

@@ -250,4 +250,4 @@ Each stage keeps command, stdout, stderr, normalized JSON result, and harness st
 
 The first-Hub `add-hub` vertical slice is live: placement, accepted-state writer, FDB/Chain readers, runtime projection, Coolify deployment adapter, queued-deployment wait, Hub observer, operation store, and add/finalize protocol are implemented and tested.
 
-The remaining lifecycle gap is `remove-hub`, including ordinary contraction and guarded `1 -> 0` deletion. Until that protocol is implemented, its internal CLI stages must fail explicitly rather than delegating to the legacy mixed deployers.
+The Hub membership lifecycle now implements both `add-hub` and `remove-hub`, including ordinary contraction and guarded `1 -> 0` deletion. Removal freezes the exact accepted Hub placement and Coolify application identity, deletes only that deployment, proves absence, and advances Hub membership authority without silently rectifying FDB or Chain dependency contracts.

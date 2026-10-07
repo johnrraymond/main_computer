@@ -40,6 +40,11 @@ networks:
           api_token: token-a
           project_uuid: project-a
           server_uuid: server-a
+        coolify-c:
+          url: http://coolify-c.invalid
+          api_token: token-c
+          project_uuid: project-c
+          server_uuid: server-c
 """.strip() + "\n",
         encoding="utf-8",
     )
@@ -119,6 +124,91 @@ def test_add_hub_prep_from_unborn_discovers_both_dependency_contracts(tmp_path: 
     assert op["target"]["environment_name"] == "mainnet-hubs"
     assert (ctx.fdb_state_root / "mainnet" / "consumer-contract.json").is_file()
     assert (ctx.chain_state_root / "mainnet" / "consumer-contract.json").is_file()
+
+
+def test_first_hub_uses_enumerated_identity_and_keeps_network_ingress_separate(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+
+    prepared = add_hub.prep(
+        ctx,
+        "mainnet",
+        "mainneta-hub1",
+        chain_verifier=lambda _contract: {"verified": True, "reason": "test-chain-proof"},
+        deployment_inspector=lambda _target: {"present": False},
+    )
+
+    op = require_operation(ctx, "mainnet", prepared["details"]["operation_id"])
+    target = op["target"]
+    assert target["public_url"] == "https://mainneta-hub1.greatlibrary.io"
+    assert target["network_ingress_url"] == "https://mainnet-hub.greatlibrary.io"
+    assert target["serve_network_ingress"] is True
+    assert target["topology"]["entry_urls"] == ["https://mainnet-hub.greatlibrary.io"]
+    assert target["topology"]["hubs"] == [
+        {
+            "hub_id": "mainneta-hub1",
+            "hub_url": "https://mainneta-hub1.greatlibrary.io",
+            "public_url": "https://mainneta-hub1.greatlibrary.io",
+            "roles": ["entry", "execution"],
+        }
+    ]
+
+
+def test_new_controller_hub_gets_its_own_enumerated_url_and_ingress_alias(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    first = add_hub.prep(
+        ctx,
+        "mainnet",
+        "mainneta-hub1",
+        chain_verifier=lambda _contract: {"verified": True, "reason": "test-chain-proof"},
+        deployment_inspector=lambda _target: {"present": False},
+    )
+    first_id = first["details"]["operation_id"]
+    add_hub.do(ctx, "mainnet", first_id, deployer=lambda _target: {"application_uuid": "app-a", "action": "created"}, observer=_observer)
+    add_hub.finalize(ctx, "mainnet", first_id, observer=_observer)
+
+    second = add_hub.prep(
+        ctx,
+        "mainnet",
+        "mainnetc-hub1",
+        chain_verifier=lambda _contract: {"verified": True, "reason": "test-chain-proof"},
+        deployment_inspector=lambda _target: {"present": False},
+    )
+    target = require_operation(ctx, "mainnet", second["details"]["operation_id"])["target"]
+    assert target["public_url"] == "https://mainnetc-hub1.greatlibrary.io"
+    assert target["network_ingress_url"] == "https://mainnet-hub.greatlibrary.io"
+    assert target["serve_network_ingress"] is True
+    assert [hub["public_url"] for hub in target["topology"]["hubs"]] == [
+        "https://mainneta-hub1.greatlibrary.io",
+        "https://mainnetc-hub1.greatlibrary.io",
+    ]
+
+
+def test_second_hub_on_same_controller_does_not_claim_shared_ingress_host_rule(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    first = add_hub.prep(
+        ctx,
+        "mainnet",
+        "mainneta-hub1",
+        chain_verifier=lambda _contract: {"verified": True, "reason": "test-chain-proof"},
+        deployment_inspector=lambda _target: {"present": False},
+    )
+    first_id = first["details"]["operation_id"]
+    add_hub.do(ctx, "mainnet", first_id, deployer=lambda _target: {"application_uuid": "app-a1", "action": "created"}, observer=_observer)
+    add_hub.finalize(ctx, "mainnet", first_id, observer=_observer)
+
+    second = add_hub.prep(
+        ctx,
+        "mainnet",
+        "mainneta-hub2",
+        chain_verifier=lambda _contract: {"verified": True, "reason": "test-chain-proof"},
+        deployment_inspector=lambda _target: {"present": False},
+    )
+    target = require_operation(ctx, "mainnet", second["details"]["operation_id"])["target"]
+    assert target["public_url"] == "https://mainneta-hub2.greatlibrary.io"
+    assert target["serve_network_ingress"] is False
 
 
 def test_unborn_add_hub_round_trip_accepts_generation_one_after_both_proofs(tmp_path: Path) -> None:

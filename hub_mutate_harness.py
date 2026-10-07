@@ -37,6 +37,15 @@ STEPS = (
     "final-inspect",
 )
 MUTATING_STEPS = frozenset({"do", "finalize"})
+ADD_HUB_REPREP_DO_ERROR_CODES = frozenset(
+    {
+        "HUB_BRIDGE_ESCROW_NOT_LIVE",
+        "HUB_BRIDGE_ESCROW_INTERFACE_INVALID",
+        "HUB_BRIDGE_CONTROLLER_NOT_AUTHORIZED",
+        "HUB_BRIDGE_SIGNER_ESCROW_MISMATCH",
+        "HUB_BRIDGE_SIGNER_CHAIN_MISMATCH",
+    }
+)
 
 
 class HarnessError(RuntimeError):
@@ -103,6 +112,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--hub")
     parser.add_argument("--allow-full-deletion", action="store_true")
     parser.add_argument(
+        "--force-git",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "for add-hub, block when relevant Hub runtime files have uncommitted local changes; "
+            "--no-force-git warns but does not block"
+        ),
+    )
+    parser.add_argument(
         "--repo-root",
         type=Path,
         default=Path(__file__).resolve().parent,
@@ -121,6 +139,7 @@ class Harness:
         self.network = str(args.network)
         self.hub = str(args.hub or "").strip()
         self.allow_full_deletion = bool(args.allow_full_deletion)
+        self.force_git = bool(getattr(args, "force_git", True))
         self._prepared_boundary_printed = False
         self._resumed_existing_run = False
 
@@ -129,6 +148,8 @@ class Harness:
                 raise HarnessError("inspect does not take --hub")
             if self.allow_full_deletion:
                 raise HarnessError("--allow-full-deletion applies only to remove-hub")
+            if not self.force_git:
+                raise HarnessError("--no-force-git applies only to add-hub")
             self.run_dir: Path | None = None
             self.state: dict[str, Any] = {}
             return
@@ -137,6 +158,8 @@ class Harness:
             raise HarnessError(f"{self.operation} requires --hub")
         if self.allow_full_deletion and self.operation != "remove-hub":
             raise HarnessError("--allow-full-deletion applies only to remove-hub")
+        if not self.force_git and self.operation != "add-hub":
+            raise HarnessError("--no-force-git applies only to add-hub")
 
         existing = self._find_unfinished_run()
         if existing is not None:
@@ -160,6 +183,7 @@ class Harness:
             "network": self.network,
             "hub": self.hub,
             "allow_full_deletion": self.allow_full_deletion,
+            "force_git": self.force_git,
             "full_deletion": False,
             "rebirth": False,
             "operation_id": None,
@@ -170,9 +194,13 @@ class Harness:
             "target_hub_count": None,
             "resolved_controller": None,
             "resolved_host": None,
+            "public_url": None,
+            "network_ingress_url": None,
+            "serve_network_ingress": False,
             "fdb_contract": None,
             "chain_contract": None,
             "dependency_rectification_required": [],
+            "preexisting_dependency_drift": [],
             "last_completed_step": None,
         }
         self._write_state()
@@ -198,6 +226,8 @@ class Harness:
             if payload.get("hub") != self.hub:
                 continue
             if bool(payload.get("allow_full_deletion", False)) != self.allow_full_deletion:
+                continue
+            if self.operation == "add-hub" and bool(payload.get("force_git", True)) != self.force_git:
                 continue
             if payload.get("last_completed_step") == "final-inspect":
                 continue
@@ -232,13 +262,16 @@ class Harness:
         return command
 
     def do_cmd(self) -> list[str]:
-        return self.control_cmd(
+        command = self.control_cmd(
             self.operation,
             "do",
             self.network,
             "--operation-id",
             self._required_state("operation_id"),
         )
+        if self.operation == "add-hub" and not self.force_git:
+            command.append("--no-force-git")
+        return command
 
     def operation_inspect_cmd(self) -> list[str]:
         return self.control_cmd(
@@ -272,7 +305,16 @@ class Harness:
             print(f"Resuming unfinished {self.operation} for {self.hub}.")
 
         completed = self.state.get("last_completed_step")
-        start_index = 0 if completed not in STEPS else STEPS.index(str(completed)) + 1
+        # A completed pre-inspect is only an observation, not a frozen mutation
+        # boundary. If prep previously failed and the harness is resumed later,
+        # accepted Hub authority may have advanced in the meantime. Refresh the
+        # observation before prep so the human-visible starting state matches the
+        # authority that prep is about to freeze.
+        if self._resumed_existing_run and completed == "pre-inspect":
+            print("Refreshing pre-inspect before prep; accepted Hub authority may have changed since the prior attempt.")
+            start_index = STEPS.index("pre-inspect")
+        else:
+            start_index = 0 if completed not in STEPS else STEPS.index(str(completed)) + 1
         for step in STEPS[start_index:]:
             if step in MUTATING_STEPS and not self._mutation_authorized():
                 if not self._prepared_boundary_printed:
@@ -344,6 +386,14 @@ class Harness:
             encoding="utf-8",
         )
         if proc.returncode != 0 or payload.get("ok") is not True:
+            error = payload.get("error")
+            error_code = str(error.get("code") or "") if isinstance(error, dict) else ""
+            if (
+                step == "do"
+                and self.operation == "add-hub"
+                and error_code in ADD_HUB_REPREP_DO_ERROR_CODES
+            ):
+                self._invalidate_prepared_add_hub_after_dependency_failure(error_code)
             raise HarnessError(
                 f"{step} failed (exit={proc.returncode}): {payload.get('error')}; "
                 f"stdout/stderr saved under {prefix}.*"
@@ -353,16 +403,60 @@ class Harness:
             raise HarnessError(f"{step} did not return a result object")
         return result
 
+    def _invalidate_prepared_add_hub_after_dependency_failure(self, error_code: str) -> None:
+        """Force the next retry back through pre-inspect/prep after Chain repair.
+
+        Contract redeployment changes the Chain consumer contract and therefore
+        invalidates the dependency projection frozen by the old add-hub prep.
+        Keeping that old operation id would only turn the next retry into a
+        signer/escrow mismatch.  The harness keeps the run directory/evidence but
+        deliberately reopens the read-only observation boundary.
+        """
+
+        self.state["last_completed_step"] = "pre-inspect"
+        for key in (
+            "operation_id",
+            "target_generation",
+            "target_hub_count",
+            "resolved_controller",
+            "resolved_host",
+            "public_url",
+            "network_ingress_url",
+            "fdb_contract",
+            "chain_contract",
+            "chain_preflight",
+        ):
+            self.state[key] = None
+        self.state["serve_network_ingress"] = False
+        self.state["rebirth"] = False
+        self._write_state()
+        print(
+            "Hub dependency preflight invalidated the frozen add-hub prep "
+            f"({error_code}); after repairing/deploying the Chain contracts, rerun the same add-hub command."
+        )
+
     def _validate_step(self, step: str, result: dict[str, Any]) -> None:
         if step == "pre-inspect":
             status = result.get("status")
+            self.state["preexisting_dependency_drift"] = []
             if self.operation == "add-hub" and status in {"unborn", "accepted-empty"}:
                 key = "unborn_topology_verification" if status == "unborn" else "empty_topology_verification"
                 verification = result.get(key)
                 if not isinstance(verification, dict) or verification.get("verified") is not True:
                     raise HarnessError(f"pre-inspect could not verify {status} Hub state: {verification}")
+            elif status != "accepted":
+                raise HarnessError(
+                    f"pre-inspect requires an accepted Hub topology; observed status={status!r}"
+                )
             else:
-                self._require_accepted_verified(result, label="pre-inspect")
+                verification = result.get("topology_verification")
+                if not isinstance(verification, dict) or verification.get("verified") is not True:
+                    drift = self._dependency_drift_only(result)
+                    if not drift:
+                        raise HarnessError(
+                            f"pre-inspect could not independently verify accepted Hub state: {verification}"
+                        )
+                    self.state["preexisting_dependency_drift"] = drift
             generation = result.get("accepted_generation")
             if not isinstance(generation, int) or isinstance(generation, bool):
                 raise HarnessError("pre-inspect did not report an accepted generation")
@@ -379,8 +473,32 @@ class Harness:
                 raise HarnessError(f"prep did not reach prepared state: {result}")
             details = _mapping(result.get("details"), "prep.details")
             self.state["operation_id"] = _text(details.get("operation_id"), "prep operation_id")
-            self.state["target_generation"] = details.get("target_generation")
+            target_generation = details.get("target_generation")
+            if not isinstance(target_generation, int) or isinstance(target_generation, bool):
+                raise HarnessError("prep did not report an integer target_generation")
+            self.state["target_generation"] = target_generation
             self.state["target_hub_count"] = details.get("target_hub_count")
+
+            # Prep is the authoritative freeze point. Newer Hub Control versions
+            # report the accepted prestate they actually froze; use it to reconcile
+            # any earlier pre-inspect snapshot that became stale before prep.
+            prep_generation = details.get("accepted_generation")
+            if prep_generation is not None:
+                if not isinstance(prep_generation, int) or isinstance(prep_generation, bool):
+                    raise HarnessError("prep accepted_generation is not an integer")
+                if target_generation != prep_generation + 1:
+                    raise HarnessError(
+                        f"prep generation boundary is inconsistent: accepted={prep_generation}, target={target_generation}"
+                    )
+                self.state["starting_generation"] = prep_generation
+            prep_hub_count = details.get("accepted_hub_count")
+            if prep_hub_count is not None:
+                if not isinstance(prep_hub_count, int) or isinstance(prep_hub_count, bool) or prep_hub_count < 0:
+                    raise HarnessError("prep accepted_hub_count is not a non-negative integer")
+                self.state["starting_hub_count"] = prep_hub_count
+            prep_status = details.get("accepted_status")
+            if prep_status not in (None, ""):
+                self.state["starting_status"] = str(prep_status)
             self.state["full_deletion"] = bool(details.get("full_deletion"))
             self.state["rebirth"] = bool(details.get("rebirth"))
             if self.state["full_deletion"] and not self.allow_full_deletion:
@@ -393,6 +511,11 @@ class Harness:
                 self.state["resolved_controller"] = _text(controller, "prep controller_id")
             if host not in (None, ""):
                 self.state["resolved_host"] = _text(host, "prep host_id")
+            if details.get("public_url") not in (None, ""):
+                self.state["public_url"] = _text(details.get("public_url"), "prep public_url")
+            if details.get("network_ingress_url") not in (None, ""):
+                self.state["network_ingress_url"] = _text(details.get("network_ingress_url"), "prep network_ingress_url")
+            self.state["serve_network_ingress"] = bool(details.get("serve_network_ingress"))
             self.state["fdb_contract"] = details.get("fdb_contract")
             self.state["chain_contract"] = details.get("chain_contract")
             self.state["chain_preflight"] = details.get("chain_preflight")
@@ -419,7 +542,7 @@ class Harness:
             details = _mapping(result.get("details"), "finalize.details")
             if details.get("verified") is not True:
                 raise HarnessError("finalize did not report verified=true")
-            expected = int(self._required_state("starting_generation")) + 1
+            expected = int(self._required_state("target_generation"))
             if details.get("accepted_generation") != expected:
                 raise HarnessError(
                     f"finalize generation mismatch: expected {expected}, got {details.get('accepted_generation')}"
@@ -442,7 +565,7 @@ class Harness:
                     f"final-inspect requires accepted Hub authority; observed status={result.get('status')!r}"
                 )
 
-            expected = int(self._required_state("starting_generation")) + 1
+            expected = int(self._required_state("target_generation"))
             if result.get("accepted_generation") != expected:
                 raise HarnessError(
                     f"final inspect generation mismatch: expected {expected}, got {result.get('accepted_generation')}"
@@ -575,7 +698,7 @@ class Harness:
 
     def _print_step_result(self, step: str, result: dict[str, Any]) -> None:
         if step in {"pre-inspect", "final-inspect"}:
-            self._print_inspect_stage_result(result)
+            self._print_inspect_stage_result(result, step=step)
             return
         if step == "prep":
             return
@@ -592,12 +715,25 @@ class Harness:
                 print(f"deployment status:    {details.get('deployment_status')}")
             if details.get("deployment_commit"):
                 print(f"deployment commit:    {details.get('deployment_commit')}")
+            source_check = details.get("git_source_check")
+            if isinstance(source_check, dict) and source_check.get("checked") is True:
+                if source_check.get("dirty"):
+                    mode = "warning/override" if not source_check.get("force_git") else "blocked"
+                    print(f"Git source check:     dirty ({mode})")
+                else:
+                    print("Git source check:     clean")
             if "hub_running" in details:
                 print(f"Hub running:          {'verified' if details.get('hub_running') else 'not verified'}")
             if "fdb_adoption_verified" in details:
                 print(f"FDB adoption:         {'verified' if details.get('fdb_adoption_verified') else 'not verified'}")
             if "chain_adoption_verified" in details:
                 print(f"Chain adoption:       {'verified' if details.get('chain_adoption_verified') else 'not verified'}")
+            if "bridge_signer_verified" in details:
+                print(f"Bridge signing:       {'verified' if details.get('bridge_signer_verified') else 'not verified'}")
+            signer = details.get("bridge_signer")
+            if isinstance(signer, dict) and signer.get("configured"):
+                if signer.get("bridge_controller_address"):
+                    print(f"Bridge controller:    {signer.get('bridge_controller_address')}")
             if "deployment_deleted" in details:
                 print(f"deployment deletion:  {'complete' if details.get('deployment_deleted') else 'not complete'}")
             return
@@ -615,7 +751,7 @@ class Harness:
                 print(f"accepted generation:  {details.get('accepted_generation')}")
             print(f"accepted authority:   {'advanced' if details.get('verified') is True else 'not advanced'}")
 
-    def _print_inspect_stage_result(self, result: dict[str, Any]) -> None:
+    def _print_inspect_stage_result(self, result: dict[str, Any], *, step: str) -> None:
         print(f"status:               {result.get('status')}")
         if result.get("accepted_generation") is not None:
             print(f"accepted generation:  {result.get('accepted_generation')}")
@@ -629,7 +765,15 @@ class Harness:
         )
         if isinstance(verification, dict):
             print(f"verification:         {'verified' if verification.get('verified') is True else 'not verified'}")
-        if self.state.get("dependency_rectification_required"):
+        if step == "pre-inspect" and self.state.get("preexisting_dependency_drift"):
+            print("membership authority: usable; dependency drift only")
+            for item in self.state["preexisting_dependency_drift"]:
+                dependency = str(item.get("dependency") or "dependency").upper()
+                print(
+                    f"pre-existing drift:   {item.get('hub_id')} {dependency} "
+                    f"generation {item.get('adopted_generation')} -> {item.get('current_generation')}"
+                )
+        if step == "final-inspect" and self.state.get("dependency_rectification_required"):
             print("membership result:    verified against frozen mutation target")
             for item in self.state["dependency_rectification_required"]:
                 dependency = str(item.get("dependency") or "dependency").upper()
@@ -688,6 +832,11 @@ class Harness:
             print(f"logical controller:   {self.state['resolved_controller']}")
         if self.state.get("resolved_host"):
             print(f"resolved host:        {self.state['resolved_host']}")
+        if self.state.get("public_url"):
+            print(f"direct Hub URL:       {self.state['public_url']}")
+        if self.state.get("network_ingress_url"):
+            print(f"network ingress:      {self.state['network_ingress_url']}")
+            print(f"ingress alias here:   {'yes' if self.state.get('serve_network_ingress') else 'no'}")
         if self.state.get("starting_generation") is not None:
             print(f"accepted generation:  {self.state['starting_generation']}")
         if self.state.get("target_hub_count") is not None:

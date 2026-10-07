@@ -288,3 +288,210 @@ def test_json_rpc_client_wraps_http_forbidden_with_method_and_body(monkeypatch) 
 
     with pytest.raises(RuntimeError, match="Chain RPC request eth_getTransactionReceipt failed with HTTP 403"):
         JsonRpcClient("https://rpc.example.invalid", timeout_s=3).transaction_receipt("0x" + "ab" * 32)
+
+
+def test_bridge_signer_bundle_loads_as_hub_admin_deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from main_computer.hub_credit_bridge_completion import load_bridge_deployment, load_hub_admin_private_key
+
+    signer = tmp_path / "bridge-signer-bundle.json"
+    private_key = "0x" + "44" * 32
+    signer.write_text(
+        __import__("json").dumps(
+            {
+                "schema": "main-computer.bridge-signer.v1",
+                "network": "signer-test",
+                "chain_id": 42424240,
+                "chain_rpc_url": "https://mainnet-rpc.example.invalid",
+                "contracts": {
+                    "hub_credit_bridge_escrow": {
+                        "address": CONTRACT,
+                        "bridge_controller_address": ADMIN,
+                    }
+                },
+                "bridge_controller": {"address": ADMIN, "private_key": private_key},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_NETWORK", "signer-test")
+    config = MainComputerConfig(workspace=tmp_path, hub_root=tmp_path / "hub")
+
+    deployment = load_bridge_deployment(config, deployment_manifest_path=signer)
+
+    assert deployment.chain_id == 42424240
+    assert deployment.rpc_url == "https://mainnet-rpc.example.invalid"
+    assert deployment.contract_address == CONTRACT
+    assert deployment.bridge_controller_address == ADMIN
+    assert deployment.hub_admin_address == ADMIN
+    assert deployment.hub_admin_wallet_path == signer
+    assert load_hub_admin_private_key(deployment) == private_key
+
+
+def test_hub_executes_bridge_reconciliation_with_controller_signer(tmp_path: Path) -> None:
+    class FakeReconciliationClient:
+        def __init__(self) -> None:
+            self.rectify_calls: list[tuple] = []
+            self.withdraw_calls: list[dict] = []
+
+        def deposit_record(self, deposit_id: str) -> DepositRecord:
+            assert deposit_id == DEPOSIT_ID
+            return DepositRecord(
+                exists=True,
+                completed=True,
+                account=WALLET,
+                payer=PAYER,
+                amount_units=2 * COMPUTE_CREDIT_BASE_UNITS,
+            )
+
+        def rectify_spend(self, account: str, amount_units: int, rectification_id: str, memo: str) -> dict:
+            self.rectify_calls.append((account, amount_units, rectification_id, memo))
+            return {"tx_hash": "0x" + "66" * 32, "receipt": {"status": "0x1"}}
+
+        def release_withdrawal(self, **kwargs) -> dict:
+            self.withdraw_calls.append(dict(kwargs))
+            return {"tx_hash": "0x" + "77" * 32, "receipt": {"status": "0x1"}}
+
+    ledger = HubCreditLedger(tmp_path / "hub" / "compute_credits")
+    ledger.issue(account_id=WALLET, owner_address=WALLET, credits=2, memo="test bridge funding")
+    ledger.spend_request_credit_wei(
+        account_id=WALLET,
+        request_id="request-1",
+        credit_wei=COMPUTE_CREDIT_BASE_UNITS,
+        memo="test request charge",
+    )
+    client = FakeReconciliationClient()
+    service = HubCreditBridgeCompletionService(
+        ledger,
+        MainComputerConfig(workspace=tmp_path, hub_root=tmp_path / "hub"),
+        client=client,
+        deployment=_deployment(tmp_path),
+    )
+    request_status = {
+        "request_id": "request-1",
+        "state": "completed",
+        "account_id": WALLET,
+        "bridge_deposit_id": DEPOSIT_ID,
+    }
+
+    result = service.execute_bridge_reconciliation(
+        {
+            "request_id": "request-1",
+            "deposit_id": DEPOSIT_ID,
+            "wallet_address": WALLET,
+            "expected_bridge_credit_wei": str(2 * COMPUTE_CREDIT_BASE_UNITS),
+            "expected_charged_credit_wei": str(COMPUTE_CREDIT_BASE_UNITS),
+        },
+        request_status=request_status,
+    )
+
+    assert result["ok"] is True
+    assert result["signing_mode"] == "hub-bridge-controller"
+    assert result["bridge_credit_wei"] == str(2 * COMPUTE_CREDIT_BASE_UNITS)
+    assert result["charged_credit_wei"] == str(COMPUTE_CREDIT_BASE_UNITS)
+    assert result["rectified_credit_wei"] == str(COMPUTE_CREDIT_BASE_UNITS)
+    assert result["withdrawn_credit_wei"] == str(COMPUTE_CREDIT_BASE_UNITS)
+    assert len(client.rectify_calls) == 1
+    rect_account, rect_amount, rect_id, rect_memo = client.rectify_calls[0]
+    assert rect_account == WALLET
+    assert rect_amount == COMPUTE_CREDIT_BASE_UNITS
+    assert rect_id == result["rectification_id"]
+    assert rect_memo == "hub request bridge reconciliation request-1"
+    assert client.withdraw_calls == [
+        {
+            "account": WALLET,
+            "recipient": WALLET,
+            "amount_units": COMPUTE_CREDIT_BASE_UNITS,
+            "withdrawal_id": result["withdrawal_id"],
+            "memo": "hub request bridge reconciliation request-1",
+        }
+    ]
+    assert result["rectification"]["tx_hash"] == "0x" + "66" * 32
+    assert result["withdrawal"]["tx_hash"] == "0x" + "77" * 32
+
+
+def test_hub_bridge_reconciliation_rejects_client_amount_mismatch_before_signing(tmp_path: Path) -> None:
+    class FakeReconciliationClient:
+        def __init__(self) -> None:
+            self.sign_calls = 0
+
+        def deposit_record(self, deposit_id: str) -> DepositRecord:
+            return DepositRecord(
+                exists=True,
+                completed=True,
+                account=WALLET,
+                payer=PAYER,
+                amount_units=2 * COMPUTE_CREDIT_BASE_UNITS,
+            )
+
+        def rectify_spend(self, *args, **kwargs) -> dict:
+            self.sign_calls += 1
+            return {}
+
+        def release_withdrawal(self, **kwargs) -> dict:
+            self.sign_calls += 1
+            return {}
+
+    ledger = HubCreditLedger(tmp_path / "hub" / "compute_credits")
+    ledger.issue(account_id=WALLET, owner_address=WALLET, credits=2, memo="test bridge funding")
+    ledger.spend_request_credit_wei(
+        account_id=WALLET,
+        request_id="request-1",
+        credit_wei=COMPUTE_CREDIT_BASE_UNITS,
+        memo="test request charge",
+    )
+    client = FakeReconciliationClient()
+    service = HubCreditBridgeCompletionService(
+        ledger,
+        MainComputerConfig(workspace=tmp_path, hub_root=tmp_path / "hub"),
+        client=client,
+        deployment=_deployment(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="client charged amount disagrees with Hub ledger"):
+        service.execute_bridge_reconciliation(
+            {
+                "request_id": "request-1",
+                "deposit_id": DEPOSIT_ID,
+                "wallet_address": WALLET,
+                "expected_charged_credit_wei": str(2 * COMPUTE_CREDIT_BASE_UNITS),
+            },
+            request_status={
+                "request_id": "request-1",
+                "state": "completed",
+                "account_id": WALLET,
+                "bridge_deposit_id": DEPOSIT_ID,
+            },
+        )
+
+    assert client.sign_calls == 0
+
+
+def test_hub_bridge_reconciliation_rejects_unbound_deposit_before_signing(tmp_path: Path) -> None:
+    class FakeReconciliationClient:
+        def __init__(self) -> None:
+            self.deposit_reads = 0
+
+        def deposit_record(self, deposit_id: str) -> DepositRecord:
+            self.deposit_reads += 1
+            raise AssertionError("unbound deposit must be rejected before chain access")
+
+    client = FakeReconciliationClient()
+    service = HubCreditBridgeCompletionService(
+        HubCreditLedger(tmp_path / "hub" / "compute_credits"),
+        MainComputerConfig(workspace=tmp_path, hub_root=tmp_path / "hub"),
+        client=client,
+        deployment=_deployment(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="bridge deposit does not match Hub request binding"):
+        service.execute_bridge_reconciliation(
+            {"request_id": "request-1", "deposit_id": "0x" + "cd" * 32},
+            request_status={
+                "request_id": "request-1",
+                "state": "completed",
+                "account_id": WALLET,
+                "bridge_deposit_id": DEPOSIT_ID,
+            },
+        )
+
+    assert client.deposit_reads == 0

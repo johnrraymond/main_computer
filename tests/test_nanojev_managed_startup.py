@@ -155,4 +155,65 @@ def test_manager_builds_image_only_on_first_use_when_missing() -> None:
     assert 'self.ensure_image()' in manager
     assert 'self._compose("build", "--progress", "plain", "nanojev", check=False)' in manager
     assert 'self._compose("up", "-d", "--no-build", "nanojev", check=False)' in manager
-    assert 'parser.add_argument("--image-name", default="main-computer/nanojev:unified-games-v1")' in manager
+    assert 'parser.add_argument("--image-name", default="main-computer/nanojev:managed-v2")' in manager
+    assert 'default=os.environ.get("MAIN_COMPUTER_NANOJEV_CHECKPOINT", "champion")' in manager
+    assert 'default=os.environ.get("MAIN_COMPUTER_NANOJEV_HF_REPO", "johnrraymond/NanoJev-CLEF")' in manager
+
+
+def test_managed_nanojev_defaults_to_public_clef_champion_and_keeps_unified_fallback() -> None:
+    compose = (ROOT / "docker-compose.nanojev.yml").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "docker" / "nanojev" / "Dockerfile").read_text(encoding="utf-8")
+    entrypoint = (ROOT / "docker" / "nanojev" / "entrypoint.py").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert 'MAIN_COMPUTER_NANOJEV_CHECKPOINT: "${MAIN_COMPUTER_NANOJEV_CHECKPOINT:-champion}"' in compose
+    assert 'MAIN_COMPUTER_NANOJEV_HF_REPO: "${MAIN_COMPUTER_NANOJEV_HF_REPO:-johnrraymond/NanoJev-CLEF}"' in compose
+    assert 'image: main-computer/nanojev:managed-v2' in compose
+    assert 'nanojev-hf-cache:/root/.cache/huggingface' in compose
+    assert 'selector == "unified-games-v1"' in entrypoint
+    assert '/opt/nanojev/source/scripts/serve_decisions.py' in entrypoint
+    assert '/opt/nanojev-clef-service/clef_service.py' in entrypoint
+    assert 'COPY tools/nanojev_three_backbone_clef_tinystories_structured_supervision_train.py' in dockerfile
+    assert '"--image-name", "main-computer/nanojev:managed-v2"' in helper
+    assert 'MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS" "900"' in helper
+
+
+
+def test_idle_unload_next_request_starts_container_again_so_checkpoint_is_reresolved() -> None:
+    module = _load_manager_module()
+
+    class FakeController:
+        backend_url = "http://127.0.0.1:9766"
+
+        def __init__(self) -> None:
+            self.running = False
+            self.starts = 0
+            self.stops = 0
+
+        def health(self) -> bool:
+            return self.running
+
+        def start(self) -> None:
+            self.starts += 1
+            self.running = True
+
+        def stop(self) -> None:
+            self.stops += 1
+            self.running = False
+
+    now = [0.0]
+    controller = FakeController()
+    lifecycle = module.NanoJevLifecycle(controller, idle_seconds=5.0, clock=lambda: now[0])
+
+    lifecycle.begin_request()
+    lifecycle.end_request()
+    assert controller.starts == 1
+
+    now[0] = 5.0
+    assert lifecycle.sweep() is True
+    assert controller.stops == 1
+
+    now[0] = 6.0
+    lifecycle.begin_request()
+    assert controller.starts == 2
+    lifecycle.end_request()

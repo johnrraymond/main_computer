@@ -270,17 +270,6 @@ def test_bridge_signer_bundle_enables_non_smoke_payout_without_smoke_client(tmp_
         + "\n",
         encoding="utf-8",
     )
-    commands: list[list[str]] = []
-
-    def fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
-        commands.append(command)
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps({"transactionHash": "0x" + f"{len(commands):064x}"}) + "\n",
-            stderr="",
-        )
-
     backend = build_hub_bridge_backend(
         backend_name="dev-chain",
         repo_root=tmp_path,
@@ -290,7 +279,17 @@ def test_bridge_signer_bundle_enables_non_smoke_payout_without_smoke_client(tmp_
         allow_missing_bridge_signer=False,
     )
     assert isinstance(backend, BridgeSignerHubBridgeBackend)
-    backend.adapter.command_runner = fake_runner  # type: ignore[misc]
+
+    class FakeContractClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def release_withdrawal(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(dict(kwargs))
+            return {"tx_hash": "0x" + "1".zfill(64), "receipt": {"status": "0x1"}}
+
+    fake_contract_client = FakeContractClient()
+    backend.contract_client = fake_contract_client  # type: ignore[assignment]
 
     status = backend.status()
     assert status["mode"] == "bridge-signer"
@@ -310,12 +309,13 @@ def test_bridge_signer_bundle_enables_non_smoke_payout_without_smoke_client(tmp_
         }
     )
 
-    assert len(commands) == 1
-    assert "--private-key" in commands[0]
+    assert len(fake_contract_client.calls) == 1
+    assert fake_contract_client.calls[0]["account"] == "0x1111111111111111111111111111111111111111"
+    assert fake_contract_client.calls[0]["recipient"] == "0x3333333333333333333333333333333333333333"
     assert metadata["bridge_backend"] == "dev-chain"
     assert metadata["bridge_backend_operation"] == "payout_confirmation"
     assert metadata["dev_chain"]["transaction_hashes"] == ["0x" + "1".zfill(64)]
-    assert metadata["dev_chain"]["movement"]["transactions"][0]["command"].count("<redacted>") == 1
+    assert metadata["dev_chain"]["movement"]["transactions"][0]["command"] == []
 
 
 def test_bridge_signer_bundle_fails_deposit_confirmation_closed(tmp_path: Path) -> None:

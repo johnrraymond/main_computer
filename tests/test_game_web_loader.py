@@ -9,7 +9,7 @@ from main_computer.game_web_loader import GameWebLoaderError, load_game_manifest
 
 
 def write_manifest(root: Path, game_id: str, bundles: dict[str, list[str]]) -> None:
-    game_root = root / "games" / game_id
+    game_root = root / "game_projects" / game_id
     game_root.mkdir(parents=True, exist_ok=True)
     (game_root / "game.json").write_text(
         json.dumps(
@@ -25,7 +25,7 @@ def write_manifest(root: Path, game_id: str, bundles: dict[str, list[str]]) -> N
 
 
 def test_reads_manifest_bundle_in_declared_order(tmp_path: Path) -> None:
-    game_root = tmp_path / "games" / "alpha"
+    game_root = tmp_path / "game_projects" / "alpha"
     game_root.mkdir(parents=True)
     (game_root / "a.js").write_text("alpha", encoding="utf-8")
     (game_root / "b.js").write_text("beta", encoding="utf-8")
@@ -37,7 +37,7 @@ def test_reads_manifest_bundle_in_declared_order(tmp_path: Path) -> None:
 
 
 def test_expands_game_local_includes_relative_to_containing_file(tmp_path: Path) -> None:
-    game_root = tmp_path / "games" / "alpha"
+    game_root = tmp_path / "game_projects" / "alpha"
     nested = game_root / "web" / "scripts"
     nested.mkdir(parents=True)
     (nested / "state.js").write_text("const state = 7;", encoding="utf-8")
@@ -52,17 +52,17 @@ def test_expands_game_local_includes_relative_to_containing_file(tmp_path: Path)
 
 def test_rejects_bundle_path_escape(tmp_path: Path) -> None:
     write_manifest(tmp_path, "alpha", {"runtime": ["../outside.js"]})
-    (tmp_path / "games" / "outside.js").write_text("bad", encoding="utf-8")
+    (tmp_path / "game_projects" / "outside.js").write_text("bad", encoding="utf-8")
 
     with pytest.raises(GameWebLoaderError, match="stay relative"):
         read_game_bundle(tmp_path, "runtime", "alpha")
 
 
 def test_rejects_game_include_path_escape(tmp_path: Path) -> None:
-    game_root = tmp_path / "games" / "alpha"
+    game_root = tmp_path / "game_projects" / "alpha"
     game_root.mkdir(parents=True)
     (game_root / "main.js").write_text("<!-- @include ../outside.js -->", encoding="utf-8")
-    (tmp_path / "games" / "outside.js").write_text("bad", encoding="utf-8")
+    (tmp_path / "game_projects" / "outside.js").write_text("bad", encoding="utf-8")
     write_manifest(tmp_path, "alpha", {"runtime": ["main.js"]})
 
     with pytest.raises(GameWebLoaderError, match="include path must stay relative"):
@@ -70,7 +70,7 @@ def test_rejects_game_include_path_escape(tmp_path: Path) -> None:
 
 
 def test_rejects_recursive_game_include(tmp_path: Path) -> None:
-    game_root = tmp_path / "games" / "alpha"
+    game_root = tmp_path / "game_projects" / "alpha"
     game_root.mkdir(parents=True)
     (game_root / "a.js").write_text("<!-- @include b.js -->", encoding="utf-8")
     (game_root / "b.js").write_text("<!-- @include a.js -->", encoding="utf-8")
@@ -81,7 +81,7 @@ def test_rejects_recursive_game_include(tmp_path: Path) -> None:
 
 
 def test_rejects_manifest_identity_mismatch(tmp_path: Path) -> None:
-    game_root = tmp_path / "games" / "alpha"
+    game_root = tmp_path / "game_projects" / "alpha"
     game_root.mkdir(parents=True)
     (game_root / "game.json").write_text(
         json.dumps(

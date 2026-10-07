@@ -31,6 +31,8 @@ def _operation_id(network: str, hub_id: str, accepted: Mapping[str, Any] | None,
         "fdb_contract": target["fdb_contract"]["sha256"],
         "chain_contract": target["chain_contract"]["sha256"],
         "host_id": target["host_id"],
+        "public_url": target["public_url"],
+        "network_ingress_url": target.get("network_ingress_url"),
     }
     digest = hashlib.sha256(canonical_bytes(seed)).hexdigest()[:16]
     return f"hub-add-{network}-{digest}"
@@ -107,6 +109,11 @@ def prep(
             "controller_id": placement.controller_id,
             "host_id": placement.host_id,
             "public_url": placement.public_url,
+            "network_ingress_url": target.get("network_ingress_url"),
+            "serve_network_ingress": bool(target.get("serve_network_ingress")),
+            "accepted_generation": int(accepted["generation"]) if accepted else 0,
+            "accepted_hub_count": len(hubs),
+            "accepted_status": "unborn" if accepted is None else ("accepted-empty" if not hubs else "accepted"),
             "target_generation": (int(accepted["generation"]) + 1) if accepted else 1,
             "target_hub_count": len(hubs) + 1,
             "rebirth": not hubs,
@@ -126,6 +133,7 @@ def do(
     network: str,
     operation_id: str,
     *,
+    force_git: bool = True,
     deployer: Callable[..., dict[str, Any]] = apply_deployment,
     observer: Callable[..., dict[str, Any]] = observe_hub,
 ) -> dict[str, Any]:
@@ -141,6 +149,10 @@ def do(
     if read_accepted(ctx, network) != accepted_prestate:
         raise HubControlError("HUB_ACCEPTED_STATE_CHANGED", "accepted Hub topology changed after prep; inspect before retrying")
     target = dict(op["target"])
+    # Local-only deployment controls are injected after the frozen target is
+    # loaded so they cannot alter operation identity or accepted authority.
+    target["_local_repo_root"] = str(ctx.repo_root)
+    target["_force_git"] = bool(force_git)
     deployment = deployer(target)
     if deployment.get("application_uuid"):
         target["application_uuid"] = str(deployment.get("application_uuid"))
@@ -154,7 +166,7 @@ def do(
             last_verification=dict(verification),
         )
         detail = verification.get("last_error")
-        message = f"new Hub did not verify both dependencies: {verification.get('reason')}"
+        message = f"new Hub did not verify dependencies and bridge signing: {verification.get('reason')}"
         if detail not in (None, "", {}):
             message += f"; last observation={detail}"
         raise HubControlError("HUB_ADD_NOT_VERIFIED", message)
@@ -165,10 +177,13 @@ def do(
         "deployment_status": deployment.get("deployment_status"),
         "deployment_commit": deployment.get("deployment_commit"),
         "deployment_waited": bool(deployment.get("deployment_waited")),
+        "git_source_check": deployment.get("git_source_check"),
         "rebirth": op.get("accepted_prestate") is None or not list((op.get("accepted_prestate") or {}).get("hubs") or []),
         "hub_running": bool(verification.get("hub_running")),
         "fdb_adoption_verified": bool(verification.get("fdb_adoption_verified")),
         "chain_adoption_verified": bool(verification.get("chain_adoption_verified")),
+        "bridge_signer_verified": bool(verification.get("bridge_signer_verified")),
+        "bridge_signer": deployment.get("bridge_signer"),
         "verification_reason": verification.get("reason"),
     }
     update_operation(ctx, network, operation_id, stage="deployed", deployment_result=result, verification=verification)

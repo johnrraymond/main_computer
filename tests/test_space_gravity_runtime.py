@@ -8,10 +8,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "space-gravity-runtime.js"
-SCENE_VIEWER_PATH = ROOT / "main_computer" / "web" / "applications" / "scripts" / "scene-viewer.js"
-APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
-SMOKE_PATH = ROOT / "tools" / "space_gravity_smoke.py"
+GAME_ROOT = ROOT / "game_projects" / "webgl-demo"
+RUNTIME_PATH = GAME_ROOT / "web" / "scripts" / "space-gravity-runtime.js"
+SCENE_VIEWER_PATH = GAME_ROOT / "web" / "scripts" / "scene-viewer.js"
+GAME_MANIFEST = GAME_ROOT / "game.json"
+SMOKE_PATH = GAME_ROOT / "tools" / "space_gravity_smoke.py"
 PROJECT_PATHS = (
     ROOT / "game_projects" / "webgl-demo" / "project.json",
     ROOT / "game_projects" / "starter-game" / "project.json",
@@ -90,10 +91,17 @@ console.log('gravity-initializers-ok');
         self.assertIn("gravity-initializers-ok", result.stdout)
 
     def test_scene_viewer_ticks_gravity_after_navigation(self) -> None:
-        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        manifest = json.loads(GAME_MANIFEST.read_text(encoding="utf-8"))
+        runtime_bundle = manifest["web"]["bundles"]["runtime-before-routing"]
         viewer = SCENE_VIEWER_PATH.read_text(encoding="utf-8")
-        self.assertLess(applications.index("space-navigation-runtime.js"), applications.index("space-gravity-runtime.js"))
-        self.assertLess(applications.index("space-gravity-runtime.js"), applications.index("scene-viewer.js"))
+        self.assertLess(
+            runtime_bundle.index("web/scripts/space-navigation-runtime.js"),
+            runtime_bundle.index("web/scripts/space-gravity-runtime.js"),
+        )
+        self.assertLess(
+            runtime_bundle.index("web/scripts/space-gravity-runtime.js"),
+            runtime_bundle.index("web/scripts/scene-viewer.js"),
+        )
         self.assertIn("this.spaceGravityRuntime = this.createSpaceGravityRuntime(options)", viewer)
         self.assertIn("options.project?.metadata?.spacePhysics", viewer)
         self.assertIn("runtime.setActiveSystem(navigation?.currentSystemId || \"\")", viewer)

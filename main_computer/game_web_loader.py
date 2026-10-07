@@ -26,12 +26,12 @@ def selected_game_id() -> str:
 def _game_root(repository_root: Path, game_id: str) -> Path:
     if not _GAME_ID_RE.fullmatch(game_id):
         raise GameWebLoaderError(f"Invalid game id: {game_id!r}")
-    root = (repository_root / "games" / game_id).resolve()
-    games_root = (repository_root / "games").resolve()
+    root = (repository_root / "game_projects" / game_id).resolve()
+    games_root = (repository_root / "game_projects").resolve()
     try:
         root.relative_to(games_root)
     except ValueError as exc:
-        raise GameWebLoaderError("Game root escaped repository games directory.") from exc
+        raise GameWebLoaderError("Game root escaped repository game_projects directory.") from exc
     return root
 
 
@@ -40,7 +40,7 @@ def load_game_manifest(repository_root: Path, game_id: str | None = None) -> dic
     root = _game_root(repository_root, chosen)
     manifest_path = root / "game.json"
     if not manifest_path.is_file():
-        raise GameWebLoaderError(f"Game manifest not found: games/{chosen}/game.json")
+        raise GameWebLoaderError(f"Game manifest not found: game_projects/{chosen}/game.json")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -116,6 +116,6 @@ def read_game_bundle(repository_root: Path, slot: str, game_id: str | None = Non
     for relative in bundle_paths:
         path = _resolve_game_path(root, relative, context=f"Game bundle {slot!r}")
         if not path.is_file():
-            raise GameWebLoaderError(f"Game bundle file not found: games/{chosen}/{relative}")
+            raise GameWebLoaderError(f"Game bundle file not found: game_projects/{chosen}/{relative}")
         parts.append(_read_game_source(root, path))
     return "\n".join(parts)

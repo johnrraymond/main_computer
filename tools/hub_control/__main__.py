@@ -18,13 +18,11 @@ from .add_hub import prep as add_prep
 from .common.errors import HubControlError
 from .common.models import HubContext
 from .inspect import inspect_network
-
-
-class HubControlPending(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
+from .remove_hub import do as remove_do
+from .remove_hub import finalize as remove_finalize
+from .remove_hub import inspect_operation as remove_inspect_operation
+from .remove_hub import prep as remove_prep
+from .common.state import require_operation
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -49,14 +47,14 @@ def _parser() -> argparse.ArgumentParser:
             cmd = stages.add_parser(stage)
             cmd.add_argument("network")
             cmd.add_argument("--operation-id", required=True)
+            if kind == "add-hub" and stage == "do":
+                cmd.add_argument(
+                    "--force-git",
+                    action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="block deployment when relevant Hub runtime files have uncommitted local changes",
+                )
     return parser
-
-
-def _pending_remove(stage: str) -> None:
-    raise HubControlPending(
-        "HUB_CONTROL_REMOVE_IMPLEMENTATION_PENDING",
-        f"remove-hub {stage} is frozen by the Hub control surface but is not implemented in the first-birth patch",
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,28 +63,49 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "inspect":
             operation_id = str(args.operation_id or "")
-            result = add_inspect_operation(ctx, args.network, operation_id) if operation_id else inspect_network(ctx, args.network)
+            if operation_id:
+                operation = require_operation(ctx, args.network, operation_id)
+                if operation.get("kind") == "add-hub":
+                    result = add_inspect_operation(ctx, args.network, operation_id)
+                elif operation.get("kind") == "remove-hub":
+                    result = remove_inspect_operation(ctx, args.network, operation_id)
+                else:
+                    raise HubControlError("HUB_OPERATION_KIND_MISMATCH", f"unsupported Hub operation kind: {operation.get('kind')!r}")
+            else:
+                result = inspect_network(ctx, args.network)
         elif args.command == "add-hub":
             if args.stage == "prep":
                 result = add_prep(ctx, args.network, args.hub)
             elif args.stage == "do":
-                result = add_do(ctx, args.network, args.operation_id)
+                result = add_do(
+                    ctx,
+                    args.network,
+                    args.operation_id,
+                    force_git=bool(args.force_git),
+                )
             elif args.stage == "finalize":
                 result = add_finalize(ctx, args.network, args.operation_id)
             else:
                 raise ValueError(f"unsupported add-hub stage: {args.stage!r}")
         elif args.command == "remove-hub":
-            _pending_remove(args.stage)
-            raise AssertionError("unreachable")
+            if args.stage == "prep":
+                result = remove_prep(
+                    ctx,
+                    args.network,
+                    args.hub,
+                    allow_full_deletion=bool(args.allow_full_deletion),
+                )
+            elif args.stage == "do":
+                result = remove_do(ctx, args.network, args.operation_id)
+            elif args.stage == "finalize":
+                result = remove_finalize(ctx, args.network, args.operation_id)
+            else:
+                raise ValueError(f"unsupported remove-hub stage: {args.stage!r}")
         else:
             raise ValueError(f"unsupported Hub command: {args.command!r}")
         payload = {"ok": True, "result": result}
         print(json.dumps(payload, sort_keys=True) if args.json else json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    except HubControlPending as exc:
-        payload = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
-        print(json.dumps(payload, sort_keys=True) if args.json else json.dumps(payload, indent=2, sort_keys=True))
-        return 2
     except HubControlError as exc:
         payload = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
         print(json.dumps(payload, sort_keys=True) if args.json else json.dumps(payload, indent=2, sort_keys=True))

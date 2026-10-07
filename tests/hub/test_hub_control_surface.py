@@ -63,7 +63,7 @@ def test_internal_add_surface_is_no_longer_reported_as_implementation_pending(tm
     assert "coolify_hub_cluster" not in proc.stdout
 
 
-def test_internal_remove_prep_accepts_full_deletion_acknowledgement(tmp_path: Path) -> None:
+def test_internal_remove_surface_is_no_longer_reported_as_implementation_pending(tmp_path: Path) -> None:
     proc = _run(
         tmp_path,
         "remove-hub",
@@ -75,4 +75,21 @@ def test_internal_remove_prep_accepts_full_deletion_acknowledgement(tmp_path: Pa
     )
     payload = json.loads(proc.stdout)
     assert proc.returncode == 2
-    assert payload["error"]["code"] == "HUB_CONTROL_REMOVE_IMPLEMENTATION_PENDING"
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "HUB_TOPOLOGY_UNBORN"
+
+
+def test_internal_add_do_accepts_no_force_git_override(tmp_path: Path) -> None:
+    proc = _run(
+        tmp_path,
+        "add-hub",
+        "do",
+        "mainnet",
+        "--operation-id",
+        "missing-operation",
+        "--no-force-git",
+    )
+    payload = json.loads(proc.stdout)
+    assert proc.returncode == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] != "HUB_CONTROL_ERROR"

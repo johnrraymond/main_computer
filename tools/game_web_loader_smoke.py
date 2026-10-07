@@ -55,7 +55,7 @@ def main() -> int:
         if marker not in template:
             raise SystemExit(f"GAME_WEB_LOADER_SMOKE: FAIL applications.html missing {marker}")
 
-    relocation_path = repo / "games" / game_id / "relocation-source-map.json"
+    relocation_path = repo / "game_projects" / game_id / "relocation-source-map.json"
     relocation = json.loads(relocation_path.read_text(encoding="utf-8"))
     game_owned_legacy_paths = {
         str(record.get("source") or "").replace("\\", "/")
@@ -90,8 +90,11 @@ def main() -> int:
         destination = str(record.get("destination") or "")
         if not destination:
             continue
-        if not (repo / destination).is_file():
-            missing_destinations.append(destination)
+        destination_path = Path(destination.replace("\\", "/"))
+        if destination_path.parts[:2] == ("games", game_id):
+            destination_path = Path("game_projects", game_id, *destination_path.parts[2:])
+        if not (repo / destination_path).is_file():
+            missing_destinations.append(destination_path.as_posix())
     if missing_destinations:
         raise SystemExit(
             f"GAME_WEB_LOADER_SMOKE: FAIL relocated game files missing: {sorted(missing_destinations)}"
@@ -110,7 +113,7 @@ def main() -> int:
 
     print("GAME_WEB_LOADER_SMOKE: PASS")
     print(f"gameId={game_id}")
-    print(f"manifest={repo / 'games' / game_id / 'game.json'}")
+    print(f"manifest={repo / 'game_projects' / game_id / 'game.json'}")
     print(f"bundleSlots={len(bundles)}")
     print(f"gameOwnedLegacyIncludes=0")
     print(f"relocatedGameFiles={len(relocation.get('files', []))}")

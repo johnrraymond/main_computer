@@ -588,7 +588,7 @@ if ((-not $InstallerReHome) -and [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
   $ArchiveRoot = Join-Path (Split-Path -Parent $SourceRoot) "archive"
 }
 
-$exportItems = @(
+$mainExportItems = @(
   "main_computer",
   "tests",
   "contracts",
@@ -609,7 +609,6 @@ $exportItems = @(
   "run-main-computer-test.ps1",
   "install-main-computer-python-target.ps1",
   "pretty_docs",
-  "game_projects",
   "new_patch.py",
   "new_diff.py",
   "git-control.py",
@@ -693,6 +692,33 @@ $exportItems = @(
   "conftest.py"
 )
 
+$gameExportItems = @(
+  "game_projects"
+)
+
+$allExportItems = @(
+  @($mainExportItems)
+  @($gameExportItems)
+) | Select-Object -Unique
+
+function Get-ExportComponentForRepoPath {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$RepoPath
+  )
+
+  $repoPath = Convert-ToRepoPath $RepoPath
+
+  if (
+    $repoPath -eq "game_projects" -or
+    $repoPath.StartsWith("game_projects/", [System.StringComparison]::OrdinalIgnoreCase)
+  ) {
+    return "game"
+  }
+
+  return "main"
+}
+
 function Test-PathInsideRoot {
   param(
     [Parameter(Mandatory = $true)]
@@ -737,7 +763,7 @@ function Convert-ToSourceRelativeRepoPath {
   return Convert-ToRepoPath ($fullPath.Substring($fullRoot.Length).TrimStart("\", "/"))
 }
 
-function Test-FollowEventAllowed {
+function Get-FollowEventComponents {
   param(
     [Parameter(Mandatory = $true)]
     $EventRecord
@@ -745,27 +771,48 @@ function Test-FollowEventAllowed {
 
   $eventArgs = $EventRecord.SourceEventArgs
   if ($null -eq $eventArgs) {
-    return $false
+    return @()
   }
 
-  $eventPath = $eventArgs.FullPath
-  if ([string]::IsNullOrWhiteSpace($eventPath)) {
-    return $false
+  $candidatePaths = New-Object System.Collections.Generic.List[string]
+
+  if (-not [string]::IsNullOrWhiteSpace($eventArgs.FullPath)) {
+    $candidatePaths.Add($eventArgs.FullPath) | Out-Null
   }
 
-  if (-not [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
-    if (Test-PathInsideRoot -Path $eventPath -Root $ArchiveRoot) {
-      return $false
+  if (
+    ($eventArgs -is [System.IO.RenamedEventArgs]) -and
+    -not [string]::IsNullOrWhiteSpace($eventArgs.OldFullPath)
+  ) {
+    $candidatePaths.Add($eventArgs.OldFullPath) | Out-Null
+  }
+
+  $components = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+  foreach ($eventPath in $candidatePaths) {
+    if (-not [string]::IsNullOrWhiteSpace($ArchiveRoot)) {
+      if (Test-PathInsideRoot -Path $eventPath -Root $ArchiveRoot) {
+        continue
+      }
+    }
+
+    $repoPath = Convert-ToSourceRelativeRepoPath -Path $eventPath
+    if ([string]::IsNullOrWhiteSpace($repoPath)) {
+      continue
+    }
+
+    $isDirectory = Test-Path -LiteralPath $eventPath -PathType Container
+    if (-not (Test-RepoPathAllowed -RepoPath $repoPath -IsDirectory:$isDirectory)) {
+      continue
+    }
+
+    $component = Get-ExportComponentForRepoPath -RepoPath $repoPath
+    if (-not [string]::IsNullOrWhiteSpace($component)) {
+      $components.Add($component) | Out-Null
     }
   }
 
-  $repoPath = Convert-ToSourceRelativeRepoPath -Path $eventPath
-  if ([string]::IsNullOrWhiteSpace($repoPath)) {
-    return $false
-  }
-
-  $isDirectory = Test-Path -LiteralPath $eventPath -PathType Container
-  return (Test-RepoPathAllowed -RepoPath $repoPath -IsDirectory:$isDirectory)
+  return @($components)
 }
 
 function Test-PathCoveredByRecursiveWatcher {
@@ -846,7 +893,7 @@ function Start-FollowExportLoop {
   $counter = 0
 
   try {
-    foreach ($relative in ($exportItems | Sort-Object { (Convert-ToRepoPath $_).Length })) {
+    foreach ($relative in ($allExportItems | Sort-Object { (Convert-ToRepoPath $_).Length })) {
       $repoPath = Convert-ToRepoPath $relative
       $path = Join-Path $sourceFull $repoPath
 
@@ -901,9 +948,11 @@ function Start-FollowExportLoop {
     Write-Host ("following export inputs under {0}" -f $sourceFull)
     Write-Host ("watchers: {0}" -f $watchers.Count)
     Write-Host ("quiet window: {0} second(s)" -f $FollowCalmSeconds)
+    Write-Host "component ownership: game_projects/** => game; everything else => main"
     Write-Host "press Ctrl+C to stop following"
 
-    $pendingExport = $false
+    $pendingMainExport = $false
+    $pendingGameExport = $false
     $quietUntilUtc = [DateTime]::MinValue
 
     while ($true) {
@@ -917,7 +966,15 @@ function Start-FollowExportLoop {
             ($null -ne $eventRecord.SourceIdentifier) -and
             $eventRecord.SourceIdentifier.StartsWith($sourceIdentifierPrefix, [System.StringComparison]::Ordinal)
           ) {
-            if (Test-FollowEventAllowed -EventRecord $eventRecord) {
+            $eventComponents = @(Get-FollowEventComponents -EventRecord $eventRecord)
+
+            if ($eventComponents -contains "main") {
+              $pendingMainExport = $true
+              $sawRelevantEvent = $true
+            }
+
+            if ($eventComponents -contains "game") {
+              $pendingGameExport = $true
               $sawRelevantEvent = $true
             }
 
@@ -933,16 +990,29 @@ function Start-FollowExportLoop {
         }
 
         if ($sawRelevantEvent) {
-          $pendingExport = $true
           $quietUntilUtc = [DateTime]::UtcNow.AddSeconds($FollowCalmSeconds)
-          Write-Host ("detected export input changes; exporting after {0} quiet second(s)" -f $FollowCalmSeconds)
+          $pendingNames = @()
+          if ($pendingMainExport) { $pendingNames += "main" }
+          if ($pendingGameExport) { $pendingNames += "game" }
+          Write-Host ("detected {0} export input changes; exporting after {1} quiet second(s)" -f ($pendingNames -join "+"), $FollowCalmSeconds)
         }
       }
 
-      if ($pendingExport -and ([DateTime]::UtcNow -ge $quietUntilUtc)) {
-        Write-Host "quiet window elapsed; creating export"
-        Invoke-ExportSnapshot
-        $pendingExport = $false
+      if (
+        ($pendingMainExport -or $pendingGameExport) -and
+        ([DateTime]::UtcNow -ge $quietUntilUtc)
+      ) {
+        $pendingNames = @()
+        if ($pendingMainExport) { $pendingNames += "main" }
+        if ($pendingGameExport) { $pendingNames += "game" }
+        Write-Host ("quiet window elapsed; creating {0} export(s)" -f ($pendingNames -join "+"))
+
+        Invoke-ExportSnapshot `
+          -ExportMain:$pendingMainExport `
+          -ExportGame:$pendingGameExport
+
+        $pendingMainExport = $false
+        $pendingGameExport = $false
       }
     }
   } finally {
@@ -966,7 +1036,85 @@ function Start-FollowExportLoop {
   }
 }
 
+function New-ComponentExportArchive {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ComponentName,
+
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyCollection()]
+    [string[]]$Items,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ArchiveBaseName,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Timestamp,
+
+    [Parameter(Mandatory = $true)]
+    [string]$RunArchiveRoot,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TempRoot
+  )
+
+  $componentTempRoot = Join-Path $TempRoot $ComponentName
+  $stageRoot = Join-Path $componentTempRoot $ProjectName
+  $zipPath = Join-Path $RunArchiveRoot ("{0}-{1}.zip" -f $ArchiveBaseName, $Timestamp)
+
+  if (Test-Path -LiteralPath $componentTempRoot) {
+    Remove-Item -LiteralPath $componentTempRoot -Recurse -Force
+  }
+
+  New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
+
+  $stagedSourceCount = 0
+
+  foreach ($relative in $Items) {
+    $path = Join-Path $sourceFull $relative
+
+    if (Test-Path -LiteralPath $path) {
+      Copy-ExportItem -SourcePath $path -StageRoot $stageRoot -RelativePath $relative
+      $stagedSourceCount += 1
+    }
+  }
+
+  if ($stagedSourceCount -eq 0) {
+    throw "The $ComponentName export has no source inputs available under: $sourceFull"
+  }
+
+  Assert-CleanExportStage -StageRoot $stageRoot
+
+  if (Test-Path -LiteralPath $zipPath) {
+    Remove-Item -LiteralPath $zipPath -Force
+  }
+
+  Compress-Archive -Path $stageRoot -DestinationPath $zipPath -Force
+
+  $count = (Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force).Count
+
+  Write-Host ("created {0}" -f $zipPath)
+  Write-Host ("component: {0}" -f $ComponentName)
+  Write-Host ("files: {0}" -f $count)
+  Write-Host "clean export exclusions enforced"
+
+  return [PSCustomObject]@{
+    Component = $ComponentName
+    ZipPath = $zipPath
+    FileCount = $count
+  }
+}
+
 function Invoke-ExportSnapshot {
+  param(
+    [switch]$ExportMain,
+    [switch]$ExportGame
+  )
+
+  if (-not $ExportMain -and -not $ExportGame) {
+    throw "Invoke-ExportSnapshot requires at least one component: main or game."
+  }
+
   $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $nonce = [guid]::NewGuid().ToString("N").Substring(0, 8)
   $runArchiveRoot = $ArchiveRoot
@@ -975,6 +1123,10 @@ function Invoke-ExportSnapshot {
   $installerReHomeRepoRoot = ""
 
   if ($InstallerReHome) {
+    if (-not $ExportMain -or -not $ExportGame) {
+      throw "Installer rehome requires both the main and game exports."
+    }
+
     $installerReHomeBaseRoot = Resolve-InstallerReHomeBaseRoot
     $installerReHomeRunRoot = Join-Path $installerReHomeBaseRoot $nonce
     if ([string]::IsNullOrWhiteSpace($runArchiveRoot)) {
@@ -992,40 +1144,38 @@ function Invoke-ExportSnapshot {
     New-Item -ItemType Directory -Path $runArchiveRoot -Force | Out-Null
   }
 
-  $zipPath = Join-Path $runArchiveRoot ("{0}-{1}.zip" -f $ProjectName, $timestamp)
-
   if ($InstallerReHome) {
     $tempRoot = Join-Path $installerReHomeRunRoot "s"
   }
   else {
     $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("mct-{0}" -f $nonce)
   }
-  $stageRoot = Join-Path $tempRoot $ProjectName
 
-  New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
+  New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+
+  $mainResult = $null
+  $gameResult = $null
 
   try {
-    foreach ($relative in $exportItems) {
-      $path = Join-Path $sourceFull $relative
-
-      if (Test-Path -LiteralPath $path) {
-        Copy-ExportItem -SourcePath $path -StageRoot $stageRoot -RelativePath $relative
-      }
+    if ($ExportMain) {
+      $mainResult = New-ComponentExportArchive `
+        -ComponentName "main" `
+        -Items $mainExportItems `
+        -ArchiveBaseName $ProjectName `
+        -Timestamp $timestamp `
+        -RunArchiveRoot $runArchiveRoot `
+        -TempRoot $tempRoot
     }
 
-    Assert-CleanExportStage -StageRoot $stageRoot
-
-    if (Test-Path -LiteralPath $zipPath) {
-      Remove-Item -LiteralPath $zipPath -Force
+    if ($ExportGame) {
+      $gameResult = New-ComponentExportArchive `
+        -ComponentName "game" `
+        -Items $gameExportItems `
+        -ArchiveBaseName ("{0}-game" -f $ProjectName) `
+        -Timestamp $timestamp `
+        -RunArchiveRoot $runArchiveRoot `
+        -TempRoot $tempRoot
     }
-
-    Compress-Archive -Path $stageRoot -DestinationPath $zipPath -Force
-
-    $count = (Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force).Count
-
-    Write-Host ("created {0}" -f $zipPath)
-    Write-Host ("files: {0}" -f $count)
-    Write-Host "clean export exclusions enforced"
 
     if ($InstallerReHome) {
       if (Test-Path -LiteralPath $installerReHomeExtractRoot) {
@@ -1033,8 +1183,9 @@ function Invoke-ExportSnapshot {
       }
 
       New-Item -ItemType Directory -Path $installerReHomeExtractRoot -Force | Out-Null
-      Add-Type -AssemblyName System.IO.Compression.FileSystem
-      [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $installerReHomeExtractRoot)
+
+      Expand-Archive -LiteralPath $mainResult.ZipPath -DestinationPath $installerReHomeExtractRoot -Force
+      Expand-Archive -LiteralPath $gameResult.ZipPath -DestinationPath $installerReHomeExtractRoot -Force
 
       if (-not (Test-Path -LiteralPath $installerReHomeRepoRoot -PathType Container)) {
         throw "Installer rehome export did not extract the expected repository root: $installerReHomeRepoRoot"
@@ -1043,6 +1194,11 @@ function Invoke-ExportSnapshot {
       $bootstrapDriver = Join-Path $installerReHomeRepoRoot "tools\bootstrap_main_computer.py"
       if (-not (Test-Path -LiteralPath $bootstrapDriver -PathType Leaf)) {
         throw "Installer rehome export is missing the Python bootstrap driver: $bootstrapDriver"
+      }
+
+      $gameRoot = Join-Path $installerReHomeRepoRoot "game_projects"
+      if (-not (Test-Path -LiteralPath $gameRoot -PathType Container)) {
+        throw "Installer rehome export is missing the game project payload: $gameRoot"
       }
 
       Write-Host ("extracted {0}" -f $installerReHomeRepoRoot)
@@ -1054,7 +1210,9 @@ function Invoke-ExportSnapshot {
   }
 }
 
-Invoke-ExportSnapshot
+# Every invocation starts with a complete pair. In -Follow mode, later exports are
+# component-selective based on which ownership domains changed during the quiet window.
+Invoke-ExportSnapshot -ExportMain -ExportGame
 
 if ($Follow) {
   Start-FollowExportLoop

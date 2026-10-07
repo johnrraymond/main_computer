@@ -1,0 +1,225 @@
+/* Shared containment for player-facing strategic cards.
+   The dock always reserves scene space; cards never float over the playable viewport. */
+
+.canvas-wrap {
+  container-type: inline-size;
+  --strategic-dock-expanded-width: clamp(340px, 36%, 460px);
+  --strategic-dock-compact-width: clamp(280px, 30%, 360px);
+  --strategic-dock-collapsed-width: 72px;
+  --strategic-dock-expanded-height: 220px;
+  --strategic-dock-compact-height: 140px;
+  --strategic-dock-collapsed-height: 64px;
+  --strategic-dock-width: var(--strategic-dock-expanded-width);
+  --strategic-dock-height: var(--strategic-dock-expanded-height);
+  --strategic-dock-transition: 180ms ease;
+}
+
+body:not([data-active-app="webgl"]) .strategic-ai-panel-dock {
+  display: none !important;
+}
+
+.canvas-wrap[data-strategic-dock-active="true"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--strategic-dock-width);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.strategic-ai-panel-dock {
+  position: relative;
+  z-index: 15;
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  border-left: 1px solid rgba(148, 163, 184, 0.24);
+  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(2, 6, 23, 0.95), rgba(7, 12, 26, 0.97));
+  box-shadow: -12px 0 32px rgba(2, 6, 23, 0.28);
+  pointer-events: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.44) rgba(2, 6, 23, 0.35);
+  transition:
+    width var(--strategic-dock-transition),
+    height var(--strategic-dock-transition);
+}
+
+.strategic-ai-panel-dock[hidden] {
+  display: none;
+}
+
+.canvas-wrap[data-strategic-dock-mode="compact"] {
+  --strategic-dock-width: var(--strategic-dock-compact-width);
+  --strategic-dock-height: var(--strategic-dock-compact-height);
+}
+
+.canvas-wrap[data-strategic-dock-mode="collapsed"] {
+  --strategic-dock-width: var(--strategic-dock-collapsed-width);
+  --strategic-dock-height: var(--strategic-dock-collapsed-height);
+}
+
+.canvas-wrap[data-strategic-dock-active="true"] #webgl-demo {
+  grid-column: 1;
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  transition:
+    width var(--strategic-dock-transition),
+    height var(--strategic-dock-transition);
+}
+
+.strategic-ai-panel-dock > [data-strategic-ai-panel] {
+  position: relative !important;
+  inset: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  top: auto !important;
+  z-index: auto !important;
+  flex: 0 0 auto;
+  width: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  overflow: visible !important;
+  margin: 0;
+  box-sizing: border-box;
+  pointer-events: auto;
+  box-shadow: 0 10px 26px rgba(2, 6, 23, 0.34);
+}
+
+.strategic-ai-panel-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.strategic-ai-panel-actions button {
+  min-height: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.86);
+  font: inherit;
+  font-size: 0.65rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.strategic-ai-panel-actions button:hover {
+  filter: brightness(1.14);
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="compact"] {
+  padding: 11px;
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="compact"] .vela-gate-strategic-explanation,
+[data-strategic-ai-panel][data-strategic-panel-mode="compact"][data-phase="complete"] .solace-strategic-promise,
+[data-strategic-ai-panel][data-strategic-panel-mode="compact"][data-phase="complete"] .solace-strategic-outcome,
+[data-strategic-ai-panel][data-strategic-panel-mode="compact"] .strategic-ai-return-meta {
+  display: none;
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="compact"] .strategic-ai-return-changes > :nth-child(n + 2) {
+  display: none;
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="collapsed"] {
+  min-height: 38px;
+  border-radius: 12px;
+  padding: 6px !important;
+  overflow: hidden !important;
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="collapsed"] > :not(header),
+[data-strategic-ai-panel][data-strategic-panel-mode="collapsed"] header > :not(.strategic-ai-panel-actions),
+[data-strategic-ai-panel][data-strategic-panel-mode="collapsed"] .strategic-ai-panel-actions > :not([data-strategic-ai-panel-collapse]) {
+  display: none !important;
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="collapsed"] header {
+  min-height: 32px;
+  margin: 0;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="collapsed"] .strategic-ai-panel-actions {
+  width: 100%;
+  justify-content: center;
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="collapsed"] [data-strategic-ai-panel-collapse] {
+  width: 42px;
+  min-height: 32px;
+  overflow: hidden;
+  padding: 4px;
+  text-indent: -9999px;
+}
+
+[data-strategic-ai-panel][data-strategic-panel-mode="collapsed"] [data-strategic-ai-panel-collapse]::after {
+  content: "AI";
+  display: block;
+  text-indent: 0;
+  color: #e0f2fe;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+}
+
+.canvas-wrap[data-strategic-dock-axis="bottom"][data-strategic-dock-active="true"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--strategic-dock-height);
+}
+
+.canvas-wrap[data-strategic-dock-axis="bottom"] .strategic-ai-panel-dock {
+  grid-column: 1;
+  grid-row: 2;
+  width: 100%;
+  height: 100%;
+  border-top: 1px solid rgba(148, 163, 184, 0.24);
+  border-left: 0;
+  padding: 8px;
+  box-shadow: 0 -12px 32px rgba(2, 6, 23, 0.28);
+}
+
+.canvas-wrap[data-strategic-dock-axis="bottom"][data-strategic-dock-active="true"] #webgl-demo {
+  grid-column: 1;
+  grid-row: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+.canvas-wrap[data-strategic-dock-axis="bottom"] .strategic-ai-panel-dock > [data-strategic-ai-panel] {
+  max-height: none !important;
+}
+
+@container (max-width: 560px) {
+  .strategic-ai-panel-actions button {
+    min-height: 26px;
+    padding: 4px 7px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .strategic-ai-panel-dock,
+  .canvas-wrap[data-strategic-dock-active="true"] #webgl-demo {
+    transition: none;
+  }
+}

@@ -49,7 +49,9 @@ class ComposeNanoJevController:
         backend_port: int,
         start_timeout_seconds: float,
         docker_command: str = "docker",
-        image_name: str = "main-computer/nanojev:unified-games-v1",
+        image_name: str = "main-computer/nanojev:managed-v2",
+        checkpoint_selector: str = "champion",
+        hf_repo: str = "johnrraymond/NanoJev-CLEF",
     ) -> None:
         self.root = root
         self.compose_file = compose_file
@@ -58,11 +60,15 @@ class ComposeNanoJevController:
         self.start_timeout_seconds = float(start_timeout_seconds)
         self.docker_command = docker_command
         self.image_name = image_name
+        self.checkpoint_selector = str(checkpoint_selector).strip() or "champion"
+        self.hf_repo = str(hf_repo).strip() or "johnrraymond/NanoJev-CLEF"
         self.backend_url = f"http://127.0.0.1:{self.backend_port}"
 
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
         env["MAIN_COMPUTER_NANOJEV_BIND_PORT"] = str(self.backend_port)
+        env["MAIN_COMPUTER_NANOJEV_CHECKPOINT"] = self.checkpoint_selector
+        env["MAIN_COMPUTER_NANOJEV_HF_REPO"] = self.hf_repo
         return env
 
     def _compose(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -111,7 +117,21 @@ class ComposeNanoJevController:
             return False
         if not isinstance(payload, dict):
             return False
-        return bool(payload.get("ready")) and bool(payload.get("model_loaded_once")) and int(payload.get("provider_calls", -1)) == 0
+        base_ready = (
+            bool(payload.get("ready"))
+            and bool(payload.get("model_loaded_once"))
+            and int(payload.get("provider_calls", -1)) == 0
+        )
+        if not base_ready:
+            return False
+        if self.checkpoint_selector == "unified-games-v1":
+            observed = payload.get("checkpoint_selector")
+            return observed in (None, "unified-games-v1")
+        return (
+            payload.get("model_family") == "nanojev-clef"
+            and payload.get("checkpoint_selector") == self.checkpoint_selector
+            and payload.get("checkpoint_repo") == self.hf_repo
+        )
 
     def start(self) -> None:
         if self.health():
@@ -271,6 +291,8 @@ class NanoJevLifecycle:
                 "idle_timeout_seconds": self.idle_seconds,
                 "idle_remaining_seconds": remaining,
                 "backend_url": self.controller.backend_url,
+                "checkpoint_selector": getattr(self.controller, "checkpoint_selector", None),
+                "checkpoint_repo": getattr(self.controller, "hf_repo", None),
                 "last_error": self.last_error,
             }
 
@@ -399,9 +421,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--listen-port", type=int, default=9765)
     parser.add_argument("--backend-port", type=int, default=9766)
     parser.add_argument("--idle-seconds", type=float, default=300.0)
-    parser.add_argument("--start-timeout-seconds", type=float, default=180.0)
+    parser.add_argument("--start-timeout-seconds", type=float, default=900.0)
     parser.add_argument("--docker-command", default="docker")
-    parser.add_argument("--image-name", default="main-computer/nanojev:unified-games-v1")
+    parser.add_argument("--image-name", default="main-computer/nanojev:managed-v2")
+    parser.add_argument(
+        "--checkpoint",
+        default=os.environ.get("MAIN_COMPUTER_NANOJEV_CHECKPOINT", "champion"),
+        help="CLEF Hugging Face revision/tag/branch; use unified-games-v1 for the legacy runtime",
+    )
+    parser.add_argument(
+        "--hf-repo",
+        default=os.environ.get("MAIN_COMPUTER_NANOJEV_HF_REPO", "johnrraymond/NanoJev-CLEF"),
+    )
     parser.add_argument("--sweep-interval-seconds", type=float, default=1.0)
     return parser.parse_args()
 
@@ -418,13 +449,16 @@ def main() -> int:
         start_timeout_seconds=args.start_timeout_seconds,
         docker_command=args.docker_command,
         image_name=args.image_name,
+        checkpoint_selector=args.checkpoint,
+        hf_repo=args.hf_repo,
     )
     lifecycle = NanoJevLifecycle(controller, idle_seconds=args.idle_seconds)
     server = NanoJevManagerServer((args.listen_host, args.listen_port), lifecycle)
     _start_sweeper(server, max(0.1, float(args.sweep_interval_seconds)))
     print(
         f"NanoJev lazy manager listening at http://{args.listen_host}:{args.listen_port}; "
-        f"backend={controller.backend_url}; idle={args.idle_seconds:g}s",
+        f"backend={controller.backend_url}; idle={args.idle_seconds:g}s; "
+        f"checkpoint={controller.checkpoint_selector}; repo={controller.hf_repo}",
         flush=True,
     )
     try:

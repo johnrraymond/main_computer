@@ -38,12 +38,12 @@ BRIEF_SCHEMA = "game.meaningfulGameModuleBrief.v1"
 
 SOURCE_REFERENCE_PATHS = (
     "game_projects/{project}/project.json",
-    "main_computer/web/applications/scripts/space-navigation-runtime.js",
-    "main_computer/web/applications/scripts/system-scenario-runtime.js",
-    "main_computer/web/applications/scripts/gameplay-pack-runtime.js",
-    "main_computer/web/applications/scripts/strategic-ai-runtime.js",
-    "main_computer/web/applications/scripts/strategic-ai-action-runtime.js",
-    "main_computer/web/applications/scripts/strategic-ai-offscreen-runtime.js",
+    "game_projects/{project}/web/scripts/space-navigation-runtime.js",
+    "game_projects/{project}/web/scripts/system-scenario-runtime.js",
+    "game_projects/{project}/web/scripts/gameplay-pack-runtime.js",
+    "game_projects/{project}/web/scripts/strategic-ai-runtime.js",
+    "game_projects/{project}/web/scripts/strategic-ai-action-runtime.js",
+    "game_projects/{project}/web/scripts/strategic-ai-offscreen-runtime.js",
 )
 
 DEFAULT_SPY_HUNT_BRIEF: dict[str, Any] = {

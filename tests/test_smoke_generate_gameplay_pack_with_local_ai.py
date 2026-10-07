@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "smoke_generate_gameplay_pack_with_local_ai.py"
+SCRIPT = ROOT / "game_projects" / "webgl-demo" / "tools" / "smoke_generate_gameplay_pack_with_local_ai.py"
 
 
 GOOD_MARKER_RESPONSE = textwrap.dedent(

@@ -8,14 +8,15 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "main_computer" / "web" / "applications" / "scripts"
+GAME_ROOT = ROOT / "game_projects" / "webgl-demo"
+SCRIPTS = GAME_ROOT / "web" / "scripts"
 UNIVERSE_RUNTIME = SCRIPTS / "space-universe-runtime.js"
 ASTROMETRICS_RUNTIME = SCRIPTS / "space-astrometrics-runtime.js"
 GRAVITY_RUNTIME = SCRIPTS / "space-gravity-runtime.js"
 SCENE_VIEWER = SCRIPTS / "scene-viewer.js"
 VIEWSCREENS = SCRIPTS / "shuttle3d-render-viewscreens.js"
-APPLICATIONS = ROOT / "main_computer" / "web" / "applications.html"
-SMOKE = ROOT / "tools" / "space_universe_astrometrics_smoke.py"
+GAME_MANIFEST = GAME_ROOT / "game.json"
+SMOKE = GAME_ROOT / "tools" / "space_universe_astrometrics_smoke.py"
 PROJECTS = (
     ROOT / "game_projects" / "webgl-demo" / "project.json",
     ROOT / "game_projects" / "starter-game" / "project.json",
@@ -96,13 +97,14 @@ console.log('hyperbolic-observer-centers-ok');
         self.assertIn("hyperbolic-observer-centers-ok", result.stdout)
 
     def test_actual_game_boot_order_and_viewscreen_consume_astrometrics(self) -> None:
-        html = APPLICATIONS.read_text(encoding="utf-8")
+        manifest = json.loads(GAME_MANIFEST.read_text(encoding="utf-8"))
+        runtime_bundle = manifest["web"]["bundles"]["runtime-before-routing"]
         viewer = SCENE_VIEWER.read_text(encoding="utf-8")
         viewscreens = VIEWSCREENS.read_text(encoding="utf-8")
-        self.assertLess(html.index("space-navigation-runtime.js"), html.index("space-universe-runtime.js"))
-        self.assertLess(html.index("space-universe-runtime.js"), html.index("space-gravity-runtime.js"))
-        self.assertLess(html.index("space-gravity-runtime.js"), html.index("space-astrometrics-runtime.js"))
-        self.assertLess(html.index("space-astrometrics-runtime.js"), html.index("scene-viewer.js"))
+        self.assertLess(runtime_bundle.index("web/scripts/space-navigation-runtime.js"), runtime_bundle.index("web/scripts/space-universe-runtime.js"))
+        self.assertLess(runtime_bundle.index("web/scripts/space-universe-runtime.js"), runtime_bundle.index("web/scripts/space-gravity-runtime.js"))
+        self.assertLess(runtime_bundle.index("web/scripts/space-gravity-runtime.js"), runtime_bundle.index("web/scripts/space-astrometrics-runtime.js"))
+        self.assertLess(runtime_bundle.index("web/scripts/space-astrometrics-runtime.js"), runtime_bundle.index("web/scripts/scene-viewer.js"))
         self.assertIn("this.spaceUniverseRuntime = this.createSpaceUniverseRuntime(options)", viewer)
         self.assertIn("this.spaceAstrometricsRuntime = this.createSpaceAstrometricsRuntime(options)", viewer)
         self.assertIn("this.updateSpaceUniverse(frameTime, deltaSeconds)", viewer)

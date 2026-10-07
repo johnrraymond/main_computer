@@ -14,7 +14,7 @@ def test_nanojev_compose_is_loopback_gpu_service_on_fast_path() -> None:
     service = compose["services"]["nanojev"]
 
     assert compose["name"] == "main-computer-nanojev"
-    assert service["image"] == "main-computer/nanojev:unified-games-v1"
+    assert service["image"] == "main-computer/nanojev:managed-v2"
     assert service["gpus"] == "all"
     assert service["ports"] == ["127.0.0.1:${MAIN_COMPUTER_NANOJEV_BIND_PORT:-9765}:9765"]
     assert service["restart"] == "unless-stopped"
@@ -22,9 +22,15 @@ def test_nanojev_compose_is_loopback_gpu_service_on_fast_path() -> None:
 
     dockerfile = (ROOT / "docker" / "nanojev" / "Dockerfile").read_text(encoding="utf-8")
     assert "torch==2.14.0 --index-url https://download.pytorch.org/whl/cu126" in dockerfile
-    assert '"--port", "9765"' in dockerfile
-    assert '"--precision", "bf16"' in dockerfile
-    assert '"--disable-native-triton"' not in dockerfile
+    assert 'CMD ["python", "/opt/nanojev-clef-service/entrypoint.py"]' in dockerfile
+    assert 'COPY docker/nanojev/clef_service.py' in dockerfile
+    assert 'COPY tools/nanojev_three_backbone_clef_tinystories_structured_supervision_train.py' in dockerfile
+
+    entrypoint = (ROOT / "docker" / "nanojev" / "entrypoint.py").read_text(encoding="utf-8")
+    assert 'MAIN_COMPUTER_NANOJEV_CHECKPOINT", "champion"' in entrypoint
+    assert 'selector == "unified-games-v1"' in entrypoint
+    assert '"--precision",' in entrypoint and '"bf16"' in entrypoint
+    assert '"--disable-native-triton"' not in entrypoint
 
 
 def test_nanojev_image_uses_frozen_unified_release_and_verifies_weights() -> None:

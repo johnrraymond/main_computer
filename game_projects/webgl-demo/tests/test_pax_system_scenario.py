@@ -1,0 +1,3053 @@
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import textwrap
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_ROOT = ROOT / "game_projects" / "webgl-demo" / "web" / "scripts"
+STYLE_ROOT = ROOT / "game_projects" / "webgl-demo" / "web" / "styles"
+PROJECT_PATH = ROOT / "game_projects" / "webgl-demo" / "project.json"
+APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
+WEBGL_HTML = ROOT / "game_projects" / "webgl-demo" / "web" / "apps" / "webgl.html"
+SCENARIO_RUNTIME = SCRIPT_ROOT / "system-scenario-runtime.js"
+CHARACTER_RUNTIME = SCRIPT_ROOT / "character-ai-runtime.js"
+ENCOUNTER_STATE = SCRIPT_ROOT / "encounter-state.js"
+PAX_VALUE_UTILS = SCRIPT_ROOT / "pax-value-utils.js"
+PAX_CONFIG = SCRIPT_ROOT / "pax-scenario-config.js"
+PAX_PRESENTATION_MODEL = SCRIPT_ROOT / "pax-presentation-model.js"
+PAX_DOM_RENDERER = SCRIPT_ROOT / "pax-dom-renderer.js"
+PAX_SESSION_PRESENTATION = SCRIPT_ROOT / "pax-scenario-session-presentation.js"
+PAX_SESSION_STATE = SCRIPT_ROOT / "pax-scenario-session-state.js"
+PAX_SESSION_API = SCRIPT_ROOT / "pax-scenario-session-api.js"
+PAX_SESSION_RUNTIME = SCRIPT_ROOT / "pax-scenario-session-runtime.js"
+PAX_PROTECTION_MODEL = SCRIPT_ROOT / "pax-protection-encounter-model.js"
+PAX_PROTECTION_ACTOR_DEPLOYMENT = SCRIPT_ROOT / "pax-protection-actor-deployment.js"
+PAX_PROTECTION_COMMANDS = SCRIPT_ROOT / "pax-protection-encounter-commands.js"
+PAX_PROTECTION_RECONCILIATION = SCRIPT_ROOT / "pax-protection-reconciliation.js"
+PAX_PROTECTION_CONTROLLER = SCRIPT_ROOT / "pax-protection-encounter-controller.js"
+PAX_PROTECTION_COMPAT = SCRIPT_ROOT / "pax-protection-encounter.js"
+PAX_SESSION = SCRIPT_ROOT / "pax-scenario-session.js"
+PAX_INTERACTION = SCRIPT_ROOT / "pax-scenario-interaction.js"
+PAX_STYLE = STYLE_ROOT / "pax-scenario-interaction.css"
+WEBGL_DESKTOP = SCRIPT_ROOT / "webgl-desktop.js"
+SCENE_VIEWER = SCRIPT_ROOT / "scene-viewer.js"
+
+
+class PaxSystemScenarioTests(unittest.TestCase):
+    def run_node(self, script: str) -> dict:
+        if not shutil.which("node"):
+            self.skipTest("node is required for Pax scenario runtime tests")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                textwrap.dedent(script),
+                str(SCENARIO_RUNTIME),
+                str(CHARACTER_RUNTIME),
+                str(PROJECT_PATH),
+                str(PAX_INTERACTION),
+                str(ENCOUNTER_STATE),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        return json.loads(result.stdout)
+
+    def test_pax_definition_and_complete_refugee_power_route(self) -> None:
+        project = json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
+        definition = project["metadata"]["systemScenarios"]
+        self.assertEqual(definition["schema"], "game.systemScenarios.v1")
+        self.assertEqual(
+            definition["definitionVersion"],
+            "game.systemScenarios.definition.v1",
+        )
+        self.assertEqual(
+            definition["stateVersion"],
+            "game.systemScenarios.state.v1",
+        )
+
+        scenario = definition["scenarios"][0]
+        self.assertEqual(
+            scenario["id"],
+            "scenario.pax.neutrality-under-fire",
+        )
+        self.assertEqual(scenario["systemId"], "system.pax")
+        self.assertEqual(
+            scenario["completionCharacterId"],
+            "enemy.pax.quiet-service-assassin-01",
+        )
+        self.assertEqual(len(scenario["evidence"]), 3)
+        self.assertEqual(len(scenario["resolutions"]), 4)
+        self.assertEqual(len(scenario["completionCharacterIds"]), 6)
+        self.assertEqual(
+            len([item for item in project["metadata"]["characterAI"]["characters"]
+                 if item["id"] in scenario["completionCharacterIds"]]),
+            6,
+        )
+        self.assertIn("Defensive force", scenario["localRule"])
+
+        result = self.run_node(
+            r'''
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const report = scenarioApi.validateDefinition(
+              project.metadata.systemScenarios
+            );
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            const before = scenario.view(
+              "scenario.pax.neutrality-under-fire"
+            );
+            const started = scenario.startScenario(
+              "scenario.pax.neutrality-under-fire",
+              {nowMs: 10}
+            );
+            project.metadata.systemScenarios.scenarios[0].completionCharacterIds
+              .forEach((characterId, index) => characters.damageCharacter(
+                characterId,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              ));
+            const synced = scenario.syncCharacterRuntime(
+              "scenario.pax.neutrality-under-fire",
+              characters,
+              {nowMs: 30}
+            );
+
+            [
+              "evidence.pax.weapon-serial",
+              "evidence.pax.refugee-testimony",
+              "evidence.pax.cutter-signal"
+            ].forEach((evidenceId, index) => {
+              scenario.recordEvidence(
+                "scenario.pax.neutrality-under-fire",
+                evidenceId,
+                {nowMs: 40 + index}
+              );
+            });
+            scenario.proceedToConference(
+              "scenario.pax.neutrality-under-fire",
+              {nowMs: 50}
+            );
+            const resolved = scenario.resolveScenario(
+              "scenario.pax.neutrality-under-fire",
+              "resolution.pax.refugee-power",
+              {nowMs: 60}
+            );
+            const extension = scenario.campaignExtension();
+            const restored = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.solace-reach"
+              }
+            );
+            restored.restoreCampaignExtension(extension, {emit: false});
+            const restoredView = restored.view(
+              "scenario.pax.neutrality-under-fire"
+            );
+
+            process.stdout.write(JSON.stringify({
+              reportOk: report.ok,
+              errors: report.errors,
+              beforeStatus: before.state.status,
+              beforeStage: before.state.stageId,
+              startStage: started.view.state.stageId,
+              syncChanged: synced.changed,
+              syncStage: synced.view.state.stageId,
+              finalStatus: resolved.view.state.status,
+              finalStage: resolved.view.state.stageId,
+              resolutionId: resolved.view.state.resolutionId,
+              refugeeSupport:
+                resolved.view.state.consequences.refugeeSupport,
+              kestrelGateway:
+                resolved.view.state.consequences.kestrelGateway,
+              vesselStatus: resolved.view.vesselStatus,
+              restoredStatus: restoredView.state.status,
+              restoredEvidence: restoredView.state.evidenceIds.length,
+              restoredResolution: restoredView.state.resolutionId,
+              sequence: restored.snapshot().sequence,
+              campaignSchema: extension.schema
+            }));
+            '''
+        )
+
+        self.assertTrue(result["reportOk"], result)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["beforeStatus"], "available")
+        self.assertEqual(result["beforeStage"], "arrival")
+        self.assertEqual(result["startStage"], "protect-witness")
+        self.assertTrue(result["syncChanged"])
+        self.assertEqual(result["syncStage"], "investigation")
+        self.assertEqual(result["finalStatus"], "resolved")
+        self.assertEqual(result["finalStage"], "resolved")
+        self.assertEqual(
+            result["resolutionId"],
+            "resolution.pax.refugee-power",
+        )
+        self.assertEqual(result["refugeeSupport"], "allied")
+        self.assertEqual(
+            result["kestrelGateway"],
+            "civilian-courier-protected",
+        )
+        self.assertIn("joint civilian commission", result["vesselStatus"])
+        self.assertEqual(result["restoredStatus"], "resolved")
+        self.assertEqual(result["restoredEvidence"], 3)
+        self.assertEqual(
+            result["restoredResolution"],
+            "resolution.pax.refugee-power",
+        )
+        self.assertGreaterEqual(result["sequence"], 4)
+        self.assertEqual(
+            result["campaignSchema"],
+            "game.systemScenarios.campaignExtension.v1",
+        )
+
+    def test_pax_arrival_commit_starts_once_and_reload_resumes(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+            const interaction = require(process.argv[4]);
+
+            const scenarioId = "scenario.pax.neutrality-under-fire";
+            const runtime = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.solace-reach"
+              }
+            );
+            interaction.setRuntime(runtime);
+
+            const ignored = interaction.handleNavigation({
+              currentSystemId: "system.pax",
+              travelPhase: "arriving",
+              changeReason: "phase-arriving",
+              lastCompletedRouteId: null,
+              lastArrivalAtMs: null,
+              sequence: 7
+            });
+
+            runtime.setActiveSystemId("system.pax", {
+              nowMs: 100,
+              record: false
+            });
+            const arrival = {
+              currentSystemId: "system.pax",
+              travelPhase: "in-system",
+              changeReason: "arrival-committed",
+              lastCompletedRouteId: "route.solace-pax",
+              lastArrivalAtMs: 200,
+              sequence: 8
+            };
+            const started = interaction.handleNavigation(arrival);
+            const duplicate = interaction.handleNavigation(arrival);
+            const startedView = runtime.view(scenarioId);
+            const startReceipts = startedView.state.receipts.filter(
+              (receipt) => receipt.reason === "scenario-started"
+            );
+
+            const snapshot = runtime.snapshot();
+            const restored = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                state: snapshot,
+                activeSystemId: "system.pax"
+              }
+            );
+            interaction.setRuntime(restored);
+            const recovered = interaction.handleNavigation({
+              currentSystemId: "system.pax",
+              travelPhase: "in-system",
+              lastCompletedRouteId: "route.solace-pax",
+              lastArrivalAtMs: 200,
+              sequence: 8
+            });
+            const restoredView = restored.view(scenarioId);
+            const restoredStarts = restoredView.state.receipts.filter(
+              (receipt) => receipt.reason === "scenario-started"
+            );
+
+            const legacy = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            interaction.setRuntime(legacy);
+            const legacyStarted = interaction.handleNavigation({
+              currentSystemId: "system.pax",
+              travelPhase: "in-system",
+              lastCompletedRouteId: null,
+              lastArrivalAtMs: null,
+              sequence: 3
+            });
+            const legacyView = legacy.view(scenarioId);
+            const legacyPresentation = interaction.presentation.viewModel(
+              legacyView
+            );
+            const legacyObjective = legacyPresentation.objective;
+            const cueUi = {
+              briefing: {hidden: true, dataset: {}},
+              objective: {hidden: true, dataset: {}},
+              objectiveKicker: {textContent: ""},
+              objectiveTitle: {textContent: ""},
+              objectiveDetail: {textContent: ""}
+            };
+            const cues = interaction.presentation.renderMissionCues(
+              cueUi,
+              legacyPresentation
+            );
+
+            process.stdout.write(JSON.stringify({
+              ignoredHandled: ignored.handled,
+              ignoredReason: ignored.reason,
+              started: started.started,
+              startedTrigger: started.receipt.trigger,
+              startedActivationKey: started.receipt.activationKey,
+              startedRouteId: started.receipt.routeId,
+              startedNavigationSequence:
+                started.receipt.navigationSequence,
+              duplicateStarted: duplicate.started,
+              duplicateReused: duplicate.reused,
+              status: startedView.state.status,
+              stageId: startedView.state.stageId,
+              startReceiptCount: startReceipts.length,
+              recoveredStarted: recovered.started,
+              recoveredReused: recovered.reused,
+              restoredStatus: restoredView.state.status,
+              restoredStageId: restoredView.state.stageId,
+              restoredStartReceiptCount: restoredStarts.length,
+              legacyStarted: legacyStarted.started,
+              legacyTrigger: legacyStarted.receipt.trigger,
+              legacyActivationKey: legacyStarted.receipt.activationKey,
+              legacyStageId: legacyView.state.stageId,
+              legacyObjectiveVisible: legacyObjective.visible,
+              legacyObjectiveUrgent: legacyObjective.urgent,
+              legacyObjectiveTitle: legacyObjective.title,
+              presentationKind: legacyPresentation.snapshotKind,
+              presentationReadOnly: legacyPresentation.readOnly,
+              presentationStatus: legacyPresentation.scenario.status,
+              presentationStage: legacyPresentation.scenario.stageId,
+              presentationBriefingVisible:
+                legacyPresentation.missionCues.briefing.visible,
+              presentationHardVisible: legacyPresentation.hardStart.visible,
+              presentationProceedVisible: legacyPresentation.proceed.visible,
+              briefingVisible: !cueUi.briefing.hidden,
+              objectiveVisible: !cueUi.objective.hidden,
+              renderedObjectiveTitle: cueUi.objectiveTitle.textContent,
+              cueKey: cues.cueKey
+            }));
+            """
+        )
+
+        self.assertFalse(result["ignoredHandled"], result)
+        self.assertEqual(result["ignoredReason"], "phase-arriving")
+        self.assertTrue(result["started"], result)
+        self.assertEqual(
+            result["startedTrigger"],
+            "navigation-arrival",
+        )
+        self.assertIn("route.solace-pax", result["startedActivationKey"])
+        self.assertEqual(result["startedRouteId"], "route.solace-pax")
+        self.assertEqual(result["startedNavigationSequence"], 8)
+        self.assertFalse(result["duplicateStarted"])
+        self.assertTrue(result["duplicateReused"])
+        self.assertEqual(result["status"], "active")
+        self.assertEqual(result["stageId"], "protect-witness")
+        self.assertEqual(result["startReceiptCount"], 1)
+        self.assertFalse(result["recoveredStarted"])
+        self.assertTrue(result["recoveredReused"])
+        self.assertEqual(result["restoredStatus"], "active")
+        self.assertEqual(result["restoredStageId"], "protect-witness")
+        self.assertEqual(result["restoredStartReceiptCount"], 1)
+        self.assertTrue(result["legacyStarted"], result)
+        self.assertEqual(
+            result["legacyTrigger"],
+            "navigation-current-system-recovery",
+        )
+        self.assertIn("current-system-recovery", result["legacyActivationKey"])
+        self.assertEqual(result["legacyStageId"], "protect-witness")
+        self.assertTrue(result["legacyObjectiveVisible"])
+        self.assertTrue(result["legacyObjectiveUrgent"])
+        self.assertEqual(result["legacyObjectiveTitle"], "REPEL THE BOARDERS")
+        self.assertEqual(result["presentationKind"], "pax-protection-presentation")
+        self.assertTrue(result["presentationReadOnly"])
+        self.assertEqual(result["presentationStatus"], "active")
+        self.assertEqual(result["presentationStage"], "protect-witness")
+        self.assertTrue(result["presentationBriefingVisible"])
+        self.assertTrue(result["presentationHardVisible"])
+        self.assertFalse(result["presentationProceedVisible"])
+        self.assertTrue(result["briefingVisible"])
+        self.assertTrue(result["objectiveVisible"])
+        self.assertEqual(
+            result["renderedObjectiveTitle"],
+            "REPEL THE BOARDERS",
+        )
+        self.assertTrue(result["cueKey"])
+
+    def test_pax_local_rule_distinguishes_defense_from_intimidation(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            scenario.startScenario(
+              "scenario.pax.neutrality-under-fire",
+              {nowMs: 1}
+            );
+            const defensive = scenario.recordPlayerAction(
+              "scenario.pax.neutrality-under-fire",
+              "weapon-discharge",
+              {
+                targetId: "enemy.pax.quiet-service-assassin-01",
+                targetKind: "character",
+                defensive: true
+              },
+              {nowMs: 2}
+            );
+            project.metadata.systemScenarios.scenarios[0].completionCharacterIds
+              .forEach((characterId, index) => characters.damageCharacter(
+                characterId,
+                999,
+                {sourceId: "player", nowMs: 3 + index}
+              ));
+            scenario.syncCharacterRuntime(
+              "scenario.pax.neutrality-under-fire",
+              characters,
+              {nowMs: 12}
+            );
+            const intimidation = scenario.recordPlayerAction(
+              "scenario.pax.neutrality-under-fire",
+              "weapon-discharge",
+              {
+                targetId: "",
+                targetKind: "none",
+                defensive: false
+              },
+              {nowMs: 5}
+            );
+            [
+              "evidence.pax.weapon-serial",
+              "evidence.pax.refugee-testimony",
+              "evidence.pax.cutter-signal"
+            ].forEach((evidenceId, index) => scenario.recordEvidence(
+              "scenario.pax.neutrality-under-fire",
+              evidenceId,
+              {nowMs: 10 + index}
+            ));
+            scenario.proceedToConference(
+              "scenario.pax.neutrality-under-fire",
+              {nowMs: 20}
+            );
+            const view = scenario.view(
+              "scenario.pax.neutrality-under-fire"
+            );
+            const availability = Object.fromEntries(
+              view.resolutions.map((item) => [item.id, {
+                available: item.available,
+                conductSatisfied: item.conductSatisfied,
+                currentIntimidationShots: item.currentIntimidationShots,
+                maxIntimidationShots: item.maxIntimidationShots
+              }])
+            );
+            process.stdout.write(JSON.stringify({
+              defensive: defensive.defensive,
+              intimidation: intimidation.defensive,
+              metrics: view.state.metrics,
+              availability
+            }));
+            """
+        )
+
+        self.assertTrue(result["defensive"])
+        self.assertFalse(result["intimidation"])
+        self.assertEqual(result["metrics"]["weaponDischarges"], 2)
+        self.assertEqual(result["metrics"]["defensiveDischarges"], 1)
+        self.assertEqual(result["metrics"]["intimidationDischarges"], 1)
+        self.assertFalse(
+            result["availability"]["resolution.pax.refugee-power"]["available"]
+        )
+        self.assertFalse(
+            result["availability"]["resolution.pax.expose-quiet-service"]["available"]
+        )
+        self.assertTrue(
+            result["availability"]["resolution.pax.controlled-disclosure"]["available"]
+        )
+        self.assertTrue(
+            result["availability"]["resolution.pax.withdraw"]["available"]
+        )
+
+    def test_character_runtime_gates_pax_cast_and_authorizes_cutter_support(self) -> None:
+        result = self.run_node(
+            r'''
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+
+            const world = (systemId, stageId, status = "active") => ({
+              phase: "mother-ship",
+              player: {
+                alive: true,
+                health: 100,
+                position: [0, -0.55, -31]
+              },
+              ship: {
+                power: "online",
+                security: "alert",
+                currentSystemId: systemId
+              },
+              scenario: {
+                id: "scenario.pax.neutrality-under-fire",
+                status,
+                stageId
+              },
+              canOccupy() {
+                return true;
+              }
+            });
+
+            const unavailable = characters.activeCharactersForWorld(
+              world("system.pax", "arrival", "available")
+            ).map((item) => item.id);
+            scenario.startScenario(
+              "scenario.pax.neutrality-under-fire",
+              {nowMs: 1}
+            );
+            const paxWorld = world(
+              "system.pax",
+              scenario.activeScenarioContext().stageId
+            );
+            const active = characters.activeCharactersForWorld(paxWorld)
+              .map((item) => item.id)
+              .sort();
+            const solace = characters.activeCharactersForWorld(
+              world("system.solace-reach", "protect-witness")
+            ).map((item) => item.id).sort();
+            const step = characters.step(paxWorld, 1000);
+            const assassin = step.decisions.find(
+              (item) => (
+                item.characterId
+                === "enemy.pax.quiet-service-assassin-01"
+              )
+            );
+            const support = step.effects.find(
+              (item) => item.type === "support-requested"
+            );
+            const perception = characters.buildPerception(
+              "enemy.pax.quiet-service-assassin-01",
+              paxWorld,
+              1000
+            );
+
+            process.stdout.write(JSON.stringify({
+              unavailable,
+              active,
+              solace,
+              assassinAction: assassin.actionId,
+              assassinTarget: assassin.targetId,
+              supportShipId: support.shipId,
+              knownVessels:
+                perception.ship.knownVessels.map((item) => item.id),
+              supportVesselId: perception.actor.supportVesselId
+            }));
+            '''
+        )
+
+        self.assertEqual(result["unavailable"], [])
+        self.assertEqual(
+            result["active"],
+            [
+                "enemy.pax.boarder-01",
+                "enemy.pax.boarder-02",
+                "enemy.pax.boarder-03",
+                "enemy.pax.boarder-04",
+                "enemy.pax.boarder-05",
+                "enemy.pax.quiet-service-assassin-01",
+                "npc.pax.neutrality-marshal-01",
+                "npc.pax.refugee-witness-01",
+            ],
+        )
+        self.assertEqual(
+            result["solace"],
+            [
+                "enemy.raider-boarder-01",
+                "npc.engineering-officer-01",
+            ],
+        )
+        self.assertEqual(result["assassinAction"], "call_support")
+        self.assertEqual(
+            result["assassinTarget"],
+            "ship.pax.quiet-service-cutter-01",
+        )
+        self.assertEqual(
+            result["supportShipId"],
+            "ship.pax.quiet-service-cutter-01",
+        )
+        self.assertEqual(
+            result["knownVessels"],
+            [
+                "ship.raider-01",
+                "ship.pax.quiet-service-cutter-01",
+            ],
+        )
+        self.assertEqual(
+            result["supportVesselId"],
+            "ship.pax.quiet-service-cutter-01",
+        )
+
+    def test_hard_kickoff_recovers_visible_pax_and_forces_bridge_cast(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+            const interaction = require(process.argv[4]);
+
+            const scenarioId = "scenario.pax.neutrality-under-fire";
+            const assassinId = "enemy.pax.quiet-service-assassin-01";
+            const witnessId = "npc.pax.refugee-witness-01";
+            const marshalId = "npc.pax.neutrality-marshal-01";
+
+            scenarioApi.clearCurrent();
+            characterApi.clearCurrent();
+            const scenarioRuntime = scenarioApi.ensure(
+              "webgl-demo",
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characterRuntime = characterApi.ensure(
+              "webgl-demo",
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+            interaction.setRuntime(scenarioRuntime);
+            interaction.setCharacterRuntime(characterRuntime);
+
+            characterRuntime.forceCharacterState(
+              assassinId,
+              {
+                health: 0,
+                status: "down",
+                position: [8, -0.55, 4],
+                currentActionId: "down"
+              },
+              {nowMs: 100, source: "test-stale-state"}
+            );
+
+            const started = interaction.commands.startOrRecover(
+              "test-hard-kickoff",
+              {nowMs: 250, allowSystemChange: false}
+            );
+            const view = scenarioRuntime.view(scenarioId);
+            const context = scenarioRuntime.activeScenarioContext();
+            const world = {
+              phase: "mother-ship",
+              player: {position: [-2.85, -0.55, -36.7]},
+              ship: {currentSystemId: "system.pax"},
+              scenario: context
+            };
+            const activeIds = characterRuntime
+              .activeCharactersForWorld(world)
+              .map((character) => character.id)
+              .sort();
+            const assassin = characterRuntime.character(assassinId);
+            const witness = characterRuntime.character(witnessId);
+            const marshal = characterRuntime.character(marshalId);
+            interaction.setWorldSnapshot({
+              player: {position: [-2.85, -0.55, -36.7]},
+              activeThreatCount: 1,
+              activeThreatIds: [assassinId],
+              characters: [
+                characterRuntime.character(assassinId),
+                characterRuntime.character(witnessId)
+              ]
+            });
+            const presentation = interaction.presentation.viewModel(view);
+            const hardPresentation = presentation.hardStart;
+            const objective = presentation.objective;
+            const threat = presentation.threat;
+            const receiptReasons = characterRuntime
+              .snapshot()
+              .receipts
+              .map((receipt) => receipt.reason);
+
+            process.stdout.write(JSON.stringify({
+              started: started.started,
+              forced: started.forced,
+              status: view.state.status,
+              stageId: view.state.stageId,
+              activeIds,
+              assassinStatus: assassin.status,
+              assassinHealth: assassin.health,
+              assassinPosition: assassin.position,
+              assassinAction: assassin.currentActionId,
+              witnessPosition: witness.position,
+              marshalPosition: marshal.position,
+              presentationKind: presentation.snapshotKind,
+              presentationReadOnly: presentation.readOnly,
+              presentationStage: presentation.scenario.stageId,
+              presentationCharacterCount: presentation.characters.rows.length,
+              hardVisible: hardPresentation.visible,
+              hardTitle: hardPresentation.title,
+              hardButton: hardPresentation.button,
+              hardButtonDisabled: hardPresentation.buttonDisabled,
+              objectiveVisible: objective.visible,
+              objectiveDetail: objective.detail,
+              threatVisible: threat.visible,
+              threatName: threat.name,
+              threatDetail: threat.detail,
+              threatAction: threat.action,
+              forceReceiptCount: receiptReasons.filter(
+                (reason) => reason === "character-state-forced"
+              ).length,
+              kickoffReason: interaction.diagnostics.state().lastHardKickoff.reason
+            }));
+            """
+        )
+
+        self.assertTrue(result["started"], result)
+        self.assertTrue(result["forced"], result)
+        self.assertEqual(result["status"], "active")
+        self.assertEqual(result["stageId"], "protect-witness")
+        self.assertIn("enemy.pax.quiet-service-assassin-01", result["activeIds"])
+        self.assertIn("npc.pax.refugee-witness-01", result["activeIds"])
+        self.assertIn("npc.pax.neutrality-marshal-01", result["activeIds"])
+        self.assertEqual(result["assassinStatus"], "active")
+        self.assertGreater(result["assassinHealth"], 0)
+        self.assertEqual(result["assassinPosition"], [0, -0.55, -40])
+        self.assertEqual(result["assassinAction"], "call_support")
+        self.assertEqual(result["witnessPosition"], [-1.45, -0.55, -36.45])
+        self.assertEqual(result["marshalPosition"], [1.45, -0.55, -36.35])
+        self.assertEqual(result["presentationKind"], "pax-protection-presentation")
+        self.assertTrue(result["presentationReadOnly"])
+        self.assertEqual(result["presentationStage"], "protect-witness")
+        self.assertGreaterEqual(result["presentationCharacterCount"], 6)
+        self.assertTrue(result["hardVisible"])
+        self.assertEqual(result["hardTitle"], "PAX MISSION LIVE")
+        self.assertEqual(result["hardButton"], "Respawn visible encounter")
+        self.assertFalse(result["hardButtonDisabled"])
+        self.assertTrue(result["objectiveVisible"])
+        self.assertIn("SIX HOSTILES ABOARD", result["objectiveDetail"])
+        self.assertTrue(result["threatVisible"])
+        self.assertEqual(result["threatName"], "REPEL THE BOARDERS — 1 REMAIN")
+        self.assertIn("NEAREST:", result["threatDetail"])
+        self.assertIn("AHEAD / VIEWSCREEN SIDE", result["threatDetail"])
+        self.assertIn("Red beacons mark every hostile", result["threatAction"])
+        self.assertGreaterEqual(result["forceReceiptCount"], 4)
+        self.assertEqual(result["kickoffReason"], "test-hard-kickoff")
+
+    def test_pax_start_or_recover_forces_all_red_boarders_active(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+            const interaction = require(process.argv[4]);
+
+            scenarioApi.clearCurrent();
+            characterApi.clearCurrent();
+            const scenarioRuntime = scenarioApi.ensure(
+              "webgl-demo",
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characterRuntime = characterApi.ensure(
+              "webgl-demo",
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+            interaction.setRuntime(scenarioRuntime);
+            interaction.setCharacterRuntime(characterRuntime);
+
+            const started = interaction.commands.startOrRecover(
+              "red-boarder-regression-guard",
+              {nowMs: 300, allowSystemChange: false}
+            );
+            const view = scenarioRuntime.view(interaction.SCENARIO_ID);
+            const context = scenarioRuntime.activeScenarioContext();
+            const world = {
+              phase: "mother-ship",
+              player: {position: [0, -0.55, -30]},
+              ship: {currentSystemId: "system.pax"},
+              scenario: context
+            };
+            const activeIds = characterRuntime
+              .activeCharactersForWorld(world)
+              .map((character) => character.id)
+              .sort();
+            const boarders = interaction.boarderIds.map((id) => {
+              const character = characterRuntime.character(id);
+              return {
+                id,
+                status: character?.status || null,
+                health: character?.health || 0,
+                position: character?.position || null,
+                activeInWorld: activeIds.includes(id)
+              };
+            });
+            const blueIds = [
+              "npc.pax.refugee-witness-01",
+              "npc.pax.neutrality-marshal-01"
+            ];
+            const blueActors = blueIds.map((id) => {
+              const character = characterRuntime.character(id);
+              return {
+                id,
+                status: character?.status || null,
+                health: character?.health || 0,
+                activeInWorld: activeIds.includes(id)
+              };
+            });
+
+            console.log(JSON.stringify({
+              started: started.started,
+              forced: started.forced,
+              forceBoarderIds: started.forceResult?.boarderIds || [],
+              stageId: view.state.stageId,
+              activeIds,
+              boarders,
+              blueActors,
+              diagnosticStatus: interaction.diagnosePaxProtectionEncounter().status,
+              actorStatus: interaction.diagnosePaxProtectionEncounter().actorStatus
+            }));
+            """
+        )
+
+        self.assertTrue(result["started"], result)
+        self.assertTrue(result["forced"], result)
+        self.assertEqual(result["stageId"], "protect-witness")
+        self.assertEqual(len(result["forceBoarderIds"]), 6)
+        self.assertEqual(len(result["boarders"]), 6)
+        self.assertTrue(
+            all(row["status"] == "active" for row in result["boarders"]),
+            result,
+        )
+        self.assertTrue(
+            all(row["health"] > 0 for row in result["boarders"]),
+            result,
+        )
+        self.assertTrue(
+            all(row["activeInWorld"] for row in result["boarders"]),
+            result,
+        )
+        self.assertTrue(
+            all(row["activeInWorld"] for row in result["blueActors"]),
+            result,
+        )
+        self.assertEqual(result["diagnosticStatus"], "consistent-active")
+        self.assertEqual(result["actorStatus"], "active")
+
+    def test_completion_receipt_diagnostic_does_not_suppress_red_boarder_recovery(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const before = scenario.view(interaction.SCENARIO_ID);
+            const beforeSnapshot = interaction.diagnosePaxProtectionEncounter();
+
+            /*
+             * Attaching the character runtime is the path that previously got
+             * broken by treating protection-completed receipts as authoritative
+             * encounter instances. A receipt may be reported for diagnostics,
+             * but it must not block startup recovery of defeated red boarders.
+             */
+            interaction.setCharacterRuntime(characters);
+
+            const after = scenario.view(interaction.SCENARIO_ID);
+            const afterSnapshot = interaction.diagnosePaxProtectionEncounter();
+            const activeIds = characters.activeCharactersForWorld({
+              phase: "mother-ship",
+              player: {position: [0, -0.55, -30]},
+              ship: {currentSystemId: "system.pax"},
+              scenario: scenario.activeScenarioContext()
+            }).map((character) => character.id).sort();
+
+            console.log(JSON.stringify({
+              beforeStage: before.state.stageId,
+              beforeReceiptReasons: before.state.receipts.map((receipt) => receipt.reason),
+              beforeReceiptKind: beforeSnapshot.completionReceiptDiagnostics.snapshotKind,
+              beforeReceiptCount: beforeSnapshot.completionReceiptCount,
+              beforeReceiptSummaryCount: beforeSnapshot.completionReceiptSummary.count,
+              beforeReceiptPolicyDiagnosticOnly:
+                beforeSnapshot.completionReceiptPolicy.diagnosticOnly,
+              beforeReceiptPolicyRecoveryAuthority:
+                beforeSnapshot.completionReceiptPolicy.recoveryPolicyAuthority,
+              beforeReceiptPolicyCompletionAuthority:
+                beforeSnapshot.completionReceiptPolicy.encounterCompletionAuthority,
+              beforeReceiptUsedForRecoveryPolicy:
+                beforeSnapshot.completionReceiptUsedForRecoveryPolicy,
+              beforeReceiptTrustedForEncounterCompletion:
+                beforeSnapshot.completionReceiptTrustedForEncounterCompletion,
+              beforeReceiptIds: beforeSnapshot.completionReceiptIds,
+              afterStage: after.state.stageId,
+              afterReceiptCount: afterSnapshot.completionReceiptCount,
+              afterReceiptLatestReason: afterSnapshot.completionReceiptLatest?.reason || "",
+              afterDiagnosticStatus: afterSnapshot.status,
+              afterActorStatus: afterSnapshot.actorStatus,
+              activeIds,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  id,
+                  status: character?.status || null,
+                  health: character?.health || 0,
+                  activeInWorld: activeIds.includes(id)
+                };
+              })
+            }));
+            """
+        )
+
+        self.assertEqual(result["beforeStage"], "investigation")
+        self.assertIn("protection-completed", result["beforeReceiptReasons"])
+        self.assertEqual(
+            result["beforeReceiptKind"],
+            "pax-protection-receipt-diagnostics",
+        )
+        self.assertEqual(result["beforeReceiptCount"], 1)
+        self.assertEqual(result["beforeReceiptSummaryCount"], 1)
+        self.assertEqual(len(result["beforeReceiptIds"]), 1)
+        self.assertTrue(result["beforeReceiptPolicyDiagnosticOnly"], result)
+        self.assertEqual(
+            result["beforeReceiptPolicyRecoveryAuthority"],
+            "diagnostic-only",
+        )
+        self.assertEqual(
+            result["beforeReceiptPolicyCompletionAuthority"],
+            "diagnostic-only",
+        )
+        self.assertFalse(result["beforeReceiptUsedForRecoveryPolicy"], result)
+        self.assertFalse(result["beforeReceiptTrustedForEncounterCompletion"], result)
+        self.assertEqual(result["afterStage"], "protect-witness")
+        self.assertEqual(result["afterReceiptCount"], 1)
+        self.assertEqual(result["afterReceiptLatestReason"], "protection-completed")
+        self.assertEqual(result["afterDiagnosticStatus"], "consistent-active")
+        self.assertEqual(result["afterActorStatus"], "active")
+        self.assertTrue(
+            all(row["status"] == "active" for row in result["boarders"]),
+            result,
+        )
+        self.assertTrue(
+            all(row["health"] > 0 for row in result["boarders"]),
+            result,
+        )
+        self.assertTrue(
+            all(row["activeInWorld"] for row in result["boarders"]),
+            result,
+        )
+
+    def test_game_surface_exposes_pax_scenario_without_polling(self) -> None:
+        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        webgl = WEBGL_HTML.read_text(encoding="utf-8")
+        interaction = PAX_INTERACTION.read_text(encoding="utf-8").lower()
+        session = PAX_SESSION.read_text(encoding="utf-8").lower()
+        session_api = PAX_SESSION_API.read_text(encoding="utf-8").lower()
+        session_runtime = PAX_SESSION_RUNTIME.read_text(encoding="utf-8").lower()
+        presentation = PAX_PRESENTATION_MODEL.read_text(encoding="utf-8").lower()
+        dom_renderer = PAX_DOM_RENDERER.read_text(encoding="utf-8").lower()
+        protection_model = PAX_PROTECTION_MODEL.read_text(encoding="utf-8").lower()
+        actor_deployment = PAX_PROTECTION_ACTOR_DEPLOYMENT.read_text(encoding="utf-8").lower()
+        protection_commands = PAX_PROTECTION_COMMANDS.read_text(encoding="utf-8").lower()
+        protection_reconciliation = PAX_PROTECTION_RECONCILIATION.read_text(encoding="utf-8").lower()
+        controller = PAX_PROTECTION_CONTROLLER.read_text(encoding="utf-8").lower()
+        style = PAX_STYLE.read_text(encoding="utf-8")
+        desktop = WEBGL_DESKTOP.read_text(encoding="utf-8")
+        scene = SCENE_VIEWER.read_text(encoding="utf-8")
+        runtime = SCENARIO_RUNTIME.read_text(encoding="utf-8").lower()
+
+        self.assertIn(
+            "<!-- @include applications/scripts/system-scenario-runtime.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-scenario-interaction.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-dom-renderer.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-scenario-session-state.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-protection-encounter-model.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-protection-actor-deployment.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-protection-encounter-commands.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-protection-reconciliation.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-scenario-session-runtime.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-scenario-session-api.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/scripts/pax-scenario-session.js -->",
+            applications,
+        )
+        self.assertIn(
+            "<!-- @include applications/styles/pax-scenario-interaction.css -->",
+            applications,
+        )
+        self.assertLess(
+            applications.index("system-scenario-runtime.js"),
+            applications.index("scene-viewer.js"),
+        )
+        self.assertLess(
+            applications.index("pax-dom-renderer.js"),
+            applications.index("pax-scenario-session-state.js"),
+        )
+        self.assertLess(
+            applications.index("pax-scenario-session-state.js"),
+            applications.index("pax-protection-encounter-model.js"),
+        )
+        self.assertLess(
+            applications.index("pax-protection-encounter-model.js"),
+            applications.index("pax-protection-actor-deployment.js"),
+        )
+        self.assertLess(
+            applications.index("pax-protection-actor-deployment.js"),
+            applications.index("pax-protection-encounter-commands.js"),
+        )
+        self.assertLess(
+            applications.index("pax-protection-encounter-commands.js"),
+            applications.index("pax-protection-reconciliation.js"),
+        )
+        self.assertLess(
+            applications.index("pax-protection-reconciliation.js"),
+            applications.index("pax-protection-encounter-controller.js"),
+        )
+        self.assertLess(
+            applications.index("pax-protection-encounter-controller.js"),
+            applications.index("pax-scenario-session-runtime.js"),
+        )
+        self.assertLess(
+            applications.index("pax-scenario-session-runtime.js"),
+            applications.index("pax-scenario-session-api.js"),
+        )
+        self.assertLess(
+            applications.index("pax-scenario-session-api.js"),
+            applications.index("pax-scenario-session.js"),
+        )
+        self.assertLess(
+            applications.index("pax-scenario-session.js"),
+            applications.index("pax-scenario-interaction.js"),
+        )
+        self.assertLess(
+            applications.index("pax-scenario-interaction.js"),
+            applications.index("scene-viewer.js"),
+        )
+        self.assertIn('id="pax-scenario-contact"', webgl)
+        self.assertIn('data-strategic-ai-panel-id="pax-scenario"', webgl)
+        self.assertIn('id="pax-scenario-arrival-briefing"', webgl)
+        self.assertIn('id="pax-scenario-arrival-ack"', webgl)
+        self.assertIn('id="pax-scenario-objective-banner"', webgl)
+        self.assertIn('id="pax-scenario-threat-tracker"', webgl)
+        self.assertIn('id="pax-scenario-threat-name"', webgl)
+        self.assertIn('id="pax-scenario-hard-start"', webgl)
+        self.assertIn('id="pax-scenario-hard-start-button"', webgl)
+        self.assertIn("ASSASSIN ABOARD", webgl)
+        self.assertIn("Bridge deck, front viewscreen side", webgl)
+        self.assertNotIn('id="pax-scenario-start"', webgl)
+        self.assertNotIn("Take the conference protection detail", webgl)
+        self.assertIn('id="pax-scenario-evidence-list"', webgl)
+        self.assertIn('id="pax-scenario-resolution-list"', webgl)
+        self.assertIn("ensureWebglSystemScenarioRuntime", desktop)
+        self.assertIn("activeScenarioContext", scene)
+        self.assertIn("recordPlayerAction", scene)
+        self.assertIn("activeCharactersForWorld", scene)
+        self.assertIn("global.maincomputerpaxprotectionencountermodel = api", protection_model)
+        self.assertIn("global.maincomputerpaxprotectionactordeployment = api", actor_deployment)
+        self.assertIn("paxprotectionactordeployment.create", protection_commands)
+        self.assertIn("paxprotectionencountercommands.create", controller)
+        self.assertIn("paxprotectionreconciliation.create", controller)
+        self.assertIn("synccharacterruntime", protection_commands)
+        self.assertIn("handlenavigation", session_runtime)
+        self.assertIn('"arrival-committed"', protection_commands)
+        self.assertIn("navigation-current-system-recovery", protection_commands)
+        self.assertIn("rendermissioncues", dom_renderer)
+        self.assertIn("renderpresentation", dom_renderer)
+        self.assertIn("presentation.renderpresentation", session_runtime)
+        self.assertIn("paxscenariosessionapi.create", session)
+        self.assertIn("global.maincomputerpaxscenariosessionapi = api", session_api)
+        self.assertIn("diagnostics,", session_api)
+        self.assertIn("commands,", session_api)
+        self.assertIn("startorrecoverprotectionencounter", protection_commands)
+        self.assertIn("forceprotectionencountercharacters", protection_commands)
+        self.assertIn("performpaxprotectionrecovery", protection_reconciliation)
+        self.assertIn("camerarelativeboardingpositions", actor_deployment)
+        self.assertNotIn("startorrecoverpax", interaction)
+        self.assertNotIn("forcepaxcharacterstates", interaction)
+        self.assertIn("objectivepresentation", presentation)
+        self.assertIn("threatpresentation", presentation)
+        self.assertIn("setworldsnapshot", session_runtime)
+        self.assertIn("briefingacknowledged", session_runtime)
+        self.assertIn("paxinteraction?.handlenavigation?.(navigation)", desktop.lower())
+        self.assertIn('update.arrived ? "arrival-committed" : ""', scene)
+        self.assertIn("proceedtoconference", session_runtime)
+        self.assertIn("resolvescenario", dom_renderer)
+        self.assertIn("recordevidence", dom_renderer)
+        self.assertIn("campaignextension()", runtime)
+        self.assertNotIn("setinterval", interaction)
+        self.assertNotIn("setinterval", session)
+        self.assertNotIn("setinterval", session_runtime)
+        self.assertNotIn("requestanimationframe", interaction)
+        self.assertNotIn("requestanimationframe", session)
+        self.assertNotIn("requestanimationframe", session_runtime)
+        self.assertNotIn("setinterval", runtime)
+        self.assertIn(
+            '[data-strategic-panel-mode="compact"] .pax-scenario-local-rule',
+            style,
+        )
+        self.assertIn("@media (max-width: 620px)", style)
+        self.assertIn(".pax-scenario-arrival-briefing", style)
+        self.assertIn(".pax-scenario-objective-banner", style)
+        self.assertIn(".pax-scenario-threat-tracker", style)
+        self.assertIn(".pax-scenario-hard-start", style)
+        self.assertIn("@keyframes pax-arrival-pulse", style)
+        self.assertIn("@keyframes pax-threat-pulse", style)
+        self.assertIn("setWorldSnapshot", scene)
+        self.assertIn("activeThreatCount", scene)
+        self.assertIn("#ff2d2d", scene)
+
+    def test_pax_dom_renderer_owns_dom_rendering_helpers(self) -> None:
+        renderer = PAX_DOM_RENDERER.read_text(encoding="utf-8")
+        session = PAX_SESSION.read_text(encoding="utf-8")
+        interaction = PAX_INTERACTION.read_text(encoding="utf-8")
+        self.assertIn("function createPaxDomRenderer", renderer)
+        self.assertIn("function renderPresentation", renderer)
+        self.assertIn("function renderCharacters", renderer)
+        self.assertIn("function renderEvidence", renderer)
+        self.assertIn("function renderResolutions", renderer)
+        self.assertIn("function renderOutcome", renderer)
+        self.assertIn("recordEvidence", renderer)
+        self.assertIn("resolveScenario", renderer)
+        self.assertIn("MainComputerPaxDomRenderer", renderer)
+        self.assertIn("PaxDomRenderer.create", session)
+        self.assertIn("MainComputerPaxScenarioSession", interaction)
+        self.assertIn("MainComputerPaxScenarioInteraction", interaction)
+        self.assertIn("presentation.renderPresentation", PAX_SESSION_RUNTIME.read_text(encoding="utf-8"))
+        self.assertNotIn("document.createElement", interaction)
+        self.assertNotIn("replaceChildren();", interaction)
+
+    def test_pax_boarders_deploy_in_front_of_active_camera(self) -> None:
+        deployment = PAX_PROTECTION_ACTOR_DEPLOYMENT.read_text(encoding="utf-8")
+        controller = PAX_PROTECTION_CONTROLLER.read_text(encoding="utf-8")
+        self.assertIn("function createPaxProtectionActorDeployment", deployment)
+        self.assertIn("cameraRelativeBoardingPositions", deployment)
+        self.assertIn("__mainComputerShuttle3dRenderer", deployment)
+        self.assertIn("renderer.cameraDirection()", deployment)
+        self.assertIn("position: deploymentPositions[index]", deployment)
+        commands = PAX_PROTECTION_COMMANDS.read_text(encoding="utf-8")
+        self.assertIn("PaxProtectionActorDeployment.create", commands)
+        self.assertNotIn("renderer.cameraDirection()", controller)
+        self.assertNotIn("position: deploymentPositions[index]", controller)
+
+
+    def test_pax_actor_deployment_module_forces_camera_relative_cast(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for Pax actor deployment tests")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                textwrap.dedent(
+                    r"""
+                    const deploymentModule = require(process.argv[1]);
+                    const calls = [];
+                    const state = {};
+                    const runtime = {
+                      forceCharacterState: (characterId, nextState, options) => {
+                        calls.push({characterId, nextState, options});
+                        return {
+                          ok: true,
+                          characterId,
+                          position: nextState.position,
+                          action: nextState.currentActionId,
+                          target: nextState.currentTargetId
+                        };
+                      }
+                    };
+                    const deployment = deploymentModule.create({
+                      state,
+                      nowMs: (options) => Number.isFinite(Number(options.nowMs))
+                        ? Number(options.nowMs)
+                        : 1234,
+                      currentCharacterRuntime: () => runtime,
+                      activeShuttleRenderer: () => ({
+                        camera: [10, 0.9, -20],
+                        cameraDirection: () => [0, 0, -1]
+                      })
+                    });
+                    const positions = deployment.cameraRelativeBoardingPositions();
+                    const forced = deployment.forceProtectionEncounterCharacters(
+                      "actor-deployment-test",
+                      {nowMs: 2000}
+                    );
+                    console.log(JSON.stringify({
+                      positions,
+                      forced,
+                      calls,
+                      lastHardKickoff: state.lastHardKickoff
+                    }));
+                    """
+                ),
+                str(PAX_PROTECTION_ACTOR_DEPLOYMENT),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["forced"]["forced"])
+        self.assertEqual(len(payload["forced"]["boarderIds"]), 6)
+        self.assertEqual(len(payload["calls"]), 8)
+        self.assertEqual(payload["positions"][0], [10, -0.55, -25])
+        self.assertEqual(payload["positions"][1], [8.2, -0.55, -26.4])
+        self.assertEqual(payload["calls"][0]["nextState"]["currentActionId"], "call_support")
+        self.assertEqual(
+            payload["calls"][0]["nextState"]["currentTargetId"],
+            "ship.pax.quiet-service-cutter-01",
+        )
+        self.assertEqual(payload["calls"][1]["nextState"]["currentActionId"], "move_to_player")
+        self.assertEqual(payload["lastHardKickoff"]["reason"], "actor-deployment-test")
+        self.assertEqual(len(payload["lastHardKickoff"]["positions"]["boarders"]), 6)
+
+
+    def test_mother_ship_scene_renders_character_ai_before_alternate_scene_return(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        build_dynamic = source.index("buildDynamicGeometry(nowMs)")
+        docking_guard = source.index("if (this.isDockingCutsceneActive())", build_dynamic)
+        mother_ship_guard = source.index("if (this.isShuttleBaySceneActive())", docking_guard)
+        append_characters = source.index(
+            "this.appendCharacterAIGeometry(builder, nowMs);",
+            mother_ship_guard,
+        )
+        alternate_return = source.index(
+            "return builder.toFloat32Array();",
+            mother_ship_guard,
+        )
+        self.assertLess(append_characters, alternate_return)
+        self.assertNotIn(
+            "if (this.isDockingSceneActive()) {\n"
+            "            this.dynamicAnnotationPrimitiveTargets = annotationTargets;",
+            source,
+        )
+
+
+    def test_mother_ship_character_movement_uses_bridge_space_not_shuttle_colliders(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        start = source.index("canCharacterOccupy(characterId, x, z)")
+        end = source.index("characterAIWorld(", start)
+        occupancy = source[start:end]
+        self.assertIn('this.characterAIPhase() === "mother-ship"', occupancy)
+        self.assertIn("withinBridgeEncounter", occupancy)
+        self.assertIn("const {bounds, colliders} = this.movement;", occupancy)
+        self.assertLess(
+            occupancy.index('this.characterAIPhase() === "mother-ship"'),
+            occupancy.index("const {bounds, colliders} = this.movement;"),
+        )
+
+    def test_mother_ship_scene_renders_active_phaser_beam_before_return(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        build_dynamic = source.index("buildDynamicGeometry(nowMs)")
+        mother_ship_guard = source.index("if (this.isShuttleBaySceneActive())", build_dynamic)
+        mother_ship_return = source.index("return builder.toFloat32Array();", mother_ship_guard)
+        branch = source[mother_ship_guard:mother_ship_return]
+        self.assertIn("this.phaserBeam && nowMs <= this.phaserBeam.expiresAtMs", branch)
+        self.assertIn("builder.beam(this.phaserBeam.start, this.phaserBeam.end", branch)
+
+    def test_shuttle_scene_does_not_render_scenario_characters_over_legacy_aliens(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        build_dynamic = source.index("buildDynamicGeometry(nowMs)")
+        mother_ship_guard = source.index("if (this.isShuttleBaySceneActive())", build_dynamic)
+        mother_ship_return = source.index("return builder.toFloat32Array();", mother_ship_guard)
+        shuttle_aliens = source.index("this.aliens.forEach((alien)", mother_ship_return)
+        between = source[mother_ship_return:shuttle_aliens]
+        self.assertNotIn("appendCharacterAIGeometry", between)
+
+    def test_shuttle_boarders_spawn_even_when_character_ai_runtime_exists(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        self.assertIn(
+            'if (this.characterAIPhase() === "shuttle" && nowMs >= this.nextTransportAtMs)',
+            source,
+        )
+        self.assertNotIn(
+            "if (!this.characterAIRuntime && nowMs >= this.nextTransportAtMs)",
+            source,
+        )
+
+
+    def test_mother_ship_phaser_bypasses_only_legacy_boarding_pause(self) -> None:
+        source = SCENE_VIEWER.read_text(encoding="utf-8")
+        pause_start = source.index("isWeaponFirePaused()")
+        pause_end = source.index("dockingCutsceneSnapshot", pause_start)
+        pause_method = source[pause_start:pause_end]
+        self.assertIn('this.characterAIPhase?.() === "mother-ship"', pause_method)
+        self.assertIn("this.isDockingCutsceneActive()", pause_method)
+        self.assertIn("this.isWarpTravelActive()", pause_method)
+        self.assertIn("return this.isBoardingPaused();", pause_method)
+
+        fire_start = source.index("firePhaser(nowMs")
+        fire_end = source.index("const {forward, right, up}", fire_start)
+        fire_guard = source[fire_start:fire_end]
+        self.assertIn("this.isWeaponFirePaused()", fire_guard)
+        self.assertNotIn("this.isBoardingPaused()", fire_guard)
+
+        update_start = source.index("updateCombat(nowMs")
+        update_end = source.index("this.combatClockMs = nowMs;", update_start)
+        update_guard = source[update_start:update_end]
+        self.assertIn("this.isBoardingPaused()", update_guard)
+        self.assertNotIn("this.isWeaponFirePaused()", update_guard)
+
+
+    def test_encounter_state_module_classifies_staged_recovery(self) -> None:
+        result = self.run_node(
+            r"""
+            const encounter = require(process.argv[5]);
+            const actorIds = ["enemy.one", "enemy.two"];
+            const snapshot = {
+              characters: {
+                "enemy.one": {status: "down", health: 0},
+                "enemy.two": {status: "down", health: 0}
+              }
+            };
+            const actorGroup = encounter.classifyActorGroup({
+              actorIds,
+              snapshot,
+              actorCollectionKey: "characters",
+              entriesKey: "boarders"
+            });
+            const classification = encounter.classifyStagedEncounterState({
+              view: {
+                visible: true,
+                state: {
+                  status: "active",
+                  stageId: "combat"
+                }
+              },
+              actorGroup,
+              activeStageIds: ["combat"],
+              completedStageIds: ["investigation"]
+            });
+            const blockedPlan = encounter.reconciliationPlan(classification, {
+              recoverDefeated: false
+            });
+            const allowedPlan = encounter.reconciliationPlan(classification, {
+              recoverDefeated: true
+            });
+            console.log(JSON.stringify({
+              actorStatus: actorGroup.status,
+              defeatedCount: actorGroup.defeatedCount,
+              boarderAliasCount: actorGroup.boarders.length,
+              status: classification.status,
+              recovery: classification.recovery,
+              blocked: blockedPlan.recover,
+              allowed: allowedPlan.recover,
+              succeeded: encounter.recoverySucceeded(
+                {action: "custom-restart"},
+                {reset: true},
+                {successKeys: {"custom-restart": "reset"}}
+              )
+            }));
+            """
+        )
+
+        self.assertEqual(result["actorStatus"], "defeated")
+        self.assertEqual(result["defeatedCount"], 2)
+        self.assertEqual(result["boarderAliasCount"], 2)
+        self.assertEqual(result["status"], "recoverable-active-defeated")
+        self.assertEqual(result["recovery"], "revive-actors")
+        self.assertFalse(result["blocked"])
+        self.assertTrue(result["allowed"])
+        self.assertTrue(result["succeeded"])
+
+
+
+    def test_pax_value_utils_normalize_shared_pax_values(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for Pax value utility tests")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                textwrap.dedent(
+                    r"""
+                    const utils = require(process.argv[1]);
+                    const source = {nested: {value: 3}};
+                    const cloned = utils.cloneSnapshot(source);
+                    cloned.nested.value = 7;
+                    console.log(JSON.stringify({
+                      objectNullKeys: Object.keys(utils.objectValue(null)).length,
+                      objectArrayKeys: Object.keys(utils.objectValue([1, 2])).length,
+                      arrayNullLength: utils.arrayValue(null).length,
+                      stringValue: utils.stringValue("  pax  "),
+                      finiteFallback: utils.finiteNumber("nope", 42),
+                      vector: utils.vector3(["1", "nope", 3], [9, 8, 7]),
+                      frozen: Object.isFrozen(utils.freezeVector3([1, 2, 3])),
+                      clonedOriginalValue: source.nested.value,
+                      clonedValue: cloned.nested.value,
+                      now: utils.nowMs({nowMs: 123})
+                    }));
+                    """
+                ),
+                str(PAX_VALUE_UTILS),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["objectNullKeys"], 0)
+        self.assertEqual(payload["objectArrayKeys"], 0)
+        self.assertEqual(payload["arrayNullLength"], 0)
+        self.assertEqual(payload["stringValue"], "pax")
+        self.assertEqual(payload["finiteFallback"], 42)
+        self.assertEqual(payload["vector"], [1, 8, 3])
+        self.assertTrue(payload["frozen"])
+        self.assertEqual(payload["clonedOriginalValue"], 3)
+        self.assertEqual(payload["clonedValue"], 7)
+        self.assertEqual(payload["now"], 123)
+
+    def test_pax_session_presentation_owns_view_model_and_dom_bridges(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for Pax session presentation tests")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                textwrap.dedent(
+                    r"""
+                    const sessionPresentationModule = require(process.argv[1]);
+                    const config = require(process.argv[2]).config;
+                    const state = {
+                      running: true,
+                      lastError: "blocked",
+                      worldSnapshot: {characters: []}
+                    };
+                    const calls = [];
+                    const presentationModel = {
+                      characterRows: () => [{id: "row"}],
+                      requirementText: () => "need proof",
+                      stageStatus: () => ({label: "stage"}),
+                      objectivePresentation: () => ({title: "objective"}),
+                      threatPresentation: (_view, snapshot, options) => ({
+                        snapshotCharacters: snapshot.characters.length,
+                        running: options.running,
+                        error: options.lastError
+                      }),
+                      hardStartPresentation: () => ({visible: true}),
+                      isPaxPresentationViewModel: (value) => value?.snapshotKind === "pax.presentation",
+                      toPaxPresentationViewModel: () => ({snapshotKind: "pax.presentation"}),
+                      paxProtectionPresentationViewModel: () => ({snapshotKind: "pax.presentation"})
+                    };
+                    const domRenderer = {
+                      nodes: () => ({root: true}),
+                      renderCharacters: (_container, _presentation, context) => {
+                        calls.push(["characters", context.running, context.scenarioId]);
+                      },
+                      renderEvidence: () => calls.push(["evidence"]),
+                      renderResolutions: () => calls.push(["resolutions"]),
+                      renderOutcome: () => calls.push(["outcome"]),
+                      renderThreatTracker: () => calls.push(["threat"]),
+                      renderMissionCues: () => calls.push(["mission"]),
+                      renderHardStart: () => calls.push(["hard"]),
+                      renderPresentation: (_ui, _presentation, context) => {
+                        calls.push(["presentation", context.presentationOptions.running]);
+                      },
+                      hideScenarioChrome: () => calls.push(["hide"]),
+                      revealArrivalPanel: () => calls.push(["arrival"])
+                    };
+                    const bridge = sessionPresentationModule.create({
+                      config,
+                      state,
+                      presentationModel,
+                      domRenderer,
+                      currentRuntime: () => ({id: "runtime"}),
+                      currentCharacterRuntime: () => ({id: "character-runtime"}),
+                      briefingAcknowledged: () => false,
+                      runUi: () => null,
+                      nowMs: () => 42
+                    });
+                    const threat = bridge.threatPresentation({state: {}});
+                    bridge.renderCharacters({}, {snapshotKind: "pax.presentation"});
+                    bridge.renderPresentation({}, {snapshotKind: "pax.presentation"});
+                    bridge.hideScenarioChrome({});
+                    bridge.revealArrivalPanel();
+                    process.stdout.write(JSON.stringify({
+                      globalName: Boolean(global.MainComputerPaxScenarioSessionPresentation),
+                      characterRows: bridge.characterRows({}).length,
+                      requirement: bridge.requirementText({}),
+                      threat,
+                      nodesRoot: bridge.nodes().root,
+                      calls
+                    }));
+                    """
+                ),
+                str(PAX_SESSION_PRESENTATION),
+                str(PAX_CONFIG),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["globalName"])
+        self.assertEqual(payload["characterRows"], 1)
+        self.assertEqual(payload["requirement"], "need proof")
+        self.assertEqual(payload["threat"]["running"], True)
+        self.assertEqual(payload["threat"]["error"], "blocked")
+        self.assertEqual(payload["nodesRoot"], True)
+        self.assertIn(["characters", True, "scenario.pax.neutrality-under-fire"], payload["calls"])
+        self.assertIn(["presentation", True], payload["calls"])
+        self.assertIn(["hide"], payload["calls"])
+        self.assertIn(["arrival"], payload["calls"])
+
+
+    def test_pax_session_state_owns_runtime_and_briefing_state(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for Pax session state tests")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                textwrap.dedent(
+                    r"""
+                    const sessionStateModule = require(process.argv[1]);
+                    const store = new Map();
+                    const renderer = {id: "renderer"};
+                    const fallbackRuntime = {id: "fallback-runtime"};
+                    const fallbackCharacterRuntime = {id: "fallback-character-runtime"};
+                    const globalRef = {
+                      localStorage: {
+                        getItem: (key) => store.get(key) || null,
+                        setItem: (key, value) => store.set(key, value)
+                      },
+                      document: {
+                        querySelector: (selector) => selector === "#webgl-demo"
+                          ? {__mainComputerShuttle3dRenderer: renderer}
+                          : null
+                      },
+                      MainComputerSystemScenarioRuntime: {
+                        current: () => fallbackRuntime
+                      },
+                      MainComputerCharacterAIRuntime: {
+                        current: () => fallbackCharacterRuntime
+                      }
+                    };
+                    const session = sessionStateModule.create({
+                      globalRef,
+                      briefingCueKey: (view) => view && view.cue
+                    });
+                    const before = session.briefingAcknowledged("arrival");
+                    const acknowledged = session.acknowledgeBriefing({cue: "arrival"});
+                    const after = session.briefingAcknowledged("arrival");
+                    session.state.runtime = {id: "attached-runtime"};
+                    session.state.characterRuntime = {id: "attached-character-runtime"};
+                    session.state.lastHardKickoff = {reason: "test"};
+                    console.log(JSON.stringify({
+                      before,
+                      acknowledged,
+                      after,
+                      stored: store.get("main-computer.pax-scenario.briefing-ack.v1:arrival"),
+                      runtimeId: session.currentRuntime().id,
+                      characterRuntimeId: session.currentCharacterRuntime().id,
+                      rendererId: session.activeShuttleRenderer().id,
+                      now: session.nowMs({nowMs: 55}),
+                      debug: session.debugState()
+                    }));
+                    """
+                ),
+                str(PAX_SESSION_STATE),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["before"])
+        self.assertTrue(payload["acknowledged"]["acknowledged"])
+        self.assertEqual(payload["acknowledged"]["cueKey"], "arrival")
+        self.assertTrue(payload["after"])
+        self.assertEqual(payload["stored"], "acknowledged")
+        self.assertEqual(payload["runtimeId"], "attached-runtime")
+        self.assertEqual(payload["characterRuntimeId"], "attached-character-runtime")
+        self.assertEqual(payload["rendererId"], "renderer")
+        self.assertEqual(payload["now"], 55)
+        self.assertTrue(payload["debug"]["runtimeAttached"])
+        self.assertTrue(payload["debug"]["characterRuntimeAttached"])
+        self.assertEqual(payload["debug"]["lastHardKickoff"]["reason"], "test")
+
+
+    def test_pax_session_api_owns_public_surface_assembly(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for Pax session API tests")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                textwrap.dedent(
+                    r"""
+                    const api = require(process.argv[1]);
+                    const config = require(process.argv[2]).config;
+                    const noop = () => null;
+                    const built = api.create({
+                      config,
+                      diagnostics: {
+                        snapshot: noop,
+                        diagnose: noop,
+                        state: noop,
+                        characterRows: noop,
+                        encounterIdentity: noop,
+                        encounterInstanceDescriptor: noop
+                      },
+                      commands: {
+                        startOrRecover: noop,
+                        requestReconciliation: noop,
+                        resetProtectionEncounter: noop,
+                        forceCharacterStates: noop
+                      },
+                      presentation: {
+                        model: {
+                          viewModel: noop,
+                          objective: noop,
+                          threat: noop,
+                          hardStart: noop,
+                          requirementText: noop,
+                          stageStatus: noop,
+                          characterRows: noop
+                        },
+                        dom: {
+                          nodes: noop,
+                          hideScenarioChrome: noop,
+                          renderPresentation: noop,
+                          renderMissionCues: noop,
+                          renderThreatTracker: noop,
+                          renderHardStart: noop,
+                          renderCharacters: noop,
+                          renderEvidence: noop,
+                          renderResolutions: noop,
+                          renderOutcome: noop
+                        }
+                      },
+                      runtime: {
+                        setRuntime: noop,
+                        setCharacterRuntime: noop,
+                        handleNavigation: noop,
+                        setWorldSnapshot: noop,
+                        bind: noop,
+                        render: noop
+                      }
+                    });
+                    process.stdout.write(JSON.stringify({
+                      scenarioId: built.SCENARIO_ID,
+                      commandBoundary: typeof built.commands.startOrRecover,
+                      diagnosticBoundary: typeof built.diagnostics.snapshot,
+                      presentationBoundary: typeof built.presentation.dom.renderPresentation,
+                      runtimeBoundary: typeof built.runtime.bind,
+                      boarderCount: built.boarderIds.length,
+                      frozen: Object.isFrozen(built)
+                    }));
+                    """
+                ),
+                str(PAX_SESSION_API),
+                str(PAX_CONFIG),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["scenarioId"], "scenario.pax.neutrality-under-fire")
+        self.assertEqual(payload["commandBoundary"], "function")
+        self.assertEqual(payload["diagnosticBoundary"], "function")
+        self.assertEqual(payload["presentationBoundary"], "function")
+        self.assertEqual(payload["runtimeBoundary"], "function")
+        self.assertEqual(payload["boarderCount"], 6)
+        self.assertTrue(payload["frozen"])
+
+    def test_pax_session_runtime_owns_render_and_attachment_wiring(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for Pax session runtime tests")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                textwrap.dedent(
+                    r"""
+                    const runtimeModule = require(process.argv[1]);
+                    const config = require(process.argv[2]).config;
+                    const calls = [];
+                    const ui = {
+                      root: true,
+                      briefingAck: {addEventListener: (name) => calls.push(["bind", "briefing", name])},
+                      hardStartButton: {addEventListener: (name) => calls.push(["bind", "hard", name])},
+                      proceed: {addEventListener: (name) => calls.push(["bind", "proceed", name])}
+                    };
+                    const sessionState = {
+                      state: {
+                        bound: false,
+                        runtime: null,
+                        characterRuntime: null,
+                        unsubscribe: null,
+                        characterUnsubscribe: null,
+                        running: false,
+                        recoveryInProgress: false,
+                        lastError: "",
+                        lastHardKickoff: null,
+                        recoveredCharacterRuntime: null,
+                        worldSnapshot: null
+                      },
+                      nowMs: (options = {}) => Number.isFinite(Number(options.nowMs))
+                        ? Number(options.nowMs)
+                        : 77,
+                      currentRuntime() { return this.state.runtime; },
+                      currentCharacterRuntime() { return this.state.characterRuntime; },
+                      activeShuttleRenderer() { return {id: "renderer"}; },
+                      briefingAcknowledged() { return false; },
+                      acknowledgeBriefing(view) {
+                        calls.push(["ack", view && view.state && view.state.stageId]);
+                        return {acknowledged: true};
+                      },
+                      debugState() { return {runtimeAttached: Boolean(this.state.runtime)}; }
+                    };
+                    const presentation = {
+                      nodes: () => ui,
+                      hideScenarioChrome: () => calls.push(["hide"]),
+                      paxProtectionPresentationViewModel: (view) => ({view}),
+                      renderPresentation: (ui, model) => calls.push(["render", model.view.state.stageId]),
+                      characterRows: () => [],
+                      objectivePresentation: () => ({}),
+                      threatPresentation: () => ({}),
+                      hardStartPresentation: () => ({}),
+                      requirementText: () => "",
+                      stageStatus: () => "",
+                      renderMissionCues: () => null,
+                      renderThreatTracker: () => null,
+                      renderHardStart: () => null,
+                      renderCharacters: () => null,
+                      renderEvidence: () => null,
+                      renderResolutions: () => null,
+                      renderOutcome: () => null
+                    };
+                    const protectionEncounter = {
+                      commands: {
+                        syncProtection: () => calls.push(["sync"]),
+                        forceCharacterStates: (reason) => {
+                          calls.push(["force", reason]);
+                          sessionState.state.lastHardKickoff = {reason};
+                          return {forced: true};
+                        },
+                        resetProtectionEncounter: () => ({reset: true}),
+                        startOrRecover: () => ({view: null}),
+                        handleNavigation: (navigation) => navigation,
+                        setWorldSnapshot: (snapshot) => snapshot
+                      },
+                      diagnostics: {
+                        encounterIdentity: () => ({key: "identity"}),
+                        encounterInstanceDescriptor: () => ({key: "instance"}),
+                        snapshot: () => ({snapshotKind: "pax-protection-encounter"}),
+                        diagnose: () => ({diagnosed: true})
+                      },
+                      reconciliation: {
+                        request: (reason, mode) => {
+                          calls.push(["reconcile", reason, mode]);
+                          return {recovered: false};
+                        }
+                      }
+                    };
+                    const view = {
+                      visible: true,
+                      state: {status: "active", stageId: "protect-witness"}
+                    };
+                    const runtime = {
+                      view: () => view,
+                      subscribe: (callback) => {
+                        calls.push(["subscribe", "scenario"]);
+                        return () => calls.push(["unsubscribe", "scenario"]);
+                      }
+                    };
+                    const characterRuntime = {
+                      subscribe: (callback) => {
+                        calls.push(["subscribe", "character"]);
+                        return () => calls.push(["unsubscribe", "character"]);
+                      }
+                    };
+                    const built = runtimeModule.create({
+                      config,
+                      sessionState,
+                      presentation,
+                      protectionEncounter,
+                      globalRef: {
+                        performance: {now: () => 88},
+                        MainComputerSystemScenarioRuntime: {current: () => runtime},
+                        MainComputerCharacterAIRuntime: {current: () => characterRuntime},
+                        addEventListener: (name) => calls.push(["listen", name])
+                      }
+                    });
+                    built.runtime.setRuntime(runtime);
+                    built.runtime.setCharacterRuntime(characterRuntime);
+                    built.runtime.render();
+                    process.stdout.write(JSON.stringify({
+                      hasRuntimeApi: typeof built.runtime.setRuntime,
+                      hasCommandApi: typeof built.commands.requestReconciliation,
+                      hasDiagnosticApi: typeof built.diagnostics.snapshot,
+                      hasPresentationApi: typeof built.presentation.dom.renderPresentation,
+                      calls,
+                      debug: built.diagnostics.state(),
+                      publicKeys: Object.keys(built).sort()
+                    }));
+                    """
+                ),
+                str(PAX_SESSION_RUNTIME),
+                str(PAX_CONFIG),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["hasRuntimeApi"], "function")
+        self.assertEqual(payload["hasCommandApi"], "function")
+        self.assertEqual(payload["hasDiagnosticApi"], "function")
+        self.assertEqual(payload["hasPresentationApi"], "function")
+        self.assertEqual(payload["publicKeys"], ["commands", "diagnostics", "presentation", "runtime"])
+        self.assertIn(["subscribe", "scenario"], payload["calls"])
+        self.assertIn(["subscribe", "character"], payload["calls"])
+        self.assertIn(["force", "visible-protection-hard-kickoff"], payload["calls"])
+        self.assertIn(["render", "protect-witness"], payload["calls"])
+        self.assertTrue(payload["debug"]["runtimeAttached"])
+
+
+    def test_pax_reconciliation_uses_neutral_encounter_state_module(self) -> None:
+        encounter_source = ENCOUNTER_STATE.read_text(encoding="utf-8")
+        utils_source = PAX_VALUE_UTILS.read_text(encoding="utf-8")
+        config_source = PAX_CONFIG.read_text(encoding="utf-8")
+        model_source = PAX_PROTECTION_MODEL.read_text(encoding="utf-8")
+        deployment_source = PAX_PROTECTION_ACTOR_DEPLOYMENT.read_text(encoding="utf-8")
+        commands_source = PAX_PROTECTION_COMMANDS.read_text(encoding="utf-8")
+        reconciliation_source = PAX_PROTECTION_RECONCILIATION.read_text(encoding="utf-8")
+        presentation_source = PAX_PRESENTATION_MODEL.read_text(encoding="utf-8")
+        dom_renderer_source = PAX_DOM_RENDERER.read_text(encoding="utf-8")
+        session_presentation_source = PAX_SESSION_PRESENTATION.read_text(encoding="utf-8")
+        session_state_source = PAX_SESSION_STATE.read_text(encoding="utf-8")
+        session_api_source = PAX_SESSION_API.read_text(encoding="utf-8")
+        session_runtime_source = PAX_SESSION_RUNTIME.read_text(encoding="utf-8")
+        controller_source = PAX_PROTECTION_CONTROLLER.read_text(encoding="utf-8")
+        pax_source = PAX_INTERACTION.read_text(encoding="utf-8")
+        session_source = PAX_SESSION.read_text(encoding="utf-8")
+        html_source = APPLICATIONS_HTML.read_text(encoding="utf-8")
+
+        self.assertIn("global.MainComputerEncounterState = api", encounter_source)
+        self.assertIn("global.MainComputerPaxValueUtils = api", utils_source)
+        self.assertIn("objectValue", utils_source)
+        self.assertIn("freezeVector3", utils_source)
+        self.assertIn("cloneSnapshot", utils_source)
+        self.assertIn("classifyActorGroup", encounter_source)
+        self.assertIn("classifyStagedEncounterState", encounter_source)
+        self.assertIn("reconciliationPlan", encounter_source)
+        self.assertIn("recoverySucceeded", encounter_source)
+        self.assertIn("actorDiagnosticRows", encounter_source)
+
+        self.assertIn("global.MainComputerPaxScenarioConfig = api", config_source)
+        self.assertIn("const {freezeVector3} = PaxValueUtils", config_source)
+        self.assertIn("PaxValueUtils", presentation_source)
+        self.assertIn("PaxValueUtils", dom_renderer_source)
+        self.assertIn("PaxValueUtils", session_presentation_source)
+        self.assertIn("PaxValueUtils", session_state_source)
+        self.assertIn("PaxValueUtils", session_api_source)
+        self.assertIn("PaxValueUtils", session_runtime_source)
+        self.assertIn("PaxValueUtils", model_source)
+        self.assertIn("PaxValueUtils", deployment_source)
+        self.assertIn("PaxValueUtils", commands_source)
+        self.assertIn("PaxValueUtils", reconciliation_source)
+        self.assertIn("global.MainComputerPaxScenarioSessionPresentation = api", session_presentation_source)
+        self.assertIn("function createPaxScenarioSessionPresentation", session_presentation_source)
+        self.assertIn("global.MainComputerPaxScenarioSessionState = api", session_state_source)
+        self.assertIn("global.MainComputerPaxScenarioSessionApi = api", session_api_source)
+        self.assertIn("function createPaxScenarioSessionApi", session_api_source)
+        self.assertIn("global.MainComputerPaxProtectionEncounterModel = api", model_source)
+        self.assertIn("global.MainComputerPaxProtectionActorDeployment = api", deployment_source)
+        self.assertIn("global.MainComputerPaxProtectionEncounterCommands = api", commands_source)
+        self.assertIn("global.MainComputerPaxProtectionReconciliation = api", reconciliation_source)
+        self.assertIn("global.MainComputerPaxProtectionEncounterController = api", controller_source)
+        self.assertIn("EncounterState.classifyActorGroup", model_source)
+        self.assertIn("EncounterState.classifyStagedEncounterState", model_source)
+        self.assertIn("EncounterState.reconciliationPlan", model_source)
+        self.assertIn("EncounterState.recoverySucceeded", model_source)
+        self.assertIn("EncounterState.diagnosticSnapshot", model_source)
+        self.assertIn("EncounterState.actorDiagnosticRows", model_source)
+        self.assertIn("PaxProtectionEncounterModel.create", controller_source)
+        self.assertIn("PaxProtectionActorDeployment.create", commands_source)
+        self.assertIn("PaxProtectionEncounterCommands.create", controller_source)
+        self.assertIn("PaxProtectionReconciliation.create", controller_source)
+        self.assertIn("const commands = Object.freeze", controller_source)
+        self.assertIn("const diagnostics = Object.freeze", controller_source)
+        self.assertIn("const reconciliation = Object.freeze", controller_source)
+        self.assertIn("stateLabels: model.paxProtectionStateLabels", controller_source)
+        self.assertIn("performRecovery: rawReconciliation.performRecovery", controller_source)
+        self.assertNotIn("syncProtection: encounterCommands.syncProtection", controller_source)
+        self.assertNotIn("reconcilePaxProtectionState: reconciliation.reconcilePaxProtectionState", controller_source)
+        self.assertIn("performRecovery: performPaxProtectionRecovery", reconciliation_source)
+        self.assertIn("request: requestProtectionEncounterReconciliation", reconciliation_source)
+        self.assertIn("cameraRelativeBoardingPositions", deployment_source)
+        self.assertIn("forceProtectionEncounterCharacters", deployment_source)
+        self.assertIn("PaxScenarioSessionPresentation.create", session_source)
+        self.assertIn("presentation.renderPresentation", session_runtime_source)
+        self.assertIn("PaxScenarioSessionState.create", session_source)
+        self.assertIn("PaxScenarioSessionRuntime.create", session_source)
+        self.assertIn("PaxScenarioSessionApi.create", session_source)
+        self.assertIn("PaxProtectionEncounterController.create", session_source)
+        self.assertIn("global.MainComputerPaxScenarioSessionRuntime = api", session_runtime_source)
+        self.assertIn("function createPaxScenarioSessionRuntime", session_runtime_source)
+        self.assertIn("sessionState.debugState", session_runtime_source)
+        self.assertIn("encounterCommands.syncProtection", session_runtime_source)
+        self.assertIn("encounterDiagnostics.snapshot", session_runtime_source)
+        self.assertIn("encounterReconciliation.request", session_runtime_source)
+        self.assertNotIn("protectionEncounter.syncProtection", session_runtime_source)
+        self.assertIn("presentation.renderPresentation", session_runtime_source)
+        self.assertIn("briefingAcknowledged", session_state_source)
+        self.assertIn("acknowledgeBriefing", session_state_source)
+        self.assertNotIn("const boarders = BOARDER_IDS.map", session_source)
+
+        self.assertLess(
+            html_source.index("applications/scripts/encounter-state.js"),
+            html_source.index("applications/scripts/pax-value-utils.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-value-utils.js"),
+            html_source.index("applications/scripts/pax-scenario-config.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-scenario-config.js"),
+            html_source.index("applications/scripts/pax-presentation-model.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-presentation-model.js"),
+            html_source.index("applications/scripts/pax-dom-renderer.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-dom-renderer.js"),
+            html_source.index("applications/scripts/pax-scenario-session-presentation.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-scenario-session-presentation.js"),
+            html_source.index("applications/scripts/pax-scenario-session-state.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-scenario-session-state.js"),
+            html_source.index("applications/scripts/pax-protection-encounter-model.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-protection-encounter-model.js"),
+            html_source.index("applications/scripts/pax-protection-actor-deployment.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-protection-actor-deployment.js"),
+            html_source.index("applications/scripts/pax-protection-encounter-commands.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-protection-encounter-commands.js"),
+            html_source.index("applications/scripts/pax-protection-reconciliation.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-protection-reconciliation.js"),
+            html_source.index("applications/scripts/pax-protection-encounter-controller.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-protection-encounter-controller.js"),
+            html_source.index("applications/scripts/pax-scenario-session-runtime.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-scenario-session-runtime.js"),
+            html_source.index("applications/scripts/pax-scenario-session-api.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-scenario-session-api.js"),
+            html_source.index("applications/scripts/pax-scenario-session.js"),
+        )
+        self.assertLess(
+            html_source.index("applications/scripts/pax-scenario-session.js"),
+            html_source.index("applications/scripts/pax-scenario-interaction.js"),
+        )
+
+
+    def test_pax_legacy_protection_encounter_api_is_a_compatibility_shim(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("node is required for Pax protection compatibility tests")
+        result = subprocess.run(
+            [
+                "node",
+                "-e",
+                textwrap.dedent(
+                    r"""
+                    const legacy = require(process.argv[1]);
+                    const adapter = legacy.createEncounterAdapter();
+                    const classification = {
+                      status: "recoverable-protection-defeated",
+                      recovery: legacy.PAX_PROTECTION_RECOVERY.reviveBoarders,
+                      actorGroup: {status: "active"}
+                    };
+                    const plan = adapter.reconciliationPlan(classification, {});
+                    process.stdout.write(JSON.stringify({
+                      scenarioId: legacy.SCENARIO_ID,
+                      boarderCount: legacy.BOARDER_IDS.length,
+                      configSameScenario: legacy.config.ids.scenarioId === legacy.SCENARIO_ID,
+                      adapterScenarioId: adapter.scenarioId,
+                      hasClassifyActorGroup: typeof adapter.classifyActorGroup === "function",
+                      hasClassifyStagedEncounterState:
+                        typeof adapter.classifyStagedEncounterState === "function",
+                      hasDiagnosticSnapshot: typeof adapter.diagnosticSnapshot === "function",
+                      planRecover: plan.recover,
+                      planAction: plan.action
+                    }));
+                    """
+                ),
+                str(PAX_PROTECTION_COMPAT),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["scenarioId"], "scenario.pax.neutrality-under-fire")
+        self.assertEqual(payload["boarderCount"], 6)
+        self.assertTrue(payload["configSameScenario"])
+        self.assertEqual(payload["adapterScenarioId"], payload["scenarioId"])
+        self.assertTrue(payload["hasClassifyActorGroup"])
+        self.assertTrue(payload["hasClassifyStagedEncounterState"])
+        self.assertTrue(payload["hasDiagnosticSnapshot"])
+        self.assertTrue(payload["planRecover"])
+        self.assertEqual(payload["planAction"], "revive-boarders")
+
+
+    def test_pax_protection_diagnostic_snapshot_reports_canonical_state(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            interaction.setCharacterRuntime(characters);
+            interaction.commands.startOrRecover("test-diagnostic-start", {
+              allowSystemChange: true,
+              nowMs: 10
+            });
+
+            const passiveSnapshot = interaction.paxProtectionEncounterSnapshot({
+              mode: "passive"
+            });
+            const startupSnapshot = interaction.paxProtectionEncounterSnapshot({
+              mode: "startup-attach"
+            });
+            const diagnostic = interaction.diagnosePaxProtectionEncounter();
+
+            console.log(JSON.stringify({
+              passiveRecoverDefeated: passiveSnapshot.reconciliation.recoverDefeated,
+              startupRecoverDefeated: startupSnapshot.reconciliation.recoverDefeated,
+              snapshotVersion: diagnostic.snapshotVersion,
+              snapshotKind: diagnostic.snapshotKind,
+              readOnly: diagnostic.readOnly,
+              mode: diagnostic.mode,
+              actors: diagnostic.actors,
+              runtimes: diagnostic.runtimes,
+              reconciliation: diagnostic.reconciliation,
+              hasSnapshotExport: typeof interaction.paxProtectionEncounterSnapshot === "function",
+              hasOptionsExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "paxProtectionReconciliationOptions"
+              ),
+              hasClassifierExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "classifyPaxProtectionState"
+              ),
+              hasBoarderGroupExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "classifyBoarderGroup"
+              ),
+              hasPlannerExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "paxProtectionReconciliationPlan"
+              ),
+              hasRawReconcileExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "reconcilePaxProtectionState"
+              ),
+              hasCommandsApi: typeof interaction.commands === "object",
+              hasDiagnosticsApi: typeof interaction.diagnostics === "object",
+              hasPresentationApi: typeof interaction.presentation === "object",
+              hasRuntimeApi: typeof interaction.runtime === "object",
+              hasTopLevelConfig: typeof interaction.config === "object",
+              constantsConfigSame: interaction.constants.config === interaction.config,
+              configuredScenarioId: interaction.config.ids.scenarioId,
+              configuredSystemId: interaction.config.ids.systemId,
+              configuredStages: interaction.config.stages,
+              configuredEncounter: interaction.config.encounter,
+              configuredBoarderIds: interaction.config.actors.boarderIds,
+              configuredRecoveryActions: interaction.config.recovery.actions,
+              configuredReconciliationModes: interaction.config.recovery.reconciliationModes,
+              configuredPositionFrozen: Object.isFrozen(
+                interaction.config.actors.hardKickoffPositions.assassin
+              ),
+              hasTopLevelStateExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "state"
+              ),
+              hasTopLevelStartExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "startOrRecoverPax"
+              ),
+              hasTopLevelForceExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "forcePaxCharacterStates"
+              ),
+              hasTopLevelResetExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "resetPaxProtectionEncounter"
+              ),
+              hasTopLevelRequestExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "requestPaxProtectionReconciliation"
+              ),
+              hasCommandStart: typeof interaction.commands.startOrRecover === "function",
+              hasCommandForce: typeof interaction.commands.forceCharacterStates === "function",
+              hasCommandReset: typeof interaction.commands.resetProtectionEncounter === "function",
+              hasCommandRequestReconciliation: typeof interaction.commands.requestReconciliation === "function",
+              hasCommandLegacyStart: Object.prototype.hasOwnProperty.call(
+                interaction.commands,
+                "startOrRecoverPax"
+              ),
+              hasCommandLegacyRecoverActiveBoarders: Object.prototype.hasOwnProperty.call(
+                interaction.commands,
+                "recoverActiveBoardersOutsideProtection"
+              ),
+              hasDiagnosticState: typeof interaction.diagnostics.state === "function",
+              hasPresentationObjective: typeof interaction.presentation.objective === "function",
+              hasPresentationViewModel: typeof interaction.presentation.viewModel === "function",
+              hasPresentationAlias:
+                interaction.presentation.presentationViewModel === interaction.presentation.viewModel,
+              hasPresentationRenderThreatExport: Object.prototype.hasOwnProperty.call(
+                interaction,
+                "renderThreatTracker"
+              ),
+              debugState: interaction.diagnostics.state(),
+              status: diagnostic.status,
+              stageId: diagnostic.stageId,
+              stageClass: diagnostic.stageClass,
+              actorStatus: diagnostic.actorStatus,
+              total: diagnostic.total,
+              activeCount: diagnostic.activeCount,
+              defeatedCount: diagnostic.defeatedCount,
+              missingCount: diagnostic.missingCount,
+              planRecover: diagnostic.plan.recover,
+              planAction: diagnostic.plan.action,
+              scenarioId: diagnostic.scenarioId,
+              systemId: diagnostic.systemId,
+              activeStageId: diagnostic.activeStageId,
+              completedStageId: diagnostic.completedStageId,
+              encounter: diagnostic.encounter,
+              encounterKey: diagnostic.encounterKey,
+              encounterDefinitionId: diagnostic.encounterDefinitionId,
+              encounterInstanceId: diagnostic.encounterInstanceId,
+              encounterInstanceKnown: diagnostic.encounterInstanceKnown,
+              encounterInstance: diagnostic.encounterInstance,
+              encounterProposedInstanceId: diagnostic.encounterProposedInstanceId,
+              encounterProposedInstanceKey: diagnostic.encounterProposedInstanceKey,
+              encounterInstancePlaceholder: diagnostic.encounterInstancePlaceholder,
+              encounterInstanceDurableCommitted: diagnostic.encounterInstanceDurableCommitted,
+              completionStatus: diagnostic.completionStatus,
+              completionTrusted: diagnostic.completionTrusted,
+              completionReason: diagnostic.completionReason,
+              staleActorState: diagnostic.staleActorState,
+              restartableCompletionCorruption: diagnostic.restartableCompletionCorruption,
+              completionIssueCodes: diagnostic.completionIssueCodes,
+              completion: diagnostic.completion,
+              boarderIds: diagnostic.boarderIds,
+              boarders: diagnostic.boarders,
+              runtimeAttached: diagnostic.runtimeAttached,
+              characterRuntimeAttached: diagnostic.characterRuntimeAttached
+            }));
+            """
+        )
+
+        self.assertFalse(result["passiveRecoverDefeated"])
+        self.assertTrue(result["startupRecoverDefeated"])
+        self.assertEqual(
+            result["snapshotVersion"],
+            "pax-protection-encounter-snapshot.v1",
+        )
+        self.assertEqual(result["snapshotKind"], "pax-protection-encounter")
+        self.assertTrue(result["readOnly"])
+        self.assertEqual(result["mode"], "passive")
+        self.assertTrue(result["hasSnapshotExport"])
+        self.assertFalse(result["hasOptionsExport"])
+        self.assertFalse(result["hasClassifierExport"])
+        self.assertFalse(result["hasBoarderGroupExport"])
+        self.assertFalse(result["hasPlannerExport"])
+        self.assertFalse(result["hasRawReconcileExport"])
+        self.assertTrue(result["hasCommandsApi"])
+        self.assertTrue(result["hasDiagnosticsApi"])
+        self.assertTrue(result["hasPresentationApi"])
+        self.assertTrue(result["hasRuntimeApi"])
+        self.assertTrue(result["hasTopLevelConfig"])
+        self.assertTrue(result["constantsConfigSame"])
+        self.assertEqual(
+            result["configuredScenarioId"],
+            "scenario.pax.neutrality-under-fire",
+        )
+        self.assertEqual(result["configuredSystemId"], "system.pax")
+        self.assertEqual(result["configuredStages"]["protection"], "protect-witness")
+        self.assertEqual(result["configuredStages"]["investigation"], "investigation")
+        self.assertEqual(result["configuredStages"]["conference"], "conference")
+        self.assertEqual(
+            result["configuredStages"]["hardKickoff"],
+            ["protect-witness", "investigation", "conference"],
+        )
+        self.assertEqual(
+            result["configuredEncounter"]["definitionId"],
+            "encounter.pax.protection-boarding",
+        )
+        self.assertEqual(
+            result["configuredEncounter"]["activeStageIds"],
+            ["protect-witness"],
+        )
+        self.assertEqual(
+            result["configuredEncounter"]["completedStageIds"],
+            ["investigation"],
+        )
+        self.assertEqual(len(result["configuredBoarderIds"]), 6)
+        self.assertEqual(result["configuredRecoveryActions"]["none"], "none")
+        self.assertEqual(
+            result["configuredRecoveryActions"]["restartEncounter"],
+            "restart-encounter",
+        )
+        self.assertEqual(
+            result["configuredReconciliationModes"]["startupAttach"],
+            "startup-attach",
+        )
+        self.assertTrue(result["configuredPositionFrozen"])
+        self.assertFalse(result["hasTopLevelStateExport"])
+        self.assertFalse(result["hasTopLevelStartExport"])
+        self.assertFalse(result["hasTopLevelForceExport"])
+        self.assertFalse(result["hasTopLevelResetExport"])
+        self.assertFalse(result["hasTopLevelRequestExport"])
+        self.assertTrue(result["hasCommandStart"])
+        self.assertTrue(result["hasCommandForce"])
+        self.assertTrue(result["hasCommandReset"])
+        self.assertTrue(result["hasCommandRequestReconciliation"])
+        self.assertFalse(result["hasCommandLegacyStart"])
+        self.assertFalse(result["hasCommandLegacyRecoverActiveBoarders"])
+        self.assertTrue(result["hasDiagnosticState"])
+        self.assertTrue(result["hasPresentationObjective"])
+        self.assertTrue(result["hasPresentationViewModel"])
+        self.assertTrue(result["hasPresentationAlias"])
+        self.assertFalse(result["hasPresentationRenderThreatExport"])
+        self.assertTrue(result["debugState"]["runtimeAttached"])
+        self.assertTrue(result["debugState"]["characterRuntimeAttached"])
+        self.assertFalse(result["debugState"]["recoveryInProgress"])
+        self.assertEqual(result["actors"]["status"], "active")
+        self.assertEqual(result["actors"]["total"], 6)
+        self.assertEqual(len(result["actors"]["rows"]), 6)
+        self.assertTrue(result["runtimes"]["scenarioAttached"])
+        self.assertTrue(result["runtimes"]["characterAttached"])
+        self.assertEqual(result["reconciliation"]["mode"], "passive")
+        self.assertFalse(result["reconciliation"]["recoverDefeated"])
+        self.assertFalse(result["reconciliation"]["inProgress"])
+        self.assertFalse(result["reconciliation"]["plan"]["recover"])
+        self.assertEqual(result["status"], "consistent-active")
+        self.assertEqual(result["stageId"], "protect-witness")
+        self.assertEqual(result["stageClass"], "active")
+        self.assertEqual(result["actorStatus"], "active")
+        self.assertEqual(result["total"], 6)
+        self.assertEqual(result["activeCount"], 6)
+        self.assertEqual(result["defeatedCount"], 0)
+        self.assertEqual(result["missingCount"], 0)
+        self.assertFalse(result["planRecover"])
+        self.assertEqual(result["planAction"], "none")
+        self.assertEqual(
+            result["scenarioId"],
+            "scenario.pax.neutrality-under-fire",
+        )
+        self.assertEqual(result["systemId"], "system.pax")
+        self.assertEqual(result["activeStageId"], "protect-witness")
+        self.assertEqual(result["completedStageId"], "investigation")
+        self.assertEqual(
+            result["encounterKey"],
+            "scenario.pax.neutrality-under-fire:encounter.pax.protection-boarding",
+        )
+        self.assertEqual(
+            result["encounterDefinitionId"],
+            "encounter.pax.protection-boarding",
+        )
+        self.assertIsNone(result["encounterInstanceId"])
+        self.assertFalse(result["encounterInstanceKnown"])
+        expected_instance_key = (
+            "scenario.pax.neutrality-under-fire:"
+            "encounter.pax.protection-boarding:"
+            "instance:protect-witness:pending"
+        )
+        self.assertEqual(result["encounterProposedInstanceId"], expected_instance_key)
+        self.assertEqual(result["encounterProposedInstanceKey"], expected_instance_key)
+        self.assertTrue(result["encounterInstancePlaceholder"])
+        self.assertFalse(result["encounterInstanceDurableCommitted"])
+        self.assertEqual(
+            result["encounterInstance"]["status"],
+            "placeholder",
+        )
+        self.assertEqual(
+            result["encounterInstance"]["source"],
+            "pax-diagnostic-placeholder",
+        )
+        self.assertEqual(
+            result["encounterInstance"]["proposedInstanceId"],
+            expected_instance_key,
+        )
+        self.assertEqual(result["completionStatus"], "not-completed")
+        self.assertFalse(result["completionTrusted"])
+        self.assertEqual(result["completionReason"], "not-completed")
+        self.assertEqual(result["staleActorState"], "none")
+        self.assertEqual(result["restartableCompletionCorruption"], "none")
+        self.assertEqual(result["completionIssueCodes"], [])
+        self.assertFalse(result["completion"]["completed"])
+        self.assertEqual(result["encounter"]["stageId"], "protect-witness")
+        self.assertEqual(result["encounter"]["scenarioId"], result["scenarioId"])
+        self.assertEqual(result["encounter"]["systemId"], result["systemId"])
+        self.assertEqual(result["encounter"]["activeStageIds"], ["protect-witness"])
+        self.assertEqual(result["encounter"]["completedStageIds"], ["investigation"])
+        self.assertEqual(len(result["encounter"]["actorIds"]), 6)
+        self.assertEqual(len(result["boarderIds"]), 6)
+        self.assertEqual(len(result["boarders"]), 6)
+        self.assertTrue(all(row["active"] for row in result["boarders"]))
+        self.assertTrue(result["runtimeAttached"])
+        self.assertTrue(result["characterRuntimeAttached"])
+
+
+    def test_pax_completed_without_durable_instance_reports_stale_state_diagnostic(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const diagnostic = interaction.diagnosePaxProtectionEncounter({
+              mode: "startup-attach"
+            });
+
+            console.log(JSON.stringify({
+              status: diagnostic.status,
+              stageId: diagnostic.stageId,
+              stageClass: diagnostic.stageClass,
+              actorStatus: diagnostic.actorStatus,
+              completionStatus: diagnostic.completionStatus,
+              completionTrusted: diagnostic.completionTrusted,
+              completionReason: diagnostic.completionReason,
+              staleActorState: diagnostic.staleActorState,
+              restartableCompletionCorruption: diagnostic.restartableCompletionCorruption,
+              completionIssueCodes: diagnostic.completionIssueCodes,
+              planRecover: diagnostic.plan.recover,
+              planAction: diagnostic.plan.action
+            }));
+            """
+        )
+
+        self.assertEqual(result["status"], "recoverable-investigation-defeated")
+        self.assertEqual(result["stageId"], "investigation")
+        self.assertEqual(result["stageClass"], "completed")
+        self.assertEqual(result["actorStatus"], "defeated")
+        self.assertEqual(result["completionStatus"], "completed-but-untrusted")
+        self.assertFalse(result["completionTrusted"])
+        self.assertEqual(result["completionReason"], "durable-instance-missing")
+        self.assertEqual(result["staleActorState"], "stale-defeated-actors")
+        self.assertEqual(
+            result["restartableCompletionCorruption"],
+            "restartable-corruption",
+        )
+        self.assertEqual(
+            result["completionIssueCodes"],
+            [
+                "durable-instance-missing",
+                "stale-defeated-actors",
+                "restartable-corruption",
+            ],
+        )
+        self.assertTrue(result["planRecover"])
+        self.assertEqual(result["planAction"], "restart-encounter")
+
+
+    def test_persisted_defeated_pax_boarders_use_shared_reconciliation_on_attach(self) -> None:
+        interaction_source = PAX_INTERACTION.read_text(encoding="utf-8")
+        session_source = PAX_SESSION.read_text(encoding="utf-8")
+        config_source = PAX_CONFIG.read_text(encoding="utf-8")
+        model_source = PAX_PROTECTION_MODEL.read_text(encoding="utf-8")
+        commands_source = PAX_PROTECTION_COMMANDS.read_text(encoding="utf-8")
+        reconciliation_source = PAX_PROTECTION_RECONCILIATION.read_text(encoding="utf-8")
+        controller_source = PAX_PROTECTION_CONTROLLER.read_text(encoding="utf-8")
+        session_api_source = PAX_SESSION_API.read_text(encoding="utf-8")
+        session_runtime_source = PAX_SESSION_RUNTIME.read_text(encoding="utf-8")
+        self.assertIn("const config = PaxScenarioConfig.config", session_source)
+        self.assertIn("const scenarioId = config.ids.scenarioId", session_runtime_source)
+        self.assertNotIn("const BOARDER_IDS = PAX_SCENARIO_CONFIG.actors.boarderIds", session_source)
+        self.assertIn("boarderIds: constants.boarderIds", session_api_source)
+        self.assertIn("activeStageIds: PAX_PROTECTION_ACTIVE_STAGE_IDS", model_source)
+        self.assertIn("completedStageIds: PAX_PROTECTION_COMPLETED_STAGE_IDS", model_source)
+        self.assertNotIn('state.stageId === "protect-witness"', session_source)
+        self.assertNotIn('state.stageId === "investigation"', session_source)
+        self.assertNotIn('state.stageId === "conference"', session_source)
+        self.assertIn("function classifyBoarderGroup", model_source)
+        self.assertIn("function classifyPaxProtectionState", model_source)
+        self.assertIn("function paxProtectionReconciliationPlan", model_source)
+        self.assertIn("function paxProtectionEncounterInstanceDescriptor", model_source)
+        self.assertIn("function paxProtectionEncounterSnapshotData", model_source)
+        self.assertIn("function buildPaxProtectionEncounterSnapshot", model_source)
+        self.assertIn("function paxProtectionEncounterSnapshot", model_source)
+        self.assertIn("function paxProtectionReconciliationOptions", model_source)
+        self.assertIn("function diagnosePaxProtectionEncounter", model_source)
+        self.assertIn("function startOrRecoverProtectionEncounter", commands_source)
+        self.assertIn("function forceProtectionEncounterCharacters", commands_source)
+        self.assertIn("function resetProtectionEncounter", commands_source)
+        self.assertIn("function requestProtectionEncounterReconciliation", reconciliation_source)
+        self.assertIn("function performPaxProtectionRecovery", reconciliation_source)
+        self.assertIn("function reconcilePaxProtectionState", reconciliation_source)
+        self.assertIn('recoverableProtectionDefeated: "recoverable-protection-defeated"', config_source)
+        self.assertIn('recoverableInvestigationDefeated: "recoverable-investigation-defeated"', config_source)
+        self.assertIn('restartEncounter: "restart-encounter"', config_source)
+        self.assertIn("uiState.recoveredCharacterRuntime !== runtime", session_runtime_source)
+        self.assertIn(
+            '"character-runtime-attach-encounter-reconciliation"',
+            config_source,
+        )
+        self.assertIn("recoverDefeated: true", config_source)
+        self.assertIn('"scenario-runtime-attach-inconsistent-recovery"', config_source)
+        self.assertNotIn("recoverDefeatedProtectionBoardersOnAttach", session_source)
+        self.assertNotIn("startOrRecoverPax", session_source)
+        self.assertNotIn("startOrRecoverPax", interaction_source)
+        self.assertNotIn("forcePaxCharacterStates", session_source)
+        self.assertNotIn("forcePaxCharacterStates", interaction_source)
+        self.assertNotIn("resetPaxProtectionEncounter", interaction_source)
+        self.assertNotIn("requestPaxProtectionReconciliation", interaction_source)
+        self.assertNotIn("recoverActiveBoardersOutsideProtection", interaction_source)
+
+
+    def test_pax_restart_resets_stage_before_replaying_boarding_encounter(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            interaction.setCharacterRuntime(characters);
+
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const before = scenario.view(interaction.SCENARIO_ID);
+            const reset = interaction.commands.startOrRecover(
+              "test-restart",
+              {
+                nowMs: 50,
+                restartProtectionEncounter: true
+              }
+            );
+            const after = scenario.view(interaction.SCENARIO_ID);
+
+            console.log(JSON.stringify({
+              beforeStage: before.state.stageId,
+              reset: reset.reset,
+              forced: reset.forced,
+              afterStage: after.state.stageId,
+              evidenceIds: after.state.evidenceIds,
+              metrics: after.state.metrics,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  id,
+                  status: character.status,
+                  health: character.health,
+                  action: character.currentActionId
+                };
+              }),
+              receiptReasons: after.state.receipts.map((receipt) => receipt.reason)
+            }));
+            """
+        )
+
+        self.assertEqual(result["beforeStage"], "investigation")
+        self.assertTrue(result["reset"], result)
+        self.assertTrue(result["forced"], result)
+        self.assertEqual(result["afterStage"], "protect-witness")
+        self.assertEqual(result["evidenceIds"], [])
+        self.assertEqual(
+            result["metrics"],
+            {
+                "weaponDischarges": 0,
+                "defensiveDischarges": 0,
+                "intimidationDischarges": 0,
+            },
+        )
+        self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
+        self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
+        self.assertIn("protection-encounter-reset", result["receiptReasons"])
+
+    def test_pax_restart_button_requests_atomic_protection_reset(self) -> None:
+        session_source = PAX_SESSION.read_text(encoding="utf-8")
+        presentation_source = PAX_PRESENTATION_MODEL.read_text(encoding="utf-8")
+        commands_source = PAX_PROTECTION_COMMANDS.read_text(encoding="utf-8")
+        runtime = SCENARIO_RUNTIME.read_text(encoding="utf-8")
+        self.assertIn("function resetProtectionEncounter", commands_source)
+        self.assertIn("restartProtectionEncounter", PAX_SESSION_RUNTIME.read_text(encoding="utf-8"))
+        self.assertIn("Restart boarding encounter", presentation_source)
+        self.assertIn("resetProtectionEncounter(scenarioId", runtime)
+        self.assertIn('"protection-encounter-reset"', runtime)
+
+
+    def test_investigation_with_all_boarders_active_auto_recovers_to_protection(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            interaction.setCharacterRuntime(characters);
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            interaction.commands.forceCharacterStates(
+              "test-create-inconsistent-active-boarders",
+              {nowMs: 50}
+            );
+
+            const recovered = scenario.view(interaction.SCENARIO_ID);
+
+            console.log(JSON.stringify({
+              inconsistentStage: "investigation",
+              recoveredStage: recovered.state.stageId,
+              evidenceIds: recovered.state.evidenceIds,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  status: character.status,
+                  health: character.health
+                };
+              }),
+              receiptReasons: recovered.state.receipts.map((receipt) => receipt.reason)
+            }));
+            """
+        )
+
+        self.assertEqual(result["inconsistentStage"], "investigation")
+        self.assertEqual(result["recoveredStage"], "protect-witness")
+        self.assertEqual(result["evidenceIds"], [])
+        self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
+        self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
+        self.assertIn("protection-encounter-reset", result["receiptReasons"])
+
+
+    def test_attach_recovers_investigation_with_all_boarders_down(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => scenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+            interaction.setRuntime(scenario);
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const before = scenario.view(interaction.SCENARIO_ID);
+            interaction.setCharacterRuntime(characters);
+            const after = scenario.view(interaction.SCENARIO_ID);
+
+            console.log(JSON.stringify({
+              beforeStage: before.state.stageId,
+              afterStage: after.state.stageId,
+              evidenceIds: after.state.evidenceIds,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  status: character.status,
+                  health: character.health
+                };
+              }),
+              receiptReasons: after.state.receipts.map((receipt) => receipt.reason)
+            }));
+            """
+        )
+
+        self.assertEqual(result["beforeStage"], "investigation")
+        self.assertEqual(result["afterStage"], "protect-witness")
+        self.assertEqual(result["evidenceIds"], [])
+        self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
+        self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
+        self.assertIn("protection-encounter-reset", result["receiptReasons"])
+
+
+    def test_scenario_attach_recovers_after_character_runtime_attached_too_early(self) -> None:
+        result = self.run_node(
+            r"""
+            const fs = require("fs");
+            const scenarioApi = require(process.argv[1]);
+            const characterApi = require(process.argv[2]);
+            const project = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+            const scenario = scenarioApi.create(
+              project.metadata.systemScenarios,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false,
+                activeSystemId: "system.pax"
+              }
+            );
+            const characters = characterApi.create(
+              project.metadata.characterAI,
+              {
+                projectId: "webgl-demo",
+                storage: null,
+                restore: false
+              }
+            );
+
+            let currentScenario = null;
+            global.MainComputerSystemScenarioRuntime = {
+              current: () => currentScenario
+            };
+            global.MainComputerCharacterAIRuntime = {
+              current: () => characters
+            };
+            global.document = {
+              querySelector: () => null
+            };
+
+            const interaction = require(process.argv[4]);
+
+            /*
+             * Browser startup can attach the character runtime before the
+             * scenario runtime is ready. That early no-op must not suppress
+             * the later scenario-runtime recovery pass.
+             */
+            interaction.setCharacterRuntime(characters);
+            const markedAfterEarlyAttach =
+              interaction.diagnostics.state().recoveredCharacterRuntimeAttached;
+
+            currentScenario = scenario;
+            scenario.startScenario(interaction.SCENARIO_ID, {nowMs: 10});
+            interaction.boarderIds.forEach((id, index) => {
+              characters.damageCharacter(
+                id,
+                999,
+                {sourceId: "player", nowMs: 20 + index}
+              );
+            });
+            scenario.syncCharacterRuntime(
+              interaction.SCENARIO_ID,
+              characters,
+              {nowMs: 40}
+            );
+
+            const before = scenario.view(interaction.SCENARIO_ID);
+            interaction.setRuntime(scenario);
+            const after = scenario.view(interaction.SCENARIO_ID);
+
+            console.log(JSON.stringify({
+              markedAfterEarlyAttach,
+              beforeStage: before.state.stageId,
+              afterStage: after.state.stageId,
+              evidenceIds: after.state.evidenceIds,
+              boarders: interaction.boarderIds.map((id) => {
+                const character = characters.character(id);
+                return {
+                  status: character.status,
+                  health: character.health
+                };
+              }),
+              receiptReasons: after.state.receipts.map((receipt) => receipt.reason)
+            }));
+            """
+        )
+
+        self.assertFalse(result["markedAfterEarlyAttach"], result)
+        self.assertEqual(result["beforeStage"], "investigation")
+        self.assertEqual(result["afterStage"], "protect-witness")
+        self.assertEqual(result["evidenceIds"], [])
+        self.assertTrue(all(row["status"] == "active" for row in result["boarders"]))
+        self.assertTrue(all(row["health"] > 0 for row in result["boarders"]))
+        self.assertIn("protection-encounter-reset", result["receiptReasons"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1106,7 +1106,7 @@ function Start-MainComputerNanoJev([string]$RootPath, [object]$LaunchContext, [s
     }
   }
 
-  $timeoutText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS" "180"
+  $timeoutText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS" "900"
   try { $timeoutSeconds = [Math]::Max(1, [int]$timeoutText) } catch { $timeoutSeconds = 180 }
   $deadline = (Get-Date).AddSeconds($timeoutSeconds)
   while ((Get-Date) -lt $deadline) {
@@ -1180,7 +1180,7 @@ function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchCont
   $managerPort = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_MANAGER_PORT" "9765"
   $backendPort = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_BACKEND_PORT" "9766"
   $idleSeconds = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_IDLE_SECONDS" "300"
-  $startTimeout = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS" "180"
+  $startTimeout = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS" "900"
 
   if (-not (Test-MainComputerNanoJevEnabled $LaunchContext)) {
     return [ordered]@{
@@ -1248,7 +1248,7 @@ function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchCont
     "--idle-seconds", [string]$idleSeconds,
     "--start-timeout-seconds", [string]$startTimeout,
     "--docker-command", "docker",
-    "--image-name", "main-computer/nanojev:unified-games-v1"
+    "--image-name", "main-computer/nanojev:managed-v2"
   )
   $argString = Join-CommandLine $arguments
   $process = Start-Process `

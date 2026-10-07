@@ -1,0 +1,47 @@
+        <div class="demo-controls" id="demo-controls">
+          <div class="webgl-vfx-controls" aria-label="Game Surface VFX density controls">
+            <strong>VFX</strong>
+            <label>
+              <span>Particles <output id="webgl-particle-density-value">2x</output></span>
+              <input id="webgl-particle-density" type="range" min="1" max="4" step="0.25" value="2" aria-label="Game Surface particle density multiplier">
+            </label>
+            <label>
+              <span>Effects <output id="webgl-effect-intensity-value">2x</output></span>
+              <input id="webgl-effect-intensity" type="range" min="1" max="4" step="0.25" value="2" aria-label="Game Surface effect intensity multiplier">
+            </label>
+            <div class="webgl-vfx-presets" aria-label="Game Surface VFX presets">
+              <button type="button" data-webgl-vfx-preset="1">1x</button>
+              <button type="button" data-webgl-vfx-preset="2">2x</button>
+              <button type="button" data-webgl-vfx-preset="4">4x</button>
+            </div>
+          </div>
+          <div class="webgl-gameplay-pack-selector webgl-gameplay-pack-controls" id="webgl-gameplay-pack-selector" aria-label="Game Surface gameplay pack lobby" data-webgl-gameplay-pack-controls data-mode="none">
+            <strong>Gameplay Packs</strong>
+            <div class="webgl-gameplay-pack-lobby-copy">Choose one or more gameplay packs for a new game.</div>
+            <fieldset class="webgl-gameplay-pack-checklist" id="webgl-gameplay-pack-checklist" data-webgl-gameplay-pack-checklist>
+              <legend>Available gameplay packs</legend>
+              <label class="webgl-gameplay-pack-option">
+                <input type="checkbox" value="pack.opening-shuttle.elite-boarders" data-webgl-gameplay-pack-checkbox checked>
+                <span class="webgl-gameplay-pack-option-copy">
+                  <span class="webgl-gameplay-pack-option-title">Opening Shuttle: Elite Boarders</span>
+                  <span class="webgl-gameplay-pack-option-meta">Opening shuttle encounter · default on</span>
+                  <span class="webgl-gameplay-pack-option-description">Triple-strength shuttle boarders and an elite boarding leader.</span>
+                </span>
+              </label>
+              <label class="webgl-gameplay-pack-option">
+                <input type="checkbox" value="pack.main-ship.bay-boarders" data-webgl-gameplay-pack-checkbox checked>
+                <span class="webgl-gameplay-pack-option-copy">
+                  <span class="webgl-gameplay-pack-option-title">Main Ship: Bay Boarders</span>
+                  <span class="webgl-gameplay-pack-option-meta">Main ship bay entry · default on</span>
+                  <span class="webgl-gameplay-pack-option-description">Spawns boarders after the bay-entry cutscene resolves.</span>
+                </span>
+              </label>
+            </fieldset>
+            <div class="webgl-gameplay-pack-actions" data-webgl-gameplay-pack-actions>
+              <button id="webgl-load-game" data-webgl-load-game type="button" disabled aria-disabled="true">LOAD GAME</button>
+              <button id="webgl-gameplay-pack-apply" data-webgl-gameplay-pack-start type="button">START NEW GAME</button>
+            </div>
+            <div class="webgl-autosave-status" id="webgl-autosave-status" role="status" aria-live="polite" data-webgl-autosave-status>Autosave: none yet.</div>
+            <div class="webgl-gameplay-pack-status" id="webgl-gameplay-pack-status" role="status" aria-live="polite">Default packs selected. Press START NEW GAME.</div>
+          </div>
+        </div>

@@ -209,12 +209,18 @@ def test_pairwise_stage_defaults_use_fresh_512_predev_and_progressive_480_popula
     assert result["tinystories_lexical_hidden_size"] == 768
     assert result["head_hidden_sizes"]["tinystories"] == 768
     assert result["head_parameters"] == 128327175
-    assert result["trainable_parameters"] == 128_327_175
-    assert result["frozen_head_parameters"] == 0
+    assert result["trainable_parameters"] == 85_425_159
+    assert result["frozen_head_parameters"] == 42_902_016
+    assert result["routing_frozen_parameters"] == 42_902_016
+    assert result["routing_frozen_parameter_tensors"] == 60
+    assert result["downstream_trainable_parameter_tensors"] == 99
+    assert result["training_phase"] == m.TRAINING_PHASE == "routing-frozen-v1"
+    assert result["routing_freeze_schema"] == m.ROUTING_FREEZE_SCHEMA
+    assert result["frozen_parameter_groups"] == ["routing"]
     assert result["tinystories_lr_effective"] == 0.0
     assert result["frozen_backbones"] == ["qwen", "pythia", "tinystories"]
     assert result["trainable_backbone"] is None
-    assert result["trainable_component"] == "clef-full-head-plus-tinystories-residual-taps"
+    assert result["trainable_component"] == "clef-downstream-after-frozen-routing"
     assert result["tinystories_backprop"] == "none-backbone-frozen"
     assert result["clef_backprop"] == m.CLEF_BACKPROP_MODE
     assert result["frozen_cache_reused_across_progressive_depths"] is False
@@ -1739,10 +1745,176 @@ def test_zero_residual_branch_and_mature_clef_both_get_gradients():
     )
 
 
-def test_optimizer_contains_mature_clef_and_residual_groups_while_tinystories_is_frozen():
+def test_routing_freeze_covers_every_parameter_that_can_change_routing_logits():
+    torch = pytest.importorskip("torch")
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
+    freeze = m.configure_routing_freeze(head)
+    frozen = set(freeze["frozen_names"])
+    trainable = set(freeze["trainable_names"])
+
+    assert "model_embeddings.qwen" in frozen
+    assert any(name.startswith("evidence_layers.0.") for name in frozen)
+    assert "backbone_modules.qwen.memory_projection.weight" in frozen
+    assert "backbone_modules.qwen.question_projection.weight" in frozen
+    assert "backbone_modules.qwen.option_context_projection.weight" in frozen
+    assert "backbone_modules.qwen.option_question_projection.weight" in frozen
+    assert "backbone_modules.qwen.option_lexical_projection.weight" in frozen
+    assert "backbone_modules.qwen.option_logp_projection.weight" in frozen
+    assert "tinystories_residual.memory.weight" in frozen
+    assert "tinystories_residual.option_question.weight" in frozen
+
+    assert "tinystories_residual.global.weight" in trainable
+    assert "backbone_modules.qwen.global_projection.weight" in trainable
+    assert "backbone_modules.qwen.option_logp_scalar.weight" in trainable
+    assert "option_summary_norm.weight" in trainable
+    assert "fusion_norm.weight" in trainable
+    assert "field_norm.weight" in trainable
+    assert "residual_scorer.0.weight" in trainable
+    assert all(not parameter.requires_grad for name, parameter in head.named_parameters() if name in frozen)
+    assert all(parameter.requires_grad for name, parameter in head.named_parameters() if name in trainable)
+
+
+def test_downstream_training_step_cannot_change_frozen_routing_logits():
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(20261006)
+    hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
+    head, _ = m.build_layer_tap_head(
+        torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs()
+    )
+    m.configure_routing_freeze(head)
+    tiny = torch.nn.Linear(3, 2)
+    for parameter in tiny.parameters():
+        parameter.requires_grad_(False)
+    args = SimpleNamespace(
+        head_lr=1e-4, clef_head_lr=1e-4, tinystories_lr=1e-5, weight_decay=0.0
+    )
+    optimizer = m.build_optimizer(torch=torch, head=head, tinystories_lm=tiny, args=args)
+    evidence = _add_residual_sources(torch, _head_evidence(torch, hidden))
+
+    with torch.no_grad():
+        _before_logits, before_stages = head.forward_with_supervision(evidence)
+        routing_before = before_stages["routing_logits"].detach().clone()
+        downstream_before = head.field_norm.weight.detach().clone()
+
+    optimizer.zero_grad(set_to_none=True)
+    logits, stages = head.forward_with_supervision(evidence)
+    # Train only through surfaces downstream of routing. The routing stage still
+    # participates in inference, but none of its producers can move.
+    loss = logits.square().mean() + stages["field_alignment_logits"].square().mean()
+    loss.backward()
+    optimizer.step()
+
+    with torch.no_grad():
+        _after_logits, after_stages = head.forward_with_supervision(evidence)
+    assert torch.equal(routing_before, after_stages["routing_logits"])
+    assert not torch.equal(downstream_before, head.field_norm.weight.detach())
+    assert all(
+        parameter.grad is None
+        for name, parameter in head.named_parameters()
+        if m.is_routing_parameter_name(name)
+    )
+
+
+def test_routing_freeze_phase_migration_is_one_time_and_contract_driven():
+    current_contract = {
+        "training_phase": m.TRAINING_PHASE,
+        "routing_freeze_schema": m.ROUTING_FREEZE_SCHEMA,
+        "frozen_parameter_groups": list(m.FROZEN_PARAMETER_GROUPS),
+    }
+    current_state = {"training_phase": m.TRAINING_PHASE}
+    current_meta = {"training_phase": m.TRAINING_PHASE}
+    assert m.routing_freeze_migration_required({}) is True
+    assert m.routing_freeze_migration_required(
+        current_contract, state=current_state, latest_checkpoint_meta=current_meta
+    ) is False
+    assert m.routing_freeze_migration_required(
+        current_contract, state={}, latest_checkpoint_meta=current_meta
+    ) is True
+    assert m.routing_freeze_migration_required(
+        current_contract, state=current_state, latest_checkpoint_meta={}
+    ) is True
+    stale = {
+        "training_phase": "joint-training-v1",
+        "routing_freeze_schema": m.ROUTING_FREEZE_SCHEMA,
+        "frozen_parameter_groups": list(m.FROZEN_PARAMETER_GROUPS),
+    }
+    assert m.routing_freeze_migration_required(stale) is True
+
+
+def test_routing_freeze_migration_restores_champion_and_resets_optimizer():
+    source = TRAIN_TOOL.read_text(encoding="utf-8")
+    branch = source[source.index("elif routing_freeze_migration:"):source.index("else:", source.index("elif routing_freeze_migration:"))]
+    assert "checkpoint=best_checkpoint" in branch
+    assert "load_optimizer=False" in branch
+    assert '"mode": "routing-freeze-fresh-optimizer-from-champion"' in branch
+    assert '"optimizer_reset": True' in branch
+    assert 'champion_meta = smoke.read_json(best_checkpoint / "meta.json")' in source
+    assert 'global_step = int(champion_meta["global_step"])' in source
+
+
+def test_pre_phase_incumbent_restore_clears_incompatible_optimizer_state(tmp_path: Path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+
+    class DummyHead(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor([1.0]))
+
+    class DummyTiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor([2.0]), requires_grad=False)
+
+    checkpoint = tmp_path / "cycle-000136-reuse-002"
+    checkpoint.mkdir()
+    source_head = DummyHead()
+    source_tiny = DummyTiny()
+    source_optimizer = torch.optim.AdamW(source_head.parameters(), lr=1e-4)
+    source_optimizer.zero_grad(set_to_none=True)
+    source_head.weight.sum().backward()
+    source_optimizer.step()
+    safetensors.save_file(source_head.state_dict(), str(checkpoint / "head.safetensors"))
+    safetensors.save_file(source_tiny.state_dict(), str(checkpoint / "tinystories.safetensors"))
+    torch.save(source_optimizer.state_dict(), checkpoint / "optimizer.pt")
+    torch.save({
+        "python_random": __import__("random").getstate(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": [],
+    }, checkpoint / "rng_state.pt")
+    (checkpoint / "meta.json").write_text(json.dumps({
+        "schema_version": m.SCHEMA,
+        "cycle": 136,
+        "reuse_epoch": 2,
+        "global_step": 1234,
+        # Deliberately no training_phase: this is the old full-head incumbent.
+    }), encoding="utf-8")
+
+    head = DummyHead()
+    tiny = DummyTiny()
+    optimizer = torch.optim.AdamW(head.parameters(), lr=1e-4)
+    optimizer.zero_grad(set_to_none=True)
+    head.weight.sum().backward()
+    optimizer.step()
+    assert optimizer.state
+
+    meta = m.load_checkpoint(
+        torch=torch, head=head, tinystories_lm=tiny, optimizer=optimizer, checkpoint=checkpoint
+    )
+    assert meta["_optimizer_load"]["mode"] == "routing-freeze-phase-reset"
+    assert meta["_optimizer_load"]["optimizer_reset"] is True
+    assert not optimizer.state
+    assert torch.equal(head.weight.detach(), source_head.weight.detach())
+
+
+def test_optimizer_contains_only_downstream_clef_after_routing_freeze():
     torch = pytest.importorskip("torch")
     hidden = {"qwen": 1024, "pythia": 512, "tinystories": 768}
     head, _ = m.build_layer_tap_head(torch=torch, hidden_sizes=hidden, head_kwargs=_small_head_kwargs())
+    freeze = m.configure_routing_freeze(head)
     tiny = torch.nn.Linear(3, 2)
     for parameter in tiny.parameters():
         parameter.requires_grad_(False)
@@ -1753,8 +1925,18 @@ def test_optimizer_contains_mature_clef_and_residual_groups_while_tinystories_is
     assert optimizer.param_groups[1]["group_name"] == "tinystories_residual_taps"
     assert optimizer.param_groups[0]["lr"] == pytest.approx(1e-6)
     assert optimizer.param_groups[1]["lr"] == pytest.approx(1e-4)
+    optimizer_params = {id(p) for group in optimizer.param_groups for p in group["params"]}
+    assert all(
+        id(parameter) not in optimizer_params
+        for name, parameter in head.named_parameters()
+        if m.is_routing_parameter_name(name)
+    )
     assert sum(p.numel() for p in optimizer.param_groups[0]["params"]) > 0
-    assert sum(p.numel() for p in optimizer.param_groups[1]["params"]) == 7_077_888
+    # Five routing-affecting TinyStories residual adapters are frozen; only the
+    # global residual adapter remains trainable downstream.
+    assert sum(p.numel() for p in optimizer.param_groups[1]["params"]) == 768 * 1536
+    assert freeze["frozen_parameters"] > 0
+    assert freeze["trainable_parameters"] > 0
 
 
 def test_v2_migration_source_uses_only_committed_champion_weights(tmp_path: Path):

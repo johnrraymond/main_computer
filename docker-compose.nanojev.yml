@@ -3,15 +3,20 @@ name: main-computer-nanojev
 services:
   nanojev:
     build:
-      context: ./docker/nanojev
-    image: main-computer/nanojev:unified-games-v1
+      context: .
+      dockerfile: docker/nanojev/Dockerfile
+    image: main-computer/nanojev:managed-v2
     container_name: main-computer-nanojev
     restart: unless-stopped
     ports:
       - "127.0.0.1:${MAIN_COMPUTER_NANOJEV_BIND_PORT:-9765}:9765"
     environment:
+      MAIN_COMPUTER_NANOJEV_CHECKPOINT: "${MAIN_COMPUTER_NANOJEV_CHECKPOINT:-champion}"
+      MAIN_COMPUTER_NANOJEV_HF_REPO: "${MAIN_COMPUTER_NANOJEV_HF_REPO:-johnrraymond/NanoJev-CLEF}"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+    volumes:
+      - nanojev-hf-cache:/root/.cache/huggingface
     gpus: all
     healthcheck:
       test:
@@ -22,4 +27,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
-      start_period: 60s
+      start_period: 900s
+
+volumes:
+  nanojev-hf-cache:

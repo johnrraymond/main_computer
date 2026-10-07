@@ -1,0 +1,567 @@
+{
+  "schema": "main-computer-game-additive-relocation-map.v1",
+  "gameId": "webgl-demo",
+  "sourceSnapshot": "main_computer_test-20261005-161241.zip",
+  "mode": "additive-copy",
+  "sourceFilesRemainAuthoritative": true,
+  "files": [
+    {
+      "source": "game_projects/webgl-demo/project.json",
+      "destination": "games/webgl-demo/project.json",
+      "bytes": 350361,
+      "sha256": "3592fae92e534ec8dfa322044180ea1cdf1bdcf4003d52f7e806ec8b43f9bf04"
+    },
+    {
+      "source": "game_projects/webgl-demo/README.md",
+      "destination": "games/webgl-demo/README.md",
+      "bytes": 2132,
+      "sha256": "dac013477d7d5f159f7e754d70c5614b3fc47ddcd505415ff9d0394873e9a4b2"
+    },
+    {
+      "source": "game_projects/webgl-demo/assets/.gitkeep",
+      "destination": "games/webgl-demo/assets/.gitkeep",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "source": "game_projects/webgl-demo/assets/gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.json",
+      "destination": "games/webgl-demo/assets/gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.json",
+      "bytes": 2491,
+      "sha256": "2a2d13a074b6ce24268a8e5484e0240dbe61cb626bcf54b413660fe3d3fff311"
+    },
+    {
+      "source": "game_projects/webgl-demo/assets/gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.svg",
+      "destination": "games/webgl-demo/assets/gpu-forge/default-empty-scene-arcstorm-nova-prebuilt.svg",
+      "bytes": 5009,
+      "sha256": "613855906d00d1d6ad97551cb9da38115be48259b0dd5f4c4a9724303e7afdc7"
+    },
+    {
+      "source": "game_projects/webgl-demo/assets/gpu-forge/default-empty-scene-hero-arc-bolt-storm-lash-prebuilt.json",
+      "destination": "games/webgl-demo/assets/gpu-forge/default-empty-scene-hero-arc-bolt-storm-lash-prebuilt.json",
+      "bytes": 2178,
+      "sha256": "65e6a50777903668d652657996f1a73b3ba237fd8e9ffb6eabf2899c44b3a03c"
+    },
+    {
+      "source": "game_projects/webgl-demo/assets/gpu-forge/default-empty-scene-hero-arc-bolt-storm-lash-prebuilt.svg",
+      "destination": "games/webgl-demo/assets/gpu-forge/default-empty-scene-hero-arc-bolt-storm-lash-prebuilt.svg",
+      "bytes": 15042,
+      "sha256": "e9a2286c1a89fd582cfede6acdd21cc190257472dd5345ac30c699d42c03b190"
+    },
+    {
+      "source": "game_projects/webgl-demo/builds/.gitkeep",
+      "destination": "games/webgl-demo/builds/.gitkeep",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "source": "game_projects/webgl-demo/data/.gitkeep",
+      "destination": "games/webgl-demo/data/.gitkeep",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/generation.md",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/generation.md",
+      "bytes": 1456,
+      "sha256": "be85d37ca7d258b593eec6c0dea49d56c4cb4e1a68d49b02fae8c1989a5b90b4"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/generation_plan.md",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/generation_plan.md",
+      "bytes": 722,
+      "sha256": "3ad26c242025182a9f026ae451510cfcbc2bdb2eb811e6b574c3b867c8f41132"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/generation_plan_prompt.md",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/generation_plan_prompt.md",
+      "bytes": 3061,
+      "sha256": "a64b242cb17c45d16d820c7a9bd469a058a2a9abcddd6f7e9942155a8032cc84"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/generation_prompt.md",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/generation_prompt.md",
+      "bytes": 10667,
+      "sha256": "76e915e07944aa69d69dffc59de4828386c2d9256cdb0de8ed0bfaa2ea111a5a"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/manifest.json",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/manifest.json",
+      "bytes": 932,
+      "sha256": "f9bfccb5c157adcda54a8a5b10b88874fb637dede3372ebd0a9486d063250fa4"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/pack.js",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/pack.js",
+      "bytes": 941,
+      "sha256": "9232cc8c81efaac60ac6013f88dc19c0e9ad9625df72c0a45b736fd05a4dd7da"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/pack_generation_prompt.md",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/pack_generation_prompt.md",
+      "bytes": 10667,
+      "sha256": "76e915e07944aa69d69dffc59de4828386c2d9256cdb0de8ed0bfaa2ea111a5a"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/plan.json",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/plan.json",
+      "bytes": 682,
+      "sha256": "2aaa4ad1f5b94d3e9dc0bbd472702480163c50bc845132d8bdc91487ee4378a1"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/prompt.txt",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/prompt.txt",
+      "bytes": 159,
+      "sha256": "08d369de98685d0614d6befd53871d9ed66fb56b8c37676297bb9adde37090d9"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/validation.json",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/validation.json",
+      "bytes": 8673,
+      "sha256": "176065e9e91d6edfe277b6422a4389f9b3d196091830ce370a1e2e2312e8ff3d"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/local_model_pack_call/local_model_prompt_call.json",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/local_model_pack_call/local_model_prompt_call.json",
+      "bytes": 2335,
+      "sha256": "f3145d7d8ca44704bd030b9b8966bfb605432bf3468415fd8ab3a58c68fcf207"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/local_model_plan_call/local_model_prompt_call.json",
+      "destination": "games/webgl-demo/gameplay_packs/experimental/large-random-shuttle-boarder/local_model_plan_call/local_model_prompt_call.json",
+      "bytes": 1596,
+      "sha256": "1891f1228680ca6bc73f0de03a0f493cabbd0271e38a1f47dc2c7d57ecc12371"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/main_ship_bay_boarders/manifest.json",
+      "destination": "games/webgl-demo/gameplay_packs/main_ship_bay_boarders/manifest.json",
+      "bytes": 2552,
+      "sha256": "83e76605663b5e5d7ee036f6039c2220006e85aec4d6d0052734b5e7ccd535f1"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/main_ship_bay_boarders/pack.js",
+      "destination": "games/webgl-demo/gameplay_packs/main_ship_bay_boarders/pack.js",
+      "bytes": 2484,
+      "sha256": "71537b7e13ade9035af6ecf22ceeb39d3d45027e1bc5319516e0bfc6126814cb"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/main_ship_bay_boarders/README.md",
+      "destination": "games/webgl-demo/gameplay_packs/main_ship_bay_boarders/README.md",
+      "bytes": 1260,
+      "sha256": "e2b2f583317bf854e30f46b0fa3ba4441bcb4cf9472f5ab6d29460bf60ad2dc5"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/opening_shuttle_elite_boarders/manifest.json",
+      "destination": "games/webgl-demo/gameplay_packs/opening_shuttle_elite_boarders/manifest.json",
+      "bytes": 2225,
+      "sha256": "315382760ecae19f24109b1186be1be0cbb516c1ca7feb42fda44ac2fa5c8c90"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/opening_shuttle_elite_boarders/pack.js",
+      "destination": "games/webgl-demo/gameplay_packs/opening_shuttle_elite_boarders/pack.js",
+      "bytes": 2823,
+      "sha256": "bd6055a40d8980c9b2257d9f2cf2fa4dcccc12305bb8de3734aadceae3d377a3"
+    },
+    {
+      "source": "game_projects/webgl-demo/gameplay_packs/opening_shuttle_elite_boarders/README.md",
+      "destination": "games/webgl-demo/gameplay_packs/opening_shuttle_elite_boarders/README.md",
+      "bytes": 1221,
+      "sha256": "093ff47919dcee61a000446740645c578569c417239844eadc667d673f44d8fd"
+    },
+    {
+      "source": "game_projects/webgl-demo/generated/gameplay-plugins/activation-manifest.json",
+      "destination": "games/webgl-demo/generated/gameplay-plugins/activation-manifest.json",
+      "bytes": 1331,
+      "sha256": "8f6e253e43bd1c5c93cb552e07e6c5efa6ff10ada35ef09ed5a5ce0fea21f66b"
+    },
+    {
+      "source": "game_projects/webgl-demo/generated/gameplay-plugins/runtime-catalog.json",
+      "destination": "games/webgl-demo/generated/gameplay-plugins/runtime-catalog.json",
+      "bytes": 9180,
+      "sha256": "1fd84decec5c422dfdd4ff8f606cdcbcf472d315712903ecd0e797e6f06bed62"
+    },
+    {
+      "source": "game_projects/webgl-demo/generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/materialization-receipt.json",
+      "destination": "games/webgl-demo/generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/materialization-receipt.json",
+      "bytes": 2432,
+      "sha256": "3d995a17c31113bdd1f19b5c94eff544965046510a09ee6e933b99a404f34fda"
+    },
+    {
+      "source": "game_projects/webgl-demo/generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/rollback-plan.json",
+      "destination": "games/webgl-demo/generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/rollback-plan.json",
+      "bytes": 1311,
+      "sha256": "aa7133551650cbb47c58e787511f157292052966fe0b82ec4703cbbe9b34dc49"
+    },
+    {
+      "source": "game_projects/webgl-demo/generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json",
+      "destination": "games/webgl-demo/generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/encounters/opening-shuttle-ambush-elite-wave.json",
+      "bytes": 1980,
+      "sha256": "53f51533635c38173993ef00a32fd77f00db062666447ce69132960d0dc89466"
+    },
+    {
+      "source": "game_projects/webgl-demo/generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+      "destination": "games/webgl-demo/generated/gameplay-plugins/plugin.hand-authored.opening-shuttle-ambush.001/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+      "bytes": 1997,
+      "sha256": "7deb3d25aa404f7ced0b31e51020bb24b62b3bd98fe007a662c3d0aa36e703fe"
+    },
+    {
+      "source": "game_projects/webgl-demo/plugins/hand_authored/opening_shuttle_ambush_extension/manifest.json",
+      "destination": "games/webgl-demo/plugins/hand_authored/opening_shuttle_ambush_extension/manifest.json",
+      "bytes": 4449,
+      "sha256": "4b91fe9dbc8e5c7824b89ac4d124589cd5746a84c44fac7b2ca7a21160bbd1b5"
+    },
+    {
+      "source": "game_projects/webgl-demo/plugins/hand_authored/opening_shuttle_ambush_extension/content/encounters/opening-shuttle-ambush-elite-wave.json",
+      "destination": "games/webgl-demo/plugins/hand_authored/opening_shuttle_ambush_extension/content/encounters/opening-shuttle-ambush-elite-wave.json",
+      "bytes": 1980,
+      "sha256": "53f51533635c38173993ef00a32fd77f00db062666447ce69132960d0dc89466"
+    },
+    {
+      "source": "game_projects/webgl-demo/plugins/hand_authored/opening_shuttle_ambush_extension/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+      "destination": "games/webgl-demo/plugins/hand_authored/opening_shuttle_ambush_extension/content/scenarios/opening-shuttle-ambush-elite-wave.json",
+      "bytes": 1997,
+      "sha256": "7deb3d25aa404f7ced0b31e51020bb24b62b3bd98fe007a662c3d0aa36e703fe"
+    },
+    {
+      "source": "game_projects/webgl-demo/plugins/hand_authored/vela_escape_extension/manifest.json",
+      "destination": "games/webgl-demo/plugins/hand_authored/vela_escape_extension/manifest.json",
+      "bytes": 4058,
+      "sha256": "6c472d0c8bbd1211cf0527960ddb0518ded15f867b45d142d6ff38b7d26c6788"
+    },
+    {
+      "source": "game_projects/webgl-demo/plugins/hand_authored/vela_escape_extension/content/encounters/vela-cave-extension-escape-route.json",
+      "destination": "games/webgl-demo/plugins/hand_authored/vela_escape_extension/content/encounters/vela-cave-extension-escape-route.json",
+      "bytes": 1601,
+      "sha256": "4b442a6c386108c10e3f14d38776c97e54d3daf6b080d0c0e1d6e791c76c9afe"
+    },
+    {
+      "source": "game_projects/webgl-demo/plugins/hand_authored/vela_escape_extension/content/scenarios/vela-cave-extension-followup.json",
+      "destination": "games/webgl-demo/plugins/hand_authored/vela_escape_extension/content/scenarios/vela-cave-extension-followup.json",
+      "bytes": 1612,
+      "sha256": "505f7b14d256da8018965e7b60b8aa4a21fee3d7f6294fd7fda430322efb1c16"
+    },
+    {
+      "source": "game_projects/webgl-demo/scripts/.gitkeep",
+      "destination": "games/webgl-demo/scripts/.gitkeep",
+      "bytes": 2,
+      "sha256": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6"
+    },
+    {
+      "source": "main_computer/web/applications/apps/webgl.html",
+      "destination": "games/webgl-demo/web/apps/webgl.html",
+      "bytes": 23360,
+      "sha256": "03355197fa54bd2690b0851d820763b1eadf42c24579a334dc2677c493779f91"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/character-ai-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/character-ai-runtime.js",
+      "bytes": 57577,
+      "sha256": "6a5b1da67cda9e929c1e6fed7c072bd003b25b821387e3b23edd039cd385a337"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/encounter-state.js",
+      "destination": "games/webgl-demo/web/scripts/encounter-state.js",
+      "bytes": 21428,
+      "sha256": "91d037ff2499447e9153409cf5a81931713f34496fe511f810b52dd90bcdb296"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/gameplay-pack-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/gameplay-pack-runtime.js",
+      "bytes": 24652,
+      "sha256": "333ee5e982f3d897fb85ad8204b3c42fcbb8718da99b19a4eec7de0746f308be"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-dom-renderer.js",
+      "destination": "games/webgl-demo/web/scripts/pax-dom-renderer.js",
+      "bytes": 16575,
+      "sha256": "484a41aef80a4ab9ce1be02c594e55fdfd972646fa3a8967a91db590bf101dcf"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-presentation-model.js",
+      "destination": "games/webgl-demo/web/scripts/pax-presentation-model.js",
+      "bytes": 16059,
+      "sha256": "594ef8b3211aad05d2ad125a6899a7553262fbe59833fcf01d8b368243ca741d"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-protection-actor-deployment.js",
+      "destination": "games/webgl-demo/web/scripts/pax-protection-actor-deployment.js",
+      "bytes": 6098,
+      "sha256": "9566a52ee2d61982f7f2915a5e3a9f15ccb9cb9fb602ef418dcc81c7da50b158"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-protection-encounter-commands.js",
+      "destination": "games/webgl-demo/web/scripts/pax-protection-encounter-commands.js",
+      "bytes": 13203,
+      "sha256": "b9b009627da3fc700ecd0f9616365c04db6acb5a5355de1af8187e211a525dfb"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-protection-encounter-controller.js",
+      "destination": "games/webgl-demo/web/scripts/pax-protection-encounter-controller.js",
+      "bytes": 4939,
+      "sha256": "fa394b806f8c61c611b70d9ffe1d4ee939be64ef40ae53b9d64ee455ae2594e4"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-protection-encounter-model.js",
+      "destination": "games/webgl-demo/web/scripts/pax-protection-encounter-model.js",
+      "bytes": 17137,
+      "sha256": "ff7b4a221b01b4f10db77b78bead36c15d35a30c21321ddd1444a346381577f8"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-protection-encounter.js",
+      "destination": "games/webgl-demo/web/scripts/pax-protection-encounter.js",
+      "bytes": 6421,
+      "sha256": "269d0fd6712ba71ca342238b1a1cb890cd44968b4e4c6f660fb78adb3d383a97"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-protection-reconciliation.js",
+      "destination": "games/webgl-demo/web/scripts/pax-protection-reconciliation.js",
+      "bytes": 5114,
+      "sha256": "6def7ee0f20c2f0327d2a606eceb761abb78fbf2e7f5850c7549a34784fba509"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-scenario-config.js",
+      "destination": "games/webgl-demo/web/scripts/pax-scenario-config.js",
+      "bytes": 6264,
+      "sha256": "37fd9a25fff85bf1c3ce63542bac3cb95c9293d7b568ce81ee8d46a13972cef2"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-scenario-interaction.js",
+      "destination": "games/webgl-demo/web/scripts/pax-scenario-interaction.js",
+      "bytes": 605,
+      "sha256": "bea00474610f659262dad944c624d228be85c8f0352e760800b07914e60fc4cd"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-scenario-session-api.js",
+      "destination": "games/webgl-demo/web/scripts/pax-scenario-session-api.js",
+      "bytes": 9437,
+      "sha256": "6d94658d0ddddc1af135e441b458a4e14c6155ddb2de7fb5952a840a26aed546"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-scenario-session-presentation.js",
+      "destination": "games/webgl-demo/web/scripts/pax-scenario-session-presentation.js",
+      "bytes": 7131,
+      "sha256": "939c9b9d096c0a90bc797a063e45b21bde933284d538e1b95fe5b0a84cce6abb"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-scenario-session-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/pax-scenario-session-runtime.js",
+      "bytes": 12698,
+      "sha256": "4c5e6f47dc89380d51cd215460942b55ca6bff5f87d923bd0c850f0bf4b90186"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-scenario-session-state.js",
+      "destination": "games/webgl-demo/web/scripts/pax-scenario-session-state.js",
+      "bytes": 4977,
+      "sha256": "8acb324d0e0de00e9ca5256f93ad75a9eecac50bb1967559b193bf5aae9a9d16"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-scenario-session.js",
+      "destination": "games/webgl-demo/web/scripts/pax-scenario-session.js",
+      "bytes": 4820,
+      "sha256": "bb5d4c4bcdd82ba7a0ca39219187cb5e8533e11e43b4142c1c6ba3885c5a8691"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/pax-value-utils.js",
+      "destination": "games/webgl-demo/web/scripts/pax-value-utils.js",
+      "bytes": 1597,
+      "sha256": "620f014fa6b3f843ffb86d2597cdec3d45010cb6bbb87c1605f0c6d98860ad26"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/scene-store.js",
+      "destination": "games/webgl-demo/web/scripts/scene-store.js",
+      "bytes": 58049,
+      "sha256": "b52ad59584150a05974d7c0beac8bb74ec61021094453e84870d2a0ab57a199b"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/scene-viewer.js",
+      "destination": "games/webgl-demo/web/scripts/scene-viewer.js",
+      "bytes": 664381,
+      "sha256": "3ade6f5099af77421489aba451fa60aabfede09e23693f276bb80cc905dbadd9"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/shuttle3d-render-room-geometry.js",
+      "destination": "games/webgl-demo/web/scripts/shuttle3d-render-room-geometry.js",
+      "bytes": 7985,
+      "sha256": "2efe90a7dca7fed1a8d83101bea93b541e10b5f01560e3206be95ccad655faeb"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/shuttle3d-render-viewscreens.js",
+      "destination": "games/webgl-demo/web/scripts/shuttle3d-render-viewscreens.js",
+      "bytes": 43614,
+      "sha256": "c6236ab102c35400fabcc5bce121479160d8fdc180dc0ea0e0d8e3509a4a6176"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/shuttle3d-renderer-modules.js",
+      "destination": "games/webgl-demo/web/scripts/shuttle3d-renderer-modules.js",
+      "bytes": 1057,
+      "sha256": "8a44370450a934c6bef6fb72dbce597d9dd34ec5c1c550718b5673a4fa96762c"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/space-astrometrics-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/space-astrometrics-runtime.js",
+      "bytes": 7654,
+      "sha256": "ed4d13d95b16378dc588338ba7e020900040ee68336466c24f57c56a0fad0ba7"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/space-gravity-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/space-gravity-runtime.js",
+      "bytes": 21818,
+      "sha256": "29c739c2f8b4a513d1a72e68da144087ad75f1345466aee6438d2681a6825107"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/space-navigation-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/space-navigation-runtime.js",
+      "bytes": 40688,
+      "sha256": "f8a3b0654a52f013cf5a91bb5f47bdf6fb18923ed6775629ecaa6820c8b37df6"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/space-universe-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/space-universe-runtime.js",
+      "bytes": 15012,
+      "sha256": "8da9ebfe8fd995dcddf2977d4a87a62f6034f4bc824280a5d54d4f9e75a9a80f"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-action-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-action-runtime.js",
+      "bytes": 37848,
+      "sha256": "1af1a607c3731ae46fdf7f7419bec6e790107301bf1347dceae5825f3b32a244"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-commitment-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-commitment-runtime.js",
+      "bytes": 20599,
+      "sha256": "1ebad70a8a88918febc1cfb4f30b1994b60cf06793bd1130faf19141d5e750f5"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-communication-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-communication-runtime.js",
+      "bytes": 23142,
+      "sha256": "4601787c31b0a4ea2ac18808a0d7b1a7999203f58d2bc2db6965cbbdf73776d2"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-coordinator.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-coordinator.js",
+      "bytes": 18737,
+      "sha256": "76df63e7499af57e243f1db5058d5775221c46294f06c51c3da8965809c34cd0"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-debug-panel.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-debug-panel.js",
+      "bytes": 15179,
+      "sha256": "57cff0124944b40840bb0a7f6084169b1520815e85f3641dba3c957bc7d083d4"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-director-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-director-runtime.js",
+      "bytes": 19491,
+      "sha256": "3a88f0a34a36b45e964fa58984f0b606b149be9cb6d45d368ebe3300265f3c8c"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-offscreen-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-offscreen-runtime.js",
+      "bytes": 25031,
+      "sha256": "5e4c126e6fdcd61c261cbb9b0c81aa70a73db84d78ca879624887cd829378f77"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-panel-layout.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-panel-layout.js",
+      "bytes": 7765,
+      "sha256": "982c9758e250a025b747c1ff99b19cef5f6b99be6a7d562470d048a335af0dac"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-runtime.js",
+      "bytes": 37935,
+      "sha256": "007d8e008fbb98473931e3016c44e3c013d3b2ca3d49086db43fb5bfe1c4a3c9"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-session.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-session.js",
+      "bytes": 29515,
+      "sha256": "5f7f10932e9a98e5f36c2aa1100b477654aeda2dbaa7018dee5f563ee049921d"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-social-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-social-runtime.js",
+      "bytes": 22813,
+      "sha256": "87763a90371c4f72d3b36e217b6b7b9080720cf8ad304dd5ec6bec6b08decbf6"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-solace-interaction.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-solace-interaction.js",
+      "bytes": 19669,
+      "sha256": "eda36048287869320a13a12763eb0f8ea6613079aa88b552e15a5d43bcfa9cf3"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-travel-integration.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-travel-integration.js",
+      "bytes": 8206,
+      "sha256": "8856c48ef83c17c77542b8c17de13ee693054a8d193bec7703397b99196ea16c"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/strategic-ai-vela-interaction.js",
+      "destination": "games/webgl-demo/web/scripts/strategic-ai-vela-interaction.js",
+      "bytes": 53474,
+      "sha256": "048eade8d7d4940d4bdc346c5a29173b4a80509210376a395d8ee6ac0728cd4c"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/system-scenario-runtime.js",
+      "destination": "games/webgl-demo/web/scripts/system-scenario-runtime.js",
+      "bytes": 128535,
+      "sha256": "3b9b59d47b76f02938bef81665ececbe86ab439f5fba8938c3a8e05c3d0145b6"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/webgl-desktop.js",
+      "destination": "games/webgl-demo/web/scripts/webgl-desktop.js",
+      "bytes": 107871,
+      "sha256": "1cec9528d6bb1a990d405abd1ce5364e005130db2709cad5ab0f7d62d3a1b1a6"
+    },
+    {
+      "source": "main_computer/web/applications/scripts/dom-bindings/webgl-state.js",
+      "destination": "games/webgl-demo/web/scripts/dom-bindings/webgl-state.js",
+      "bytes": 66,
+      "sha256": "6c7e867516c1e4fcd669471509ac9e5671edd0837f741e852a582ea26dda7891"
+    },
+    {
+      "source": "main_computer/web/applications/styles/game-editor.css",
+      "destination": "games/webgl-demo/web/styles/game-editor.css",
+      "bytes": 81809,
+      "sha256": "264ec5ad1c2f59a0966f06a8376499e787d30d2d648daf0a706abe74d775a982"
+    },
+    {
+      "source": "main_computer/web/applications/styles/pax-scenario-interaction.css",
+      "destination": "games/webgl-demo/web/styles/pax-scenario-interaction.css",
+      "bytes": 12197,
+      "sha256": "e96b7e52c210c505e4fbde4df7c2110d3ca9df363b606ff8e7732b126a4fdf9c"
+    },
+    {
+      "source": "main_computer/web/applications/styles/strategic-ai-debug.css",
+      "destination": "games/webgl-demo/web/styles/strategic-ai-debug.css",
+      "bytes": 4678,
+      "sha256": "0823823267cb4d77c357a30b3c28c840d6e55a6be706fed5943350e95e406af0"
+    },
+    {
+      "source": "main_computer/web/applications/styles/strategic-ai-panel-layout.css",
+      "destination": "games/webgl-demo/web/styles/strategic-ai-panel-layout.css",
+      "bytes": 6343,
+      "sha256": "5178f2028c3c31469a8091b363d10e158a37739658fe011679bb7b1da51fe364"
+    },
+    {
+      "source": "main_computer/web/applications/styles/strategic-ai-solace-interaction.css",
+      "destination": "games/webgl-demo/web/styles/strategic-ai-solace-interaction.css",
+      "bytes": 7006,
+      "sha256": "f996426f9357edb76a09157e19db4ab374af67a5a6804a619c64efd16a2a50b1"
+    },
+    {
+      "source": "main_computer/web/applications/styles/strategic-ai-travel-integration.css",
+      "destination": "games/webgl-demo/web/styles/strategic-ai-travel-integration.css",
+      "bytes": 2938,
+      "sha256": "9de026e12af6d54c63dd90434686ac87ccdf519fa5af0d48cd10451b22559335"
+    },
+    {
+      "source": "main_computer/web/applications/styles/strategic-ai-vela-interaction.css",
+      "destination": "games/webgl-demo/web/styles/strategic-ai-vela-interaction.css",
+      "bytes": 12193,
+      "sha256": "18f95be3c40d40aa59b1f7e7ec5450f88752f983941c1fdaa0444945ab9e78a0"
+    }
+  ]
+}

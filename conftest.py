@@ -12,13 +12,25 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
+def _is_live_game_test_path(path: Path, root: Path) -> bool:
+    """Return True only for game_projects/<project>/tests/** paths."""
+
+    game_projects = root / "game_projects"
+    if not _is_relative_to(path, game_projects):
+        return False
+
+    relative = path.relative_to(game_projects)
+    parts = relative.parts
+    return len(parts) >= 2 and parts[1] == "tests"
+
+
 def pytest_ignore_collect(collection_path: Any, config: Any) -> bool:
-    """Only collect the live repo test suite.
+    """Only collect live platform and game-project test suites.
 
     The repository can contain historical snapshots, patch bundles, undo bundles,
     executor workspaces, and other generated artifacts with files named test_*.py.
-    Those files are not active tests.  The live suite is the top-level tests/
-    directory only.
+    Those files are not active tests.  Live tests are limited to the top-level
+    tests/ tree and game_projects/<project>/tests/ trees.
     """
 
     root = Path(str(config.rootpath)).resolve()
@@ -28,8 +40,11 @@ def pytest_ignore_collect(collection_path: Any, config: Any) -> bool:
     if path == live_tests or _is_relative_to(path, live_tests):
         return False
 
+    if _is_live_game_test_path(path, root):
+        return False
+
     # Keep this root conftest importable, but do not let pytest collect any other
-    # top-level or generated test-looking files outside tests/.
+    # top-level or generated test-looking files outside the live test roots.
     if path == root / "conftest.py":
         return False
 

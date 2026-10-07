@@ -507,8 +507,8 @@ class ViewportGameEditorTests(unittest.TestCase):
 
     def test_gpu_forge_frontend_links_baked_atlas_for_scene_viewer_playback(self) -> None:
         editor_script = (ROOT / "main_computer" / "web" / "applications" / "scripts" / "game-editor.js").read_text(encoding="utf-8")
-        scene_viewer_script = (ROOT / "main_computer" / "web" / "applications" / "scripts" / "scene-viewer.js").read_text(encoding="utf-8")
-        editor_style = (ROOT / "main_computer" / "web" / "applications" / "styles" / "game-editor.css").read_text(encoding="utf-8")
+        scene_viewer_script = (ROOT / "game_projects" / "webgl-demo" / "web" / "scripts" / "scene-viewer.js").read_text(encoding="utf-8")
+        editor_style = (ROOT / "game_projects" / "webgl-demo" / "web" / "styles" / "game-editor.css").read_text(encoding="utf-8")
 
         self.assertIn("applyGameEditorGpuForgeBakeToScene", editor_script)
         self.assertIn("activeGameEditorGpuForgeBinding", editor_script)

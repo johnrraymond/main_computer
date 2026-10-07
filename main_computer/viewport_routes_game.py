@@ -822,15 +822,15 @@ class ViewportGameRoutesMixin:
             return None
         return "/".join(parts)
 
-    def _game_editor_allowed_editor_source_paths(self) -> list[str]:
+    def _game_editor_allowed_editor_source_paths(self, *, project_id: str) -> list[str]:
         return [
             "main_computer/viewport_routes_game.py",
             "main_computer/web/applications/scripts/game-editor.js",
             "main_computer/web/applications/scripts/chat-console.js",
             "main_computer/web/applications/scripts/dom-bindings/game-editor.js",
             "main_computer/web/applications/scripts/dom-bindings/game-editor-state.js",
-            "main_computer/web/applications/styles/game-editor.css",
             "tests/test_viewport_game_editor.py",
+            f"game_projects/{project_id}/web/styles/game-editor.css",
         ]
 
     def _game_editor_rag_path_allowed(self, path: str, evidence: dict[str, Any]) -> bool:
@@ -890,7 +890,11 @@ class ViewportGameRoutesMixin:
         repo_root = self.server.debug_root.resolve()
         project_root = self._game_project_root(project_id).resolve()
         allowed_root = f"game_projects/{project_id}/"
-        allowed_editor_paths = [path for path in self._game_editor_allowed_editor_source_paths() if (repo_root / path).is_file()]
+        allowed_editor_paths = [
+            path
+            for path in self._game_editor_allowed_editor_source_paths(project_id=project_id)
+            if (repo_root / path).is_file()
+        ]
 
         project_file = project_root / "project.json"
         project_text = project_file.read_text(encoding="utf-8")

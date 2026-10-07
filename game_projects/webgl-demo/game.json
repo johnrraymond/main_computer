@@ -1,0 +1,73 @@
+{
+  "schema": "main-computer-game-web.v1",
+  "gameId": "webgl-demo",
+  "title": "WebGL Demo",
+  "web": {
+    "applicationId": "webgl",
+    "bundles": {
+      "styles": [
+        "web/styles/game-editor.css",
+        "web/styles/strategic-ai-debug.css",
+        "web/styles/strategic-ai-vela-interaction.css",
+        "web/styles/strategic-ai-solace-interaction.css",
+        "web/styles/strategic-ai-travel-integration.css",
+        "web/styles/strategic-ai-panel-layout.css",
+        "web/styles/pax-scenario-interaction.css"
+      ],
+      "surface": [
+        "web/apps/webgl.html"
+      ],
+      "controls": [
+        "web/apps/webgl-controls.html"
+      ],
+      "runtime-before-routing": [
+        "web/scripts/dom-bindings/webgl-state.js",
+        "web/scripts/scene-store.js",
+        "web/scripts/space-navigation-runtime.js",
+        "web/scripts/space-universe-runtime.js",
+        "web/scripts/space-gravity-runtime.js",
+        "web/scripts/space-astrometrics-runtime.js",
+        "web/scripts/character-ai-runtime.js",
+        "web/scripts/system-scenario-runtime.js",
+        "web/scripts/gameplay-pack-runtime.js",
+        "web/scripts/strategic-ai-runtime.js",
+        "web/scripts/strategic-ai-action-runtime.js",
+        "web/scripts/strategic-ai-social-runtime.js",
+        "web/scripts/strategic-ai-commitment-runtime.js",
+        "web/scripts/strategic-ai-director-runtime.js",
+        "web/scripts/strategic-ai-communication-runtime.js",
+        "web/scripts/strategic-ai-coordinator.js",
+        "web/scripts/strategic-ai-offscreen-runtime.js",
+        "web/scripts/strategic-ai-session.js",
+        "web/scripts/strategic-ai-travel-integration.js",
+        "web/scripts/strategic-ai-debug-panel.js",
+        "web/scripts/strategic-ai-vela-interaction.js",
+        "web/scripts/strategic-ai-solace-interaction.js",
+        "web/scripts/strategic-ai-panel-layout.js",
+        "web/scripts/encounter-state.js",
+        "web/scripts/pax-value-utils.js",
+        "web/scripts/pax-scenario-config.js",
+        "web/scripts/pax-presentation-model.js",
+        "web/scripts/pax-dom-renderer.js",
+        "web/scripts/pax-scenario-session-presentation.js",
+        "web/scripts/pax-scenario-session-state.js",
+        "web/scripts/pax-protection-encounter-model.js",
+        "web/scripts/pax-protection-actor-deployment.js",
+        "web/scripts/pax-protection-encounter-commands.js",
+        "web/scripts/pax-protection-reconciliation.js",
+        "web/scripts/pax-protection-encounter-controller.js",
+        "web/scripts/pax-scenario-session-runtime.js",
+        "web/scripts/pax-scenario-session-api.js",
+        "web/scripts/pax-scenario-session.js",
+        "web/scripts/pax-scenario-interaction.js",
+        "web/scripts/shuttle3d-renderer-modules.js",
+        "web/scripts/shuttle3d-render-room-geometry.js",
+        "web/scripts/shuttle3d-render-viewscreens.js",
+        "web/scripts/scene-viewer.js"
+      ],
+      "runtime-after-routing": [
+        "web/scripts/webgl-desktop.js"
+      ]
+    }
+  }
+}

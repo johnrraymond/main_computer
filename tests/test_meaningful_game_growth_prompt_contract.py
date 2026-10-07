@@ -175,7 +175,7 @@ class MeaningfulGameGrowthPromptContractTests(unittest.TestCase):
             "contextRequests": [
                 {
                     "id": "ctx.nav",
-                    "path": "main_computer/web/applications/scripts/space-navigation-runtime.js",
+                    "path": "game_projects/webgl-demo/web/scripts/space-navigation-runtime.js",
                     "selector": {"kind": "search", "terms": ["currentSystemId"], "contextLines": 50},
                     "reason": "Resolve player-location authority.",
                     "required": True,

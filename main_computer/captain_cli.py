@@ -356,6 +356,11 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             idempotency_key=idempotency_key,
             smoke_id=smoke_id,
             quote_id=quote_id,
+            bridge_deposit_id=(
+                str(result.get("hub", {}).get("bridge", {}).get("deposit", {}).get("deposit_id") or "")
+                if use_bridge
+                else ""
+            ),
         )
         submit_payload["execution_mode"] = PHASE9_EXECUTION_MODE
         result["hub"]["submit"] = _post_hub_json(
@@ -410,6 +415,7 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                         charged_credit_wei=_sum_charge_credit_wei(charges),
                         smoke_id=smoke_id,
                         request_id=request_id,
+                        deposit_id=str(bridge.get("deposit", {}).get("deposit_id") or ""),
                         controller_private_key=str(options.bridge_controller_private_key or ""),
                         timeout_s=options.timeout_s,
                     )
@@ -652,6 +658,7 @@ def build_hub_request_payload(
     idempotency_key: str,
     smoke_id: str,
     quote_id: str = "",
+    bridge_deposit_id: str = "",
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "mode": "captain-smoke-hub-request-v1",
@@ -666,6 +673,8 @@ def build_hub_request_payload(
     }
     if quote_id:
         metadata["quote_id"] = quote_id
+    if bridge_deposit_id:
+        metadata["bridge_deposit_id"] = str(bridge_deposit_id).strip()
     return {
         "model": str(model or "hub-auto"),
         "client_node_id": str(client_node_id or "main-computer-captain-cli"),
@@ -854,118 +863,40 @@ def send_captain_bridge_refund(
     charged_credit_wei: int,
     smoke_id: str,
     request_id: str,
+    deposit_id: str,
     controller_private_key: str,
     timeout_s: float,
 ) -> dict[str, Any]:
-    charged_credit_wei = max(0, int(charged_credit_wei or 0))
-    bridge_credit_wei = max(0, int(bridge_credit_wei or 0))
-    rectified_credit_wei = min(charged_credit_wei, bridge_credit_wei)
-    refund_credit_wei = max(0, bridge_credit_wei - rectified_credit_wei)
-    result: dict[str, Any] = {
-        "ok": True,
-        "request_id": request_id,
-        "charged_credit_wei": str(charged_credit_wei),
-        "rectified_credit_wei": str(rectified_credit_wei),
-        "refund_credit_wei": str(refund_credit_wei),
-        "refund_credits_display": credit_wei_to_decimal_text(refund_credit_wei),
+    """Ask the Hub to perform controller-only bridge reconciliation.
+
+    The requester wallet signs only its own deposit.  The Hub owns the bridge
+    controller key and independently derives the authorized spend/refund from
+    the terminal request, its ledger charges, and the bound on-chain deposit.
+    Client-supplied amounts are assertions only; they are never signing
+    authority. ``controller_private_key`` remains accepted for CLI compatibility
+    but is intentionally ignored.
+    """
+
+    del controller_private_key
+    payload = {
+        "request_id": str(request_id or "").strip(),
+        "deposit_id": str(deposit_id or "").strip(),
+        "wallet_address": runtime.wallet.address,
+        "expected_bridge_credit_wei": str(max(0, int(bridge_credit_wei or 0))),
+        "expected_charged_credit_wei": str(max(0, int(charged_credit_wei or 0))),
+        "metadata": {
+            "mode": "captain-hub-signed-bridge-refund-v2",
+            "smoke_id": smoke_id,
+        },
     }
-    if refund_credit_wei <= 0 and rectified_credit_wei <= 0:
-        result.update({"skipped": True, "reason": "no rectification or refund is required"})
-        return result
-
-    private_key = _resolve_bridge_controller_private_key(runtime, override=controller_private_key)
-    if not private_key:
-        raise CaptainCliError(
-            "Bridge refund requires the bridge controller private key. "
-            "Use --bridge-controller-private-key, MAIN_COMPUTER_BRIDGE_CONTROLLER_PRIVATE_KEY, "
-            "MAIN_COMPUTER_HUB_ADMIN_PRIVATE_KEY, or a hub_admin wallet_path in the deployment manifest."
-        )
-
-    if rectified_credit_wei > 0:
-        rectification_id = normalize_smoke_id(
-            f"{smoke_id}:bridge-rectify:{request_id}:{runtime.wallet.address}:{rectified_credit_wei}"
-        )
-        result["rectification_id"] = rectification_id
-        result["rectification"] = send_captain_contract_transaction(
-            runtime,
-            contract_address=runtime.bridge_escrow_address,
-            private_key=private_key,
-            function_signature="rectifySpend(address,uint256,bytes32,string)",
-            function_args=[
-                runtime.wallet.address,
-                str(rectified_credit_wei),
-                rectification_id,
-                f"captain smoke spend rectification {request_id}",
-            ],
-            value_wei=0,
-            timeout_s=timeout_s,
-        )
-
-    if refund_credit_wei > 0:
-        withdrawal_id = normalize_smoke_id(
-            f"{smoke_id}:bridge-withdrawal:{request_id}:{runtime.wallet.address}:{refund_credit_wei}"
-        )
-        result["withdrawal_id"] = withdrawal_id
-        result["withdrawal"] = send_captain_contract_transaction(
-            runtime,
-            contract_address=runtime.bridge_escrow_address,
-            private_key=private_key,
-            function_signature="releaseWithdrawal(address,address,uint256,bytes32,string)",
-            function_args=[
-                runtime.wallet.address,
-                runtime.wallet.address,
-                str(refund_credit_wei),
-                withdrawal_id,
-                f"captain smoke bridge refund {request_id}",
-            ],
-            value_wei=0,
-            timeout_s=timeout_s,
-        )
-
-    # The current reconciliation endpoint names the integer unit fields
-    # *_credits, while the bridge contract and ledger carry the atomic unit
-    # amount through metadata/display fields.  Keep the exact atomic amounts in
-    # metadata so operators can audit the chain movement even on hubs that still
-    # store only whole-credit reconciliation rows.
-    record_rectified = _whole_credit_floor(rectified_credit_wei)
-    record_withdrawn = _whole_credit_floor(refund_credit_wei)
-    if record_rectified > 0 or record_withdrawn > 0:
-        result["hub_record_payload"] = {
-            "account_id": wallet_account_id(runtime.wallet.address),
-            "rectified_credits": record_rectified,
-            "withdrawn_credits": record_withdrawn,
-            "rectification_id": result.get("rectification_id", ""),
-            "withdrawal_id": result.get("withdrawal_id", ""),
-            "recipient_address": runtime.wallet.address,
-            "memo": f"captain smoke bridge refund {request_id}",
-            "metadata": {
-                "mode": "captain-smoke-bridge-refund-v1",
-                "smoke_id": smoke_id,
-                "request_id": request_id,
-                "bridge_credit_wei": str(bridge_credit_wei),
-                "charged_credit_wei": str(charged_credit_wei),
-                "rectified_credit_wei": str(rectified_credit_wei),
-                "refund_credit_wei": str(refund_credit_wei),
-                "rectification_tx_hash": (
-                    result.get("rectification", {}).get("transaction_hash")
-                    if isinstance(result.get("rectification"), dict)
-                    else ""
-                ),
-                "withdrawal_tx_hash": (
-                    result.get("withdrawal", {}).get("transaction_hash")
-                    if isinstance(result.get("withdrawal"), dict)
-                    else ""
-                ),
-            },
-        }
-    else:
-        result["hub_record_skipped"] = {
-            "reason": "reconciliation endpoint currently records whole-credit rows only",
-            "rectified_credit_wei": str(rectified_credit_wei),
-            "refund_credit_wei": str(refund_credit_wei),
-        }
+    result = _post_hub_json(
+        runtime.config.hub_url,
+        "/api/hub/v1/credits/bridge-reconciliation/execute",
+        payload,
+        timeout_s=timeout_s,
+    )
+    result.setdefault("request_id", str(request_id or "").strip())
     return result
-
 
 def send_captain_contract_transaction(
     runtime: CaptainRuntime,
