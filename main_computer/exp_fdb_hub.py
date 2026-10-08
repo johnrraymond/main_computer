@@ -76,6 +76,7 @@ from main_computer.stable_hub_worker_sessions import (
     stable_task_queue_for_partition,
 )
 from main_computer.hub_credit_bridge_completion import HubCreditBridgeCompletionService
+from main_computer.hub_admin_runtime import install_hub_admin_bundle
 from main_computer.hub_credit_indexer import HubCreditIndexer
 
 
@@ -2742,6 +2743,14 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
         stable_hub_id=_exp_fdb_hub_id_for_topology(args, stable_topology, port=int(port)),
         verbose=not args.noverbose,
     )
+    # Separate Hub operator signer: the bridge-controller wallet remains unchanged.
+    wallet_attestation = install_hub_admin_bundle(
+        hub_id=server.stable_hub_node.hub_id,
+        network=str(stable_topology.network.get("network_key") or ""),
+        runtime_dir=Path(os.environ.get("MAIN_COMPUTER_HUB_CONTROL_RUNTIME_DIR") or fdb_config.repo_root / "runtime"),
+    )
+    if wallet_attestation is not None:
+        server.identity["hub_admin"] = wallet_attestation
     fdb_health = server.credit_ledger.health_check()
     state_health = server.fdb_state.health_check()
 
