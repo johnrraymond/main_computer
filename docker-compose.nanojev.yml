@@ -23,7 +23,7 @@ services:
         - CMD
         - python
         - -c
-        - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:9765/api/health',timeout=2)); raise SystemExit(0 if d.get('ready') is True and d.get('model_loaded_once') is True and d.get('provider_calls') == 0 else 1)"
+        - "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:9765/api/health',timeout=2)); raise SystemExit(0 if d.get('ready') is True and d.get('model_loaded_once') is True else 1)"
       interval: 5s
       timeout: 3s
       retries: 12

@@ -622,22 +622,20 @@ def test_dynamic_post_work_cleanup_substeps_are_mutation_gated(tmp_path: Path) -
     assert exc.value.code == 3
 
 
-def test_preflight_paranoia_is_in_add_and_remove_before_mutation_planning() -> None:
-    assert harness.COMMON_STEPS[0:5] == [
-        "preflight-paranoia-validator-set",
+def test_validator_set_rpc_preflight_is_remove_only_before_mutation_planning() -> None:
+    assert harness.COMMON_STEPS[0:4] == [
         "detect-topology",
         "preflight-paranoia",
         "preflight-paranoia-snap",
         "reserve-identity",
     ]
     assert harness.REMOVE_STEPS[0:3] == [
-        "preflight-paranoia-validator-set",
         "detect-topology",
+        "preflight-paranoia-validator-set",
         "preflight-paranoia",
     ]
-    assert harness.COMMON_STEPS.index("preflight-paranoia-validator-set") < harness.COMMON_STEPS.index("detect-topology")
-    assert harness.REMOVE_STEPS.index("preflight-paranoia-validator-set") < harness.REMOVE_STEPS.index("detect-topology")
-    assert harness.COMMON_STEPS.index("preflight-paranoia-validator-set") < harness.COMMON_STEPS.index("reserve-identity")
+    assert "preflight-paranoia-validator-set" not in harness.COMMON_STEPS
+    assert harness.REMOVE_STEPS.index("detect-topology") < harness.REMOVE_STEPS.index("preflight-paranoia-validator-set")
     assert harness.COMMON_STEPS.index("preflight-paranoia") < harness.COMMON_STEPS.index("reserve-identity")
     assert harness.COMMON_STEPS.index("preflight-paranoia-snap") < harness.COMMON_STEPS.index("reserve-identity")
     assert harness.COMMON_STEPS.index("preflight-paranoia-snap") < harness.COMMON_STEPS.index("prep")
@@ -727,15 +725,17 @@ def test_resume_after_early_snap_gate_cannot_bypass_snap_preflight(tmp_path: Pat
     instance = harness.Harness(args)
     calls: list[object] = []
 
+    instance.step_detect_topology = lambda: calls.append("detect-topology")
     instance.step_preflight_paranoia_validator_set = lambda: calls.append("validator-set-preflight")
     instance.step_preflight_paranoia_snap = lambda: calls.append("snap-preflight")
     instance.run_steps = lambda steps, start_at: calls.append((tuple(steps), start_at))
 
     instance.run_all()
 
-    assert calls[0] == "validator-set-preflight"
+    assert calls[0] == "detect-topology"
     assert calls[1] == "snap-preflight"
     assert calls[2][1] == "release-replica-sync"
+    assert "validator-set-preflight" not in calls
 
 
 def test_preflight_paranoia_blocks_with_fresh_cleanup_topology_command(tmp_path: Path, capsys) -> None:
@@ -808,6 +808,7 @@ def test_validator_set_preflight_cmd_uses_harness_selected_baseline(tmp_path: Pa
 
 def test_validator_set_preflight_blocks_and_surfaces_manual_cleanup(tmp_path: Path, capsys) -> None:
     args = _parser_args(tmp_path)
+    args.operation = "remove-node"
     args.baseline_evidence = str(tmp_path / "selected-topology.json")
     args.baseline_evidence_sha256 = "e" * 64
     instance = harness.Harness(args)
@@ -838,6 +839,7 @@ def test_validator_set_preflight_blocks_and_surfaces_manual_cleanup(tmp_path: Pa
 
 def test_validator_set_preflight_blocks_and_surfaces_reseal(tmp_path: Path, capsys) -> None:
     args = _parser_args(tmp_path)
+    args.operation = "remove-node"
     args.baseline_evidence = str(tmp_path / "selected-topology.json")
     args.baseline_evidence_sha256 = "f" * 64
     instance = harness.Harness(args)
@@ -860,20 +862,29 @@ def test_validator_set_preflight_blocks_and_surfaces_reseal(tmp_path: Path, caps
     assert reseal in capsys.readouterr().out
 
 
-def test_resume_cannot_bypass_validator_set_preflight_for_add(tmp_path: Path) -> None:
+@pytest.mark.parametrize("start_at", ["preflight-paranoia", "release-replica-sync", "execute-validator-admission"])
+def test_resumed_add_detects_topology_without_validator_set_rpc(tmp_path: Path, start_at: str) -> None:
     args = _parser_args(tmp_path)
-    args.start_at = "release-replica-sync"
+    args.start_at = start_at
     instance = harness.Harness(args)
     calls: list[object] = []
 
+    instance.step_detect_topology = lambda: calls.append("detect-topology")
     instance.step_preflight_paranoia_validator_set = lambda: calls.append("validator-set-preflight")
     instance.step_preflight_paranoia_snap = lambda: calls.append("snap-preflight")
     instance.run_steps = lambda steps, start_at: calls.append((tuple(steps), start_at))
+    instance.route_after_identity = lambda: "replica-admission"
 
     instance.run_all()
 
-    assert calls[0] == "validator-set-preflight"
-    assert calls[1] == "snap-preflight"
+    assert calls[0] == "detect-topology"
+    assert "validator-set-preflight" not in calls
+    if start_at == "preflight-paranoia":
+        assert calls[1][1] == start_at
+        assert calls[2][1] == "release-replica-sync"
+    else:
+        assert calls[1] == "snap-preflight"
+        assert calls[2][1] == start_at
 
 
 def test_resume_cannot_bypass_validator_set_preflight_for_remove(tmp_path: Path) -> None:
@@ -883,11 +894,136 @@ def test_resume_cannot_bypass_validator_set_preflight_for_remove(tmp_path: Path)
     instance = harness.Harness(args)
     calls: list[object] = []
 
+    instance.step_detect_topology = lambda: calls.append("detect-topology")
     instance.step_preflight_paranoia_validator_set = lambda: calls.append("validator-set-preflight")
     instance.step_preflight_paranoia_snap = lambda: calls.append("snap-preflight")
     instance.run_steps = lambda steps, start_at: calls.append((tuple(steps), start_at))
 
     instance.run_all()
 
-    assert calls[0] == "validator-set-preflight"
-    assert calls[1][1] == "execute-remove-do"
+    assert calls[0] == "detect-topology"
+    assert calls[1] == "validator-set-preflight"
+    assert calls[2][1] == "execute-remove-do"
+
+
+def test_resume_at_validator_gate_detects_topology_first(tmp_path: Path) -> None:
+    args = _parser_args(tmp_path)
+    args.operation = "remove-node"
+    args.start_at = "preflight-paranoia-validator-set"
+    instance = harness.Harness(args)
+    calls: list[object] = []
+    instance.step_detect_topology = lambda: calls.append("detect-topology")
+    instance.step_preflight_paranoia_validator_set = lambda: calls.append("validator-set-preflight")
+    instance.run_steps = lambda steps, start_at: calls.append((tuple(steps), start_at))
+    instance.run_all()
+
+    assert calls[0] == "detect-topology"
+    assert calls[1][1] == "preflight-paranoia-validator-set"
+
+
+def test_verified_empty_first_node_does_not_contact_rpc(tmp_path: Path) -> None:
+    args = _parser_args(tmp_path)
+    args.internal_add_prep_mode = "initial"
+    args.baseline_evidence = str(tmp_path / "empty.json")
+    args.baseline_evidence_sha256 = "a" * 64
+    instance = harness.Harness(args)
+
+    def fake_run(step, argv, *, allow_failure=False):
+        assert step == "detect-topology", "first-node bootstrap must not query QBFT"
+        return {
+            "status": "pass",
+            "network": "mainnet",
+            "topology_evidence": {"sha256": args.baseline_evidence_sha256},
+            "expected_nodes": [],
+            "expected_validator_set": [],
+            "expected_services": {},
+            "present_expected_nodes": [],
+            "unknown_expected_nodes": [],
+            "observed_live_node_hints": [],
+            "observed_live_primary_nodes": [],
+            "unexpected_live_nodes": [],
+            "summary": {"topology_current": True},
+        }
+
+    instance.run = fake_run
+    instance.step_detect_topology()
+    instance.step_preflight_paranoia_validator_set()
+
+    assert instance.state["verified_empty_add_topology"] is True
+    assert instance.state["preflight_paranoia_validator_set_status"] == "not-required"
+
+
+@pytest.mark.parametrize("override", [
+    {"status": "manual-review-required"},
+    {"summary": {"topology_current": False}},
+    {"observed_live_primary_nodes": ["mainneta-super1"]},
+    {"topology_evidence": {"sha256": "b" * 64}},
+])
+def test_add_never_checks_validator_rpc_for_ambiguous_empty_topology(tmp_path: Path, override: dict) -> None:
+    args = _parser_args(tmp_path)
+    args.internal_add_prep_mode = "initial"
+    args.baseline_evidence = str(tmp_path / "empty.json")
+    args.baseline_evidence_sha256 = "a" * 64
+    instance = harness.Harness(args)
+    calls: list[str] = []
+    detection = {
+        "status": "pass", "network": "mainnet",
+        "topology_evidence": {"sha256": args.baseline_evidence_sha256},
+        "expected_nodes": [], "expected_validator_set": [], "expected_services": {},
+        "present_expected_nodes": [], "unknown_expected_nodes": [],
+        "observed_live_node_hints": [], "observed_live_primary_nodes": [],
+        "unexpected_live_nodes": [], "summary": {"topology_current": True},
+    }
+    detection.update(override)
+
+    def fake_run(step, argv, *, allow_failure=False):
+        calls.append(step)
+        if step == "detect-topology":
+            return detection
+        assert step == "preflight-paranoia-validator-set"
+        return {"status": "pass", "summary": {"clean": True}}
+
+    instance.run = fake_run
+    instance.step_detect_topology()
+    instance.step_preflight_paranoia_validator_set()
+
+    assert calls == ["detect-topology"]
+    assert instance.state["preflight_paranoia_validator_set_status"] == "not-required"
+
+
+def test_add_never_checks_validator_rpc_even_with_skipped_detection(tmp_path: Path) -> None:
+    args = _parser_args(tmp_path)
+    args.internal_add_prep_mode = "initial"
+    args.skip_staleness_detection = True
+    args.baseline_evidence = str(tmp_path / "empty.json")
+    args.baseline_evidence_sha256 = "a" * 64
+    instance = harness.Harness(args)
+    calls: list[str] = []
+
+    def fake_run(step, argv, *, allow_failure=False):
+        calls.append(step)
+        return {"status": "pass", "summary": {"clean": True}}
+
+    instance.run = fake_run
+    instance.step_detect_topology()
+    instance.step_preflight_paranoia_validator_set()
+    assert calls == []
+
+
+def test_stale_topology_stops_before_any_rpc_preflight(tmp_path: Path) -> None:
+    args = _parser_args(tmp_path)
+    args.baseline_evidence = str(tmp_path / "old-topology.json")
+    args.baseline_evidence_sha256 = "a" * 64
+    instance = harness.Harness(args)
+    calls: list[str] = []
+
+    def fake_run(step, argv, *, allow_failure=False):
+        calls.append(step)
+        assert step == "detect-topology"
+        return {"status": "stale", "summary": {"rectification_required": True}}
+
+    instance.run = fake_run
+    with pytest.raises(SystemExit) as exc:
+        instance.run_all()
+    assert exc.value.code == 3
+    assert calls == ["detect-topology"]

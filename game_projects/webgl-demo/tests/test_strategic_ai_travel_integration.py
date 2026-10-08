@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 SCRIPT_ROOT = GAME_ROOT / "web" / "scripts"
 STYLE_ROOT = GAME_ROOT / "web" / "styles"
 PROJECT_PATH = GAME_ROOT / "project.json"
@@ -20,6 +21,11 @@ SESSION_PATH = SCRIPT_ROOT / "strategic-ai-session.js"
 TRAVEL_PATH = SCRIPT_ROOT / "strategic-ai-travel-integration.js"
 TRAVEL_STYLE_PATH = STYLE_ROOT / "strategic-ai-travel-integration.css"
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 class StrategicAITravelIntegrationTests(unittest.TestCase):
     def test_completed_travel_advances_once_excludes_destination_and_builds_return_summary(
@@ -321,29 +327,21 @@ class StrategicAITravelIntegrationTests(unittest.TestCase):
         self.assertEqual(report["processedTravelCount"], 0)
 
     def test_travel_controller_is_loaded_and_wired_to_game_surface(self) -> None:
-        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        styles_bundle = _game_bundle("styles")
+        runtime = _game_bundle("runtime-before-routing")
+        runtime_after = _game_bundle("runtime-after-routing")
         webgl = WEBGL_APP_PATH.read_text(encoding="utf-8")
         desktop = WEBGL_DESKTOP_PATH.read_text(encoding="utf-8")
         session = SESSION_PATH.read_text(encoding="utf-8")
         travel = TRAVEL_PATH.read_text(encoding="utf-8").lower()
         style = TRAVEL_STYLE_PATH.read_text(encoding="utf-8")
 
-        self.assertIn(
-            "<!-- @include applications/styles/strategic-ai-travel-integration.css -->",
-            applications,
-        )
-        self.assertIn(
-            "<!-- @include applications/scripts/strategic-ai-travel-integration.js -->",
-            applications,
-        )
+        self.assertIn("web/styles/strategic-ai-travel-integration.css", styles_bundle)
         self.assertLess(
-            applications.index("strategic-ai-session.js"),
-            applications.index("strategic-ai-travel-integration.js"),
+            runtime.index("web/scripts/strategic-ai-session.js"),
+            runtime.index("web/scripts/strategic-ai-travel-integration.js"),
         )
-        self.assertLess(
-            applications.index("strategic-ai-travel-integration.js"),
-            applications.index("webgl-desktop.js"),
-        )
+        self.assertIn("web/scripts/webgl-desktop.js", runtime_after)
         self.assertIn('id="strategic-ai-return-summary"', webgl)
         self.assertIn('id="strategic-ai-return-dismiss"', webgl)
         self.assertIn("While you were away", webgl)

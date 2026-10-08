@@ -5596,6 +5596,12 @@
           this.onPilotChanged = null;
           this.onBayControlStarted = null;
           this.onShipStateChanged = null;
+          this.tacticalAIReadinessProvider = typeof options.tacticalAIReadiness === "function"
+            ? options.tacticalAIReadiness
+            : null;
+          this.ensureTacticalAIReadiness = typeof options.ensureTacticalAIReadiness === "function"
+            ? options.ensureTacticalAIReadiness
+            : null;
         }
 
         initializeCombatRuntimeState() {
@@ -6547,6 +6553,44 @@
           return Boolean(this.flight?.bayPlayerControlActive);
         }
 
+        tacticalAIExitGateSnapshot() {
+          let source = null;
+          try {
+            source = this.tacticalAIReadinessProvider?.() || null;
+          } catch (error) {
+            console.error("Tactical AI readiness callback failed", error);
+          }
+          const performance = source?.payload?.performance || source?.performance || {};
+          const manager = source?.payload?.manager || source?.manager || {};
+          const consecutivePasses = Math.max(0, Number(source?.consecutivePasses ?? performance.consecutivePasses ?? 0));
+          const requiredPasses = 3;
+          const providerReady = source?.ready === true || performance.ready === true;
+          const managerReady = !Object.keys(manager).length
+            || (manager.ok === true && manager.backend_ready === true && manager.running === true);
+          return {
+            ready: Boolean(providerReady && managerReady && consecutivePasses >= requiredPasses),
+            consecutivePasses,
+            requiredPasses,
+            timeStepSeconds: Math.max(1, Math.min(5, Number(source?.timeStepSeconds ?? performance.timeStepSeconds ?? 5))),
+            phase: String(source?.phase || source?.payload?.phase || "idle"),
+            lastError: String(source?.lastError || source?.payload?.lastError || "")
+          };
+        }
+
+        requestTacticalAIExitReadiness() {
+          const snapshot = this.tacticalAIExitGateSnapshot();
+          if (snapshot.ready || typeof this.ensureTacticalAIReadiness !== "function") return snapshot;
+          try {
+            const result = this.ensureTacticalAIReadiness();
+            if (result && typeof result.catch === "function") {
+              result.catch((error) => console.error("Tactical AI readiness request failed", error));
+            }
+          } catch (error) {
+            console.error("Tactical AI readiness request failed", error);
+          }
+          return snapshot;
+        }
+
         velaSubsurfaceEscapeSnapshot() {
           const interaction = globalThis.MainComputerStrategicAIVelaInteraction;
           if (!interaction) return null;
@@ -7487,6 +7531,23 @@
         enterShuttleBayPlayerControl(force = false) {
           const flight = this.flight;
           if (!flight) return false;
+          const tacticalAI = this.tacticalAIExitGateSnapshot();
+          if (!tacticalAI.ready) {
+            this.requestTacticalAIExitReadiness();
+            if (force) {
+              const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
+              flight.docked = true;
+              flight.dockingCutsceneActive = false;
+              flight.dockingCutsceneComplete = true;
+              flight.dockingCutsceneElapsedMs = Math.max(
+                Number(flight.dockingCutsceneElapsedMs) || 0,
+                config.cutscene?.durationMs || 9600
+              );
+              flight.dockingCutscenePhase = "tactical-ai-check";
+            }
+            this.emitPilotState(true);
+            return false;
+          }
           if (!flight.playerExitedToBay && !force) return false;
           if (flight.bayPlayerControlActive && !force) return false;
           const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
@@ -7632,12 +7693,22 @@
           const config = this.flightConfig || shuttle3dFlightConfig(this.scene);
           const flight = this.flight || this.createFlightState();
           const duration = Math.max(1, config.cutscene?.durationMs || 9600);
-          const elapsed = flight.dockingCutsceneActive
+          const rawElapsed = flight.dockingCutsceneActive
             ? Math.max(0, (Number.isFinite(nowMs) ? nowMs : performance.now()) - flight.dockingCutsceneStartedAtMs)
             : flight.dockingCutsceneElapsedMs;
+          const rawProgress = Math.max(0, Math.min(1, rawElapsed / duration));
+          const tacticalAI = this.tacticalAIExitGateSnapshot();
+          const waitingForTacticalAI = Boolean(
+            flight.docked
+            && !flight.playerExitedToBay
+            && rawProgress >= 0.72
+            && !tacticalAI.ready
+          );
+          const elapsed = waitingForTacticalAI ? Math.min(rawElapsed, duration * 0.72) : rawElapsed;
           const progress = Math.max(0, Math.min(1, elapsed / duration));
           let phase = flight.dockingCutscenePhase || "approach";
           if (flight.playerExitedToBay) phase = "arrived";
+          else if (waitingForTacticalAI) phase = "tactical-ai-check";
           else if (progress >= 0.72) phase = "player-exit";
           else if (progress >= 0.42) phase = "bay-landing";
           else phase = "hangar-approach";
@@ -7649,6 +7720,12 @@
             elapsed,
             duration,
             phase,
+            waitingForTacticalAI,
+            tacticalAIReady: tacticalAI.ready,
+            tacticalAIConsecutivePasses: tacticalAI.consecutivePasses,
+            tacticalAIRequiredPasses: tacticalAI.requiredPasses,
+            tacticalAITimeStepSeconds: tacticalAI.timeStepSeconds,
+            tacticalAIError: tacticalAI.lastError,
             bayLabel: config.cutscene?.bayLabel || "Mother Ship Shuttle Bay"
           };
         }
@@ -7682,6 +7759,19 @@
           const snapshot = this.dockingCutsceneSnapshot(nowMs);
           flight.dockingCutsceneElapsedMs = snapshot.elapsed;
           flight.dockingCutscenePhase = snapshot.phase;
+          if (snapshot.waitingForTacticalAI) {
+            this.requestTacticalAIExitReadiness();
+            // Freeze the docking cinematic at the landed/ramp-open boundary so the
+            // cadet does not visually leave the shuttle before the 3/3 gate passes.
+            flight.dockingCutsceneStartedAtMs += Math.max(0, Number(deltaSeconds) || 0) * 1000;
+            flight.forwardSpeed = 0;
+            flight.distance = config.dockingDistance;
+            this.pilot.throttle = 0;
+            this.pilot.impulse = 0;
+            this.emitPilotState();
+            this.emitCombatState();
+            return;
+          }
           if (snapshot.progress >= 1) {
             flight.dockingCutsceneActive = false;
             flight.dockingCutsceneComplete = true;
@@ -7751,7 +7841,12 @@
             dockingCutsceneProgress: Number(cutscene.progress.toFixed(3)),
             playerExitedToBay: cutscene.playerExitedToBay,
             shuttleBayControlActive: this.isShuttleBayPlayerControlActive(),
-            shuttleBayLabel: cutscene.bayLabel
+            shuttleBayLabel: cutscene.bayLabel,
+            tacticalAIExitReady: Boolean(cutscene.tacticalAIReady),
+            tacticalAIExitConsecutivePasses: Number(cutscene.tacticalAIConsecutivePasses || 0),
+            tacticalAIExitRequiredPasses: Number(cutscene.tacticalAIRequiredPasses || 3),
+            tacticalAITimeStepSeconds: Number(cutscene.tacticalAITimeStepSeconds || 5),
+            tacticalAIExitError: String(cutscene.tacticalAIError || "")
           };
         }
 
@@ -11244,6 +11339,16 @@
         }
 
         updateMovement(deltaSeconds) {
+          if (this.flight?.docked && this.flight?.dockingCutsceneComplete && !this.flight?.playerExitedToBay) {
+            const tacticalAI = this.tacticalAIExitGateSnapshot();
+            if (!tacticalAI.ready) {
+              this.requestTacticalAIExitReadiness();
+              this.emitPilotState();
+              return;
+            }
+            this.enterShuttleBayPlayerControl(true);
+            return;
+          }
           if (this.isDockingCutsceneActive()) {
             this.updateDockingCutscene(deltaSeconds);
             return;
@@ -12129,6 +12234,9 @@
             if (pilot.shuttleBayControlActive) {
               twiddleStatus.textContent = `Control restored in ${pilot.shuttleBayLabel}.`;
               twiddleButton.disabled = true;
+            } else if (!pilot.tacticalAIExitReady && (pilot.dockingCutsceneActive || pilot.flightDocked)) {
+              twiddleStatus.textContent = `Tactical AI gate ${pilot.tacticalAIExitConsecutivePasses}/${pilot.tacticalAIExitRequiredPasses} • remain inside shuttle.`;
+              twiddleButton.disabled = true;
             } else if (pilot.dockingCutsceneActive) {
               twiddleStatus.textContent = `Docking ${phase} • ${progress}% • press T if handoff sticks.`;
               twiddleButton.disabled = false;
@@ -12346,9 +12454,17 @@
             updateTwiddleSystem(pilot);
             if (pilot.dockingCutsceneActive) {
               const progress = Math.round(pilot.dockingCutsceneProgress * 100);
-              pilotLine.textContent = `DOCKING CUTSCENE • ${pilot.dockingCutscenePhase.replace(/-/g, " ").toUpperCase()} • ${progress}%`;
-              pilotPrompt.hidden = false;
-              pilotPrompt.textContent = `Autopilot docking with ${pilot.targetLabel}: shuttle entering bay, landing, and cadet exiting`;
+              if (pilot.dockingCutscenePhase === "tactical-ai-check") {
+                pilotLine.textContent = `DOCKED • TACTICAL AI CHECK ${pilot.tacticalAIExitConsecutivePasses}/${pilot.tacticalAIExitRequiredPasses} • ${pilot.tacticalAITimeStepSeconds}s SLICE`;
+                pilotPrompt.hidden = false;
+                pilotPrompt.textContent = pilot.tacticalAIExitError
+                  ? `Tactical AI unavailable: ${pilot.tacticalAIExitError}`
+                  : `Remain inside shuttle until Tactical AI reaches ${pilot.tacticalAIExitRequiredPasses}/${pilot.tacticalAIExitRequiredPasses}.`;
+              } else {
+                pilotLine.textContent = `DOCKING CUTSCENE • ${pilot.dockingCutscenePhase.replace(/-/g, " ").toUpperCase()} • ${progress}%`;
+                pilotPrompt.hidden = false;
+                pilotPrompt.textContent = `Autopilot docking with ${pilot.targetLabel}: shuttle entering bay and landing`;
+              }
             } else if (pilot.playerExitedToBay) {
               pilotLine.textContent = `ARRIVED: ${pilot.shuttleBayLabel} • FIRST-PERSON CONTROL`;
               const shipTarget = renderer.shipInteractionTarget?.();

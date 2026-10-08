@@ -1098,7 +1098,7 @@ def narrate_generation_battle(
         ship = dict(final_ships.get(str(captain.get("shipId") or "")) or {})
         status_bits = []
         if ship:
-            speed = float(ship.get("vMps", 0.0) or 0.0)
+            speed = float(ship.get("speedMps", ship.get("vMps", 0.0)) or 0.0)
             damage = float(ship.get("damageFraction", 0.0) or 0.0)
             status_bits.append(
                 f"finished moving at {_fmt_number(speed)} m/s with {_fmt_number(damage)} damage"
@@ -1514,8 +1514,8 @@ def main() -> int:
     parser.add_argument(
         "--async-game-loop-intervals-seconds",
         type=str,
-        default="0.5,1,2",
-        help="Control deadlines characterized by --async-game-loop (default: 0.5,1,2).",
+        default="1,2,3,4,5",
+        help="Tactical deadlines characterized by --async-game-loop (default: 1,2,3,4,5).",
     )
     parser.add_argument(
         "--speed-scaling-counts",

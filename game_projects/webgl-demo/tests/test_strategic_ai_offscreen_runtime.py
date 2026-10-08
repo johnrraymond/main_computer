@@ -15,6 +15,7 @@ from main_computer.strategic_ai_definition import validate_strategic_ai_definiti
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 SCRIPTS = GAME_ROOT / "web" / "scripts"
 COGNITION_RUNTIME = SCRIPTS / "strategic-ai-runtime.js"
 ACTION_RUNTIME = SCRIPTS / "strategic-ai-action-runtime.js"
@@ -28,6 +29,11 @@ APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
 PROJECT_PATH = GAME_ROOT / "project.json"
 SCHEMA_PATH = GAME_ROOT.parent / "schema" / "strategic-ai.v1.schema.json"
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 def _definition() -> dict[str, Any]:
     project = json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
@@ -273,14 +279,10 @@ def offscreen_report() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def test_offscreen_runtime_loads_after_coordinator() -> None:
-    html = APPLICATIONS_HTML.read_text(encoding="utf-8")
-    coordinator = html.index(
-        "<!-- @include applications/scripts/strategic-ai-coordinator.js -->"
-    )
-    offscreen = html.index(
-        "<!-- @include applications/scripts/strategic-ai-offscreen-runtime.js -->"
-    )
-    scene = html.index("<!-- @include applications/scripts/scene-viewer.js -->")
+    runtime = _game_bundle("runtime-before-routing")
+    coordinator = runtime.index("web/scripts/strategic-ai-coordinator.js")
+    offscreen = runtime.index("web/scripts/strategic-ai-offscreen-runtime.js")
+    scene = runtime.index("web/scripts/scene-viewer.js")
     assert coordinator < offscreen < scene
 
 

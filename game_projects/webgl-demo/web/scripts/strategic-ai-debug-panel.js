@@ -92,6 +92,10 @@
     ui.panel.hidden = !open;
     ui.toggle.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
+      const tacticalPanel = document.querySelector("#tactical-ai-debug-panel");
+      const tacticalToggle = document.querySelector("#tactical-ai-debug-toggle");
+      if (tacticalPanel) tacticalPanel.hidden = true;
+      tacticalToggle?.setAttribute("aria-expanded", "false");
       render();
       ui.panel.focus?.({preventScroll: true});
     }

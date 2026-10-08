@@ -15,10 +15,20 @@
       lastAutosave: null,
       autosaveLoadActive: false,
       autosaveLoad: null,
-      autosaveLoadGameplayPackIds: []
+      autosaveLoadGameplayPackIds: [],
+      tacticalAIStatus: null,
+      tacticalAIError: "",
+      tacticalAIPreparePromise: null,
+      tacticalAIPollTimer: null,
+      tacticalAILastPrepareAtMs: 0
     };
 
     const WEBGL_AUTOSAVE_KEY = "main-computer.webgl.autosave.v1";
+    const WEBGL_TACTICAL_AI_API_ROOT = "/api/applications/game/tactical-ai";
+    const WEBGL_TACTICAL_AI_DEFAULT_TIME_STEP_SECONDS = 5;
+    const WEBGL_TACTICAL_AI_REQUIRED_CONSECUTIVE_PASSES = 3;
+    const WEBGL_TACTICAL_AI_WARMUP_TIMEOUT_SECONDS = 120;
+    const WEBGL_TACTICAL_AI_POLL_INTERVAL_MS = 500;
     const WEBGL_LEGACY_ACTIVE_GAMEPLAY_PACKS_KEY = "main-computer.webgl.active-gameplay-packs.v1";
     const WEBGL_ENABLED_GAMEPLAY_PACKS_KEY = "main-computer.webgl.enabled-gameplay-packs.v2";
     const WEBGL_ACTIVE_GAMEPLAY_PACKS_KEY = WEBGL_ENABLED_GAMEPLAY_PACKS_KEY;
@@ -89,6 +99,103 @@
         throw new Error(data?.error || `${path} failed with HTTP ${response.status}`);
       }
       return data;
+    }
+
+    async function webglGetJson(path) {
+      const response = await fetch(path, {cache: "no-store"});
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || `${path} failed with HTTP ${response.status}`);
+      }
+      return data;
+    }
+
+    function webglTacticalAIReadinessSnapshot() {
+      const payload = webglProjectState.tacticalAIStatus || {};
+      const performance = payload.performance || {};
+      const manager = payload.manager || {};
+      const consecutivePasses = Math.max(0, Number(performance.consecutivePasses || 0));
+      const requiredPasses = WEBGL_TACTICAL_AI_REQUIRED_CONSECUTIVE_PASSES;
+      const ready = Boolean(
+        performance.ready === true
+        && consecutivePasses >= requiredPasses
+        && manager.ok === true
+        && manager.backend_ready === true
+        && manager.running === true
+      );
+      return {
+        ready,
+        consecutivePasses,
+        requiredPasses,
+        timeStepSeconds: Math.max(1, Math.min(5, Number(performance.timeStepSeconds || WEBGL_TACTICAL_AI_DEFAULT_TIME_STEP_SECONDS))),
+        phase: String(payload.phase || "idle"),
+        lastError: String(webglProjectState.tacticalAIError || payload.lastError || ""),
+        payload
+      };
+    }
+
+    async function webglRefreshTacticalAIStatus() {
+      try {
+        const payload = await webglGetJson(`${WEBGL_TACTICAL_AI_API_ROOT}/status`);
+        webglProjectState.tacticalAIStatus = payload;
+        webglProjectState.tacticalAIError = "";
+        return payload;
+      } catch (error) {
+        webglProjectState.tacticalAIError = error instanceof Error ? error.message : String(error || "Tactical AI status failed");
+        return null;
+      }
+    }
+
+    function webglEnsureTacticalAIPolling() {
+      if (webglProjectState.tacticalAIPollTimer) return;
+      webglProjectState.tacticalAIPollTimer = window.setInterval(() => {
+        if (!webglProjectState.gameStarted) return;
+        void webglRefreshTacticalAIStatus();
+      }, WEBGL_TACTICAL_AI_POLL_INTERVAL_MS);
+    }
+
+    function webglPrepareTacticalAIForGame({force = false} = {}) {
+      const snapshot = webglTacticalAIReadinessSnapshot();
+      if (!force && snapshot.ready) return Promise.resolve(snapshot.payload);
+      if (webglProjectState.tacticalAIPreparePromise) return webglProjectState.tacticalAIPreparePromise;
+      const now = performance.now();
+      if (!force && now - Number(webglProjectState.tacticalAILastPrepareAtMs || 0) < 1000) {
+        return Promise.resolve(webglProjectState.tacticalAIStatus);
+      }
+      webglProjectState.tacticalAILastPrepareAtMs = now;
+      webglEnsureTacticalAIPolling();
+      const promise = webglPost(`${WEBGL_TACTICAL_AI_API_ROOT}/prepare`, {
+        time_step_seconds: WEBGL_TACTICAL_AI_DEFAULT_TIME_STEP_SECONDS,
+        consecutive_passes: WEBGL_TACTICAL_AI_REQUIRED_CONSECUTIVE_PASSES,
+        warmup_timeout_seconds: WEBGL_TACTICAL_AI_WARMUP_TIMEOUT_SECONDS,
+        startup_timeout_seconds: 180,
+        request_timeout_seconds: 300
+      })
+        .then((payload) => {
+          webglProjectState.tacticalAIStatus = payload;
+          webglProjectState.tacticalAIError = "";
+          return payload;
+        })
+        .catch((error) => {
+          webglProjectState.tacticalAIError = error instanceof Error ? error.message : String(error || "Tactical AI prepare failed");
+          return null;
+        })
+        .finally(() => {
+          webglProjectState.tacticalAIPreparePromise = null;
+        });
+      webglProjectState.tacticalAIPreparePromise = promise;
+      return promise;
+    }
+
+    function webglEnsureTacticalAIForShuttleExit() {
+      const snapshot = webglTacticalAIReadinessSnapshot();
+      if (!snapshot.ready) void webglPrepareTacticalAIForGame();
+      return snapshot;
     }
 
     function webglDefaultStrategicSystem(project) {
@@ -1032,6 +1139,8 @@
       webglUpdateAutosaveStatus(autosave, {justSaved: true});
       webglShowAutosaveToast(webglAutosaveStatusMessage(autosave, {justSaved: true}));
       webglProjectState.gameStarted = true;
+      webglEnsureTacticalAIPolling();
+      void webglPrepareTacticalAIForGame({force: true});
       webglSetGameplayPackLobbyVisible(false);
       webglSetGameplayPackLobbyActionsBusy(true);
       webglSetGameplayPackSelectorStatus(
@@ -1072,6 +1181,8 @@
       webglProjectState.autosaveLoad = autosave;
       webglProjectState.autosaveLoadGameplayPackIds = packIds;
       webglProjectState.gameStarted = true;
+      webglEnsureTacticalAIPolling();
+      void webglPrepareTacticalAIForGame({force: true});
       webglSetGameplayPackLobbyVisible(false);
       webglSetGameplayPackLobbyActionsBusy(true);
       webglUpdateAutosaveStatus(autosave);
@@ -2403,6 +2514,8 @@
         project,
         spaceNavigation: candidate?.project?.metadata?.spaceNavigation || webglProjectState.project?.metadata?.spaceNavigation || null,
         selectedObjectId,
+        tacticalAIReadiness: webglTacticalAIReadinessSnapshot,
+        ensureTacticalAIReadiness: webglEnsureTacticalAIForShuttleExit,
         onNavigationChanged: syncWebglStrategicNavigation,
         onAutosaveCheckpoint: webglHandleSceneAutosaveCheckpoint,
         autosaveLoadActive: webglProjectState.autosaveLoadActive === true,
@@ -2620,6 +2733,16 @@
         });
       }
     }
+
+    window.MainComputerWebglTacticalAI = {
+      defaultTimeStepSeconds: WEBGL_TACTICAL_AI_DEFAULT_TIME_STEP_SECONDS,
+      requiredConsecutivePasses: WEBGL_TACTICAL_AI_REQUIRED_CONSECUTIVE_PASSES,
+      prepare: webglPrepareTacticalAIForGame,
+      refresh: webglRefreshTacticalAIStatus,
+      readiness: webglTacticalAIReadinessSnapshot,
+      ensureForShuttleExit: webglEnsureTacticalAIForShuttleExit,
+      projectState: webglProjectState
+    };
 
     window.MainComputerWebglStrategicSession = {
       ensure: ensureWebglStrategicSession,

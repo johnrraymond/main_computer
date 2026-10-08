@@ -1020,8 +1020,7 @@ function Test-MainComputerNanoJevHealth([string]$BaseUrl) {
     $response = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 3
     return (
       (Get-ObjectPropertyValue $response "ready" $false) -eq $true -and
-      (Get-ObjectPropertyValue $response "model_loaded_once" $false) -eq $true -and
-      [int](Get-ObjectPropertyValue $response "provider_calls" -1) -eq 0
+      (Get-ObjectPropertyValue $response "model_loaded_once" $false) -eq $true
     )
   } catch {
     return $false
@@ -1170,6 +1169,46 @@ function Get-MainComputerNanoJevManagerStatus([string]$ManagerUrl) {
   }
 }
 
+function Stop-MainComputerNanoJevManagerAtUrl([string]$ManagerUrl, [int]$RequestTimeoutSeconds = 30, [int]$ExitTimeoutSeconds = 15) {
+  $status = Get-MainComputerNanoJevManagerStatus $ManagerUrl
+  if ($null -eq $status) {
+    return [ordered]@{ ok = $true; state = "manager-absent"; url = $ManagerUrl }
+  }
+
+  $mode = ConvertTo-StringValue (Get-ObjectPropertyValue $status "mode" "") ""
+  if ($mode -ne "lazy-managed") {
+    return [ordered]@{
+      ok = $false
+      state = "manager-port-owned-by-foreign-service"
+      url = $ManagerUrl
+      message = "NanoJev manager URL responds, but it is not a lazy-managed NanoJev lifecycle manager."
+    }
+  }
+
+  try {
+    $timeout = [Math]::Max(1, $RequestTimeoutSeconds)
+    $response = Invoke-RestMethod -Uri ($ManagerUrl.TrimEnd("/") + "/control/shutdown") -Method Post -TimeoutSec $timeout
+  } catch {
+    return [ordered]@{ ok = $false; state = "shutdown-request-failed"; url = $ManagerUrl; message = $_.Exception.Message }
+  }
+
+  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $ExitTimeoutSeconds))
+  while ((Get-Date) -lt $deadline) {
+    if ($null -eq (Get-MainComputerNanoJevManagerStatus $ManagerUrl)) {
+      return [ordered]@{ ok = $true; state = "shutdown-complete"; url = $ManagerUrl; response = $response }
+    }
+    Start-Sleep -Milliseconds 250
+  }
+
+  return [ordered]@{
+    ok = $false
+    state = "shutdown-exit-timeout"
+    url = $ManagerUrl
+    response = $response
+    message = ("NanoJev lifecycle manager still answered after {0} seconds." -f [Math]::Max(1, $ExitTimeoutSeconds))
+  }
+}
+
 function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
   $composePath = Join-Path $RootPath "docker-compose.nanojev.yml"
   $managerScript = Join-Path $RootPath "tools\nanojev_lifecycle_service.py"
@@ -1181,6 +1220,10 @@ function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchCont
   $backendPort = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_BACKEND_PORT" "9766"
   $idleSeconds = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_IDLE_SECONDS" "300"
   $startTimeout = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_START_TIMEOUT_SECONDS" "900"
+  $healthPollSeconds = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_HEALTH_POLL_SECONDS" "0.5"
+  $stopTimeoutSeconds = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_STOP_TIMEOUT_SECONDS" "10"
+  $proxyTimeoutSeconds = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_PROXY_TIMEOUT_SECONDS" "300"
+  $sweepIntervalSeconds = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_SWEEP_INTERVAL_SECONDS" "1"
 
   if (-not (Test-MainComputerNanoJevEnabled $LaunchContext)) {
     return [ordered]@{
@@ -1223,7 +1266,22 @@ function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchCont
   $composeCommand = ConvertTo-MainComputerStringArray $containerRuntime.compose_command
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_NANOJEV_BIND_PORT", [string]$backendPort, "Process")
 
-  # Remove an older direct-mode container that may still own public port 9765.
+  # A repeated start must not accidentally accept an older manager that still owns
+  # the public port. Shut down the previous generation before starting this one.
+  $existingManagerStop = Stop-MainComputerNanoJevManagerAtUrl $managerUrl 30 15
+  if (-not [bool](Get-ObjectPropertyValue $existingManagerStop "ok" $false)) {
+    return [ordered]@{
+      ok = $false
+      requested = $true
+      mode = "lazy-managed"
+      state = (ConvertTo-StringValue (Get-ObjectPropertyValue $existingManagerStop "state" "existing-manager-stop-failed") "existing-manager-stop-failed")
+      url = $managerUrl
+      message = (ConvertTo-StringValue (Get-ObjectPropertyValue $existingManagerStop "message" "Could not stop the existing NanoJev lifecycle manager.") "Could not stop the existing NanoJev lifecycle manager.")
+    }
+  }
+
+  # Remove an older direct-mode or orphaned backend container before the new
+  # lifecycle manager takes ownership of the Compose project.
   Invoke-MainComputerRuntimeCommand `
     -Command $composeCommand `
     -Arguments @("--project-name", $projectName, "-f", $composePath, "down", "--remove-orphans") `
@@ -1247,6 +1305,10 @@ function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchCont
     "--backend-port", [string]$backendPort,
     "--idle-seconds", [string]$idleSeconds,
     "--start-timeout-seconds", [string]$startTimeout,
+    "--health-poll-seconds", [string]$healthPollSeconds,
+    "--stop-timeout-seconds", [string]$stopTimeoutSeconds,
+    "--proxy-timeout-seconds", [string]$proxyTimeoutSeconds,
+    "--sweep-interval-seconds", [string]$sweepIntervalSeconds,
     "--docker-command", "docker",
     "--image-name", "main-computer/nanojev:managed-v2"
   )
@@ -1264,6 +1326,25 @@ function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchCont
   $deadline = (Get-Date).AddSeconds(15)
   $status = $null
   while ((Get-Date) -lt $deadline) {
+    if ($process.HasExited) {
+      $stderrTail = ""
+      try {
+        if (Test-Path -LiteralPath $stderr -PathType Leaf) {
+          $stderrTail = ((Get-Content -LiteralPath $stderr -Tail 40 -ErrorAction SilentlyContinue) -join "`n").Trim()
+        }
+      } catch {}
+      return [ordered]@{
+        ok = $false
+        requested = $true
+        mode = "lazy-managed"
+        state = "manager-exited-during-startup"
+        url = $managerUrl
+        pid = $process.Id
+        stdout = $stdout
+        stderr = $stderr
+        message = $(if ([string]::IsNullOrWhiteSpace($stderrTail)) { "NanoJev lifecycle manager exited before becoming ready." } else { $stderrTail })
+      }
+    }
     $status = Get-MainComputerNanoJevManagerStatus $managerUrl
     if ($null -ne $status -and [bool](Get-ObjectPropertyValue $status "ok" $false)) {
       return [ordered]@{
@@ -1316,12 +1397,7 @@ function Stop-MainComputerNanoJevManagerGracefully([object]$Session) {
   if ([string]::IsNullOrWhiteSpace($managerUrl)) {
     return $null
   }
-  try {
-    $response = Invoke-RestMethod -Uri ($managerUrl.TrimEnd("/") + "/control/shutdown") -Method Post -TimeoutSec 30
-    return [ordered]@{ ok = $true; state = "shutdown-requested"; url = $managerUrl; response = $response }
-  } catch {
-    return [ordered]@{ ok = $false; state = "shutdown-request-failed"; url = $managerUrl; message = $_.Exception.Message }
-  }
+  return Stop-MainComputerNanoJevManagerAtUrl $managerUrl 30 15
 }
 
 function Show-MainComputerNanoJevStatus([object]$LaunchContext) {

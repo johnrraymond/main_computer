@@ -15,6 +15,7 @@ from main_computer.strategic_ai_definition import validate_strategic_ai_definiti
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 SCRIPT_ROOT = GAME_ROOT / "web" / "scripts"
 COGNITION_RUNTIME = SCRIPT_ROOT / "strategic-ai-runtime.js"
 ACTION_RUNTIME = SCRIPT_ROOT / "strategic-ai-action-runtime.js"
@@ -35,6 +36,11 @@ SURVIVOR_INTENT = "communicative-intent.vela.survivor-report-sabotage"
 PROMISE_INTENT = "communicative-intent.solace.haven-confirm-shuttle-promise"
 PROMISE_TYPE = "commitment.solace.shuttle-to-osprey"
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 def _definition() -> dict[str, Any]:
     project = json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
@@ -257,17 +263,11 @@ def communication_report() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def test_communication_runtime_loads_before_coordinator() -> None:
-    html = APPLICATIONS_HTML.read_text(encoding="utf-8")
-    director = html.index(
-        "<!-- @include applications/scripts/strategic-ai-director-runtime.js -->"
-    )
-    communication = html.index(
-        "<!-- @include applications/scripts/strategic-ai-communication-runtime.js -->"
-    )
-    coordinator = html.index(
-        "<!-- @include applications/scripts/strategic-ai-coordinator.js -->"
-    )
-    scene = html.index("<!-- @include applications/scripts/scene-viewer.js -->")
+    runtime = _game_bundle("runtime-before-routing")
+    director = runtime.index("web/scripts/strategic-ai-director-runtime.js")
+    communication = runtime.index("web/scripts/strategic-ai-communication-runtime.js")
+    coordinator = runtime.index("web/scripts/strategic-ai-coordinator.js")
+    scene = runtime.index("web/scripts/scene-viewer.js")
     assert director < communication < coordinator < scene
 
 

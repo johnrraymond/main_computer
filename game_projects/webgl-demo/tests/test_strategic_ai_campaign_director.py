@@ -15,6 +15,7 @@ from main_computer.strategic_ai_definition import validate_strategic_ai_definiti
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 SCRIPTS = GAME_ROOT / "web" / "scripts"
 COGNITION_RUNTIME = SCRIPTS / "strategic-ai-runtime.js"
 ACTION_RUNTIME = SCRIPTS / "strategic-ai-action-runtime.js"
@@ -41,6 +42,11 @@ SOLACE_ACTORS = {
     "actor.solace.lyria-medic",
 }
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 def _load_project() -> dict[str, Any]:
     return json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
@@ -235,17 +241,11 @@ def _states_by_id(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def test_director_runtime_loads_before_coordinator() -> None:
-    html = APPLICATIONS_HTML.read_text(encoding="utf-8")
-    commitment = html.index(
-        "<!-- @include applications/scripts/strategic-ai-commitment-runtime.js -->"
-    )
-    director = html.index(
-        "<!-- @include applications/scripts/strategic-ai-director-runtime.js -->"
-    )
-    coordinator = html.index(
-        "<!-- @include applications/scripts/strategic-ai-coordinator.js -->"
-    )
-    scene = html.index("<!-- @include applications/scripts/scene-viewer.js -->")
+    runtime = _game_bundle("runtime-before-routing")
+    commitment = runtime.index("web/scripts/strategic-ai-commitment-runtime.js")
+    director = runtime.index("web/scripts/strategic-ai-director-runtime.js")
+    coordinator = runtime.index("web/scripts/strategic-ai-coordinator.js")
+    scene = runtime.index("web/scripts/scene-viewer.js")
     assert commitment < director < coordinator < scene
 
 

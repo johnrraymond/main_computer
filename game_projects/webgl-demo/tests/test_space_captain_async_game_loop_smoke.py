@@ -39,7 +39,7 @@ def test_async_game_loop_smoke_keeps_physics_and_viewport_independent_of_captain
     assert checks["viewportHeartbeatRemainsResponsive"] is True
     assert checks["authoritativePhysicsAdvancesOnClockNotCaptainCompletion"] is True
     assert checks["captainResponsesCannotRetroactivelyMutatePhysics"] is True
-    assert checks["gradientPredictionSupportsHalfToTwoSecondViewportSmoothing"] is True
+    assert checks["gradientPredictionSupportsOneToFiveSecondViewportSmoothing"] is True
     assert checks["viewportCorrectionAtAuthoritativeTicksIsSmall"] is True
 
     metrics = result["metrics"]
@@ -60,9 +60,9 @@ def test_async_game_loop_smoke_keeps_physics_and_viewport_independent_of_captain
     assert calls[2]["missedControlBoundariesSeconds"] == [0.05, 0.1]
 
 
-def test_async_game_loop_defaults_cover_half_to_two_second_game_control_horizon() -> None:
+def test_async_game_loop_defaults_cover_one_to_five_second_game_tactical_horizon() -> None:
     source = SMOKE.read_text(encoding="utf-8")
-    assert 'default="0.5,1,2"' in source
+    assert 'default="1,2,3,4,5"' in source
     assert "current action remains active until a future control boundary publishes a ready result" in source
     assert "never rewrite past physics" in source
     assert "position, velocity, and local acceleration gradient" in source

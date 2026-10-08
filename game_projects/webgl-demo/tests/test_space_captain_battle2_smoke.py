@@ -68,6 +68,22 @@ def test_dimension_tie_prefers_current_commitment():
     assert choice == "withdraw"
 
 
+def test_snapshot_ship_speed_is_scalar_magnitude_with_explicit_velocity_components():
+    module = load_module()
+    battle = module.Battle(args())
+    try:
+        ship = battle.ships["ship.alpha"]
+        ship.v_mps = 3.0
+        ship.vy_mps = 4.0
+        state = battle.snapshot_ships()["ship.alpha"]
+        assert state["vxMps"] == 3.0
+        assert state["vyMps"] == 4.0
+        assert state["speedMps"] == 5.0
+        assert state["vMps"] == 5.0
+    finally:
+        battle.close()
+
+
 def test_impact_policy_ready_times_keep_reconsideration_separate_from_impact():
     module = load_module()
     assert module.policy_ready_time("rethink-on-impact", 10.0, 10.25) == 10.25

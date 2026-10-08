@@ -48,6 +48,9 @@ class ComposeNanoJevController:
         project_name: str,
         backend_port: int,
         start_timeout_seconds: float,
+        health_poll_seconds: float = 0.5,
+        health_request_timeout_seconds: float = 1.5,
+        stop_timeout_seconds: float = 10.0,
         docker_command: str = "docker",
         image_name: str = "main-computer/nanojev:managed-v2",
         checkpoint_selector: str = "champion",
@@ -57,7 +60,10 @@ class ComposeNanoJevController:
         self.compose_file = compose_file
         self.project_name = project_name
         self.backend_port = int(backend_port)
-        self.start_timeout_seconds = float(start_timeout_seconds)
+        self.start_timeout_seconds = max(0.1, float(start_timeout_seconds))
+        self.health_poll_seconds = max(0.05, float(health_poll_seconds))
+        self.health_request_timeout_seconds = max(0.05, float(health_request_timeout_seconds))
+        self.stop_timeout_seconds = max(0.0, float(stop_timeout_seconds))
         self.docker_command = docker_command
         self.image_name = image_name
         self.checkpoint_selector = str(checkpoint_selector).strip() or "champion"
@@ -112,16 +118,17 @@ class ComposeNanoJevController:
 
     def health(self) -> bool:
         try:
-            payload = _http_json(self.backend_url + "/api/health", timeout=1.5)
+            payload = _http_json(
+                self.backend_url + "/api/health",
+                timeout=self.health_request_timeout_seconds,
+            )
         except Exception:
             return False
         if not isinstance(payload, dict):
             return False
-        base_ready = (
-            bool(payload.get("ready"))
-            and bool(payload.get("model_loaded_once"))
-            and int(payload.get("provider_calls", -1)) == 0
-        )
+        # provider_calls is observability, not readiness. A backend must remain healthy
+        # after it has served one or many inference requests.
+        base_ready = bool(payload.get("ready")) and bool(payload.get("model_loaded_once"))
         if not base_ready:
             return False
         if self.checkpoint_selector == "unified-games-v1":
@@ -144,11 +151,12 @@ class ComposeNanoJevController:
         while time.monotonic() < deadline:
             if self.health():
                 return
-            time.sleep(0.5)
+            time.sleep(self.health_poll_seconds)
         raise TimeoutError(f"NanoJev did not become healthy within {self.start_timeout_seconds:.0f} seconds")
 
     def stop(self) -> None:
-        result = self._compose("down", "--remove-orphans", check=False)
+        stop_timeout = str(max(0, int(round(self.stop_timeout_seconds))))
+        result = self._compose("down", "--remove-orphans", "--timeout", stop_timeout, check=False)
         if result.returncode != 0:
             raise RuntimeError(f"NanoJev compose down failed ({result.returncode}): {result.stdout.strip()}")
 
@@ -165,41 +173,64 @@ class NanoJevLifecycle:
         self.idle_seconds = max(0.0, float(idle_seconds))
         self.clock = clock
         self.lock = threading.RLock()
+        # Serialize blocking Docker start/stop transitions without holding the
+        # state lock.  /control/status must remain responsive while Compose is
+        # starting or stopping the backend.
+        self.transition_lock = threading.Lock()
         self.pinned = False
         self.dirty = False
         self.active_requests = 0
         self.last_activity = self.clock()
         self.running = controller.health()
         self.last_error = ""
+        self.phase = "ready" if self.running else "idle"
+        self.shutdown_complete = False
 
     def _refresh_running(self) -> bool:
+        # A transition owns the authoritative state while Docker is changing it.
+        # Do not perform a second blocking backend probe or overwrite the visible
+        # starting/stopping phase from a concurrent /control/status request.
+        with self.lock:
+            if self.phase in {"starting", "stopping"}:
+                return self.running
         running = self.controller.health()
         with self.lock:
+            if self.phase in {"starting", "stopping"}:
+                return self.running
             self.running = running
+            self.phase = "ready" if running else ("error" if self.last_error else "idle")
             if not running:
                 self.dirty = False
                 self.active_requests = 0
         return running
 
     def ensure_on(self, *, pin: bool = False) -> None:
-        with self.lock:
-            if pin:
-                self.pinned = True
-            self.dirty = False
-            self.last_activity = self.clock()
-            already_running = self.running
-        if already_running and self.controller.health():
-            return
-        with self.lock:
+        with self.transition_lock:
+            with self.lock:
+                if pin:
+                    self.pinned = True
+                self.dirty = False
+                self.last_activity = self.clock()
+                already_running = self.running
+            if already_running and self.controller.health():
+                return
+            with self.lock:
+                self.phase = "starting"
+                self.last_error = ""
             try:
                 self.controller.start()
-                self.running = True
-                self.last_error = ""
-                self.last_activity = self.clock()
             except Exception as exc:
-                self.running = False
-                self.last_error = str(exc)
+                with self.lock:
+                    self.running = False
+                    self.phase = "error"
+                    self.last_error = str(exc)
                 raise
+            else:
+                with self.lock:
+                    self.running = True
+                    self.phase = "ready"
+                    self.last_error = ""
+                    self.last_activity = self.clock()
 
     def turn_on(self) -> dict[str, object]:
         self.ensure_on(pin=True)
@@ -249,28 +280,65 @@ class NanoJevLifecycle:
             )
         if not should_stop:
             return False
-        with self.lock:
+
+        # Serialize the backend transition, then re-check the idle predicate: a
+        # request may have arrived while we were waiting for another transition.
+        with self.transition_lock:
+            now = self.clock()
+            with self.lock:
+                should_stop = (
+                    self.running
+                    and self.dirty
+                    and not self.pinned
+                    and self.active_requests == 0
+                    and (now - self.last_activity) >= self.idle_seconds
+                )
+                if not should_stop:
+                    return False
+                self.phase = "stopping"
+                self.last_error = ""
             try:
                 self.controller.stop()
-                self.running = False
-                self.dirty = False
-                self.last_error = ""
-                return True
             except Exception as exc:
-                self.last_error = str(exc)
+                with self.lock:
+                    self.phase = "error"
+                    self.last_error = str(exc)
                 return False
+            else:
+                with self.lock:
+                    self.running = False
+                    self.dirty = False
+                    self.phase = "idle"
+                    self.last_error = ""
+                return True
 
     def shutdown_now(self) -> None:
-        with self.lock:
-            self.pinned = False
-            self.dirty = False
-        try:
-            if self.running or self.controller.health():
-                self.controller.stop()
-        finally:
+        # The manager owns the Compose project, not merely a healthy backend. Always
+        # issue compose down so an unhealthy, half-started, or post-request container
+        # cannot survive manager teardown. Keep the state lock free while Docker is
+        # stopping so control/status remains observable through the transition.
+        with self.transition_lock:
             with self.lock:
-                self.running = False
-                self.active_requests = 0
+                if self.shutdown_complete:
+                    return
+                self.pinned = False
+                self.dirty = False
+                self.phase = "stopping"
+                self.last_error = ""
+            try:
+                self.controller.stop()
+            except Exception as exc:
+                with self.lock:
+                    self.phase = "error"
+                    self.last_error = str(exc)
+                raise
+            else:
+                with self.lock:
+                    self.running = False
+                    self.active_requests = 0
+                    self.phase = "idle"
+                    self.last_error = ""
+                    self.shutdown_complete = True
 
     def status(self, *, refresh: bool = True) -> dict[str, object]:
         if refresh:
@@ -284,7 +352,9 @@ class NanoJevLifecycle:
             return {
                 "ok": True,
                 "mode": "lazy-managed",
+                "phase": self.phase,
                 "running": self.running,
+                "backend_ready": self.running and self.phase == "ready",
                 "pinned": self.pinned,
                 "dirty": self.dirty,
                 "active_requests": self.active_requests,
@@ -300,9 +370,16 @@ class NanoJevLifecycle:
 class NanoJevManagerServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], lifecycle: NanoJevLifecycle) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        lifecycle: NanoJevLifecycle,
+        *,
+        proxy_timeout_seconds: float,
+    ) -> None:
         super().__init__(address, NanoJevManagerHandler)
         self.lifecycle = lifecycle
+        self.proxy_timeout_seconds = max(0.1, float(proxy_timeout_seconds))
 
 
 class NanoJevManagerHandler(BaseHTTPRequestHandler):
@@ -319,7 +396,12 @@ class NanoJevManagerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # Control/status clients are intentionally allowed to use short timeouts.
+            # A client disappearing after headers is not a manager failure.
+            self.close_connection = True
 
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -340,7 +422,7 @@ class NanoJevManagerHandler(BaseHTTPRequestHandler):
                     continue
                 request.add_header(name, value)
             try:
-                with urllib.request.urlopen(request, timeout=300) as response:
+                with urllib.request.urlopen(request, timeout=self.server.proxy_timeout_seconds) as response:
                     payload = response.read()
                     status = int(response.status)
                     headers = list(response.headers.items())
@@ -389,6 +471,8 @@ class NanoJevManagerHandler(BaseHTTPRequestHandler):
             try:
                 self.server.lifecycle.shutdown_now()
                 self._send_json(200, {"ok": True, "state": "shutdown"})
+            except Exception as exc:
+                self._send_json(503, {"ok": False, "error": str(exc)})
             finally:
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
@@ -422,6 +506,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend-port", type=int, default=9766)
     parser.add_argument("--idle-seconds", type=float, default=300.0)
     parser.add_argument("--start-timeout-seconds", type=float, default=900.0)
+    parser.add_argument("--health-poll-seconds", type=float, default=0.5)
+    parser.add_argument("--health-request-timeout-seconds", type=float, default=1.5)
+    parser.add_argument("--stop-timeout-seconds", type=float, default=10.0)
+    parser.add_argument("--proxy-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--docker-command", default="docker")
     parser.add_argument("--image-name", default="main-computer/nanojev:managed-v2")
     parser.add_argument(
@@ -447,24 +535,37 @@ def main() -> int:
         project_name=args.project_name,
         backend_port=args.backend_port,
         start_timeout_seconds=args.start_timeout_seconds,
+        health_poll_seconds=args.health_poll_seconds,
+        health_request_timeout_seconds=args.health_request_timeout_seconds,
+        stop_timeout_seconds=args.stop_timeout_seconds,
         docker_command=args.docker_command,
         image_name=args.image_name,
         checkpoint_selector=args.checkpoint,
         hf_repo=args.hf_repo,
     )
     lifecycle = NanoJevLifecycle(controller, idle_seconds=args.idle_seconds)
-    server = NanoJevManagerServer((args.listen_host, args.listen_port), lifecycle)
+    server = NanoJevManagerServer(
+        (args.listen_host, args.listen_port),
+        lifecycle,
+        proxy_timeout_seconds=args.proxy_timeout_seconds,
+    )
     _start_sweeper(server, max(0.1, float(args.sweep_interval_seconds)))
     print(
         f"NanoJev lazy manager listening at http://{args.listen_host}:{args.listen_port}; "
         f"backend={controller.backend_url}; idle={args.idle_seconds:g}s; "
+        f"start_timeout={args.start_timeout_seconds:g}s; "
+        f"health_request_timeout={args.health_request_timeout_seconds:g}s; "
+        f"stop_timeout={args.stop_timeout_seconds:g}s; "
         f"checkpoint={controller.checkpoint_selector}; repo={controller.hf_repo}",
         flush=True,
     )
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
-        server.server_close()
+        try:
+            lifecycle.shutdown_now()
+        finally:
+            server.server_close()
     return 0
 
 

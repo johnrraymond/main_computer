@@ -15,6 +15,7 @@ from main_computer.strategic_ai_definition import validate_strategic_ai_definiti
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 RUNTIME_PATH = (
     GAME_ROOT
     / "web"
@@ -46,6 +47,11 @@ ACTION_POLICIES = {
     },
 }
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 def _load_project() -> dict[str, Any]:
     return json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
@@ -198,11 +204,9 @@ def _runtime_report() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def test_runtime_is_loaded_before_scene_viewer() -> None:
-    html = APPLICATIONS_HTML.read_text(encoding="utf-8")
-    strategic = html.index(
-        "<!-- @include applications/scripts/strategic-ai-runtime.js -->"
-    )
-    scene = html.index("<!-- @include applications/scripts/scene-viewer.js -->")
+    runtime = _game_bundle("runtime-before-routing")
+    strategic = runtime.index("web/scripts/strategic-ai-runtime.js")
+    scene = runtime.index("web/scripts/scene-viewer.js")
     assert strategic < scene
 
 

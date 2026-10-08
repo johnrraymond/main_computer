@@ -15,6 +15,7 @@ from main_computer.strategic_ai_definition import validate_strategic_ai_definiti
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 COGNITION_RUNTIME = (
     GAME_ROOT / "web" / "scripts"
     / "strategic-ai-runtime.js"
@@ -39,6 +40,11 @@ OFFICIAL = "actor.vela.gate-official"
 ORGANIZER = "actor.vela.rescue-organizer"
 SURVIVOR = "actor.vela.survivor"
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 def _definition() -> dict[str, Any]:
     project = json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
@@ -283,20 +289,12 @@ def social_report() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def test_social_runtime_loads_before_coordinator_and_scene() -> None:
-    html = APPLICATIONS_HTML.read_text(encoding="utf-8")
-    cognition = html.index(
-        "<!-- @include applications/scripts/strategic-ai-runtime.js -->"
-    )
-    action = html.index(
-        "<!-- @include applications/scripts/strategic-ai-action-runtime.js -->"
-    )
-    social = html.index(
-        "<!-- @include applications/scripts/strategic-ai-social-runtime.js -->"
-    )
-    coordinator = html.index(
-        "<!-- @include applications/scripts/strategic-ai-coordinator.js -->"
-    )
-    scene = html.index("<!-- @include applications/scripts/scene-viewer.js -->")
+    runtime = _game_bundle("runtime-before-routing")
+    cognition = runtime.index("web/scripts/strategic-ai-runtime.js")
+    action = runtime.index("web/scripts/strategic-ai-action-runtime.js")
+    social = runtime.index("web/scripts/strategic-ai-social-runtime.js")
+    coordinator = runtime.index("web/scripts/strategic-ai-coordinator.js")
+    scene = runtime.index("web/scripts/scene-viewer.js")
     assert cognition < action < social < coordinator < scene
 
 

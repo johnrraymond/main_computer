@@ -398,3 +398,49 @@ def test_add_auto_rebuilds_pristine_empty_baseline_from_reset_backup(tmp_path: P
     assert document["final_topology"]["genesis_sha256"] == genesis
     assert document["source_previous_topology_evidence"]["path"] == str(source_path)
     assert args.baseline_evidence_sha256 == harness.canonical_sha256_file(baseline)
+
+
+def test_add_node_auto_selects_newer_native_mint_topology_evidence(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "mother" / "evidence" / "deployment-node-add-post-admission-observe" / "20261006T010000Z-old.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.add_node_post_admission_topology_evidence.v1",
+                "completed_at": "2026-10-06T01:00:00Z",
+                "final_topology": {"nodes": ["mainneta-super1"], "validator_set": ["0x1"]},
+            }
+        ).encode(),
+    )
+    native_path, native_sha = _write(
+        tmp_path / "mother" / "evidence" / "native-mint-topology" / "20261006T020000Z-native.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.native_mint_topology_evidence.v1",
+                "status": "pass",
+                "completed_at": "2026-10-06T02:00:00Z",
+                "current_topology": {"nodes": ["mainneta-super1"], "validator_set": ["0x1"]},
+            }
+        ).encode(),
+    )
+    args = _args(tmp_path, operation="add-node", node="mainnetc-super1", mode="soft")
+    harness.resolve_baseline_arguments(args)
+    assert args.baseline_evidence == native_path
+    assert args.baseline_evidence_sha256 == native_sha
+
+
+def test_remove_node_accepts_native_mint_topology_as_current_baseline(tmp_path: Path) -> None:
+    native_path, native_sha = _write(
+        tmp_path / "mother" / "evidence" / "native-mint-topology" / "20261006T020000Z-native.json",
+        json.dumps(
+            {
+                "kind": "main_computer.mother.native_mint_topology_evidence.v1",
+                "status": "pass",
+                "completed_at": "2026-10-06T02:00:00Z",
+                "current_topology": {"nodes": ["mainneta-super1"], "validator_set": ["0x1"]},
+            }
+        ).encode(),
+    )
+    args = _args(tmp_path, operation="remove-node", node="mainneta-super1", mode="reactivate")
+    harness.resolve_baseline_arguments(args)
+    assert args.baseline_evidence == native_path
+    assert args.baseline_evidence_sha256 == native_sha

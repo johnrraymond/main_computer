@@ -16,6 +16,7 @@ from main_computer.gameplay_plugin_catalog_export import write_gameplay_plugin_c
 from main_computer.gameplay_plugin_materializer import materialize_gameplay_plugin_generated_content
 from main_computer.gameplay_plugin_project_catalog import apply_gameplay_plugin_project_catalog, read_gameplay_plugin_project_catalog
 from main_computer.gameplay_plugin_registry import discover_gameplay_plugin_registry
+from main_computer.tactical_ai_service import TacticalAIError, TacticalAIService
 
 
 _JS_OPENING_SHUTTLE_PACK_ID = "pack.opening-shuttle.elite-boarders"
@@ -191,6 +192,44 @@ def _mounted_editor_edit_request(source: str) -> bool:
 
 
 class ViewportGameRoutesMixin:
+    def _tactical_ai_service(self) -> TacticalAIService:
+        service = getattr(self.server, "tactical_ai_service", None)
+        if service is None:
+            service = TacticalAIService(Path.cwd())
+            self.server.tactical_ai_service = service
+        return service
+
+    def _handle_tactical_ai_status(self) -> None:
+        try:
+            self._send_json(self._tactical_ai_service().status())
+        except Exception as exc:
+            self.server.signal("api-tactical-ai-error", route=self.path, error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_tactical_ai_post(self) -> None:
+        try:
+            body = self._read_json()
+            route = self.path
+            service = self._tactical_ai_service()
+            if route == "/api/applications/game/tactical-ai/prepare":
+                payload = service.prepare(body)
+            elif route == "/api/applications/game/tactical-ai/battle/start":
+                payload = service.start_battle(body)
+            elif route == "/api/applications/game/tactical-ai/battle/stop":
+                payload = service.stop_battle()
+            elif route == "/api/applications/game/tactical-ai/reset":
+                payload = service.reset()
+            else:
+                raise ValueError("Unknown Tactical AI route.")
+            self.server.signal("api-tactical-ai", route=route, phase=payload.get("phase"))
+            self._send_json(payload)
+        except TacticalAIError as exc:
+            self.server.signal("api-tactical-ai-error", route=self.path, error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.CONFLICT)
+        except Exception as exc:
+            self.server.signal("api-tactical-ai-error", route=self.path, error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_game_editor_post(self) -> None:
         try:
             body = self._read_json()

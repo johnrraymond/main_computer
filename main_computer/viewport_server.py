@@ -233,6 +233,12 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
         server.signal("server-interrupt")
         print("\nViewport stopped.")
     finally:
+        tactical_ai_service = getattr(server, "tactical_ai_service", None)
+        if tactical_ai_service is not None:
+            try:
+                tactical_ai_service.close()
+            except Exception as exc:
+                server.signal("tactical-ai-close-error", error=exc)
         server.worker_runtime_supervisor.stop()
         if _viewport_pid_path(control_root) == viewport_pid_file:
             _clear_viewport_pid_file(viewport_pid_file)

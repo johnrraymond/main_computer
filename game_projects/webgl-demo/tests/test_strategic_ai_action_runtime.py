@@ -15,6 +15,7 @@ from main_computer.strategic_ai_definition import validate_strategic_ai_definiti
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 COGNITION_RUNTIME = (
     GAME_ROOT / "web" / "scripts"
     / "strategic-ai-runtime.js"
@@ -27,6 +28,11 @@ APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
 PROJECT_PATH = GAME_ROOT / "project.json"
 SCHEMA_PATH = GAME_ROOT.parent / "schema" / "strategic-ai.v1.schema.json"
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 def _load_definition() -> dict[str, Any]:
     project = json.loads(PROJECT_PATH.read_text(encoding="utf-8"))
@@ -377,14 +383,10 @@ def action_report() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def test_action_runtime_is_loaded_between_cognition_and_scene_viewer() -> None:
-    html = APPLICATIONS_HTML.read_text(encoding="utf-8")
-    cognition = html.index(
-        "<!-- @include applications/scripts/strategic-ai-runtime.js -->"
-    )
-    action = html.index(
-        "<!-- @include applications/scripts/strategic-ai-action-runtime.js -->"
-    )
-    scene = html.index("<!-- @include applications/scripts/scene-viewer.js -->")
+    runtime = _game_bundle("runtime-before-routing")
+    cognition = runtime.index("web/scripts/strategic-ai-runtime.js")
+    action = runtime.index("web/scripts/strategic-ai-action-runtime.js")
+    scene = runtime.index("web/scripts/scene-viewer.js")
     assert cognition < action < scene
 
 

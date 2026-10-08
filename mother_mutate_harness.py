@@ -47,7 +47,6 @@ from tools.mother.common.static_node_precleanup_gate import build_static_node_pr
 
 
 COMMON_STEPS = [
-    "preflight-paranoia-validator-set",
     "detect-topology",
     "preflight-paranoia",
     "preflight-paranoia-snap",
@@ -94,8 +93,8 @@ REPLICA_ADMISSION_STEPS = [
 ]
 
 REMOVE_STEPS = [
-    "preflight-paranoia-validator-set",
     "detect-topology",
+    "preflight-paranoia-validator-set",
     "preflight-paranoia",
     "preflight-paranoia2",
     "preflight-rpc-paranoia",
@@ -408,6 +407,8 @@ EMPTY_RECTIFICATION_EVIDENCE_KIND = "main_computer.mother.live_topology_empty_re
 EMPTY_RECTIFICATION_EVIDENCE_DIRECTORY = "deployment-live-topology-empty-rectification"
 LIVE_CURRENT_TOPOLOGY_EVIDENCE_KIND = "main_computer.mother.live_current_topology_evidence.v1"
 LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY = "deployment-live-current-topology"
+NATIVE_MINT_TOPOLOGY_EVIDENCE_KIND = "main_computer.mother.native_mint_topology_evidence.v1"
+NATIVE_MINT_TOPOLOGY_EVIDENCE_DIRECTORY = "native-mint-topology"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -763,6 +764,7 @@ _REMOVE_AUTO_BASELINE_KIND_BY_DIRECTORY = {
     "deployment-node-remove-finalize": REMOVE_FINALIZE_EVIDENCE_KIND,
     "deployment-node-add-single-node-chain-and-hub-proof": "main_computer.mother.deployment_node_add_single_node_chain_and_hub_proof_evidence.v1",
     LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY: LIVE_CURRENT_TOPOLOGY_EVIDENCE_KIND,
+    NATIVE_MINT_TOPOLOGY_EVIDENCE_DIRECTORY: NATIVE_MINT_TOPOLOGY_EVIDENCE_KIND,
 }
 
 
@@ -921,6 +923,7 @@ def auto_baseline_patterns(args: argparse.Namespace) -> tuple[str, list[Path]]:
                 evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
                 evidence_root / LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY / "*.json",
                 evidence_root / EMPTY_RECTIFICATION_EVIDENCE_DIRECTORY / "*.json",
+                evidence_root / NATIVE_MINT_TOPOLOGY_EVIDENCE_DIRECTORY / "*.json",
             ],
         )
 
@@ -931,6 +934,7 @@ def auto_baseline_patterns(args: argparse.Namespace) -> tuple[str, list[Path]]:
             evidence_root / "deployment-node-remove-finalize" / "*.json",
             evidence_root / "deployment-node-add-single-node-chain-and-hub-proof" / "*.json",
             evidence_root / LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY / "*.json",
+            evidence_root / NATIVE_MINT_TOPOLOGY_EVIDENCE_DIRECTORY / "*.json",
         ],
     )
 
@@ -1341,6 +1345,7 @@ class Harness:
         return obj
 
     def step_detect_topology(self) -> None:
+        self.state["verified_empty_add_topology"] = False
         if self.args.skip_staleness_detection:
             return
         require("--baseline-evidence", self.state["baseline_evidence"])
@@ -1500,6 +1505,27 @@ class Harness:
                 print("\nNo non-empty live node set was established, so no live-subset seal command is safe to suggest.")
             raise SystemExit(3)
 
+        # The detector has verified the acknowledged baseline against live Coolify.
+        # Only that verified empty first-node case can omit the live QBFT gate.
+        evidence = obj.get("topology_evidence")
+        self.state["verified_empty_add_topology"] = (
+            self.args.operation == "add-node"
+            and self.state.get("internal_add_prep_mode") == "initial"
+            and obj.get("status") == "pass"
+            and obj.get("network") == self.args.network
+            and topology_current
+            and isinstance(evidence, dict)
+            and evidence.get("sha256") == self.state["baseline_evidence_sha256"]
+            and obj.get("expected_nodes") == []
+            and obj.get("expected_validator_set") == []
+            and obj.get("expected_services") == {}
+            and obj.get("present_expected_nodes") == []
+            and obj.get("unknown_expected_nodes") == []
+            and obj.get("observed_live_node_hints") == []
+            and obj.get("observed_live_primary_nodes") == []
+            and obj.get("unexpected_live_nodes") == []
+        )
+
     def step_reserve_identity(self) -> None:
         obj = self.run(
             "reserve-identity",
@@ -1541,6 +1567,16 @@ class Harness:
             )
 
     def step_preflight_paranoia_validator_set(self) -> None:
+        # Admission preparation must not depend on public RPC reachability.
+        # Keep this QBFT validator-set gate on the remove-node path only.
+        if self.args.operation == "add-node":
+            self.state["preflight_paranoia_validator_set_status"] = "not-required"
+            self.state["preflight_paranoia_validator_set_summary"] = {
+                "clean": True,
+                "reason": "add-node does not require live QBFT validator-set RPC preflight",
+            }
+            print("\n=== preflight-paranoia-validator-set not required for add-node ===")
+            return
         obj = self.run(
             "preflight-paranoia-validator-set",
             self.preflight_paranoia_validator_set_cmd(),
@@ -2474,15 +2510,23 @@ class Harness:
         raise SystemExit(f"unsupported add-node next_phase after identity: {next_phase!r}")
 
     def ensure_validator_set_preflight_for_resume(self) -> None:
-        """Prevent --start-at from bypassing the canonical-vs-live validator gate."""
+        """Detect topology on resume; require live validator RPC for removal only."""
+
+        if self.args.operation == "add-node":
+            if self.args.start_at != "detect-topology":
+                self.step_detect_topology()
+            return
 
         gate = "preflight-paranoia-validator-set"
-        route_steps = REMOVE_STEPS if self.args.operation == "remove-node" else COMMON_STEPS
+        route_steps = REMOVE_STEPS
         if self.args.start_at in route_steps:
             start_index = route_steps.index(self.args.start_at)
             gate_index = route_steps.index(gate)
             if start_index <= gate_index:
+                if start_index > route_steps.index("detect-topology"):
+                    self.step_detect_topology()
                 return
+        self.step_detect_topology()
         self.step_preflight_paranoia_validator_set()
 
     def ensure_snap_preflight_for_resume(self) -> None:
@@ -2638,5 +2682,43 @@ def main() -> None:
     Harness(args).run_all()
 
 
+def _native_mint_cleanup_entry(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="mother_mutate_harness.py native-mint --cleanup",
+        description="Delete leftover ephemeral Mother native-mint helper services from enabled Coolify controllers.",
+    )
+    parser.add_argument("--cleanup", action="store_true", required=True)
+    parser.add_argument("--network", default="mainnet")
+    parser.add_argument("--runtime-state-root", default=str(Path(__file__).resolve().parent / "runtime" / "state"))
+    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    from tools.native_mint_control import main as native_mint_control_main
+
+    control_argv = [
+        "--runtime-state-root",
+        args.runtime_state_root,
+        "cleanup",
+        args.network,
+        "--timeout",
+        str(args.timeout),
+    ]
+    if args.dry_run:
+        control_argv.append("--dry-run")
+    return native_mint_control_main(control_argv)
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "native-mint" and "--cleanup" in sys.argv[2:]:
+        raise SystemExit(_native_mint_cleanup_entry(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] in {
+        "native-mint",
+        "native-mint-open",
+        "native-mint-close",
+        "native-mint-status",
+    }:
+        from native_mint_mutate_harness import main as native_mint_main
+
+        raise SystemExit(native_mint_main(sys.argv[1:]))
     main()

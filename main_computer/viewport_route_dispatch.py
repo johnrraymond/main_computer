@@ -2045,6 +2045,9 @@ def dispatch_get(self) -> None:
     if route_path == "/api/applications/worker/settings":
         self._handle_worker_settings_load()
         return
+    if route_path == "/api/applications/game/tactical-ai/status":
+        self._handle_tactical_ai_status()
+        return
     if urlsplit(self.path).path == "/api/applications/game-editor/asset/read":
         self._handle_game_asset_read()
         return
@@ -2534,6 +2537,9 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/spreadsheet/import-chat-variables":
         self._handle_spreadsheet_import_chat_variables()
+        return
+    if self.path.startswith("/api/applications/game/tactical-ai/"):
+        self._handle_tactical_ai_post()
         return
     if self.path.startswith("/api/applications/game-editor/"):
         self._handle_game_editor_post()

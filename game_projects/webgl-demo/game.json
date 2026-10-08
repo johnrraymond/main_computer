@@ -8,6 +8,7 @@
       "styles": [
         "web/styles/game-editor.css",
         "web/styles/strategic-ai-debug.css",
+        "web/styles/tactical-ai-debug.css",
         "web/styles/strategic-ai-vela-interaction.css",
         "web/styles/strategic-ai-solace-interaction.css",
         "web/styles/strategic-ai-travel-integration.css",
@@ -41,6 +42,7 @@
         "web/scripts/strategic-ai-session.js",
         "web/scripts/strategic-ai-travel-integration.js",
         "web/scripts/strategic-ai-debug-panel.js",
+        "web/scripts/tactical-ai-debug-panel.js",
         "web/scripts/strategic-ai-vela-interaction.js",
         "web/scripts/strategic-ai-solace-interaction.js",
         "web/scripts/strategic-ai-panel-layout.js",

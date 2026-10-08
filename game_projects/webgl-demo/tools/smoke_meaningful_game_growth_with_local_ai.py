@@ -21,7 +21,7 @@ required.  Raw model text and provider traces are retained beside the workflow.
 
 Typical live run from the repository root:
 
-    python scripts/smoke_meaningful_game_growth_with_local_ai.py \\
+    python game_projects/webgl-demo/tools/smoke_meaningful_game_growth_with_local_ai.py \\
       --project webgl-demo \\
       --workflow-dir diagnostics_output/spy_hunt_growth_smoke \\
       --model qwen3.8:27b \\
@@ -154,7 +154,7 @@ def _utc_run_id() -> str:
 
 
 def _repo_root_from_script() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[3]
 
 
 def _single_json_fence(text: str) -> str | None:

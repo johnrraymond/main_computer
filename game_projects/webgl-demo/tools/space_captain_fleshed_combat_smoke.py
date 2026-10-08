@@ -253,6 +253,8 @@ class LiveActionDriver:
         if existing is not None:
             return False
         payload, meta = self.request_for(smoke, ship, trigger)
+        target_publish_seconds = smoke.time + smoke.live_action_interval_seconds
+        meta["targetPublishSimulationSeconds"] = target_publish_seconds
         self.thought_meta[ship.id] = meta
         self.thoughts[ship.id] = self.executor.submit(self._provider_call, payload, meta)
         self.launch_count += 1
@@ -262,6 +264,7 @@ class LiveActionDriver:
             ship=ship.id,
             trigger=trigger,
             questionCount=meta["questionCount"],
+            targetPublishSimulationSeconds=target_publish_seconds,
         )
         return True
 
@@ -374,7 +377,12 @@ class LiveActionDriver:
             "clientRequestId": result.get("clientRequestId"),
             "clientSendUnixNs": result.get("clientSendUnixNs"),
             "launchSimulationSeconds": result["launchSimulationSeconds"],
+            "targetPublishSimulationSeconds": result.get("targetPublishSimulationSeconds"),
             "publishSimulationSeconds": smoke.time,
+            "publicationSlotLatenessSeconds": max(
+                0.0,
+                smoke.time - float(result.get("targetPublishSimulationSeconds") or smoke.time),
+            ),
             "wallLatencyMs": wall_ms,
             "modelLatencyMs": model_ms,
             "amortizedQuestionLatencyMs": float(response.get("amortizedQuestionLatencyMs") or 0.0),
@@ -403,7 +411,9 @@ class LiveActionDriver:
                 "captainId": ship.id,
                 "trigger": result["trigger"],
                 "launchSimulationSeconds": result["launchSimulationSeconds"],
+                "targetPublishSimulationSeconds": result.get("targetPublishSimulationSeconds"),
                 "publishSimulationSeconds": smoke.time,
+                "publicationSlotLatenessSeconds": diagnostics["publicationSlotLatenessSeconds"],
                 "request": request_snapshot,
                 "observationAtLaunch": dict((request_snapshot.get("battle") or {}).get("observation") or {}),
                 "candidates": [dict(candidate) for candidate in (request_snapshot.get("tacticalControls") or [])],
@@ -553,7 +563,10 @@ class CombatSmoke:
         self.terminal_time: float | None = None
         self.live_action_driver = live_action_driver
         self.live_action_interval_seconds = float(live_action_interval_seconds)
-        self.live_next_thought_at: dict[str, float] = {"alpha": 0.0, "beta": 0.0}
+        # Tactical cognition is anchored to an immutable simulation-time grid.
+        # Inference may finish early and wait for the next slot, or miss a slot;
+        # it may never shift future tactical boundaries.
+        self.live_next_tactical_boundary_at: dict[str, float] = {"alpha": 0.0, "beta": 0.0}
         self.live_current_actions: dict[str, dict[str, str]] = {}
         self.live_start_wall: float | None = None
         self.ships = {
@@ -1188,16 +1201,24 @@ class CombatSmoke:
             for ship in self.ships.values():
                 if not ship.alive:
                     continue
-                completed = self.live_action_driver.harvest_completed(self, ship)
-                if completed is not None:
-                    self.live_current_actions[ship.id] = completed
-                    self.live_next_thought_at[ship.id] = self.time + self.live_action_interval_seconds
-                if (
-                    not self.live_action_driver.thought_in_flight(ship.id)
-                    and self.time + EPS >= self.live_next_thought_at[ship.id]
-                ):
-                    trigger = "initial" if ship.id not in self.live_current_actions else "periodic"
-                    self.live_action_driver.launch_thought(self, ship, trigger)
+                next_boundary = self.live_next_tactical_boundary_at[ship.id]
+                if self.time + EPS >= next_boundary:
+                    # Advance the boundary cursor from the grid itself, never from
+                    # completion/publication time.  A late result may skip one or
+                    # more slots, but it cannot cause tactical-clock drift.
+                    while self.time + EPS >= self.live_next_tactical_boundary_at[ship.id]:
+                        self.live_next_tactical_boundary_at[ship.id] += self.live_action_interval_seconds
+
+                    # Results that finish before a boundary wait here.  Results that
+                    # miss their intended boundary remain in flight and may publish
+                    # only on a later grid boundary; they are never applied mid-slice.
+                    completed = self.live_action_driver.harvest_completed(self, ship)
+                    if completed is not None:
+                        self.live_current_actions[ship.id] = completed
+
+                    if not self.live_action_driver.thought_in_flight(ship.id):
+                        trigger = "initial" if ship.id not in self.live_current_actions else "periodic"
+                        self.live_action_driver.launch_thought(self, ship, trigger)
         for ship in self.ships.values():
             if ship.alive:
                 if self.live_action_driver is None:
@@ -1541,7 +1562,7 @@ def main() -> int:
         ),
     )
     parser.add_argument("--live-action", action="store_true", help="Use the managed NanoJev CLEF service to choose combat actions.")
-    parser.add_argument("--live-action-interval-seconds", type=float, default=2.0, help="Minimum simulated seconds after a published CLEF action before that captain may launch its next asynchronous thought.")
+    parser.add_argument("--live-action-interval-seconds", type=float, default=5.0, help="Fixed tactical-slice seconds for live captains; launches/publications stay anchored to the simulation-time grid 0,N,2N,... regardless of inference latency (game default: 5).")
     parser.add_argument("--live-action-backend-url", default="", help="Reuse an already-running Space Captain protocol adapter instead of launching one.")
     parser.add_argument("--nanojev-service-url", default="http://127.0.0.1:9765", help="Managed NanoJev lifecycle-service URL used by the Space Captain protocol adapter.")
     parser.add_argument("--run-dir", default=str(DEFAULT_LIVE_RUN))

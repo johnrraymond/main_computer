@@ -1,15 +1,21 @@
 
-body:not([data-active-app="webgl"]) .strategic-ai-debug-toggle,
+body:not([data-active-app="webgl"]) .ai-debug-launchers,
 body:not([data-active-app="webgl"]) .strategic-ai-debug-panel {
   display: none !important;
 }
 
-.strategic-ai-debug-toggle {
+.ai-debug-launchers {
   position: absolute;
   top: 12px;
   left: 12px;
   right: auto;
   z-index: 40;
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+}
+
+.strategic-ai-debug-toggle {
   border: 1px solid rgba(103, 232, 249, 0.55);
   border-radius: 999px;
   padding: 8px 12px;

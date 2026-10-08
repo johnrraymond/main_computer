@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 SCRIPT_ROOT = GAME_ROOT / "web" / "scripts"
 SESSION_PATH = SCRIPT_ROOT / "strategic-ai-session.js"
 PANEL_PATH = SCRIPT_ROOT / "strategic-ai-debug-panel.js"
@@ -32,6 +33,11 @@ RUNTIME_NAMES = (
     "strategic-ai-session.js",
 )
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 class StrategicAILiveSessionTests(unittest.TestCase):
     def test_live_session_owns_state_across_rerender_reload_and_snapshot_roundtrip(self) -> None:
@@ -239,37 +245,23 @@ class StrategicAILiveSessionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_panel_markup_styles_and_script_order_are_present(self) -> None:
-        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        runtime = _game_bundle("runtime-before-routing")
+        styles_bundle = _game_bundle("styles")
         webgl = WEBGL_APP_PATH.read_text(encoding="utf-8")
         styles = STYLE_PATH.read_text(encoding="utf-8")
 
-        self.assertIn(
-            "<!-- @include applications/styles/strategic-ai-debug.css -->",
-            applications,
+        self.assertIn("web/styles/strategic-ai-debug.css", styles_bundle)
+        self.assertLess(
+            runtime.index("web/scripts/strategic-ai-offscreen-runtime.js"),
+            runtime.index("web/scripts/strategic-ai-session.js"),
         )
         self.assertLess(
-            applications.index(
-                "<!-- @include applications/scripts/strategic-ai-offscreen-runtime.js -->"
-            ),
-            applications.index(
-                "<!-- @include applications/scripts/strategic-ai-session.js -->"
-            ),
+            runtime.index("web/scripts/strategic-ai-session.js"),
+            runtime.index("web/scripts/strategic-ai-debug-panel.js"),
         )
         self.assertLess(
-            applications.index(
-                "<!-- @include applications/scripts/strategic-ai-session.js -->"
-            ),
-            applications.index(
-                "<!-- @include applications/scripts/strategic-ai-debug-panel.js -->"
-            ),
-        )
-        self.assertLess(
-            applications.index(
-                "<!-- @include applications/scripts/strategic-ai-debug-panel.js -->"
-            ),
-            applications.index(
-                "<!-- @include applications/scripts/scene-viewer.js -->"
-            ),
+            runtime.index("web/scripts/strategic-ai-debug-panel.js"),
+            runtime.index("web/scripts/scene-viewer.js"),
         )
         for element_id in (
             "strategic-ai-debug-toggle",

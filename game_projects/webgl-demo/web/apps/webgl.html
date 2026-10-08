@@ -396,16 +396,28 @@
 
           </div>
 
-          <button
-            id="strategic-ai-debug-toggle"
-            class="strategic-ai-debug-toggle"
-            type="button"
-            aria-controls="strategic-ai-debug-panel"
-            aria-expanded="false"
-            data-mc-component-id="strategic-ai.debug.toggle"
-            data-mc-component-kind="action"
-            data-mc-component-label="Open Strategic AI Debug Panel"
-          >Strategic AI</button>
+          <div class="ai-debug-launchers" aria-label="AI developer harnesses">
+            <button
+              id="strategic-ai-debug-toggle"
+              class="strategic-ai-debug-toggle"
+              type="button"
+              aria-controls="strategic-ai-debug-panel"
+              aria-expanded="false"
+              data-mc-component-id="strategic-ai.debug.toggle"
+              data-mc-component-kind="action"
+              data-mc-component-label="Open Strategic AI Debug Panel"
+            >Strategic AI</button>
+            <button
+              id="tactical-ai-debug-toggle"
+              class="tactical-ai-debug-toggle"
+              type="button"
+              aria-controls="tactical-ai-debug-panel"
+              aria-expanded="false"
+              data-mc-component-id="tactical-ai.debug.toggle"
+              data-mc-component-kind="action"
+              data-mc-component-label="Open Tactical AI Debug Panel"
+            >Tactical AI</button>
+          </div>
           <aside
             id="strategic-ai-debug-panel"
             class="strategic-ai-debug-panel"
@@ -520,5 +532,63 @@
             <details>
               <summary>Operation log</summary>
               <pre id="strategic-ai-debug-log">No operations yet.</pre>
+            </details>
+          </aside>
+
+          <aside
+            id="tactical-ai-debug-panel"
+            class="tactical-ai-debug-panel"
+            hidden
+            tabindex="-1"
+            aria-label="Tactical AI live combat harness"
+            data-mc-component-id="tactical-ai.debug.panel"
+            data-mc-component-kind="panel"
+            data-mc-component-label="Tactical AI Live Combat Harness"
+            data-mc-feature-id="tactical-ai.feature.live-harness"
+          >
+            <header class="tactical-ai-debug-head">
+              <div>
+                <strong>Tactical AI Live Harness</strong>
+                <span>Managed NanoJev • Space Captain combat runtime</span>
+              </div>
+              <button id="tactical-ai-debug-close" type="button">Close</button>
+            </header>
+
+            <output id="tactical-ai-debug-status" class="tactical-ai-debug-status" role="status" aria-live="polite">Tactical AI is idle.</output>
+            <div id="tactical-ai-debug-summary" class="tactical-ai-debug-summary" aria-label="Tactical AI readiness summary"></div>
+
+            <div class="tactical-ai-debug-controls">
+              <fieldset>
+                <legend>Performance readiness</legend>
+                <label><span>Tactical time step (s)</span><select id="tactical-ai-debug-time-step"><option value="1">1 second</option><option value="2">2 seconds</option><option value="3">3 seconds</option><option value="4">4 seconds</option><option value="5" selected>5 seconds</option></select></label>
+                <label><span>Consecutive passing calls</span><input id="tactical-ai-debug-consecutive" type="number" min="1" max="20" step="1" value="3"></label>
+                <label><span>Warmup timeout (s)</span><input id="tactical-ai-debug-warmup-timeout" type="number" min="5" step="5" value="120"></label>
+                <button id="tactical-ai-debug-prepare" type="button">Prepare Tactical AI</button>
+              </fieldset>
+
+              <fieldset>
+                <legend>Battle</legend>
+                <label><span>Seed</span><input id="tactical-ai-debug-seed" type="number" min="0" step="1" value="7"></label>
+                <label><span>Duration (s)</span><input id="tactical-ai-debug-duration" type="number" min="1" step="1" value="120"></label>
+                <div class="tactical-ai-debug-button-row">
+                  <button id="tactical-ai-debug-start" type="button" disabled>Start Battle</button>
+                  <button id="tactical-ai-debug-stop" type="button" disabled>Stop</button>
+                  <button id="tactical-ai-debug-reset" type="button">Reset</button>
+                </div>
+              </fieldset>
+            </div>
+
+            <section class="tactical-ai-debug-ships" aria-label="Live captain state">
+              <article><h3>Alpha</h3><div id="tactical-ai-debug-alpha">No battle state.</div></article>
+              <article><h3>Beta</h3><div id="tactical-ai-debug-beta">No battle state.</div></article>
+            </section>
+
+            <details open>
+              <summary>Recent tactical events</summary>
+              <pre id="tactical-ai-debug-events">No tactical events yet.</pre>
+            </details>
+            <details>
+              <summary>Raw tactical state</summary>
+              <pre id="tactical-ai-debug-output">{}</pre>
             </details>
           </aside>

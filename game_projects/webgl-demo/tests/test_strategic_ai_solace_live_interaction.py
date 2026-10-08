@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 SCRIPT_ROOT = GAME_ROOT / "web" / "scripts"
 STYLE_ROOT = GAME_ROOT / "web" / "styles"
 PROJECT_PATH = GAME_ROOT / "project.json"
@@ -19,6 +20,11 @@ WEBGL_DESKTOP_PATH = SCRIPT_ROOT / "webgl-desktop.js"
 INTERACTION_PATH = SCRIPT_ROOT / "strategic-ai-solace-interaction.js"
 INTERACTION_STYLE_PATH = STYLE_ROOT / "strategic-ai-solace-interaction.css"
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 class StrategicAISolaceLiveInteractionTests(unittest.TestCase):
     def run_node_scenario(self) -> dict:
@@ -217,24 +223,17 @@ class StrategicAISolaceLiveInteractionTests(unittest.TestCase):
         self.assertEqual(kept["canonicalRevision"], broken["canonicalRevision"], 2)
 
     def test_solace_interaction_is_player_visible_and_loaded_before_webgl(self) -> None:
-        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        styles_bundle = _game_bundle("styles")
+        runtime = _game_bundle("runtime-before-routing")
+        runtime_after = _game_bundle("runtime-after-routing")
         webgl = WEBGL_APP_PATH.read_text(encoding="utf-8")
         desktop = WEBGL_DESKTOP_PATH.read_text(encoding="utf-8")
         interaction = INTERACTION_PATH.read_text(encoding="utf-8").lower()
         style = INTERACTION_STYLE_PATH.read_text(encoding="utf-8")
 
-        self.assertIn(
-            "<!-- @include applications/styles/strategic-ai-solace-interaction.css -->",
-            applications,
-        )
-        self.assertIn(
-            "<!-- @include applications/scripts/strategic-ai-solace-interaction.js -->",
-            applications,
-        )
-        self.assertLess(
-            applications.index("strategic-ai-solace-interaction.js"),
-            applications.index("webgl-desktop.js"),
-        )
+        self.assertIn("web/styles/strategic-ai-solace-interaction.css", styles_bundle)
+        self.assertIn("web/scripts/strategic-ai-solace-interaction.js", runtime)
+        self.assertIn("web/scripts/webgl-desktop.js", runtime_after)
         self.assertIn('id="solace-strategic-contact"', webgl)
         self.assertIn('id="solace-strategic-begin"', webgl)
         self.assertIn('id="solace-strategic-keep"', webgl)

@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 SCRIPT_ROOT = GAME_ROOT / "web" / "scripts"
 STYLE_ROOT = GAME_ROOT / "web" / "styles"
 PROJECT_PATH = GAME_ROOT / "project.json"
@@ -20,6 +21,11 @@ INTERACTION_PATH = SCRIPT_ROOT / "strategic-ai-vela-interaction.js"
 SCENE_VIEWER_PATH = SCRIPT_ROOT / "scene-viewer.js"
 INTERACTION_STYLE_PATH = STYLE_ROOT / "strategic-ai-vela-interaction.css"
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 class StrategicAIVelaLiveInteractionTests(unittest.TestCase):
     def test_player_interaction_runs_verified_turn_and_safe_briefing_once(self) -> None:
@@ -767,24 +773,17 @@ class StrategicAIVelaLiveInteractionTests(unittest.TestCase):
 
 
     def test_live_interaction_is_player_visible_and_loaded_before_webgl(self) -> None:
-        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
+        styles_bundle = _game_bundle("styles")
+        runtime = _game_bundle("runtime-before-routing")
+        runtime_after = _game_bundle("runtime-after-routing")
         webgl = WEBGL_APP_PATH.read_text(encoding="utf-8")
         desktop = WEBGL_DESKTOP_PATH.read_text(encoding="utf-8")
         interaction = INTERACTION_PATH.read_text(encoding="utf-8").lower()
         scene_viewer = SCENE_VIEWER_PATH.read_text(encoding="utf-8")
 
-        self.assertIn(
-            "<!-- @include applications/styles/strategic-ai-vela-interaction.css -->",
-            applications,
-        )
-        self.assertIn(
-            "<!-- @include applications/scripts/strategic-ai-vela-interaction.js -->",
-            applications,
-        )
-        self.assertLess(
-            applications.index("strategic-ai-vela-interaction.js"),
-            applications.index("webgl-desktop.js"),
-        )
+        self.assertIn("web/styles/strategic-ai-vela-interaction.css", styles_bundle)
+        self.assertIn("web/scripts/strategic-ai-vela-interaction.js", runtime)
+        self.assertIn("web/scripts/webgl-desktop.js", runtime_after)
         self.assertIn('id="vela-gate-strategic-contact"', webgl)
         self.assertIn('id="vela-gate-strategic-request"', webgl)
         self.assertIn('id="vela-gate-strategic-explanation"', webgl)

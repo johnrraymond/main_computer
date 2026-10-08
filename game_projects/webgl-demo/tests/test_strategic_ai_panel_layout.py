@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 GAME_ROOT = Path(__file__).resolve().parents[1]
+GAME_MANIFEST_PATH = GAME_ROOT / "game.json"
 SCRIPT_ROOT = GAME_ROOT / "web" / "scripts"
 STYLE_ROOT = GAME_ROOT / "web" / "styles"
 APPLICATIONS_HTML = ROOT / "main_computer" / "web" / "applications.html"
@@ -17,6 +18,11 @@ WEBGL_APP = GAME_ROOT / "web" / "apps" / "webgl.html"
 LAYOUT_SCRIPT = SCRIPT_ROOT / "strategic-ai-panel-layout.js"
 LAYOUT_STYLE = STYLE_ROOT / "strategic-ai-panel-layout.css"
 
+
+
+def _game_bundle(name: str) -> list[str]:
+    manifest = json.loads(GAME_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["web"]["bundles"][name]
 
 class StrategicAIPanelLayoutTests(unittest.TestCase):
     def test_panel_modes_are_normalized_prioritized_and_persisted(self) -> None:
@@ -134,7 +140,6 @@ class StrategicAIPanelLayoutTests(unittest.TestCase):
         )
 
     def test_player_panels_share_a_non_obscuring_collapsible_dock(self) -> None:
-        applications = APPLICATIONS_HTML.read_text(encoding="utf-8")
         webgl = WEBGL_APP.read_text(encoding="utf-8")
         style = LAYOUT_STYLE.read_text(encoding="utf-8")
         script = LAYOUT_SCRIPT.read_text(encoding="utf-8").lower()
@@ -156,25 +161,21 @@ class StrategicAIPanelLayoutTests(unittest.TestCase):
             webgl.index('id="strategic-ai-debug-toggle"'),
         )
 
-        self.assertIn(
-            "<!-- @include applications/styles/strategic-ai-panel-layout.css -->",
-            applications,
-        )
-        self.assertIn(
-            "<!-- @include applications/scripts/strategic-ai-panel-layout.js -->",
-            applications,
-        )
+        styles_bundle = _game_bundle("styles")
+        runtime = _game_bundle("runtime-before-routing")
+        self.assertIn("web/styles/strategic-ai-panel-layout.css", styles_bundle)
         self.assertGreater(
-            applications.index("strategic-ai-panel-layout.css"),
-            applications.index("strategic-ai-travel-integration.css"),
+            styles_bundle.index("web/styles/strategic-ai-panel-layout.css"),
+            styles_bundle.index("web/styles/strategic-ai-travel-integration.css"),
         )
+        self.assertIn("web/scripts/strategic-ai-panel-layout.js", runtime)
         self.assertGreater(
-            applications.index("strategic-ai-panel-layout.js"),
-            applications.index("strategic-ai-solace-interaction.js"),
+            runtime.index("web/scripts/strategic-ai-panel-layout.js"),
+            runtime.index("web/scripts/strategic-ai-solace-interaction.js"),
         )
         self.assertLess(
-            applications.index("strategic-ai-panel-layout.js"),
-            applications.index("scene-viewer.js"),
+            runtime.index("web/scripts/strategic-ai-panel-layout.js"),
+            runtime.index("web/scripts/scene-viewer.js"),
         )
 
         self.assertIn(

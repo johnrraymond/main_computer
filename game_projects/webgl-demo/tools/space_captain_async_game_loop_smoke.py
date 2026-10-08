@@ -33,7 +33,7 @@ def main() -> int:
         description=(
             "Smoke the asynchronous in-system captain/game-loop contract. Captain judgments run "
             "without blocking smooth viewport prediction or authoritative physics ticks; results "
-            "are classified against 0.5-2 second control deadlines and never rewrite past physics."
+            "are classified against the game's 1-5 second tactical deadlines and never rewrite past physics."
         )
     )
     parser.add_argument("--project", type=Path, default=DEFAULT_PROJECT)
@@ -43,7 +43,7 @@ def main() -> int:
     parser.add_argument("--checkpoint-sha256", type=str, default="reference-pinned-checkpoint")
     parser.add_argument("--questions-per-captain", type=int, default=20)
     parser.add_argument("--viewport-hz", type=float, default=60.0)
-    parser.add_argument("--intervals-seconds", type=str, default="0.5,1,2")
+    parser.add_argument("--intervals-seconds", type=str, default="1,2,3,4,5")
     parser.add_argument(
         "--simulated-latencies-seconds",
         type=str,
@@ -393,7 +393,7 @@ async function run() {
     viewportContinuesWhileCaptainRequestsAreInFlight: viewportTicksWhileCallsInFlight > 0,
     viewportHeartbeatRemainsResponsive: smoothViewport,
     authoritativePhysicsAdvancesOnClockNotCaptainCompletion: exactPhysicsTicks,
-    gradientPredictionSupportsHalfToTwoSecondViewportSmoothing: maxGradientErrorFraction < 1e-5,
+    gradientPredictionSupportsOneToFiveSecondViewportSmoothing: maxGradientErrorFraction < 1e-5,
     viewportCorrectionAtAuthoritativeTicksIsSmall: maxBoundaryCorrectionM < 1,
     captainResponsesCannotRetroactivelyMutatePhysics: finalPhysicsDifferenceM < 1e-9,
     captainCheckpointPinnedAcrossConcurrentRequests: checkpointPinned,

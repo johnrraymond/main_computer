@@ -514,17 +514,26 @@ class Battle:
         }
 
     def snapshot_ships(self) -> dict[str, Any]:
-        return {
-            ship_id: {
+        result: dict[str, Any] = {}
+        for ship_id, ship in sorted(self.ships.items()):
+            vx_mps = float(ship.v_mps)
+            vy_mps = float(ship.vy_mps)
+            speed_mps = math.hypot(vx_mps, vy_mps)
+            result[ship_id] = {
                 "xM": float(ship.x_m),
                 "yM": float(ship.y_m),
-                "vMps": float(ship.v_mps),
-                "vxMps": float(ship.v_mps),
-                "vyMps": float(ship.vy_mps),
+                # `vMps` historically meant the one-dimensional x velocity.  Once
+                # Battle 2 became two-dimensional that name became ambiguous and
+                # downstream viewscreen code could mistake it for scalar speed.
+                # Keep the compatibility field, but give it the physically useful
+                # scalar meaning and expose the vector components explicitly.
+                "vMps": speed_mps,
+                "speedMps": speed_mps,
+                "vxMps": vx_mps,
+                "vyMps": vy_mps,
                 "damageFraction": float(ship.damage),
             }
-            for ship_id, ship in sorted(self.ships.items())
-        }
+        return result
 
     def acceleration_vector_for(self, ship_id: str) -> tuple[float, float]:
         ship = self.ships[ship_id]
@@ -1791,7 +1800,7 @@ def main() -> int:
     parser.add_argument("--projectile-speed-mps", type=float, default=6000.0)
     parser.add_argument("--projectile-hit-radius-m", type=float, default=8.0)
     parser.add_argument("--fire-cooldown-seconds", type=float, default=0.4)
-    parser.add_argument("--impact-delta-v-mps", type=float, default=5.0)
+    parser.add_argument("--impact-delta-v-mps", type=float, default=0.75)
     parser.add_argument("--impact-damage-fraction", type=float, default=0.02)
     parser.add_argument("--overload-impact-count", type=int, default=3)
     parser.add_argument("--overload-window-seconds", type=float, default=1.0)
