@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from .hub_admin_pool import POOL_SIZE, HubAdminPoolError, complete_pool, inspect_pool
 from .ethereum_identity import (
     generate_private_key,
     is_address,
@@ -195,6 +196,16 @@ def analyze_starter_identity(
             ):
                 _text(reservation.get(field), f"networks.{network}.nodes.{node}.{field}")
 
+    # Existing node assignments are part of the 15, not additional wallets.
+    # Missing target administrators will be reserved by the normal node-identity
+    # pass; reserve only the remaining unassigned pool slots after counting them.
+    try:
+        hub_pool = inspect_pool(network_state, pending_nodes=tuple(targets))
+    except HubAdminPoolError as exc:
+        raise StarterIdentityError(str(exc)) from exc
+    for label in range(hub_pool["new_reservations_needed"]):
+        generation_labels.append(f"hub-admin-reserve:{label + 1}")
+
     genesis_required = network_state.get("genesis") is None
     if not genesis_required:
         genesis = _mapping(network_state.get("genesis"), f"networks.{network}.genesis")
@@ -203,8 +214,12 @@ def analyze_starter_identity(
         qbft = _mapping(genesis.get("qbft"), f"networks.{network}.genesis.qbft")
         if qbft.get("blockperiodseconds") != 2 or qbft.get("epochlength") != 30000:
             raise StarterIdentityError("existing starter QBFT genesis settings conflict with policy")
+        if genesis.get("hub_admin_pool_count", POOL_SIZE) != POOL_SIZE:
+            raise StarterIdentityError("existing Hub administrator genesis pool policy is invalid")
         alloc = genesis.get("alloc_accounts")
-        if alloc != [{"ref": f"networks.{network}.wallets.captain"}]:
+        expected = [{"ref": f"networks.{network}.wallets.{role}"}
+                    for role in (*_GOVERNANCE_WALLETS, "deployer")]
+        if alloc not in ([expected[0]], expected):
             raise StarterIdentityError("existing starter genesis allocation is invalid")
 
     return StarterIdentityAnalysis(
@@ -355,9 +370,23 @@ def reserve_starter_identity(
             "validator_ref": f"networks.{network}.validators.{node}",
         }
 
+    # Reuse the assigned keys above and persist only the missing unassigned
+    # identities. They participate in genesis even before a Hub claims them.
+    try:
+        reserved_labels = complete_pool(
+            network_state, generated_at=generated_at, key_factory=key_factory,
+        )
+    except HubAdminPoolError as exc:
+        raise StarterIdentityError(str(exc)) from exc
+    generated.extend(reserved_labels)
+
     network_state["genesis"] = {
-        "alloc_accounts": [{"ref": f"networks.{network}.wallets.captain"}],
+        "alloc_accounts": [
+            {"ref": f"networks.{network}.wallets.{role}"}
+            for role in (*_GOVERNANCE_WALLETS, "deployer")
+        ],
         "first_topology_mode": "initial",
+        "hub_admin_pool_count": POOL_SIZE,
         "qbft": {
             "blockperiodseconds": 2,
             "epochlength": 30000,

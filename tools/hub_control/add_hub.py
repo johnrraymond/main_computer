@@ -4,8 +4,10 @@ import hashlib
 from typing import Any, Callable, Mapping
 
 from .common.canonical import canonical_bytes
+from .common.admin_identity import preview_admin, reserve_admin, verify_admin_current_funding
 from .common.chain_contract import load_current_chain_contract, verify_chain_contract
-from .common.deployment import apply_deployment, deployment_target, inspect_deployment, observe_hub
+from .common.bridge_controller_authorization import ensure_bridge_controller
+from .common.deployment import apply_deployment, deployment_target, inspect_deployment, observe_hub, _check_deployment_git_source
 from .common.errors import HubControlError
 from .common.fdb_contract import load_current_fdb_contract
 from .common.models import HubContext
@@ -51,7 +53,10 @@ def prep(
     if any(isinstance(item, Mapping) and item.get("hub_id") == hub_id for item in hubs):
         raise HubControlError("HUB_ALREADY_ACCEPTED", f"Hub {hub_id!r} is already accepted")
 
+    # Prep is read-only for Mother private state. Never manufacture or replenish
+    # Hub administrators: an assigned identity or existing reserve is required.
     private = load_private(ctx)
+    wallet_preview = preview_admin(private, network=network, hub_id=hub_id)
     placement, resolution = infer_hub_placement(
         ctx,
         private,
@@ -64,6 +69,10 @@ def prep(
     chain_proof = chain_verifier(chain_contract)
     if chain_proof.get("verified") is not True:
         raise HubControlError("HUB_CHAIN_NOT_VERIFIED", "current Chain consumer contract did not verify")
+
+    # A wallet must be usable on the current chain; historical genesis state
+    # does not determine its spendable funds or presently deployed code.
+    current_funding = verify_admin_current_funding(chain_contract, wallet_preview["address"])
 
     target = deployment_target(
         ctx,
@@ -117,6 +126,9 @@ def prep(
             "target_generation": (int(accepted["generation"]) + 1) if accepted else 1,
             "target_hub_count": len(hubs) + 1,
             "rebirth": not hubs,
+            "hub_admin_candidate_address": wallet_preview["address"],
+            "hub_admin_source": wallet_preview["source"],
+            "hub_admin_current_funding": current_funding,
             "full_deletion": False,
             "fdb_contract": fdb_contract.reference(),
             "chain_contract": chain_contract.reference(),
@@ -149,6 +161,29 @@ def do(
     if read_accepted(ctx, network) != accepted_prestate:
         raise HubControlError("HUB_ACCEPTED_STATE_CHANGED", "accepted Hub topology changed after prep; inspect before retrying")
     target = dict(op["target"])
+    # Fail the local Git source gate before performing any on-chain mutation.
+    # The real deployer repeats this check immediately before Coolify operations.
+    target["_local_repo_root"] = str(ctx.repo_root)
+    target["_force_git"] = bool(force_git)
+    if deployer is apply_deployment:
+        _check_deployment_git_source(target)
+    wallet = reserve_admin(ctx, network=network, hub_id=str(target["hub_id"]), operation_id=operation_id)
+    # Only public identity information is retained in the Hub operation receipt.
+    frozen_address = str(target.get("hub_admin_address") or "")
+    if frozen_address and frozen_address.lower() != wallet["address"].lower():
+        raise HubControlError("HUB_ADMIN_RESERVATION_CHANGED", "prepared Hub administrator address differs from the committed assignment")
+    target["hub_admin_address"] = wallet["address"]
+    target["hub_admin_private_state_path"] = wallet["private_state_path"]
+    update_operation(ctx, network, operation_id, target={
+        k: v for k, v in target.items() if not k.startswith("_")
+    })
+    # Owner-signed authorization must succeed before any Coolify mutation.
+    # Retry observes the same committed Hub admin and skips a redundant tx.
+    authorization = ensure_bridge_controller(ctx, network=network, target=target, admin_address=wallet["address"])
+    if authorization.get("verified") is not True:
+        raise HubControlError("HUB_BRIDGE_AUTHORIZATION_UNVERIFIED", "assigned Hub admin is not an authorized bridge controller")
+    # Secrets are only attached to the in-memory deployment target.
+    target["_hub_admin_wallet"] = {"address": wallet["address"], "private_key": wallet["private_key"]}
     # Local-only deployment controls are injected after the frozen target is
     # loaded so they cannot alter operation identity or accepted authority.
     target["_local_repo_root"] = str(ctx.repo_root)
@@ -184,6 +219,9 @@ def do(
         "chain_adoption_verified": bool(verification.get("chain_adoption_verified")),
         "bridge_signer_verified": bool(verification.get("bridge_signer_verified")),
         "bridge_signer": deployment.get("bridge_signer"),
+        "hub_admin_address": wallet["address"],
+        "hub_admin_verified": bool(verification.get("hub_admin_verified")),
+        "bridge_controller_authorization": authorization,
         "verification_reason": verification.get("reason"),
     }
     update_operation(ctx, network, operation_id, stage="deployed", deployment_result=result, verification=verification)
@@ -222,6 +260,7 @@ def _accepted_hub(target: Mapping[str, Any]) -> dict[str, Any]:
         "controller_id": str(target["controller_id"]),
         "host_id": str(target["host_id"]),
         "public_url": str(target["public_url"]),
+        "hub_admin_address": str(target["hub_admin_address"]),
         "fdb_contract": {
             "generation": int(target["fdb_contract"]["generation"]),
             "sha256": str(target["fdb_contract"]["sha256"]),
@@ -256,6 +295,8 @@ def finalize(
     if op.get("stage") != "deployed":
         raise HubControlError("HUB_ADD_NOT_DEPLOYED", "add-hub finalize requires a deployed operation")
     target = dict(op["target"])
+    if not target.get("hub_admin_address"):
+        raise HubControlError("HUB_ADMIN_REDEPLOY_REQUIRED", "this deployed operation predates funded Hub wallet installation; redeploy before finalizing")
     verification = observer(target, wait_timeout_s=0.0)
     if verification.get("verified") is not True:
         raise HubControlError("HUB_ADD_NOT_VERIFIED", f"Hub verification was lost before finalize: {verification.get('reason')}")

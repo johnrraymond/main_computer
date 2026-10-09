@@ -23,6 +23,7 @@ from .canonical import canonical_json
 from .coolify_state import _DEFAULT_OPENER
 from .deployment_topology_rectification import detect_topology_staleness
 
+from .hub_admin_pool import POOL_FIELD, POOL_SIZE, HubAdminPoolError, complete_pool, genesis_addresses, inspect_pool
 from .ethereum_identity import (
     generate_private_key,
     is_address,
@@ -747,7 +748,30 @@ def _add_missing_identity(
         raise _fail("MOTHER_DEPLOY_NODE_IDENTITY_RESERVATION_CONFLICT", "target identity appeared during reservation planning")
 
     validator_key = _private_key(key_factory, "validator")
-    hub_key = _private_key(key_factory, "hub-admin")
+    # Once a 15-wallet genesis pool is present, an added Hub/node MUST claim
+    # a previously funded unassigned key instead of generating an unfunded 16th.
+    reserve = network_state.get("wallets", {}).get(POOL_FIELD)
+    if reserve is not None:
+        try:
+            genesis_addresses(network_state)
+            in_use = set(inspect_pool(network_state)["assigned"])
+            choices = [
+                (label, item) for label, item in sorted(reserve.items())
+                if str(item["address"]).lower() not in in_use
+            ]
+            if not choices:
+                raise HubAdminPoolError("all 15 funded Hub administrator identities are assigned")
+            label, chosen = choices[0]
+            hub_key = chosen["private_key"]
+            del reserve[label]
+        except (HubAdminPoolError, KeyError, TypeError, AttributeError) as exc:
+            raise _fail(
+                "MOTHER_DEPLOY_NODE_HUB_ADMIN_POOL_EXHAUSTED",
+                f"cannot claim a genesis-funded Hub administrator identity: {exc}",
+            ) from exc
+    else:
+        # Compatibility for chains born before the 15-wallet pool feature.
+        hub_key = _private_key(key_factory, "hub-admin")
     if validator_key == hub_key:
         raise _fail("MOTHER_DEPLOY_NODE_IDENTITY_RESERVATION_SECRET_INVALID", "validator and Hub admin identities must be distinct")
 
@@ -780,6 +804,7 @@ def reserve_add_node_identity(
     generated_at: str | None = None,
     operation: OperationIdentity,
     key_factory: Callable[[], str] = generate_private_key,
+    prepare_genesis_hub_admins: bool = False,
     refresh_topology_evidence: bool = False,
     topology_evidence_path: Path | None = None,
     acknowledged_topology_evidence_sha256: str | None = None,
@@ -809,6 +834,24 @@ def reserve_add_node_identity(
     network_state = _network_state(current_document, network)
     _controller(network_state, host)
 
+    # An empty-topology *fresh genesis* is the only point where the Mother
+    # add-node harness opts into this. Complete the funded identity set BEFORE
+    # reserving the node: the node may then claim one of those 15, and both
+    # changes enter the SAME verified successor and topology refresh.
+    genesis_birth_document = current_document
+    genesis_pool_generated: tuple[str, ...] = ()
+    if prepare_genesis_hub_admins:
+        genesis_birth_document = deepcopy(current_document)
+        birth_network = _network_state(genesis_birth_document, network)
+        genesis_descriptor = _mapping(birth_network.get("genesis"), f"networks.{network}.genesis")
+        if genesis_descriptor.get("source") != "mother-private" or genesis_descriptor.get("first_topology_mode") != "initial":
+            raise _fail("MOTHER_DEPLOY_GENESIS_HUB_ADMIN_PREP_INVALID", "fresh first-genesis policy is missing")
+        try:
+            genesis_pool_generated = complete_pool(birth_network, generated_at=generated)
+        except HubAdminPoolError as exc:
+            raise _fail("MOTHER_DEPLOY_GENESIS_HUB_ADMIN_PREP_INVALID", str(exc)) from exc
+        genesis_descriptor["hub_admin_pool_count"] = POOL_SIZE
+
     repaired_partial = False
     repair_document: dict[str, Any] | None = None
     repair_validator_address: str | None = None
@@ -819,7 +862,7 @@ def reserve_add_node_identity(
         if exc.code != "MOTHER_DEPLOY_NODE_IDENTITY_RESERVATION_CONFLICT":
             raise
         repaired = _repair_missing_deployment_target_identity(
-            current_document,
+            genesis_birth_document,
             network=network,
             node=node,
             host=host,
@@ -866,7 +909,7 @@ def reserve_add_node_identity(
             opener=opener,
         )
 
-    if existing is not None:
+    if existing is not None and genesis_birth_document == current_document:
         result = {
             "kind": "main_computer.mother.add_node_identity_reservation.v1",
             "schema_version": 1,
@@ -926,7 +969,13 @@ def reserve_add_node_identity(
                     result["refreshed_topology_evidence_sha256"] = refreshed_sha
         return result
 
-    if repaired_partial:
+    if existing is not None:
+        # Already-reserved target, but the genesis pool/marker needed updating.
+        successor_document = genesis_birth_document
+        validator_address = existing["validator_address"]
+        hub_address = existing["hub_admin_address"]
+        generated_labels = []
+    elif repaired_partial:
         if repair_document is None or repair_validator_address is None or repair_hub_address is None:
             raise AssertionError("partial identity repair was selected without repair details")
         successor_document = repair_document
@@ -935,14 +984,23 @@ def reserve_add_node_identity(
         generated_labels: list[str] = []
     else:
         successor_document, validator_address, hub_address = _add_missing_identity(
-            current_document,
+            genesis_birth_document,
             network=network,
             node=node,
             host=host,
             generated_at=generated,
             key_factory=key_factory,
         )
-        generated_labels = [f"validator:{node}", f"hub-admin:{node}"]
+        predecessor_pool = _network_state(genesis_birth_document, network).get("wallets", {}).get(POOL_FIELD)
+        claimed_existing = isinstance(predecessor_pool, Mapping) and any(
+            isinstance(entry, Mapping)
+            and str(entry.get("address", "")).lower() == hub_address.lower()
+            for entry in predecessor_pool.values()
+        )
+        generated_labels = [f"validator:{node}"]
+        if not claimed_existing:
+            generated_labels.append(f"hub-admin:{node}")
+    generated_labels.extend(genesis_pool_generated)
     closure = prepare_private_state_successor(
         private_state,
         successor_document,
@@ -979,13 +1037,18 @@ def reserve_add_node_identity(
         "generated_at": generated,
         "predecessor_binding": predecessor_binding,
         "successor_binding": successor_binding,
-        "identity_already_reserved": False,
+        "identity_already_reserved": existing is not None,
         "partial_identity_repaired": repaired_partial,
         "private_state_update_required": True,
         "private_state_updated": installed,
         "validator_address": validator_address,
         "hub_admin_address": hub_address,
         "generated_labels": generated_labels,
+        "genesis_hub_admin_pool": {
+            "prepared": prepare_genesis_hub_admins,
+            "total": POOL_SIZE if prepare_genesis_hub_admins else None,
+            "new_reservations": len(genesis_pool_generated),
+        },
         "private_key_material_in_output": False,
         "network_access_performed": False,
         "live_mutation_performed": False,

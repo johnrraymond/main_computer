@@ -491,6 +491,12 @@ def test_birth_executor_proves_chain_through_internal_guardian_and_coolify(tmp_p
         operation=_operation("birth-live"),
     )
     assert result["status"] == "pass"
+    # The successful Mother birth is the public contract-address publication boundary.
+    published = tmp_path / "main_computer" / "config" / "mainnet_contracts.json"
+    assert published.is_file()
+    active = json.loads(published.read_text(encoding="utf-8"))
+    assert active["xlag-bridge-reserve"] == "0x000000000000000000000000000000000000c0de"
+    assert active["hub_credit_bridge_escrow"] == "0x000000000000000000000000000000000000e5c0"
     assert result["summary"]["initial_chain_proven"] is True
     assert result["summary"]["manual_ssh_required"] is False
     assert result["summary"]["public_endpoint_created"] is False

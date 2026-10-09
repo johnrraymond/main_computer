@@ -74,6 +74,7 @@ SINGLE_NODE_STEPS = [
     "verify-bootstrap-evidence",
     "finalize-single-node-proof",
     "verify-single-node-proof",
+    "ensure-rpc-route",
     POST_WORK_CLEANUP_STEP,
     PRISTINE_CLEANUP_STEP,
 ]
@@ -88,6 +89,7 @@ REPLICA_ADMISSION_STEPS = [
     "execute-validator-admission",
     "verify-validator-admission-evidence",
     "finalize-post-admission-topology",
+    "ensure-rpc-route",
     POST_WORK_CLEANUP_STEP,
     PRISTINE_CLEANUP_STEP,
 ]
@@ -135,6 +137,7 @@ MUTATION_STEPS = {
     "execute-bootstrap",
     "execute-replica-sync",
     "execute-validator-admission",
+    "ensure-rpc-route",
     "execute-remove-do",
     PRISTINE_CLEANUP_STEP,
 }
@@ -896,6 +899,27 @@ def _baseline_established_validator_count(document: dict[str, Any]) -> int | Non
     return count if count >= 0 else None
 
 
+def baseline_requires_new_genesis(baseline_path: str | Path) -> bool:
+    """Only enable birth funding for an explicit fresh reset or truly new chain.
+
+    Never change a known accepted genesis just because the topology is empty:
+    that case is a rebootstrap of the existing chain, not a new genesis.
+    """
+    document = _read_json_object(Path(baseline_path))
+    candidates = [document]
+    for field in (
+        "rollback_baseline_topology", "final_topology", "current_topology",
+        "post_add_topology", "post_removal_topology", "pre_removal_topology",
+    ):
+        item = document.get(field)
+        if isinstance(item, dict):
+            candidates.append(item)
+    if any(item.get("fresh_genesis_required") is True or item.get("genesis_lineage") == "fresh-required" for item in candidates):
+        return True
+    # Uninitialized first birth (there has never been a genesis SHA) is new.
+    return not any(item.get("genesis_sha256") for item in candidates)
+
+
 def infer_internal_add_prep_mode(args: argparse.Namespace, baseline_path: Path) -> str | None:
     if args.operation != "add-node":
         return None
@@ -1110,6 +1134,11 @@ class Harness:
             "--max-response-bytes",
             str(self.args.max_response_bytes),
         )
+        if (
+            self.state.get("internal_add_prep_mode") == "initial"
+            and baseline_requires_new_genesis(require("--baseline-evidence", self.state["baseline_evidence"]))
+        ):
+            argv.append("--prepare-genesis-hub-admins")
         if execute:
             argv.append("--execute")
         return argv
@@ -2318,6 +2347,32 @@ class Harness:
             evidence_sha = _file_sha256(evidence)
         return str(evidence), str(evidence_sha), "add-node"
 
+    def step_ensure_rpc_route(self) -> None:
+        """Always install/repair RPC routing after a successful node deployment.
+
+        This is independent of the RPC paranoia/canary steps; skip-cleanup
+        does not skip routing. Repeating the step is safe: it writes the same
+        controller-local dynamic configuration and checks eth_chainId.
+        """
+        if self.args.operation != "add-node":
+            raise SystemExit("ensure-rpc-route is only valid after add-node deployment")
+        obj = self.run("ensure-rpc-route", [
+            sys.executable,
+            str(self.repo_root / "tools" / "mother_rpc_route_ensure.py"),
+            "--network", self.args.network,
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--node", self.args.node,
+            "--controller-id", self.args.host,
+            "--timeout", str(self.args.timeout),
+            "--max-response-bytes", str(self.args.max_response_bytes),
+            "--max-wait-seconds", str(self.args.max_wait_seconds),
+            "--poll-interval-seconds", str(self.args.poll_interval_seconds),
+            "--execute",
+        ])
+        if obj.get("ensured") is not True:
+            raise SystemExit("MOTHER_MUTATE_HARNESS_RPC_ROUTE_NOT_ENSURED")
+        self.state["rpc_route_ensure"] = obj
+
     def step_post_work_cleanup(self) -> None:
         if self.args.skip_post_work_cleanup:
             print(f"\n=== {POST_WORK_CLEANUP_STEP} skipped ===")
@@ -2483,6 +2538,7 @@ class Harness:
             "execute-validator-admission": self.step_execute_validator_admission,
             "verify-validator-admission-evidence": self.step_verify_validator_admission_evidence,
             "finalize-post-admission-topology": self.step_finalize_post_admission_topology,
+            "ensure-rpc-route": self.step_ensure_rpc_route,
             "remove-prep": self.step_remove_prep,
             "verify-remove-prep": self.step_verify_remove_prep,
             "release-remove-do": self.step_release_remove_do,

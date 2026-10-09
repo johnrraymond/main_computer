@@ -793,7 +793,7 @@ def test_bridge_signer_live_preflight_requires_controller_authorization(
         )
 
     assert exc_info.value.code == "HUB_BRIDGE_CONTROLLER_NOT_AUTHORIZED"
-    assert "HUB_CONTRACT_DEPLOYER_COMMAND:" in capsys.readouterr().err
+    assert "HUB_CONTRACT_DEPLOYER_COMMAND:" not in capsys.readouterr().err
 
 
 def test_bridge_signer_live_preflight_verifies_live_contract_and_controller(

@@ -69,6 +69,9 @@ class ComposeNanoJevController:
         self.checkpoint_selector = str(checkpoint_selector).strip() or "champion"
         self.hf_repo = str(hf_repo).strip() or "johnrraymond/NanoJev-CLEF"
         self.backend_url = f"http://127.0.0.1:{self.backend_port}"
+        self.model_loaded_once = False
+        self.checkpoint_validated = False
+        self.health_error = ""
 
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
@@ -97,24 +100,75 @@ class ComposeNanoJevController:
             stderr=subprocess.STDOUT,
         )
 
-    def image_exists(self) -> bool:
+    def container_id(self) -> str:
+        # Compose includes stopped containers only with -a. Its project/service
+        # labels ensure we never adopt an unrelated Docker container.
+        result = self._compose("ps", "-a", "-q", "nanojev", check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"NanoJev container inspection failed ({result.returncode}): {result.stdout.strip()}")
+        ids = result.stdout.strip().splitlines()
+        if len(ids) > 1:
+            raise RuntimeError(f"Expected one NanoJev container, found {len(ids)}")
+        return ids[0].strip() if ids else ""
+
+    def container_state(self) -> str:
+        """Read Docker state without starting NanoJev, touching its idle timer, or building.
+
+        Compose labels scope this query to our project and service. This is a
+        lightweight observation; it must not use `compose up` or `start`.
+        """
+        command = [
+            self.docker_command, "ps", "-a",
+            "--filter", f"label=com.docker.compose.project={self.project_name}",
+            "--filter", "label=com.docker.compose.service=nanojev",
+            "--format", "{{.State}}",
+        ]
+        result = subprocess.run(
+            command, cwd=self.root, env=self._env(), check=False,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=3.0,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"NanoJev Docker status failed ({result.returncode}): {result.stdout.strip()}")
+        states = [line.strip().lower() for line in result.stdout.splitlines() if line.strip()]
+        if len(states) > 1:
+            raise RuntimeError(f"Expected one NanoJev container, found {len(states)}")
+        return states[0] if states else "absent"
+
+    def image_bootstrap(self) -> dict[str, object] | None:
+        # Provisioning is owned by ./start, never by this lazy lifecycle manager.
+        status_path = self.root / "runtime" / "start_stop" / "nanojev-image-bootstrap.json"
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if isinstance(payload, dict) and payload.get("image") == self.image_name:
+            return payload
+        return None
+
+    def require_image(self) -> None:
         result = subprocess.run(
             [self.docker_command, "image", "inspect", self.image_name],
             cwd=self.root,
             env=self._env(),
             check=False,
             text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
-        return result.returncode == 0
-
-    def ensure_image(self) -> None:
-        if self.image_exists():
+        if result.returncode == 0:
             return
-        result = self._compose("build", "--progress", "plain", "nanojev", check=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"NanoJev compose build failed ({result.returncode}): {result.stdout.strip()}")
+        detail = result.stdout.strip()
+        if "No such image:" in detail or "No such object:" in detail:
+            bootstrap = self.image_bootstrap()
+            if bootstrap and bootstrap.get("state") in {"checking", "building"}:
+                raise RuntimeError("NanoJev image bootstrap is running in the background; check /control/status")
+            if bootstrap and bootstrap.get("state") == "failed":
+                raise RuntimeError(f"NanoJev image bootstrap failed: {bootstrap.get('error', 'unknown error')}")
+            raise RuntimeError(
+                f"NanoJev image {self.image_name!r} is missing; run ./start to launch background image bootstrap"
+            )
+        raise RuntimeError(f"NanoJev image inspection failed ({result.returncode}): {detail}")
 
     def health(self) -> bool:
         try:
@@ -123,30 +177,51 @@ class ComposeNanoJevController:
                 timeout=self.health_request_timeout_seconds,
             )
         except Exception:
+            self.model_loaded_once = False
+            self.checkpoint_validated = False
+            self.health_error = ""
             return False
         if not isinstance(payload, dict):
+            self.model_loaded_once = False
+            self.checkpoint_validated = False
+            self.health_error = "Invalid NanoJev backend health response"
             return False
-        # provider_calls is observability, not readiness. A backend must remain healthy
-        # after it has served one or many inference requests.
-        base_ready = bool(payload.get("ready")) and bool(payload.get("model_loaded_once"))
-        if not base_ready:
-            return False
+        self.model_loaded_once = bool(payload.get("model_loaded_once"))
+        # Model and checkpoint identity are separate facts; a loaded wrong
+        # checkpoint must never open the Tactical AI performance gate.
         if self.checkpoint_selector == "unified-games-v1":
             observed = payload.get("checkpoint_selector")
-            return observed in (None, "unified-games-v1")
-        return (
-            payload.get("model_family") == "nanojev-clef"
-            and payload.get("checkpoint_selector") == self.checkpoint_selector
-            and payload.get("checkpoint_repo") == self.hf_repo
+            identity_ok = observed in (None, "unified-games-v1")
+        else:
+            identity_ok = (
+                payload.get("model_family") == "nanojev-clef"
+                and payload.get("checkpoint_selector") == self.checkpoint_selector
+                and payload.get("checkpoint_repo") == self.hf_repo
+            )
+        self.checkpoint_validated = bool(payload.get("ready")) and self.model_loaded_once and identity_ok
+        self.health_error = (
+            f"Checkpoint mismatch: expected {self.hf_repo}/{self.checkpoint_selector}; "
+            f"backend reports {payload.get('checkpoint_repo')}/{payload.get('checkpoint_selector')}"
+            if self.model_loaded_once and not identity_ok else ""
         )
+        return self.checkpoint_validated
 
     def start(self) -> None:
         if self.health():
             return
-        self.ensure_image()
-        result = self._compose("up", "-d", "--no-build", "nanojev", check=False)
+        if self.container_id():
+            # Never use `up` for an existing container: Compose may recreate it
+            # after configuration/image changes, and recreate breaks image pinning.
+            result = self._compose("start", "nanojev", check=False)
+            operation = "start"
+        else:
+            # Provision once from an explicitly built image. A lazy game wake-up
+            # must never perform an unbounded image build (or implicitly pull).
+            self.require_image()
+            result = self._compose("up", "-d", "--no-build", "--pull", "never", "nanojev", check=False)
+            operation = "up"
         if result.returncode != 0:
-            raise RuntimeError(f"NanoJev compose up failed ({result.returncode}): {result.stdout.strip()}")
+            raise RuntimeError(f"NanoJev compose {operation} failed ({result.returncode}): {result.stdout.strip()}")
         deadline = time.monotonic() + self.start_timeout_seconds
         while time.monotonic() < deadline:
             if self.health():
@@ -155,10 +230,11 @@ class ComposeNanoJevController:
         raise TimeoutError(f"NanoJev did not become healthy within {self.start_timeout_seconds:.0f} seconds")
 
     def stop(self) -> None:
+        # Stop only the managed service. Never remove its container or image.
         stop_timeout = str(max(0, int(round(self.stop_timeout_seconds))))
-        result = self._compose("down", "--remove-orphans", "--timeout", stop_timeout, check=False)
+        result = self._compose("stop", "--timeout", stop_timeout, "nanojev", check=False)
         if result.returncode != 0:
-            raise RuntimeError(f"NanoJev compose down failed ({result.returncode}): {result.stdout.strip()}")
+            raise RuntimeError(f"NanoJev compose stop failed ({result.returncode}): {result.stdout.strip()}")
 
 
 class NanoJevLifecycle:
@@ -185,6 +261,34 @@ class NanoJevLifecycle:
         self.last_error = ""
         self.phase = "ready" if self.running else "idle"
         self.shutdown_complete = False
+        # Docker observation is deliberately asynchronous. A stalled docker.exe
+        # must never stall the manager's /control/status endpoint or the game UI.
+        self._container_state = "unknown"
+        self._container_error = ""
+        self._container_probe_started_at = float("-inf")
+        self._container_probe_active = False
+
+    def _probe_container_state(self) -> None:
+        state, error = "unknown", ""
+        try:
+            state = str(self.controller.container_state())
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        with self.lock:
+            self._container_state = state
+            self._container_error = error
+            self._container_probe_active = False
+
+    def _schedule_container_probe(self) -> None:
+        if not hasattr(self.controller, "container_state"):
+            return
+        with self.lock:
+            now = time.monotonic()
+            if self._container_probe_active or now - self._container_probe_started_at < 2.0:
+                return
+            self._container_probe_started_at = now
+            self._container_probe_active = True
+        threading.Thread(target=self._probe_container_state, name="nanojev-docker-status", daemon=True).start()
 
     def _refresh_running(self) -> bool:
         # A transition owns the authoritative state while Docker is changing it.
@@ -313,10 +417,9 @@ class NanoJevLifecycle:
                 return True
 
     def shutdown_now(self) -> None:
-        # The manager owns the Compose project, not merely a healthy backend. Always
-        # issue compose down so an unhealthy, half-started, or post-request container
-        # cannot survive manager teardown. Keep the state lock free while Docker is
-        # stopping so control/status remains observable through the transition.
+        # Stop the backend even if it is unhealthy or partially started, but
+        # preserve the Compose container/image across manager generations.
+        # Keep the state lock free so control/status remains observable.
         with self.transition_lock:
             with self.lock:
                 if self.shutdown_complete:
@@ -342,6 +445,7 @@ class NanoJevLifecycle:
 
     def status(self, *, refresh: bool = True) -> dict[str, object]:
         if refresh:
+            self._schedule_container_probe()
             self._refresh_running()
         with self.lock:
             now = self.clock()
@@ -349,10 +453,47 @@ class NanoJevLifecycle:
             remaining = None
             if self.running and self.dirty and not self.pinned and self.active_requests == 0:
                 remaining = max(0.0, self.idle_seconds - elapsed)
+            bootstrap = self.controller.image_bootstrap() if hasattr(self.controller, "image_bootstrap") else None
+            phase = self.phase
+            if not self.running and phase in {"idle", "error"} and bootstrap and bootstrap.get("state") in {"checking", "building"}:
+                phase = "building"
+            container = self._container_state
+            model_loaded = bool(getattr(self.controller, "model_loaded_once", self.running))
+            checkpoint_validated = bool(getattr(self.controller, "checkpoint_validated", self.running)) and self.running
+            backend_error = str(getattr(self.controller, "health_error", ""))
+            if self.phase == "error":
+                runtime_state = "error"
+            elif self.phase in {"starting", "stopping"}:
+                runtime_state = self.phase
+            elif checkpoint_validated:
+                runtime_state = "busy" if self.active_requests else "ready"
+            elif model_loaded and backend_error:
+                runtime_state = "error"
+            elif container == "running":
+                runtime_state = "loading"
+            elif phase == "building":
+                runtime_state = "building"
+            elif self._container_error:
+                runtime_state = "error"
+            elif container in {"created", "absent"}:
+                runtime_state = container
+            elif container in {"exited", "stopped", "dead"}:
+                runtime_state = "stopped"
+            else:
+                runtime_state = "unknown"
             return {
                 "ok": True,
                 "mode": "lazy-managed",
-                "phase": self.phase,
+                "phase": phase,
+                "runtime_state": runtime_state,
+                "container_state": container,
+                "container_exists": None if container == "unknown" else container != "absent",
+                "container_running": container == "running" if container != "unknown" else None,
+                "model_loaded": model_loaded,
+                "checkpoint_validated": checkpoint_validated,
+                "backend_error": backend_error,
+                "container_error": self._container_error,
+                "image_bootstrap": bootstrap,
                 "running": self.running,
                 "backend_ready": self.running and self.phase == "ready",
                 "pinned": self.pinned,

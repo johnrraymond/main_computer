@@ -257,6 +257,8 @@ from tools.mother.common.deployment_genesis_birth import (
 from tools.mother.common.deployment_genesis import (
     MotherDeploymentGenesisError,
     build_deployment_genesis_transaction,
+    _reserve_artifact_from_path,
+    _bridge_escrow_artifact_from_path,
     verify_deployment_genesis_transaction,
     write_deployment_genesis_transaction,
 )
@@ -576,6 +578,7 @@ def _parser() -> argparse.ArgumentParser:
     add_node_reserve_identity.add_argument("--timeout", type=float, default=30.0)
     add_node_reserve_identity.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)
     add_node_reserve_identity.add_argument("--no-refresh-topology-evidence", action="store_true", help="only reserve identity; do not write a refreshed topology baseline")
+    add_node_reserve_identity.add_argument("--prepare-genesis-hub-admins", action="store_true", help="on fresh first-genesis, atomically complete the 15-wallet Hub admin pool alongside node reservation")
     add_node_reserve_identity.add_argument("--execute", action="store_true", help="install the verified private-state successor")
 
     add_node_do = add_node_subparsers.add_parser(
@@ -1672,9 +1675,17 @@ def _parser() -> argparse.ArgumentParser:
     _common(stage_genesis)
     stage_genesis.add_argument("--identity-execution", required=True)
     stage_genesis.add_argument(
+        "--reserve-artifact",
+        help="Compiled XLagBridgeReserve.json with storageLayout; defaults to the proven local smoke artifact",
+    )
+    stage_genesis.add_argument(
         "--identity-rollback-verification",
         required=True,
         help="proof that the same identity profile was applied, rolled back, verified absent, and then reapplied",
+    )
+    stage_genesis.add_argument(
+        "--bridge-escrow-artifact",
+        help="Compiled HubCreditBridgeEscrow.json with storageLayout; required for pool-enabled new genesis",
     )
     stage_genesis.add_argument("--created-at")
     stage_genesis.add_argument(
@@ -3480,6 +3491,14 @@ def _cmd_stage_genesis(args: argparse.Namespace, private_state) -> int:
         network=args.network,
         selected_nodes=_selected_nodes(args.node),
         created_at=args.created_at,
+        reserve_artifact=(
+            _reserve_artifact_from_path(Path(args.reserve_artifact))
+            if args.reserve_artifact else None
+        ),
+        bridge_escrow_artifact=(
+            _bridge_escrow_artifact_from_path(Path(args.bridge_escrow_artifact))
+            if args.bridge_escrow_artifact else None
+        ),
     )
     if args.write_transaction:
         path, digest = write_deployment_genesis_transaction(
@@ -5654,6 +5673,7 @@ def _cmd_add_node_reserve_identity(args: argparse.Namespace, private_state) -> i
         host=args.host,
         execute=args.execute,
         generated_at=args.generated_at,
+        prepare_genesis_hub_admins=args.prepare_genesis_hub_admins,
         operation=_operation("add-node-reserve-identity", args.network, args.operation_id),
         refresh_topology_evidence=not args.no_refresh_topology_evidence,
         topology_evidence_path=Path(args.topology_evidence) if args.topology_evidence else None,

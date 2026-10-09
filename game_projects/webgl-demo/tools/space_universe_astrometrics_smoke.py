@@ -242,50 +242,42 @@ const observerRelativeVectorsMatchGravity = Boolean(observerBody) && localAstrom
 universe.observeCatalogFromSystem('system.vela-gate');
 const paxEstimate = universe.snapshot('system.vela-gate').catalog.find((entry) => entry.id === 'system.pax');
 
-// Exercise the exact renderer bridge and opening-encounter methods from scene-viewer.js.
-const bridgeStart = sceneViewerSource.indexOf('        appendAstrometricSystemDisplay(');
-const bridgeEnd = sceneViewerSource.indexOf('        appendWarpTransitDisplay(', bridgeStart);
-let rendererBridgeInstalled = false;
-if (bridgeStart >= 0 && bridgeEnd > bridgeStart) {
-  const bridgeMethods = Function(`return ({${sceneViewerSource.slice(bridgeStart, bridgeEnd).trim()}});`)();
-  let callArgs = null;
-  const previousModules = globalThis.MainComputerShuttle3DRendererModules;
-  globalThis.MainComputerShuttle3DRendererModules = {
-    call(...args) {
-      callArgs = args;
-      return 'bridge-ok';
-    }
-  };
-  try {
-    const renderer = {appendAstrometricSystemDisplay: bridgeMethods.appendAstrometricSystemDisplay};
-    const result = renderer.appendAstrometricSystemDisplay('builder', 'prop', 1234, 'navigation', 'astrometrics');
-    rendererBridgeInstalled = Boolean(
-      result === 'bridge-ok'
-      && callArgs?.[0] === 'viewscreens'
-      && callArgs?.[1] === 'appendAstrometricSystemDisplay'
-      && callArgs?.[2] === renderer
-      && callArgs?.[3] === 'builder'
-      && callArgs?.[4] === 'prop'
-      && callArgs?.[5] === 1234
-      && callArgs?.[6] === 'navigation'
-      && callArgs?.[7] === 'astrometrics'
-    );
-  } finally {
-    globalThis.MainComputerShuttle3DRendererModules = previousModules;
-  }
-}
+// Exercise the replacement astrometric presentation seam rather than the deleted legacy viewscreen module.
+const presentationSource = fs.readFileSync(process.argv[8], 'utf8');
+const previousProjection = globalThis.MainComputerBridgeViewscreenProjection;
+globalThis.MainComputerBridgeViewscreenProjection = {SCHEMA:'game.bridgeViewscreenProjection.v1'};
+Function(presentationSource)();
+const presentationApi = globalThis.MainComputerBridgeViewscreenPresentation;
+const astrometricMode = presentationApi?.selectModeForSources?.({
+  encounterActive:false,
+  navigationSnapshot:nav,
+  astrometricSnapshot:before
+});
+const presentationSystem = presentationApi?.createSystem?.({initialMode:'encounter', selectedAtSimulationSeconds:0, displayPowered:true});
+presentationSystem?.select?.(astrometricMode, realSeconds);
+const astrometricPresentation = presentationSystem?.present?.({
+  navigationSnapshot:nav,
+  astrometricSnapshot:before,
+  simulationSeconds:realSeconds,
+  tracked:true
+});
+const astrometricRendererBridgeInstalled = Boolean(
+  astrometricMode === 'astrometric'
+  && astrometricPresentation?.schema === 'game.bridgeViewscreenPresentation.v1'
+  && astrometricPresentation?.mode === 'astrometric'
+  && astrometricPresentation?.targetObject?.id === before.targetObject?.id
+  && Array.isArray(astrometricPresentation?.catalog?.stars)
+);
+globalThis.MainComputerBridgeViewscreenProjection = previousProjection;
 
 const encounterStart = sceneViewerSource.indexOf('        openingEnemyEncounterActive(');
-const encounterEnd = sceneViewerSource.indexOf('        fireBridgeTacticalConsole(', encounterStart);
+const encounterEnd = sceneViewerSource.indexOf('        enemyShipHullPercent(', encounterStart);
 let destroyedEncounterExpiresAfterPresentation = false;
 if (encounterStart >= 0 && encounterEnd > encounterStart) {
-  const methodSource = sceneViewerSource.slice(encounterStart, encounterEnd).trim()
-    .replace(/\n        (?=(enemyShipHullPercent|enemyShipDisabled|bridgeTacticalShotAgeMs))/g, ',\n        ');
-  const encounterMethods = Function(`return ({${methodSource}});`)();
+  const encounterMethods = Function(`return ({${sceneViewerSource.slice(encounterStart, encounterEnd).trim()}});`)();
   const startSystemId = nav.startSystemId || nav.currentSystemId;
   const runtime = {
     ...encounterMethods,
-    lastFrameTime: 0,
     navigationSnapshot() {
       return {
         currentSystemId: startSystemId,
@@ -296,7 +288,9 @@ if (encounterStart >= 0 && encounterEnd > encounterStart) {
         elapsedWorldTime: 0
       };
     },
-    shipState: {flags: {enemyShipHullPercent: 0, enemyShipDisabled: true, bridgeTacticalLastFireAtMs: 1000}}
+    bridgeEncounterStatus(nowMs) {
+      return {targetDestroyed:true, lastImpactAgeMs:Number(nowMs)-1000};
+    }
   };
   destroyedEncounterExpiresAfterPresentation = Boolean(
     runtime.openingEnemyEncounterActive(2899) === true
@@ -305,7 +299,7 @@ if (encounterStart >= 0 && encounterEnd > encounterStart) {
 }
 
 const checks = {
-  astrometricRendererBridgeInstalled: rendererBridgeInstalled,
+  astrometricRendererBridgeInstalled,
   destroyedEncounterExpiresAfterPresentation,
   universeCatalogLoaded: universe.snapshot(nav.currentSystemId).systemCount === project.metadata.spaceNavigation.systems.length,
   observerIsMotherShip: before.observer?.bodyId === 'ship.mother',
@@ -392,6 +386,7 @@ process.exitCode = ok ? 0 : 1;
             str(project),
             str(args.real_seconds),
             str((SCRIPTS / "scene-viewer.js").resolve()),
+            str((SCRIPTS / "bridge-viewscreen-presentation.js").resolve()),
         ],
         cwd=REPO_ROOT,
         text=True,

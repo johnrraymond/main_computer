@@ -45,7 +45,8 @@ def test_default_encounter_transitions_from_boarding_to_real_fight_without_scene
     metrics = result["metrics"]
     assert metrics["timeStepSeconds"] == 5.0
     assert metrics["physicsStepSeconds"] == 0.1
-    assert metrics["viewportHz"] == 60.0
+    assert metrics["referenceViewportSampleHz"] == 60.0
+    assert metrics["browserRenderCadence"] == "requestAnimationFrame"
     assert metrics["playerFireAtSeconds"] == pytest.approx(11.7)
     assert metrics["hostileCombatReactionAtSeconds"] == pytest.approx(15.0)
     assert metrics["expectedHostileCombatReactionAtSeconds"] == pytest.approx(15.0)

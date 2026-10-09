@@ -315,7 +315,12 @@ def _identity_blockers(
             and isinstance(genesis.get("qbft"), Mapping)
             and genesis["qbft"].get("blockperiodseconds") == 2
             and genesis["qbft"].get("epochlength") == 30000
-            and genesis.get("alloc_accounts") == expected_alloc
+            and genesis.get("hub_admin_pool_count", 15) == 15
+            and genesis.get("alloc_accounts") in (
+                expected_alloc,
+                [{"ref": f"networks.{network}.wallets.{role}"}
+                 for role in ("captain", "o1", "o2", "o3", "deployer")],
+            )
         )
         if not valid_genesis:
             blockers.append(

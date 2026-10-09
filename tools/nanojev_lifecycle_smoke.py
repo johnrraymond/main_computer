@@ -1,22 +1,11 @@
 #!/usr/bin/env python3
-"""Destructive end-to-end smoke for the managed NanoJev lifecycle.
+"""End-to-end smoke for the managed NanoJev stop/start lifecycle.
 
-The smoke owns the normal NanoJev manager/backend ports and Compose project while it
-runs. It intentionally:
-
-1. shuts down any existing NanoJev lifecycle manager;
-2. removes the NanoJev Compose container;
-3. starts a fresh manager with smoke-sized timing values;
-4. sends a real /api/evaluate request through the manager and waits for the model;
-5. proves the backend is ready and a real response came back;
-6. waits for idle eviction and proves the backend container disappeared while the
-   manager stayed alive;
-7. shuts down the manager and proves both manager and backend are gone; and
-8. repeats the whole manager generation to catch stale-port / stale-state bugs.
-
-The image and Hugging Face cache are preserved. By default the image must already
-exist so a multi-minute image build cannot masquerade as a lifecycle failure. Pass
---allow-image-build to exercise the manager's build-on-first-use path as well.
+The smoke temporarily takes ownership of the normal manager/backend ports and Compose
+service, and makes real inference calls. It shuts down any existing manager, stops
+(but never removes) the backend container, exercises two manager generations, verifies
+idle stop and subsequent restart preserve the container ID, and leaves the backend
+stopped. The NanoJev image must be built before running the smoke.
 """
 
 from __future__ import annotations
@@ -116,21 +105,21 @@ def compose_env(args: argparse.Namespace) -> dict[str, str]:
     return env
 
 
-def compose_down(args: argparse.Namespace) -> subprocess.CompletedProcess[str]:
+def compose_stop(args: argparse.Namespace) -> subprocess.CompletedProcess[str]:
     stop_timeout = str(max(0, int(round(args.stop_timeout_seconds))))
     result = run_command(
-        [*compose_base(args), "down", "--remove-orphans", "--timeout", stop_timeout],
+        [*compose_base(args), "stop", "--timeout", stop_timeout, "nanojev"],
         cwd=args.root,
         env=compose_env(args),
     )
     emit(
-        "compose_down",
+        "compose_stop",
         exit_code=result.returncode,
         stop_timeout_seconds=args.stop_timeout_seconds,
         output=result.stdout.strip(),
     )
     if result.returncode != 0:
-        raise SmokeError(f"NanoJev compose down failed ({result.returncode}): {result.stdout.strip()}")
+        raise SmokeError(f"NanoJev compose stop failed ({result.returncode}): {result.stdout.strip()}")
     return result
 
 
@@ -235,7 +224,7 @@ def stop_existing_manager(args: argparse.Namespace) -> None:
             method="POST",
             timeout_seconds=args.shutdown_timeout_seconds,
         )
-    except Exception as exc:  # compose_down below still cleans the backend
+    except Exception as exc:  # compose_stop below still stops the backend
         emit("preclean_manager_shutdown_error", error=f"{type(exc).__name__}: {exc}")
     else:
         emit("preclean_manager_shutdown_response", response=response)
@@ -441,7 +430,7 @@ def wait_for_idle_unload(
         state = container_state(args)
         last_status = status
         last_container = state
-        if status.get("running") is False and not state["exists"]:
+        if status.get("running") is False and state["exists"] and state["status"] == "exited":
             backend_health = try_http_json(
                 args.backend_url + "/api/health",
                 timeout_seconds=min(1.0, max(0.2, args.poll_seconds * 2.0)),
@@ -489,8 +478,8 @@ def shutdown_manager(args: argparse.Namespace, process: subprocess.Popen[Any], g
     if not manager_is_absent(args):
         raise SmokeError(f"manager generation {generation} still answers after process exit")
     state = container_state(args)
-    if state["exists"]:
-        raise SmokeError(f"backend survived manager shutdown: {state!r}")
+    if not state["exists"] or state["status"] != "exited":
+        raise SmokeError(f"backend was removed or survived running after manager shutdown: {state!r}")
     emit(
         "manager_shutdown_complete",
         generation=generation,
@@ -522,13 +511,13 @@ def cleanup_process(args: argparse.Namespace, process: subprocess.Popen[Any] | N
                 process.kill()
                 process.wait(timeout=5)
     try:
-        compose_down(args)
+        compose_stop(args)
     except Exception as exc:
-        emit("cleanup_compose_down_error", error=f"{type(exc).__name__}: {exc}")
+        emit("cleanup_compose_stop_error", error=f"{type(exc).__name__}: {exc}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Destructive end-to-end NanoJev lifecycle smoke")
+    parser = argparse.ArgumentParser(description="NanoJev stop/start lifecycle smoke (uses live model)")
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--compose-file", type=Path, default=DEFAULT_COMPOSE)
     parser.add_argument("--manager-script", type=Path, default=DEFAULT_MANAGER)
@@ -555,11 +544,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shutdown-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--manager-exit-timeout-seconds", type=float, default=15.0)
     parser.add_argument("--stop-timeout-seconds", type=float, default=2.0)
-    parser.add_argument(
-        "--allow-image-build",
-        action="store_true",
-        help="allow the manager to build the NanoJev image if it is missing; default is fail-fast",
-    )
     args = parser.parse_args()
     args.root = args.root.resolve()
     args.compose_file = args.compose_file.resolve()
@@ -599,7 +583,7 @@ def main() -> int:
 
     emit(
         "smoke_start",
-        destructive=True,
+        stops_live_backend=True,
         root=str(args.root),
         manager_url=args.manager_url,
         backend_url=args.backend_url,
@@ -618,7 +602,7 @@ def main() -> int:
     generations: list[dict[str, Any]] = []
     try:
         stop_existing_manager(args)
-        compose_down(args)
+        compose_stop(args)
         pid_file = args.root / ".main_computer_nanojev_manager.pid"
         if pid_file.exists():
             pid_file.unlink()
@@ -626,18 +610,28 @@ def main() -> int:
 
         has_image = image_exists(args)
         emit("image_preflight", image=args.image_name, exists=has_image)
-        if not has_image and not args.allow_image_build:
+        if not has_image:
             raise SmokeError(
-                f"NanoJev image {args.image_name!r} is missing. Build it first or pass --allow-image-build."
+                f"NanoJev image {args.image_name!r} is missing. Build it explicitly first."
             )
 
+        previous_id: str | None = container_state(args)["id"]
         for generation in range(1, args.manager_generations + 1):
-            if container_state(args)["exists"]:
-                raise SmokeError(f"backend container exists before manager generation {generation}")
+            before = container_state(args)
+            if before["exists"] and before["status"] != "exited":
+                raise SmokeError(f"backend must be stopped before manager generation {generation}: {before!r}")
             process = start_manager(args, generation)
             request_result = wake_and_respond(args, generation)
+            started_id = request_result["container_after_response"]["id"]
+            if previous_id is not None and started_id != previous_id:
+                raise SmokeError(f"container ID changed after restart: {previous_id} -> {started_id}")
             idle_result = wait_for_idle_unload(args, process, generation)
+            if idle_result["container"]["id"] != started_id:
+                raise SmokeError("container ID changed during idle stop")
             shutdown_result = shutdown_manager(args, process, generation)
+            if shutdown_result["container"]["id"] != started_id:
+                raise SmokeError("container ID changed during manager shutdown")
+            previous_id = started_id
             process = None
             generations.append(
                 {

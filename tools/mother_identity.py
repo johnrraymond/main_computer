@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -17,10 +18,14 @@ if str(REPO_ROOT) not in sys.path:
 from tools.mother.common.errors import MotherError, exit_code_for
 from tools.mother.common.models import OperationIdentity
 from tools.mother.common.paths import MotherPaths
+from tools.mother.common.hub_admin_pool import (
+    POOL_SIZE, HubAdminPoolError, complete_pool, inspect_pool,
+)
 from tools.mother.common.private_state import (
     prepare_private_state_successor,
     read_private_state,
     replace_verified_starter_private_state,
+    replace_verified_private_state,
 )
 from tools.mother.common.starter_identity import (
     StarterIdentityError,
@@ -123,6 +128,62 @@ def _reserve_starter(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prepare_genesis_hub_admin_pool(args: argparse.Namespace) -> int:
+    """Prepare exact genesis-funded admin set at *any* Mother state generation.
+
+    Must run before identity execution / genesis staging because those artifacts
+    bind the current private-state generation. Never repair old genesis silently.
+    """
+    operation = OperationIdentity(
+        operation_id=args.operation_id or f"mother-genesis-hub-admin-prep-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+        request_id="mother-genesis-hub-admin-prep",
+        network=args.network, operation_kind="MOTHER-OP-IDENTITY-ROTATION",
+    )
+    paths = _paths(Path(args.runtime_state_root))
+    current = read_private_state(paths, operation=operation)
+    document = _document(current)
+    original = document["networks"][args.network]
+    view = inspect_pool(original)
+    print(f"hub admins existing: {len(view['addresses'])}")
+    print(f"hub admins missing: {view['new_reservations_needed']}")
+    print(f"hub admins target: {POOL_SIZE}")
+    print(f"current Mother generation: {current.binding.generation}")
+    print("network access performed: no")
+    print("private keys printed: 0")
+    if not args.write:
+        print("write performed: no (dry-run)")
+        return 0
+    successor = deepcopy(document)
+    net = successor["networks"][args.network]
+    timestamp = args.updated_at or _utc_now()
+    labels = complete_pool(net, generated_at=timestamp)
+    # This marker is the explicit opt-in to a *new* genesis. Old accepted
+    # genesis receipts are intentionally NOT mutated or reinterpreted.
+    descriptor = net.get("genesis")
+    if not isinstance(descriptor, dict):
+        raise HubAdminPoolError("first genesis descriptor is not yet reserved")
+    descriptor["hub_admin_pool_count"] = POOL_SIZE
+    if successor == document:
+        print("write performed: no (already prepared)")
+        return 0
+    closure = prepare_private_state_successor(
+        current, successor, updated_at=timestamp,
+        updated_by_action_id=operation.operation_id, operation=operation,
+    )
+    installed = replace_verified_private_state(
+        paths, closure, current.binding, operation=operation,
+    )
+    if not installed.installed:
+        raise RuntimeError("verified Hub administrator prep successor not installed")
+    verified = read_private_state(paths, operation=operation)
+    if verified.binding != installed.binding:
+        raise RuntimeError("committed Hub administrator prep did not verify")
+    print(f"generated new hub admins: {len(labels)}")
+    print(f"installed generation: {installed.binding.generation}")
+    print("write performed: yes")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -137,6 +198,16 @@ def _parser() -> argparse.ArgumentParser:
     reserve.add_argument("--operation-id")
     reserve.add_argument("--write", action="store_true")
     reserve.set_defaults(handler=_reserve_starter)
+    prepare = subparsers.add_parser(
+        "prepare-genesis-hub-admins",
+        help="complete 15 allocated hub_admin identities before identity execution and genesis staging",
+    )
+    prepare.add_argument("--network", default="mainnet")
+    prepare.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    prepare.add_argument("--updated-at")
+    prepare.add_argument("--operation-id")
+    prepare.add_argument("--write", action="store_true")
+    prepare.set_defaults(handler=_prepare_genesis_hub_admin_pool)
     return parser
 
 
@@ -147,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     except MotherError as exc:
         print(str(exc), file=sys.stderr)
         return exit_code_for(exc)
-    except (OSError, RuntimeError, StarterIdentityError, TypeError, ValueError) as exc:
+    except (OSError, RuntimeError, HubAdminPoolError, KeyError, StarterIdentityError, TypeError, ValueError) as exc:
         print(f"mother-identity error: {exc}", file=sys.stderr)
         return 2
 

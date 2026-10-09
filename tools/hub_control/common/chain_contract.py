@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from main_computer.hub_networks import load_hub_network_registry
+from main_computer.contract_config import load_contract_config, contract_address_map, ContractConfigError
 
 from .canonical import canonical_bytes, sha256_json
 from .errors import HubControlError
@@ -30,100 +31,6 @@ def _repo_relative(ctx: HubContext, path: Path) -> str:
         return str(path)
 
 
-def _deployment_manifest_path(ctx: HubContext, profile: object, network: str) -> Path:
-    raw = getattr(profile, "deployment_manifest_path", None)
-    path = Path(raw) if raw is not None else Path("runtime") / "deployments" / network / "latest.json"
-    return path if path.is_absolute() else ctx.repo_root / path
-
-
-def _load_deployment_contract_addresses(
-    ctx: HubContext,
-    network: str,
-    profile: object,
-    *,
-    expected_chain_id: int,
-) -> tuple[dict[str, str], dict[str, Any]] | None:
-    path = _deployment_manifest_path(ctx, profile, network)
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HubControlError("HUB_CHAIN_DEPLOYMENT_INVALID", f"could not parse {path}: {exc}") from exc
-    if not isinstance(payload, Mapping):
-        raise HubControlError("HUB_CHAIN_DEPLOYMENT_INVALID", f"{path} must contain an object")
-
-    schema = str(payload.get("schema") or "").strip()
-    if schema and schema != "main-computer.deployment.v1":
-        raise HubControlError("HUB_CHAIN_DEPLOYMENT_INVALID", f"{path} has unsupported schema {schema!r}")
-    environment = str(payload.get("environment") or "").strip()
-    if environment and environment != network:
-        raise HubControlError(
-            "HUB_CHAIN_DEPLOYMENT_NETWORK_MISMATCH",
-            f"{path} describes network {environment!r}, expected {network!r}",
-        )
-
-    chain = payload.get("chain")
-    if not isinstance(chain, Mapping):
-        raise HubControlError("HUB_CHAIN_DEPLOYMENT_INVALID", f"{path} is missing its chain object")
-    raw_manifest_chain_id = chain.get("chain_id")
-    if raw_manifest_chain_id not in (None, ""):
-        try:
-            manifest_chain_id = int(str(raw_manifest_chain_id), 0)
-        except Exception as exc:
-            raise HubControlError(
-                "HUB_CHAIN_DEPLOYMENT_INVALID",
-                f"{path} has invalid chain.chain_id {raw_manifest_chain_id!r}",
-            ) from exc
-        if manifest_chain_id != expected_chain_id:
-            raise HubControlError(
-                "HUB_CHAIN_DEPLOYMENT_ID_MISMATCH",
-                f"{path} has chain id {manifest_chain_id}, expected {expected_chain_id}",
-            )
-
-    raw_contracts = payload.get("contracts")
-    if raw_contracts is None:
-        raw_contracts = payload.get("deployments")
-    if not isinstance(raw_contracts, Mapping):
-        raise HubControlError("HUB_CHAIN_DEPLOYMENT_INVALID", f"{path} is missing its contracts object")
-
-    addresses: dict[str, str] = {}
-    for raw_name, raw_record in raw_contracts.items():
-        name = str(raw_name).strip()
-        if not name:
-            continue
-        if isinstance(raw_record, Mapping):
-            address = str(raw_record.get("address") or "").strip()
-        else:
-            address = str(raw_record or "").strip()
-        if address:
-            addresses[name] = address
-
-    source: dict[str, Any] = {
-        "kind": "deployment-manifest",
-        "path": _repo_relative(ctx, path),
-    }
-    if payload.get("run_id") not in (None, ""):
-        source["run_id"] = str(payload.get("run_id"))
-    if payload.get("created_at") not in (None, ""):
-        source["created_at"] = str(payload.get("created_at"))
-    return addresses, source
-
-
-def _load_checked_in_contract_addresses(ctx: HubContext, network: str) -> tuple[dict[str, str], dict[str, Any]]:
-    path = ctx.repo_root / "main_computer" / "config" / f"{network}_contracts.json"
-    if not path.is_file():
-        return {}, {"kind": "checked-in-fallback", "path": _repo_relative(ctx, path)}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HubControlError("HUB_CHAIN_CONTRACTS_INVALID", f"could not parse {path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise HubControlError("HUB_CHAIN_CONTRACTS_INVALID", f"{path} must contain an object")
-    addresses = {str(k): str(v) for k, v in payload.items() if str(v).strip()}
-    return addresses, {"kind": "checked-in-fallback", "path": _repo_relative(ctx, path)}
-
-
 def _load_contract_addresses(
     ctx: HubContext,
     network: str,
@@ -131,15 +38,18 @@ def _load_contract_addresses(
     *,
     expected_chain_id: int,
 ) -> tuple[dict[str, str], dict[str, Any]]:
-    deployment = _load_deployment_contract_addresses(
-        ctx,
-        network,
-        profile,
-        expected_chain_id=expected_chain_id,
-    )
-    if deployment is not None:
-        return deployment
-    return _load_checked_in_contract_addresses(ctx, network)
+    # No historical deployment-manifest fallback: it may belong to a previous
+    # genesis with an identical chain ID.
+    try:
+        loaded = load_contract_config(network, repo_root=ctx.repo_root, required=True)
+    except ContractConfigError as exc:
+        raise HubControlError("HUB_CHAIN_CONTRACTS_INVALID", str(exc)) from exc
+    assert loaded is not None
+    path, payload = loaded
+    return contract_address_map(payload), {
+        "kind": "public-contract-registry",
+        "path": _repo_relative(ctx, path),
+    }
 
 
 def _required_contract_addresses(addresses: Mapping[str, str]) -> dict[str, str]:

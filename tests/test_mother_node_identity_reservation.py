@@ -682,3 +682,99 @@ def test_existing_reserved_identity_refreshes_from_recoverable_predecessor_topol
     assert refreshed["mother_binding"] == _topology_binding_for_test(updated)
     assert refreshed["final_topology"]["nodes"] == ["mainneta-super1"]
     assert refreshed["summary"]["topology_current"] is True
+
+
+def test_fresh_genesis_identity_reservation_completes_pool_atomically(tmp_path: Path) -> None:
+    """The harness must not need a standalone pool-prep command."""
+    from tools.mother.common.hub_admin_pool import genesis_addresses
+
+    paths, original = _install_state(tmp_path)
+    original_doc = yaml.safe_load(original.document_bytes)
+    original_net = original_doc["networks"]["mainnet"]
+    before = {
+        node: entry["wallets"]["hub_admin"]["private_key"]
+        for node, entry in original_net["node_seed_material"].items()
+    }
+    # This target is already reserved, but its first genesis has not been born.
+    result = reserve_add_node_identity(
+        paths, original, network="mainnet", node="mainneta-super1",
+        host="coolify-a", execute=True, prepare_genesis_hub_admins=True,
+        operation=_operation("genesis-pool-with-existing-target"),
+        refresh_topology_evidence=False,
+    )
+    assert result["private_state_updated"] is True
+    assert result["identity_already_reserved"] is True
+    assert result["genesis_hub_admin_pool"] == {
+        "prepared": True, "total": 15, "new_reservations": 13,
+    }
+    state = read_private_state(paths, operation=_operation("genesis-pool-read"))
+    assert state.binding.generation == original.binding.generation + 1
+    doc = yaml.safe_load(state.document_bytes)["networks"]["mainnet"]
+    assert len(genesis_addresses(doc)) == 15
+    assert doc["genesis"]["hub_admin_pool_count"] == 15
+    assert all(doc["node_seed_material"][node]["wallets"]["hub_admin"]["private_key"] == key for node, key in before.items())
+    assert len(doc["wallets"]["hub_admin_reserve"]) == 13
+
+    rerun = reserve_add_node_identity(
+        paths, state, network="mainnet", node="mainneta-super1",
+        host="coolify-a", execute=True, prepare_genesis_hub_admins=True,
+        operation=_operation("genesis-pool-idempotent"),
+        refresh_topology_evidence=False,
+    )
+    assert rerun["private_state_update_required"] is False
+    assert rerun["private_state_updated"] is False
+
+
+def test_fresh_genesis_new_node_claims_one_of_exactly_fifteen(tmp_path: Path) -> None:
+    from tools.mother.common.hub_admin_pool import genesis_addresses
+
+    paths, original = _install_state(tmp_path)
+    result = reserve_add_node_identity(
+        paths, original, network="mainnet", node="mainneta-super2",
+        host="coolify-a", execute=True, prepare_genesis_hub_admins=True,
+        key_factory=lambda: "0x" + "66" * 32,
+        operation=_operation("genesis-pool-new-target"),
+        refresh_topology_evidence=False,
+    )
+    assert result["private_state_updated"] is True
+    assert result["genesis_hub_admin_pool"]["new_reservations"] == 13
+    state = read_private_state(paths, operation=_operation("genesis-pool-new-target-read"))
+    net = yaml.safe_load(state.document_bytes)["networks"]["mainnet"]
+    assert len(genesis_addresses(net)) == 15
+    assert len(net["wallets"]["hub_admin_reserve"]) == 12
+    assert result["hub_admin_address"].lower() in genesis_addresses(net)
+    assert result["hub_admin_address"].lower() == net["node_seed_material"]["mainneta-super2"]["wallets"]["hub_admin"]["address"].lower()
+
+
+def test_genesis_pool_three_assigned_one_reserved_generates_eleven(tmp_path: Path) -> None:
+    from tools.mother.common.hub_admin_pool import genesis_addresses
+
+    runtime = tmp_path / "runtime" / "state"
+    paths = MotherPaths(runtime_state_root=runtime).resolve_private_state_paths()
+    document = _base_document()
+    net = document["networks"]["mainnet"]
+    def wallet(key: str) -> dict[str, str]:
+        return {"private_key": key, "address": private_key_to_address(key)}
+    # Two existing per-node assignments, one already-assigned Hub and one
+    # previously reserved but unassigned identity: 4 unique wallets.
+    net["hub_admin_assignments"] = {"mainneta-hub1": wallet("0x" + "88" * 32)}
+    net["wallets"]["hub_admin_reserve"] = {"reserve01": wallet("0x" + "99" * 32)}
+    op = _operation("genesis-pool-three-assigned-one-reserved-bootstrap")
+    closure = prepare_private_state_bootstrap(
+        paths, document, updated_at="2026-08-01T00:00:00Z",
+        updated_by_action_id=op.operation_id, operation=op,
+    )
+    install_verified_private_state(paths, closure, None, operation=op)
+    before = read_private_state(paths, operation=_operation("three-plus-one-read"))
+    result = reserve_add_node_identity(
+        paths, before, network="mainnet", node="mainneta-super1", host="coolify-a",
+        execute=True, prepare_genesis_hub_admins=True,
+        operation=_operation("three-plus-one-prepare"),
+        refresh_topology_evidence=False,
+    )
+    assert result["genesis_hub_admin_pool"]["new_reservations"] == 11
+    updated = read_private_state(paths, operation=_operation("three-plus-one-final"))
+    final = yaml.safe_load(updated.document_bytes)["networks"]["mainnet"]
+    assert len(genesis_addresses(final)) == 15
+    assert final["hub_admin_assignments"]["mainneta-hub1"] == net["hub_admin_assignments"]["mainneta-hub1"]
+    assert final["wallets"]["hub_admin_reserve"]["reserve01"] == net["wallets"]["hub_admin_reserve"]["reserve01"]

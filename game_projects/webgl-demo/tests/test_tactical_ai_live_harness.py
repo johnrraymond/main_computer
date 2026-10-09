@@ -63,3 +63,15 @@ def test_battle_is_primed_before_t_zero_is_released():
     run = service.index("result = smoke.run()", release)
     assert prime < release < run
     assert 'self._battle_config["simulationReleasedAfterPrime"] = True' in service
+
+
+def test_tactical_panel_displays_backend_model_load_state():
+    script = (GAME_ROOT / "web" / "scripts" / "tactical-ai-debug-panel.js").read_text(encoding="utf-8")
+    assert '"loading-model": "Loading NanoJev checkpoint"' in script
+    assert 'const modelLoaded = payload.modelLoaded === true && manager.model_loaded === true && manager.backend_ready === true' in script
+    assert 'chip("container", container)' in script
+    assert 'chip("model", modelLoaded ? "loaded"' in script
+    assert 'chip("recovery", recovery)' in script
+    assert 'manager.checkpoint_validated === true' in script
+    assert '!modelLoaded || !timeStepMatches' in script
+    assert 'phase === "loading-model"' in script

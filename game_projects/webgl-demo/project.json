@@ -2357,24 +2357,12 @@
                 "label": "Proceed to the bridge and inspect the main viewscreen.",
                 "location": "corridor.main"
               },
-              "objective.bridge-screen": {
-                "label": "Use the bridge viewscreen controls to identify the current target.",
-                "location": "bridge.deck"
-              },
-              "objective.enemy-track": {
-                "label": "Enemy raider centered on the bridge viewscreen.",
-                "location": "bridge.deck"
-              },
               "objective.enemy-attack": {
                 "label": "Fire the bridge tactical console at the enemy raider.",
                 "location": "bridge.deck"
               },
               "objective.enemy-disabled": {
                 "label": "Enemy raider destroyed. Open navigation and choose the next system.",
-                "location": "bridge.deck"
-              },
-              "objective.planet-view": {
-                "label": "Center the current system planet on the bridge viewscreen.",
                 "location": "bridge.deck"
               },
               "objective.planet-scan": {
@@ -2444,7 +2432,7 @@
               "terminal.bridge-viewscreen": {
                 "label": "Bridge Viewscreen",
                 "location": "bridge.deck",
-                "state": "standby"
+                "state": "online"
               },
               "terminal.bridge-tactical": {
                 "label": "Bridge Tactical Console / Sensor Array",
@@ -2713,8 +2701,8 @@
                   -37.15
                 ],
                 "range": 2.45,
-                "action": "trackEnemyShipOnViewscreen",
-                "prompt": "Press E to use the bridge viewscreen controls.",
+                "action": "toggleBridgeViewscreenDisplayPower",
+                "prompt": "Press E to toggle the bridge viewscreen display power.",
                 "visual": {
                   "color": "#22d3ee",
                   "activeColor": "#fef3c7",
@@ -2809,30 +2797,7 @@
                 "nextObjective": [
                   "objective.restore-power",
                   "objective.survey-departments",
-                  "objective.bridge-screen"
-                ]
-              },
-              "trackEnemyShipOnViewscreen": {
-                "id": "trackEnemyShipOnViewscreen",
-                "label": "Acquire bridge viewscreen target",
-                "handler": "trackEnemyShipOnViewscreen",
-                "status": "Current target centered on the main viewscreen.",
-                "changesState": [
-                  "terminals[terminal.bridge-viewscreen].state",
-                  "flags.bridgeViewscreenTrackingActive",
-                  "flags.enemyShipOnBridgeViewscreen",
-                  "flags.lastSurveyedPlanetId",
-                  "flags.lastSurveyedSystemId",
-                  "flags.bridgeViewscreenInteractedAtMs",
-                  "objectiveId",
-                  "lastInteractionStatus"
-                ],
-                "successStatus": "Current target centered on the main viewscreen.",
-                "nextObjective": [
-                  "objective.enemy-attack",
-                  "objective.enemy-disabled",
-                  "objective.planet-scan",
-                  "objective.planet-surveyed"
+                  "objective.bridge-access"
                 ]
               },
               "fireBridgeTacticalConsole": {
@@ -2840,13 +2805,8 @@
                 "label": "Fire tactical weapons or scan planet",
                 "handler": "fireBridgeTacticalConsole",
                 "changesState": [
-                  "terminals[terminal.bridge-viewscreen].state",
+                  "bridgeEncounterRuntime",
                   "terminals[terminal.bridge-tactical].state",
-                  "flags.bridgeViewscreenTrackingActive",
-                  "flags.enemyShipHullPercent",
-                  "flags.enemyShipDisabled",
-                  "flags.bridgeTacticalShotsFired",
-                  "flags.bridgeTacticalLastFireAtMs",
                   "flags.currentSystemPlanetSurveyed",
                   "flags.lastSurveyedPlanetId",
                   "flags.lastSurveyedSystemId",
@@ -2873,6 +2833,18 @@
                   "lastInteractionStatus"
                 ],
                 "successStatus": "Bridge navigation online. Plot an adjacent course and engage warp."
+              },
+              "toggleBridgeViewscreenDisplayPower": {
+                "id": "toggleBridgeViewscreenDisplayPower",
+                "label": "Toggle bridge viewscreen display power",
+                "handler": "toggleBridgeViewscreenDisplayPower",
+                "changesState": [
+                  "bridgeViewscreenSystem.displayPowered",
+                  "terminals[terminal.bridge-viewscreen].state",
+                  "lastInteractionStatus"
+                ],
+                "successStatus": "Bridge viewscreen display power changed.",
+                "nextObjective": []
               }
             },
             "validation": {

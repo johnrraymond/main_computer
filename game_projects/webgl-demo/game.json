@@ -62,9 +62,14 @@
         "web/scripts/pax-scenario-session-api.js",
         "web/scripts/pax-scenario-session.js",
         "web/scripts/pax-scenario-interaction.js",
+        "web/scripts/space-captain-multirate-contract.js",
+        "web/scripts/bridge-encounter-runtime.js",
+        "web/scripts/bridge-viewscreen-projection.js",
+        "web/scripts/bridge-viewscreen-encounter-runtime.js",
+        "web/scripts/bridge-viewscreen-presentation.js",
+        "web/scripts/bridge-viewscreen-renderer.js",
         "web/scripts/shuttle3d-renderer-modules.js",
         "web/scripts/shuttle3d-render-room-geometry.js",
-        "web/scripts/shuttle3d-render-viewscreens.js",
         "web/scripts/scene-viewer.js"
       ],
       "runtime-after-routing": [

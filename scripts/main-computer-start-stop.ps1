@@ -1087,7 +1087,7 @@ function Start-MainComputerNanoJev([string]$RootPath, [object]$LaunchContext, [s
   $arguments = @(
     "--project-name", $projectName,
     "-f", $composePath,
-    "up", "-d", "--build", "nanojev"
+    "up", "-d", "--no-build", "--pull", "never", "nanojev"
   )
   Invoke-MainComputerRuntimeCommand -Command $composeCommand -Arguments $arguments
   $exitCode = $LASTEXITCODE
@@ -1209,6 +1209,50 @@ function Stop-MainComputerNanoJevManagerAtUrl([string]$ManagerUrl, [int]$Request
   }
 }
 
+function Start-MainComputerNanoJevImageBootstrap([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
+  # Fire and forget. The worker owns the image inspection/build and enforces
+  # single-flight across repeated ./start invocations. Other services must not wait.
+  if (-not (Test-MainComputerNanoJevEnabled $LaunchContext) -or $NoDocker) { return }
+  $scriptPath = Join-Path $RootPath "tools\nanojev_image_bootstrap.py"
+  $composePath = Join-Path $RootPath "docker-compose.nanojev.yml"
+  if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $composePath -PathType Leaf)) {
+    Write-Warning "NanoJev image bootstrap unavailable: script or Compose file missing."
+    return
+  }
+  $projectName = Get-SafeDockerName `
+    (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_NANOJEV_COMPOSE_PROJECT" "main-computer-nanojev") `
+    "main-computer-nanojev"
+  $runtime = Get-StartStopRuntime $RootPath
+  Ensure-Directory $runtime
+  # Unique redirects: a repeated ./start must not truncate a running worker's logs.
+  $invocation = [Guid]::NewGuid().ToString("N").Substring(0, 12)
+  $stdout = Join-Path $runtime ("nanojev-bootstrap-launch-" + $invocation + ".stdout.log")
+  $stderr = Join-Path $runtime ("nanojev-bootstrap-launch-" + $invocation + ".stderr.log")
+  $arguments = @(
+    $scriptPath,
+    "--root", $RootPath,
+    "--compose-file", $composePath,
+    "--project-name", $projectName,
+    "--docker-command", "docker",
+    "--image-name", "main-computer/nanojev:managed-v2"
+  )
+  try {
+    $process = Start-Process `
+      -FilePath $PythonCommand `
+      -ArgumentList (Join-CommandLine $arguments) `
+      -WorkingDirectory $RootPath `
+      -WindowStyle Hidden `
+      -RedirectStandardOutput $stdout `
+      -RedirectStandardError $stderr `
+      -PassThru
+    Write-Host ("NanoJev image bootstrap dispatched in background (PID {0}); status: {1}" -f $process.Id, (Join-Path $runtime "nanojev-image-bootstrap.json"))
+  } catch {
+    # Bootstrap failure is independently observable; do not block Main Computer.
+    Write-Warning ("Could not launch NanoJev image bootstrap: {0}" -f $_.Exception.Message)
+  }
+}
+
 function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
   $composePath = Join-Path $RootPath "docker-compose.nanojev.yml"
   $managerScript = Join-Path $RootPath "tools\nanojev_lifecycle_service.py"
@@ -1263,7 +1307,6 @@ function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchCont
     return [ordered]@{ ok = $false; requested = $true; mode = "lazy-managed"; state = "docker-required"; message = "Lazy NanoJev lifecycle manager currently requires Docker." }
   }
 
-  $composeCommand = ConvertTo-MainComputerStringArray $containerRuntime.compose_command
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_NANOJEV_BIND_PORT", [string]$backendPort, "Process")
 
   # A repeated start must not accidentally accept an older manager that still owns
@@ -1280,14 +1323,14 @@ function Start-MainComputerNanoJevManager([string]$RootPath, [object]$LaunchCont
     }
   }
 
-  # Remove an older direct-mode or orphaned backend container before the new
-  # lifecycle manager takes ownership of the Compose project.
-  Invoke-MainComputerRuntimeCommand `
-    -Command $composeCommand `
-    -Arguments @("--project-name", $projectName, "-f", $composePath, "down", "--remove-orphans") `
-    -SuppressErrors
-
-  Write-Host "Starting NanoJev lazy manager; image/container will be created only on first use."
+  # Do not issue a second, unconditional `compose stop` during startup.
+  # The previous manager already stops its backend during /control/shutdown;
+  # a separately started backend can be adopted by the new manager. More
+  # importantly, ./start's async bootstrap may be creating the container at
+  # this moment. A concurrent stop is unnecessary and can turn Docker's
+  # ordinary stderr progress into a terminating PowerShell NativeCommandError.
+  # Only the lifecycle manager owns backend start/stop transitions.
+  Write-Host "Starting NanoJev lazy manager; existing container will be reused without a startup stop; image bootstrap runs independently."
 
   $runtime = Get-StartStopRuntime $RootPath
   Ensure-Directory $runtime
@@ -2742,9 +2785,9 @@ function New-StartSession(
         env_file = $null
         started_by = @("start_v2.bat")
         start_commands = @(
-          @("docker", "compose", "--project-name", $nanoJevProject, "-f", $nanoJevCompose, "up", "-d", "--build", "nanojev")
+          @("docker", "compose", "--project-name", $nanoJevProject, "-f", $nanoJevCompose, "up", "-d", "--no-build", "--pull", "never", "nanojev")
         )
-        stop_command = @("docker", "compose", "--project-name", $nanoJevProject, "-f", $nanoJevCompose, "down", "--remove-orphans")
+        stop_command = @("docker", "compose", "--project-name", $nanoJevProject, "-f", $nanoJevCompose, "stop", "nanojev")
       },
       [ordered]@{
         name = "executor-unleashed"
@@ -2888,6 +2931,10 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$No
 
   Ensure-MainComputerDockerDesktopStarted $RootPath $launchContext $pythonCommand
   Assert-MainComputerExplicitContainerRuntimeAvailable $RootPath $launchContext $pythonCommand
+
+  if (Test-MainComputerNanoJevManaged $launchContext) {
+    Start-MainComputerNanoJevImageBootstrap $RootPath $launchContext $pythonCommand
+  }
 
   $devChainStart = Start-MainComputerDevChainIfNeeded $RootPath $launchContext $pythonCommand
   if ($null -eq $devChainStart) {

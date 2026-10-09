@@ -62,12 +62,18 @@ class TacticalAIService:
         self._phase = "idle"
         self._last_error = ""
         self._performance_ready = False
+        self._model_loaded = False
         self._warmup_samples: list[dict[str, Any]] = []
         self._warmup_target_seconds = 5.0
         self._tactical_time_step_seconds = 5
         self._warmup_required_consecutive = 3
         self._warmup_consecutive_passes = 0
         self._warmup_timeout_seconds = 120.0
+        # Watchdog starts only after the captain adapter becomes healthy. A slow
+        # cold model load is not a failed tactical inference.
+        self._no_good_result_reset_seconds = 20.0
+        self._warmup_soft_reset_count = 0
+        self._warmup_last_soft_reset_reason = ""
         self._prepare_started_monotonic: float | None = None
         self._battle_started_monotonic: float | None = None
         self._battle_config: dict[str, Any] = {}
@@ -96,6 +102,16 @@ class TacticalAIService:
             return data if data.get("ok") is True else {"ok": False, "error": data.get("error", "manager status failed")}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    @staticmethod
+    def _manager_model_ready(manager: dict[str, Any]) -> bool:
+        return (
+            manager.get("ok") is True
+            and manager.get("running") is True
+            and manager.get("backend_ready") is True
+            and manager.get("model_loaded") is True
+            and manager.get("checkpoint_validated") is True
+        )
 
     def _adapter_alive(self) -> bool:
         process = self._adapter_process
@@ -177,6 +193,33 @@ class TacticalAIService:
             f"last_error={last_error}; log={log_path}"
         )
 
+    def _ensure_model_loaded(self, startup_timeout_seconds: float, cancel_event: threading.Event) -> None:
+        """Wake the lazy manager and verify a loaded checkpoint before timed inference.
+
+        The manager's /api/health proxy starts the container if necessary. Unlike
+        the lightweight captain adapter /health, this endpoint explicitly reports
+        model_loaded_once and is validated by the manager's checkpoint-aware health.
+        Cold startup is outside the 20-second inference watchdog.
+        """
+        if cancel_event.is_set():
+            return
+        try:
+            backend_health = _json_get(
+                self.manager_url + "/api/health",
+                timeout=max(5.0, startup_timeout_seconds),
+            )
+        except Exception as exc:
+            raise TacticalAIError(f"NanoJev model load did not complete: {type(exc).__name__}: {exc}") from exc
+        if cancel_event.is_set():
+            return
+        if backend_health.get("ready") is not True or backend_health.get("model_loaded_once") is not True:
+            raise TacticalAIError("NanoJev did not confirm ready=true and model_loaded_once=true")
+        manager = self._manager_status()
+        if not self._manager_model_ready(manager):
+            raise TacticalAIError("NanoJev's model responded, but the manager has not confirmed checkpoint readiness")
+        with self._lock:
+            self._model_loaded = True
+
     @staticmethod
     def _positive_float(value: Any, default: float, minimum: float, maximum: float) -> float:
         try:
@@ -236,12 +279,15 @@ class TacticalAIService:
             self._phase = "starting-ai"
             self._last_error = ""
             self._performance_ready = False
+            self._model_loaded = False
             self._warmup_samples = []
             self._warmup_target_seconds = target
             self._tactical_time_step_seconds = time_step
             self._warmup_required_consecutive = required
             self._warmup_consecutive_passes = 0
             self._warmup_timeout_seconds = timeout
+            self._warmup_soft_reset_count = 0
+            self._warmup_last_soft_reset_reason = ""
             self._prepare_started_monotonic = time.monotonic()
             self._prepare_cancel_event = cancel_event
             thread = threading.Thread(
@@ -262,12 +308,19 @@ class TacticalAIService:
     ) -> None:
         driver = None
         try:
+            with self._lock:
+                self._phase = "loading-model"
+            self._ensure_model_loaded(startup_timeout_seconds, cancel_event)
+            if cancel_event.is_set():
+                return
             health = self._ensure_adapter(startup_timeout_seconds)
+            if cancel_event.is_set():
+                return
             runtime = self._runtime_module()
             driver = runtime.LiveActionDriver(
                 self._adapter_evaluate_url,
                 health,
-                request_timeout_seconds=request_timeout_seconds,
+                request_timeout_seconds=min(request_timeout_seconds, self._no_good_result_reset_seconds),
                 include_call_snapshots=False,
             )
             smoke = runtime.CombatSmoke(7, 120.0)
@@ -275,35 +328,95 @@ class TacticalAIService:
             with self._lock:
                 self._phase = "warming-ai"
             started = time.monotonic()
+            last_passing_result_at = started
+            last_failure = ""
             sample_index = 0
             while not cancel_event.is_set() and time.monotonic() - started < self._warmup_timeout_seconds:
                 sample_index += 1
                 driver.launch_count = sample_index - 1
                 payload, meta = driver.request_for(smoke, ship, "performance-warmup")
-                result = driver._provider_call(payload, meta)
+                try:
+                    result = driver._provider_call(payload, meta)
+                except Exception as exc:
+                    if cancel_event.is_set():
+                        return
+                    last_failure = f"{type(exc).__name__}: {exc}"
+                    result = None
                 if cancel_event.is_set():
                     return
-                response = dict(result.get("response") or {})
-                answers = list(response.get("answers") or [])
-                if response.get("schema") != "game.captainDecisionResponse.v6" or len(answers) != int(meta["questionCount"]):
-                    raise TacticalAIError(f"Representative captain warmup returned an invalid response: {response}")
-                latency_seconds = float(result.get("wallLatencyMs") or 0.0) / 1000.0
-                passed = latency_seconds <= self._warmup_target_seconds
-                with self._lock:
-                    self._warmup_consecutive_passes = self._warmup_consecutive_passes + 1 if passed else 0
-                    self._warmup_samples.append({
-                        "index": sample_index,
-                        "wallLatencySeconds": latency_seconds,
-                        "modelLatencyMs": float(response.get("modelLatencyMs") or 0.0),
-                        "questionCount": int(meta["questionCount"]),
-                        "passed": passed,
-                    })
-                    self._warmup_samples = self._warmup_samples[-24:]
-                    if self._warmup_consecutive_passes >= self._warmup_required_consecutive:
-                        self._performance_ready = True
-                        self._phase = "performance-ready"
+                # An eventually returned answer does not retroactively satisfy a
+                # watchdog that expired while the provider call was in flight.
+                watchdog_expired = time.monotonic() - last_passing_result_at >= self._no_good_result_reset_seconds
+                if watchdog_expired and result is not None:
+                    last_failure = "Inference completed after the no-good-result timeout"
+                if result is not None and not watchdog_expired:
+                    response = dict(result.get("response") or {})
+                    answers = list(response.get("answers") or [])
+                    if response.get("schema") != "game.captainDecisionResponse.v6" or len(answers) != int(meta["questionCount"]):
+                        last_failure = "Invalid captain response schema or answer count"
+                    else:
+                        latency_seconds = float(result.get("wallLatencyMs") or 0.0) / 1000.0
+                        passed = latency_seconds <= self._warmup_target_seconds
+                        with self._lock:
+                            self._warmup_consecutive_passes = self._warmup_consecutive_passes + 1 if passed else 0
+                            self._warmup_samples.append({
+                                "index": sample_index,
+                                "wallLatencySeconds": latency_seconds,
+                                "modelLatencyMs": float(response.get("modelLatencyMs") or 0.0),
+                                "questionCount": int(meta["questionCount"]),
+                                "passed": passed,
+                            })
+                            self._warmup_samples = self._warmup_samples[-24:]
+                            if passed:
+                                last_passing_result_at = time.monotonic()
+                            if self._warmup_consecutive_passes >= self._warmup_required_consecutive:
+                                self._performance_ready = True
+                                self._phase = "performance-ready"
+                                return
+                if time.monotonic() - last_passing_result_at >= self._no_good_result_reset_seconds:
+                    with self._lock:
+                        if self._warmup_soft_reset_count >= 1:
+                            raise TacticalAIError(
+                                f"No passing Tactical AI inference for {self._no_good_result_reset_seconds:g}s "
+                                f"after a soft reset. Last failure: {last_failure or 'calls exceeded the performance gate'}"
+                            )
+                        self._warmup_soft_reset_count += 1
+                        self._warmup_last_soft_reset_reason = (
+                            f"No passing Tactical AI inference for {self._no_good_result_reset_seconds:g}s; "
+                            f"last failure: {last_failure or 'calls exceeded the performance gate'}"
+                        )
+                        self._phase = "restarting-ai"
+                        self._warmup_consecutive_passes = 0
+                        self._warmup_samples = []
+                    # Kill only the game-specific adapter process. NanoJev's
+                    # Docker container, model checkpoint and training are untouched.
+                    driver.close()
+                    driver = None
+                    with self._lock:
+                        if cancel_event.is_set():
+                            return
+                        self._terminate_adapter()
+                    if cancel_event.is_set():
                         return
-                if cancel_event.wait(0.05):
+                    self._ensure_model_loaded(startup_timeout_seconds, cancel_event)
+                    if cancel_event.is_set():
+                        return
+                    health = self._ensure_adapter(startup_timeout_seconds)
+                    if cancel_event.is_set():
+                        return
+                    driver = runtime.LiveActionDriver(
+                        self._adapter_evaluate_url,
+                        health,
+                        request_timeout_seconds=min(request_timeout_seconds, self._no_good_result_reset_seconds),
+                        include_call_snapshots=False,
+                    )
+                    with self._lock:
+                        if not cancel_event.is_set():
+                            self._phase = "warming-ai"
+                    last_passing_result_at = time.monotonic()
+                    last_failure = ""
+                pause = min(0.25 if result is None else 0.05, self._no_good_result_reset_seconds / 10.0)
+                if cancel_event.wait(pause):
                     return
             if cancel_event.is_set():
                 return
@@ -325,7 +438,7 @@ class TacticalAIService:
 
     def _require_runtime_ready(self) -> None:
         manager = self._manager_status()
-        if manager.get("ok") is not True or manager.get("backend_ready") is not True or manager.get("running") is not True:
+        if not self._manager_model_ready(manager):
             with self._lock:
                 self._performance_ready = False
                 if self._phase == "performance-ready":
@@ -478,8 +591,11 @@ class TacticalAIService:
 
         with self._lock:
             self._performance_ready = False
+            self._model_loaded = False
             self._warmup_samples = []
             self._warmup_consecutive_passes = 0
+            self._warmup_soft_reset_count = 0
+            self._warmup_last_soft_reset_reason = ""
             self._phase = "idle"
             self._last_error = ""
             self._smoke = None
@@ -525,8 +641,9 @@ class TacticalAIService:
     def status(self, *, include_manager: bool = True) -> dict[str, Any]:
         manager = self._manager_status() if include_manager else None
         if manager and manager.get("ok") is True:
-            if manager.get("running") is False and manager.get("backend_ready") is False:
+            if not self._manager_model_ready(manager):
                 with self._lock:
+                    self._model_loaded = False
                     if self._performance_ready and not (self._battle_thread and self._battle_thread.is_alive()):
                         self._performance_ready = False
                         if self._phase == "performance-ready":
@@ -541,6 +658,11 @@ class TacticalAIService:
                 "lastError": self._last_error,
                 "managerUrl": self.manager_url,
                 "manager": manager,
+                "modelLoaded": (
+                    self._manager_model_ready(manager)
+                    if manager is not None and manager.get("ok") is True
+                    else self._model_loaded if manager is None else False
+                ),
                 "adapter": {
                     "running": self._adapter_alive(),
                     "healthUrl": self._adapter_health_url or None,
@@ -557,6 +679,9 @@ class TacticalAIService:
                     "requiredConsecutivePasses": self._warmup_required_consecutive,
                     "consecutivePasses": self._warmup_consecutive_passes,
                     "warmupTimeoutSeconds": self._warmup_timeout_seconds,
+                    "noGoodResultResetSeconds": self._no_good_result_reset_seconds,
+                    "softResetCount": self._warmup_soft_reset_count,
+                    "lastSoftResetReason": self._warmup_last_soft_reset_reason,
                     "lastSample": last_sample,
                     "samples": samples,
                 },

@@ -332,7 +332,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "contract": {
                 "tacticalClock": "captain intent may change only at the configured tactical-slice boundary",
                 "physicsClock": "authoritative motion is integrated in smaller fixed sub-slice updates",
-                "viewClock": "display positions are generated at viewport cadence from the current authoritative trajectory anchor",
+                "viewClock": "reference display samples are generated from the current authoritative trajectory anchor; production Chromium uses requestAnimationFrame at the display cadence",
                 "ordinaryBoundaryRule": "a tactical boundary may change acceleration but never snaps position or velocity",
                 "impactRule": "Impact preserves position, changes velocity, and starts a new display/physics trajectory segment immediately",
             },
@@ -341,7 +341,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "metrics": {
                 "timeStepSeconds": time_step,
                 "physicsStepSeconds": physics_step,
-                "viewportHz": viewport_hz,
+                "referenceViewportSampleHz": viewport_hz,
+                "browserRenderCadence": "requestAnimationFrame",
                 "sliceCount": slices,
                 "durationSeconds": duration,
                 "physicsSubstepCount": len(physics_samples),
@@ -374,7 +375,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke the pre-browser Space Captain viewscreen tactical-slice motion contract.")
     parser.add_argument("--time-step-seconds", type=float, default=5.0, help="Tactical intent slice, constrained to 1..5 seconds (default: 5).")
     parser.add_argument("--physics-step-seconds", type=float, default=0.1, help="Authoritative sub-slice physics update (default: 0.1).")
-    parser.add_argument("--viewport-hz", type=float, default=60.0, help="Display sampling cadence (default: 60).")
+    parser.add_argument("--reference-view-sample-hz", "--viewport-hz", dest="viewport_hz", type=float, default=60.0, help="Reference sample cadence for the pre-browser trajectory; real browser rendering uses requestAnimationFrame (default reference: 60).")
     parser.add_argument("--slices", type=int, default=2, help="Number of tactical slices to simulate (default: 2).")
     parser.add_argument("--impact-at-seconds", type=float, default=None, help="Impact time inside the first tactical slice; defaults to 46%% of the slice.")
     parser.add_argument("--seed", type=int, default=7)

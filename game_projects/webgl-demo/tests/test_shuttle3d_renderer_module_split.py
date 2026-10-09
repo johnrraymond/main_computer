@@ -1,58 +1,62 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
-from main_computer.viewport import APPLICATIONS_INDEX_HTML
-
 
 ROOT = Path(__file__).resolve().parents[3]
-WEB_ROOT = ROOT / "main_computer" / "web"
-SCRIPT_ROOT = ROOT / "game_projects" / "webgl-demo" / "web" / "scripts"
+GAME_ROOT = ROOT / "game_projects" / "webgl-demo"
+SCRIPT_ROOT = GAME_ROOT / "web" / "scripts"
 
 
 class Shuttle3DRendererModuleSplitTests(unittest.TestCase):
-    """Patch S: renderer passes can move out of scene-viewer.js without changing load order."""
+    """Renderer extraction remains modular after the legacy viewscreen module is removed."""
 
-    def test_renderer_modules_are_included_before_scene_viewer(self) -> None:
-        html = (WEB_ROOT / "applications.html").read_text(encoding="utf-8")
-        registry = "<!-- @include applications/scripts/shuttle3d-renderer-modules.js -->"
-        room_geometry = "<!-- @include applications/scripts/shuttle3d-render-room-geometry.js -->"
-        viewscreens = "<!-- @include applications/scripts/shuttle3d-render-viewscreens.js -->"
-        scene_viewer = "<!-- @include applications/scripts/scene-viewer.js -->"
+    def test_room_geometry_registry_and_new_viewscreen_renderer_load_before_scene_viewer(self) -> None:
+        game = json.loads((GAME_ROOT / "game.json").read_text(encoding="utf-8"))
+        scripts = game["web"]["bundles"]["runtime-before-routing"]
+        registry = "web/scripts/shuttle3d-renderer-modules.js"
+        room_geometry = "web/scripts/shuttle3d-render-room-geometry.js"
+        presentation = "web/scripts/bridge-viewscreen-presentation.js"
+        renderer = "web/scripts/bridge-viewscreen-renderer.js"
+        legacy = "web/scripts/shuttle3d-render-viewscreens.js"
+        scene_viewer = "web/scripts/scene-viewer.js"
 
-        for include in (registry, room_geometry, viewscreens, scene_viewer):
-            self.assertIn(include, html)
+        for script in (presentation, renderer, registry, room_geometry, scene_viewer):
+            self.assertIn(script, scripts)
+        self.assertNotIn(legacy, scripts)
+        self.assertLess(scripts.index(presentation), scripts.index(renderer))
+        self.assertLess(scripts.index(renderer), scripts.index(scene_viewer))
+        self.assertLess(scripts.index(registry), scripts.index(room_geometry))
+        self.assertLess(scripts.index(room_geometry), scripts.index(scene_viewer))
 
-        self.assertLess(html.index(registry), html.index(room_geometry))
-        self.assertLess(html.index(room_geometry), html.index(viewscreens))
-        self.assertLess(html.index(viewscreens), html.index(scene_viewer))
+    def test_legacy_viewscreen_module_is_physically_deleted(self) -> None:
+        self.assertFalse((SCRIPT_ROOT / "shuttle3d-render-viewscreens.js").exists())
 
-    def test_served_application_bundle_contains_renderer_modules(self) -> None:
-        self.assertIn("Patch S: browser-safe renderer module registry", APPLICATIONS_INDEX_HTML)
-        self.assertIn("MainComputerShuttle3DRendererModules", APPLICATIONS_INDEX_HTML)
-        self.assertIn('modules.register("roomGeometry"', APPLICATIONS_INDEX_HTML)
-        self.assertIn('modules.register("viewscreens"', APPLICATIONS_INDEX_HTML)
-        self.assertIn("appendMotherShipRoomGeometry(builder, nowMs = 0)", APPLICATIONS_INDEX_HTML)
-        self.assertIn("appendMotherShipViewscreenDisplay(builder, prop, nowMs = 0)", APPLICATIONS_INDEX_HTML)
-        self.assertIn("appendEnemyShipTacticalDisplay(builder, prop, nowMs = 0)", APPLICATIONS_INDEX_HTML)
-
-    def test_scene_viewer_delegates_extracted_render_passes(self) -> None:
+    def test_scene_viewer_has_no_legacy_viewscreen_delegating_seams(self) -> None:
         scene_viewer = (SCRIPT_ROOT / "scene-viewer.js").read_text(encoding="utf-8")
         room_geometry = (SCRIPT_ROOT / "shuttle3d-render-room-geometry.js").read_text(encoding="utf-8")
-        viewscreens = (SCRIPT_ROOT / "shuttle3d-render-viewscreens.js").read_text(encoding="utf-8")
+        renderer = (SCRIPT_ROOT / "bridge-viewscreen-renderer.js").read_text(encoding="utf-8")
 
         self.assertIn('"roomGeometry"', scene_viewer)
-        self.assertIn('"viewscreens"', scene_viewer)
         self.assertIn("MainComputerShuttle3DRendererModules?.call", scene_viewer)
         self.assertIn("Patch O renders room shell/wall/opening geometry from rooms[].geometry", room_geometry)
-        self.assertIn("Patch P renders content-defined viewscreens/displays from prop.display metadata", viewscreens)
+        self.assertIn("MainComputerBridgeViewscreenRenderer", scene_viewer)
+        self.assertIn('case "planet"', renderer)
+        self.assertIn('case "warp-transit"', renderer)
+        self.assertIn('case "astrometric"', renderer)
+        self.assertIn('case "idle"', renderer)
 
-        # The heavy implementation should live in the module file; scene-viewer keeps only the delegating seam.
-        self.assertNotIn("const doorStateColor = (doorId) =>", scene_viewer)
-        self.assertIn("const doorStateColor = (doorId) =>", room_geometry)
-        self.assertNotIn("const tacticalGrid = builder.color", scene_viewer)
-        self.assertIn("const tacticalGrid = builder.color", viewscreens)
+        for legacy in (
+            "appendMotherShipViewscreenDisplay",
+            "appendSystemPlanetDisplay",
+            "appendAstrometricSystemDisplay",
+            "appendWarpTransitDisplay",
+            "appendEnemyShipTacticalDisplay",
+        ):
+            self.assertNotIn(legacy, scene_viewer)
+        self.assertNotIn('"viewscreens"', scene_viewer)
 
 
 if __name__ == "__main__":

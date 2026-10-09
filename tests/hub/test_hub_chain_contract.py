@@ -159,7 +159,7 @@ def test_published_contract_declares_no_core_hub_application_contract_requiremen
     assert (ctx.chain_state_root / "mainnet" / "consumer-contract.json").is_file()
 
 
-def test_deployment_manifest_is_primary_contract_identity_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_public_registry_wins_over_historical_deployment_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _temp_ctx(tmp_path)
     _write_private_state(ctx)
     _patch_registry(monkeypatch)
@@ -188,15 +188,14 @@ def test_deployment_manifest_is_primary_contract_identity_source(tmp_path: Path,
 
     contract = chain_contract.load_current_chain_contract(ctx, "mainnet")
 
-    assert contract.payload["contracts"]["hub_credit_bridge_escrow"] == "0xf6C11125329793730Fb99DF80C869372c2Ea1e0f"
+    assert contract.payload["contracts"]["hub_credit_bridge_escrow"] == REQUIRED_ADDRESS
     assert contract.payload["contract_source"] == {
-        "kind": "deployment-manifest",
-        "path": "runtime/deployments/mainnet/latest.json",
-        "run_id": "live-run",
+        "kind": "public-contract-registry",
+        "path": "main_computer/config/mainnet_contracts.json",
     }
 
 
-def test_checked_in_contract_file_is_only_fallback_when_manifest_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_public_registry_is_used_without_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _temp_ctx(tmp_path)
     _write_private_state(ctx)
     _patch_registry(monkeypatch)
@@ -211,12 +210,12 @@ def test_checked_in_contract_file_is_only_fallback_when_manifest_absent(tmp_path
 
     assert contract.payload["contracts"]["hub_credit_bridge_escrow"] == REQUIRED_ADDRESS
     assert contract.payload["contract_source"] == {
-        "kind": "checked-in-fallback",
+        "kind": "public-contract-registry",
         "path": "main_computer/config/mainnet_contracts.json",
     }
 
 
-def test_deployment_manifest_chain_id_mismatch_blocks_contract_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_historical_manifest_cannot_supply_addresses_if_registry_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _temp_ctx(tmp_path)
     _write_private_state(ctx)
     _patch_registry(monkeypatch)
@@ -237,4 +236,4 @@ def test_deployment_manifest_chain_id_mismatch_blocks_contract_publication(tmp_p
 
     with pytest.raises(HubControlError) as excinfo:
         chain_contract.load_current_chain_contract(ctx, "mainnet")
-    assert excinfo.value.code == "HUB_CHAIN_DEPLOYMENT_ID_MISMATCH"
+    assert excinfo.value.code == "HUB_CHAIN_CONTRACTS_INVALID"

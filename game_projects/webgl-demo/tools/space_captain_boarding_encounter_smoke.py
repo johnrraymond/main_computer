@@ -861,7 +861,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "playerTrigger": "player weapon discharge makes the encounter hostile immediately without resetting physical space",
                 "hostileReaction": "hostile captain publishes its first combat plan on the next fixed tactical boundary",
                 "physics": "Battle 2 authoritative sub-slice integration remains continuous; ordinary weapon impact contributes only a small center-of-mass delta-v",
-                "viewscreen": "60 Hz soft target lock retains the hostile ship through impact and smoothly follows the powered combat break without camera snaps",
+                "viewscreen": "the reference view samples characterize soft-lock motion; production Chromium renders that same trajectory at requestAnimationFrame cadence without a fixed refresh-rate assumption",
                 "rangeDesign": "the hostile captain's powered breakaway, not weapon impulse, arrests the boarding collapse and preserves stand-off range",
             },
             "checks": checks,
@@ -869,7 +869,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "metrics": {
                 "timeStepSeconds": time_step,
                 "physicsStepSeconds": physics_step,
-                "viewportHz": viewport_hz,
+                "referenceViewportSampleHz": viewport_hz,
+                "browserRenderCadence": "requestAnimationFrame",
                 "sliceCount": slices,
                 "durationSeconds": duration,
                 "boardingDeadlineSeconds": boarding_deadline,
@@ -920,7 +921,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke the first boarding-to-hostile bridge encounter and soft-lock viewscreen contract.")
     parser.add_argument("--time-step-seconds", type=float, default=5.0, help="Tactical slice, constrained to 1..5 seconds (default: 5).")
     parser.add_argument("--physics-step-seconds", type=float, default=0.1, help="Authoritative physics step (default: 0.1).")
-    parser.add_argument("--viewport-hz", type=float, default=60.0, help="Synthetic viewscreen frame rate (default: 60).")
+    parser.add_argument("--reference-view-sample-hz", "--viewport-hz", dest="viewport_hz", type=float, default=60.0, help="Reference sample cadence used to characterize the synthetic viewscreen trajectory; real browser rendering uses requestAnimationFrame (default reference: 60).")
     parser.add_argument("--slices", type=int, default=5, help="Number of tactical slices to simulate (default: 5).")
     parser.add_argument("--player-fire-at-seconds", type=float, default=None, help="Opening hostile-fire time; default is 2.34 tactical slices.")
     parser.add_argument("--opening-shot", choices=("hit", "miss"), default="hit", help="Whether the player's opening shot hits (default) or misses.")

@@ -78,6 +78,10 @@ DEFAULT_DEPLOYER_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5e
 DEFAULT_FUNDED_ACCOUNT_BALANCE = "0x21e19e0c9bab2400000"  # 10000 * 10^18 wei
 DEFAULT_GENESIS_BASE_FEE_PER_GAS = "0x3b9aca00"  # 1 gwei; London/EIP-1559 active from genesis.
 DEFAULT_SHANGHAI_TIME = 0  # Enables PUSH0-era bytecode from genesis for modern Solidity/Foundry deploys.
+NATIVE_MINT_PRECOMPILE_ADDRESS = "0x00000000000000000000000000000000000001f0"
+NATIVE_MINT_PROTOCOL_NAME = "NATIVE_MINT_V1"
+NATIVE_MINT_VALIDATOR_SLOT_BASE = 0x10
+NATIVE_MINT_VALIDATOR_FUND_BALANCE = DEFAULT_FUNDED_ACCOUNT_BALANCE
 DEFAULT_FUNDED_ACCOUNTS = [
     "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
     "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
@@ -416,6 +420,86 @@ def generate_network_files(runtime_dir: Path, *, image: str) -> Path:
     return stable_dir
 
 
+def _storage_word(value: int) -> str:
+    if value < 0 or value >= 1 << 256:
+        raise ValueError(f"Storage word outside uint256 range: {value}")
+    return "0x" + value.to_bytes(32, "big").hex()
+
+
+def _alloc_address(address: str) -> str:
+    value = str(address).strip().lower()
+    if value.startswith("0x"):
+        value = value[2:]
+    if len(value) != 40:
+        raise ValueError(f"Expected 20-byte account address, got {address!r}")
+    int(value, 16)
+    return value
+
+
+def seed_native_mint_genesis(network_files: Path) -> dict[str, Any]:
+    """Activate the local-only NATIVE_MINT_V1 rule in the generated QBFT genesis.
+
+    This is a birth-time fixture for the raw local QBFT smoke lab.  It funds the
+    generated validator EOAs so their node keys can sign ordinary approval
+    transactions, and seeds the custom precompile account with the exact initial
+    validator registry plus the >2/3 approval threshold.  Nothing here is
+    rewritten for an individual mint.
+    """
+    genesis_path = network_files / "genesis.json"
+    keys_dir = network_files / "keys"
+    if not genesis_path.exists() or not keys_dir.exists():
+        raise RuntimeError("Generated QBFT genesis/key material is incomplete")
+
+    key_dirs = sorted(path for path in keys_dir.iterdir() if path.is_dir())
+    if len(key_dirs) != VALIDATOR_COUNT:
+        raise RuntimeError(
+            f"Expected {VALIDATOR_COUNT} generated validators before native-mint seeding, "
+            f"found {len(key_dirs)}"
+        )
+
+    validator_addresses = ["0x" + _alloc_address(path.name) for path in key_dirs]
+    required_approvals = ((len(validator_addresses) * 2) // 3) + 1
+    genesis = json.loads(genesis_path.read_text(encoding="utf-8"))
+    alloc = genesis.setdefault("alloc", {})
+    if not isinstance(alloc, dict):
+        raise RuntimeError("Generated QBFT genesis alloc must be an object")
+
+    for address in validator_addresses:
+        key = _alloc_address(address)
+        entry = alloc.setdefault(key, {})
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"Generated genesis alloc entry for {address} is not an object")
+        entry.setdefault("balance", NATIVE_MINT_VALIDATOR_FUND_BALANCE)
+
+    precompile_key = _alloc_address(NATIVE_MINT_PRECOMPILE_ADDRESS)
+    if precompile_key in alloc:
+        raise RuntimeError(
+            f"Generated genesis already allocates native-mint precompile address {NATIVE_MINT_PRECOMPILE_ADDRESS}"
+        )
+
+    storage: dict[str, str] = {
+        _storage_word(0): _storage_word(len(validator_addresses)),
+        _storage_word(1): _storage_word(required_approvals),
+        _storage_word(2): _storage_word(int.from_bytes(NATIVE_MINT_PROTOCOL_NAME.encode("ascii"), "big")),
+    }
+    for index, address in enumerate(validator_addresses):
+        storage[_storage_word(NATIVE_MINT_VALIDATOR_SLOT_BASE + index)] = _storage_word(int(address, 16))
+
+    alloc[precompile_key] = {
+        "balance": "0x0",
+        "storage": storage,
+    }
+    genesis_path.write_text(json.dumps(genesis, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "enabled": True,
+        "protocol": NATIVE_MINT_PROTOCOL_NAME,
+        "precompile_address": NATIVE_MINT_PRECOMPILE_ADDRESS,
+        "validator_addresses": validator_addresses,
+        "validator_count": len(validator_addresses),
+        "required_approvals": required_approvals,
+    }
+
+
 def normalize_node_public_key(raw_value: str, *, source: Path) -> str:
     value = raw_value.strip().lower()
     if value.startswith("0x"):
@@ -740,6 +824,8 @@ def write_metadata(
     rpc_ports: list[int],
     public_rpc_port: int,
     validators: list[dict[str, str]],
+    native_mint: dict[str, Any] | None = None,
+    native_reserve: dict[str, Any] | None = None,
 ) -> None:
     metadata = {
         "version": 1,
@@ -765,6 +851,8 @@ def write_metadata(
         "block_period_seconds": args.block_period_seconds,
         "request_timeout_seconds": args.request_timeout_seconds,
         "validators": validators,
+        "native_mint": native_mint or {"enabled": False},
+        "genesis_native_reserve": native_reserve or {"enabled": False},
     }
     (runtime_dir / METADATA_FILE).write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -1076,6 +1164,24 @@ def start_lab(args: argparse.Namespace, *, cleanup_on_failure: bool = False) -> 
     started: list[str] = []
     try:
         network_files = generate_network_files(runtime_dir, image=args.image)
+        native_mint = None
+        native_reserve = None
+        if args.native_mint_genesis and args.genesis_native_reserve:
+            raise ValueError("Choose exactly one genesis extension: precompile mint or stock-Besu reserve")
+        if args.native_mint_genesis:
+            native_mint = seed_native_mint_genesis(network_files)
+        if args.genesis_native_reserve:
+            from genesis_native_reserve import seed as seed_genesis_native_reserve
+
+            native_reserve = seed_genesis_native_reserve(
+                network_files,
+                artifact_path=Path(args.genesis_reserve_artifact).resolve(),
+                deployer_address=DEFAULT_FUNDED_ACCOUNTS[0],
+                reserve_address=args.genesis_reserve_address,
+                captain_balance_wei=int(args.genesis_captain_balance_wei),
+                deployer_balance_wei=int(args.genesis_deployer_balance_wei),
+                max_payout_wei=int(args.genesis_reserve_max_payout_wei),
+            )
         validators = install_validator_files(network_files, runtime_dir, docker_subnet=args.docker_subnet)
         install_rpc_node_files(runtime_dir, validators=validators)
 
@@ -1127,6 +1233,8 @@ def start_lab(args: argparse.Namespace, *, cleanup_on_failure: bool = False) -> 
             rpc_ports=rpc_ports,
             public_rpc_port=public_rpc_port,
             validators=validators,
+            native_mint=native_mint,
+            native_reserve=native_reserve,
         )
 
         print()
@@ -1366,6 +1474,24 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--block-period-seconds", type=int, default=2, help="QBFT block period. Default: 2")
     parser.add_argument("--request-timeout-seconds", type=int, default=4, help="QBFT request timeout. Default: 4")
     parser.add_argument("--timeout-seconds", type=int, default=120, help="RPC/peer/block production wait timeout. Default: 120")
+    parser.add_argument(
+        "--native-mint-genesis",
+        action="store_true",
+        help=(
+            "Seed the generated local QBFT genesis with the NATIVE_MINT_V1 precompile activation, "
+            "initial four-validator registry, and >2/3 approval threshold. Local smoke use only."
+        ),
+    )
+    parser.add_argument(
+        "--genesis-native-reserve",
+        action="store_true",
+        help="Seed XLagBridgeReserve code/storage in genesis with uint256 max minus captain, three equally funded officers, and deployer.",
+    )
+    parser.add_argument("--genesis-reserve-artifact", default="", help="Compiled XLagBridgeReserve.json with storageLayout for genesis predeployment.")
+    parser.add_argument("--genesis-reserve-address", default="0x000000000000000000000000000000000000c0de")
+    parser.add_argument("--genesis-captain-balance-wei", default="10000000000000000000000")
+    parser.add_argument("--genesis-deployer-balance-wei", default="10000000000000000000000")
+    parser.add_argument("--genesis-reserve-max-payout-wei", default="20000000000000000000")
     parser.add_argument(
         "--keep-running",
         action="store_true",

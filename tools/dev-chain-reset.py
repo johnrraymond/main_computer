@@ -2211,11 +2211,19 @@ def write_outputs(args: argparse.Namespace, rid: str, payload: dict) -> None:
     env_latest_json = env_base / "latest.json"
     env_deploy_json.write_text(public_json, encoding="utf-8")
     env_latest_json.write_text(public_json, encoding="utf-8")
-    contracts_json = write_contract_config(public_payload, repo_root=root)
+    # Only successful real deployments on an existing chain update active authority.
+    # Retain addresses of contracts not selected for this deployment.
+    publish = not bool(args.dry_run) and not bool(args.no_deploy)
+    if publish:
+        contracts_json = write_contract_config(
+            public_payload,
+            repo_root=root,
+            merge_existing=bool(getattr(args, "external_chain", False)),
+        )
+        log(f"Wrote {contracts_json}")
 
     log(f"Wrote {env_deploy_json}")
     log(f"Wrote {env_latest_json}")
-    log(f"Wrote {contracts_json}")
 
 
 

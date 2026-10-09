@@ -1726,7 +1726,8 @@ class Battle:
         metrics = {
             "battleDurationSeconds": duration,
             "controlIntervalSeconds": control_dt,
-            "viewportHz": float(self.args.viewport_hz),
+            "referenceViewportSampleHz": float(self.args.viewport_hz),
+            "browserRenderCadence": "requestAnimationFrame",
             "viewportFrames": self.viewport_frames,
             "viewportTicksWhileThoughtsInFlight": self.viewport_ticks_while_thoughts_in_flight,
             "viewportFrameGapP95Ms": sorted(frame_gaps)[int(0.95 * (len(frame_gaps) - 1))] if frame_gaps else 0.0,
@@ -1794,7 +1795,7 @@ def main() -> int:
     parser.add_argument("--questions-per-thought", type=int, default=20)
     parser.add_argument("--duration-seconds", type=float, default=6.0)
     parser.add_argument("--control-interval-seconds", type=float, default=0.5)
-    parser.add_argument("--viewport-hz", type=float, default=60.0)
+    parser.add_argument("--reference-view-sample-hz", "--viewport-hz", dest="viewport_hz", type=float, default=60.0)
     parser.add_argument("--initial-separation-m", type=float, default=4000.0)
     parser.add_argument("--thrust-accel-mps2", type=float, default=25.0)
     parser.add_argument("--projectile-speed-mps", type=float, default=6000.0)

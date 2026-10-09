@@ -26,6 +26,10 @@ import urllib.request
 
 import yaml
 
+from main_computer.contract_config import write_contract_config
+from tools.genesis_native_reserve import DEFAULT_RESERVE_ADDRESS
+from tools.genesis_hub_credit_escrow import DEFAULT_HUB_CREDIT_ESCROW_ADDRESS
+
 from . import atomic_files
 from .canonical import canonical_json
 from .coolify_state import _DEFAULT_MAX_RESPONSE_BYTES, _DEFAULT_OPENER, resolve_coolify_controller
@@ -1164,6 +1168,12 @@ def _chain(paths: PrivateStatePaths, private_state: PrivateStateReadResult, exec
         "original_compose_sha256": _sha256(execution.get("compose_sha256"), "Compose SHA-256"),
         "genesis_sha256": _sha256(execution.get("genesis_sha256"), "genesis SHA-256"),
         "chain_id": genesis.get("chain_id"),
+        "genesis_contracts": {
+            **({"xlag-bridge-reserve": DEFAULT_RESERVE_ADDRESS}
+               if DEFAULT_RESERVE_ADDRESS.lower() in {str(key).lower() for key in genesis.get("alloc_addresses", [])} else {}),
+            **({"hub_credit_bridge_escrow": DEFAULT_HUB_CREDIT_ESCROW_ADDRESS}
+               if DEFAULT_HUB_CREDIT_ESCROW_ADDRESS.lower() in {str(key).lower() for key in genesis.get("alloc_addresses", [])} else {}),
+        },
         "validator_address": genesis.get("initial_validator_address"),
     }
 
@@ -2761,6 +2771,21 @@ def execute_genesis_birth_release(
     }
     evidence_path, evidence_sha = _write_document(paths, _EVIDENCE_DIRECTORY, evidence, operation)
     evidence["evidence"] = {"path": str(evidence_path), "sha256": evidence_sha}
+    if complete:
+        # Publish only after the genesis hash, chain, and healthy initial node have
+        # been proven. A new genesis REPLACES any old deployment addresses.
+        execution_ref = release["genesis_execution"]
+        execution_path = _resolve(paths, execution_ref["locator"], "genesis execution")
+        verified_chain = _chain(paths, private_state, execution_path)
+        if verified_chain["genesis_sha256"] != inspected["genesis_sha256"]:
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_GENESIS_CONTRACT_PUBLICATION_MISMATCH", "genesis hash changed before contract publication"
+            )
+        repo_root = paths.root.resolve().parents[2]
+        write_contract_config(
+            {"network": inspected["network"], "contracts": verified_chain["genesis_contracts"]},
+            repo_root=repo_root,
+        )
     return evidence
 
 

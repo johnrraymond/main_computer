@@ -67,6 +67,7 @@
     const labels = {
       "idle": "Idle",
       "starting-ai": "Starting NanoJev",
+      "loading-model": "Loading NanoJev checkpoint",
       "warming-ai": "Warming Tactical AI",
       "restarting-ai": "Restarting Tactical AI warmup",
       "performance-ready": "Tactical AI ready",
@@ -144,16 +145,24 @@
     const selectedTimeStep = Math.max(1, Math.min(5, integer(ui.timeStep?.value, 5)));
     const preparedTimeStep = Math.max(1, Math.min(5, integer(performance.timeStepSeconds, selectedTimeStep)));
     const timeStepMatches = selectedTimeStep === preparedTimeStep;
-    const preparing = phase === "starting-ai" || phase === "warming-ai" || phase === "restarting-ai";
+    const preparing = phase === "starting-ai" || phase === "loading-model" || phase === "warming-ai" || phase === "restarting-ai";
+    const modelLoaded = payload.modelLoaded === true && manager.model_loaded === true && manager.backend_ready === true;
+    const lifecycle = manager.ok === true ? String(manager.runtime_state || "unknown") : "offline";
+    const container = manager.ok === true ? String(manager.container_state || "unknown") : "unknown";
+    const runtimeError = String(manager.last_error || manager.backend_error || manager.container_error || manager.error || manager.image_bootstrap?.error || "");
+    const recovery = Number(performance.softResetCount || 0) > 0
+      ? `${performance.softResetCount} reset; ${performance.lastSoftResetReason || "retrying"}`
+      : "none";
 
     if (ui.status) {
-      ui.status.dataset.state = state.lastError || phase === "error"
+      ui.status.dataset.state = state.lastError || phase === "error" || lifecycle === "error" || lifecycle === "offline"
         ? "error"
         : performance.ready && timeStepMatches
           ? "ready"
           : "working";
       ui.status.textContent = state.lastError
         || payload.lastError
+        || (lifecycle === "error" || lifecycle === "offline" ? runtimeError || "NanoJev manager or Docker unavailable" : "")
         || (!timeStepMatches && preparing
           ? `Switching Tactical AI warmup from ${preparedTimeStep}s to ${selectedTimeStep}s...`
           : performance.ready && !timeStepMatches
@@ -163,11 +172,14 @@
 
     if (ui.summary) {
       ui.summary.replaceChildren(
-        chip("manager", manager.ok === true ? (manager.phase || "online") : "offline"),
-        chip("backend", manager.backend_ready === true ? "ready" : manager.running === true ? "starting" : "absent"),
-        chip("checkpoint", adapter.checkpointId || "—"),
+        chip("manager", lifecycle),
+        chip("container", container),
+        chip("model", modelLoaded ? "loaded" : manager.model_loaded === true ? "loaded (unverified)" : lifecycle === "loading" || phase === "loading-model" ? "loading" : "not loaded"),
+        chip("checkpoint", `${manager.checkpoint_selector || "—"} ${manager.checkpoint_validated === true ? "(verified)" : "(unverified)"}`),
+        chip("adapter", adapter.running ? "running" : "stopped"),
         chip("step", timeStepMatches ? `${preparedTimeStep} s` : `${preparedTimeStep} s → ${selectedTimeStep} s`),
-        chip("gate", performance.ready && timeStepMatches ? "PASS" : !timeStepMatches ? "RESTART" : `${performance.consecutivePasses || 0}/${performance.requiredConsecutivePasses || 0}`),
+        chip("gate", performance.ready && timeStepMatches && modelLoaded ? "PASS" : !timeStepMatches ? "RESTART" : `${performance.consecutivePasses || 0}/${performance.requiredConsecutivePasses || 0}`),
+        chip("recovery", recovery),
         chip("last call", lastSample ? `${finiteNumber(lastSample.wallLatencySeconds, 0).toFixed(3)} s` : "—"),
         chip("sim", battle ? `${finiteNumber(battle.simulationTimeSeconds, 0).toFixed(1)} s` : "—")
       );
@@ -175,7 +187,7 @@
 
     const running = Boolean(battle?.running) || phase === "priming-battle" || phase === "running" || phase === "stopping-battle";
     if (ui.prepare) ui.prepare.disabled = state.requestActive || running || preparing;
-    if (ui.start) ui.start.disabled = state.requestActive || !performance.ready || !timeStepMatches || running;
+    if (ui.start) ui.start.disabled = state.requestActive || !performance.ready || !modelLoaded || !timeStepMatches || running;
     if (ui.stop) ui.stop.disabled = state.requestActive || !running;
     if (ui.reset) ui.reset.disabled = state.requestActive || running;
 

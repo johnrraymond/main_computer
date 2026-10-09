@@ -1325,9 +1325,12 @@ class CoolifyHubServiceTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            registry = Path(tmp) / "mainnet_contracts.json"
+            registry.write_text(json.dumps({"hub_credit_bridge_escrow": "0x" + "4" * 40}), encoding="utf-8")
             args = _args(
                 bridge_backend="credit-bridge-contract",
                 bridge_signer_source_manifest=str(manifest),
+                bridge_contract_config_path=str(registry),
                 hub_chain_rpc_url="https://mainnet-rpc.greatlibrary.io",
             )
 
@@ -1335,7 +1338,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
             self.assertTrue(bundle["ok"])
             self.assertEqual(bundle["bridge_controller_address"], "0x" + "1" * 40)
-            self.assertEqual(bundle["escrow_address"], "0x" + "3" * 40)
+            self.assertEqual(bundle["escrow_address"], "0x" + "4" * 40)
             self.assertEqual(bundle["wallet_path"], "hub_admin.private_key")
 
     def test_sync_hub_runtime_application_envs_sets_launcher_defaults_for_signer_mode(self) -> None:

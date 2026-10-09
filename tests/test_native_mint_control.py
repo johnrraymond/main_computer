@@ -201,6 +201,10 @@ def _private_genesis_state(*, initial_validator: str, other_validator: str) -> d
                 "chain_id": 42424240,
                 "wallets": {
                     "captain": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                    "o1": {"address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                    "o2": {"address": "0xcccccccccccccccccccccccccccccccccccccccc"},
+                    "o3": {"address": "0xdddddddddddddddddddddddddddddddddddddddd"},
+                    "deployer": {"address": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
                 },
                 "validators": {
                     "mainneta-super1": {"address": initial_validator},

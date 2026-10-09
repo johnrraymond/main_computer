@@ -12,17 +12,27 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
+import shutil
+import subprocess
 import hashlib
 import json
 from pathlib import Path, PureWindowsPath
 import re
 from typing import Any
 
+from tools.genesis_hub_credit_escrow import (
+    DEFAULT_HUB_CREDIT_ESCROW_ADDRESS, checked_escrow_layout, escrow_allocation,
+)
+from tools.genesis_native_reserve import (
+    DEFAULT_RESERVE_ADDRESS, MAX_UINT256, contract_runtime, keccak256, reserve_allocation,
+)
+
 import yaml
 
 from . import atomic_files
 from .canonical import canonical_json
 from .deployment_plan import build_starter_deployment_plan
+from .hub_admin_pool import POOL_SIZE, HubAdminPoolError, genesis_addresses
 from .deployment_identity_rollback import verify_identity_rollback_cycle_evidence
 from .models import OperationIdentity, PrivateStatePaths
 from .private_state import PrivateStateReadResult, _secure_private_path
@@ -40,6 +50,19 @@ _DEFAULT_REQUEST_TIMEOUT_SECONDS = 4
 _DEFAULT_FUNDED_ACCOUNT_BALANCE = "0x21e19e0c9bab2400000"
 _DEFAULT_GENESIS_BASE_FEE_PER_GAS = "0x3b9aca00"
 _DEFAULT_SHANGHAI_TIME = 0
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_RESERVE_ARTIFACT_CANDIDATES = (
+    # Prefer the compiled artifact from the successfully executed stock-Besu
+    # QBFT reserve smoke, not a potentially stale generic Forge output.
+    _REPO_ROOT / "runtime/smoke-besu-qbft-four-validators/reserve-foundry/out/XLagBridgeReserve.sol/XLagBridgeReserve.json",
+    _REPO_ROOT / "contracts/out/XLagBridgeReserve.sol/XLagBridgeReserve.json",
+)
+_DEFAULT_RESERVE_MAX_PAYOUT_WEI = MAX_UINT256
+_BRIDGE_ESCROW_ARTIFACT_CANDIDATES = (
+    _REPO_ROOT / "runtime/genesis-hub-credit-escrow-foundry/out/HubCreditBridgeEscrow.sol/HubCreditBridgeEscrow.json",
+    _REPO_ROOT / "contracts/out/HubCreditBridgeEscrow.sol/HubCreditBridgeEscrow.json",
+    _REPO_ROOT / "runtime/smoke-besu-qbft-four-validators/reserve-foundry/out/HubCreditBridgeEscrow.sol/HubCreditBridgeEscrow.json",
+)
 
 
 class MotherDeploymentGenesisError(RuntimeError):
@@ -457,11 +480,171 @@ def _identity_execution(
     return execution, byte_sha256, actual_nodes, node_bindings
 
 
+def _reserve_artifact_from_path(path: Path | None = None) -> dict[str, Any]:
+    """Load the offline Foundry artifact used by the proven stock-Besu smoke.
+
+    Nothing is compiled or downloaded during genesis staging. The same artifact
+    must remain available for offline reconstruction by Mother replica tools.
+    """
+    candidates = (Path(path),) if path is not None else _RESERVE_ARTIFACT_CANDIDATES
+    for candidate in candidates:
+        if candidate.is_file():
+            try:
+                artifact = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise MotherDeploymentGenesisError(
+                    "MOTHER_DEPLOY_GENESIS_RESERVE_ARTIFACT_INVALID",
+                    f"compiled XLagBridgeReserve artifact is unreadable: {candidate}",
+                ) from exc
+            if not isinstance(artifact, dict):
+                raise MotherDeploymentGenesisError(
+                    "MOTHER_DEPLOY_GENESIS_RESERVE_ARTIFACT_INVALID",
+                    f"compiled XLagBridgeReserve artifact must be JSON object: {candidate}",
+                )
+            return artifact
+    raise MotherDeploymentGenesisError(
+        "MOTHER_DEPLOY_GENESIS_RESERVE_ARTIFACT_MISSING",
+        "compiled XLagBridgeReserve artifact is missing. Run the proven stock-Besu smoke "
+        "or 'forge build --extra-output storageLayout' and retain its artifact before genesis staging",
+    )
+
+
+def _bridge_escrow_source_matches(artifact: Mapping[str, Any]) -> bool:
+    """Check the compiler's source commitment when Foundry provides one.
+
+    Synthetic artifacts used in unit tests omit metadata. Real Foundry
+    artifacts commit to source bytes in metadata.sources[*].keccak256.
+    """
+    metadata = artifact.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(metadata, Mapping):
+        return True  # Old/test artifacts can still be checked by storage layout.
+    sources = metadata.get("sources")
+    if not isinstance(sources, Mapping):
+        return False
+    source = _REPO_ROOT / "contracts/src/HubCreditBridgeEscrow.sol"
+    if not source.is_file():
+        return False
+    expected = "0x" + keccak256(source.read_bytes()).hex()
+    for name, info in sources.items():
+        if str(name).replace("\\", "/").endswith("/HubCreditBridgeEscrow.sol") and isinstance(info, Mapping):
+            return info.get("keccak256") == expected
+    return False
+
+
+def _validate_bridge_escrow_artifact(artifact: dict[str, Any]) -> None:
+    checked_escrow_layout(artifact)
+    contract_runtime(artifact)
+    if not _bridge_escrow_source_matches(artifact):
+        raise ValueError("HubCreditBridgeEscrow compiler artifact is stale relative to contracts/src/HubCreditBridgeEscrow.sol")
+
+
+def _compile_bridge_escrow_for_genesis() -> Path:
+    """Prepare current source with Foundry, separate from private Mother state.
+
+    Only called during fresh-genesis artifact preparation, never during
+    historical genesis verification or service mutation. Uses the same
+    dockerized Foundry workflow as the proven reserve smoke when native Forge
+    is absent. This does not deploy a transaction or change a remote chain.
+    """
+    source = _REPO_ROOT / "contracts/src/HubCreditBridgeEscrow.sol"
+    if not source.is_file():
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_ESCROW_ARTIFACT_MISSING", f"Solidity source missing: {source}",
+        )
+    workspace = _REPO_ROOT / "runtime/genesis-hub-credit-escrow-foundry"
+    src = workspace / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    # Only this contract is needed; do not mutate contracts/out or rely on
+    # its potentially stale build products.
+    shutil.copyfile(source, src / source.name)
+    (workspace / "foundry.toml").write_text(
+        '[profile.default]\nsrc = "src"\nout = "out"\n'
+        'solc_version = "0.8.24"\noptimizer = true\noptimizer_runs = 200\n',
+        encoding="utf-8",
+    )
+    if shutil.which("forge"):
+        command = ["forge", "build", "--force", "--extra-output", "storageLayout"]
+        cwd = workspace
+    elif shutil.which("docker"):
+        command = [
+            "docker", "run", "--rm", "--entrypoint", "sh",
+            "-v", f"{workspace.resolve()}:/work", "-w", "/work",
+            "ghcr.io/foundry-rs/foundry:latest", "-lc",
+            "forge build --force --extra-output storageLayout",
+        ]
+        cwd = _REPO_ROOT
+    else:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_ESCROW_ARTIFACT_BUILD_FAILED",
+            "HubCreditBridgeEscrow artifact is missing/stale and neither forge nor docker is available",
+        )
+    try:
+        result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_ESCROW_ARTIFACT_BUILD_FAILED",
+            f"Foundry could not rebuild HubCreditBridgeEscrow: {type(exc).__name__}: {exc}",
+        ) from exc
+    if result.returncode:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_ESCROW_ARTIFACT_BUILD_FAILED",
+            f"Foundry could not rebuild HubCreditBridgeEscrow (exit={result.returncode}): "
+            + (result.stdout + "\n" + result.stderr)[-2000:],
+        )
+    return workspace / "out/HubCreditBridgeEscrow.sol/HubCreditBridgeEscrow.json"
+
+
+def _bridge_escrow_artifact_from_path(path: Path | None = None) -> dict[str, Any]:
+    """Resolve a compatible escrow artifact; repair stale cached builds.
+
+    Explicit artifact paths never auto-rebuild. Default new-genesis prep
+    validates each known cache and compiles the CURRENT Solidity source if
+    none matches. Historical genesis receipts embed their compiler material.
+    """
+    candidates = (Path(path),) if path is not None else _BRIDGE_ESCROW_ARTIFACT_CANDIDATES
+    problems = []
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            artifact = json.loads(candidate.read_text(encoding="utf-8"))
+            if not isinstance(artifact, dict):
+                raise ValueError("artifact root must be a JSON object")
+            _validate_bridge_escrow_artifact(artifact)
+            return artifact
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            problems.append(f"{candidate}: {exc}")
+    if path is not None:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_ESCROW_ARTIFACT_INVALID",
+            "explicit HubCreditBridgeEscrow artifact is missing or invalid: " + "; ".join(problems or [str(path)]),
+        )
+    # A stale contracts/out artifact is NOT proof that the Solidity storage
+    # layout changed. Compile from the checked-in contract before failing.
+    candidate = _compile_bridge_escrow_for_genesis()
+    try:
+        artifact = json.loads(candidate.read_text(encoding="utf-8"))
+        _validate_bridge_escrow_artifact(artifact)
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_ESCROW_ARTIFACT_INVALID",
+            f"rebuilt HubCreditBridgeEscrow artifact is invalid: {exc}",
+        ) from exc
+    return artifact
+
+
 def _genesis_policy(
     document: Mapping[str, Any],
     *,
     network: str,
     initial_validator_address: str,
+    reserve_artifact: dict[str, Any] | None = None,
+    bridge_escrow_artifact: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     networks = _mapping(document.get("networks"), "networks")
     network_state = _mapping(networks.get(network), f"networks.{network}")
@@ -480,25 +663,97 @@ def _genesis_policy(
             "MOTHER_DEPLOY_GENESIS_POLICY_INVALID",
             "Mother QBFT genesis settings must be positive integers",
         )
-    raw_alloc = descriptor.get("alloc_accounts")
-    if type(raw_alloc) is not list or not raw_alloc:
+
+    # Accept the original captain-only descriptor for already-reserved Mother
+    # identity state; the full funded set is resolved from that same state.
+    # Newly reserved identities declare all five wallet references explicitly.
+    roles = ("captain", "o1", "o2", "o3", "deployer")
+    full_refs = [{"ref": f"networks.{network}.wallets.{role}"} for role in roles]
+    old_refs = full_refs[:1]
+    if descriptor.get("alloc_accounts") not in (old_refs, full_refs):
         raise MotherDeploymentGenesisError(
             "MOTHER_DEPLOY_GENESIS_POLICY_INVALID",
-            "Mother first genesis must declare at least one allocation reference",
+            "first genesis must declare the canonical captain or complete officer/deployer allocation policy",
         )
-    alloc_addresses: list[str] = []
-    alloc: dict[str, dict[str, str]] = {}
-    for index, raw_item in enumerate(raw_alloc):
-        item = _mapping(raw_item, f"networks.{network}.genesis.alloc_accounts[{index}]")
-        ref = item.get("ref")
-        identity = _mapping(
-            _resolve_dotted(document, ref, path=f"networks.{network}.genesis.alloc_accounts[{index}].ref"),
-            str(ref),
+    wallets = _mapping(network_state.get("wallets"), f"networks.{network}.wallets")
+    addresses = {}
+    for role in roles:
+        wallet = _mapping(wallets.get(role), f"networks.{network}.wallets.{role}")
+        addresses[role] = _address(wallet.get("address"), f"networks.{network}.wallets.{role}.address")
+
+    # The marker is explicit on freshly reserved network births. Historical
+    # genesis receipts without it must reconstruct their OLD exact genesis,
+    # not accidentally acquire a new allocation during replica recovery.
+    hub_admins: tuple[str, ...] = ()
+    if "hub_admin_pool_count" in descriptor:
+        if descriptor["hub_admin_pool_count"] != POOL_SIZE:
+            raise MotherDeploymentGenesisError(
+                "MOTHER_DEPLOY_GENESIS_HUB_ADMIN_POOL_INVALID",
+                "genesis Hub administrator pool must contain exactly 15 wallets",
+            )
+        try:
+            hub_admins = genesis_addresses(network_state)
+        except HubAdminPoolError as exc:
+            raise MotherDeploymentGenesisError(
+                "MOTHER_DEPLOY_GENESIS_HUB_ADMIN_POOL_INVALID", str(exc),
+            ) from exc
+    artifact = reserve_artifact if reserve_artifact is not None else _reserve_artifact_from_path()
+    try:
+        alloc, profile = reserve_allocation(
+            artifact=artifact,
+            captain=addresses["captain"],
+            first_officer=addresses["o1"],
+            second_officer=addresses["o2"],
+            third_officer=addresses["o3"],
+            deployer=addresses["deployer"],
+            initial_captain_wei=int(_DEFAULT_FUNDED_ACCOUNT_BALANCE, 16),
+            initial_deployer_wei=int(_DEFAULT_FUNDED_ACCOUNT_BALANCE, 16),
+            max_payout_wei=_DEFAULT_RESERVE_MAX_PAYOUT_WEI,
+            reserve_address=DEFAULT_RESERVE_ADDRESS,
+            hub_admin_addresses=hub_admins,
         )
-        address = _address(identity.get("address"), f"{ref}.address")
-        if address not in alloc_addresses:
-            alloc_addresses.append(address)
-            alloc[address[2:]] = {"balance": _DEFAULT_FUNDED_ACCOUNT_BALANCE}
+    except (KeyError, TypeError, ValueError, AssertionError) as exc:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_RESERVE_INVALID",
+            f"XLagBridgeReserve genesis constructor/storage/supply is invalid: {exc}",
+        ) from exc
+    # Only new, explicitly pool-enabled genesis births receive this contract.
+    # Historical captain-only genesis remains byte-for-byte reconstructible.
+    if "hub_admin_pool_count" in descriptor:
+        escrow_artifact = bridge_escrow_artifact if bridge_escrow_artifact is not None else _bridge_escrow_artifact_from_path()
+        # Prefer an already-reserved global controller; otherwise a stable
+        # existing assigned Hub admin, never an invented key.
+        controller_identity = wallets.get("hub_admin")
+        if isinstance(controller_identity, Mapping) and controller_identity.get("address"):
+            controller = _address(controller_identity["address"], f"networks.{network}.wallets.hub_admin.address")
+            if controller.lower() not in set(hub_admins):
+                raise MotherDeploymentGenesisError(
+                    "MOTHER_DEPLOY_GENESIS_ESCROW_CONTROLLER_INVALID",
+                    "bridge controller must be one of the 15 funded hub_admin identities",
+                )
+        else:
+            # Stable across subsequent Hub assignments / reservation moves:
+            # only the *set* of genesis-funded addresses determines this value.
+            controller = hub_admins[0]
+        if controller.lower() not in set(hub_admins):
+            raise MotherDeploymentGenesisError(
+                "MOTHER_DEPLOY_GENESIS_ESCROW_CONTROLLER_INVALID",
+                "bridge controller must be one of the funded Hub admins",
+            )
+        try:
+            entry, _escrow_profile = escrow_allocation(
+                artifact=escrow_artifact, owner=addresses["deployer"], bridge_controller=controller,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MotherDeploymentGenesisError(
+                "MOTHER_DEPLOY_GENESIS_ESCROW_INVALID",
+                f"HubCreditBridgeEscrow genesis constructor/storage invalid: {exc}",
+            ) from exc
+        alloc[DEFAULT_HUB_CREDIT_ESCROW_ADDRESS[2:]] = entry
+    alloc_addresses = [*profile["offices"], profile["deployer"]]
+    alloc_addresses = list(dict.fromkeys(alloc_addresses)) + list(hub_admins) + [profile["contract"]]
+    if "hub_admin_pool_count" in descriptor:
+        alloc_addresses.append(DEFAULT_HUB_CREDIT_ESCROW_ADDRESS)
     genesis = {
         "config": {
             "chainId": chain_id,
@@ -533,6 +788,8 @@ def build_deployment_genesis_transaction(
     network: str = "mainnet",
     selected_nodes: Iterable[str] = (),
     created_at: str | None = None,
+    reserve_artifact: dict[str, Any] | None = None,
+    bridge_escrow_artifact: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     network = _identifier(network, "network")
     requested_nodes = tuple(_identifier(item, "selected node") for item in selected_nodes)
@@ -598,10 +855,28 @@ def build_deployment_genesis_transaction(
         node_addresses[node] = _address(validator.get("address"), f"{expected_ref}.address")
 
     initial_node = _identifier(initial_steps[0].get("node"), "initial node")
+    compiled_reserve = reserve_artifact if reserve_artifact is not None else _reserve_artifact_from_path()
+    network_genesis_descriptor = _mapping(network_state.get("genesis"), "network.genesis")
+    compiled_bridge_escrow = None
+    if "hub_admin_pool_count" in network_genesis_descriptor:
+        compiled_bridge_escrow = bridge_escrow_artifact if bridge_escrow_artifact is not None else _bridge_escrow_artifact_from_path()
     genesis, alloc_addresses = _genesis_policy(
         document,
         network=network,
         initial_validator_address=node_addresses[initial_node],
+        reserve_artifact=compiled_reserve,
+        bridge_escrow_artifact=compiled_bridge_escrow,
+    )
+    # Embed only the public code/layout necessary to reconstruct this exact
+    # transaction, not the entire Forge artifact or any account key material.
+    reserve_compiler = {
+        "deployedBytecode": compiled_reserve.get("deployedBytecode"),
+        "storageLayout": compiled_reserve.get("storageLayout"),
+    }
+    bridge_escrow_compiler = (
+        {"deployedBytecode": compiled_bridge_escrow.get("deployedBytecode"),
+         "storageLayout": compiled_bridge_escrow.get("storageLayout")}
+        if compiled_bridge_escrow is not None else None
     )
     genesis_bytes = canonical_json(genesis)
     genesis_sha256 = hashlib.sha256(genesis_bytes).hexdigest()
@@ -711,6 +986,13 @@ def build_deployment_genesis_transaction(
             "initial_validator_address": node_addresses[initial_node],
             "validator_set": [node_addresses[initial_node]],
             "alloc_addresses": alloc_addresses,
+            "reserve_contract": DEFAULT_RESERVE_ADDRESS,
+            "reserve_compiler": reserve_compiler,
+            "reserve_compiler_sha256": hashlib.sha256(canonical_json(reserve_compiler)).hexdigest(),
+            **({"hub_credit_bridge_escrow": DEFAULT_HUB_CREDIT_ESCROW_ADDRESS,
+                "hub_credit_bridge_escrow_compiler": bridge_escrow_compiler,
+                "hub_credit_bridge_escrow_compiler_sha256": hashlib.sha256(canonical_json(bridge_escrow_compiler)).hexdigest()}
+               if bridge_escrow_compiler is not None else {}),
             "canonical_json": genesis,
             "canonical_json_sha256": genesis_sha256,
             "canonical_json_bytes": len(genesis_bytes),
@@ -808,6 +1090,32 @@ def write_deployment_genesis_transaction(
     return destination, digest
 
 
+def _validated_compiler_from_transaction(transaction: Mapping[str, Any]) -> dict[str, Any]:
+    info = _mapping(transaction.get("genesis"), "genesis")
+    compiler = _mapping(info.get("reserve_compiler"), "genesis.reserve_compiler")
+    expected_sha256 = _sha256(info.get("reserve_compiler_sha256"), "reserve compiler SHA-256")
+    if hashlib.sha256(canonical_json(compiler)).hexdigest() != expected_sha256:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_RESERVE_ARTIFACT_INVALID",
+            "compiled reserve bytecode/storage-layout commitment does not match the transaction",
+        )
+    return compiler
+
+
+def _validated_bridge_escrow_compiler_from_transaction(transaction: Mapping[str, Any]) -> dict[str, Any] | None:
+    info = _mapping(transaction.get("genesis"), "genesis")
+    if "hub_credit_bridge_escrow_compiler" not in info:
+        return None
+    compiler = _mapping(info.get("hub_credit_bridge_escrow_compiler"), "genesis.hub_credit_bridge_escrow_compiler")
+    digest = _sha256(info.get("hub_credit_bridge_escrow_compiler_sha256"), "escrow compiler SHA-256")
+    if hashlib.sha256(canonical_json(compiler)).hexdigest() != digest:
+        raise MotherDeploymentGenesisError(
+            "MOTHER_DEPLOY_GENESIS_ESCROW_ARTIFACT_INVALID",
+            "compiled HubCreditBridgeEscrow bytecode/layout does not match genesis transaction",
+        )
+    return compiler
+
+
 def verify_deployment_genesis_transaction(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -873,6 +1181,8 @@ def verify_deployment_genesis_transaction(
         network=transaction.get("network", "mainnet"),
         selected_nodes=actual_nodes,
         created_at=transaction.get("created_at"),
+        reserve_artifact=_validated_compiler_from_transaction(transaction),
+        bridge_escrow_artifact=_validated_bridge_escrow_compiler_from_transaction(transaction),
     )
     if rebuilt != transaction:
         raise MotherDeploymentGenesisError(

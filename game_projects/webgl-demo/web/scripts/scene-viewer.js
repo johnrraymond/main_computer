@@ -2533,24 +2533,12 @@
               label: "Proceed to the bridge and inspect the main viewscreen.",
               location: "corridor.main"
             },
-            "objective.bridge-screen": {
-              label: "Use the bridge viewscreen controls to identify the current target.",
-              location: "bridge.deck"
-            },
-            "objective.enemy-track": {
-              label: "Enemy raider centered on the bridge viewscreen.",
-              location: "bridge.deck"
-            },
             "objective.enemy-attack": {
               label: "Fire the bridge tactical console at the enemy raider.",
               location: "bridge.deck"
             },
             "objective.enemy-disabled": {
               label: "Enemy raider destroyed. Open navigation and choose the next system.",
-              location: "bridge.deck"
-            },
-            "objective.planet-view": {
-              label: "Center the current system planet on the bridge viewscreen.",
               location: "bridge.deck"
             },
             "objective.planet-scan": {
@@ -2620,7 +2608,7 @@
             "terminal.bridge-viewscreen": {
               label: "Bridge Viewscreen",
               location: "bridge.deck",
-              state: "standby"
+              state: "online"
             },
             "terminal.bridge-tactical": {
               label: "Bridge Tactical Console / Sensor Array",
@@ -2631,17 +2619,11 @@
           flags: {
             bayControlActive: true,
             boardersPausedAfterDocking: true,
-            bridgeViewscreenTrackingActive: false,
-            bridgeTacticalArmed: false,
-            bridgeTacticalShotsFired: 0,
-            bridgeTacticalLastFireAtMs: 0,
             currentSystemPlanetSurveyed: false,
             lastSurveyedPlanetId: "",
             lastSurveyedSystemId: "",
             planetScansCompleted: 0,
-            planetScanLastAtMs: 0,
-            enemyShipHullPercent: 100,
-            enemyShipDisabled: false
+            planetScanLastAtMs: 0
           }
         };
       }
@@ -2649,12 +2631,8 @@
       function shuttle3dNormalizeMotherShipFlags(value) {
         const defaults = shuttle3dMotherShipInteriorStateDefaults().flags;
         const flags = {...defaults, ...shuttle3dObjectValue(value)};
-        if (!Number.isFinite(Number(flags.enemyShipHullPercent))) flags.enemyShipHullPercent = defaults.enemyShipHullPercent;
-        flags.enemyShipHullPercent = Math.max(0, Math.min(100, Number(flags.enemyShipHullPercent)));
-        if (!Number.isFinite(Number(flags.bridgeTacticalShotsFired))) flags.bridgeTacticalShotsFired = defaults.bridgeTacticalShotsFired;
-        flags.bridgeTacticalShotsFired = Math.max(0, Number(flags.bridgeTacticalShotsFired));
-        if (!Number.isFinite(Number(flags.bridgeTacticalLastFireAtMs))) flags.bridgeTacticalLastFireAtMs = defaults.bridgeTacticalLastFireAtMs;
-        flags.bridgeTacticalLastFireAtMs = Math.max(0, Number(flags.bridgeTacticalLastFireAtMs));
+        // Phase 2 deliberately rejects legacy bridge-combat save state. Combat truth now lives only in BridgeEncounterRuntime.
+        ["bridgeViewscreenTrackingActive", "bridgeTacticalArmed", "bridgeTacticalShotsFired", "bridgeTacticalLastFireAtMs", "enemyShipHullPercent", "enemyShipDisabled", "enemyShipOnBridgeViewscreen", "bridgeViewscreenInteractedAtMs"].forEach((key) => delete flags[key]);
         if (!Number.isFinite(Number(flags.planetScansCompleted))) flags.planetScansCompleted = defaults.planetScansCompleted;
         flags.planetScansCompleted = Math.max(0, Number(flags.planetScansCompleted));
         if (!Number.isFinite(Number(flags.planetScanLastAtMs))) flags.planetScanLastAtMs = defaults.planetScanLastAtMs;
@@ -2662,11 +2640,8 @@
         flags.lastSurveyedPlanetId = String(flags.lastSurveyedPlanetId || "");
         flags.lastSurveyedSystemId = String(flags.lastSurveyedSystemId || "");
         if (typeof flags.currentSystemPlanetSurveyed !== "boolean") flags.currentSystemPlanetSurveyed = Boolean(defaults.currentSystemPlanetSurveyed);
-        if (typeof flags.bridgeTacticalArmed !== "boolean") flags.bridgeTacticalArmed = Boolean(defaults.bridgeTacticalArmed);
-        if (typeof flags.bridgeViewscreenTrackingActive !== "boolean") flags.bridgeViewscreenTrackingActive = Boolean(defaults.bridgeViewscreenTrackingActive);
         if (typeof flags.bayControlActive !== "boolean") flags.bayControlActive = Boolean(defaults.bayControlActive);
         if (typeof flags.boardersPausedAfterDocking !== "boolean") flags.boardersPausedAfterDocking = Boolean(defaults.boardersPausedAfterDocking);
-        if (typeof flags.enemyShipDisabled !== "boolean") flags.enemyShipDisabled = flags.enemyShipHullPercent <= 0;
         return flags;
       }
 
@@ -4148,8 +4123,8 @@
               location: "bridge.deck",
               position: [0.0, -37.15],
               range: 2.45,
-              action: "trackEnemyShipOnViewscreen",
-              prompt: "Press E to use the bridge viewscreen controls."
+              action: "toggleBridgeViewscreenDisplayPower",
+              prompt: "Press E to toggle the bridge viewscreen display power."
             }
           ],
           // Patch E formalizes action ids as registry entries instead of embedding E-key behavior in a switch.
@@ -4202,38 +4177,27 @@
               handler: "inspectOpenDoorRoute",
               changesState: ["doors[target.id].state", "objectiveId", "lastInteractionStatus"],
               successStatus: "Route is open. No door lock is required.",
-              nextObjective: ["objective.restore-power", "objective.survey-departments", "objective.bridge-screen"]
+              nextObjective: ["objective.restore-power", "objective.survey-departments", "objective.bridge-access"]
             },
-            trackEnemyShipOnViewscreen: {
-              id: "trackEnemyShipOnViewscreen",
-              label: "Acquire bridge viewscreen target",
-              handler: "trackEnemyShipOnViewscreen",
-              status: "Current target centered on the main viewscreen.",
+            toggleBridgeViewscreenDisplayPower: {
+              id: "toggleBridgeViewscreenDisplayPower",
+              label: "Toggle bridge viewscreen display power",
+              handler: "toggleBridgeViewscreenDisplayPower",
               changesState: [
+                "bridgeViewscreenSystem.displayPowered",
                 "terminals[terminal.bridge-viewscreen].state",
-                "flags.bridgeViewscreenTrackingActive",
-                "flags.enemyShipOnBridgeViewscreen",
-                "flags.lastSurveyedPlanetId",
-                "flags.lastSurveyedSystemId",
-                "flags.bridgeViewscreenInteractedAtMs",
-                "objectiveId",
                 "lastInteractionStatus"
               ],
-              successStatus: "Current target centered on the main viewscreen.",
-              nextObjective: ["objective.enemy-attack", "objective.enemy-disabled", "objective.planet-scan", "objective.planet-surveyed"]
+              successStatus: "Bridge viewscreen display power changed.",
+              nextObjective: []
             },
             fireBridgeTacticalConsole: {
               id: "fireBridgeTacticalConsole",
               label: "Fire tactical weapons or scan planet",
               handler: "fireBridgeTacticalConsole",
               changesState: [
-                "terminals[terminal.bridge-viewscreen].state",
+                "bridgeEncounterRuntime",
                 "terminals[terminal.bridge-tactical].state",
-                "flags.bridgeViewscreenTrackingActive",
-                "flags.enemyShipHullPercent",
-                "flags.enemyShipDisabled",
-                "flags.bridgeTacticalShotsFired",
-                "flags.bridgeTacticalLastFireAtMs",
                 "flags.currentSystemPlanetSurveyed",
                 "flags.lastSurveyedPlanetId",
                 "flags.lastSurveyedSystemId",
@@ -4719,7 +4683,7 @@
           "enterBayOpsAccess",
           "activateBayOperationsTerminal",
           "restoreEngineeringPower",
-          "trackEnemyShipOnViewscreen",
+          "toggleBridgeViewscreenDisplayPower",
           "fireBridgeTacticalConsole",
           "openBridgeNavigationConsole",
           "inspectOpenDoorRoute"
@@ -5575,6 +5539,17 @@
           this.onNavigationChanged = null;
           this.flight = this.createFlightState();
           this.shipState = this.createShipState();
+          this.bridgeEncounterRuntime = globalThis.MainComputerBridgeEncounterRuntime?.create?.() || null;
+          this.bridgeViewscreenEncounterRuntime = globalThis.MainComputerBridgeViewscreenEncounterRuntime?.create?.({authority: this.bridgeEncounterRuntime}) || null;
+          this.bridgeViewscreenSystem = globalThis.MainComputerBridgeViewscreenPresentation?.createSystem?.({
+            initialMode: "encounter",
+            selectedAtSimulationSeconds: 0,
+            displayPowered: true
+          }) || null;
+          this.bridgeViewscreenProjectionFrame = null;
+          this.bridgeViewscreenPresentationFrame = null;
+          this.bridgeViewscreenPresentationInputsFrame = null;
+          this.bridgeEncounterLastUiEventSequence = 0;
           this.shipInteractionRegistry = this.createShipInteractionRegistry();
           this.pilotStations = shuttle3dPilotStationsConfig(scene);
           this.hoveredPilotStation = null;
@@ -6374,12 +6349,10 @@
           if (update.arrived) {
             if (this.shipState?.flags) {
               this.shipState.flags.currentSystemPlanetSurveyed = false;
-              this.shipState.flags.bridgeViewscreenTrackingActive = false;
-              this.shipState.flags.enemyShipOnBridgeViewscreen = false;
             }
-            this.setShipTerminalState?.("terminal.bridge-viewscreen", "standby");
+            // Arrival updates the presented planet, never the independently powered display.
             this.setShipTerminalState?.("terminal.bridge-tactical", "ready");
-            this.setShipObjective?.("objective.planet-view", true);
+            this.setShipObjective?.("objective.planet-scan", true);
             const worldSummary = Number(snapshot.currentPlanetCount || 0) > 1
               ? `${snapshot.currentPlanetCount} charted worlds are available in-system`
               : `${snapshot.currentPlanetLabel || "Destination planet"} is now on the bridge viewscreen`;
@@ -6499,6 +6472,13 @@
             interactionKind: interaction?.kind || "",
             interactionHint: this.shipInteractionHint?.(interaction) || "",
             interactionStatus: state.lastInteractionStatus || "",
+            bridgeEncounter: this.bridgeEncounterStatus?.(this.lastFrameTime ?? performance.now()) || null,
+            bridgeViewscreen: {
+              selectedMode: this.bridgeViewscreenSelectedMode?.() || "encounter",
+              displayPowered: this.bridgeViewscreenDisplayPowered?.() !== false,
+              presentationSchema: this.bridgeViewscreenPresentationSnapshot?.()?.schema || "",
+              presentationSimulationSeconds: Number(this.bridgeViewscreenPresentationSnapshot?.()?.time?.simulationSeconds ?? 0)
+            },
             shuttleBayControlActive: this.isShuttleBayPlayerControlActive(),
             mainShipGameplayPack: this.mainShipGameplayPackSnapshot?.() || null
           };
@@ -6526,6 +6506,13 @@
         resetFlightState() {
           this.flight = this.createFlightState();
           this.shipState = this.createShipState();
+          this.bridgeEncounterRuntime?.reset?.();
+          this.bridgeViewscreenEncounterRuntime?.reset?.();
+          this.bridgeViewscreenSystem?.reset?.({initialMode: "encounter", selectedAtSimulationSeconds: 0, displayPowered: true});
+          this.bridgeViewscreenProjectionFrame = null;
+          this.bridgeViewscreenPresentationFrame = null;
+          this.bridgeViewscreenPresentationInputsFrame = null;
+          this.bridgeEncounterLastUiEventSequence = 0;
           if (this.pilot) {
             this.pilot.active = false;
             this.pilot.station = null;
@@ -7134,18 +7121,158 @@
           return true;
         }
 
+        bridgeEncounterStatus(nowMs = this.lastFrameTime ?? performance.now()) {
+          const runtime = this.bridgeEncounterRuntime;
+          if (!runtime || typeof runtime.status !== "function") {
+            return {
+              targetHullPercent: 100,
+              targetStatus: "operational",
+              targetDestroyed: false,
+              shotsFired: 0,
+              pendingShotCount: 0,
+              lastFireAgeMs: Infinity,
+              lastImpactAgeMs: Infinity,
+              lastExactEvent: null
+            };
+          }
+          return runtime.status(nowMs);
+        }
+
         bridgeViewscreenTrackingActive() {
-          const state = String(this.shipState?.terminals?.["terminal.bridge-viewscreen"]?.state || "").toLowerCase();
-          return state === "tracking" || state === "surveying" || Boolean(this.shipState?.flags?.bridgeViewscreenTrackingActive);
+          const presentation = this.bridgeViewscreenPresentationSnapshot();
+          if (presentation?.mode === "encounter") return Boolean(presentation.target?.lock?.acquired);
+          if (presentation?.tracking && typeof presentation.tracking.active === "boolean") return presentation.tracking.active;
+          return false;
+        }
+
+        bridgeViewscreenDisplayPowered() {
+          const system = this.bridgeViewscreenSystem;
+          return system && typeof system.displayPowered === "function" ? system.displayPowered() : true;
+        }
+
+        setBridgeViewscreenDisplayPowered(powered) {
+          const system = this.bridgeViewscreenSystem;
+          if (!system || typeof system.setDisplayPowered !== "function") return false;
+          system.setDisplayPowered(Boolean(powered));
+          // Rebuild from the cached input frame: no physics step, camera update,
+          // target reacquisition, or authority query is permitted on a power toggle.
+          if (this.bridgeViewscreenPresentationInputsFrame) {
+            this.bridgeViewscreenPresentationFrame = system.present(this.bridgeViewscreenPresentationInputsFrame);
+          }
+          if (this.shipState?.terminals?.["terminal.bridge-viewscreen"]) {
+            this.setShipTerminalState("terminal.bridge-viewscreen", system.displayPowered() ? "online" : "off");
+          }
+          return this.bridgeViewscreenDisplayPowered();
+        }
+
+        toggleBridgeViewscreenDisplayPower() {
+          if (!this.bridgeViewscreenSystem) return false;
+          const powered = this.setBridgeViewscreenDisplayPowered(!this.bridgeViewscreenDisplayPowered());
+          this.setShipInteractionStatus(
+            powered ? "Bridge viewscreen display on. Current ship feed restored." : "Bridge viewscreen display off. Ship tracking and encounter systems remain active."
+          );
+          return true;
+        }
+
+        bridgeViewscreenSelectedMode() {
+          const system = this.bridgeViewscreenSystem;
+          return system && typeof system.selectedMode === "function" ? system.selectedMode() : "encounter";
+        }
+
+        bridgeViewscreenPresentationSnapshot() {
+          return this.bridgeViewscreenPresentationFrame || this.bridgeViewscreenSystem?.lastPresentation || null;
+        }
+
+        syncBridgeEncounterUiFromAuthority(nowMs = this.lastFrameTime ?? performance.now()) {
+          const runtime = this.bridgeEncounterRuntime;
+          if (!runtime || typeof runtime.eventsSince !== "function") return false;
+          const events = runtime.eventsSince(this.bridgeEncounterLastUiEventSequence || 0);
+          if (!events.length) return false;
+          let changed = false;
+          for (const event of events) {
+            this.bridgeEncounterLastUiEventSequence = Math.max(this.bridgeEncounterLastUiEventSequence || 0, Number(event.sequence) || 0);
+            if (event.kind !== "Impact") continue;
+            const hull = Math.max(0, Math.min(100, Number(event.hullAfterPercent ?? this.enemyShipHullPercent())));
+            if (hull <= 0 || String(event.targetStatus || "") === "destroyed") {
+              this.setShipTerminalState("terminal.bridge-tactical", "target-destroyed");
+              this.setShipObjective("objective.enemy-disabled", true);
+              this.setShipInteractionStatus("Direct hit. Enemy raider destroyed in an expanding fireball. Navigation is ready.");
+            } else {
+              this.setShipTerminalState("terminal.bridge-tactical", "ready");
+              this.setShipObjective("objective.enemy-attack", true);
+              this.setShipInteractionStatus(`Direct hit. Enemy raider hull ${Math.round(hull)}%.`);
+            }
+            changed = true;
+          }
+          if (changed) this.emitShipState(true);
+          return changed;
+        }
+
+        updateBridgeViewscreenEncounter(nowMs = this.lastFrameTime ?? performance.now()) {
+          const runtime = this.bridgeEncounterRuntime;
+          const projectionRuntime = this.bridgeViewscreenEncounterRuntime;
+          const system = this.bridgeViewscreenSystem;
+          const presentationApi = globalThis.MainComputerBridgeViewscreenPresentation;
+          if (!system || !presentationApi || typeof system.present !== "function") return null;
+
+          // The viewscreen is an always-operational ship system. Mode routing, projection,
+          // and presentation continue independently of player location and display power.
+          const navigation = this.navigationSnapshot?.(nowMs) || {};
+          const astrometrics = this.astrometricSnapshot?.() || null;
+          const encounterActive = this.openingEnemyEncounterActive(nowMs);
+          const simulationSeconds = Math.max(0, Number(nowMs) || 0) / 1000;
+          const selectedMode = presentationApi.selectModeForSources({
+            encounterActive,
+            navigationSnapshot: navigation,
+            astrometricSnapshot: astrometrics
+          });
+          system.select?.(selectedMode, simulationSeconds);
+
+          let encounterResult = null;
+          let encounterProjection = null;
+          if (encounterActive && runtime && typeof runtime.advance === "function") {
+            encounterResult = runtime.advance(nowMs, {active: true});
+            this.syncBridgeEncounterUiFromAuthority(nowMs);
+            if (projectionRuntime && typeof projectionRuntime.snapshot === "function") {
+              encounterProjection = projectionRuntime.snapshot(nowMs, {active: true});
+            }
+          }
+          this.bridgeViewscreenProjectionFrame = encounterProjection;
+
+          // The selected ship feed is already acquired, regardless of player presence,
+          // terminal interactions, survey completion, or screen power state.
+          const tracked = selectedMode === "encounter"
+            || selectedMode === "planet"
+            || selectedMode === "astrometric";
+          const presentationInputs = {
+            encounterProjection,
+            navigationSnapshot: navigation,
+            astrometricSnapshot: astrometrics,
+            simulationSeconds,
+            tracked,
+            idleReason: navigation.enabled === false ? "navigation-unavailable" : "standby"
+          };
+          this.bridgeViewscreenPresentationInputsFrame = presentationInputs;
+          this.bridgeViewscreenPresentationFrame = system.present(presentationInputs);
+          return encounterResult || this.bridgeViewscreenPresentationFrame;
+        }
+
+        bridgeViewscreenEncounterSnapshot(nowMs = this.lastFrameTime ?? performance.now()) {
+          const runtime = this.bridgeViewscreenEncounterRuntime;
+          if (!runtime || typeof runtime.snapshot !== "function") return null;
+          // Rendering consumes the frame projection established by updateBridgeViewscreenEncounter().
+          // It must not create another projection/camera step merely because a draw helper asks again.
+          if (this.bridgeViewscreenProjectionFrame) return this.bridgeViewscreenProjectionFrame;
+          return runtime.lastSnapshot || null;
         }
 
         currentSystemPlanet() {
           return this.navigationSnapshot?.()?.currentPlanet || null;
         }
 
-        openingEnemyEncounterActive(nowMs = this.lastFrameTime ?? performance.now()) {
+        openingEnemyEncounterPendingNavigation(nowMs = this.lastFrameTime ?? performance.now()) {
           const navigation = this.navigationSnapshot?.(nowMs) || {};
-          const openingEncounterBaseState = Boolean(
+          return Boolean(
             navigation.currentSystemId
             && navigation.currentSystemId === navigation.startSystemId
             && !navigation.travelling
@@ -7153,25 +7280,30 @@
             && !navigation.lastArrivalAtMs
             && Number(navigation.elapsedWorldTime || 0) === 0
           );
-          if (!openingEncounterBaseState) return false;
-          if (!this.enemyShipDisabled()) return true;
-          return Number(this.bridgeTacticalShotAgeMs(nowMs)) < 1900;
+        }
+
+        openingEnemyEncounterActive(nowMs = this.lastFrameTime ?? performance.now()) {
+          if (!this.openingEnemyEncounterPendingNavigation(nowMs)) return false;
+          const status = this.bridgeEncounterStatus(nowMs);
+          if (!status.targetDestroyed) return true;
+          return Number(status.lastImpactAgeMs) < 1900;
         }
 
         enemyShipHullPercent() {
-          const value = Number(this.shipState?.flags?.enemyShipHullPercent);
-          if (!Number.isFinite(value)) return 100;
-          return Math.max(0, Math.min(100, value));
+          const value = Number(this.bridgeEncounterStatus().targetHullPercent);
+          return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 100;
         }
 
         enemyShipDisabled() {
-          return this.enemyShipHullPercent() <= 0 || Boolean(this.shipState?.flags?.enemyShipDisabled);
+          return Boolean(this.bridgeEncounterStatus().targetDestroyed);
         }
 
         bridgeTacticalShotAgeMs(nowMs = this.lastFrameTime ?? performance.now()) {
-          const firedAt = Number(this.shipState?.flags?.bridgeTacticalLastFireAtMs || 0);
-          if (!firedAt) return Infinity;
-          return Math.max(0, (Number.isFinite(nowMs) ? nowMs : performance.now()) - firedAt);
+          return Number(this.bridgeEncounterStatus(nowMs).lastFireAgeMs);
+        }
+
+        bridgeTacticalImpactAgeMs(nowMs = this.lastFrameTime ?? performance.now()) {
+          return Number(this.bridgeEncounterStatus(nowMs).lastImpactAgeMs);
         }
 
         fireBridgeTacticalConsole() {
@@ -7180,45 +7312,39 @@
           const nowMs = Math.round(this.lastFrameTime || performance.now() || 0);
 
           if (this.openingEnemyEncounterActive(nowMs)) {
-            this.setShipTerminalState("terminal.bridge-viewscreen", "tracking");
-            this.setShipTerminalState("terminal.bridge-tactical", "firing");
-            flags.bridgeViewscreenTrackingActive = true;
-            flags.enemyShipOnBridgeViewscreen = true;
-            flags.bridgeTacticalArmed = true;
-            flags.bridgeTacticalShotsFired = Math.max(0, Number(flags.bridgeTacticalShotsFired) || 0) + 1;
-            flags.bridgeTacticalLastFireAtMs = nowMs;
-            const currentHull = this.enemyShipHullPercent();
-            if (currentHull <= 0 || flags.enemyShipDisabled) {
-              flags.enemyShipHullPercent = 0;
-              flags.enemyShipDisabled = true;
+            const before = this.bridgeEncounterStatus(nowMs);
+            if (before.targetDestroyed) {
               this.setShipTerminalState("terminal.bridge-tactical", "target-destroyed");
               this.setShipObjective("objective.enemy-disabled", true);
               this.setShipInteractionStatus("Bridge tactical console reports the enemy raider has already been destroyed.");
               this.emitShipState(true);
               return true;
             }
-            const nextHull = Math.max(0, currentHull - 50);
-            flags.enemyShipHullPercent = nextHull;
-            if (nextHull <= 0) {
-              flags.enemyShipDisabled = true;
-              this.setShipTerminalState("terminal.bridge-tactical", "target-destroyed");
-              this.setShipObjective("objective.enemy-disabled", true);
-              this.setShipInteractionStatus("Bridge tactical console fired. Direct hit. Enemy raider destroyed in an expanding fireball. Navigation is ready.");
-            } else {
-              flags.enemyShipDisabled = false;
-              this.setShipObjective("objective.enemy-attack", true);
-              this.setShipInteractionStatus(`Bridge tactical console fired. Direct hit. Enemy raider hull ${Math.round(nextHull)}%. Fire one more volley.`);
+            this.setShipTerminalState("terminal.bridge-tactical", "firing");
+            const command = this.bridgeEncounterRuntime?.command?.({type: "fire-primary-weapon"}, nowMs) || {accepted: false, reason: "bridge-encounter-runtime-unavailable"};
+            if (!command.accepted) {
+              this.setShipInteractionStatus(`Bridge tactical console could not fire: ${String(command.reason || "command rejected")}.`);
+              this.emitShipState(true);
+              return false;
             }
+            this.setShipObjective("objective.enemy-attack", true);
+            this.setShipInteractionStatus(
+              `Bridge tactical console fired ${String(command.shot?.id || "primary weapon")}. Projectile in flight; enemy raider hull ${Math.round(Number(command.targetHullPercent) || 0)}%.`
+            );
             this.emitShipState(true);
             return true;
           }
 
           const navigation = this.navigationSnapshot?.(nowMs) || {};
+          const targetDestroyed = this.bridgeEncounterStatus(nowMs).targetDestroyed;
+          if (targetDestroyed && this.openingEnemyEncounterPendingNavigation(nowMs)) {
+            this.setShipTerminalState("terminal.bridge-tactical", "target-destroyed");
+            this.setShipObjective("objective.enemy-disabled", true);
+            this.setShipInteractionStatus("Enemy raider destroyed. Navigation is ready.");
+            return true;
+          }
           const planet = navigation.currentPlanet || {};
-          this.setShipTerminalState("terminal.bridge-viewscreen", "tracking");
           this.setShipTerminalState("terminal.bridge-tactical", "scanning");
-          flags.bridgeViewscreenTrackingActive = true;
-          flags.enemyShipOnBridgeViewscreen = false;
           flags.currentSystemPlanetSurveyed = true;
           flags.lastSurveyedPlanetId = String(planet.id || navigation.currentPlanetId || "");
           flags.lastSurveyedSystemId = String(navigation.currentSystemId || "");
@@ -7294,21 +7420,15 @@
           } else if (nextLocation === "bridge.access") {
             this.setShipObjective("objective.bridge-access");
           } else if (nextLocation === "bridge.deck") {
-            if (this.openingEnemyEncounterActive()) {
+            if (this.openingEnemyEncounterPendingNavigation()) {
               this.setShipObjective(
-                this.enemyShipDisabled()
-                  ? "objective.enemy-disabled"
-                  : this.bridgeViewscreenTrackingActive()
-                    ? "objective.enemy-attack"
-                    : "objective.bridge-screen"
+                this.enemyShipDisabled() ? "objective.enemy-disabled" : "objective.enemy-attack"
               );
             } else {
               this.setShipObjective(
                 Boolean(this.shipState?.flags?.currentSystemPlanetSurveyed)
                   ? "objective.planet-surveyed"
-                  : this.bridgeViewscreenTrackingActive()
-                    ? "objective.planet-scan"
-                    : "objective.planet-view"
+                  : "objective.planet-scan"
               );
             }
           }
@@ -7359,7 +7479,7 @@
         shipInteractionHint(target = this.shipInteractionTarget()) {
           if (!target) return "";
           if (target.id === "terminal.bridge-tactical") {
-            if (this.openingEnemyEncounterActive()) {
+            if (this.openingEnemyEncounterPendingNavigation()) {
               return this.enemyShipDisabled()
                 ? "Enemy raider destroyed. Press E to review tactical status."
                 : this.enemyShipHullPercent() <= 50
@@ -7369,12 +7489,9 @@
             return "Press E to scan the current system planet.";
           }
           if (target.id === "terminal.bridge-viewscreen") {
-            if (this.openingEnemyEncounterActive()) {
-              return this.enemyShipDisabled()
-                ? "Press E to inspect the enemy raider debris field."
-                : "Press E to acquire the enemy raider on the bridge viewscreen.";
-            }
-            return "Press E to center the current system planet on the viewscreen.";
+            return this.bridgeViewscreenDisplayPowered()
+              ? "Press E to turn off the bridge viewscreen display. Tracking continues."
+              : "Press E to turn on the bridge viewscreen display.";
           }
           if (target.prompt) return String(target.prompt);
           if (target.kind === "access") return `Press E to enter through ${target.label}.`;
@@ -7387,7 +7504,7 @@
             enterBayOpsAccess: (target, interaction) => this.enterBayOpsAccess(target, interaction),
             activateBayOperationsTerminal: (target, interaction) => this.activateBayOperationsTerminal(target, interaction),
             restoreEngineeringPower: (target, interaction) => this.restoreEngineeringPower(target, interaction),
-            trackEnemyShipOnViewscreen: (target, interaction) => this.trackEnemyShipOnViewscreen(target, interaction),
+            toggleBridgeViewscreenDisplayPower: (target, interaction) => this.toggleBridgeViewscreenDisplayPower(target, interaction),
             fireBridgeTacticalConsole: (target, interaction) => this.fireBridgeTacticalConsole(target, interaction),
             openBridgeNavigationConsole: (target, interaction) => this.openBridgeNavigationConsole(target, interaction),
             inspectOpenDoorRoute: (target, interaction) => this.inspectOpenDoorRoute(target, interaction)
@@ -7454,50 +7571,14 @@
           this.shipState.power = "online";
           this.shipState.security = "yellow-alert";
           this.setShipDoorState("door.bridge", "open");
-          this.setShipObjective("objective.bridge-access");
+          // A late Character AI engineering-repair event must not rewind the
+          // player's mission after the bridge has already been reached.
+          const objectiveAlreadyBeyondBridge = this.shipState.location === "bridge.deck"
+            || ["objective.enemy-attack", "objective.enemy-disabled", "objective.planet-scan", "objective.planet-surveyed"]
+              .includes(String(this.shipState.objectiveId || ""));
+          if (!objectiveAlreadyBeyondBridge) this.setShipObjective("objective.bridge-access");
           if (this.shipState?.flags) this.shipState.flags.engineeringPowerRestored = true;
           this.setShipInteractionStatus(interaction?.status || "Engineering restored main power. Bridge route confirmed open.");
-          return true;
-        }
-
-        trackEnemyShipOnViewscreen(target, interaction) {
-          const navigation = this.navigationSnapshot?.() || {};
-          this.setShipTerminalState("terminal.bridge-viewscreen", "tracking");
-
-          if (this.openingEnemyEncounterActive()) {
-            this.setShipObjective(this.enemyShipDisabled() ? "objective.enemy-disabled" : "objective.enemy-attack", true);
-            if (this.shipState?.flags) {
-              this.shipState.flags.enemyShipOnBridgeViewscreen = true;
-              this.shipState.flags.bridgeViewscreenTrackingActive = true;
-              this.shipState.flags.bridgeViewscreenInteractedAtMs = Math.round(this.lastFrameTime || 0);
-            }
-            this.setShipInteractionStatus(
-              this.enemyShipDisabled()
-                ? "Enemy raider debris field centered on the main viewscreen."
-                : "Bridge tactical lock engaged. Enemy raider is tracked on the main viewscreen. Use the Bridge Tactical Console / Sensor Array to fire."
-            );
-            this.emitShipState(true);
-            return true;
-          }
-
-          const planet = navigation.currentPlanet || {};
-          this.setShipObjective(
-            this.shipState?.flags?.currentSystemPlanetSurveyed
-              ? "objective.planet-surveyed"
-              : "objective.planet-scan",
-            true
-          );
-          if (this.shipState?.flags) {
-            this.shipState.flags.enemyShipOnBridgeViewscreen = false;
-            this.shipState.flags.bridgeViewscreenTrackingActive = true;
-            this.shipState.flags.lastSurveyedPlanetId = String(planet.id || navigation.currentPlanetId || "");
-            this.shipState.flags.lastSurveyedSystemId = String(navigation.currentSystemId || "");
-            this.shipState.flags.bridgeViewscreenInteractedAtMs = Math.round(this.lastFrameTime || 0);
-          }
-          this.setShipInteractionStatus(
-            `${String(planet.label || navigation.currentPlanetLabel || "Current planet")} centered on the main viewscreen. Use the Bridge Tactical Console / Sensor Array to complete the survey.`
-          );
-          this.emitShipState(true);
           return true;
         }
 
@@ -7505,7 +7586,7 @@
           if (this.shipDoorState(target.id) !== "open") this.setShipDoorState(target.id, "open");
           if (target.id === "door.bay-inner" || target.id === "door.security-hub") this.setShipObjective("objective.restore-power");
           if (target.id === "door.engineering-access" || target.id === "door.medbay" || target.id === "door.science") this.setShipObjective("objective.survey-departments");
-          if (target.id === "door.bridge") this.setShipObjective("objective.bridge-screen");
+          if (target.id === "door.bridge") this.setShipObjective("objective.bridge-access");
           this.setShipInteractionStatus(`${target.label} route is open. No door lock is required.`);
           return true;
         }
@@ -8429,9 +8510,19 @@
             if (active) builder.beam([x - width / 2, -0.5, z], [x + width / 2, -0.5, z], 0.02 + pulse * 0.01, activeTrim);
           };
           const drawViewscreen = (prop) => {
-            // Patch P renders content-defined viewscreens/displays from prop.display metadata.
-            // See requirements/game-runtime-patch-P-content-defined-viewscreens.md for the content contract.
-            this.appendMotherShipViewscreenDisplay(builder, prop, nowMs);
+            const renderer = globalThis.MainComputerBridgeViewscreenRenderer;
+            const presentation = this.bridgeViewscreenPresentationSnapshot?.();
+            if (!renderer || typeof renderer.render !== "function") {
+              throw new Error("BRIDGE_VIEWSCREEN_RENDERER_MISSING");
+            }
+            if (!presentation) {
+              throw new Error("BRIDGE_VIEWSCREEN_PRESENTATION_MISSING");
+            }
+            renderer.render({
+              builder,
+              surface: prop,
+              presentation
+            });
           };
           props.forEach((prop) => {
             const kind = String(prop.kind || "").toLowerCase();
@@ -8872,63 +8963,6 @@
           };
         }
 
-        appendMotherShipViewscreenDisplay(builder, prop, nowMs = 0) {
-          return globalThis.MainComputerShuttle3DRendererModules?.call(
-            "viewscreens",
-            "appendMotherShipViewscreenDisplay",
-            this,
-            builder,
-            prop,
-            nowMs
-          );
-        }
-
-        appendSystemPlanetDisplay(builder, prop, nowMs = 0) {
-          return globalThis.MainComputerShuttle3DRendererModules?.call(
-            "viewscreens",
-            "appendSystemPlanetDisplay",
-            this,
-            builder,
-            prop,
-            nowMs
-          );
-        }
-
-        appendAstrometricSystemDisplay(builder, prop, nowMs = 0, navigationState = null, astrometricState = null) {
-          return globalThis.MainComputerShuttle3DRendererModules?.call(
-            "viewscreens",
-            "appendAstrometricSystemDisplay",
-            this,
-            builder,
-            prop,
-            nowMs,
-            navigationState,
-            astrometricState
-          );
-        }
-
-        appendWarpTransitDisplay(builder, prop, nowMs = 0, navigationState = null) {
-          return globalThis.MainComputerShuttle3DRendererModules?.call(
-            "viewscreens",
-            "appendWarpTransitDisplay",
-            this,
-            builder,
-            prop,
-            nowMs,
-            navigationState
-          );
-        }
-
-        appendEnemyShipTacticalDisplay(builder, prop, nowMs = 0) {
-          return globalThis.MainComputerShuttle3DRendererModules?.call(
-            "viewscreens",
-            "appendEnemyShipTacticalDisplay",
-            this,
-            builder,
-            prop,
-            nowMs
-          );
-        }
 
 
         appendMotherShip(builder, center, scale = 1, docked = false) {
@@ -11396,6 +11430,7 @@
           this.updateMovement(deltaSeconds);
           this.updateCharacterAI(frameTime, deltaSeconds);
           this.updateCombat(frameTime, deltaSeconds);
+          this.updateBridgeViewscreenEncounter(frameTime);
           this.dynamicGeometry = this.buildDynamicGeometry(frameTime);
           this.dynamicVertexCount = this.dynamicGeometry.length / 10;
           this.vertexCount = this.worldVertexCount + this.starVertexCount + this.dynamicVertexCount;
@@ -12256,7 +12291,8 @@
             const combat = renderer.combatSnapshot();
             const pilot = renderer.pilotSnapshot();
             const pilotText = pilot.active ? ` • piloting ${pilot.stationLabel}` : "";
-            const bayText = pilot.shuttleBayControlActive ? ` • ${pilot.shuttleBayLabel}` : "";
+            const shipLocation = renderer.shipStateSnapshot?.()?.locationLabel || pilot.shuttleBayLabel;
+            const bayText = pilot.shuttleBayControlActive ? ` • ${shipLocation}` : "";
             status.textContent = `${renderer.worldVertexCount.toLocaleString()} fixed vertices • ${renderer.starfield.count} sphere stars • ${combat.alive} boarders${pilotText}${bayText} • x ${camera[0].toFixed(1)} • z ${camera[2].toFixed(1)}`;
             canvas.dataset.cameraX = camera[0].toFixed(3);
             canvas.dataset.cameraZ = camera[2].toFixed(3);
@@ -12278,14 +12314,17 @@
                 || encounter.objectiveSequence.find((objective) => objective.status === "pending")
                 || null
               : null;
-            encounterLine.hidden = !encounter.objectiveLine;
+            // After the shuttle handoff, the mother-ship objective is the live
+            // objective. Do not keep displaying a stale shuttle-boarding mission.
+            const motherShipControlActive = renderer.isShuttleBayPlayerControlActive?.() === true;
+            encounterLine.hidden = !encounter.objectiveLine || motherShipControlActive;
             encounterLine.textContent = encounter.objectiveLine
               ? `OBJECTIVE: ${encounter.objectiveLine}`
               : "";
             encounterLine.dataset.objectiveStatus = String(currentObjective?.status || "");
             encounterLine.dataset.eliteWaveRequested = String(encounter.eliteWave?.requested === true);
             encounterLine.dataset.eliteWaveCleared = String(encounter.eliteWave?.cleared === true);
-            packLine.hidden = !encounter.packLine;
+            packLine.hidden = !encounter.packLine || motherShipControlActive;
             packLine.textContent = encounter.packLine ? String(encounter.packLine).toUpperCase() : "";
             packLine.dataset.packConfigured = String(encounter.eliteWave?.packConfigured === true);
             packLine.dataset.packPluginId = String(encounter.eliteWave?.pluginId || "");

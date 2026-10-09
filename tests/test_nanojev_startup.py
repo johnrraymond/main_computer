@@ -50,7 +50,7 @@ def test_start_v2_boots_and_tracks_nanojev_container() -> None:
     assert 'MAIN_COMPUTER_NANOJEV_PORT = "9765"' in helper
     assert 'MAIN_COMPUTER_NANOJEV_URL = "http://127.0.0.1:9765"' in helper
     assert "function Start-MainComputerNanoJev" in helper
-    assert '"up", "-d", "--build", "nanojev"' in helper
+    assert '"up", "-d", "--no-build", "--pull", "never", "nanojev"' in helper
     assert "Test-MainComputerNanoJevHealth $baseUrl" in helper
     assert '$nanoJevStart = Start-MainComputerNanoJev $RootPath $launchContext $pythonCommand' in helper
     assert 'nanojev = $NanoJevStart' in helper

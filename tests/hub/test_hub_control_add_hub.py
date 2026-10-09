@@ -14,6 +14,24 @@ from tools.hub_control.common.state import read_accepted, require_operation
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def _legacy_hub_control_fixture_without_funded_pool(monkeypatch):
+    """Legacy topology tests intentionally use stub Mother state without genesis wallets.
+
+    The real Mother successor and pool are covered in test_hub_admin_wallet_allocation.
+    """
+    from tools.mother.common.ethereum_identity import private_key_to_address
+    key = "0x" + "01".zfill(64)
+    address = private_key_to_address(key)
+    monkeypatch.setattr(add_hub, "verify_admin_current_funding", lambda *a, **kw: {"verified": True, "block": "latest"})
+    monkeypatch.setattr(add_hub, "preview_admin", lambda *a, **kw: {"address": address, "source": "legacy-fixture"})
+    monkeypatch.setattr(add_hub, "ensure_bridge_controller", lambda *a, **kw: {"verified": True, "already_authorized": True, "controller": address})
+    monkeypatch.setattr(add_hub, "reserve_admin", lambda *a, **kw: {
+        "address": address, "private_key": key,
+        "private_state_path": "networks.mainnet.hub_admin_assignments.fixture",
+    })
+
+
 def _ctx(tmp_path: Path) -> HubContext:
     return HubContext(
         repo_root=ROOT,

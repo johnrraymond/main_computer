@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +35,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from main_computer.hub_networks import HubNetworkConfigError, HubNetworkProfile, load_hub_network_registry  # noqa: E402
+from main_computer.contract_config import get_contract_address, load_contract_config, ContractConfigError
 
 
 DEFAULT_TOKEN_ENV = "MAIN_COMPUTER_COOLIFY_TOKEN"
@@ -808,21 +809,6 @@ def _resolve_local_runtime_path(path_text: str, *, manifest_path: Path) -> Path:
     return candidates[0]
 
 
-def _contract_record_from_payload(payload: dict[str, Any], key: str) -> dict[str, Any]:
-    contracts = payload.get("contracts") if isinstance(payload.get("contracts"), dict) else {}
-    raw = contracts.get(key) if isinstance(contracts, dict) else None
-    if isinstance(raw, dict):
-        return dict(raw)
-    if isinstance(raw, str):
-        return {"address": raw}
-    raw = payload.get(key)
-    if isinstance(raw, dict):
-        return dict(raw)
-    if isinstance(raw, str):
-        return {"address": raw}
-    return {}
-
-
 def _build_bridge_signer_bundle_payload(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = bridge_signer_source_manifest_path(profile, args)
     manifest = _load_json_object(manifest_path, label="bridge signer source manifest")
@@ -865,18 +851,23 @@ def _build_bridge_signer_bundle_payload(profile: HubNetworkProfile, args: argpar
         raise CoolifyHubDeployError(f"hub_admin.private_key in bridge signer source manifest is not a valid private key: {manifest_path}")
 
     chain = manifest.get("chain") if isinstance(manifest.get("chain"), dict) else {}
-    escrow = _contract_record_from_payload(manifest, "hub_credit_bridge_escrow")
-    escrow_address = str(escrow.get("address") or "").strip()
-    if not _looks_like_address(escrow_address):
-        raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_credit_bridge_escrow.address: {manifest_path}")
-    contract_controller = str(escrow.get("bridge_controller_address") or "").strip()
-    if contract_controller and contract_controller.lower() != controller_address.lower():
-        raise CoolifyHubDeployError(
-            f"hub_admin.address does not match hub_credit_bridge_escrow.bridge_controller_address: {controller_address} != {contract_controller}"
+    # Historical manifests are a signer-key source, NOT an active-contract registry.
+    config_override = str(getattr(args, "bridge_contract_config_path", "") or "").strip()
+    try:
+        loaded = load_contract_config(
+            profile.network_key,
+            path=config_override or None,
+            required=True,
         )
+    except ContractConfigError as exc:
+        raise CoolifyHubDeployError(f"bridge signer active contract registry unavailable: {exc}") from exc
+    assert loaded is not None
+    escrow_address = get_contract_address(loaded[1], "hub_credit_bridge_escrow")
+    if not _looks_like_address(escrow_address):
+        raise CoolifyHubDeployError(f"active contract registry lacks hub_credit_bridge_escrow: {loaded[0]}")
 
     chain_id = profile.chain_id
-    raw_chain_id = escrow.get("chain_id") or chain.get("chain_id")
+    raw_chain_id = chain.get("chain_id")
     if chain_id is None and raw_chain_id not in (None, ""):
         try:
             chain_id = int(raw_chain_id, 0) if isinstance(raw_chain_id, str) else int(raw_chain_id)
@@ -916,10 +907,45 @@ def _build_bridge_signer_bundle_payload(profile: HubNetworkProfile, args: argpar
     }
 
 
-def build_bridge_signer_bundle(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
-    """Build a private bridge signer bundle and a redacted summary for Coolify env sync."""
+def build_bridge_signer_bundle(
+    profile: HubNetworkProfile, args: argparse.Namespace, *,
+    wallet_override: Mapping[str, Any] | None = None,
+    chain_override: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a signer bundle; Hub Control may pass its committed private-state wallet.
 
-    bundle = _build_bridge_signer_bundle_payload(profile, args)
+    When supplied, overrides are authoritative and no legacy manifest is opened.
+    The private key never enters the returned public metadata.
+    """
+    if wallet_override is None and chain_override is None:
+        bundle = _build_bridge_signer_bundle_payload(profile, args)
+    elif wallet_override is not None and chain_override is not None:
+        address = str(wallet_override.get("address") or "")
+        private_key = str(wallet_override.get("private_key") or "")
+        escrow = str(chain_override.get("escrow_address") or "")
+        rpc_url = str(chain_override.get("chain_rpc_url") or "")
+        chain_id = int(chain_override.get("chain_id") or 0)
+        if not _looks_like_address(address) or not _looks_like_private_key(private_key):
+            raise CoolifyHubDeployError("assigned Hub admin address/private key is invalid")
+        if not _looks_like_address(escrow) or not rpc_url or not chain_id:
+            raise CoolifyHubDeployError("assigned Hub signer requires a valid Chain contract")
+        from tools.mother.common.ethereum_identity import private_key_to_address
+        if private_key_to_address(private_key).lower() != address.lower():
+            raise CoolifyHubDeployError("assigned Hub admin private key does not match public address")
+        bundle = {
+            "schema": BRIDGE_SIGNER_SCHEMA,
+            "network": profile.network_key,
+            "chain_id": chain_id,
+            "chain_rpc_url": rpc_url,
+            "contracts": {"hub_credit_bridge_escrow": {
+                "address": escrow, "bridge_controller_address": address,
+            }},
+            "bridge_controller": {"address": address, "private_key": private_key},
+            "source": {"manifest_path": "mother-private-state", "wallet_path": str(chain_override.get("private_state_path") or ""),
+                       "run_id": "", "schema": "mother-private-state"},
+        }
+    else:
+        raise CoolifyHubDeployError("bridge signer wallet and Chain overrides must be provided together")
     raw = json.dumps(bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     encoded = base64.b64encode(raw).decode("ascii")
     return {

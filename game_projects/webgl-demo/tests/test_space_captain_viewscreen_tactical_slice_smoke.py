@@ -43,7 +43,8 @@ def test_default_five_second_slice_has_smooth_subslice_motion_and_impact_break()
     metrics = result["metrics"]
     assert metrics["timeStepSeconds"] == 5.0
     assert metrics["physicsStepSeconds"] == 0.1
-    assert metrics["viewportHz"] == 60.0
+    assert metrics["referenceViewportSampleHz"] == 60.0
+    assert metrics["browserRenderCadence"] == "requestAnimationFrame"
     assert metrics["sliceCount"] == 2
     assert metrics["durationSeconds"] == 10.0
     assert min(metrics["physicsSubstepsBySlice"]) >= 50

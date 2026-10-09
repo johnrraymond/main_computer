@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from main_computer.hub_networks import load_hub_network_registry
+from main_computer.hub_admin_runtime import HUB_ADMIN_BUNDLE_ENV, HUB_ADMIN_BUNDLE_SCHEMA
 from tools import coolify_hub_service as legacy
 
 from .canonical import canonical_bytes
@@ -1216,11 +1217,10 @@ def _verify_live_bridge_signer_contract(
         )
     authorized = int(hex_data[-64:], 16) != 0
     if not authorized:
-        _emit_contract_deployer_command(target)
         raise HubControlError(
             "HUB_BRIDGE_CONTROLLER_NOT_AUTHORIZED",
-            f"bridge controller {controller} is not authorized by HubCreditBridgeEscrow {escrow}; "
-            "run the emitted HUB_CONTRACT_DEPLOYER_COMMAND, then rerun add-hub",
+            f"assigned Hub admin {controller} is not authorized by HubCreditBridgeEscrow {escrow}; "
+            "rerun add-hub to check or establish authorization through the contract owner",
         )
 
     _progress(
@@ -1241,10 +1241,9 @@ def _verify_live_bridge_signer_contract(
 def _build_bridge_signer_for_deployment(target: Mapping[str, Any]) -> dict[str, Any] | None:
     """Build the existing canonical Hub bridge-controller bundle without logging secrets.
 
-    Hub Control intentionally reuses the signer-bundle builder already used by
-    ``coolify_hub_service``.  The source remains the private deployment manifest
-    under runtime/deployments/<network>/latest.json; only the bridge-controller
-    signer is copied into the bundle (never requester/smoke wallet material).
+    Hub Control reuses the signer-bundle builder from ``coolify_hub_service``,
+    but supplies its already-reserved Hub administrator wallet explicitly.
+    Legacy deployment manifests never select the bridge-controller identity.
     """
 
     if not _bridge_signer_required(target):
@@ -1259,28 +1258,22 @@ def _build_bridge_signer_for_deployment(target: Mapping[str, Any]) -> dict[str, 
     network = str(target.get("network") or "").strip()
     if not network:
         raise HubControlError("HUB_BRIDGE_SIGNER_SOURCE_UNAVAILABLE", "Hub bridge signing requires a network key")
-    manifest_path = repo_root / "runtime" / "deployments" / network / "latest.json"
-    if not manifest_path.is_file():
-        raise HubControlError(
-            "HUB_BRIDGE_SIGNER_SOURCE_UNAVAILABLE",
-            f"Hub bridge signing is required but the private deployment manifest is missing: {manifest_path}",
-        )
-
+    admin = target.get("_hub_admin_wallet")
+    expected_admin = str(target.get("hub_admin_address") or "").strip()
+    if not isinstance(admin, Mapping) or not expected_admin or str(admin.get("address") or "").lower() != expected_admin.lower():
+        raise HubControlError("HUB_BRIDGE_SIGNER_SOURCE_INVALID", "bridge signer must be the Hub's committed admin identity")
+    chain = target.get("chain_contract") or {}
+    escrow = str((chain.get("contracts") or {}).get("hub_credit_bridge_escrow") or "")
     try:
         profile = load_hub_network_registry(repo_root / "main_computer" / "config" / "hub_networks.json").get(network)
-        args = argparse.Namespace(
-            bridge_signer_source_manifest=str(manifest_path),
-            bridge_controller_wallet_path="",
-            bridge_signer_env_key=BRIDGE_SIGNER_ENV,
-            hub_chain_rpc_url=str((target.get("chain_contract") or {}).get("rpc_url") or ""),
+        args = argparse.Namespace(bridge_signer_env_key=BRIDGE_SIGNER_ENV)
+        bundle = legacy.build_bridge_signer_bundle(
+            profile, args, wallet_override=admin,
+            chain_override={"chain_id": chain.get("chain_id"), "chain_rpc_url": chain.get("rpc_url"),
+                            "escrow_address": escrow, "private_state_path": target.get("hub_admin_private_state_path")},
         )
-        bundle = legacy.build_bridge_signer_bundle(profile, args)
-    except Exception as exc:  # noqa: BLE001
-        raise HubControlError(
-            "HUB_BRIDGE_SIGNER_SOURCE_INVALID",
-            f"could not build the Hub bridge signer bundle from {manifest_path}: {exc}",
-        ) from exc
-
+    except Exception as exc:
+        raise HubControlError("HUB_BRIDGE_SIGNER_SOURCE_INVALID", f"could not build bridge signer from assigned Hub admin: {type(exc).__name__}: {exc}") from exc
     expected_chain_id = int((target.get("chain_contract") or {}).get("chain_id") or 0)
     actual_chain_id = int(bundle.get("chain_id") or 0)
     if expected_chain_id and actual_chain_id and actual_chain_id != expected_chain_id:
@@ -1304,7 +1297,7 @@ def _build_bridge_signer_for_deployment(target: Mapping[str, Any]) -> dict[str, 
         "bundle_b64": encoded,
         "bundle_sha256": str(bundle.get("bundle_sha256") or ""),
         "bundle_bytes": int(bundle.get("bundle_bytes") or 0),
-        "source_manifest": str(bundle.get("source_manifest") or manifest_path),
+        "source_manifest": str(bundle.get("source_manifest") or "mother-private-state"),
         "bridge_controller_address": str(bundle.get("bridge_controller_address") or ""),
         "escrow_address": actual_escrow,
         "chain_id": actual_chain_id,
@@ -1431,8 +1424,19 @@ def apply_deployment(
             "MAIN_COMPUTER_HUB_CONTROL_FDB_NAMESPACE": str(target["fdb_contract"]["namespace"]),
             "MAIN_COMPUTER_HUB_CONTROL_FDB_API_VERSION": str(target["fdb_contract"].get("api_version", 740)),
         }
-        if bridge_signer is not None:
-            env_values[str(bridge_signer["env_key"])] = str(bridge_signer["bundle_b64"])
+        admin = target.get("_hub_admin_wallet")
+        expected_admin = str(target.get("hub_admin_address") or "").strip()
+        if expected_admin:
+            if not isinstance(admin, Mapping) or str(admin.get("address") or "").lower() != expected_admin.lower():
+                raise HubControlError("HUB_ADMIN_INSTALL_MISSING", "committed Hub administrator signer is missing from deployment")
+            bundle = {
+                "schema": HUB_ADMIN_BUNDLE_SCHEMA,
+                "network": str(target["network"]),
+                "hub_id": str(target["hub_id"]),
+                "address": expected_admin,
+                "private_key": str(admin["private_key"]),
+            }
+            env_values[HUB_ADMIN_BUNDLE_ENV] = base64.b64encode(canonical_bytes(bundle)).decode("ascii")
         _progress(f"deployment: synchronize {len(env_values)} environment variables")
         for index, (key, value) in enumerate(env_values.items(), start=1):
             _progress(f"deployment: env {index}/{len(env_values)} key={key}")
@@ -1559,6 +1563,11 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
             checks["bridge_controller_authorized"] = bridge_backend.get("bridge_controller_authorized") is True
             checks["bridge_write_operations"] = bridge_backend.get("write_operations_enabled") is True
             checks["bridge_signer_mode"] = str(bridge_backend.get("mode") or "") == "bridge-signer"
+        expected_admin = str(target.get("hub_admin_address") or "").strip()
+        if expected_admin:
+            hub_admin = identity.get("hub_admin") if isinstance(identity, Mapping) and isinstance(identity.get("hub_admin"), Mapping) else {}
+            checks["hub_admin_wallet_loaded"] = hub_admin.get("wallet_loaded") is True
+            checks["hub_admin_address"] = str(hub_admin.get("address") or "").lower() == expected_admin.lower()
         fdb_verified = all(checks[key] for key in ("hub_identity", "fdb_backend", "fdb_cluster_file", "fdb_namespace"))
         chain_verified = all(checks[key] for key in ("hub_identity", "chain_id", "chain_rpc", "status_chain_id", "status_rpc"))
         bridge_signer_verified = (
@@ -1594,6 +1603,7 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
                 "fdb_adoption_verified": True,
                 "chain_adoption_verified": True,
                 "bridge_signer_verified": bridge_signer_verified,
+                "hub_admin_verified": (not expected_admin or (checks["hub_admin_wallet_loaded"] and checks["hub_admin_address"])),
                 **last_observation,
             }
         failed_checks = [key for key, value in checks.items() if not value]
@@ -1628,6 +1638,7 @@ def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, req
                 "fdb_adoption_verified": fdb_verified,
                 "chain_adoption_verified": chain_verified,
                 "bridge_signer_verified": bridge_signer_verified,
+                "hub_admin_verified": (not expected_admin or (checks["hub_admin_wallet_loaded"] and checks["hub_admin_address"])),
                 "last_error": last_error,
                 **last_observation,
             }

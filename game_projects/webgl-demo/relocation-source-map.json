@@ -384,12 +384,6 @@
       "sha256": "2efe90a7dca7fed1a8d83101bea93b541e10b5f01560e3206be95ccad655faeb"
     },
     {
-      "source": "main_computer/web/applications/scripts/shuttle3d-render-viewscreens.js",
-      "destination": "games/webgl-demo/web/scripts/shuttle3d-render-viewscreens.js",
-      "bytes": 43614,
-      "sha256": "c6236ab102c35400fabcc5bce121479160d8fdc180dc0ea0e0d8e3509a4a6176"
-    },
-    {
       "source": "main_computer/web/applications/scripts/shuttle3d-renderer-modules.js",
       "destination": "games/webgl-demo/web/scripts/shuttle3d-renderer-modules.js",
       "bytes": 1057,

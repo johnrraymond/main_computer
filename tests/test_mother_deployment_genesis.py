@@ -246,7 +246,31 @@ def test_genesis_compiler_builds_one_initial_validator_and_one_soft_admission(
     assert transaction["genesis"]["validator_set"] == [validator_a]
     assert validator_a[2:] in genesis["extraData"]
     assert validator_c[2:] not in genesis["extraData"]
-    assert set(genesis["alloc"]) == {captain[2:]}
+    wallet_addresses = [network["wallets"][role]["address"].lower()
+                        for role in ("captain", "o1", "o2", "o3", "deployer")]
+    from tools.mother.common.hub_admin_pool import genesis_addresses
+    hub_addresses = genesis_addresses(network)
+    assert len(hub_addresses) == 15
+    reserve_address = "0x000000000000000000000000000000000000c0de"
+    assert set(genesis["alloc"]) == (
+        {address[2:] for address in wallet_addresses}
+        | {address[2:] for address in hub_addresses}
+        | {reserve_address[2:]}
+        | {"000000000000000000000000000000000000e5c0"}
+    )
+    for address in (*wallet_addresses, *hub_addresses):
+        assert int(genesis["alloc"][address[2:]]["balance"], 16) == 10_000 * 10**18
+    reserve_account = genesis["alloc"][reserve_address[2:]]
+    assert len(bytes.fromhex(reserve_account["code"][2:])) > 0
+    assert sum(int(item["balance"], 16) for item in genesis["alloc"].values()) == (1 << 256) - 1
+    assert transaction["genesis"]["reserve_contract"] == reserve_address
+    bridge_escrow = genesis["alloc"]["000000000000000000000000000000000000e5c0"]
+    assert bridge_escrow["balance"] == "0x0"
+    assert bridge_escrow["code"].startswith("0x")
+    assert int(bridge_escrow["storage"]["0x" + "00" * 32], 16) == int(network["wallets"]["deployer"]["address"], 16)
+    assert transaction["genesis"]["hub_credit_bridge_escrow"] == "0x000000000000000000000000000000000000e5c0"
+    assert transaction["genesis"]["hub_credit_bridge_escrow_compiler_sha256"]
+    assert transaction["genesis"]["reserve_compiler_sha256"]
     assert genesis["config"]["berlinBlock"] == 0
     assert genesis["config"]["londonBlock"] == 0
     assert genesis["config"]["shanghaiTime"] == 0
@@ -271,10 +295,18 @@ def test_genesis_compiler_builds_one_initial_validator_and_one_soft_admission(
     assert transaction["policy"]["network_access_performed"] is False
     assert transaction["policy"]["service_deploy_or_start_performed"] is False
 
-    rendered = json.dumps(transaction, sort_keys=True)
+    # A 32-byte fake validator key such as 0x...08 can equal the hex encoding
+    # of a reserve storage SLOT KEY. Detect secret-valued JSON fields, not
+    # coincidental substrings in public contract storage locations.
+    from tools.mother.common.deployment_genesis import _contains_sensitive_field
+    assert not _contains_sensitive_field(transaction)
+    import copy
+    sanitized = copy.deepcopy(transaction)
+    sanitized["genesis"]["canonical_json"]["alloc"][reserve_address[2:]].pop("storage")
+    public_json = json.dumps(sanitized, sort_keys=True)
     for node in ("mainneta-super1", "mainnetc-super1"):
-        assert network["validators"][node]["private_key"] not in rendered
-        assert network["node_seed_material"][node]["wallets"]["hub_admin"]["private_key"] not in rendered
+        assert network["validators"][node]["private_key"] not in public_json
+        assert network["node_seed_material"][node]["wallets"]["hub_admin"]["private_key"] not in public_json
 
 
 def test_genesis_transaction_persists_canonically_and_verifies(tmp_path: Path) -> None:
@@ -434,3 +466,94 @@ def test_genesis_remains_blocked_until_identity_is_reapplied_after_verified_roll
             selected_nodes=("mainneta-super1", "mainnetc-super1"),
         )
     assert caught.value.code == "MOTHER_DEPLOY_IDENTITY_ROLLBACK_CYCLE_REQUIRED"
+
+
+def test_mother_genesis_reserve_uses_governance_wallets_not_validator_keys(tmp_path: Path) -> None:
+    from tools.genesis_native_reserve import keccak256, mapping_slot, word, MAX_UINT256
+    paths, private_state, execution_path, rollback_verification_path = _identity_execution(tmp_path)
+    transaction = build_deployment_genesis_transaction(
+        paths, private_state, execution_path,
+        identity_rollback_verification_path=rollback_verification_path,
+        selected_nodes=("mainneta-super1", "mainnetc-super1"),
+        created_at="2026-07-31T20:34:00Z",
+    )
+    source = yaml.safe_load(private_state.document_bytes)["networks"]["mainnet"]
+    alloc = transaction["genesis"]["canonical_json"]["alloc"]
+    escrow = alloc["000000000000000000000000000000000000c0de"]
+    storage = escrow["storage"]
+    wallets = source["wallets"]
+    officers = [wallets[role]["address"].lower() for role in ("captain", "o1", "o2", "o3")]
+    for idx, addr in enumerate(officers):
+        assert int(storage[word(idx)], 16) == int(addr, 16)
+        assert int(storage[word(mapping_slot(addr, 4))], 16) == idx + 1
+        assert int(alloc[addr[2:]]["balance"], 16) == 10_000 * 10**18
+    assert int(storage[word(8)], 16) == MAX_UINT256
+    assert int(storage[word(10)], 16) == 1
+    assert int(storage[word(9)], 16) == 0
+    assert int(alloc[wallets["deployer"]["address"].lower()[2:]]["balance"], 16) == 10_000 * 10**18
+    for validator in source["validators"].values():
+        assert validator["address"].lower() not in officers
+    assert int(escrow["balance"], 16) == MAX_UINT256 - 20 * 10_000 * 10**18
+    from tools.mother.common.deployment_genesis import _contains_sensitive_field
+    assert not _contains_sensitive_field(transaction)
+
+
+def test_mother_genesis_escrow_compiler_commitment_rejects_changed_bytecode(tmp_path: Path) -> None:
+    paths, private_state, execution_path, rollback_verification_path = _identity_execution(tmp_path)
+    transaction = build_deployment_genesis_transaction(
+        paths, private_state, execution_path,
+        identity_rollback_verification_path=rollback_verification_path,
+        created_at="2026-07-31T20:34:00Z",
+    )
+    from tools.mother.common.deployment_genesis import _validated_compiler_from_transaction
+    import copy
+    compiler = _validated_compiler_from_transaction(transaction)
+    assert compiler["deployedBytecode"]["object"]
+    changed = copy.deepcopy(transaction)
+    changed["genesis"]["reserve_compiler"]["deployedBytecode"]["object"] = "0x60006000"
+    with pytest.raises(MotherDeploymentGenesisError) as caught:
+        _validated_compiler_from_transaction(changed)
+    assert caught.value.code == "MOTHER_DEPLOY_GENESIS_RESERVE_ARTIFACT_INVALID"
+
+
+def test_mother_genesis_rejects_compiler_storage_layout_drift(tmp_path: Path) -> None:
+    from tests.test_smoke_besu_qbft_native_mint import fake_artifact
+    from tools.mother.common.deployment_genesis import _genesis_policy
+    state = {"networks": {"mainnet": {
+        "chain_id": 42424240,
+        "genesis": {
+            "source": "mother-private", "first_topology_mode": "initial",
+            "qbft": {"blockperiodseconds": 2, "epochlength": 30000},
+            "alloc_accounts": [{"ref": "networks.mainnet.wallets.captain"}],
+        },
+        "wallets": {
+            role: {"address": f"0x{idx:040x}"}
+            for idx, role in enumerate(("captain", "o1", "o2", "o3", "deployer"), 1)
+        },
+    }}}
+    from tools.mother.common.ethereum_identity import private_key_to_address
+    network = state["networks"]["mainnet"]
+    network["wallets"]["hub_admin_reserve"] = {
+        f"reserve{i:02d}": {
+            "private_key": key,
+            "address": private_key_to_address(key),
+        }
+        for i in range(1, 16)
+        for key in ["0x" + f"{i + 15:064x}"]
+    }
+    artifact = fake_artifact()
+    artifact["storageLayout"]["storage"][0]["slot"] = "99"
+    with pytest.raises(MotherDeploymentGenesisError) as caught:
+        _genesis_policy(state, network="mainnet", initial_validator_address="0x" + "12" * 20,
+                        reserve_artifact=artifact)
+    assert caught.value.code == "MOTHER_DEPLOY_GENESIS_RESERVE_INVALID"
+
+
+def test_mother_genesis_missing_compiled_reserve_artifact_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from tools.mother.common import deployment_genesis
+    monkeypatch.setattr(
+        deployment_genesis, "_RESERVE_ARTIFACT_CANDIDATES", (tmp_path / "does-not-exist.json",)
+    )
+    with pytest.raises(MotherDeploymentGenesisError) as caught:
+        deployment_genesis._reserve_artifact_from_path()
+    assert caught.value.code == "MOTHER_DEPLOY_GENESIS_RESERVE_ARTIFACT_MISSING"

@@ -1027,3 +1027,28 @@ def test_stale_topology_stops_before_any_rpc_preflight(tmp_path: Path) -> None:
         instance.run_all()
     assert exc.value.code == 3
     assert calls == ["detect-topology"]
+
+
+def test_harness_auto_prepares_hub_admin_pool_only_for_fresh_genesis(tmp_path: Path) -> None:
+    baseline, sha = _write_json(
+        tmp_path / "fresh.json",
+        {"current_topology": {"nodes": [], "genesis_lineage": "fresh-required", "fresh_genesis_required": True}},
+    )
+    args = _parser_args(tmp_path)
+    args.baseline_evidence = baseline
+    args.baseline_evidence_sha256 = sha
+    args.internal_add_prep_mode = "initial"
+    run = harness.Harness(args)
+    assert "--prepare-genesis-hub-admins" in run.reserve_identity_cmd(execute=True)
+    assert "--execute" in run.reserve_identity_cmd(execute=True)
+    assert "--execute" not in run.reserve_identity_cmd(execute=False)
+
+    reused, _sha = _write_json(
+        tmp_path / "reused.json",
+        {"current_topology": {"nodes": [], "genesis_sha256": "a" * 64}},
+    )
+    run.state["baseline_evidence"] = reused
+    assert "--prepare-genesis-hub-admins" not in run.reserve_identity_cmd(execute=True)
+    run.state["internal_add_prep_mode"] = "soft"
+    run.state["baseline_evidence"] = baseline
+    assert "--prepare-genesis-hub-admins" not in run.reserve_identity_cmd(execute=True)

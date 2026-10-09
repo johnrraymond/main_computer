@@ -196,9 +196,13 @@ def test_write_installs_generation_two_complete_starter_identity(tmp_path: Path)
 
     document = json.loads(state.canonical_object_bytes.decode("utf-8"))
     network = document["networks"]["mainnet"]
-    assert set(network["wallets"]) == {"deployer", "captain", "o1", "o2", "o3"}
-    for role, identity in network["wallets"].items():
+    assert set(network["wallets"]) == {"deployer", "captain", "o1", "o2", "o3", "hub_admin_reserve"}
+    for role in ("deployer", "captain", "o1", "o2", "o3"):
+        identity = network["wallets"][role]
         assert identity["address"].lower() == private_key_to_address(identity["private_key"]).lower(), role
+    from tools.mother.common.hub_admin_pool import genesis_addresses
+    assert len(genesis_addresses(network)) == 15
+    assert len(network["wallets"]["hub_admin_reserve"]) == 13
     for node, identity in network["validators"].items():
         validate_identity(identity, path=f"validators.{node}")
     assert set(network["nodes"]) == {"mainneta-super1", "mainnetc-super1"}
@@ -210,8 +214,12 @@ def test_write_installs_generation_two_complete_starter_identity(tmp_path: Path)
     assert c_hub["address"].lower() == private_key_to_address(c_hub["private_key"]).lower()
     assert all(target["key_material_status"] == "present" for target in network["deployment"]["targets"].values())
     assert network["genesis"] == {
-        "alloc_accounts": [{"ref": "networks.mainnet.wallets.captain"}],
+        "alloc_accounts": [
+            {"ref": f"networks.mainnet.wallets.{role}"}
+            for role in ("captain", "o1", "o2", "o3", "deployer")
+        ],
         "first_topology_mode": "initial",
+        "hub_admin_pool_count": 15,
         "qbft": {"blockperiodseconds": 2, "epochlength": 30000},
         "source": "mother-private",
     }
