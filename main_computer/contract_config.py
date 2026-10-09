@@ -207,12 +207,23 @@ def write_contract_config(
     *,
     repo_root: str | Path | None = None,
     path: str | Path | None = None,
+    merge_existing: bool = False,
 ) -> Path:
+    """Publish the active address map. Partial on-chain deployments merge; new genesis replaces."""
     if not isinstance(deployment_payload, dict):
         raise ContractConfigError("deployment payload must be a JSON object")
     network = clean_network_key(deployment_payload.get("environment") or deployment_payload.get("network") or "dev")
     payload = public_contract_config_payload(deployment_payload)
     resolved = Path(path) if path is not None and str(path).strip() else contract_config_path(network, repo_root=repo_root)
+    if merge_existing:
+        prior = load_contract_config(network, path=resolved)
+        if prior is not None:
+            payload = dict(sorted({**contract_address_map(prior[1]), **payload}.items()))
+    validate_contract_config(payload, path=resolved, expected_network=network)
+    serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if not resolved.is_file() or resolved.read_text(encoding="utf-8") != serialized:
+        temporary = resolved.with_name(resolved.name + ".tmp")
+        temporary.write_text(serialized, encoding="utf-8")
+        temporary.replace(resolved)
     return resolved
