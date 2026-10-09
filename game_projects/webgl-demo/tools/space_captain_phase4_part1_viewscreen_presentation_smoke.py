@@ -43,7 +43,7 @@ def _source_contract_checks() -> dict[str, bool]:
             "const onBridge = String(this.shipState?.location || \"\") === \"bridge.deck\";" not in scene[scene.index("updateBridgeViewscreenEncounter"):scene.index("currentSystemPlanet()", scene.index("updateBridgeViewscreenEncounter"))]
         ),
         "sceneMaintainsOneProjectionAndPresentationPerFrame": (
-            "encounterProjection = projectionRuntime.snapshot" in scene
+            "projectionRuntime.snapshot(nowMs" in scene
             and "this.bridgeViewscreenProjectionFrame = encounterProjection;" in scene
             and "this.bridgeViewscreenPresentationFrame = system.present(presentationInputs);" in scene
             and "if (this.bridgeViewscreenProjectionFrame) return this.bridgeViewscreenProjectionFrame;" in scene

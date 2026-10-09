@@ -23,19 +23,24 @@ const authorityFingerprint = (snapshot) => JSON.stringify({
 
 const runtime = runtimeFactory.create({tacticalSliceSeconds:3, physicsStepSeconds:0.2});
 const START_MS = 1000;
+// Explicit ship-mounted observation fixture; a projection cannot invent a camera.
+const OBSERVER = Object.freeze({bodyId:'ship.mother',positionM:[1000,2000,3000],velocityMps:[0,0,0],
+  forwardWorld:[1,0,0],upWorld:[0,0,1],validThroughSeconds:20});
+const viewAt = nowMs => runtime.snapshot(nowMs, {active:true,observerPose:OBSERVER,
+  targetWorldPositionM:[3600,2598,3000]});
 runtime.advance(START_MS, {active:true});
-const initial = runtime.snapshot(START_MS, {active:true});
+const initial = viewAt(START_MS);
 const initialAuthority = authorityFingerprint(initial);
 
 // A presentation read before the next authority boundary may predict, but must not mutate authority.
-const predictedOnly = runtime.snapshot(START_MS + 100, {active:true});
+const predictedOnly = viewAt(START_MS + 100);
 const predictionAuthorityUnchanged = authorityFingerprint(predictedOnly) === initialAuthority;
 
 // A read that crosses an unprocessed authority boundary must fail rather than catch authority up.
 let staleSnapshotRejected = false;
 let staleSnapshotError = '';
 try {
-  runtime.snapshot(START_MS + 250, {active:true});
+  viewAt(START_MS + 250);
 } catch (error) {
   staleSnapshotError = String(error?.message || error);
   staleSnapshotRejected = staleSnapshotError.includes('BRIDGE_VIEWSCREEN_AUTHORITY_STALE');
@@ -43,23 +48,32 @@ try {
 const authorityStillUnchangedAfterRejectedRead = runtime.authorityAtSeconds === 0 && runtime.authorityUpdateCount === 0;
 
 runtime.advance(START_MS + 250, {active:true});
-const afterPhysicsAdvance = runtime.snapshot(START_MS + 250, {active:true});
+const afterPhysicsAdvance = viewAt(START_MS + 250);
 const firstPhysicsAnchorIsConfiguredGrid = Math.abs(Number(afterPhysicsAdvance.authority.atSeconds) - 0.2) <= EPS;
 const onePhysicsUpdateProcessed = Number(afterPhysicsAdvance.authority.updateCount) === 1;
 
 // Move into the deterministic encounter and fire at a non-grid timestamp.
 const FIRE_SECONDS = 7.02;
-runtime.playerFire(START_MS + FIRE_SECONDS * 1000);
-const fired = runtime.snapshot(START_MS + FIRE_SECONDS * 1000, {active:true});
+runtime.authority.playerFire(START_MS + FIRE_SECONDS * 1000);
+const fired = viewAt(START_MS + FIRE_SECONDS * 1000);
 const playerFireIsExactSemanticEvent =
   Math.abs(Number(fired.playerFireAtSeconds) - FIRE_SECONDS) <= EPS &&
   fired.authority?.lastExactEvent?.kind === 'player-fire' &&
   Math.abs(Number(fired.authority?.lastExactEvent?.atSeconds) - FIRE_SECONDS) <= EPS;
 const combatBoundaryIsNextConfiguredGrid = Math.abs(Number(fired.combatBoundarySeconds) - 9.0) <= EPS;
+// The captain, not the combat phase, must request a maneuver. Verify that
+// the next tactical boundary changes acceleration under that active order.
+const captainOrder=runtime.authority.command({type:'captain-helm-order',order:{
+  captainId:'captain.beta',shipId:'ship.beta',decisionId:'phase1-captain-001',revision:1,
+  issuedAtSeconds:FIRE_SECONDS,validThroughSeconds:30,maneuver:'hold',rangeM:2050,
+  source:'deterministic-phase1-test'
+}},START_MS+FIRE_SECONDS*1000);
+if (!captainOrder.accepted) throw new Error('PHASE1_CAPTAIN_ORDER_REJECTED');
+
 
 const impactSeconds = Number(fired.impactAtSeconds);
 runtime.advance(START_MS + impactSeconds * 1000, {active:true});
-const impacted = runtime.snapshot(START_MS + impactSeconds * 1000, {active:true});
+const impacted = viewAt(START_MS + impactSeconds * 1000);
 const impactAnchorsAtExactTimestamp =
   impacted.authority?.lastExactEvent?.kind === 'Impact' &&
   Math.abs(Number(impacted.authority?.lastExactEvent?.atSeconds) - impactSeconds) <= EPS &&
@@ -67,7 +81,7 @@ const impactAnchorsAtExactTimestamp =
 
 // Characterize the 9s tactical boundary: position and velocity remain continuous while acceleration changes.
 runtime.advance(START_MS + 8999, {active:true});
-const beforeBoundary = runtime.snapshot(START_MS + 8999, {active:true});
+const beforeBoundary = viewAt(START_MS + 8999);
 const targetBefore = beforeBoundary.ships['ship.beta'];
 const dt = 0.001;
 const predictedAtBoundary = {
@@ -77,7 +91,7 @@ const predictedAtBoundary = {
   vyMps: Number(targetBefore.vyMps) + Number(targetBefore.ayMps2) * dt,
 };
 runtime.advance(START_MS + 9000, {active:true});
-const atBoundary = runtime.snapshot(START_MS + 9000, {active:true});
+const atBoundary = viewAt(START_MS + 9000);
 const targetAfter = atBoundary.ships['ship.beta'];
 const tacticalBoundaryPositionErrorM = shipDistance(predictedAtBoundary, targetAfter);
 const tacticalBoundaryVelocityErrorMps = velocityDistance(predictedAtBoundary, targetAfter);
@@ -102,7 +116,7 @@ const checks = {
   impactAnchorsAtExactTimestamp: impactAnchorsAtExactTimestamp,
   tacticalBoundaryDoesNotTeleport: tacticalBoundaryPositionErrorM <= 1e-7,
   tacticalBoundaryDoesNotSnapVelocity: tacticalBoundaryVelocityErrorMps <= 1e-7,
-  tacticalBoundaryChangesAccelerationInstead: accelerationChangeMps2 > 1e-3,
+  tacticalBoundaryChangesAccelerationInstead: captainOrder.accepted && accelerationChangeMps2 > 1e-3,
   softTargetLockRemainsPresentationOnly: contract.RULES.cameraMode === 'soft-target-lock' && contract.RULES.cameraMayMutateAuthority === false,
 };
 const failedChecks = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);

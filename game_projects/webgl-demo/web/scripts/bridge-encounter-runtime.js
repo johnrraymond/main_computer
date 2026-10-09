@@ -6,6 +6,12 @@
   const TARGET = "ship.beta";
   const EPS = Number(CONTRACT.EPSILON_SECONDS);
   const DEFAULT_WEAPON_DAMAGE_HULL_PERCENT = 50;
+  // Tactical coordinates are relative to ship.mother when the physical
+  // player authority owns the player's motion. Captain orders set objectives;
+  // the helm does not choose its own boarding distance.
+  const BOARDING_KP_PER_SECOND2 = 0.014;
+  const BOARDING_KD_PER_SECOND = 0.30;
+  const BOARDING_MAX_ACCEL_MPS2 = 8;
 
   const magnitude = (x, y) => Math.hypot(Number(x) || 0, Number(y) || 0);
   const finiteNow = (value) => Number.isFinite(Number(value)) ? Number(value) : performance.now();
@@ -27,6 +33,10 @@
         0,
         Math.min(100, Number(options.weaponDamageHullPercent ?? DEFAULT_WEAPON_DAMAGE_HULL_PERCENT) || 0)
       );
+      // The live bridge uses ship.mother as its player-motion authority.
+      // Standalone tactical probes can still model both vessels locally.
+      this.physicalPlayerAuthority = options.physicalPlayerAuthority === true;
+      this.requirePhysicalWeaponRange = options.requirePhysicalWeaponRange === true;
       this.reset();
     }
 
@@ -56,30 +66,79 @@
         [PLAYER]: {xM: 0, yM: 0, vxMps: 0, vyMps: 0},
         [TARGET]: {xM: 2600, yM: 598, vxMps: -85, vyMps: -12},
       };
-      this.acceleration = {
-        [PLAYER]: [0, 0],
-        [TARGET]: this._boardingAccelerationForBoundary(0),
-      };
+      this.acceleration = {[PLAYER]:[0,0],[TARGET]:[0,0]};
+      this.enemyCaptainOrder = null;
+      this.enemyCaptainRevision = -1;
+      this.enemyCaptainDecisionIds = new Set();
+      this.lastCaptainDecisionEvent = null;
       return this;
     }
 
-    _boardingAccelerationForBoundary(index) {
-      if (index <= 0) return [-4.872775933074498, -1.1207384646071346];
-      if (index === 1) return [7.999925750083501, -0.03446727652324954];
-      return [-3.864588428255515, -1.0319671894946905];
+    _helmAcceleration(atSeconds) {
+      const order = this.enemyCaptainOrder;
+      if (!order || order.validThroughSeconds <= atSeconds + EPS || this.targetStatus === "destroyed") return [0,0];
+      if (order.maneuver === "coast") return [0,0];
+      const own=this.ships[PLAYER], ship=this.ships[TARGET];
+      const dx=ship.xM-own.xM, dy=ship.yM-own.yM;
+      const r=Math.max(0.000001,Math.hypot(dx,dy)), ux=dx/r, uy=dy/r;
+      const vx=ship.vxMps-own.vxMps, vy=ship.vyMps-own.vyMps;
+      let ax=0,ay=0;
+      if (order.maneuver === 'withdraw') {
+        const radialVelocity = vx*ux+vy*uy;
+        const wanted = Math.max(0, 70-radialVelocity);
+        ax = ux * Math.min(BOARDING_MAX_ACCEL_MPS2, wanted*0.3);
+        ay = uy * Math.min(BOARDING_MAX_ACCEL_MPS2, wanted*0.3);
+      } else {
+        // Captain chooses range. Helm may brake, but never chooses the objective.
+        const wanted=order.maneuver==='approach' ? (order.rangeM ?? 0) : order.rangeM;
+        const goalX=ux*wanted,goalY=uy*wanted;
+        const kp=order.maneuver==='approach'?0.022:BOARDING_KP_PER_SECOND2;
+        const kd=order.maneuver==='approach'?0.27:BOARDING_KD_PER_SECOND;
+        ax=kp*(goalX-dx)-kd*vx;
+        ay=kp*(goalY-dy)-kd*vy;
+      }
+      const a=Math.hypot(ax,ay),scale=a>BOARDING_MAX_ACCEL_MPS2?BOARDING_MAX_ACCEL_MPS2/a:1;
+      return [ax*scale,ay*scale];
     }
 
-    _combatAccelerationForBoundary(index) {
-      if (index <= 0) {
-        return {
-          [PLAYER]: [23.47688181927758, -8.592788839700047],
-          [TARGET]: [12.459472249196837, 21.673983281148253],
-        };
-      }
-      return {
-        [PLAYER]: [18.958959133848047, 16.29594638433374],
-        [TARGET]: [24.91500131284076, -2.0597838675800864],
-      };
+    _applyCaptainOrder(order,nowMs) {
+      const fail = reason => ({accepted:false,reason,commandType:'captain-helm-order',snapshot:null});
+      if (!order || typeof order!=='object') return fail('invalid-captain-order');
+      if (order.captainId!=='captain.beta' || order.shipId!==TARGET) return fail('captain-not-authorized');
+      if (typeof order.decisionId!=='string'||!order.decisionId.trim()) return fail('invalid-decision-id');
+      if (this.enemyCaptainDecisionIds.has(order.decisionId)) return fail('duplicate-decision-id');
+      if (!Number.isSafeInteger(order.revision)||order.revision<=this.enemyCaptainRevision) return fail('stale-captain-revision');
+      if (!['approach','hold','withdraw','coast'].includes(order.maneuver)) return fail('invalid-maneuver');
+      if ((order.maneuver==='hold' || order.rangeM!==undefined) &&
+           (!Number.isFinite(order.rangeM)||order.rangeM<0||order.rangeM>1e9)) return fail('invalid-range');
+      if (!Number.isFinite(order.issuedAtSeconds)||!Number.isFinite(order.validThroughSeconds)||
+          order.issuedAtSeconds<0 || order.validThroughSeconds<=order.issuedAtSeconds) return fail('invalid-order-time');
+      const nowS=this.startedAtMs===null ? 0 : Math.max(0,(finiteNow(nowMs)-this.startedAtMs)/1000);
+      if (order.issuedAtSeconds>nowS+EPS || order.validThroughSeconds<=nowS+EPS) return fail('order-not-current');
+      if (this.targetStatus==='destroyed') return fail('target-destroyed');
+      // A decision changes acceleration only at its real simulation timestamp.
+      this.advance(nowMs,{active:true});
+      if (this.authorityAtSeconds+EPS<nowS) this._integrateTo(nowS);
+      this.enemyCaptainOrder=Object.freeze({
+        captainId:order.captainId,shipId:TARGET,decisionId:order.decisionId,revision:order.revision,
+        maneuver:order.maneuver,rangeM:order.rangeM??null,
+        issuedAtSeconds:order.issuedAtSeconds,validThroughSeconds:order.validThroughSeconds,
+        source:String(order.source||'captain-decision')
+      });
+      this.enemyCaptainDecisionIds.add(order.decisionId);
+      this.enemyCaptainRevision=order.revision;
+      this.acceleration[TARGET]=this._helmAcceleration(nowS);
+      this.lastAnchorKind='captain-order';
+      this.lastCaptainDecisionEvent=this._recordEvent('captain-order',nowS,{captainId:order.captainId,shipId:TARGET,
+        decisionId:order.decisionId,revision:order.revision,maneuver:order.maneuver});
+      this.eventAnchorCount++;
+      return {accepted:true,commandType:'captain-helm-order',
+        decisionId:order.decisionId,snapshot:this.snapshot(nowMs)};
+    }
+
+    _nextOrderExpiryAtSeconds() {
+      const order=this.enemyCaptainOrder;
+      return order && order.validThroughSeconds>this.authorityAtSeconds+EPS ? order.validThroughSeconds : Infinity;
     }
 
     _ensureStarted(nowMs) {
@@ -133,23 +192,10 @@
     }
 
     _applyTacticalBoundary(atSeconds) {
-      const step = Number(this.config.tacticalSliceSeconds);
-      const boundaryIndex = Math.max(0, CONTRACT.tacticalBoundaryIndex(atSeconds, this.config));
-      if (this.targetStatus === "destroyed") {
-        this.acceleration = {[PLAYER]: [0, 0], [TARGET]: [0, 0]};
-      } else if (this.hostile && this.combatBoundarySeconds !== null && atSeconds + EPS >= this.combatBoundarySeconds) {
-        const combatIndex = Math.max(0, Math.round((atSeconds - this.combatBoundarySeconds) / step));
-        const next = this._combatAccelerationForBoundary(combatIndex);
-        this.acceleration = {
-          [PLAYER]: next[PLAYER].slice(),
-          [TARGET]: next[TARGET].slice(),
-        };
-      } else {
-        this.acceleration = {
-          [PLAYER]: [0, 0],
-          [TARGET]: this._boardingAccelerationForBoundary(boundaryIndex),
-        };
-      }
+      this.acceleration = {
+        [PLAYER]:[0,0],
+        [TARGET]:this._helmAcceleration(atSeconds)
+      };
       this.lastAnchorKind = "tactical-boundary";
       this._recordEvent("tactical-boundary", atSeconds, {
         targetStatus: this.targetStatus,
@@ -176,6 +222,7 @@
         if (this.targetDestroyedAtSeconds === null) this.targetDestroyedAtSeconds = Number(atSeconds);
         this.terminalOutcome = "target-destroyed";
         this.acceleration[TARGET] = [0, 0];
+        this.enemyCaptainOrder=null;
       }
       shot.status = "impact";
       shot.impactedAtSeconds = Number(atSeconds);
@@ -206,7 +253,8 @@
       while (true) {
         const nextBoundary = this._nextTacticalBoundaryAfter(this.authorityAtSeconds);
         const nextImpact = this._nextPendingImpactAtSeconds();
-        const nextTime = Math.min(this.nextPhysicsAtSeconds, nextBoundary, nextImpact);
+        const nextExpiry=this._nextOrderExpiryAtSeconds();
+        const nextTime = Math.min(this.nextPhysicsAtSeconds, nextBoundary, nextImpact, nextExpiry);
         if (nextTime > targetTime + EPS || !Number.isFinite(nextTime)) break;
 
         this._integrateTo(nextTime);
@@ -216,6 +264,13 @@
         const isPhysicsGrid = Math.abs(this.nextPhysicsAtSeconds - nextTime) <= EPS;
 
         if (isImpact) this._applyImpactsAt(nextTime);
+        if (Math.abs(nextExpiry-nextTime)<=EPS && this.enemyCaptainOrder) {
+          const expired=this.enemyCaptainOrder;
+          this.enemyCaptainOrder=null;
+          this.acceleration[TARGET]=[0,0];
+          this._recordEvent('captain-order-expired',nextTime,{decisionId:expired.decisionId});
+          this.eventAnchorCount++;
+        }
         if (isTacticalBoundary) this._applyTacticalBoundary(nextTime);
         if (isPhysicsGrid) {
           if (!isImpact && !isTacticalBoundary) this.lastAnchorKind = "physics-update";
@@ -229,7 +284,8 @@
       return Math.min(
         this.nextPhysicsAtSeconds,
         this._nextTacticalBoundaryAfter(this.authorityAtSeconds),
-        this._nextPendingImpactAtSeconds()
+        this._nextPendingImpactAtSeconds(),
+        this._nextOrderExpiryAtSeconds()
       );
     }
 
@@ -290,7 +346,7 @@
       return "boarding-prep";
     }
 
-    playerFire(nowMs) {
+    playerFire(nowMs, physicalShot = null) {
       const simulationSeconds = this.simulationSeconds(nowMs);
       this._advanceAuthorityTo(simulationSeconds);
 
@@ -311,13 +367,26 @@
       const ships = this._predictAtSimulationSeconds(simulationSeconds);
       const player = ships[PLAYER];
       const target = ships[TARGET];
-      const rangeM = magnitude(target.xM - player.xM, target.yM - player.yM);
+      const tacticalRangeM = magnitude(target.xM - player.xM, target.yM - player.yM);
+      const worldVector = value => Array.isArray(value) && value.length === 3
+        && value.every(x => typeof x === "number" && Number.isFinite(x));
+      const physicalValid = physicalShot && worldVector(physicalShot.originWorldPositionM)
+        && worldVector(physicalShot.targetWorldPositionM);
+      if (this.requirePhysicalWeaponRange && !physicalValid) {
+        return {accepted:false,reason:"physical-shot-state-required",simulationSeconds};
+      }
+      const rangeM = physicalValid
+        ? Math.hypot(...physicalShot.targetWorldPositionM.map((v,i) => v-physicalShot.originWorldPositionM[i]))
+        : tacticalRangeM;
       const impactAtSeconds = simulationSeconds + rangeM / Number(this.config.projectileSpeedMps);
       const shot = {
         id: `player-shot-${++this.shotSequence}`,
         firedAtSeconds: simulationSeconds,
         impactAtSeconds,
         status: "in-flight",
+        rangeAtFireM: rangeM,
+        originWorldPositionM: physicalValid ? physicalShot.originWorldPositionM.slice() : null,
+        targetWorldPositionAtFireM: physicalValid ? physicalShot.targetWorldPositionM.slice() : null,
         damageHullPercent: 0,
       };
       this.shots.push(shot);
@@ -402,6 +471,7 @@
     command(command, nowMs) {
       const payload = command && typeof command === "object" ? command : {type: command};
       const type = String(payload?.type || "").trim();
+      if (type === "captain-helm-order") return this._applyCaptainOrder(payload.order,nowMs);
       if (type !== "fire-primary-weapon") {
         return {
           accepted: false,
@@ -410,7 +480,7 @@
           snapshot: null,
         };
       }
-      const result = this.playerFire(nowMs);
+      const result = this.playerFire(nowMs, payload.physicalShot || null);
       return {
         ...result,
         commandType: type,
@@ -465,11 +535,19 @@
           nextPendingImpactAtSeconds: Number.isFinite(nextImpact) ? nextImpact : null,
           lastExactEvent: this.lastExactEvent ? {...this.lastExactEvent} : null,
         },
+        helm: {
+          [TARGET]: {activeOrder:this.enemyCaptainOrder ? {...this.enemyCaptainOrder} : null,
+                     lastRevision:this.enemyCaptainRevision}
+        },
         ships: {
           [PLAYER]: cloneShip(this.ships[PLAYER], this.acceleration[PLAYER]),
           [TARGET]: cloneShip(this.ships[TARGET], this.acceleration[TARGET]),
         },
-        recentEvents: this.events.slice(-24).map((event) => ({...event})),
+        recentEvents: [
+          ...(this.lastCaptainDecisionEvent && !this.events.slice(-24).some(event=>event.sequence===this.lastCaptainDecisionEvent.sequence)
+             ? [this.lastCaptainDecisionEvent] : []),
+          ...this.events.slice(-24)
+        ].map(event=>({...event})),
       };
     }
 
@@ -516,11 +594,19 @@
           nextPendingImpactAtSeconds: this._nextPendingImpactAtSeconds(),
           lastExactEvent: this.lastExactEvent ? {...this.lastExactEvent} : null,
         },
+        helm: {
+          [TARGET]: {activeOrder:this.enemyCaptainOrder ? {...this.enemyCaptainOrder} : null,
+                     lastRevision:this.enemyCaptainRevision}
+        },
         ships: {
           [PLAYER]: cloneShip(ships[PLAYER], this.acceleration[PLAYER]),
           [TARGET]: cloneShip(ships[TARGET], this.acceleration[TARGET]),
         },
-        recentEvents: this.events.slice(-24).map((event) => ({...event})),
+        recentEvents: [
+          ...(this.lastCaptainDecisionEvent && !this.events.slice(-24).some(event=>event.sequence===this.lastCaptainDecisionEvent.sequence)
+             ? [this.lastCaptainDecisionEvent] : []),
+          ...this.events.slice(-24)
+        ].map(event=>({...event})),
       };
     }
   }

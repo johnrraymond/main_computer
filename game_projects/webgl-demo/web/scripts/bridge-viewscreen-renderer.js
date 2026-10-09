@@ -98,20 +98,6 @@
     });
   }
 
-  function renderOwnShip(builder, frame, ownShip) {
-    if (!ownShip?.visible) return null;
-    const center = screenPoint(frame, ownShip.screen, frame.depth * 0.5);
-    const glow = builder.color("#bae6fd", true);
-    builder.ellipsoid(center, [frame.width * 0.018, frame.height * 0.045, frame.depth * 0.42], 12, 6, glow);
-    builder.beam(
-      [center[0] - frame.width * 0.025, center[1], frame.displayZ],
-      [center[0] + frame.width * 0.025, center[1], frame.displayZ],
-      0.01,
-      glow
-    );
-    return center;
-  }
-
   function renderTargetHull(builder, frame, target, center) {
     if (!target?.visible || target.visualState === "destroyed") return;
     const damaged = target.visualState === "damaged" || finite(target.hullFraction, 1) < 0.999;
@@ -234,7 +220,7 @@
   function renderEncounter(builder, surface, presentation) {
     const frame = surfaceGeometry(surface);
     renderFrame(builder, frame, surface);
-    const ownShipCenter = renderOwnShip(builder, frame, presentation.ownShip);
+    const ownShipCenter = null; // ship-mounted camera; never render observer geometry
     const targetCenter = screenPoint(frame, presentation.target?.screen, 0);
     renderTargetHull(builder, frame, presentation.target, targetCenter);
     renderTargetLock(builder, frame, presentation.target, targetCenter, presentation.time?.simulationSeconds);

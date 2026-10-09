@@ -59,6 +59,7 @@ def source_checks() -> dict[str, bool]:
         "productionSceneAndViewscreenModulesLoaded": all(path in script_paths for path in (
             "web/scripts/scene-store.js",
             "web/scripts/bridge-encounter-runtime.js",
+            "web/scripts/bridge-captain-decision-policy.js",
             "web/scripts/bridge-viewscreen-projection.js",
             "web/scripts/bridge-viewscreen-presentation.js",
             "web/scripts/bridge-viewscreen-renderer.js",
@@ -180,6 +181,8 @@ def _spatial_report(timeline: dict[str, dict]) -> tuple[dict[str, bool], dict[st
         range_error = (abs(reported_range-expected_range)
                        if isinstance(reported_range,(int,float)) and math.isfinite(reported_range)
                        and expected_range is not None else None)
+        aim = ([delta/expected_range for delta in expected_relative]
+               if expected_relative and expected_range and expected_range > 0 else None)
         rows.append({
             'stage':name,
             'physicsSimulationSeconds':frame.get('physicsSimulationSeconds'),
@@ -187,8 +190,12 @@ def _spatial_report(timeline: dict[str, dict]) -> tuple[dict[str, bool], dict[st
             'cameraWorldPositionM':camera,
             'cameraOriginErrorM':_separation(ship,camera),
             'poseOriginErrorM':_separation(ship,pose.get('positionM')),
-            'viewDirectionErrorDeg':_angles_degrees(pose.get('forwardWorld'),frame.get('cameraForwardWorld')),
+            'viewDirectionErrorDeg':_angles_degrees(aim,frame.get('cameraForwardWorld')),
             'targetAuthorityWorldErrorM':_separation(enemy,enemy_authority),
+            'encounterWorldOriginM':frame.get('encounterWorldOriginM'),
+            'enemyOrbitalReferencePositionM':frame.get('enemyOrbitalReferencePositionM'),
+            'physicalRangeM':frame.get('projectedRangeM'),
+            'targetVisible':frame.get('targetVisible'),
             'targetRelativePositionErrorM':_separation(relative,expected_relative),
             'targetRangeErrorM':range_error,
             'bodyId':frame.get('cameraObserverBodyId'),
@@ -202,8 +209,13 @@ def _spatial_report(timeline: dict[str, dict]) -> tuple[dict[str, bool], dict[st
         'physicsReportsShipMotherInAllEncounterSamples':len(rows)==len(names) and all(_vec3(row['physicalMotherPositionM']) for row in rows),
         'viewscreenCameraOriginMatchesPhysicalMother':len(rows)==len(names) and all(good(row['cameraOriginErrorM']) and row['bodyId']=='ship.mother' for row in rows),
         'productionObserverPoseIsFromActualMotherShip':len(rows)==len(names) and all(good(row['poseOriginErrorM']) and row['poseBodyId']=='ship.mother' for row in rows),
-        'cameraViewDirectionMatchesAuthoritativeAttitude':len(rows)==len(names) and all(good(row['viewDirectionErrorDeg'],1e-4) for row in rows),
+        'cameraTracksActualWorldTarget':len(rows)==len(names) and all(good(row['viewDirectionErrorDeg'],1e-4) and row['targetInFront'] is True for row in rows),
         'targetHasAuthoritativeWorldPosition':len(rows)==len(names) and all(good(row['targetAuthorityWorldErrorM']) for row in rows),
+        'encounterOrbitalReferenceMovesWithGravity':len(rows)==len(names) and all(
+            _vec3(row['encounterWorldOriginM']) and good(_separation(row['encounterWorldOriginM'],row['enemyOrbitalReferencePositionM']))
+            for row in rows) and _separation(rows[0]['encounterWorldOriginM'],rows[-1]['encounterWorldOriginM'])>1e6,
+        'encounterRemainsNearMotherThroughMission':len(rows)==len(names) and all(
+            0 < row['physicalRangeM'] < 4000 for row in rows),
         'targetRelativePositionUsesPhysicalShipOrigin':len(rows)==len(names) and all(good(row['targetRelativePositionErrorM']) for row in rows),
         'targetRangeMatchesWorldSpaceSeparation':len(rows)==len(names) and all(good(row['targetRangeErrorM']) for row in rows),
         'playerShipNeverAppearsAsExternalContact':len(rows)==len(names) and all(row['playerShipExternalVisible'] is False for row in rows),
@@ -287,8 +299,17 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                 screen(page, "01-shuttle-opening")
                 pre_bridge = state(page, "shuttle-encounter-progressed", 2500)
                 checks["openingEncounterSelectedBeforeBridge"] = shuttle["selectedMode"] == "encounter" and shuttle["presentationSchema"] == "game.bridgeViewscreenPresentation.v1"
-                checks["encounterAdvancesBeforeBridgeEntry"] = (pre_bridge["presentationSeconds"] > shuttle["presentationSeconds"]
-                    and pre_bridge["targetScreen"] != shuttle["targetScreen"] and pre_bridge["physicalMotherPositionM"] is not None)
+                checks["openingPursuitWithoutPrematureTacticalSimulation"] = (
+                    shuttle.get("tacticalStartedAtMs") is None
+                    and pre_bridge.get("tacticalStartedAtMs") is None
+                    and shuttle.get("captainOrder") is None
+                    and pre_bridge.get("captainOrder") is None
+                    and shuttle["presentationSeconds"] == pre_bridge["presentationSeconds"] == 0
+                    and _separation(pre_bridge.get("targetWorldPositionM"),shuttle.get("targetWorldPositionM")) is not None
+                    and _separation(pre_bridge.get("targetWorldPositionM"),shuttle.get("targetWorldPositionM")) > 1
+                    and pre_bridge["targetVisible"] and shuttle["targetVisible"]
+                    and pre_bridge["physicalMotherPositionM"] is not None
+                )
                 checks["intactEnemyHasNoPrematureExplosionOrDebris"] = all(
                     sample["authorityHullPercent"] == 100
                     and not sample["authorityTargetDestroyed"]
@@ -312,21 +333,59 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                     and bridge["presentationSeconds"] >= pre_bridge["presentationSeconds"]
                     and bridge["targetVisible"]
                 )
+                checks["bridgeEntryStartsCaptainSimulationExactlyOnce"] = (
+                    bridge.get("tacticalStartedAtMs") == BRIDGE_MS
+                    and bridge.get("presentationSeconds") == 0
+                    and bridge.get("captainOrderEventCount") == 1
+                    and bridge.get("captainOrder",{}).get("decisionId") == "opening-beta-1"
+                    and bridge.get("captainOrder",{}).get("source") == "deterministic-opening-captain-v1"
+                    and bridge.get("captainDecision",{}).get("captainId") == "captain.beta"
+                )
                 checks["bridgeCombatObjectiveStartsWithoutManualAcquisition"] = bridge["objective"] == "objective.enemy-attack"
                 checks["bridgeHudUsesCurrentMissionNotShuttleBoarding"] = bridge["shipHudVisible"] and bridge["shuttleEncounterHudHidden"]
                 checks["bridgeHudReportsActualLocation"] = "Bridge Deck" in bridge["movementLocationText"]
                 checks["bridgeViewscreenActuallyProducesGeometry"] = bridge["dynamicVertexCount"] > 0 and bridge["drawCalls"] > pre_bridge["drawCalls"]
+                # The game HUD and public game state must consume the same physical
+                # contact as projection/weaponry, not a test-specific offset.
+                contact = bridge.get("gameWorldContact") or {}
+                hud_range = bridge.get("gameHudContactRangeM")
+                checks["gameWorldContactPublishedToGameplay"] = (
+                    contact.get("observerBodyId") == "ship.mother"
+                    and contact.get("targetBodyId") == "ship.beta"
+                    and _separation(contact.get("originWorldPositionM"), bridge.get("physicalMotherPositionM")) is not None
+                    and _separation(contact.get("originWorldPositionM"), bridge.get("physicalMotherPositionM")) < 0.01
+                    and _separation(contact.get("targetWorldPositionM"), bridge.get("targetWorldPositionM")) is not None
+                    and _separation(contact.get("targetWorldPositionM"), bridge.get("targetWorldPositionM")) < 0.01
+                    and abs(float(contact.get("rangeM", -1)) - float(bridge.get("projectedRangeM", -2))) < 0.01
+                )
+                checks["gameHudDisplaysLivePhysicalRange"] = (
+                    hud_range is not None and hud_range != ""
+                    and abs(float(hud_range) - float(bridge.get("projectedRangeM", -1))) < 0.01
+                    and "RAIDER RANGE:" in bridge.get("gameHudContactText", "")
+                )
 
                 off = press_e(page, "power-off-keypress")
                 off_render = state(page, "power-off-rendered", 3900)
                 screen(page, "03-bridge-display-off")
+                checks["viewscreenPowerDoesNotRestartCaptain"] = (
+                    off.get("tacticalStartedAtMs") == BRIDGE_MS
+                    and off.get("captainOrderEventCount") == 1
+                )
                 checks["realEKeyTurnsOffDisplayWithoutModeChange"] = off["displayPowered"] is False and off["selectedMode"] == bridge["selectedMode"]
                 checks["powerOffPreservesAuthorityAndChangesGeometry"] = (
                     off["authorityHullPercent"] == bridge["authorityHullPercent"]
                     and not off_render["displayPowered"]
                     and _geometry_changed(bridge, off_render)
                 )
-                checks["encounterKeepsMovingWhileScreenIsDark"] = off_render["presentationSeconds"] > bridge["presentationSeconds"] and off_render["targetScreen"] != bridge["targetScreen"]
+                checks["encounterKeepsMovingWhileScreenIsDark"] = (
+                    off_render["presentationSeconds"] > bridge["presentationSeconds"]
+                    and _separation(off_render.get("targetWorldPositionM"),bridge.get("targetWorldPositionM")) is not None
+                    and _separation(off_render.get("targetWorldPositionM"),bridge.get("targetWorldPositionM")) > 0.5
+                    and abs(float(off_render.get("projectedRangeM",0)) - float(bridge.get("projectedRangeM",0))) > 0.5
+                    and off_render["targetVisible"]
+                    and abs(off_render["targetScreen"]["xNormalized"]) < 1e-5
+                    and abs(off_render["targetScreen"]["yNormalized"]) < 1e-5
+                )
                 on = press_e(page, "power-on-keypress")
                 on_render = state(page, "power-on-rendered", 4300)
                 screen(page, "04-bridge-display-on")
@@ -340,17 +399,28 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                 first_key = press_e(page, "first-fire-keypress")
                 first_shot = first_key["shots"][-1] if first_key["shots"] else {}
                 first_impact = float(first_shot.get("impactAtSeconds", -1))
+                origin = first_shot.get("originWorldPositionM")
+                fire_target = first_shot.get("targetWorldPositionAtFireM")
+                measured_at_fire = _separation(origin, fire_target)
+                recorded_range = first_shot.get("rangeAtFireM")
+                checks["weaponFlightUsesMeasuredPhysicalRange"] = (
+                    isinstance(recorded_range,(int,float)) and math.isfinite(recorded_range)
+                    and measured_at_fire is not None and measured_at_fire <= 4000
+                    and abs(recorded_range-measured_at_fire) <= 0.01
+                    and abs((first_impact-float(first_shot.get("firedAtSeconds",0)))
+                            -measured_at_fire/6000) <= 1e-6
+                )
                 checks["realEKeyRoutesWeaponToEncounterAuthority"] = (
                     at_weapon["interactionTargetId"] == "terminal.bridge-tactical"
                     and len(first_key["shots"]) == len(before_fire["shots"]) + 1
                     and first_impact > float(first_shot.get("firedAtSeconds", float("inf")))
                 )
                 checks["fireDoesNotCauseImmediateHullDamage"] = first_key["authorityHullPercent"] == before_fire["authorityHullPercent"] == 100
-                in_flight_ms = FIRST_MS + (float(first_shot["firedAtSeconds"]) + min(0.11, (first_impact - float(first_shot["firedAtSeconds"])) * 0.4)) * 1000
+                in_flight_ms = BRIDGE_MS + (float(first_shot["firedAtSeconds"]) + min(0.11, (first_impact - float(first_shot["firedAtSeconds"])) * 0.4)) * 1000
                 flying = state(page, "projectile-in-flight", in_flight_ms)
                 screen(page, "05-projectile-flight")
                 checks["projectileVisualAppearsBeforeImpact"] = flying["projectileCount"] > 0 and flying["authorityHullPercent"] == 100
-                impact_ms = FIRST_MS + (first_impact + 0.10) * 1000
+                impact_ms = BRIDGE_MS + (first_impact + 0.10) * 1000
                 impact = state(page, "first-impact", impact_ms)
                 screen(page, "06-first-impact")
                 checks["authoritativeImpactProducesDamageAndEffect"] = impact["authorityHullPercent"] == 50 and impact["targetHullFraction"] == 0.5 and impact["impactCount"] > 0
@@ -365,7 +435,7 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                 )
                 checks["impactGeometryIsActualWebGLOutput"] = impact["dynamicVertexCount"] > 0 and _geometry_changed(flying, impact)
 
-                second_fire_ms = FIRST_MS + (first_impact + 0.41) * 1000
+                second_fire_ms = BRIDGE_MS + (first_impact + 0.41) * 1000
                 before_second = state(page, "before-second-fire", second_fire_ms)
                 second_key = press_e(page, "second-fire-keypress")
                 second_shot = second_key["shots"][-1] if second_key["shots"] else {}
@@ -373,12 +443,12 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                 checks["secondEKeyFireAccepted"] = (
                     len(second_key["shots"]) == len(before_second["shots"]) + 1 and second_impact > float(second_shot.get("firedAtSeconds", float("inf")))
                 )
-                destroyed = state(page, "destruction", FIRST_MS + (second_impact + 0.10) * 1000)
+                destroyed = state(page, "destruction", BRIDGE_MS + (second_impact + 0.10) * 1000)
                 screen(page, "07-target-destruction")
                 checks["secondAuthorityImpactDestroysEnemy"] = destroyed["authorityHullPercent"] == 0 and destroyed["targetVisualState"] == "destroyed"
                 checks["destroyedEnemyRendersExplosionAndDebris"] = destroyed["explosionCount"] > 0 and destroyed["debrisCount"] > 0 and _geometry_changed(impact, destroyed)
                 checks["actualHudObjectiveUpdatesToEnemyDisabled"] = destroyed["objective"] == "objective.enemy-disabled" and destroyed["hudObjective"] == "objective.enemy-disabled"
-                after_explosion = state(page, "after-explosion", FIRST_MS + (second_impact + 2.5) * 1000)
+                after_explosion = state(page, "after-explosion", BRIDGE_MS + (second_impact + 2.5) * 1000)
                 screen(page, "08-destruction-objective-persists")
                 checks["objectivePersistsAfterExplosion"] = after_explosion["objective"] == "objective.enemy-disabled" and after_explosion["authorityTargetDestroyed"]
                 checks["noUnexpectedBrowserErrors"] = not page_errors and not console_errors
@@ -432,6 +502,7 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                     "web/scripts/bridge-viewscreen-presentation.js",
                     "web/scripts/bridge-viewscreen-renderer.js",
                     "web/scripts/bridge-encounter-runtime.js",
+            "web/scripts/bridge-captain-decision-policy.js",
                 )
             },
             "authoredProjectSha256": _fingerprint(PROJECT_JSON),

@@ -59,6 +59,9 @@
         authorityState,
         simulationSeconds,
         presentationState: this.presentationState,
+        observerPose: options.observerPose,
+        targetWorldPositionM: options.targetWorldPositionM,
+        viewMode: options.viewMode || "track",
       });
       this.presentationState = projected.nextPresentationState;
       this.lastSnapshotNowMs = Number(nowMs);

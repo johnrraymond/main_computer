@@ -8,7 +8,7 @@ import pytest
 from tools.hub_control import add_hub
 from tools.hub_control.common.errors import HubControlError
 from tools.hub_control.common.models import HubContext
-from tools.hub_control.common.state import read_accepted, require_operation
+from tools.hub_control.common.state import read_accepted, require_operation, update_operation
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -390,3 +390,254 @@ def test_add_hub_prep_refuses_existing_application_in_chain_environment(tmp_path
 
     assert exc_info.value.code == "HUB_COOLIFY_ENVIRONMENT_MISMATCH"
     assert "mainnet-hubs" in exc_info.value.message
+
+
+def _resume_prep(ctx: HubContext, hub_id: str = "mainneta-hub1") -> dict:
+    return add_hub.prep(
+        ctx, "mainnet", hub_id,
+        chain_verifier=lambda _contract: {"verified": True, "reason": "current-chain"},
+        deployment_inspector=lambda _target: {"present": False, "application_uuid": None},
+    )
+
+
+def test_add_hub_prep_reuses_wallet_claim_from_failed_do(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    first = _resume_prep(ctx)
+    operation_id = first["details"]["operation_id"]
+    old = require_operation(ctx, "mainnet", operation_id)
+    # A failed do already reserved the wallet, persisted its public identity,
+    # and recorded failure evidence.  Never erase any of those records.
+    assigned = "networks.mainnet.hub_admin_assignments.mainneta-hub1"
+    updated_target = dict(old["target"], hub_admin_address=first["details"]["hub_admin_candidate_address"],
+                          hub_admin_private_state_path=assigned)
+    update_operation(ctx, "mainnet", operation_id, target=updated_target,
+                     last_deployment_result={"status": "failed", "marker": "preserve-me"})
+    frozen = require_operation(ctx, "mainnet", operation_id)
+    retry = _resume_prep(ctx)
+    assert retry["details"]["operation_id"] == operation_id
+    assert require_operation(ctx, "mainnet", operation_id) == frozen
+    assert retry["status"] == "prepared"
+
+
+def test_add_hub_prep_refuses_changed_frozen_target(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    first = _resume_prep(ctx)
+    operation_id = first["details"]["operation_id"]
+    original = require_operation(ctx, "mainnet", operation_id)
+    target = dict(original["target"], rpc_url="https://untrusted.invalid")
+    update_operation(ctx, "mainnet", operation_id, target=target)
+    frozen = require_operation(ctx, "mainnet", operation_id)
+    with pytest.raises(HubControlError) as excinfo:
+        _resume_prep(ctx)
+    assert require_operation(ctx, "mainnet", operation_id) == frozen
+
+
+def test_add_hub_prep_refuses_wallet_assignment_mismatch(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    first = _resume_prep(ctx)
+    operation_id = first["details"]["operation_id"]
+    original = require_operation(ctx, "mainnet", operation_id)
+    target = dict(original["target"], hub_admin_address="0x" + "23" * 20,
+                  hub_admin_private_state_path="networks.mainnet.hub_admin_assignments.mainneta-hub1")
+    update_operation(ctx, "mainnet", operation_id, target=target)
+    frozen = require_operation(ctx, "mainnet", operation_id)
+    with pytest.raises(HubControlError) as excinfo:
+        _resume_prep(ctx)
+    assert require_operation(ctx, "mainnet", operation_id) == frozen
+
+
+def test_add_hub_prep_refuses_accepted_prestate_change_on_id_collision(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    first = _resume_prep(ctx)
+    operation_id = first["details"]["operation_id"]
+    update_operation(ctx, "mainnet", operation_id, accepted_prestate={"generation": 9})
+    with pytest.raises(HubControlError) as excinfo:
+        _resume_prep(ctx)
+
+
+def test_add_hub_prep_refuses_finalized_record_reuse(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    first = _resume_prep(ctx)
+    operation_id = first["details"]["operation_id"]
+    update_operation(ctx, "mainnet", operation_id, stage="finalized")
+    with pytest.raises(HubControlError) as excinfo:
+        _resume_prep(ctx)
+
+    assert excinfo.value.code == "HUB_OPERATION_CONFLICT"
+
+
+def _prepared_mainneta(ctx: HubContext, *, inspector=None) -> str:
+    return add_hub.prep(
+        ctx, "mainnet", "mainneta-hub1",
+        chain_verifier=lambda _contract: {"verified": True, "reason": "test-chain-proof"},
+        deployment_inspector=inspector or (lambda _target: {"present": False}),
+    )["details"]["operation_id"]
+
+
+def test_repeat_prep_reuses_identical_add_hub_operation(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    operation_id = _prepared_mainneta(ctx)
+    before = require_operation(ctx, "mainnet", operation_id)
+    assert _prepared_mainneta(ctx) == operation_id
+    assert require_operation(ctx, "mainnet", operation_id) == before
+
+
+def test_repeat_prep_preserves_hub_admin_committed_during_failed_do(tmp_path: Path) -> None:
+    from tools.hub_control.common.state import update_operation
+
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    operation_id = _prepared_mainneta(ctx)
+    original = require_operation(ctx, "mainnet", operation_id)
+    address = add_hub.preview_admin({}, network="mainnet", hub_id="mainneta-hub1")["address"]
+    assigned_target = dict(original["target"])
+    assigned_target.update({
+        "hub_admin_address": address,
+        "hub_admin_private_state_path": "networks.mainnet.hub_admin_assignments.mainneta-hub1",
+    })
+    update_operation(
+        ctx, "mainnet", operation_id, target=assigned_target,
+        last_deployment_result={"status": "failed", "error": "synthetic remote failure"},
+    )
+    prepared_again = _prepared_mainneta(ctx)
+    assert prepared_again == operation_id
+    saved = require_operation(ctx, "mainnet", operation_id)
+    assert saved["stage"] == "prepared"
+    assert saved["target"]["hub_admin_address"] == address
+    assert saved["target"]["hub_admin_private_state_path"] == assigned_target["hub_admin_private_state_path"]
+    assert saved["last_deployment_result"] == {"status": "failed", "error": "synthetic remote failure"}
+    assert "private_key" not in json.dumps(saved)
+
+
+def test_repeat_prep_can_adopt_newly_discovered_same_hub_application(tmp_path: Path) -> None:
+    from tools.hub_control.common.state import update_operation
+
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    operation_id = _prepared_mainneta(ctx)
+    original = require_operation(ctx, "mainnet", operation_id)
+    assigned_target = dict(original["target"])
+    assigned_target["hub_admin_address"] = add_hub.preview_admin({}, network="mainnet", hub_id="mainneta-hub1")["address"]
+    update_operation(ctx, "mainnet", operation_id, target=assigned_target)
+
+    resumed = _prepared_mainneta(ctx, inspector=lambda _target: {
+        "present": True, "application_uuid": "app-created-during-previous-do",
+        "resolution": {"source": "hub-control-name"},
+    })
+    saved = require_operation(ctx, "mainnet", resumed)
+    assert saved["target"]["application_uuid"] == "app-created-during-previous-do"
+    assert saved["target"]["hub_admin_address"] == assigned_target["hub_admin_address"]
+
+
+def test_repeat_prep_refuses_changed_frozen_target_without_mutating_receipt(tmp_path: Path) -> None:
+    from tools.hub_control.common.state import update_operation
+
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    operation_id = _prepared_mainneta(ctx)
+    original = require_operation(ctx, "mainnet", operation_id)
+    tampered = dict(original["target"])
+    tampered["dockerfile_location"] = "/different.Dockerfile"
+    update_operation(ctx, "mainnet", operation_id, target=tampered)
+    before = require_operation(ctx, "mainnet", operation_id)
+    with pytest.raises(HubControlError) as exc:
+        _prepared_mainneta(ctx)
+    assert exc.value.code == "HUB_OPERATION_CONFLICT"
+    assert require_operation(ctx, "mainnet", operation_id) == before
+
+
+def test_repeat_prep_refuses_changed_admin_identity(tmp_path: Path) -> None:
+    from tools.hub_control.common.state import update_operation
+
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    operation_id = _prepared_mainneta(ctx)
+    original = require_operation(ctx, "mainnet", operation_id)
+    target = dict(original["target"])
+    target["hub_admin_address"] = "0x" + "ab" * 20
+    update_operation(ctx, "mainnet", operation_id, target=target)
+    with pytest.raises(HubControlError) as exc:
+        _prepared_mainneta(ctx)
+    assert exc.value.code == "HUB_OPERATION_CONFLICT"
+    assert require_operation(ctx, "mainnet", operation_id)["target"]["hub_admin_address"] == target["hub_admin_address"]
+
+
+def test_repeat_prep_preserves_already_deployed_stage(tmp_path: Path) -> None:
+    from tools.hub_control.common.state import update_operation
+
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    operation_id = _prepared_mainneta(ctx)
+    update_operation(ctx, "mainnet", operation_id, stage="deployed", deployment_result={"application_uuid": "app-a"})
+    before = require_operation(ctx, "mainnet", operation_id)
+    assert _prepared_mainneta(ctx) == operation_id
+    assert require_operation(ctx, "mainnet", operation_id) == before
+
+
+def test_repeat_prep_rejects_different_accepted_prestate_even_with_same_operation_id(tmp_path: Path) -> None:
+    from tools.hub_control.common.state import update_operation
+
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    operation_id = _prepared_mainneta(ctx)
+    update_operation(ctx, "mainnet", operation_id, accepted_prestate={"generation": 0, "hubs": []})
+    with pytest.raises(HubControlError) as exc:
+        _prepared_mainneta(ctx)
+    assert exc.value.code == "HUB_OPERATION_CONFLICT"
+
+
+def test_repeat_prep_rejects_replacement_of_frozen_coolify_application(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    operation_id = _prepared_mainneta(ctx, inspector=lambda _target: {
+        "present": True, "application_uuid": "app-original",
+    })
+    with pytest.raises(HubControlError) as exc:
+        _prepared_mainneta(ctx, inspector=lambda _target: {
+            "present": True, "application_uuid": "app-different",
+        })
+    assert exc.value.code == "HUB_OPERATION_CONFLICT"
+    assert require_operation(ctx, "mainnet", operation_id)["target"]["application_uuid"] == "app-original"
+
+
+def test_add_hub_retry_after_failed_do_preserves_assigned_identity(tmp_path: Path, monkeypatch) -> None:
+    from tools.mother.common.ethereum_identity import private_key_to_address
+    key = "0x" + "01".zfill(64)
+    monkeypatch.setattr(add_hub, "reserve_admin", lambda *a, **kw: {
+        "address": private_key_to_address(key), "private_key": key,
+        "private_state_path": "networks.mainnet.hub_admin_assignments.mainneta-hub1",
+    })
+    ctx = _ctx(tmp_path)
+    _seed_dependencies(ctx)
+    first = _resume_prep(ctx)
+    operation_id = first["details"]["operation_id"]
+
+    def failing_deployer(_target):
+        raise HubControlError("HUB_DEPLOY_TEST_FAILURE", "simulated failure after wallet claim")
+
+    with pytest.raises(HubControlError) as exc:
+        add_hub.do(ctx, "mainnet", operation_id, deployer=failing_deployer)
+    assert exc.value.code == "HUB_DEPLOY_TEST_FAILURE"
+    claimed = require_operation(ctx, "mainnet", operation_id)
+    expected_address = claimed["target"]["hub_admin_address"]
+    assert claimed["stage"] == "prepared"
+    assert claimed["target"]["hub_admin_private_state_path"] == "networks.mainnet.hub_admin_assignments.mainneta-hub1"
+    assert "private_key" not in json.dumps(claimed)
+
+    retry = _resume_prep(ctx)
+    assert retry["details"]["operation_id"] == operation_id
+    assert require_operation(ctx, "mainnet", operation_id) == claimed
+    deployed = add_hub.do(
+        ctx, "mainnet", operation_id,
+        deployer=lambda target: {"application_uuid": "hub-a", "action": "created", "bridge_signer": {"address": target["hub_admin_address"]}},
+        observer=_observer,
+    )
+    assert deployed["status"] == "deployed"
+    assert deployed["details"]["hub_admin_address"] == expected_address
+    assert require_operation(ctx, "mainnet", operation_id)["stage"] == "deployed"

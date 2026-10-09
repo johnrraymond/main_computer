@@ -127,6 +127,9 @@
             yNormalized: finite(fromScreen.yNormalized) + (finite(toScreen.yNormalized) - finite(fromScreen.yNormalized)) * progress,
           },
           progress,
+          originWorldPositionM: clone(shot.originWorldPositionM || snapshot.viewScreen.cameraWorldPositionM),
+          targetWorldPositionM: clone(snapshot.viewScreen.targetWorldPositionM),
+          rangeAtFireM: Number.isFinite(shot.rangeAtFireM) ? shot.rangeAtFireM : null,
         };
       });
   }
@@ -204,19 +207,20 @@
 
     return deepFreeze({
       ...basePresentation(system, ENCOUNTER_MODE, simulationSeconds),
+      observer: {bodyId: snapshot.viewScreen.observerBodyId, positionM: clone(snapshot.viewScreen.cameraWorldPositionM), forwardWorld:clone(snapshot.viewScreen.cameraForwardWorld)},
       environment: {
         alertState: relationship === "hostile" ? "hostile" : "contact",
-        trackingMode: "soft-target-lock",
+        trackingMode: snapshot.viewScreen?.mode === "ship-mounted-track" ? "optical-target-track" : "fixed-forward",
       },
       ownShip: {
         id: "ship.alpha",
-        visible: Boolean(snapshot.viewScreen?.bothShipsVisible),
+        visible: false, // observation platform is never an external contact
         screen: ownScreen,
         visualState: "nominal",
       },
       target: {
         id: String(snapshot.target?.id || "ship.beta"),
-        visible: Boolean(snapshot.viewScreen?.hardLockRetained),
+        visible: Boolean(snapshot.viewScreen?.targetVisible),
         screen: targetScreen,
         rangeM: finite(snapshot.rangeM),
         lock: {
@@ -279,7 +283,7 @@
     };
   }
 
-  function buildPlanet({systemState, navigationSnapshot, simulationSeconds = 0, tracked = false} = {}) {
+  function buildPlanet({systemState, navigationSnapshot, simulationSeconds = 0, tracked = false, observerPose = null} = {}) {
     const system = normalizeSystemState(systemState);
     if (system.selectedMode !== PLANET_MODE) {
       throw new Error(`BRIDGE_VIEWSCREEN_PRESENTATION_MODE_MISMATCH: selected ${system.selectedMode}, builder ${PLANET_MODE}`);
@@ -298,6 +302,7 @@
     }));
     return deepFreeze({
       ...basePresentation(system, PLANET_MODE, simulationSeconds),
+      observer: observerPose ? clone(observerPose) : null,
       environment: {alertState: "nominal", trackingMode: tracked ? "tracked" : "sensor-scan"},
       planet: {
         id: String(planet.id || navigation.currentPlanetId || "current-planet"),
@@ -365,7 +370,7 @@
     return length > 1e-12 ? [item[0] / length, item[1] / length, item[2] / length] : fallback.slice();
   }
 
-  function buildAstrometric({systemState, navigationSnapshot, astrometricSnapshot, simulationSeconds = 0, tracked = false} = {}) {
+  function buildAstrometric({systemState, navigationSnapshot, astrometricSnapshot, simulationSeconds = 0, tracked = false, observerPose = null} = {}) {
     const system = normalizeSystemState(systemState);
     if (system.selectedMode !== ASTROMETRIC_MODE) {
       throw new Error(`BRIDGE_VIEWSCREEN_PRESENTATION_MODE_MISMATCH: selected ${system.selectedMode}, builder ${ASTROMETRIC_MODE}`);
@@ -425,6 +430,7 @@
 
     return deepFreeze({
       ...basePresentation(system, ASTROMETRIC_MODE, simulationSeconds),
+      observer: observerPose ? clone(observerPose) : (astrometrics.observer ? clone(astrometrics.observer) : null),
       environment: {alertState: "nominal", trackingMode: tracked ? "tracked-astrometric" : "astrometric-scan"},
       targetObject: {
         id: String(target.id || navigation.currentPlanetId || "astrometric-target"),
@@ -469,6 +475,7 @@
     encounterProjection = null,
     navigationSnapshot = null,
     astrometricSnapshot = null,
+    observerPose = null,
     simulationSeconds = 0,
     tracked = false,
     idleReason = "standby",
@@ -478,11 +485,11 @@
       case ENCOUNTER_MODE:
         return buildEncounter({systemState: system, projectionSnapshot: encounterProjection});
       case PLANET_MODE:
-        return buildPlanet({systemState: system, navigationSnapshot, simulationSeconds, tracked});
+        return buildPlanet({systemState: system, navigationSnapshot, simulationSeconds, tracked, observerPose});
       case WARP_MODE:
         return buildWarpTransit({systemState: system, navigationSnapshot, simulationSeconds});
       case ASTROMETRIC_MODE:
-        return buildAstrometric({systemState: system, navigationSnapshot, astrometricSnapshot, simulationSeconds, tracked});
+        return buildAstrometric({systemState: system, navigationSnapshot, astrometricSnapshot, simulationSeconds, tracked, observerPose});
       case IDLE_MODE:
         return buildIdle({systemState: system, simulationSeconds, reason: idleReason});
       default:

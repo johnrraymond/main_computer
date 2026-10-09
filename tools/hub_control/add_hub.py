@@ -18,7 +18,9 @@ from .common.state import (
     ADD_OPERATION_SCHEMA,
     advance_accepted,
     publish_first_accepted,
+    operation_path,
     read_accepted,
+    read_json,
     require_operation,
     update_operation,
     write_operation,
@@ -38,6 +40,87 @@ def _operation_id(network: str, hub_id: str, accepted: Mapping[str, Any] | None,
     }
     digest = hashlib.sha256(canonical_bytes(seed)).hexdigest()[:16]
     return f"hub-add-{network}-{digest}"
+
+
+def _write_or_resume_prepared_operation(
+    ctx: HubContext,
+    operation: dict[str, Any],
+    *,
+    admin_address: str,
+) -> dict[str, Any]:
+    """Reuse only the same frozen add-hub boundary; keep a claimed identity.
+
+    A previous ``do`` may have added a public Hub admin identity to the target
+    before failing. The operation ID deliberately excludes that field, so
+    blindly calling write_operation at the next prep would raise a conflict.
+    Do not make the general state writer less strict.
+    """
+    network = str(operation["network"])
+    operation_id = str(operation["operation_id"])
+    existing = read_json(operation_path(ctx, network, operation_id))
+    if existing is None:
+        write_operation(ctx, operation)
+        return dict(operation["target"])
+
+    def conflict(reason: str) -> None:
+        raise HubControlError(
+            "HUB_OPERATION_CONFLICT",
+            f"Existing add-hub operation {operation_id!r} cannot be resumed: {reason}",
+        )
+
+    if any(existing.get(field) != operation[field] for field in (
+        "schema", "operation_id", "network", "kind", "accepted_prestate",
+    )):
+        conflict("operation identity or accepted prestate differs")
+    if existing.get("stage") not in {"prepared", "deployed"}:
+        conflict("operation is not an unfinished add-hub")
+    old_target = existing.get("target")
+    if not isinstance(old_target, dict):
+        conflict("saved deployment target is invalid")
+    fresh_target = dict(operation["target"])
+
+    # The only identity fields allowed to be added by ``do`` are these public
+    # references. Validate against Mother state before preserving them.
+    saved_address = str(old_target.get("hub_admin_address") or "")
+    if saved_address and saved_address.lower() != admin_address.lower():
+        conflict("committed Hub admin differs from Mother's selected identity")
+    saved_path = str(old_target.get("hub_admin_private_state_path") or "")
+    expected_path = f"networks.{network}.hub_admin_assignments.{fresh_target['hub_id']}"
+    if saved_path and saved_path != expected_path:
+        conflict("saved Hub admin private-state reference differs")
+
+    old_stable = dict(old_target)
+    new_stable = dict(fresh_target)
+    # Coolify may have created the application between the original prep and
+    # the retry. Its freshly discovered UUID may fill an initially absent UUID,
+    # but an existing one cannot be silently replaced or disappear.
+    old_app = str(old_stable.get("application_uuid") or "")
+    new_app = str(new_stable.get("application_uuid") or "")
+    if old_app and old_app != new_app:
+        conflict("existing Coolify application identity changed or disappeared")
+    for key in (
+        "hub_admin_address", "hub_admin_private_state_path",
+        "application_uuid", "application_resolution", "migration_candidate",
+    ):
+        old_stable.pop(key, None)
+        new_stable.pop(key, None)
+    if old_stable != new_stable:
+        conflict("frozen placement, topology, or dependency target changed")
+
+    # Preserve the previously claimed wallet and any independent diagnostics;
+    # refresh only verified preflight and application discovery for prepared ops.
+    if existing["stage"] == "prepared":
+        if saved_address:
+            fresh_target["hub_admin_address"] = saved_address
+        if saved_path:
+            fresh_target["hub_admin_private_state_path"] = saved_path
+        update_operation(
+            ctx, network, operation_id,
+            target=fresh_target, chain_preflight=operation["chain_preflight"],
+        )
+        return fresh_target
+    # A deployed operation must retain its exact receipt until finalize.
+    return dict(old_target)
 
 
 def prep(
@@ -109,7 +192,7 @@ def prep(
         "target": target,
         "chain_preflight": chain_proof,
     }
-    write_operation(ctx, operation)
+    target = _write_or_resume_prepared_operation(ctx, operation, admin_address=wallet_preview["address"])
     return {
         "status": "prepared",
         "details": {

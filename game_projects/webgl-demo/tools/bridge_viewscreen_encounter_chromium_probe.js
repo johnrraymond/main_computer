@@ -17,7 +17,8 @@ let frames = 0;
 let priorWall = null;
 let frameIntervals = [];
 let hardLockFrames = 0;
-let bothVisibleFrames = 0;
+let cameraAnchoredFrames = 0;
+let ownShipInvisibleFrames = 0;
 let maxTargetOffset = 0;
 let minTargetOffset = Infinity;
 let combatObserved = false;
@@ -39,12 +40,15 @@ function draw(snapshot) {
     ctx.fillStyle = color;
     ctx.beginPath(); ctx.arc(x,y,radius,0,Math.PI*2); ctx.fill();
   };
-  drawShip(view.playerOffsetNormalized,5,'#bae6fd');
+  // The observer is the viewpoint, never a visible external contact.
   drawShip(view.targetOffsetNormalized,8,snapshot.phase === 'combat' ? '#ef4444' : '#f59e0b');
 }
 
 let simulationStartWallMs = null;
 let firstRuntimeSimulationSeconds = null;
+const OBSERVER={bodyId:'ship.mother',positionM:[1000,2000,3000],velocityMps:[0,0,0],
+  forwardWorld:[1,0,0],upWorld:[0,0,1],validThroughSeconds:30};
+let encounterOrigin=null;
 await new Promise((resolve) => {
   const tick = (wallNow) => {
     if (simulationStartWallMs === null) simulationStartWallMs = wallNow;
@@ -57,7 +61,14 @@ await new Promise((resolve) => {
       fired = true;
     }
     runtime.advance(simMs,{active:true});
-    const snapshot = runtime.snapshot(simMs,{active:true});
+    const tactical=runtime.authority.readAuthorityState();
+    if (!encounterOrigin) {
+      const player=tactical.ships['ship.alpha'];
+      encounterOrigin=[OBSERVER.positionM[0]-player.xM,OBSERVER.positionM[1]-player.yM,OBSERVER.positionM[2]];
+    }
+    const target=tactical.ships['ship.beta'];
+    const targetWorldPositionM=[encounterOrigin[0]+target.xM,encounterOrigin[1]+target.yM,encounterOrigin[2]];
+    const snapshot = runtime.snapshot(simMs,{active:true,observerPose:OBSERVER,targetWorldPositionM});
     if (firstRuntimeSimulationSeconds === null) firstRuntimeSimulationSeconds = Number(snapshot?.simulationSeconds || 0);
     lastSnapshot = snapshot;
     phases.add(snapshot.phase);
@@ -65,7 +76,9 @@ await new Promise((resolve) => {
     maxTargetOffset = Math.max(maxTargetOffset,offset);
     minTargetOffset = Math.min(minTargetOffset,offset);
     if (snapshot.viewScreen.hardLockRetained) hardLockFrames++;
-    if (snapshot.viewScreen.bothShipsVisible) bothVisibleFrames++;
+    if (snapshot.viewScreen.observerBodyId==='ship.mother' &&
+        snapshot.viewScreen.cameraWorldPositionM.every((v,i)=>v===OBSERVER.positionM[i])) cameraAnchoredFrames++;
+    if (snapshot.viewScreen.bothShipsVisible===false) ownShipInvisibleFrames++;
     if (snapshot.phase === 'combat') combatObserved = true;
     if (snapshot.authority?.eventAnchorCount >= 1 && snapshot.impactAtSeconds !== null && snapshot.simulationSeconds >= snapshot.impactAtSeconds) impactObserved = true;
     draw(snapshot);
@@ -94,7 +107,8 @@ const checks = {
   combatBeginsOnFixedBoundary: combatObserved && Number(lastSnapshot?.combatBoundarySeconds) % 5 === 0,
   softLockIsNotHardCentered: maxTargetOffset > 0.03 && minTargetOffset > 0.001,
   softLockRetainsEnemy: hardLockFrames / Math.max(1,frames) >= 0.99,
-  zoomedOutViewKeepsBothShips: bothVisibleFrames / Math.max(1,frames) >= 0.99,
+  viewpointRemainsOnPhysicalMotherShip: cameraAnchoredFrames === frames,
+  observerNeverRenderedAsExternalShip: ownShipInvisibleFrames === frames,
 };
 const failedChecks = Object.entries(checks).filter(([,v])=>!v).map(([k])=>k);
 return {
@@ -113,7 +127,8 @@ return {
     maxTargetOffsetNormalized:maxTargetOffset,
     minTargetOffsetNormalized:minTargetOffset,
     hardLockFraction:hardLockFrames/Math.max(1,frames),
-    bothVisibleFraction:bothVisibleFrames/Math.max(1,frames),
+    cameraAnchoredFraction:cameraAnchoredFrames/Math.max(1,frames),
+    observerInvisibleFraction:ownShipInvisibleFrames/Math.max(1,frames),
     playerFireAtSeconds:lastSnapshot?.playerFireAtSeconds,
     impactAtSeconds:lastSnapshot?.impactAtSeconds,
     combatBoundarySeconds:lastSnapshot?.combatBoundarySeconds,

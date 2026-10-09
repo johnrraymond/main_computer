@@ -22,6 +22,15 @@ const stable = (value) => JSON.stringify(value);
 const OBSERVER={bodyId:'ship.mother',positionM:[1000,2000,3000],velocityMps:[0,0,0],validThroughSeconds:40,forwardWorld:[1,0,0],upWorld:[0,0,1]};
 const TARGET_WORLD=[1400,2000,3000];
 
+// A world contact moves according to tactical authority, but its initial world
+// location does not follow the observer. The old static-target test fixture
+// could not verify continuous projection of moving physical contacts.
+function worldTarget(state, initialTarget) {
+  const ship = state.ships['ship.beta'];
+  return [TARGET_WORLD[0] + ship.xM - initialTarget.xM,
+          TARGET_WORLD[1] + ship.yM - initialTarget.yM, TARGET_WORLD[2]];
+}
+
 function authorityFingerprint(runtime) {
   const state = runtime.readAuthorityState();
   return stable({
@@ -43,6 +52,7 @@ function runScenario({powerCycle=false} = {}) {
     displayPowered:true,
   });
   authority.advance(START_MS,{active:true});
+  const initialTarget = authority.readAuthorityState().ships['ship.beta'];
 
   const rows = [];
   let fired = false;
@@ -69,7 +79,8 @@ function runScenario({powerCycle=false} = {}) {
       fired = true;
     }
     authority.advance(START_MS + t * 1000,{active:true});
-    lastProjection = wrapper.snapshot(START_MS + t * 1000,{active:true,observerPose:OBSERVER,targetWorldPositionM:TARGET_WORLD});
+    lastProjection = wrapper.snapshot(START_MS + t * 1000,{active:true,observerPose:OBSERVER,
+      targetWorldPositionM:worldTarget(authority.readAuthorityState(),initialTarget)});
     lastPresentation = system.present({encounterProjection:lastProjection});
     rows.push({
       t,
@@ -81,6 +92,8 @@ function runScenario({powerCycle=false} = {}) {
       phase:lastPresentation.encounter.phase,
       targetX:lastPresentation.target.screen.xNormalized,
       targetY:lastPresentation.target.screen.yNormalized,
+      targetWorldPositionM:lastProjection.viewScreen.targetWorldPositionM.slice(),
+      trackingMode:lastPresentation.environment.trackingMode,
       cameraCenterM:lastProjection.viewScreen.cameraCenterM.slice(),
       authorityAtSeconds:lastProjection.authority.atSeconds,
       projectileCount:lastPresentation.effects.projectiles.length,
@@ -143,8 +156,8 @@ const offRows = cycled.rows.filter(row => row.t >= POWER_OFF_SECONDS - EPS && ro
 const beforeEntry = cycled.rows.reduce((best,row)=> row.t < BRIDGE_ENTRY_SECONDS && (!best || row.t > best.t) ? row : best, null);
 const afterEntry = cycled.rows.find(row => row.t + EPS >= BRIDGE_ENTRY_SECONDS);
 const repowered = cycled.rows.find(row => row.t + EPS >= POWER_ON_SECONDS);
-const offTargetSpread = offRows.length
-  ? Math.max(...offRows.map(row=>row.targetX)) - Math.min(...offRows.map(row=>row.targetX))
+const offTargetWorldTravelM = offRows.length > 1
+  ? Math.hypot(...offRows.at(-1).targetWorldPositionM.map((v,i)=>v-offRows[0].targetWorldPositionM[i]))
   : 0;
 const projectileFrames = control.rows.filter(row=>row.projectileCount > 0);
 const impactFrames = control.rows.filter(row=>row.impactCount > 0);
@@ -173,7 +186,8 @@ const checks = {
   bridgeEntryDoesNotSelectOrResetPresentation: beforeEntry && afterEntry && beforeEntry.selectedMode === afterEntry.selectedMode && afterEntry.presentationSeconds >= beforeEntry.presentationSeconds,
   displayPowerDoesNotChangeAuthority: control.authorityFingerprint === cycled.authorityFingerprint,
   displayPowerDoesNotResetProjectionCamera: stable(control.finalProjection.viewScreen.cameraCenterM) === stable(cycled.finalProjection.viewScreen.cameraCenterM),
-  selectedPresentationContinuesWhileDisplayIsOff: offRows.length > 0 && offRows.every(row => row.displayPowered === false && row.presentationMode === 'encounter') && offTargetSpread > 1e-6,
+  selectedPresentationContinuesWhileDisplayIsOff: offRows.length > 0 && offRows.every(row => row.displayPowered === false && row.presentationMode === 'encounter') && offTargetWorldTravelM > 1 &&
+    offRows.every(row=>row.trackingMode==='optical-target-track' && Math.abs(row.targetX)<1e-6 && Math.abs(row.targetY)<1e-6),
   repowerShowsCurrentStateNotReplay: repowered && repowered.displayPowered === true && repowered.presentationSeconds + EPS >= POWER_ON_SECONDS && repowered.phase === 'combat',
   projectionInputRemainsUnchangedByPresentation: immutableBefore === immutableAfter,
   presentationFrameIsDeepFrozen: deepFrozen,
@@ -209,7 +223,7 @@ return {
     displayPowerOnAtSeconds:POWER_ON_SECONDS,
     preBridgePresentationFrameCount:preBridgeRows.length,
     poweredOffPresentationFrameCount:offRows.length,
-    poweredOffTargetXSpreadNormalized:offTargetSpread,
+    poweredOffTargetWorldTravelM:offTargetWorldTravelM,
     projectilePresentationFrameCount:projectileFrames.length,
     projectileLaunchExample:projectileFrames[0]?.projectileLaunchWorld??null,
     impactPresentationFrameCount:impactFrames.length,

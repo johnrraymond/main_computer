@@ -23,8 +23,8 @@ const OBSERVER = Object.freeze({bodyId:'ship.mother',positionM:[1000,2000,3000],
 const ENEMY_WORLD = [1400,2000,3000];
 const OFFSET = [11000,-7000,5000];
 const translated = values => values.map((value,index)=>value+OFFSET[index]);
-const withPose = (pose, targetWorldPositionM=ENEMY_WORLD) => projection.project({
-  authorityState,simulationSeconds:0.1,observerPose:pose,targetWorldPositionM
+const withPose = (pose, targetWorldPositionM=ENEMY_WORLD,viewMode="fixed") => projection.project({
+  authorityState,simulationSeconds:0.1,observerPose:pose,targetWorldPositionM,viewMode
 }).snapshot;
 
 
@@ -59,6 +59,19 @@ let expiredObserverError='';
 try {projection.project({authorityState,simulationSeconds:0.1,observerPose:{...OBSERVER,validThroughSeconds:0.05},targetWorldPositionM:ENEMY_WORLD});}
 catch (error) {expiredObserverError=String(error?.message||error);}
 const screen = key => spatial[key]?.frame?.viewScreen || {};
+const tracking = {};
+for (const [name,pose,target] of [
+  ['front',OBSERVER,ENEMY_WORLD],
+  ['rear',OBSERVER,[600,2000,3000]],
+  ['left',OBSERVER,[1000,1600,3000]],
+  ['right',OBSERVER,[1000,2400,3000]],
+  ['above',OBSERVER,[1000,2000,3400]],
+  ['below',OBSERVER,[1000,2000,2600]],
+  ['moved',{...OBSERVER,positionM:[1100,2000,3000]},ENEMY_WORLD],
+]) tracking[name] = withPose(pose,target,"track").viewScreen;
+let coincidentError = "";
+try {withPose(OBSERVER,OBSERVER.positionM,"track");}
+catch(error) {coincidentError=String(error?.message||error);}
 const cameraError = key => separation(screen(key).cameraWorldPositionM,key==='translated'?translated(OBSERVER.positionM):key==='shipMoved'?[1100,2000,3000]:OBSERVER.positionM);
 const relativeError = (key,expected) => separation(screen(key).targetRelativeWorldM,expected);
 const baseTargetScreen=screen('base').targetOffsetNormalized;
@@ -174,6 +187,16 @@ const checks = {
       (point(screen('rotated').targetOffsetNormalized) && point(baseTargetScreen) &&
       Math.hypot(...baseTargetScreen.map((v,i)=>v-screen('rotated').targetOffsetNormalized[i]))>1e-6)),
   objectBehindCameraIsExcluded: screen('behind').targetInFront === false && screen('behind').targetVisible === false,
+  trackingDefaultIsTargetCentered: projectedA.snapshot.viewScreen.mode === 'ship-mounted-track' &&
+    close(Math.hypot(...projectedA.snapshot.viewScreen.targetOffsetNormalized),0,1e-8),
+  trackingCoversFullSphere: Object.values(tracking).every(view=>view.targetVisible && view.targetInFront &&
+    close(Math.hypot(...view.targetOffsetNormalized),0,1e-8)),
+  trackingRotatesWithoutMovingCamera: Object.entries(tracking).every(([name,view])=>
+    close(separation(view.cameraWorldPositionM,name==='moved'?[1100,2000,3000]:OBSERVER.positionM),0) &&
+    close(Math.hypot(...view.cameraForwardWorld),1,1e-8)),
+  trackingDoesNotAlterShipAttitude: Object.values(tracking).every(view=>
+    close(separation(view.shipForwardWorld,OBSERVER.forwardWorld),0)),
+  trackingRejectsCoincidentTarget: coincidentError.includes('BRIDGE_VIEWSCREEN_TRACK_TARGET_COINCIDENT'),
   missingAuthoritativeObserverIsRejected: Boolean(missingObserverError),
   invalidAuthoritativeObserverIsRejected: Boolean(staleObserverError),
   expiredAuthoritativeObserverIsRejected: Boolean(expiredObserverError),
@@ -208,6 +231,9 @@ return {
       targetOffsetNormalized:row.frame?.viewScreen?.targetOffsetNormalized ?? null,
       targetInFront:row.frame?.viewScreen?.targetInFront ?? null,
       rangeM:row.frame?.rangeM ?? null,
+    }])),
+    trackingModes:Object.fromEntries(Object.entries(tracking).map(([name,view])=>[name,{
+      mode:view.mode,visible:view.targetVisible,forward:view.cameraForwardWorld,rangeM:Math.hypot(...view.targetRelativeWorldM)
     }])),
     renderCadencesHz:cadenceRows.map(row=>row.renderHz),
     cadenceRows:cadenceRows.map(({authorityFingerprint,...row})=>row),

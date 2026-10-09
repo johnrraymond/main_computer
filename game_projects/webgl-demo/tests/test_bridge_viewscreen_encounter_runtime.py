@@ -55,7 +55,7 @@ def test_phase_two_authority_exposes_immutable_projection_input_without_camera_l
     assert 'BRIDGE_ENCOUNTER_AUTHORITY_STALE' in source
     assert 'combatState()' in source
     assert 'targetHullPercent' in source
-    snapshot_body = source.split('snapshot(nowMs)', 1)[1].split('\n    }\n  }', 1)[0]
+    snapshot_body = source.split('    snapshot(nowMs) {', 1)[1].split('\n    }\n  }', 1)[0]
     assert 'this._advanceAuthorityTo(simulationSeconds);' not in snapshot_body
     assert '_updateCamera' not in source
     assert 'cameraX' not in source
@@ -68,9 +68,11 @@ def test_phase_three_projection_owns_prediction_and_camera_but_has_no_combat_mut
     assert 'SCHEMA = "game.bridgeViewscreenProjection.v1"' in source
     assert 'AUTHORITY_SCHEMA = "game.bridgeEncounterAuthorityState.v1"' in source
     assert 'function predictShips(authorityState, simulationSeconds)' in source
-    assert 'function project({authorityState, simulationSeconds, presentationState = null} = {})' in source
+    assert 'function project({authorityState,simulationSeconds,presentationState=null,observerPose,targetWorldPositionM,viewMode="track"}={})' in source
     assert 'BRIDGE_VIEWSCREEN_PROJECTION_AUTHORITY_STALE' in source
-    assert 'mode: "enemy-soft-target-lock"' in source
+    assert 'mode:viewMode === "track" ? "ship-mounted-track" : "ship-mounted-forward"' in source
+    assert 'observer.positionM.slice()' in source
+    assert 'targetRelativeWorldM:delta' in source
     for forbidden in ('.advance(', '.command(', '.playerFire(', '_integrateTo(', '_applyImpact'):
         assert forbidden not in source
 
@@ -93,11 +95,21 @@ def test_viewscreen_wrapper_delegates_projection_instead_of_implementing_camera_
 
 def test_scene_game_update_advances_authority_before_viewscreen_render_observes_it() -> None:
     source = (SCRIPT_ROOT / "scene-viewer.js").read_text(encoding="utf-8")
-    assert 'this.bridgeEncounterRuntime = globalThis.MainComputerBridgeEncounterRuntime?.create?.() || null;' in source
+    assert 'this.bridgeEncounterRuntime = globalThis.MainComputerBridgeEncounterRuntime?.create?.({' in source
+    assert 'physicalPlayerAuthority:true, requirePhysicalWeaponRange:true' in source
     assert 'MainComputerBridgeViewscreenEncounterRuntime?.create?.({authority: this.bridgeEncounterRuntime})' in source
     assert 'updateBridgeViewscreenEncounter(nowMs' in source
-    assert 'encounterResult = runtime.advance(nowMs, {active: true});' in source
-    assert 'encounterProjection = projectionRuntime.snapshot(nowMs, {active: true});' in source
+    assert 'this.startBridgeCaptainSimulation(nowMs);' in source
+    assert 'if (runtime.startedAtMs!==null)' in source
+    assert 'encounterResult = runtime.advance(nowMs,{active:true});' in source
+    assert 'this.updateEnemyCaptainDecision(nowMs);' in source
+    assert "this.shipState?.location!=='bridge.deck'" in source
+    assert 'projectionRuntime.snapshot(nowMs, {' in source
+    assert 'runtime.startedAtMs===null' in source
+    assert 'observerPose:observation' in source
+    assert 'this.resolveBridgeEncounterWorld(observerPose, authorityState, nowMs)' in source
+    assert 'this.bridgeEncounterWorldFrame = worldContact;' in source
+    assert 'targetWorldPositionM:worldContact.targetWorldPositionM' in source
     assert 'this.bridgeViewscreenPresentationFrame = system.present(presentationInputs);' in source
     assert 'if (this.bridgeViewscreenProjectionFrame) return this.bridgeViewscreenProjectionFrame;' in source
     update_index = source.index('this.updateBridgeViewscreenEncounter(frameTime);')
@@ -112,7 +124,8 @@ def test_scene_no_longer_stores_bridge_combat_truth_in_ship_flags() -> None:
         assert legacy not in defaults
     for forbidden_assignment in ('flags.enemyShipHullPercent =', 'flags.enemyShipDisabled =', 'flags.bridgeTacticalShotsFired =', 'flags.bridgeTacticalLastFireAtMs =', 'flags.bridgeTacticalArmed ='):
         assert forbidden_assignment not in source
-    assert 'this.bridgeEncounterRuntime?.command?.({type: "fire-primary-weapon"}, nowMs)' in source
+    assert 'this.bridgeEncounterRuntime?.command?.({type: "fire-primary-weapon",physicalShot}, nowMs)' in source
+    assert 'bridgeEncounterWorld: this.bridgeEncounterWorldSnapshot()' in source
     assert 'runtime.eventsSince(this.bridgeEncounterLastUiEventSequence || 0)' in source
 
 
@@ -151,7 +164,7 @@ def test_actual_viewscreen_renderer_consumes_presentation_only_and_never_reads_r
 def test_bridge_chromium_probe_explicitly_advances_before_snapshot() -> None:
     source = (GAME_ROOT / "tools" / "bridge_viewscreen_encounter_chromium_probe.js").read_text(encoding="utf-8")
     assert 'runtime.advance(simMs,{active:true});' in source
-    assert 'runtime.snapshot(simMs,{active:true});' in source
-    assert source.index('runtime.advance(simMs,{active:true});') < source.index('runtime.snapshot(simMs,{active:true});')
+    assert 'runtime.snapshot(simMs,{active:true,observerPose:OBSERVER,targetWorldPositionM});' in source
+    assert source.index('runtime.advance(simMs,{active:true});') < source.index('runtime.snapshot(simMs,{active:true,observerPose:OBSERVER,targetWorldPositionM});')
     assert 'runtimeStartsOnFirstAnimationFrame' in source
     assert 'runtimeCoversFullScriptedEncounter' in source

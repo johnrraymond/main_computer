@@ -40,7 +40,9 @@ def test_full_game_gate_requires_real_gl_keyboard_actions_and_destruction() -> N
     for marker in (
         "realWebGLContextAndCanvasAvailable",
         "openingEncounterSelectedBeforeBridge",
-        "encounterAdvancesBeforeBridgeEntry",
+        "openingPursuitWithoutPrematureTacticalSimulation",
+        "bridgeEntryStartsCaptainSimulationExactlyOnce",
+        "viewscreenPowerDoesNotRestartCaptain",
         "realEKeyTurnsOffDisplayWithoutModeChange",
         "realEKeyRestoresCurrentPresentation",
         "realEKeyRoutesWeaponToEncounterAuthority",
@@ -57,7 +59,7 @@ def test_full_game_gate_requires_real_gl_keyboard_actions_and_destruction() -> N
         "viewscreenCameraOriginMatchesPhysicalMother",
         "productionObserverPoseIsFromActualMotherShip",
         "targetRelativePositionUsesPhysicalShipOrigin",
-        "cameraViewDirectionMatchesAuthoritativeAttitude",
+        "cameraTracksActualWorldTarget",
     ):
         assert marker in source
 

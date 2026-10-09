@@ -54,7 +54,10 @@ function expectedScreenPoint(screen) {
 
 function getFrame(authority, wrapper, system, seconds) {
   authority.advance(START_MS + seconds * 1000,{active:true});
-  const projected = wrapper.snapshot(START_MS + seconds * 1000,{active:true,observerPose:OBSERVER,targetWorldPositionM:TARGET_WORLD});
+  const target = authority.readAuthorityState().ships['ship.beta'];
+  const projected = wrapper.snapshot(START_MS + seconds * 1000,{active:true,observerPose:OBSERVER,
+    targetWorldPositionM:[TARGET_WORLD[0]+target.xM-initialTarget.xM,
+      TARGET_WORLD[1]+target.yM-initialTarget.yM,TARGET_WORLD[2]]});
   return {projected, frame:system.present({encounterProjection:projected})};
 }
 
@@ -62,6 +65,7 @@ const authority = authorityFactory.create(CONFIG);
 const wrapper = wrapperFactory.create({authority});
 const system = presentation.createSystem({initialMode:'encounter',selectedAtSimulationSeconds:0,displayPowered:true});
 authority.advance(START_MS,{active:true});
+const initialTarget = authority.readAuthorityState().ships['ship.beta'];
 
 const early = getFrame(authority,wrapper,system,2.0);
 const earlyRender = renderFrame(early.frame);
@@ -138,7 +142,13 @@ const checks = {
   staleSelfVisibilityFlagCannotDrawObserver: staleSelfRender.result.ownShipCenter === null &&
     staleSelfRender.builder.calls.filter(call=>call.material==='#bae6fd:e').length === 0,
   rendererKeepsEnemyGeometryWhenSelfIsSuppressed: distance2(staleSelfRender.result.targetCenter,expectedTargetEarly) <= EPS,
-  targetGeometryMovesWithPresentation: distance2(earlyRender.result.targetCenter,midRender.result.targetCenter) > 1e-4 && distance2(midRender.result.targetCenter,expectedTargetMid) <= EPS,
+  trackingCentersMovingPhysicalTarget: distance2(earlyRender.result.targetCenter,expectedTargetEarly) <= EPS &&
+    distance2(midRender.result.targetCenter,expectedTargetMid) <= EPS &&
+    distance2(earlyRender.result.targetCenter,midRender.result.targetCenter) <= EPS &&
+    Math.hypot(...early.projected.viewScreen.targetWorldPositionM.map((value,i)=>
+      value-mid.projected.viewScreen.targetWorldPositionM[i])) > 1 &&
+    Math.hypot(...early.projected.viewScreen.cameraForwardWorld.map((value,i)=>
+      value-mid.projected.viewScreen.cameraForwardWorld[i])) > 1e-5,
   projectileGeometryFollowsPresentation: Boolean(projectileBeam) && distance2(projectileBeam.to,expectedProjectile) <= EPS,
   impactGeometryFollowsPresentation: Boolean(impactEllipsoid) && distance2(impactEllipsoid.center,expectedImpact) <= EPS,
   destructionGeometryFollowsPresentation: Boolean(explosionEllipsoid) && distance2(explosionEllipsoid.center,expectedExplosion) <= EPS,

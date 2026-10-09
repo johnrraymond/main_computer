@@ -12,6 +12,18 @@
     const physicalMother = (physics?.bodies || []).find(body => body.id === 'ship.mother') || null;
     // The attitude must come from a production source, not from an invented HUD heading.
     const observerPose = r.mainShipObserverPose?.() || null;
+    const encounterWorldOrigin = r.bridgeViewscreenWorldAnchor?.worldOriginM || null;
+    const enemyOrbitalReference = (physics?.bodies || []).find(body => body.id==='ship.beta.encounter-reference') || null;
+    let targetPredicted = null;
+    // The test observer is read-only: never start the encounter clock at boot,
+    // and never demand a fresh tactical prediction after encounter teardown.
+    if (r.lastFrameTime !== null && r.bridgeEncounterRuntime?.startedAtMs !== null) {
+      try { targetPredicted = r.bridgeEncounterRuntime.predict(r.lastFrameTime)?.['ship.beta'] || null; }
+      catch(error) {
+        if (!String(error?.message || error).includes('BRIDGE_ENCOUNTER_AUTHORITY_STALE')) throw error;
+      }
+    }
+    const localTarget = authority?.ships?.['ship.beta'] || null;
     const gl = r.gl;
     const geometry = r.dynamicGeometry || new Float32Array(0);
     let hash = 2166136261;
@@ -55,18 +67,33 @@
       cameraWorldPositionM: projected?.viewScreen?.cameraWorldPositionM?.slice?.() || null,
       cameraForwardWorld: projected?.viewScreen?.cameraForwardWorld?.slice?.() || null,
       targetWorldPositionM: projected?.viewScreen?.targetWorldPositionM?.slice?.() || null,
-      targetAuthorityWorldPositionM: authority?.ships?.['ship.beta']?.worldPositionM?.slice?.() || null,
+      targetAuthorityWorldPositionM: encounterWorldOrigin && targetPredicted ?
+        [encounterWorldOrigin[0]+targetPredicted.xM,encounterWorldOrigin[1]+targetPredicted.yM,encounterWorldOrigin[2]] : null,
+      enemyOrbitalReferencePositionM: enemyOrbitalReference?.positionM?.slice?.() || null,
+      enemyOrbitalReferenceVelocityMps: enemyOrbitalReference?.velocityMps?.slice?.() || null,
+      encounterWorldOriginM: encounterWorldOrigin?.slice?.() || null,
       targetRelativeWorldM: projected?.viewScreen?.targetRelativeWorldM?.slice?.() || null,
       targetInFront: projected?.viewScreen?.targetInFront ?? null,
       playerShipExternalVisible: presentation?.ownShip?.visible ?? null,
       projectedRangeM: projected?.rangeM ?? null,
+      gameWorldContact: r.bridgeEncounterWorldSnapshot?.() || null,
+      gameHudContactRangeM: document.querySelector(".scene-shuttle3d-canvas")?.dataset?.bridgeContactRangeM || null,
+      gameHudContactText: String(document.querySelector(".scene-shuttle3d-ship-line")?.textContent || ""),
       authorityHullPercent: Number(authority?.target?.hullPercent ?? -1),
       authorityTargetDestroyed: Boolean(authority?.target?.destroyed),
       authorityPhase: String(authority?.encounter?.phase || ""),
+      tacticalStartedAtMs: r.bridgeEncounterRuntime?.startedAtMs ?? null,
+      captainDecision: r.enemyCaptainLastDecision ? JSON.parse(JSON.stringify(r.enemyCaptainLastDecision)) : null,
+      captainOrder: authority?.helm?.['ship.beta']?.activeOrder || null,
+      captainOrderEventCount: (r.bridgeEncounterRuntime?.events || []).filter(e=>e.kind==='captain-order').length,
+      openingPursuit: r.openingPursuitPreview?.(r.lastFrameTime ?? 0) || null,
       shots: (authority?.weapons?.projectiles || []).map((shot) => ({
         id: String(shot.id || ""),
         firedAtSeconds: Number(shot.firedAtSeconds),
         impactAtSeconds: Number(shot.impactAtSeconds),
+        rangeAtFireM: shot.rangeAtFireM ?? null,
+        originWorldPositionM: shot.originWorldPositionM || null,
+        targetWorldPositionAtFireM: shot.targetWorldPositionAtFireM || null,
         resolved: Boolean(shot.impactApplied === true || shot.status === "impact"),
       })),
       interactionTargetId: String(r.shipInteractionTarget?.()?.id || ""),

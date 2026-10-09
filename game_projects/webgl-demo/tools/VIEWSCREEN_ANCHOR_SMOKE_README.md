@@ -1,6 +1,6 @@
 # Ship-mounted viewscreen: RED-to-GREEN smoke gate
 
-**Scope:** Tests and diagnostics only. No production code in this patch. The old `main_computer_test_viewscreen_no_self_ship_patch.zip` should **not** be applied.
+**Scope:** This production patch includes the previously approved ship-anchor smoke suite and updates two moving-target fixtures to follow authoritative encounter motion. The old `main_computer_test_viewscreen_no_self_ship_patch.zip` should **not** be applied.
 
 ## Required behavior
 
@@ -19,7 +19,7 @@ The standalone Phase 3 probe passes a synthetic **observerPose** and a known **t
 
 The projection must **reject missing/non-finite observer state**, not fall back to a fake location. The test intentionally supplies a different observer pose and target position for movement, whole-world translation, 90-degree view rotation, and behind-camera culling. Existing encounter authority is retained, so this is not a synthetic combat implementation.
 
-For the full-game probe, `mainShipObserverPose()` on the actual scene renderer is the intended production observer-pose access point, reading the real physical ship and actual attitude. The full-game test also reads `spaceGravitySnapshot()` independently, and compares them against the *same frame's* projection. The enemy's authoritative `ships['ship.beta'].worldPositionM` must match `viewScreen.targetWorldPositionM`; merely fabricating a world position in the presentation does not pass.
+For the full-game probe, `mainShipObserverPose()` on the actual scene renderer is the intended production observer-pose access point, reading the real physical ship position and explicitly declared viewing basis (the gravity body does not currently provide attitude). The full-game test also reads `spaceGravitySnapshot()` independently, and compares them against the *same frame's* projection. The browser probe derives the enemy's expected world position independently from the fixed encounter-world origin and tactical authority's target coordinates, then compares it to the projection. The encounter origin must remain fixed across sampled frames. Ship attitude is not simulated by the gravity runtime, so the current fixed forward/up basis is a deliberate limitation rather than invented real orientation.
 
 ## Quick smoke commands
 
@@ -52,3 +52,11 @@ The individual tests intentionally exit nonzero against the uncorrected game. Do
 - Screenshots remain supplementary evidence, not an alternative acceptance condition.
 
 A null metric means data is **missing** and causes a failure. No zero-for-missing or inferred camera coordinates are allowed.
+
+## Production correction (after approval)
+
+The scene update reads the physical `ship.mother` from gravity before projecting the encounter. Its camera origin is always that body's physical position. The encounter target receives a persistent world-space anchor at first observation, then follows the tactical target's authoritative motion relative to that fixed anchor; movement of `ship.mother` alone cannot move the enemy. The presentation carries the observer pose, and the self-ship renderer has been removed, rather than used to conceal a detached camera. The renderer remains a consumer of immutable projected presentation frames. Planet and astrometric frames carry the same physical observer pose.
+
+The standalone gate now includes a fifth layer (`scene-physical-wiring`) that runs the production scene adapter against the authored project gravity body and tactical authority without WebGL. All five layers (100 checks) passed in the preparation environment. The full-game Chromium test could not run to completion there because no real WebGL context was available: **run `--full-game` on the target Windows machine before accepting the production change**. No browser result is inferred from the standalone checks.
+
+**Attitude limitation:** the current physical gravity body has position/velocity but no attitude. A declared fixed forward/up frame is used until the navigation/ship-attitude model exposes an authoritative rotation. Tracking never translates the camera. The player-ship position, not this heading fallback, is what is physically grounded.

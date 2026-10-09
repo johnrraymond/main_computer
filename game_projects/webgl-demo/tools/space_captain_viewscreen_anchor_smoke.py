@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,12 +23,18 @@ SCRIPT_NAMES = {
     'phase4-presentation': ('space-captain-multirate-contract.js', 'bridge-encounter-runtime.js', 'bridge-viewscreen-projection.js', 'bridge-viewscreen-encounter-runtime.js', 'bridge-viewscreen-presentation.js'),
     'phase4-renderer': ('space-captain-multirate-contract.js', 'bridge-encounter-runtime.js', 'bridge-viewscreen-projection.js', 'bridge-viewscreen-encounter-runtime.js', 'bridge-viewscreen-presentation.js', 'bridge-viewscreen-renderer.js'),
     'phase4-non-encounter': ('space-captain-multirate-contract.js', 'bridge-viewscreen-projection.js', 'bridge-viewscreen-presentation.js', 'bridge-viewscreen-renderer.js'),
+    'scene-physical-wiring': ('space-gravity-runtime.js', 'space-captain-multirate-contract.js', 'bridge-encounter-runtime.js'),
+    'tracking-boarding-15m': ('space-captain-multirate-contract.js', 'bridge-encounter-runtime.js', 'bridge-viewscreen-projection.js'),
+    'bridge-captain-deterministic-15m': ('space-captain-multirate-contract.js', 'bridge-encounter-runtime.js', 'bridge-captain-decision-policy.js'),
 }
 PROBES = {
     'phase3-projection':'space_captain_phase3_viewscreen_projection_probe.js',
     'phase4-presentation':'space_captain_phase4_part1_viewscreen_presentation_probe.js',
     'phase4-renderer':'space_captain_phase4_part2_viewscreen_renderer_probe.js',
     'phase4-non-encounter':'space_captain_phase4_part3_non_encounter_modes_probe.js',
+    'scene-physical-wiring':'space_captain_viewscreen_physical_wiring_probe.js',
+    'tracking-boarding-15m':'space_captain_viewscreen_tracking_boarding_probe.js',
+    'bridge-captain-deterministic-15m':'space_captain_bridge_entry_deterministic_probe.js',
 }
 # Baseline must fail for actual spatial reasons, not because Node, graphics, or
 # the game failed to load. The old non-spatial checks are retained in each probe.
@@ -36,6 +43,9 @@ EXPECTED_RED = {
     'phase4-presentation':'playerShipIsNotExternalVisibleVessel',
     'phase4-renderer':'normalRendererDoesNotDrawOwnShip',
     'phase4-non-encounter':'astrometricObserverIsPhysicalMotherShip',
+    'scene-physical-wiring':'sceneObserverReadsPhysicsBody',
+    'tracking-boarding-15m':'unattendedBoardingRemainsInRange',
+    'bridge-captain-deterministic-15m':'firstDecisionAtBridgeTimeZero',
     'phase5-real-chromium':'viewscreenCameraOriginMatchesPhysicalMother',
 }
 NODE_DRIVER = r'''
@@ -71,7 +81,9 @@ def _run_browser() -> dict:
     if not spec or not spec.loader: return {'ok':False,'error':'Could not load browser smoke'}
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    report = module.run(output_dir=ROOT / 'builds' / 'viewscreen-anchor-smoke',screenshot_enabled=False)
+    report = module.run(headed=os.environ.get('MC_SMOKE_HEADED') == '1',
+                        output_dir=ROOT / 'builds' / 'viewscreen-anchor-smoke',screenshot_enabled=False,
+                        chromium_executable=shutil.which('chromium') or shutil.which('chromium-browser'))
     return {'ok':report['ok'],'checks':report['checks'],'failedChecks':report['failedChecks'],
             'metrics':{'spatialSamples':report.get('metrics',{}).get('spatialSamples'),
                        'spatialSampleCount':report.get('metrics',{}).get('spatialSampleCount')},
@@ -95,7 +107,7 @@ def main() -> int:
         accepted=all(run['ok'] for run in runs.values())
     report={'ok':accepted,'schema':'game.spaceCaptainViewscreenShipAnchorSmoke.v1',
             'mode':'expected-red-baseline' if ns.expect_red else 'required-green',
-            'productionCodeModified':False,
+            'productionCodeModified':True,
             'layers':runs,
             'failedLayers':[name for name,run in runs.items() if not run['ok']]}
     encoded=json.dumps(report,indent=2,allow_nan=False)+'\n'

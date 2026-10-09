@@ -5539,7 +5539,9 @@
           this.onNavigationChanged = null;
           this.flight = this.createFlightState();
           this.shipState = this.createShipState();
-          this.bridgeEncounterRuntime = globalThis.MainComputerBridgeEncounterRuntime?.create?.() || null;
+          this.bridgeEncounterRuntime = globalThis.MainComputerBridgeEncounterRuntime?.create?.({
+            physicalPlayerAuthority:true, requirePhysicalWeaponRange:true,
+          }) || null;
           this.bridgeViewscreenEncounterRuntime = globalThis.MainComputerBridgeViewscreenEncounterRuntime?.create?.({authority: this.bridgeEncounterRuntime}) || null;
           this.bridgeViewscreenSystem = globalThis.MainComputerBridgeViewscreenPresentation?.createSystem?.({
             initialMode: "encounter",
@@ -5547,9 +5549,15 @@
             displayPowered: true
           }) || null;
           this.bridgeViewscreenProjectionFrame = null;
+          this.bridgeViewscreenWorldAnchor = null;
+          this.bridgeEncounterWorldFrame = null;
           this.bridgeViewscreenPresentationFrame = null;
           this.bridgeViewscreenPresentationInputsFrame = null;
           this.bridgeEncounterLastUiEventSequence = 0;
+          this.openingPursuitStartedAtMs = null;
+          this.enemyCaptainDecisionProvider = typeof options.enemyCaptainDecisionProvider === 'function'
+            ? options.enemyCaptainDecisionProvider : null;
+          this.enemyCaptainLastDecision = null;
           this.shipInteractionRegistry = this.createShipInteractionRegistry();
           this.pilotStations = shuttle3dPilotStationsConfig(scene);
           this.hoveredPilotStation = null;
@@ -6473,6 +6481,9 @@
             interactionHint: this.shipInteractionHint?.(interaction) || "",
             interactionStatus: state.lastInteractionStatus || "",
             bridgeEncounter: this.bridgeEncounterStatus?.(this.lastFrameTime ?? performance.now()) || null,
+            // World-space contact is available to game HUDs and other subsystems,
+            // not owned by the viewscreen renderer or the browser smoke harness.
+            bridgeEncounterWorld: this.bridgeEncounterWorldSnapshot(),
             bridgeViewscreen: {
               selectedMode: this.bridgeViewscreenSelectedMode?.() || "encounter",
               displayPowered: this.bridgeViewscreenDisplayPowered?.() !== false,
@@ -6489,6 +6500,8 @@
           const clock = this.lastFrameTime ?? 0;
           if (!force && clock - this.lastShipUiAt < 120) return;
           this.lastShipUiAt = clock;
+          const worldRange = this.bridgeEncounterWorldFrame?.rangeM;
+          this.lastPublishedBridgeContactRangeM = Number.isFinite(worldRange) ? worldRange : null;
           this.onShipStateChanged(this.shipStateSnapshot());
         }
 
@@ -6510,9 +6523,16 @@
           this.bridgeViewscreenEncounterRuntime?.reset?.();
           this.bridgeViewscreenSystem?.reset?.({initialMode: "encounter", selectedAtSimulationSeconds: 0, displayPowered: true});
           this.bridgeViewscreenProjectionFrame = null;
+          if (this.bridgeViewscreenWorldAnchor?.systemId) {
+            this.spaceGravityRuntime?.removeTransientBody?.("ship.beta.encounter-reference", this.bridgeViewscreenWorldAnchor.systemId);
+          }
+          this.bridgeViewscreenWorldAnchor = null;
+          this.bridgeEncounterWorldFrame = null;
           this.bridgeViewscreenPresentationFrame = null;
           this.bridgeViewscreenPresentationInputsFrame = null;
           this.bridgeEncounterLastUiEventSequence = 0;
+          this.openingPursuitStartedAtMs = null;
+          this.enemyCaptainLastDecision = null;
           if (this.pilot) {
             this.pilot.active = false;
             this.pilot.station = null;
@@ -7208,6 +7228,144 @@
           return changed;
         }
 
+        submitEnemyCaptainOrder(order, nowMs) {
+          if (!this.bridgeEncounterRuntime) throw new Error('BRIDGE_ENCOUNTER_RUNTIME_REQUIRED');
+          const atMs=nowMs ?? this.lastFrameTime ?? performance.now();
+          return this.bridgeEncounterRuntime.command({type:'captain-helm-order',order},atMs);
+        }
+
+        openingPursuitPreview(nowMs) {
+          if(this.openingPursuitStartedAtMs===null) this.openingPursuitStartedAtMs=Number(nowMs);
+          const elapsed=Math.max(0,Math.min(75,(Number(nowMs)-this.openingPursuitStartedAtMs)/1000));
+          // Authored shuttle pursuit, before captain simulation. Preserve the
+          // final physical relative position and velocity at bridge handoff.
+          return {xM:2600-8*elapsed,yM:598-1.5*elapsed,vxMps:-8,vyMps:-1.5};
+        }
+
+        enemyCaptainObservation(nowMs) {
+          const runtime=this.bridgeEncounterRuntime;
+          const ships=runtime?.ships;
+          if(!ships) return null;
+          const own=ships['ship.alpha'],target=ships['ship.beta'];
+          const dx=target.xM-own.xM,dy=target.yM-own.yM;
+          const r=Math.hypot(dx,dy);
+          const radial=r>0 ? ((target.vxMps-own.vxMps)*dx+(target.vyMps-own.vyMps)*dy)/r : 0;
+          const sim=runtime.startedAtMs===null ? 0 : Math.max(0,(nowMs-runtime.startedAtMs)/1000);
+          return {schema:'game.bridgeCaptainObservation.v1',captainId:'captain.beta',shipId:'ship.beta',
+            simulationSeconds:sim,rangeM:r,radialVelocityMps:radial,
+            targetHullPercent:runtime.targetHullPercent,enemyStatus:runtime.targetStatus,
+            mission:'pursue-main-ship-and-seek-boarding-range'};
+        }
+
+        updateEnemyCaptainDecision(nowMs) {
+          const runtime=this.bridgeEncounterRuntime;
+          if(!runtime||runtime.startedAtMs===null||runtime.targetStatus==='destroyed') return null;
+          const policy=globalThis.MainComputerBridgeCaptainDecisionPolicy;
+          if(!policy) throw new Error('BRIDGE_CAPTAIN_DECISION_POLICY_MISSING');
+          const observation=this.enemyCaptainObservation(nowMs);
+          const activeOrder=runtime.enemyCaptainOrder;
+          const nextRevision=Math.max(1,runtime.enemyCaptainRevision+1);
+          const decide=this.enemyCaptainDecisionProvider || policy.decide;
+          const order=decide({observation,activeOrder,nextRevision,capabilities:policy.SHIP_CAPABILITIES});
+          if (!order) return null;
+          const result=this.submitEnemyCaptainOrder(order,nowMs);
+          if(!result?.accepted) throw new Error(`BRIDGE_CAPTAIN_ORDER_REJECTED: ${result?.reason||'unknown'}`);
+          this.enemyCaptainLastDecision={...order};
+          return result;
+        }
+
+        startBridgeCaptainSimulation(nowMs) {
+          const runtime=this.bridgeEncounterRuntime;
+          if(!runtime || runtime.startedAtMs!==null || this.shipState?.location!=='bridge.deck') return false;
+          // Handoff scripted chase truth into tactical state *once*. No teleport,
+          // no combat clock running before bridge entry.
+          const chase=this.openingPursuitPreview(nowMs);
+          Object.assign(runtime.ships['ship.beta'],chase);
+          runtime.advance(nowMs,{active:true});
+          this.updateEnemyCaptainDecision(nowMs);
+          return true;
+        }
+
+        mainShipObserverPose() {
+          const body = this.spaceGravitySnapshot?.()?.bodies?.find?.(item => item.id === "ship.mother");
+          const valid = value => Array.isArray(value) && value.length === 3
+            && value.every(number => typeof number === "number" && Number.isFinite(number));
+          if (!body || !valid(body.positionM) || !valid(body.velocityMps)) return null;
+          // Space gravity currently supplies position/velocity but no ship attitude.
+          // Until navigation owns a rotation, use a fixed declared forward/up basis;
+          // NEVER infer camera position from the tactical ship or the target.
+          return {
+            bodyId: "ship.mother",
+            positionM: body.positionM.slice(), velocityMps: body.velocityMps.slice(),
+            forwardWorld: valid(body.forwardWorld) ? body.forwardWorld.slice() : [1, 0, 0],
+            upWorld: valid(body.upWorld) ? body.upWorld.slice() : [0, 0, 1],
+          };
+        }
+
+        bridgeEncounterTargetWorldPosition(observerPose, authorityState, nowMs = null) {
+          const target = authorityState?.ships?.["ship.beta"];
+          if (!target || !observerPose || !this.spaceGravityRuntime) {
+            throw new Error("BRIDGE_VIEWSCREEN_WORLD_TRAJECTORY_REQUIRED");
+          }
+          const snapshot = this.spaceGravitySnapshot?.();
+          const systemId = snapshot?.activeSystemId;
+          if (!systemId || !snapshot?.simulated) throw new Error("BRIDGE_VIEWSCREEN_WORLD_SYSTEM_REQUIRED");
+          const referenceId = "ship.beta.encounter-reference";
+          // Spawn once, at the physical mother ship's position and velocity.
+          // This massless orbital reference advances independently under the
+          // same gravity as ship.mother; it is NEVER recentered on the camera.
+          if (!this.bridgeViewscreenWorldAnchor) {
+            this.spaceGravityRuntime.addTransientBody({
+              id:referenceId, positionM:observerPose.positionM,
+              velocityMps:observerPose.velocityMps,
+            }, systemId);
+            this.bridgeViewscreenWorldAnchor = {bodyId:referenceId,systemId};
+          }
+          if (this.bridgeViewscreenWorldAnchor.systemId !== systemId) {
+            throw new Error("BRIDGE_VIEWSCREEN_WORLD_SYSTEM_CHANGED");
+          }
+          const reference = this.spaceGravityRuntime.body(referenceId, systemId);
+          if (!reference) throw new Error("BRIDGE_VIEWSCREEN_WORLD_REFERENCE_MISSING");
+          this.bridgeViewscreenWorldAnchor.worldOriginM = reference.positionM.slice();
+          // Authority supplies *local maneuver displacement*; the reference
+          // supplies independent orbital translation. These distinct clocks
+          // are intentional: universe time advances faster than tactical time.
+          let maneuver = this.bridgeEncounterRuntime?.startedAtMs===null
+            ? this.openingPursuitPreview(nowMs ?? this.lastFrameTime ?? 0) : target;
+          if (nowMs !== null && this.bridgeEncounterRuntime?.startedAtMs!==null && this.bridgeEncounterRuntime?.predict) {
+            const predicted = this.bridgeEncounterRuntime.predict(nowMs);
+            if (predicted?.["ship.beta"]) maneuver = predicted["ship.beta"];
+          }
+          return [reference.positionM[0] + Number(maneuver.xM),
+                  reference.positionM[1] + Number(maneuver.yM),
+                  reference.positionM[2]];
+        }
+
+        bridgeEncounterWorldSnapshot() {
+          const frame = this.bridgeEncounterWorldFrame;
+          return frame ? JSON.parse(JSON.stringify(frame)) : null;
+        }
+
+        resolveBridgeEncounterWorld(observerPose, authorityState, nowMs) {
+          if (!observerPose || !authorityState) throw new Error("BRIDGE_ENCOUNTER_WORLD_AUTHORITY_REQUIRED");
+          const targetWorldPositionM = this.bridgeEncounterTargetWorldPosition(observerPose, authorityState, nowMs);
+          const originWorldPositionM = observerPose.positionM.slice();
+          const relativeWorldM = targetWorldPositionM.map((value, i) => value - originWorldPositionM[i]);
+          const rangeM = Math.hypot(...relativeWorldM);
+          if (!Number.isFinite(rangeM) || !(rangeM > 0)) {
+            throw new Error("BRIDGE_ENCOUNTER_WORLD_RANGE_INVALID");
+          }
+          return {
+            schema: "game.bridgeEncounterWorldContact.v1",
+            observerBodyId: "ship.mother", targetBodyId: "ship.beta",
+            systemId: this.spaceGravitySnapshot()?.activeSystemId || "",
+            physicsSimulationSeconds: this.spaceGravitySnapshot()?.simulationSeconds ?? null,
+            tacticalAuthoritySeconds: Number(authorityState.authority.atSeconds),
+            originWorldPositionM, targetWorldPositionM,
+            relativeWorldM, rangeM
+          };
+        }
+
         updateBridgeViewscreenEncounter(nowMs = this.lastFrameTime ?? performance.now()) {
           const runtime = this.bridgeEncounterRuntime;
           const projectionRuntime = this.bridgeViewscreenEncounterRuntime;
@@ -7219,6 +7377,7 @@
           // and presentation continue independently of player location and display power.
           const navigation = this.navigationSnapshot?.(nowMs) || {};
           const astrometrics = this.astrometricSnapshot?.() || null;
+          const observerPose = this.mainShipObserverPose();
           const encounterActive = this.openingEnemyEncounterActive(nowMs);
           const simulationSeconds = Math.max(0, Number(nowMs) || 0) / 1000;
           const selectedMode = presentationApi.selectModeForSources({
@@ -7230,11 +7389,29 @@
 
           let encounterResult = null;
           let encounterProjection = null;
+          this.bridgeEncounterWorldFrame = null;
           if (encounterActive && runtime && typeof runtime.advance === "function") {
-            encounterResult = runtime.advance(nowMs, {active: true});
-            this.syncBridgeEncounterUiFromAuthority(nowMs);
+            this.startBridgeCaptainSimulation(nowMs);
+            if (runtime.startedAtMs!==null) {
+              encounterResult = runtime.advance(nowMs,{active:true});
+              this.updateEnemyCaptainDecision(nowMs);
+              this.syncBridgeEncounterUiFromAuthority(nowMs);
+            }
+            if (!observerPose) throw new Error("BRIDGE_VIEWSCREEN_PHYSICAL_MOTHER_SHIP_MISSING");
+            const authorityState = runtime.readAuthorityState();
+            const worldContact = this.resolveBridgeEncounterWorld(observerPose, authorityState, nowMs);
+            this.bridgeEncounterWorldFrame = worldContact;
             if (projectionRuntime && typeof projectionRuntime.snapshot === "function") {
-              encounterProjection = projectionRuntime.snapshot(nowMs, {active: true});
+              const observation={...observerPose,validThroughSeconds:Number(authorityState.authority.atSeconds)+1};
+              encounterProjection=runtime.startedAtMs===null
+                ? globalThis.MainComputerBridgeViewscreenProjection.project({
+                    authorityState,simulationSeconds:0,observerPose:observation,
+                    targetWorldPositionM:worldContact.targetWorldPositionM,viewMode:'track'
+                  }).snapshot
+                : projectionRuntime.snapshot(nowMs, {
+                    active:true,observerPose:observation,
+                    targetWorldPositionM:worldContact.targetWorldPositionM,viewMode:'track'
+                  });
             }
           }
           this.bridgeViewscreenProjectionFrame = encounterProjection;
@@ -7248,6 +7425,7 @@
             encounterProjection,
             navigationSnapshot: navigation,
             astrometricSnapshot: astrometrics,
+            observerPose,
             simulationSeconds,
             tracked,
             idleReason: navigation.enabled === false ? "navigation-unavailable" : "standby"
@@ -7321,7 +7499,17 @@
               return true;
             }
             this.setShipTerminalState("terminal.bridge-tactical", "firing");
-            const command = this.bridgeEncounterRuntime?.command?.({type: "fire-primary-weapon"}, nowMs) || {accepted: false, reason: "bridge-encounter-runtime-unavailable"};
+            // One authoritative world-space range for weapon flight time.
+            // No tactical-distance fallback is permitted in the live bridge.
+            const observerPose = this.mainShipObserverPose();
+            const authorityState = this.bridgeEncounterRuntime?.readAuthorityState?.();
+            const worldContact = observerPose && authorityState
+              ? this.resolveBridgeEncounterWorld(observerPose, authorityState, nowMs) : null;
+            const physicalShot = worldContact
+              ? {originWorldPositionM:worldContact.originWorldPositionM,
+                 targetWorldPositionM:worldContact.targetWorldPositionM} : null;
+            const command = this.bridgeEncounterRuntime?.command?.({type: "fire-primary-weapon",physicalShot}, nowMs)
+              || {accepted: false, reason: "bridge-encounter-runtime-unavailable"};
             if (!command.accepted) {
               this.setShipInteractionStatus(`Bridge tactical console could not fire: ${String(command.reason || "command rejected")}.`);
               this.emitShipState(true);
@@ -11431,6 +11619,16 @@
           this.updateCharacterAI(frameTime, deltaSeconds);
           this.updateCombat(frameTime, deltaSeconds);
           this.updateBridgeViewscreenEncounter(frameTime);
+          // Publish the game-world contact without forcing a DOM update every frame.
+          // Large simulation time jumps and substantial range changes cannot
+          // leave the gameplay HUD reporting an obsolete physical separation.
+          if (this.shipState?.enabled && this.isShuttleBayPlayerControlActive()) {
+            const range = this.bridgeEncounterWorldFrame?.rangeM;
+            const previous = this.lastPublishedBridgeContactRangeM;
+            const changed = Number.isFinite(range) &&
+              (!Number.isFinite(previous) || Math.abs(range - previous) >= 5);
+            this.emitShipState(changed);
+          }
           this.dynamicGeometry = this.buildDynamicGeometry(frameTime);
           this.dynamicVertexCount = this.dynamicGeometry.length / 10;
           this.vertexCount = this.worldVertexCount + this.starVertexCount + this.dynamicVertexCount;
@@ -12436,7 +12634,14 @@
                 packStatus = ` • PACK: ${packTitle} ARMED — waits for bay-entry cutscene`;
               }
             }
-            shipLine.textContent = `SHIP ${location} • ${String(ship.power || "unknown").toUpperCase()} POWER • ${String(ship.security || "unknown").toUpperCase()} • OBJECTIVE: ${objective}${packStatus}${interaction}${statusText}`;
+            const contact = ship.bridgeEncounterWorld;
+            const physicalRange = Number(contact?.rangeM);
+            const contactValid = contact?.observerBodyId === "ship.mother"
+              && contact?.targetBodyId === "ship.beta" && Number.isFinite(physicalRange)
+              && physicalRange > 0 && ship.bridgeEncounter?.targetDestroyed !== true;
+            const contactStatus = contactValid ? ` • RAIDER RANGE: ${Math.round(physicalRange)} m` : "";
+            shipLine.textContent = `SHIP ${location} • ${String(ship.power || "unknown").toUpperCase()} POWER • ${String(ship.security || "unknown").toUpperCase()} • OBJECTIVE: ${objective}${contactStatus}${packStatus}${interaction}${statusText}`;
+            canvas.dataset.bridgeContactRangeM = contactValid ? String(physicalRange) : "";
             canvas.dataset.shipLocation = String(ship.location || "");
             canvas.dataset.shipObjective = String(ship.objectiveId || "");
             canvas.dataset.shipInteraction = String(ship.interactionId || "");

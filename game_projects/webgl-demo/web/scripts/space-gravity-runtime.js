@@ -405,6 +405,29 @@
       return this.activeSystemId ? this.ensureSystem(this.activeSystemId) : null;
     }
 
+    // Scenario objects share the SAME gravitational integrator as ship.mother.
+    // They are not part of authored topology and cannot contribute gravity.
+    addTransientBody({id, positionM, velocityMps, radiusM = 1}, systemId = this.activeSystemId) {
+      const state = this.ensureSystem(systemId);
+      if (!state || !stringValue(id)) throw new Error("SPACE_GRAVITY_TRANSIENT_SYSTEM_OR_ID_REQUIRED");
+      const valid = (v) => Array.isArray(v) && v.length === 3 && v.every(x => typeof x === "number" && Number.isFinite(x));
+      if (!valid(positionM) || !valid(velocityMps)) throw new Error("SPACE_GRAVITY_TRANSIENT_STATE_INVALID");
+      if (state.bodies.some(body => body.id === id)) throw new Error(`SPACE_GRAVITY_TRANSIENT_DUPLICATE: ${id}`);
+      const body = {id, label:id, kind:"transient", massKg:0,
+        radiusM:positiveNumber(radiusM,1), positionM:positionM.slice(), velocityMps:velocityMps.slice()};
+      state.bodies.push(body);
+      return clone(body);
+    }
+
+    removeTransientBody(id, systemId = this.activeSystemId) {
+      const state = this.ensureSystem(systemId);
+      if (!state) return false;
+      const index = state.bodies.findIndex(body => body.id === id && body.kind === "transient");
+      if (index < 0) return false;
+      state.bodies.splice(index,1);
+      return true;
+    }
+
     body(bodyId, systemId = this.activeSystemId) {
       const state = this.ensureSystem(systemId);
       if (!state) return null;
