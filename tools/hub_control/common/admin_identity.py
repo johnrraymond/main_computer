@@ -12,7 +12,7 @@ from typing import Any, Mapping
 import yaml
 
 from tools.mother.common.hub_admin_pool import (
-    HubAdminPoolError, available_hub_admin, claim_hub_admin, complete_pool, inspect_pool,
+    HubAdminPoolError, available_hub_admin, claim_hub_admin, release_hub_admin, complete_pool, inspect_pool,
 )
 from tools.mother.common.models import OperationIdentity, PrivateStatePaths
 from tools.mother.common.private_state import (
@@ -167,7 +167,7 @@ def reserve_admin(ctx: HubContext, *, network: str, hub_id: str, operation_id: s
         if not isinstance(net, dict):
             raise HubAdminPoolError("network private state must be mutable")
         selected = claim_hub_admin(net, hub_id)
-        if selected["source"] != "assigned":
+        if successor != document:
             timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
             closure = prepare_private_state_successor(
                 current, successor, updated_at=timestamp,
@@ -180,12 +180,12 @@ def reserve_admin(ctx: HubContext, *, network: str, hub_id: str, operation_id: s
                 raise HubAdminPoolError("verified Mother private-state successor was not installed")
         # Re-read authoritative committed state, even on no-op retry.
         committed = yaml.safe_load(read_private_state(paths, operation=identity).document_bytes)
-        assignment = network_doc(committed, network)["hub_admin_assignments"][hub_id]
+        assignment = network_doc(committed, network)["hubs"][hub_id]["hub_admin"]
         address = available_hub_admin(network_doc(committed, network), hub_id)["address"]
         return {
             "address": address,
             "private_key": assignment["private_key"],
-            "private_state_path": f"networks.{network}.hub_admin_assignments.{hub_id}",
+            "private_state_path": f"networks.{network}.hubs.{hub_id}.hub_admin",
         }
     except HubControlError:
         raise
@@ -195,3 +195,64 @@ def reserve_admin(ctx: HubContext, *, network: str, hub_id: str, operation_id: s
     except Exception as exc:
         # Never include the private state or key in the public error message.
         raise HubControlError("HUB_ADMIN_RESERVATION_FAILED", f"verified Mother wallet reservation failed: {type(exc).__name__}") from exc
+
+
+def transition_hub_identity(
+    ctx: HubContext, *, network: str, hub_id: str, operation_id: str,
+    status: str, placement: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Verified Mother CAS: activate on proven deployment; release on proven removal.
+
+    Callers MUST verify runtime/absence before invoking. No wallet is generated,
+    released to another Hub, or leaked in the returned summary.
+    """
+    if status not in ("active", "inactive"):
+        raise HubControlError("HUB_STATE_TRANSITION_INVALID", "Hub status is invalid")
+    identity = OperationIdentity(
+        operation_id=operation_id, request_id=operation_id,
+        network=network, operation_kind="MOTHER-OP-UPGRADE-HUB",
+    )
+    paths = _paths(ctx)
+    try:
+        current = read_private_state(paths, operation=identity)
+        original = yaml.safe_load(current.document_bytes)
+        successor = deepcopy(original)
+        net = network_doc(successor, network)
+        if not isinstance(net, dict):
+            raise HubAdminPoolError("Hub private state must be mutable")
+        hubs = net.setdefault("hubs", {})
+        entry = hubs.setdefault(hub_id, {"status": "inactive"})
+        if not isinstance(entry, dict):
+            raise HubAdminPoolError("Hub record invalid")
+        if status == "inactive":
+            release_hub_admin(net, hub_id)
+            entry.pop("hub_admin_address", None)
+            entry["status"] = "inactive"
+            if entry.get("application_uuid"):
+                entry["last_application_uuid"] = entry.pop("application_uuid")
+        else:
+            if entry.get("hub_admin") is None:
+                raise HubAdminPoolError("cannot activate Hub without its assigned wallet")
+            entry["status"] = "active"
+            for field in ("controller_id", "host_id", "public_url", "application_uuid"):
+                value = (placement or {}).get(field)
+                if value:
+                    entry[field] = value
+        if successor != original:
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+            closure = prepare_private_state_successor(
+                current, successor, updated_at=now,
+                updated_by_action_id=operation_id, operation=identity,
+            )
+            installed = replace_verified_private_state(paths, closure, current.binding, operation=identity)
+            if not installed.installed:
+                raise HubAdminPoolError("verified Mother private-state successor was not installed")
+        check = yaml.safe_load(read_private_state(paths, operation=identity).document_bytes)
+        actual = network_doc(check, network)["hubs"][hub_id]
+        if actual.get("status") != status or (status == "inactive" and actual.get("hub_admin")):
+            raise HubAdminPoolError("committed Hub state transition did not verify")
+        return {"hub_id": hub_id, "status": status, "hub_admin_assigned": bool(actual.get("hub_admin"))}
+    except HubControlError:
+        raise
+    except Exception as exc:
+        raise HubControlError("HUB_MOTHER_STATE_TRANSITION_FAILED", f"verified Hub state update failed: {type(exc).__name__}") from exc

@@ -1,8 +1,7 @@
-"""The canonical 15-wallet Hub administrator birth reserve.
+"""Hub administrator wallet movement. Birth pool provisioning remains separate.
 
-Existing per-node hub_admin identities retain their paths and assignments. Only
-unassigned surplus wallets live in ``networks.<network>.wallets.hub_admin_reserve``.
-No private key or assigned wallet is ever regenerated or silently replaced.
+Wallets occupy exactly one Hub record or the reserve. A reserve wallet carries
+its historical associated_hub, which cannot be reassigned by normal operations.
 """
 from __future__ import annotations
 
@@ -50,6 +49,7 @@ def inspect_pool(network_state: Mapping[str, Any], *, pending_nodes: tuple[str, 
         raise HubAdminPoolError(f"wallets.{POOL_FIELD} must be a mapping")
     unique: dict[str, str] = {}
     assigned: dict[str, str] = {}
+    associations: dict[str, str] = {}
     missing_assigned: list[str] = []
     for node in sorted(set(seeds) | set(pending_nodes)):
         node_record = seeds.get(node) or {}
@@ -78,20 +78,27 @@ def inspect_pool(network_state: Mapping[str, Any], *, pending_nodes: tuple[str, 
         assigned[address] = node
         unique[address] = path
 
-    hub_assignments = network_state.get("hub_admin_assignments") or {}
-    if not isinstance(hub_assignments, Mapping):
-        raise HubAdminPoolError("hub_admin_assignments must be a mapping")
-    for hub_id, entry in sorted(hub_assignments.items()):
-        path = f"hub_admin_assignments.{hub_id}"
-        address = _record(entry, path)
-        key = address.lower()
-        previous = assigned.get(key)
-        if previous is not None:
-            raise HubAdminPoolError(
-                f"Hub administrators {previous} and hub:{hub_id} share one assigned address"
-            )
+    hubs = network_state.get("hubs") or {}
+    if not isinstance(hubs, Mapping):
+        raise HubAdminPoolError("hubs must be a mapping")
+    for hub_id, hub in sorted(hubs.items()):
+        if not isinstance(hub, Mapping):
+            raise HubAdminPoolError(f"hubs.{hub_id} must be a mapping")
+        entry = hub.get("hub_admin")
+        if entry is None:
+            continue
+        addr = _record(entry, f"hubs.{hub_id}.hub_admin")
+        association = entry.get("associated_hub")
+        if association != hub_id:
+            raise HubAdminPoolError(f"hubs.{hub_id}.hub_admin association does not match its Hub")
+        key = addr.lower()
+        if key in unique:
+            raise HubAdminPoolError(f"duplicate Hub administrator address: {key}")
+        if hub_id in associations:
+            raise HubAdminPoolError(f"multiple wallets associated with {hub_id}")
+        associations[hub_id] = key
         assigned[key] = f"hub:{hub_id}"
-        unique[key] = path
+        unique[key] = f"hubs.{hub_id}.hub_admin"
 
     # A legacy global hub_admin wallet may be reserved but not yet assigned.
     if wallets.get("hub_admin") is not None:
@@ -99,7 +106,17 @@ def inspect_pool(network_state: Mapping[str, Any], *, pending_nodes: tuple[str, 
         unique.setdefault(addr.lower(), "wallets.hub_admin")
     for label, record in sorted(reserved.items()):
         addr = _record(record, f"wallets.{POOL_FIELD}.{label}")
-        unique.setdefault(addr.lower(), f"wallets.{POOL_FIELD}.{label}")
+        key = addr.lower()
+        if key in unique:
+            raise HubAdminPoolError(f"reserve wallet {label} duplicates {unique[key]}")
+        association = record.get("associated_hub")
+        if association is not None and (not isinstance(association, str) or not association):
+            raise HubAdminPoolError(f"reserve wallet {label} has invalid associated_hub")
+        if association is not None:
+            if association in associations:
+                raise HubAdminPoolError(f"multiple wallets associated with {association}")
+            associations[association] = key
+        unique[key] = f"wallets.{POOL_FIELD}.{label}"
 
     needed = POOL_SIZE - len(unique) - len(missing_assigned)
     if needed < 0 and enforce_birth_size:
@@ -169,46 +186,116 @@ def genesis_addresses(network_state: Mapping[str, Any]) -> tuple[str, ...]:
     return view["addresses"]
 
 
-def available_hub_admin(network_state: Mapping[str, Any], hub_id: str) -> dict[str, str]:
-    """Read-only allocation check; never manufactures new, unfunded keys."""
-    if not isinstance(hub_id, str) or not hub_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for ch in hub_id):
+def _hub_id(hub_id: str) -> None:
+    if not isinstance(hub_id, str) or not hub_id or any(
+        ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for ch in hub_id
+    ):
         raise HubAdminPoolError("hub id must be a safe nonempty identifier")
-    # Validate assignments without enforcing the birth-time wallet count.
-    allocation = inspect_pool(network_state, enforce_birth_size=False)
-    assignments = network_state.get("hub_admin_assignments") or {}
-    existing = assignments.get(hub_id)
-    if existing is not None:
-        address = _record(existing, f"hub_admin_assignments.{hub_id}")
-        return {"address": address, "source": "assigned"}
-    reserve = network_state["wallets"].get(POOL_FIELD) or {}
-    in_use = set(allocation["assigned"])
+
+
+def _reserve(network_state: Mapping[str, Any]) -> Mapping[str, Any]:
+    wallets = network_state.get("wallets") or {}
+    reserve = wallets.get(POOL_FIELD) or {}
+    if not isinstance(reserve, Mapping):
+        raise HubAdminPoolError("Hub administrator reserve must be a mapping")
+    return reserve
+
+
+def _free_reserve_label(reserve: Mapping[str, Any], hub_id: str) -> str:
+    base = f"returned-{hub_id}"
+    if base not in reserve:
+        return base
+    n = 2
+    while f"{base}-{n}" in reserve:
+        n += 1
+    return f"{base}-{n}"
+
+
+def _hub_entry(network_state: Mapping[str, Any], hub_id: str) -> Mapping[str, Any]:
+    hubs = network_state.get("hubs") or {}
+    if not isinstance(hubs, Mapping):
+        raise HubAdminPoolError("hubs must be a mapping")
+    entry = hubs.get(hub_id) or {}
+    if not isinstance(entry, Mapping):
+        raise HubAdminPoolError(f"hubs.{hub_id} is invalid")
+    return entry
+
+
+def available_hub_admin(network_state: Mapping[str, Any], hub_id: str) -> dict[str, str]:
+    """Prefer the Hub's own record, then its historical reserve wallet, then virgin reserve."""
+    _hub_id(hub_id)
+    inspect_pool(network_state, enforce_birth_size=False)
+    owned = _hub_entry(network_state, hub_id).get("hub_admin")
+    if owned is not None:
+        return {"address": _record(owned, f"hubs.{hub_id}.hub_admin"), "source": "assigned"}
+    reserve = _reserve(network_state)
+    reusable = []
+    virgin = []
     for label, wallet in sorted(reserve.items()):
         address = _record(wallet, f"wallets.{POOL_FIELD}.{label}")
-        if address.lower() not in in_use:
-            return {"address": address, "source": "reserve", "reserve_label": label}
-    raise HubAdminPoolError("HUB_ADMIN_RESERVE_EXHAUSTED: no unassigned Hub administrator wallet is available")
+        association = wallet.get("associated_hub")
+        if association == hub_id:
+            reusable.append((label, address))
+        elif association is None:
+            virgin.append((label, address))
+    if len(reusable) > 1:
+        raise HubAdminPoolError(f"multiple reserve wallets are associated with {hub_id}")
+    choices = reusable or virgin
+    if not choices:
+        raise HubAdminPoolError("HUB_ADMIN_RESERVE_EXHAUSTED: no eligible Hub administrator wallet is available")
+    label, address = choices[0]
+    return {"address": address, "source": "reserve", "reserve_label": label}
 
 
 def claim_hub_admin(network_state: dict[str, Any], hub_id: str) -> dict[str, str]:
-    """Claim exactly one prefunded wallet in a proposed *private-state successor*.
-
-    Caller must commit that successor through verified Mother private-state CAS.
-    This function does not write files or expose the key in its return value.
-    """
-    before = set(inspect_pool(network_state, enforce_birth_size=False)["addresses"])
+    """Move one complete wallet into its Hub record, preserving association."""
+    _hub_id(hub_id)
     selected = available_hub_admin(network_state, hub_id)
     if selected["source"] == "assigned":
         return selected
+    if selected["source"] != "reserve":
+        raise HubAdminPoolError("Hub administrator selection is not a reserve wallet")
     reserve = network_state["wallets"][POOL_FIELD]
     label = selected["reserve_label"]
-    wallet = deepcopy(reserve[label])
-    assignments = network_state.setdefault("hub_admin_assignments", {})
-    if not isinstance(assignments, dict) or hub_id in assignments:
-        raise HubAdminPoolError("Hub assignment changed during reservation")
+    moved = deepcopy(reserve[label])
+    previous = moved.get("associated_hub")
+    if previous not in (None, hub_id):
+        raise HubAdminPoolError("wallet is associated with a different Hub")
+    moved["associated_hub"] = hub_id
+    hubs = network_state.setdefault("hubs", {})
+    record = hubs.setdefault(hub_id, {"status": "inactive"})
+    if not isinstance(record, dict) or record.get("hub_admin") is not None:
+        raise HubAdminPoolError("Hub record changed during wallet claim")
+    before = set(inspect_pool(network_state, enforce_birth_size=False)["addresses"])
     del reserve[label]
-    assignments[hub_id] = wallet
-    # Moving one key cannot change the total funded set or duplicate ownership.
+    record["hub_admin"] = moved
+    record.pop("hub_admin_address", None)
     after = set(inspect_pool(network_state, enforce_birth_size=False)["addresses"])
     if before != after:
-        raise HubAdminPoolError("Hub administrator reserve changed total wallet identities during claim")
+        raise HubAdminPoolError("wallet moved incorrectly from reserve to Hub")
     return {"address": selected["address"], "source": "reserve", "reserve_label": label}
+
+
+def release_hub_admin(network_state: dict[str, Any], hub_id: str) -> dict[str, str] | None:
+    """Return a Hub's wallet to reserve with its immutable Hub association."""
+    _hub_id(hub_id)
+    record = network_state.setdefault("hubs", {}).setdefault(hub_id, {"status": "inactive"})
+    if not isinstance(record, dict):
+        raise HubAdminPoolError("Hub record must be a mapping")
+    wallet = record.get("hub_admin")
+    if wallet is None:
+        # Idempotent retry; the released wallet remains reserved for this Hub.
+        return None
+    address = _record(wallet, f"hubs.{hub_id}.hub_admin")
+    if wallet.get("associated_hub") != hub_id:
+        raise HubAdminPoolError("Hub wallet association mismatch")
+    before = set(inspect_pool(network_state, enforce_birth_size=False)["addresses"])
+    reserve = network_state.setdefault("wallets", {}).setdefault(POOL_FIELD, {})
+    label = _free_reserve_label(reserve, hub_id)
+    reserve[label] = deepcopy(wallet)
+    del record["hub_admin"]
+    record.pop("hub_admin_address", None)
+    after = set(inspect_pool(network_state, enforce_birth_size=False)["addresses"])
+    if before != after:
+        raise HubAdminPoolError("wallet moved incorrectly from Hub to reserve")
+    return {"address": address, "source": "reserve", "reserve_label": label}

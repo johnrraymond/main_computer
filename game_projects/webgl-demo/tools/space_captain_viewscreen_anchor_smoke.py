@@ -26,6 +26,7 @@ SCRIPT_NAMES = {
     'scene-physical-wiring': ('space-gravity-runtime.js', 'space-captain-multirate-contract.js', 'bridge-encounter-runtime.js'),
     'tracking-boarding-15m': ('space-captain-multirate-contract.js', 'bridge-encounter-runtime.js', 'bridge-viewscreen-projection.js'),
     'bridge-captain-deterministic-15m': ('space-captain-multirate-contract.js', 'bridge-encounter-runtime.js', 'bridge-captain-decision-policy.js'),
+    'boarding-commitment': ('space-captain-multirate-contract.js', 'bridge-encounter-runtime.js', 'bridge-captain-decision-policy.js'),
 }
 PROBES = {
     'phase3-projection':'space_captain_phase3_viewscreen_projection_probe.js',
@@ -35,6 +36,7 @@ PROBES = {
     'scene-physical-wiring':'space_captain_viewscreen_physical_wiring_probe.js',
     'tracking-boarding-15m':'space_captain_viewscreen_tracking_boarding_probe.js',
     'bridge-captain-deterministic-15m':'space_captain_bridge_entry_deterministic_probe.js',
+    'boarding-commitment':'space_captain_boarding_commitment_probe.js',
 }
 # Baseline must fail for actual spatial reasons, not because Node, graphics, or
 # the game failed to load. The old non-spatial checks are retained in each probe.
@@ -46,6 +48,7 @@ EXPECTED_RED = {
     'scene-physical-wiring':'sceneObserverReadsPhysicsBody',
     'tracking-boarding-15m':'unattendedBoardingRemainsInRange',
     'bridge-captain-deterministic-15m':'firstDecisionAtBridgeTimeZero',
+    'boarding-commitment':'bothCaptainsInitiate',
     'phase5-real-chromium':'viewscreenCameraOriginMatchesPhysicalMother',
 }
 NODE_DRIVER = r'''

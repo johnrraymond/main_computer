@@ -175,6 +175,7 @@ def test_resume_after_only_preinspect_refreshes_preinspect_before_prep(
         raise RuntimeError("stop-after-first-step")
 
     monkeypatch.setattr(resumed, "_run_step", fake_run_step)
+    monkeypatch.setattr(resumed, "_check_topology_before_prep", lambda: None)
     with pytest.raises(RuntimeError, match="stop-after-first-step"):
         resumed.run()
 
@@ -779,3 +780,196 @@ def test_bridge_contract_preflight_failure_reopens_add_hub_prep_boundary(
     persisted = json.loads((harness.run_dir / "harness-state.json").read_text(encoding="utf-8"))
     assert persisted["last_completed_step"] == "pre-inspect"
     assert "invalidated the frozen add-hub prep" in capsys.readouterr().out
+
+
+def _topology_report(status: str) -> dict:
+    report = {
+        "network": "mainnet",
+        "status": status,
+        "errors": [],
+        "accepted_projection": {
+            "status": "stale" if status == "DRIFT" else "current",
+            "stale_hubs": ["mainneta-hub1", "mainnetc-hub1"] if status == "DRIFT" else [],
+            "unprojected_hubs": [],
+        },
+        "missing_hubs": [],
+        "extra_hubs": [],
+    }
+    if status == "DRIFT":
+        report["seal_command"] = "python .\\tools\\hub_topology_seal.py --network mainnet --apply-state"
+    if status == "UNKNOWN":
+        report["errors"] = [{"code": "HUB_COOLIFY_INVENTORY_UNAVAILABLE", "message": "controller unreachable"}]
+    return report
+
+
+@pytest.mark.parametrize("operation", ["add-hub", "remove-hub"])
+def test_prep_topology_drift_offers_direct_seal_without_preinspect_or_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], operation: str,
+) -> None:
+    harness = Harness(_args(tmp_path, operation, execute=True))
+    runs = []
+
+    def fake_run(argv, **kwargs):
+        runs.append(argv)
+        assert argv[0] == sys.executable
+        assert argv[1] == str(tmp_path / "tools" / "hub_topology_check.py")
+        assert argv[-4:] == ["--network", "mainnet", "--repo-root", str(tmp_path)]
+        return subprocess.CompletedProcess(argv, 1, json.dumps(_topology_report("DRIFT")), "")
+
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    monkeypatch.setattr(harness, "_run_step", lambda *_: pytest.fail("pre-inspect must not run on drift"))
+    with pytest.raises(HarnessError, match="independently verified Hub topology DRIFT") as exc:
+        harness.run()
+    assert len(runs) == 1
+    assert "stale accepted Hubs: mainneta-hub1, mainnetc-hub1" in str(exc.value)
+    assert "python .\\tools\\hub_topology_seal.py --network mainnet --apply-state" in str(exc.value)
+    assert "Hub topology: DRIFT" in capsys.readouterr().out
+    assert harness.state["last_completed_step"] is None
+    assert json.loads((harness.run_dir / "00-topology-check.json").read_text())["status"] == "DRIFT"
+
+
+def test_prep_topology_unknown_fails_closed_without_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = Harness(_args(tmp_path, "add-hub", execute=True))
+    monkeypatch.setattr(
+        MODULE.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 2, json.dumps(_topology_report("UNKNOWN")), ""),
+    )
+    monkeypatch.setattr(harness, "_run_step", lambda *_: pytest.fail("pre-inspect must not run on unknown"))
+    with pytest.raises(HarnessError, match="cannot be independently verified") as exc:
+        harness.run()
+    assert "--apply-state" not in str(exc.value)
+    assert "HUB_COOLIFY_INVENTORY_UNAVAILABLE" in str(exc.value)
+
+
+def test_prep_topology_pass_allows_preinspect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = Harness(_args(tmp_path, "add-hub"))
+    monkeypatch.setattr(
+        MODULE.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, json.dumps(_topology_report("PASS")), ""),
+    )
+    steps = []
+
+    def fake_step(step, argv):
+        steps.append(step)
+        raise RuntimeError("stop at pre-inspect")
+
+    monkeypatch.setattr(harness, "_run_step", fake_step)
+    with pytest.raises(RuntimeError, match="stop at pre-inspect"):
+        harness.run()
+    assert steps == ["pre-inspect"]
+    assert "Hub topology: PASS" in capsys.readouterr().out
+
+
+def test_prep_topology_is_rechecked_on_resumed_preinspect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = Harness(_args(tmp_path, "add-hub"))
+    first.state["last_completed_step"] = "pre-inspect"
+    first._write_state()
+    resumed = Harness(_args(tmp_path, "add-hub", execute=True))
+    assert resumed._resumed_existing_run
+    calls = []
+    monkeypatch.setattr(
+        MODULE.subprocess, "run",
+        lambda argv, **kw: (calls.append(argv) or subprocess.CompletedProcess(
+            argv, 1, json.dumps(_topology_report("DRIFT")), ""
+        )),
+    )
+    monkeypatch.setattr(resumed, "_run_step", lambda *_: pytest.fail("stale pre-inspect must not run"))
+    with pytest.raises(HarnessError, match="Hub topology DRIFT"):
+        resumed.run()
+    assert len(calls) == 1
+    assert resumed.state["last_completed_step"] == "pre-inspect"
+
+
+def test_prep_topology_not_rechecked_during_prepared_operation_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = Harness(_args(tmp_path, "add-hub"))
+    first.state.update({"last_completed_step": "prep", "operation_id": "existing-op"})
+    first._write_state()
+    resumed = Harness(_args(tmp_path, "add-hub", execute=True))
+    monkeypatch.setattr(
+        MODULE.subprocess, "run", lambda *a, **kw: pytest.fail("prepared operation must not recheck topology"),
+    )
+    monkeypatch.setattr(resumed, "_run_step", lambda *_: (_ for _ in ()).throw(RuntimeError("stop at do")))
+    with pytest.raises(RuntimeError, match="stop at do"):
+        resumed.run()
+
+
+def test_prep_topology_rejects_conflicting_exit_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = Harness(_args(tmp_path, "add-hub"))
+    monkeypatch.setattr(
+        MODULE.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, json.dumps(_topology_report("DRIFT")), ""),
+    )
+    with pytest.raises(HarnessError, match="status/exit disagreement") as exc:
+        harness.run()
+    assert "--apply-state" not in str(exc.value)
+
+
+def _empty_receipt_drift() -> dict:
+    value = _topology_report("DRIFT")
+    value.update({
+        "state_hubs_active": [], "state_hubs_inactive": [], "observed_hubs": [],
+        "locked_hub_admins": [], "admin_location_drift": [],
+    })
+    return value
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_empty_topology_drift_never_seals_from_add_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    execute: bool,
+) -> None:
+    """Even an authorized first-Hub rebirth is diagnostic-only at this gate."""
+    harness = Harness(_args(tmp_path, "add-hub", execute=execute))
+    commands = []
+
+    def fake_run(argv, **kwargs):
+        commands.append(argv)
+        assert argv[1] == str(tmp_path / "tools" / "hub_topology_check.py")
+        return subprocess.CompletedProcess(argv, 1, json.dumps(_empty_receipt_drift()), "")
+
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    monkeypatch.setattr(harness, "_run_step", lambda *_: pytest.fail("pre-inspect/deployment must not run"))
+    with pytest.raises(HarnessError, match="independently verified Hub topology DRIFT") as exc:
+        harness.run()
+    assert commands == [harness.topology_check_cmd()]  # not Mother reseal or Hub seal
+    assert "stale accepted Hubs: mainneta-hub1, mainnetc-hub1" in str(exc.value)
+    assert r"python .\tools\hub_topology_seal.py --network mainnet --apply-state" in str(exc.value)
+    assert "Hub topology: DRIFT" in capsys.readouterr().out
+    assert harness.state["last_completed_step"] is None
+    assert not (harness.run_dir / "00-topology-check-after-repair.json").exists()
+
+
+def test_empty_topology_recheck_after_explicit_operator_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A separate, explicit operator seal is observed on the next invocation."""
+    initial = Harness(_args(tmp_path, "add-hub", execute=True))
+    responses = iter(("DRIFT", "PASS"))
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        status = next(responses)
+        seen.append(status)
+        return subprocess.CompletedProcess(argv, {"DRIFT": 1, "PASS": 0}[status],
+                                           json.dumps(_empty_receipt_drift() if status == "DRIFT" else _topology_report("PASS")), "")
+
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    monkeypatch.setattr(initial, "_run_step", lambda *_: pytest.fail("must stop on DRIFT"))
+    with pytest.raises(HarnessError, match="Run the reseal explicitly"):
+        initial.run()
+
+    resumed = Harness(_args(tmp_path, "add-hub", execute=True))
+    monkeypatch.setattr(resumed, "_run_step", lambda step, *_: (_ for _ in ()).throw(RuntimeError(f"entered {step}")))
+    with pytest.raises(RuntimeError, match="entered pre-inspect"):
+        resumed.run()
+    assert seen == ["DRIFT", "PASS"]

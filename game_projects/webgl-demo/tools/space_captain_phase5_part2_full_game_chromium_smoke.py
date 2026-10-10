@@ -225,7 +225,7 @@ def _spatial_report(timeline: dict[str, dict]) -> tuple[dict[str, bool], dict[st
 
 def run(*, headed: bool = False, chromium_executable: str | None = None,
         output_dir: Path | None = None, screenshot_enabled: bool = True,
-        timeout_seconds: float = 45.0) -> dict[str, Any]:
+        timeout_seconds: float = 45.0, mock_live_captain: bool = False) -> dict[str, Any]:
     output_dir = output_dir or GAME_ROOT / "builds" / "phase5-part2-chromium"
     output_dir.mkdir(parents=True, exist_ok=True)
     checks = source_checks()
@@ -278,6 +278,25 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                 page.on("console", lambda message: console_errors.append(message.text) if message.type == "error" else None)
                 page.set_content(_fixture_html(), wait_until="domcontentloaded")
                 _install_storage_and_clock(page)
+                if mock_live_captain:
+                    # Inject the existing NanoJev endpoint response *only* for
+                    # WebGL integration; the separate Python test exercises the
+                    # actual adapter schema and model-readiness contract.
+                    page.evaluate("""() => {
+                      const original = window.fetch.bind(window);
+                      window.fetch = (url, options) => {
+                        if (!String(url).endsWith('/tactical-ai/captain/decide')) return original(url,options);
+                        const observation=JSON.parse(options.body);
+                        window.__bridgeNanoJevRequests = (window.__bridgeNanoJevRequests||0)+1;
+                        return Promise.resolve({ok:true,json:async()=>({
+                          ok:true,schema:'game.bridgeCaptainNanoJevDecision.v1',
+                          captainId:'captain.beta',shipId:'ship.beta',source:'nanojev-captain-v6',
+                          maneuver:'hold',rangeM:2050,observationSeconds:observation.simulationSeconds,
+                          modelReceipt:{checkpointId:'test-checkpoint',checkpointSha256:'test-model-sha',
+                            clientRequestId:'test-live-request-'+window.__bridgeNanoJevRequests}
+                        })});
+                      };
+                    }""")
                 page.add_style_tag(content=BOOTSTRAP_CSS)
                 game = json.loads(GAME_JSON.read_text(encoding="utf-8"))
                 for path in game["web"]["bundles"].get("styles", []):
@@ -326,6 +345,22 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                 timeline["bridge-console-approach"] = at_screen
                 bridge = state(page, "bridge-entry", BRIDGE_MS)
                 screen(page, "02-bridge-tracking")
+                if mock_live_captain:
+                    # Allow the actual browser microtask to return the model
+                    # decision, then inspect the normal production encounter.
+                    page.wait_for_timeout(25)
+                    live = page.evaluate("""() => ({
+                      requests:window.__bridgeNanoJevRequests||0,
+                      authority:globalThis.__phase5Part2Renderer?.bridgeEncounterRuntime?.enemyCaptainOrder,
+                      state:globalThis.__phase5Part2Renderer?.bridgeCaptainProviderStatus?.()
+                    })""")
+                    timeline['live-captain-after-bridge-entry'] = live
+                    checks['liveNanoJevResponseReachesProductionHelm'] = bool(
+                        live['requests'] >= 1 and live['authority'] and
+                        live['authority'].get('source') == 'nanojev-captain-v6' and
+                        live['state']['live']['liveDecisionCount'] >= 1 and
+                        live['state']['lastDecision']['modelReceipt']['checkpointSha256'] == 'test-model-sha'
+                    )
                 checks["bridgeEntryUsesAuthoredTerminalAndRetainsFeed"] = (
                     at_screen["interactionTargetId"] == "terminal.bridge-viewscreen"
                     and bridge["location"] == "bridge.deck"
@@ -369,7 +404,9 @@ def run(*, headed: bool = False, chromium_executable: str | None = None,
                 screen(page, "03-bridge-display-off")
                 checks["viewscreenPowerDoesNotRestartCaptain"] = (
                     off.get("tacticalStartedAtMs") == BRIDGE_MS
-                    and off.get("captainOrderEventCount") == 1
+                    and off.get("captainOrderEventCount") == (2 if mock_live_captain else 1)
+                    and (not mock_live_captain or
+                         off.get("captainOrder", {}).get("source") == "nanojev-captain-v6")
                 )
                 checks["realEKeyTurnsOffDisplayWithoutModeChange"] = off["displayPowered"] is False and off["selectedMode"] == bridge["selectedMode"]
                 checks["powerOffPreservesAuthorityAndChangesGeometry"] = (

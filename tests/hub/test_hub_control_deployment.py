@@ -848,3 +848,124 @@ def test_apply_deployment_runs_bridge_contract_preflight_before_coolify_client(
         deployment.apply_deployment(target, client_factory=client_factory)
 
     assert exc_info.value.code == "HUB_BRIDGE_ESCROW_NOT_LIVE"
+
+
+def test_apply_deployment_syncs_assigned_bridge_signer_to_existing_coolify_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: previous 502 crash loop used a persisted legacy controller.
+
+    The escrow preflight passed locally, but the production signer env was not
+    sent to Coolify. Reusing an existing application must sync the new signer
+    BEFORE forced deploy, without leaking its private material in the receipt.
+    """
+    import base64
+    import json
+
+    bridge_private_key = "0x" + "3" * 64
+    controller = "0x" + "ab" * 20
+    escrow = "0x000000000000000000000000000000000000e5c0"
+    signer_payload = {
+        "schema": "main-computer.bridge-signer.v1",
+        "network": "mainnet",
+        "chain_id": 42424240,
+        "chain_rpc_url": "https://rpc.example.invalid",
+        "contracts": {"hub_credit_bridge_escrow": {
+            "address": escrow,
+            "bridge_controller_address": controller,
+        }},
+        "bridge_controller": {"address": controller, "private_key": bridge_private_key},
+    }
+    encoded = base64.b64encode(json.dumps(signer_payload).encode()).decode("ascii")
+    signer = {
+        "env_key": deployment.BRIDGE_SIGNER_ENV,
+        "bundle_b64": encoded,
+        "bundle_sha256": "test-sha256",
+        "bundle_bytes": len(encoded),
+        "bridge_controller_address": controller,
+        "escrow_address": escrow,
+        "chain_id": 42424240,
+        "remote_path": "/data/main-computer/hub/mainneta-hub1/private/bridge-signer/bridge-signer-bundle.json",
+    }
+    target = {
+        "network": "mainnet",
+        "hub_id": "mainneta-hub1",
+        "application_name": "main-computer-mainneta-hub1",
+        "environment_name": "mainnet-hubs",
+        "public_url": "https://mainneta-hub1.example.invalid",
+        "runtime_dir": "/data/main-computer/hub/mainneta-hub1",
+        "cluster_file_path": "/data/main-computer/hub/mainneta-hub1/fdb.cluster",
+        "topology_path": "/data/main-computer/hub/mainneta-hub1/hub-topology.json",
+        "hub_bind_port": 8790,
+        "network_display_name": "Mainnet",
+        "network_kind": "mainnet",
+        "topology": {"hubs": []},
+        "fdb_contract": {"connection_string": "test:test@127.0.0.1:4500", "namespace": "mainnet", "sha256": "fdb-sha"},
+        "chain_contract": {"chain_id": 42424240, "rpc_url": "https://rpc.example.invalid", "sha256": "chain-sha"},
+        "git_repository": "https://github.com/example/main_computer.git",
+        "git_branch": "main",
+        "dockerfile_location": "/Dockerfile.hub.exp-fdb",
+        "coolify": {"url": "https://coolify.example.invalid", "api_token": "token", "project_uuid": "project", "server_uuid": "server"},
+    }
+    events: list[tuple[str, str]] = []
+    synced: dict[str, str] = {}
+
+    monkeypatch.setattr(deployment, "_check_deployment_git_source", lambda _target: {"checked": True, "dirty": False})
+    monkeypatch.setattr(deployment, "_build_bridge_signer_for_deployment", lambda _target: signer)
+    monkeypatch.setattr(deployment, "_verify_live_bridge_signer_contract", lambda *_args: {"verified": True})
+    monkeypatch.setattr(deployment.legacy, "find_application", lambda *_args, **_kwargs: ("existing-hub", {"uuid": "existing-hub"}))
+    monkeypatch.setattr(deployment, "_ensure_storage", lambda *_args, **_kwargs: None)
+
+    def sync(_client: object, *, application_uuid: str, key: str, value: str, tried: list) -> dict:
+        assert application_uuid == "existing-hub"
+        synced[key] = value
+        events.append(("sync", key))
+        return {"ok": True}
+
+    def trigger(_client: object, *, application_uuid: str, force: bool, tried: list) -> dict:
+        assert application_uuid == "existing-hub" and force
+        assert synced[deployment.BRIDGE_SIGNER_ENV] == encoded
+        events.append(("deploy", application_uuid))
+        return {"deployment_uuid": "deployment-2"}
+
+    monkeypatch.setattr(deployment.legacy, "sync_application_env_var", sync)
+    monkeypatch.setattr(deployment.legacy, "trigger_deploy", trigger)
+    monkeypatch.setattr(deployment, "_wait_for_coolify_deployment", lambda *_args, **_kwargs: {
+        "status": "finished", "waited": True,
+    })
+
+    class FakeClient:
+        def request(self, method: str, path: str, payload: Any = None):
+            assert method == "PATCH" and path == "/api/v1/applications/existing-hub"
+            return _response(200, {"uuid": "existing-hub"}, path=path)
+
+    result = deployment.apply_deployment(target, client_factory=lambda *_args: FakeClient())
+    assert result["application_uuid"] == "existing-hub"
+    assert result["action"] == "updated"
+    assert result["bridge_signer"]["bridge_controller_address"] == controller
+    assert synced[deployment.BRIDGE_SIGNER_ENV] == encoded
+    assert events.index(("sync", deployment.BRIDGE_SIGNER_ENV)) < events.index(("deploy", "existing-hub"))
+    assert deployment.BRIDGE_SIGNER_ENV in result["environment_variables"]
+    assert encoded not in json.dumps(result)
+    assert bridge_private_key not in json.dumps(result)
+
+
+def test_synced_production_bridge_signer_overwrites_persisted_legacy_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing Hub bootstrap materializes the authoritative Coolify env over stale disk state."""
+    import base64
+    import importlib
+    import json
+
+    module = importlib.import_module("main_computer.exp_fdb_hub")
+    destination = tmp_path / "private/bridge-signer/bridge-signer-bundle.json"
+    destination.parent.mkdir(parents=True)
+    destination.write_text(json.dumps({"schema": "main-computer.bridge-signer.v1", "bridge_controller": {
+        "address": "0x2502BcEe4e4D43654F98f1202e796B997C55Ed1f"}}))
+    replacement = {"schema": "main-computer.bridge-signer.v1", "bridge_controller": {
+        "address": "0x" + "ab" * 20, "private_key": "0x" + "3" * 64}}
+    monkeypatch.setenv(deployment.BRIDGE_SIGNER_ENV, base64.b64encode(json.dumps(replacement).encode()).decode())
+    assert module._materialize_bridge_signer_bundle_from_env(destination)
+    assert json.loads(destination.read_text())["bridge_controller"]["address"] == "0x" + "ab" * 20
+    assert deployment.BRIDGE_SIGNER_ENV not in __import__("os").environ

@@ -211,7 +211,9 @@ class ViewportGameRoutesMixin:
             body = self._read_json()
             route = self.path
             service = self._tactical_ai_service()
-            if route == "/api/applications/game/tactical-ai/prepare":
+            if route == "/api/applications/game/tactical-ai/captain/decide":
+                payload = service.decide_bridge_captain(body)
+            elif route == "/api/applications/game/tactical-ai/prepare":
                 payload = service.prepare(body)
             elif route == "/api/applications/game/tactical-ai/battle/start":
                 payload = service.start_battle(body)

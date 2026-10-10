@@ -865,6 +865,7 @@ def _run_data_engage_computer(args: argparse.Namespace, option_tokens: list[str]
             lease_seconds=engage_options.lease_seconds,
             verbose=engage_options.verbose,
             max_requests=engage_options.max_requests,
+            officer="o3",
         )
     except RuntimeError as exc:
         print(f"ERROR: {exc}")

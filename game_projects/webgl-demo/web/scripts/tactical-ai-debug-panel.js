@@ -170,8 +170,21 @@
             : phaseLabel(phase));
     }
 
+    // Bridge captain is a different execution context from the two-captain
+    // tactical debug battle. Show its *actual* decision source, not readiness.
+    const liveRenderer = Array.from(document.querySelectorAll('[data-scene-viewer="true"]'))
+      .map(node => node.__mainComputerShuttle3dRenderer)
+      .find(renderer => renderer && !renderer.disposed && renderer.bridgeCaptainProviderStatus);
+    const bridgeCaptain = liveRenderer?.bridgeCaptainProviderStatus?.();
+    const bridgeOrder = bridgeCaptain?.activeOrder;
+    const bridgeLive = bridgeCaptain?.live;
     if (ui.summary) {
       ui.summary.replaceChildren(
+        chip("bridge captain", bridgeOrder?.source || bridgeCaptain?.boarding?.source || "not started"),
+        chip("boarding", bridgeCaptain?.boarding?.phase || "not started"),
+        chip("boarders", bridgeCaptain?.boarding?.boarders || "aboard"),
+        chip("live decisions", bridgeLive?.liveDecisionCount ?? 0),
+        chip("live inference", bridgeLive?.lastOutcome || "not requested"),
         chip("manager", lifecycle),
         chip("container", container),
         chip("model", modelLoaded ? "loaded" : manager.model_loaded === true ? "loaded (unverified)" : lifecycle === "loading" || phase === "loading-model" ? "loading" : "not loaded"),

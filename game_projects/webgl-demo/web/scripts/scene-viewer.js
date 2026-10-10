@@ -5558,6 +5558,12 @@
           this.enemyCaptainDecisionProvider = typeof options.enemyCaptainDecisionProvider === 'function'
             ? options.enemyCaptainDecisionProvider : null;
           this.enemyCaptainLastDecision = null;
+          this.enemyCaptainLiveStatus = {mode:'deterministic-fallback',lastOutcome:'not-requested'};
+          this.enemyCaptainLive = options.enemyCaptainDecisionProvider ? null :
+            globalThis.MainComputerBridgeLiveCaptainProvider?.create?.({
+              onDecision: result => this.acceptLiveEnemyCaptainDecision(result),
+              onStatus: status => { this.enemyCaptainLiveStatus={...status}; }
+            }) || null;
           this.shipInteractionRegistry = this.createShipInteractionRegistry();
           this.pilotStations = shuttle3dPilotStationsConfig(scene);
           this.hoveredPilotStation = null;
@@ -6533,6 +6539,7 @@
           this.bridgeEncounterLastUiEventSequence = 0;
           this.openingPursuitStartedAtMs = null;
           this.enemyCaptainLastDecision = null;
+          this.enemyCaptainLive?.reset?.();
           if (this.pilot) {
             this.pilot.active = false;
             this.pilot.station = null;
@@ -7234,6 +7241,12 @@
           return this.bridgeEncounterRuntime.command({type:'captain-helm-order',order},atMs);
         }
 
+        submitEnemyCaptainBoardingOrder(order, nowMs) {
+          if(!this.bridgeEncounterRuntime) throw new Error('BRIDGE_ENCOUNTER_RUNTIME_REQUIRED');
+          const atMs=nowMs ?? this.lastFrameTime ?? performance.now();
+          return this.bridgeEncounterRuntime.command({type:'captain-boarding-order',order},atMs);
+        }
+
         openingPursuitPreview(nowMs) {
           if(this.openingPursuitStartedAtMs===null) this.openingPursuitStartedAtMs=Number(nowMs);
           const elapsed=Math.max(0,Math.min(75,(Number(nowMs)-this.openingPursuitStartedAtMs)/1000));
@@ -7253,8 +7266,46 @@
           const sim=runtime.startedAtMs===null ? 0 : Math.max(0,(nowMs-runtime.startedAtMs)/1000);
           return {schema:'game.bridgeCaptainObservation.v1',captainId:'captain.beta',shipId:'ship.beta',
             simulationSeconds:sim,rangeM:r,radialVelocityMps:radial,
+            relativePositionM:[dx,dy],
+            relativeVelocityMps:[target.vxMps-own.vxMps,target.vyMps-own.vyMps],
+            relativeSpeedMps:Math.hypot(target.vxMps-own.vxMps,target.vyMps-own.vyMps),
+            boarding:{...runtime.boarding},
             targetHullPercent:runtime.targetHullPercent,enemyStatus:runtime.targetStatus,
+            transporterMaxRangeM:globalThis.MainComputerBridgeCaptainDecisionPolicy?.SHIP_CAPABILITIES?.['ship.beta']?.transporter?.maxRangeM,
             mission:'pursue-main-ship-and-seek-boarding-range'};
+        }
+
+        acceptLiveEnemyCaptainDecision(result) {
+          const runtime=this.bridgeEncounterRuntime;
+          if (!runtime || runtime.startedAtMs===null || runtime.targetStatus==='destroyed') return false;
+          const nowMs=this.lastFrameTime ?? performance.now();
+          const current=this.enemyCaptainObservation(nowMs);
+          // Reject late model results rather than applying an old tactical state
+          // to a different physical encounter. No forged backdating is allowed.
+          if (!current || current.simulationSeconds-result.observationSeconds>30 ||
+              current.simulationSeconds+1e-6<result.observationSeconds) return false;
+          const revision=Math.max(1,runtime.enemyCaptainRevision+1);
+          const boardingAction=result.actionType==='boarding';
+          const order={captainId:'captain.beta',shipId:'ship.beta',
+            decisionId:`nanojev-beta-${revision}`,revision,
+            issuedAtSeconds:current.simulationSeconds,
+            validThroughSeconds:current.simulationSeconds+60,
+            source:'nanojev-captain-v6',modelReceipt:{...result.modelReceipt}};
+          if(boardingAction) order.action=result.boardingAction;
+          else {order.maneuver=result.maneuver;if(result.maneuver==='hold') order.rangeM=result.rangeM;}
+          const accepted=boardingAction
+            ? this.submitEnemyCaptainBoardingOrder(order,nowMs)
+            : this.submitEnemyCaptainOrder(order,nowMs);
+          if(!accepted?.accepted) return false;
+          this.enemyCaptainLastDecision={...order,modelReceipt:{...result.modelReceipt}};
+          return true;
+        }
+
+        bridgeCaptainProviderStatus() {
+          return {activeOrder:this.bridgeEncounterRuntime?.enemyCaptainOrder || null,
+            boarding:this.bridgeEncounterRuntime?.boarding || null,
+            lastDecision:this.enemyCaptainLastDecision || null,
+            live:this.enemyCaptainLive?.status?.() || this.enemyCaptainLiveStatus};
         }
 
         updateEnemyCaptainDecision(nowMs) {
@@ -7265,12 +7316,35 @@
           const observation=this.enemyCaptainObservation(nowMs);
           const activeOrder=runtime.enemyCaptainOrder;
           const nextRevision=Math.max(1,runtime.enemyCaptainRevision+1);
-          const decide=this.enemyCaptainDecisionProvider || policy.decide;
-          const order=decide({observation,activeOrder,nextRevision,capabilities:policy.SHIP_CAPABILITIES});
-          if (!order) return null;
-          const result=this.submitEnemyCaptainOrder(order,nowMs);
-          if(!result?.accepted) throw new Error(`BRIDGE_CAPTAIN_ORDER_REJECTED: ${result?.reason||'unknown'}`);
-          this.enemyCaptainLastDecision={...order};
+          // The active live order takes precedence over deterministic policy;
+          // deterministic authority resumes only if it expires or the model is
+          // unavailable. All sources are labelled in the authority receipt.
+          this.enemyCaptainLive?.tick(observation);
+          const liveOrderCurrent=activeOrder?.source==='nanojev-captain-v6' &&
+              activeOrder.validThroughSeconds>observation.simulationSeconds+8;
+          let result=null;
+          if(!liveOrderCurrent) {
+            const decide=this.enemyCaptainDecisionProvider || policy.decide;
+            const order=decide({observation,activeOrder,nextRevision,capabilities:policy.SHIP_CAPABILITIES});
+            if(order) {
+              result=this.submitEnemyCaptainOrder(order,nowMs);
+              if(!result?.accepted) throw new Error(`BRIDGE_CAPTAIN_ORDER_REJECTED: ${result?.reason||'unknown'}`);
+              this.enemyCaptainLastDecision={...order};
+            }
+          }
+          // An active real-model decision owns the captain's intention. Never
+          // silently invent a scripted boarding decision behind its back.
+          if(this.enemyCaptainLive?.status?.().mode!=='nanojev' && policy.decideBoarding) {
+            const refreshed=this.enemyCaptainObservation(nowMs);
+            const boardingOrder=policy.decideBoarding({observation:refreshed,
+              nextRevision:Math.max(1,runtime.enemyCaptainRevision+1)});
+            if(boardingOrder) {
+              const boardingResult=this.submitEnemyCaptainBoardingOrder(boardingOrder,nowMs);
+              if(!boardingResult?.accepted) throw new Error(`BRIDGE_CAPTAIN_BOARDING_REJECTED: ${boardingResult?.reason||'unknown'}`);
+              this.enemyCaptainLastDecision={...boardingOrder};
+              result=boardingResult;
+            }
+          }
           return result;
         }
 

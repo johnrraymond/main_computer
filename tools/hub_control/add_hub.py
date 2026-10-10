@@ -4,7 +4,7 @@ import hashlib
 from typing import Any, Callable, Mapping
 
 from .common.canonical import canonical_bytes
-from .common.admin_identity import preview_admin, reserve_admin, verify_admin_current_funding
+from .common.admin_identity import preview_admin, reserve_admin, verify_admin_current_funding, transition_hub_identity
 from .common.chain_contract import load_current_chain_contract, verify_chain_contract
 from .common.bridge_controller_authorization import ensure_bridge_controller
 from .common.deployment import apply_deployment, deployment_target, inspect_deployment, observe_hub, _check_deployment_git_source
@@ -85,7 +85,7 @@ def _write_or_resume_prepared_operation(
     if saved_address and saved_address.lower() != admin_address.lower():
         conflict("committed Hub admin differs from Mother's selected identity")
     saved_path = str(old_target.get("hub_admin_private_state_path") or "")
-    expected_path = f"networks.{network}.hub_admin_assignments.{fresh_target['hub_id']}"
+    expected_path = f"networks.{network}.hubs.{fresh_target['hub_id']}.hub_admin"
     if saved_path and saved_path != expected_path:
         conflict("saved Hub admin private-state reference differs")
 
@@ -139,6 +139,13 @@ def prep(
     # Prep is read-only for Mother private state. Never manufacture or replenish
     # Hub administrators: an assigned identity or existing reserve is required.
     private = load_private(ctx)
+    mother_hubs = (private.get("networks") or {}).get(network, {}).get("hubs")
+    if isinstance(mother_hubs, Mapping):
+        active = {key for key, entry in mother_hubs.items() if isinstance(entry, Mapping) and entry.get("status") == "active"}
+        receipt_members = {str(item.get("hub_id")) for item in hubs if isinstance(item, Mapping)}
+        if active != receipt_members:
+            raise HubControlError("HUB_TOPOLOGY_SEAL_REQUIRED",
+                                  "Mother Hub membership differs from the legacy operation projection; run hub_topology_check.py, then hub_topology_seal.py --apply-state")
     wallet_preview = preview_admin(private, network=network, hub_id=hub_id)
     placement, resolution = infer_hub_placement(
         ctx,
@@ -401,6 +408,12 @@ def finalize(
         "fdb_contract": hub["fdb_contract"],
         "chain_contract": hub["chain_contract"],
     }
+    # Runtime proof precedes this verified Mother state transition.
+    transition_hub_identity(
+        ctx, network=network, hub_id=str(target["hub_id"]),
+        operation_id=operation_id + "-activate", status="active",
+        placement={**dict(target), "application_uuid": str((op.get("deployment_result") or {}).get("application_uuid") or target.get("application_uuid") or "")},
+    )
     if expected is None:
         accepted_path = publish_first_accepted(ctx, accepted)
     else:

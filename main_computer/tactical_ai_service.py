@@ -236,6 +236,178 @@ class TacticalAIService:
             number = default
         return max(minimum, min(maximum, number))
 
+    def decide_bridge_captain(self, observation: dict[str, Any]) -> dict[str, Any]:
+        """One real NanoJev captain inference on live *game* state.
+
+        This is not the self-contained CombatSmoke battle. The model ranks
+        bounded captain choices; the browser's existing helm authority alone
+        publishes orders. A failed or unavailable model is never presented as
+        a successful model decision.
+        """
+        if not isinstance(observation, dict) or observation.get("schema") != "game.bridgeCaptainObservation.v1":
+            raise TacticalAIError("BRIDGE_CAPTAIN_OBSERVATION_SCHEMA_REQUIRED")
+        if observation.get("captainId") != "captain.beta" or observation.get("shipId") != "ship.beta":
+            raise TacticalAIError("BRIDGE_CAPTAIN_WRONG_AUTHORITY")
+        import math
+        def number(key: str, low: float, high: float) -> float:
+            raw = observation.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise TacticalAIError(f"BRIDGE_CAPTAIN_INVALID_{key}")
+            value = float(raw)
+            if not math.isfinite(value) or not low <= value <= high:
+                raise TacticalAIError(f"BRIDGE_CAPTAIN_INVALID_{key}")
+            return value
+
+        sim = number("simulationSeconds", 0, 1e9)
+        distance = number("rangeM", 0, 1e12)
+        radial = number("radialVelocityMps", -1e7, 1e7)
+        hull = number("targetHullPercent", 0, 100)
+        max_transporter_range = number("transporterMaxRangeM", 200, 1e9)
+        holding_range = max(200, max_transporter_range - 450)
+        outer_holding_range = max(200, max_transporter_range - 100)
+        def pair(name: str) -> list[float]:
+            raw = observation.get(name)
+            if not isinstance(raw, list) or len(raw) != 2 or any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) or
+                not math.isfinite(float(v)) or abs(float(v)) > 1e12 for v in raw
+            ):
+                raise TacticalAIError(f"BRIDGE_CAPTAIN_INVALID_{name}")
+            return [float(v) for v in raw]
+        relative_position = pair("relativePositionM")
+        relative_velocity = pair("relativeVelocityMps")
+        if abs(math.hypot(*relative_position) - distance) > max(0.01, distance * 1e-6):
+            raise TacticalAIError("BRIDGE_CAPTAIN_RELATIVE_RANGE_MISMATCH")
+        if observation.get("mission") != "pursue-main-ship-and-seek-boarding-range":
+            raise TacticalAIError("BRIDGE_CAPTAIN_MISSION_REQUIRED")
+        with self._lock:
+            if not self._performance_ready or not self._model_loaded or not self._adapter_alive():
+                raise TacticalAIError("BRIDGE_CAPTAIN_NANOJEV_NOT_READY: Prepare Tactical AI first")
+            if self._battle_thread is not None and self._battle_thread.is_alive():
+                raise TacticalAIError("BRIDGE_CAPTAIN_ADAPTER_BUSY_WITH_BATTLE")
+            url = self._adapter_evaluate_url
+            health = dict(self._adapter_health)
+            maximum = float(self._tactical_time_step_seconds)
+        if not self._manager_model_ready(self._manager_status()):
+            raise TacticalAIError("BRIDGE_CAPTAIN_NANOJEV_CHECKPOINT_NOT_READY")
+        if not url or not health.get("checkpointId") or not health.get("checkpointSha256"):
+            raise TacticalAIError("BRIDGE_CAPTAIN_ADAPTER_CHECKPOINT_MISSING")
+
+        boarding = observation.get("boarding") or {"phase": "idle", "boarders": "aboard"}
+        if not isinstance(boarding, dict) or boarding.get("phase") not in (
+            "idle", "deploying", "deployed", "recalling", "recovered", "abandoning", "abandoned"
+        ):
+            raise TacticalAIError("BRIDGE_CAPTAIN_BOARDING_STATE_INVALID")
+        boarding_phase = boarding["phase"]
+        relative_speed = math.hypot(*relative_velocity)
+
+        # All choices are mechanically legal captain intents. The model may
+        # *select* one but cannot invent propulsion commands or bypass the helm.
+        options = [
+            {"actionType": "helm", "maneuver": "approach", "rangeM": None,
+             "text": "Pursue the main ship and close separation for eventual boarding"},
+            {"actionType": "helm", "maneuver": "hold", "rangeM": holding_range,
+             "text": f"Match relative velocity and hold {holding_range:.1f} m"},
+            {"actionType": "helm", "maneuver": "hold", "rangeM": outer_holding_range,
+             "text": f"Match relative velocity and hold {outer_holding_range:.1f} m"},
+        ]
+        if boarding_phase in ("idle", "recovered", "abandoned"):
+            options.append({"actionType": "helm", "maneuver": "withdraw", "rangeM": None,
+                            "text": "Withdraw and increase separation from main ship"})
+        options.append({"actionType": "helm", "maneuver": "coast", "rangeM": None,
+                        "text": "Cease commanded thrust, retaining momentum"})
+        if boarding_phase == "idle" and distance <= max_transporter_range and relative_speed <= 5:
+            options.append({"actionType": "boarding", "boardingAction": "initiate",
+                            "text": "Initiate boarding commitment: deployment takes 30 simulation seconds; hold range until completed"})
+        elif boarding_phase == "deployed":
+            options.extend((
+                {"actionType": "boarding", "boardingAction": "recall",
+                 "text": "Recall deployed boarders before withdrawal; recovery takes 24 seconds and requires maintained range"},
+                {"actionType": "boarding", "boardingAction": "abandon",
+                 "text": "Abandon deployed boarders to permit withdrawal; abandonment requires 12 seconds"},
+            ))
+        from itertools import combinations
+        questions = []
+        for i, (a, b) in enumerate(combinations(range(len(options)), 2)):
+            questions.append({
+                "id": f"bridge-beta-{i}", "optionA": f"beta-c{a}", "optionB": f"beta-c{b}",
+                "optionAText": options[a]["text"], "optionBText": options[b]["text"],
+                "semanticMode": "machine-grounded-tactical-control-v1",
+                "text": "From the captain's mission and observed physical situation, which reachable helm intent produces the better future?",
+            })
+        request_id = f"bridge-beta-{int(round(sim * 1000))}"
+        payload = {
+            "schema": "game.captainDecisionRequest.v6",
+            "checkpoint": {"family": "tinystories-clef", "checkpointId": health["checkpointId"], "sha256": health["checkpointSha256"]},
+            "semanticContext": {"mode": "compact-shared-context-v2", "text": (
+                f"Acting captain=beta, enemy raider ship.beta. Mission: pursue the main ship and seek boarding range. "
+                f"Real bridge combat t={sim:.2f}s; observed separation={distance:.2f}m, "
+                f"radial closing velocity={-radial:.2f}m/s, raider hull={hull:.1f}%. "
+                f"Relative ship coordinates=({relative_position[0]:.1f},{relative_position[1]:.1f})m; "
+                f"relative velocity=({relative_velocity[0]:.1f},{relative_velocity[1]:.1f})m/s. "
+                f"Raider personnel transporter max range={max_transporter_range:.1f}m; "
+                f"boarders eligible={distance <= max_transporter_range and relative_speed <= 5}. "
+                f"Boarding lifecycle phase={boarding_phase}; boarders={boarding.get('boarders', 'aboard')}; "
+                f"completion time={boarding.get('completeAtSeconds')}. "
+                "Choose between physically eligible helm actions and captain-ordered timed boarding commitments. "
+                "Deployment takes 30s, recall takes 24s, and abandonment takes 12s. "
+                "A captain cannot withdraw while boarders remain committed. "
+                "No actual personnel/boarding combat is simulated. All effects occur through authoritative game time."
+            )},
+            "execution": {"evidenceMode": "auto"},
+            "battle": {"mode": "battle-2", "trigger": "bridge-encounter", "captainId": "beta", "observation": {
+                "id": "beta", "positionM": relative_position, "velocityMps": relative_velocity,
+                "speedMps": math.hypot(*relative_velocity),
+                "hull": hull / 100, "subsystems": {}, "simulationSeconds": sim,
+            }},
+            "tacticalControls": [
+                {"id": f"beta-c{i}", **{k: v for k, v in item.items() if k != "text"},
+                 "weapon": "hold", "defense": "none", "warp": "none"}
+                for i, item in enumerate(options)
+            ],
+            "questions": questions,
+            "diagnostics": {"clientRequestId": request_id},
+        }
+        # Keep the HTTP timeout consistent with the warmed model's approved
+        # inference budget. The browser never blocks its rendering loop.
+        started = time.perf_counter()
+        request = urllib.request.Request(
+            url, data=json.dumps(payload, allow_nan=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=max(1.0, maximum + 2.0)) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise TacticalAIError(f"BRIDGE_CAPTAIN_NANOJEV_INFERENCE_FAILED: {type(exc).__name__}: {exc}") from exc
+        if not isinstance(result, dict) or result.get("schema") != "game.captainDecisionResponse.v6":
+            raise TacticalAIError("BRIDGE_CAPTAIN_NANOJEV_RESPONSE_INVALID")
+        answers = result.get("answers")
+        if not isinstance(answers, list) or len(answers) != len(questions):
+            raise TacticalAIError("BRIDGE_CAPTAIN_NANOJEV_ANSWER_COUNT_INVALID")
+        scores = [0.0] * len(options)
+        for q, answer in zip(questions, answers):
+            if not isinstance(answer, dict) or answer.get("choice") not in (q["optionA"], q["optionB"]):
+                raise TacticalAIError("BRIDGE_CAPTAIN_NANOJEV_ANSWER_NOT_IN_PAIR")
+            margin = answer.get("margin", 0)
+            if isinstance(margin, bool) or not isinstance(margin, (int, float)) or not math.isfinite(float(margin)) or abs(float(margin)) > 1:
+                raise TacticalAIError("BRIDGE_CAPTAIN_NANOJEV_MARGIN_INVALID")
+            index = int(answer["choice"].removeprefix("beta-c"))
+            scores[index] += 1 + float(margin)
+        winner = max(range(len(options)), key=lambda i: (scores[i], -i))
+        selection = options[winner]
+        return {
+            "ok": True, "schema": "game.bridgeCaptainNanoJevDecision.v1",
+            "captainId": "captain.beta", "shipId": "ship.beta",
+            "observationSeconds": sim, "actionType": selection["actionType"],
+            "maneuver": selection.get("maneuver"), "boardingAction": selection.get("boardingAction"),
+            "rangeM": selection.get("rangeM"), "source": "nanojev-captain-v6",
+            "modelReceipt": {"clientRequestId": request_id,
+                "checkpointId": health["checkpointId"], "checkpointSha256": health["checkpointSha256"],
+                "modelLatencyMs": result.get("modelLatencyMs"),
+                "wallLatencyMs": (time.perf_counter() - started) * 1000,
+                "chosenCandidateId": f"beta-c{winner}", "candidateScores": scores},
+        }
+
     def prepare(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         config = dict(config or {})
         raw_time_step = config.get("time_step_seconds")

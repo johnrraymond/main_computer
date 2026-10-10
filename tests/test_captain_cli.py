@@ -465,6 +465,7 @@ def test_bridge_wallet_funding_import_payload_uses_deposit_receipt() -> None:
 
 
 def test_bare_captain_prompt_uses_mainnet_hub_request_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
     escrow = "0x2222222222222222222222222222222222222222"
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
@@ -541,6 +542,7 @@ def test_bare_captain_prompt_uses_mainnet_hub_request_path(tmp_path, monkeypatch
 
 
 def test_captain_smoke_falls_back_to_wallet_funding_import_when_hub_lacks_bridge_metadata(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
     escrow = "0x2222222222222222222222222222222222222222"
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
     deployment_path.parent.mkdir(parents=True)

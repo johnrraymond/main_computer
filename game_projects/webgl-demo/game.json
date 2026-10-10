@@ -65,6 +65,7 @@
         "web/scripts/space-captain-multirate-contract.js",
         "web/scripts/bridge-encounter-runtime.js",
         "web/scripts/bridge-captain-decision-policy.js",
+        "web/scripts/bridge-captain-live-provider.js",
         "web/scripts/bridge-viewscreen-projection.js",
         "web/scripts/bridge-viewscreen-encounter-runtime.js",
         "web/scripts/bridge-viewscreen-presentation.js",

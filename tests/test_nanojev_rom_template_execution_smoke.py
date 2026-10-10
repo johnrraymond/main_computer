@@ -227,14 +227,18 @@ def test_consensus_execution_reuses_catalog_template_instead_of_recompile():
 
 
 
-def test_compile_training_mix_catalog_has_live_prompt_and_serialization_suffix(monkeypatch, tmp_path):
+def test_compile_training_mix_catalog_compiles_one_task_per_call(monkeypatch, tmp_path):
     seen = []
+    mix = smoke.discover_training_mix()
 
     def fake_call(*, payload, url, timeout_s, log, raw_path, stream_label):
-        seen.append(payload)
+        seen.append({"payload": payload, "stream_label": stream_label})
+        prompt = json.loads(payload["prompt"])
+        task = prompt["task"]
         requested = "structured" if "STRUCTURED PROGRAM" in payload["system"] else "flat"
-        _mix, parsed = _catalog_fixture(requested)
-        return json.dumps(parsed), {"eval_count": 1, "done": True}
+        _mix, catalog = _catalog_fixture(requested)
+        template = next(row for row in catalog["templates"] if row["task"] == task)
+        return json.dumps(template), {"eval_count": 7, "done": True}
 
     monkeypatch.setattr(smoke.ollama_stream, "call_ollama_generate_streaming", fake_call)
 
@@ -252,7 +256,6 @@ def test_compile_training_mix_catalog_has_live_prompt_and_serialization_suffix(m
         catalog_num_predict=9000,
         timeout_s=0,
     )
-    mix = smoke.discover_training_mix()
     flat = smoke.compile_training_mix_catalog(
         style="flat", args=args, out_dir=tmp_path, log=FakeLog(), mix=mix,
     )
@@ -261,10 +264,26 @@ def test_compile_training_mix_catalog_has_live_prompt_and_serialization_suffix(m
     )
     assert flat["recovery"]["usable"] is True
     assert structured["recovery"]["usable"] is True
-    assert "ROM Training-Mix Compiler" in seen[0]["system"]
-    assert "FLAT PROGRAM" in seen[0]["system"]
-    assert "instruction strings only" in seen[0]["system"]
-    assert "ROM Training-Mix Compiler" in seen[1]["system"]
-    assert "STRUCTURED PROGRAM" in seen[1]["system"]
-    assert "instruction objects only" in seen[1]["system"]
+    assert len(seen) == len(mix["tasks"]) * 2
+    assert flat["stream_summary"]["eval_count"] == 7 * len(mix["tasks"])
+    assert structured["stream_summary"]["eval_count"] == 7 * len(mix["tasks"])
+
+    flat_seen = seen[:len(mix["tasks"])]
+    structured_seen = seen[len(mix["tasks"]):]
+    assert [json.loads(item["payload"]["prompt"])["task"] for item in flat_seen] == mix["tasks"]
+    assert [json.loads(item["payload"]["prompt"])["task"] for item in structured_seen] == mix["tasks"]
+    assert all("FLAT PROGRAM" in item["payload"]["system"] for item in flat_seen)
+    assert all("instruction strings only" in item["payload"]["system"] for item in flat_seen)
+    assert all("STRUCTURED PROGRAM" in item["payload"]["system"] for item in structured_seen)
+    assert all("instruction objects only" in item["payload"]["system"] for item in structured_seen)
+
+
+def test_single_task_template_recovers_harmless_wrapper_drift():
+    _, catalog = _catalog_fixture("flat")
+    template = next(row for row in catalog["templates"] if row["task"] == "consensus")
+    assert smoke._single_task_template(template, "consensus")["task"] == "consensus"
+    assert smoke._single_task_template({"template": template}, "consensus")["task"] == "consensus"
+    assert smoke._single_task_template({"templates": [template]}, "consensus")["task"] == "consensus"
+    wrapped = {"templates": {"consensus": {k: v for k, v in template.items() if k != "task"}}}
+    assert smoke._single_task_template(wrapped, "consensus")["task"] == "consensus"
 

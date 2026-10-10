@@ -7,7 +7,8 @@ IDs, internal Hub Control stages, resume state, verification, and finalization.
 
 Normal mutation lifecycle:
 
-    accepted/observed pre-inspect -> prep -> mutation gate -> do
+    read-only topology gate -> accepted/observed pre-inspect -> prep
+    -> mutation gate -> do
     -> operation-scoped proof -> finalize -> accepted/observed post-inspect
 
 The lower-level ``tools.hub_control`` package is an internal implementation
@@ -255,6 +256,97 @@ class Harness:
     def inspect_cmd(self) -> list[str]:
         return self.control_cmd("inspect", self.network)
 
+    def topology_check_cmd(self) -> list[str]:
+        """Read-only topology gate used on entry to the Hub prep boundary."""
+        return [
+            sys.executable,
+            str(self.repo_root / "tools" / "hub_topology_check.py"),
+            "--network",
+            self.network,
+            "--repo-root",
+            str(self.repo_root),
+        ]
+
+    def _check_topology_before_prep(self) -> None:
+        """Diagnose drift before accepted-state pre-inspect can obscure its cause.
+
+        This is intentionally read-only and not a persisted lifecycle step:
+        a retry after an explicit operator seal must observe topology again.
+        In-progress do/finalize resumes do not revisit this read-only boundary.
+        """
+        if self.run_dir is None:
+            raise HarnessError("topology preflight has no harness run directory")
+        argv = self.topology_check_cmd()
+        prefix = self.run_dir / "00-topology-check"
+        prefix.with_suffix(".command.txt").write_text(quote_command(argv) + "\n", encoding="utf-8")
+        print("\n=== prep: Hub topology check ===", flush=True)
+        try:
+            proc = subprocess.run(
+                argv, cwd=self.repo_root, text=True, capture_output=True, check=False,
+            )
+        except OSError as exc:
+            raise HarnessError(f"prep blocked: Hub topology check could not start: {exc}") from exc
+        prefix.with_suffix(".stdout.txt").write_text(proc.stdout, encoding="utf-8")
+        prefix.with_suffix(".stderr.txt").write_text(proc.stderr, encoding="utf-8")
+        try:
+            report = json.loads(proc.stdout)
+        except (ValueError, TypeError) as exc:
+            raise HarnessError(
+                f"prep blocked: Hub topology check returned non-JSON output "
+                f"(exit={proc.returncode}); see {prefix.with_suffix('.stdout.txt')}"
+            ) from exc
+        prefix.with_suffix(".json").write_text(
+            json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8",
+        )
+        if not isinstance(report, dict) or report.get("network") != self.network:
+            raise HarnessError("prep blocked: Hub topology check returned invalid network/report")
+        status = report.get("status")
+        if status not in {"PASS", "DRIFT", "UNKNOWN"} or proc.returncode != {
+            "PASS": 0, "DRIFT": 1, "UNKNOWN": 2,
+        }[status]:
+            raise HarnessError(
+                f"prep blocked: Hub topology check status/exit disagreement "
+                f"(status={status!r}, exit={proc.returncode}); see {prefix.with_suffix('.json')}"
+            )
+        print(f"Hub topology: {status}")
+        if status == "PASS":
+            return
+        if status == "DRIFT" and report.get("errors") == []:
+            projection = report.get("accepted_projection")
+            projection = projection if isinstance(projection, dict) else {}
+            details = []
+            for label, values in (
+                ("stale accepted Hubs", projection.get("stale_hubs")),
+                ("unprojected Hubs", projection.get("unprojected_hubs")),
+                ("missing live Hubs", report.get("missing_hubs")),
+                ("unexpected live Hubs", report.get("extra_hubs")),
+            ):
+                if isinstance(values, list) and values:
+                    details.append(f"{label}: {', '.join(str(v) for v in values)}")
+            reason = "\n".join(details)
+            command = report.get("seal_command")
+            if isinstance(command, str) and command.strip():
+                raise HarnessError(
+                    "prep blocked: independently verified Hub topology DRIFT."
+                    + (f"\n{reason}" if reason else "")
+                    + "\nRun the reseal explicitly, then retry the same Hub command:\n"
+                    + command
+                )
+            raise HarnessError(
+                "prep blocked: verified Hub topology DRIFT but no reseal command was provided; "
+                "review the topology-check evidence before proceeding"
+            )
+        errors = report.get("errors")
+        reasons = "; ".join(
+            f"{item.get('code')}: {item.get('message')}"
+            for item in errors if isinstance(item, dict)
+        ) if isinstance(errors, list) else ""
+        raise HarnessError(
+            "prep blocked: Hub topology cannot be independently verified"
+            + (f" ({reasons})" if reasons else "")
+            + "; no reseal command is offered for UNKNOWN/unverified state"
+        )
+
     def prep_cmd(self) -> list[str]:
         command = self.control_cmd(self.operation, "prep", self.network, "--hub", self.hub)
         if self.operation == "remove-hub" and self.allow_full_deletion:
@@ -316,6 +408,11 @@ class Harness:
         else:
             start_index = 0 if completed not in STEPS else STEPS.index(str(completed)) + 1
         for step in STEPS[start_index:]:
+            # Entering prep requires the live topology check *before* the
+            # accepted-projection pre-inspect, whose stale runtime checks would
+            # otherwise abort before we can show the operator the seal command.
+            if step == "pre-inspect":
+                self._check_topology_before_prep()
             if step in MUTATING_STEPS and not self._mutation_authorized():
                 if not self._prepared_boundary_printed:
                     self._print_prepared_boundary()

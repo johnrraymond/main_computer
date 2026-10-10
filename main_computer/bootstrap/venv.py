@@ -124,6 +124,16 @@ def pip_install_project(venv_python: Path, project_root: Path, log_path: Path) -
         log_path=log_path,
     )
 
+    # On Windows pip creates an unsigned main-computer.exe which Smart App
+    # Control may block.  Install a command shim after every pip install.
+    if venv_python.name.lower() == "python.exe" and venv_python.parent.name.lower() == "scripts":
+        run_command(
+            [venv_python, "-m", "main_computer.bootstrap.windows_cmd_launcher"],
+            cwd=project_root,
+            timeout_seconds=30,
+            log_path=log_path.with_name("install-main-computer-cmd.log"),
+        )
+
     pip_check_log_path = log_path.with_name("pip-check.log")
     print(f"Pip check log: {pip_check_log_path}", flush=True)
     run_command(

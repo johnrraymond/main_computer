@@ -26,9 +26,10 @@ def _legacy_hub_control_fixture_without_funded_pool(monkeypatch):
     monkeypatch.setattr(add_hub, "verify_admin_current_funding", lambda *a, **kw: {"verified": True, "block": "latest"})
     monkeypatch.setattr(add_hub, "preview_admin", lambda *a, **kw: {"address": address, "source": "legacy-fixture"})
     monkeypatch.setattr(add_hub, "ensure_bridge_controller", lambda *a, **kw: {"verified": True, "already_authorized": True, "controller": address})
+    monkeypatch.setattr(add_hub, "transition_hub_identity", lambda *a, **kw: {"status": "active"})
     monkeypatch.setattr(add_hub, "reserve_admin", lambda *a, **kw: {
         "address": address, "private_key": key,
-        "private_state_path": "networks.mainnet.hub_admin_assignments.fixture",
+        "private_state_path": "networks.mainnet.hubs.fixture.hub_admin",
     })
 
 
@@ -408,7 +409,7 @@ def test_add_hub_prep_reuses_wallet_claim_from_failed_do(tmp_path: Path) -> None
     old = require_operation(ctx, "mainnet", operation_id)
     # A failed do already reserved the wallet, persisted its public identity,
     # and recorded failure evidence.  Never erase any of those records.
-    assigned = "networks.mainnet.hub_admin_assignments.mainneta-hub1"
+    assigned = "networks.mainnet.hubs.mainneta-hub1.hub_admin"
     updated_target = dict(old["target"], hub_admin_address=first["details"]["hub_admin_candidate_address"],
                           hub_admin_private_state_path=assigned)
     update_operation(ctx, "mainnet", operation_id, target=updated_target,
@@ -441,7 +442,7 @@ def test_add_hub_prep_refuses_wallet_assignment_mismatch(tmp_path: Path) -> None
     operation_id = first["details"]["operation_id"]
     original = require_operation(ctx, "mainnet", operation_id)
     target = dict(original["target"], hub_admin_address="0x" + "23" * 20,
-                  hub_admin_private_state_path="networks.mainnet.hub_admin_assignments.mainneta-hub1")
+                  hub_admin_private_state_path="networks.mainnet.hubs.mainneta-hub1.hub_admin")
     update_operation(ctx, "mainnet", operation_id, target=target)
     frozen = require_operation(ctx, "mainnet", operation_id)
     with pytest.raises(HubControlError) as excinfo:
@@ -499,7 +500,7 @@ def test_repeat_prep_preserves_hub_admin_committed_during_failed_do(tmp_path: Pa
     assigned_target = dict(original["target"])
     assigned_target.update({
         "hub_admin_address": address,
-        "hub_admin_private_state_path": "networks.mainnet.hub_admin_assignments.mainneta-hub1",
+        "hub_admin_private_state_path": "networks.mainnet.hubs.mainneta-hub1.hub_admin",
     })
     update_operation(
         ctx, "mainnet", operation_id, target=assigned_target,
@@ -611,7 +612,7 @@ def test_add_hub_retry_after_failed_do_preserves_assigned_identity(tmp_path: Pat
     key = "0x" + "01".zfill(64)
     monkeypatch.setattr(add_hub, "reserve_admin", lambda *a, **kw: {
         "address": private_key_to_address(key), "private_key": key,
-        "private_state_path": "networks.mainnet.hub_admin_assignments.mainneta-hub1",
+        "private_state_path": "networks.mainnet.hubs.mainneta-hub1.hub_admin",
     })
     ctx = _ctx(tmp_path)
     _seed_dependencies(ctx)
@@ -627,7 +628,7 @@ def test_add_hub_retry_after_failed_do_preserves_assigned_identity(tmp_path: Pat
     claimed = require_operation(ctx, "mainnet", operation_id)
     expected_address = claimed["target"]["hub_admin_address"]
     assert claimed["stage"] == "prepared"
-    assert claimed["target"]["hub_admin_private_state_path"] == "networks.mainnet.hub_admin_assignments.mainneta-hub1"
+    assert claimed["target"]["hub_admin_private_state_path"] == "networks.mainnet.hubs.mainneta-hub1.hub_admin"
     assert "private_key" not in json.dumps(claimed)
 
     retry = _resume_prep(ctx)

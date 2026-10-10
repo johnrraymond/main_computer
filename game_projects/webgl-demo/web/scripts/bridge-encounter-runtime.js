@@ -12,6 +12,10 @@
   const BOARDING_KP_PER_SECOND2 = 0.014;
   const BOARDING_KD_PER_SECOND = 0.30;
   const BOARDING_MAX_ACCEL_MPS2 = 8;
+  // Abstract crew commitment only; no boarding combat/teleport side effects.
+  const BOARDING_RANGE_M = 2500;
+  const BOARDING_RELATIVE_SPEED_MPS = 5;
+  const BOARDING_DURATIONS = Object.freeze({initiate:30,recall:24,abandon:12});
 
   const magnitude = (x, y) => Math.hypot(Number(x) || 0, Number(y) || 0);
   const finiteNow = (value) => Number.isFinite(Number(value)) ? Number(value) : performance.now();
@@ -71,6 +75,8 @@
       this.enemyCaptainRevision = -1;
       this.enemyCaptainDecisionIds = new Set();
       this.lastCaptainDecisionEvent = null;
+      this.boarding = {phase:'idle',boarders:'aboard',action:null,
+        startedAtSeconds:null,completeAtSeconds:null,decisionId:null,source:null};
       return this;
     }
 
@@ -109,6 +115,8 @@
       if (this.enemyCaptainDecisionIds.has(order.decisionId)) return fail('duplicate-decision-id');
       if (!Number.isSafeInteger(order.revision)||order.revision<=this.enemyCaptainRevision) return fail('stale-captain-revision');
       if (!['approach','hold','withdraw','coast'].includes(order.maneuver)) return fail('invalid-maneuver');
+      if (order.maneuver==='withdraw' && ['deploying','deployed','recalling','abandoning'].includes(this.boarding.phase))
+        return fail('boarders-committed-choose-recall-or-abandon');
       if ((order.maneuver==='hold' || order.rangeM!==undefined) &&
            (!Number.isFinite(order.rangeM)||order.rangeM<0||order.rangeM>1e9)) return fail('invalid-range');
       if (!Number.isFinite(order.issuedAtSeconds)||!Number.isFinite(order.validThroughSeconds)||
@@ -123,17 +131,95 @@
         captainId:order.captainId,shipId:TARGET,decisionId:order.decisionId,revision:order.revision,
         maneuver:order.maneuver,rangeM:order.rangeM??null,
         issuedAtSeconds:order.issuedAtSeconds,validThroughSeconds:order.validThroughSeconds,
-        source:String(order.source||'captain-decision')
+        source:String(order.source||'captain-decision'),
+        modelReceipt:order.modelReceipt ? {...order.modelReceipt} : null
       });
       this.enemyCaptainDecisionIds.add(order.decisionId);
       this.enemyCaptainRevision=order.revision;
       this.acceleration[TARGET]=this._helmAcceleration(nowS);
       this.lastAnchorKind='captain-order';
       this.lastCaptainDecisionEvent=this._recordEvent('captain-order',nowS,{captainId:order.captainId,shipId:TARGET,
-        decisionId:order.decisionId,revision:order.revision,maneuver:order.maneuver});
+        decisionId:order.decisionId,revision:order.revision,maneuver:order.maneuver,
+        source:String(order.source||'captain-decision'),
+        checkpointSha256:order.modelReceipt?.checkpointSha256||null});
       this.eventAnchorCount++;
       return {accepted:true,commandType:'captain-helm-order',
         decisionId:order.decisionId,snapshot:this.snapshot(nowMs)};
+    }
+
+    _boardingRangeM() {
+      const a=this.ships[PLAYER],b=this.ships[TARGET];
+      return Math.hypot(b.xM-a.xM,b.yM-a.yM);
+    }
+
+    _boardingRelativeSpeedMps() {
+      const a=this.ships[PLAYER],b=this.ships[TARGET];
+      return Math.hypot(b.vxMps-a.vxMps,b.vyMps-a.vyMps);
+    }
+
+    _applyBoardingOrder(order, nowMs) {
+      const fail=reason=>({accepted:false,reason,commandType:'captain-boarding-order',snapshot:null});
+      if(!order || typeof order!=='object') return fail('invalid-captain-order');
+      if(order.captainId!=='captain.beta'||order.shipId!==TARGET) return fail('captain-not-authorized');
+      if(typeof order.decisionId!=='string'||!order.decisionId.trim()) return fail('invalid-decision-id');
+      if(this.enemyCaptainDecisionIds.has(order.decisionId)) return fail('duplicate-decision-id');
+      if(!Number.isSafeInteger(order.revision)||order.revision<=this.enemyCaptainRevision) return fail('stale-captain-revision');
+      if(!['initiate','recall','abandon'].includes(order.action)) return fail('invalid-boarding-action');
+      if(!Number.isFinite(order.issuedAtSeconds)||!Number.isFinite(order.validThroughSeconds)||
+         order.issuedAtSeconds<0||order.validThroughSeconds<=order.issuedAtSeconds) return fail('invalid-order-time');
+      const nowS=this.startedAtMs===null?0:Math.max(0,(finiteNow(nowMs)-this.startedAtMs)/1000);
+      if(order.issuedAtSeconds>nowS+EPS||order.validThroughSeconds<=nowS+EPS) return fail('order-not-current');
+      if(this.targetStatus==='destroyed') return fail('target-destroyed');
+      // Validate against authoritative state *at the order time*, never the
+      // previous display/prediction frame.
+      this.advance(nowMs,{active:true});
+      this._integrateTo(nowS);
+      const phase=this.boarding.phase;
+      if(order.action==='initiate') {
+        if(phase!=='idle') return fail('boarding-already-committed');
+        if(this._boardingRangeM()>BOARDING_RANGE_M+EPS) return fail('transporter-out-of-range');
+        if(this._boardingRelativeSpeedMps()>BOARDING_RELATIVE_SPEED_MPS+EPS) return fail('relative-speed-too-high');
+      } else if(phase!=='deployed') return fail('no-deployed-boarders-to-resolve');
+      const nextPhase={initiate:'deploying',recall:'recalling',abandon:'abandoning'}[order.action];
+      this.boarding={phase:nextPhase,boarders:order.action==='initiate'?'aboard':'deployed',
+        action:order.action,startedAtSeconds:nowS,
+        completeAtSeconds:nowS+BOARDING_DURATIONS[order.action],
+        decisionId:order.decisionId,source:String(order.source||'captain-decision'),
+        modelReceipt:order.modelReceipt ? {...order.modelReceipt} : null};
+      this.enemyCaptainRevision=order.revision;
+      this.enemyCaptainDecisionIds.add(order.decisionId);
+      this.lastAnchorKind='captain-boarding-order';
+      this.lastCaptainDecisionEvent=this._recordEvent('captain-boarding-order',nowS,{
+        decisionId:order.decisionId,revision:order.revision,action:order.action,
+        completeAtSeconds:this.boarding.completeAtSeconds,source:this.boarding.source,
+        checkpointSha256:this.boarding.modelReceipt?.checkpointSha256||null});
+      this.eventAnchorCount++;
+      return {accepted:true,commandType:'captain-boarding-order',decisionId:order.decisionId,
+        snapshot:this.snapshot(nowMs)};
+    }
+
+    _nextBoardingCompletionSeconds() {
+      const t=this.boarding.completeAtSeconds;
+      return Number.isFinite(t) && t>this.authorityAtSeconds+EPS ? t : Infinity;
+    }
+
+    _completeBoarding(atSeconds) {
+      const previous=this.boarding,action=previous.action;
+      if(!action||Math.abs(previous.completeAtSeconds-atSeconds)>EPS) return;
+      // Deployment and recall are distance-sensitive *at completion* too.
+      // A broken contact does not magically transport anyone.
+      const inRange=this._boardingRangeM()<=BOARDING_RANGE_M+EPS &&
+        this._boardingRelativeSpeedMps()<=BOARDING_RELATIVE_SPEED_MPS+EPS;
+      let phase,boarders;
+      if(action==='initiate') {phase=inRange?'deployed':'idle';boarders=inRange?'deployed':'aboard';}
+      else if(action==='recall') {phase=inRange?'recovered':'deployed';boarders=inRange?'aboard':'deployed';}
+      else {phase='abandoned';boarders='abandoned';}
+      this.boarding={...previous,phase,boarders,action:null,completeAtSeconds:null};
+      this.lastAnchorKind='boarding-complete';
+      this._recordEvent('boarding-complete',atSeconds,{
+        decisionId:previous.decisionId,action,phase,boarders,success:action==='abandon'||inRange,
+        source:previous.source,checkpointSha256:previous.modelReceipt?.checkpointSha256||null});
+      this.eventAnchorCount++;
     }
 
     _nextOrderExpiryAtSeconds() {
@@ -254,7 +340,8 @@
         const nextBoundary = this._nextTacticalBoundaryAfter(this.authorityAtSeconds);
         const nextImpact = this._nextPendingImpactAtSeconds();
         const nextExpiry=this._nextOrderExpiryAtSeconds();
-        const nextTime = Math.min(this.nextPhysicsAtSeconds, nextBoundary, nextImpact, nextExpiry);
+        const nextBoarding=this._nextBoardingCompletionSeconds();
+        const nextTime = Math.min(this.nextPhysicsAtSeconds, nextBoundary, nextImpact, nextExpiry, nextBoarding);
         if (nextTime > targetTime + EPS || !Number.isFinite(nextTime)) break;
 
         this._integrateTo(nextTime);
@@ -264,6 +351,7 @@
         const isPhysicsGrid = Math.abs(this.nextPhysicsAtSeconds - nextTime) <= EPS;
 
         if (isImpact) this._applyImpactsAt(nextTime);
+        if(Math.abs(nextBoarding-nextTime)<=EPS) this._completeBoarding(nextTime);
         if (Math.abs(nextExpiry-nextTime)<=EPS && this.enemyCaptainOrder) {
           const expired=this.enemyCaptainOrder;
           this.enemyCaptainOrder=null;
@@ -285,7 +373,8 @@
         this.nextPhysicsAtSeconds,
         this._nextTacticalBoundaryAfter(this.authorityAtSeconds),
         this._nextPendingImpactAtSeconds(),
-        this._nextOrderExpiryAtSeconds()
+        this._nextOrderExpiryAtSeconds(),
+        this._nextBoardingCompletionSeconds()
       );
     }
 
@@ -472,6 +561,7 @@
       const payload = command && typeof command === "object" ? command : {type: command};
       const type = String(payload?.type || "").trim();
       if (type === "captain-helm-order") return this._applyCaptainOrder(payload.order,nowMs);
+      if (type === "captain-boarding-order") return this._applyBoardingOrder(payload.order,nowMs);
       if (type !== "fire-primary-weapon") {
         return {
           accepted: false,
@@ -535,6 +625,7 @@
           nextPendingImpactAtSeconds: Number.isFinite(nextImpact) ? nextImpact : null,
           lastExactEvent: this.lastExactEvent ? {...this.lastExactEvent} : null,
         },
+        boarding:{...this.boarding},
         helm: {
           [TARGET]: {activeOrder:this.enemyCaptainOrder ? {...this.enemyCaptainOrder} : null,
                      lastRevision:this.enemyCaptainRevision}
@@ -594,6 +685,7 @@
           nextPendingImpactAtSeconds: this._nextPendingImpactAtSeconds(),
           lastExactEvent: this.lastExactEvent ? {...this.lastExactEvent} : null,
         },
+        boarding:{...this.boarding},
         helm: {
           [TARGET]: {activeOrder:this.enemyCaptainOrder ? {...this.enemyCaptainOrder} : null,
                      lastRevision:this.enemyCaptainRevision}
@@ -613,6 +705,9 @@
 
   globalThis.MainComputerBridgeEncounterRuntime = Object.freeze({
     SCHEMA: "game.bridgeEncounterRuntime.v1",
+    BOARDING_DURATIONS,
+    BOARDING_RANGE_M,
+    BOARDING_RELATIVE_SPEED_MPS,
     CONTRACT_SCHEMA: CONTRACT.SCHEMA,
     DEFAULT_WEAPON_DAMAGE_HULL_PERCENT,
     COMBAT_RULES: Object.freeze({

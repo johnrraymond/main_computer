@@ -4,6 +4,7 @@ import hashlib
 from typing import Any, Callable, Mapping
 
 from .common.canonical import canonical_bytes
+from .common.admin_identity import transition_hub_identity
 from .common.deployment import inspect_deployment, inspect_removed_deployment, remove_deployment
 from .common.errors import HubControlError
 from .common.models import HubContext
@@ -107,6 +108,13 @@ def prep(
         )
 
     private = load_private(ctx)
+    mother_hubs = (private.get("networks") or {}).get(network, {}).get("hubs")
+    if isinstance(mother_hubs, Mapping):
+        active = {key for key, entry in mother_hubs.items() if isinstance(entry, Mapping) and entry.get("status") == "active"}
+        receipt_members = {str(item.get("hub_id")) for item in hubs if isinstance(item, Mapping)}
+        if active != receipt_members:
+            raise HubControlError("HUB_TOPOLOGY_SEAL_REQUIRED",
+                                  "Mother Hub membership differs from the legacy operation projection; run hub_topology_check.py, then hub_topology_seal.py --apply-state")
     target = _removal_target(ctx, private, network=network, hub=hub)
     deployment = deployment_inspector(target)
     if deployment.get("placement_mismatch"):
@@ -264,6 +272,11 @@ def finalize(
         "fdb_contract": dict(expected.get("fdb_contract") or {}),
         "chain_contract": dict(expected.get("chain_contract") or {}),
     }
+    # Only after independently verifying deployment absence, release this
+    # Hub's wallet into reserve WITH its original associated_hub.
+    transition_hub_identity(
+        ctx, network=network, hub_id=hub_id, operation_id=operation_id + "-release", status="inactive",
+    )
     accepted_path = advance_accepted(ctx, expected, accepted)
     update_operation(
         ctx,

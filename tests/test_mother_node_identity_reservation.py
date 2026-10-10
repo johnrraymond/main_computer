@@ -746,7 +746,7 @@ def test_fresh_genesis_new_node_claims_one_of_exactly_fifteen(tmp_path: Path) ->
     assert result["hub_admin_address"].lower() == net["node_seed_material"]["mainneta-super2"]["wallets"]["hub_admin"]["address"].lower()
 
 
-def test_genesis_pool_three_assigned_one_reserved_generates_eleven(tmp_path: Path) -> None:
+def test_genesis_pool_two_nodes_one_hub_one_reserve_generates_eleven(tmp_path: Path) -> None:
     from tools.mother.common.hub_admin_pool import genesis_addresses
 
     runtime = tmp_path / "runtime" / "state"
@@ -755,9 +755,12 @@ def test_genesis_pool_three_assigned_one_reserved_generates_eleven(tmp_path: Pat
     net = document["networks"]["mainnet"]
     def wallet(key: str) -> dict[str, str]:
         return {"private_key": key, "address": private_key_to_address(key)}
-    # Two existing per-node assignments, one already-assigned Hub and one
-    # previously reserved but unassigned identity: 4 unique wallets.
-    net["hub_admin_assignments"] = {"mainneta-hub1": wallet("0x" + "88" * 32)}
+    # Two existing per-node wallets, one Hub-assigned wallet, and one
+    # unassigned reserve wallet: four unique identities.
+    net.setdefault("hubs", {})["mainneta-hub1"] = {
+        "status": "inactive",
+        "hub_admin": {**wallet("0x" + "88" * 32), "associated_hub": "mainneta-hub1"},
+    }
     net["wallets"]["hub_admin_reserve"] = {"reserve01": wallet("0x" + "99" * 32)}
     op = _operation("genesis-pool-three-assigned-one-reserved-bootstrap")
     closure = prepare_private_state_bootstrap(
@@ -776,5 +779,5 @@ def test_genesis_pool_three_assigned_one_reserved_generates_eleven(tmp_path: Pat
     updated = read_private_state(paths, operation=_operation("three-plus-one-final"))
     final = yaml.safe_load(updated.document_bytes)["networks"]["mainnet"]
     assert len(genesis_addresses(final)) == 15
-    assert final["hub_admin_assignments"]["mainneta-hub1"] == net["hub_admin_assignments"]["mainneta-hub1"]
+    assert final["hubs"]["mainneta-hub1"] == net["hubs"]["mainneta-hub1"]
     assert final["wallets"]["hub_admin_reserve"]["reserve01"] == net["wallets"]["hub_admin_reserve"]["reserve01"]

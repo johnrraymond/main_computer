@@ -252,6 +252,18 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             "refund_enabled": bool(options.bridge_refund),
         }
 
+    live_session_hub = False
+    live_request_authorization: dict[str, Any] = {}
+    if not options.no_hub:
+        from main_computer.hub_cli_live_session import hub_uses_live_sessions
+        live_session_hub = hub_uses_live_sessions(runtime.config.hub_url)
+        if live_session_hub and effective_execute:
+            # Fail before funding or spending if the O0 key cannot authorize a request.
+            from main_computer.hub_cli_live_session import issue_cli_multisession_authorization
+            live_request_authorization = issue_cli_multisession_authorization(
+                runtime.config.hub_url, wallet=runtime.wallet, timeout_s=options.timeout_s,
+            )
+
     if not options.no_hub:
         if use_bridge:
             result["hub"]["balance_start"] = _fetch_hub_credit_balance(
@@ -270,12 +282,15 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             smoke_id=smoke_id,
             quote_id="",
         )
-        quote = _post_hub_json(
-            runtime.config.hub_url,
-            "/api/hub/v1/requests/quote",
-            quote_payload,
-            timeout_s=options.timeout_s,
-        )
+        if live_session_hub:
+            quote = {"skipped": True, "reason": "live_worker_price_selected_at_dispatch"}
+        else:
+            quote = _post_hub_json(
+                runtime.config.hub_url,
+                "/api/hub/v1/requests/quote",
+                quote_payload,
+                timeout_s=options.timeout_s,
+            )
         result["hub"]["quote"] = quote
 
     if not effective_execute:
@@ -363,9 +378,13 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             ),
         )
         submit_payload["execution_mode"] = PHASE9_EXECUTION_MODE
+        if live_session_hub:
+            submit_payload["ring"] = f"ring-{requested_ring}"
+            submit_payload["capabilities"] = ["chat.completions"]
+            submit_payload["multisession_authorization"] = live_request_authorization
         result["hub"]["submit"] = _post_hub_json(
             runtime.config.hub_url,
-            "/api/hub/v1/requests",
+            "/api/hub/v1/work/requests" if live_session_hub else "/api/hub/v1/requests",
             submit_payload,
             timeout_s=options.timeout_s,
         )

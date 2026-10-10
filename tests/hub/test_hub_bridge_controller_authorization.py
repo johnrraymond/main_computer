@@ -24,7 +24,7 @@ def target():
     return {"network": "mainnet", "hub_id": "mainneta-hub1", "hub_admin_address": ADMIN,
             "bridge_signer_required": True, "runtime_dir": "/data/hub/mainneta-hub1",
             "_hub_admin_wallet": {"address": ADMIN, "private_key": ADMIN_KEY},
-            "hub_admin_private_state_path": "networks.mainnet.hub_admin_assignments.mainneta-hub1",
+            "hub_admin_private_state_path": "networks.mainnet.hubs.mainneta-hub1.hub_admin",
             "chain_contract": {"chain_id": 42424240, "rpc_url": "https://rpc.test.invalid",
                                "contracts": {"hub_credit_bridge_escrow": ESCROW}},
             "_local_repo_root": str(Path(__file__).resolve().parents[2])}

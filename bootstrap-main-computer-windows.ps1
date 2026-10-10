@@ -4383,6 +4383,12 @@ function Install-PythonDependencies {
     )
 
     Invoke-NativeCheckedWithPreview -Label "Main Computer package install" -FilePath $PythonPath -Arguments $coreInstallArgs -WorkingDirectory $Root -TimeoutSeconds 300 | Out-Null
+    # Pip creates an unsigned main-computer.exe. Install a .cmd shim bound
+    # to this venv's python.exe, then retire the conflicting .exe.
+    Invoke-NativeCheckedWithPreview -Label "Main Computer CLI command launcher" -FilePath $PythonPath -Arguments @(
+        "-m", "main_computer.bootstrap.windows_cmd_launcher"
+    ) -WorkingDirectory $Root -TimeoutSeconds 30 | Out-Null
+
     Add-BootstrapStatus "Python dependencies" "OK" "Installed Main Computer package without Mathics optional dependency."
 
     Install-MathicsOptionalDependency -PythonPath $PythonPath -Root $Root

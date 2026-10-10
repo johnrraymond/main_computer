@@ -2155,9 +2155,23 @@ def call_hub_worker_pull_ai_json(
             "account_id": resolved_account_id,
         },
     }
+    from main_computer.hub_cli_live_session import cli_request_authorization, hub_uses_live_sessions
+    live_session_hub = hub_uses_live_sessions(resolved_hub_url)
+    if live_session_hub:
+        from main_computer.hub_credit_indexer import wallet_account_id
+        authorization = cli_request_authorization(resolved_hub_url, officer="o3")
+        authorized_account = wallet_account_id(authorization["wallet_address"])
+        if resolved_account_id != authorized_account:
+            raise RuntimeError(
+                "Data/O3 Hub account differs from its signed wallet. "
+                "Refusing to spend credits from a different identity."
+            )
+        request_payload["ring"] = "ring-3"
+        request_payload["capabilities"] = ["chat.completions"]
+        request_payload["multisession_authorization"] = authorization
     submitted = _open_hub_ai_json(
         resolved_hub_url,
-        "/api/hub/v1/requests",
+        "/api/hub/v1/work/requests" if live_session_hub else "/api/hub/v1/requests",
         method="POST",
         payload=request_payload,
         timeout_seconds=min(30.0, max(1.0, float(timeout_seconds or DEFAULT_AI_TIMEOUT_SECONDS))),

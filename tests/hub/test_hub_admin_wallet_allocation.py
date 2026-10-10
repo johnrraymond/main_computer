@@ -89,8 +89,8 @@ def test_claim_exhaustion_and_duplicate_assigned_fail_closed():
     with pytest.raises(HubAdminPoolError, match="HUB_ADMIN_RESERVE_EXHAUSTED"):
         claim_hub_admin(state, "hub16")
     assert state == before
-    state["hub_admin_assignments"]["hub16"] = deepcopy(state["hub_admin_assignments"]["hub1"])
-    with pytest.raises(HubAdminPoolError, match="share one assigned address"):
+    state["hubs"]["hub16"] = {"status": "inactive", "hub_admin": deepcopy(state["hubs"]["hub1"]["hub_admin"])}
+    with pytest.raises(HubAdminPoolError, match="association does not match its Hub"):
         inspect_pool(state)
 
 
@@ -134,7 +134,8 @@ def test_add_hub_reserves_before_deployment_and_never_stores_secret_in_operation
     def deployer(target):
         seen.append((target["_hub_admin_wallet"]["address"], target["hub_admin_address"]))
         assert "private_key" in target["_hub_admin_wallet"]
-        assert "hub_admin_assignments" in yaml.safe_load(ctx.mother_private_path.read_text())["networks"]["mainnet"]
+        net = yaml.safe_load(ctx.mother_private_path.read_text())["networks"]["mainnet"]
+        assert net["hubs"]["mainneta-hub1"]["hub_admin"]["associated_hub"] == "mainneta-hub1"
         return {"application_uuid": "app-hub", "action": "created"}
     observer = lambda target: {"verified": True, "hub_admin_verified": True, "reason": "test"}
     result = add_hub.do(ctx, "mainnet", operation_id, deployer=deployer, observer=observer)

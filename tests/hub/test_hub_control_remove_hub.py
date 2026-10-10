@@ -13,6 +13,13 @@ from tools.hub_control.common.state import read_accepted, require_operation
 
 ROOT = Path(__file__).resolve().parents[2]
 
+@pytest.fixture(autouse=True)
+def _legacy_removal_fixture(monkeypatch):
+    # Topology contract tests do not bootstrap verified Mother private state.
+    # The actual wallet release CAS is independently tested in wallet lifecycle tests.
+    monkeypatch.setattr(remove_hub, "transition_hub_identity", lambda *a, **kw: {"status": "inactive"})
+
+
 
 def _ctx(tmp_path: Path) -> HubContext:
     return HubContext(

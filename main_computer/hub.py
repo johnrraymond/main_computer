@@ -5241,8 +5241,23 @@ def serve_hub_worker_pull(
     lease_seconds: float | None = None,
     verbose: bool = True,
     max_requests: int | None = None,
+    officer: str = "o0",
 ) -> None:
     """Run a foreground worker-pull loop that lets a local provider service hub requests."""
+
+    from main_computer.hub_cli_live_session import hub_uses_live_sessions, serve_cli_live_worker
+
+    resolved_hub = (hub_url or config.hub_url).rstrip("/")
+    if hub_uses_live_sessions(resolved_hub):
+        serve_cli_live_worker(
+            hub_url=resolved_hub, worker_node_id=config.hub_worker_node_id,
+            model=config.model, chat_fn=chat_fn, assigned_ring=assigned_ring,
+            credits_per_request=config.hub_credits_per_request,
+            officer=officer, verbose=verbose, max_requests=max_requests,
+            timeout_s=min(15.0, max(3.0, config.hub_timeout_s)),
+            poll_interval_s=poll_interval_s,
+        )
+        return
 
     clean_hub_url = (hub_url or config.hub_url).rstrip("/")
     clean_worker_instance_id = config.hub_worker_node_id

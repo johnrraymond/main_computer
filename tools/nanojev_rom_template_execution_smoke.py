@@ -146,21 +146,19 @@ TASK_FAMILY_CONTRACTS: dict[str, dict[str, Any]] = {
 
 CATALOG_SYSTEM_PROMPT = r"""You are the ROM Training-Mix Compiler for the Main Computer.
 
-You receive a JSON description of the current NanoJev training-task mix.  Compile
-EVERY listed task family into exactly one reusable parameterized ROM template.
-The template represents the decision procedure for the task family; future
+You receive a JSON description of ONE current NanoJev training-task family.
+Compile exactly one reusable parameterized ROM template for that task.  Future
 training examples will reuse that same template with different runtime bindings.
 
 You are a compiler, not the decision maker.  Return JSON only, with no Markdown
 fences or prose.  Do not answer any task instance.
 
-CATALOG INVARIANTS
-- Emit every task from the input exactly once, preserving its exact task name.
-- Do not add task families that are not in the input.
+TASK TEMPLATE INVARIANTS
+- Preserve the exact input task name in the top-level "task" field.
 - Use the supplied natural_question as the semantic source of truth.
 - Treat suggested_inputs and suggested_output as strong interface hints, but you
   may choose clearer semantic port names when the meaning is preserved.
-- Infer the smallest reusable external input interface for each task.
+- Infer the smallest reusable external input interface for the task.
 - Runtime values are not present during compilation.  Every inferred input must
   therefore remain UNBOUND unless the task description itself explicitly names
   an external source path.  Never invent a source path.
@@ -234,25 +232,20 @@ OUTPUT PORT SHAPE
 
 TOP-LEVEL OUTPUT SCHEMA
 {
-  "catalog_version": 1,
-  "templates": [
-    {
-      "task": "exact input task name",
-      "rom_version": 2,
-      "question_intent": "short generic description",
-      "inputs": [...],
-      "outputs": [...],
-      "locals": [...],
-      "program": [...],
-      "unresolved": [],
-      "decision": null
-    }
-  ]
+  "task": "exact input task name",
+  "rom_version": 2,
+  "question_intent": "short generic description",
+  "inputs": [...],
+  "outputs": [...],
+  "locals": [...],
+  "program": [...],
+  "unresolved": [],
+  "decision": null
 }
 
-The output must contain one template for every task in the input and nothing else
-at the top level except catalog metadata needed to describe that catalog.
+Return exactly one task template object.
 """
+
 
 CATALOG_SERIALIZATION_SUFFIX: dict[str, str] = {
     "flat": r"""
@@ -416,25 +409,63 @@ def discover_training_mix(trainer_path: Path = TRAINER_PATH) -> dict[str, Any]:
     }
 
 
+def training_task_prompt(mix: Mapping[str, Any], task: str) -> str:
+    contract = TASK_FAMILY_CONTRACTS[str(task)]
+    return _pretty({
+        "request": "Compile this NanoJev training task family into one reusable ROM template.",
+        "compile_policy": "compile once; future examples rebind runtime values without recompiling",
+        "task": task,
+        "weight": mix["task_weights"][task],
+        "native_unit": mix["task_units"][task],
+        "default_train_count": mix["train_plan"][task],
+        "default_dev_count": mix["dev_plan"][task],
+        "natural_question": contract["question"],
+        "suggested_inputs": contract["suggested_inputs"],
+        "suggested_output": contract["suggested_output"],
+    })
+
+
 def training_mix_prompt(mix: Mapping[str, Any]) -> str:
-    tasks: list[dict[str, Any]] = []
-    for task in mix["tasks"]:
-        contract = TASK_FAMILY_CONTRACTS[str(task)]
-        tasks.append({
-            "task": task,
-            "weight": mix["task_weights"][task],
-            "native_unit": mix["task_units"][task],
-            "default_train_count": mix["train_plan"][task],
-            "default_dev_count": mix["dev_plan"][task],
-            "natural_question": contract["question"],
-            "suggested_inputs": contract["suggested_inputs"],
-            "suggested_output": contract["suggested_output"],
-        })
     return _pretty({
         "request": "Compile the current NanoJev training task mix into reusable ROM templates.",
         "compile_policy": "one template per task family; future examples rebind values without recompiling",
-        "tasks": tasks,
+        "tasks": [json.loads(training_task_prompt(mix, str(task))) for task in mix["tasks"]],
     })
+
+
+def _single_task_template(parsed: Mapping[str, Any] | None, task: str) -> Mapping[str, Any] | None:
+    """Recover one task template from the common shapes a local compiler emits.
+
+    A one-task call should normally return the template directly.  We also accept
+    a single `template`, a one-element `templates` list, or a `templates` mapping
+    keyed by task so harmless wrapper drift does not invalidate the semantic result.
+    """
+    if not isinstance(parsed, Mapping):
+        return None
+    if str(parsed.get("task", "")).strip() == task and isinstance(parsed.get("program"), list):
+        return parsed
+    wrapped = parsed.get("template")
+    if isinstance(wrapped, Mapping):
+        row = dict(wrapped)
+        row.setdefault("task", task)
+        return row
+    raw = parsed.get("templates")
+    if isinstance(raw, Mapping):
+        candidate = raw.get(task)
+        if isinstance(candidate, Mapping):
+            row = dict(candidate)
+            row.setdefault("task", task)
+            return row
+    if isinstance(raw, list):
+        matches = [item for item in raw if isinstance(item, Mapping) and str(item.get("task", "")).strip() == task]
+        if len(matches) == 1:
+            return matches[0]
+        mappings = [item for item in raw if isinstance(item, Mapping)]
+        if len(mappings) == 1:
+            row = dict(mappings[0])
+            row.setdefault("task", task)
+            return row
+    return None
 
 
 def _catalog_templates(parsed: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
@@ -562,59 +593,121 @@ def recover_catalog(parsed: Mapping[str, Any] | None, requested_style: str, mix:
 
 def compile_training_mix_catalog(*, style: str, args: argparse.Namespace, out_dir: Path,
                                  log: ollama_stream.Logger, mix: Mapping[str, Any]) -> dict[str, Any]:
-    case_dir = out_dir / "training_mix_compiler" / style
-    case_dir.mkdir(parents=True, exist_ok=True)
+    """Compile each task family independently, then assemble the catalog locally.
+
+    This keeps the semantic compile-once invariant while avoiding a large seven-task
+    generation whose outer JSON can be truncated and accidentally recovered as an
+    inner object by the tolerant JSON extractor.
+    """
+    root_dir = out_dir / "training_mix_compiler" / style
+    root_dir.mkdir(parents=True, exist_ok=True)
     system = CATALOG_SYSTEM_PROMPT + "\n" + CATALOG_SERIALIZATION_SUFFIX[style]
-    prompt = training_mix_prompt(mix)
-    request_payload = {
-        "model": args.model,
-        "system": system,
-        "prompt": prompt,
-        "stream": True,
-        "keep_alive": args.keep_alive,
-        "options": {"temperature": 0, "num_predict": args.catalog_num_predict},
-    }
-    _write_text(case_dir / "system_prompt.txt", system)
-    _write_text(case_dir / "training_mix_prompt.json", prompt + "\n")
-    _write_json(case_dir / "request.json", request_payload)
+    _write_text(root_dir / "system_prompt.txt", system)
+    _write_text(root_dir / "training_mix_prompt.json", training_mix_prompt(mix) + "\n")
     log.banner(f"ROM TRAINING MIX COMPILE: {style}")
-    started = time.perf_counter()
-    try:
-        response, stream = ollama_stream.call_ollama_generate_streaming(
-            payload=request_payload,
-            url=args.ollama_url,
-            timeout_s=args.timeout_s,
-            log=log,
-            raw_path=case_dir / "raw_stream.jsonl",
-            stream_label=f"rom-training-mix-{style}",
+
+    templates: list[Mapping[str, Any]] = []
+    task_calls: dict[str, Any] = {}
+    total_elapsed = 0.0
+    total_chars = 0
+    total_eval_count = 0
+    all_done = True
+
+    for task_value in mix["tasks"]:
+        task = str(task_value)
+        case_dir = root_dir / task
+        case_dir.mkdir(parents=True, exist_ok=True)
+        prompt = training_task_prompt(mix, task)
+        request_payload = {
+            "model": args.model,
+            "system": system,
+            "prompt": prompt,
+            "stream": True,
+            "keep_alive": args.keep_alive,
+            "options": {"temperature": 0, "num_predict": args.catalog_num_predict},
+        }
+        _write_text(case_dir / "task_prompt.json", prompt + "\n")
+        _write_json(case_dir / "request.json", request_payload)
+        started = time.perf_counter()
+        try:
+            response, stream = ollama_stream.call_ollama_generate_streaming(
+                payload=request_payload,
+                url=args.ollama_url,
+                timeout_s=args.timeout_s,
+                log=log,
+                raw_path=case_dir / "raw_stream.jsonl",
+                stream_label=f"rom-training-mix-{style}-{task}",
+            )
+            error = None
+        except Exception as exc:
+            response, stream = "", {}
+            error = f"{type(exc).__name__}: {exc}"
+        elapsed = time.perf_counter() - started
+        total_elapsed += elapsed
+        total_chars += len(response)
+        total_eval_count += int(stream.get("eval_count") or 0) if isinstance(stream, Mapping) else 0
+        if isinstance(stream, Mapping) and stream.get("done") is False:
+            all_done = False
+        _write_text(case_dir / "response.txt", response)
+        parsed = romc.extract_json_object(response)
+        if parsed is not None:
+            _write_json(case_dir / "parsed.json", parsed)
+        template = _single_task_template(parsed, task)
+        recovery = recover_catalog_template(
+            template, style, min_inputs=int(TASK_FAMILY_CONTRACTS[task]["min_inputs"])
         )
-        error = None
-    except Exception as exc:
-        response, stream = "", {}
-        error = f"{type(exc).__name__}: {exc}"
-    elapsed = time.perf_counter() - started
-    _write_text(case_dir / "response.txt", response)
-    parsed = romc.extract_json_object(response)
-    if parsed is not None:
-        _write_json(case_dir / "parsed.json", parsed)
-    recovery = recover_catalog(parsed, style, mix)
-    if error:
-        recovery["usable"] = False
-        recovery.setdefault("reasons", []).insert(0, error)
+        if error:
+            recovery["usable"] = False
+            recovery.setdefault("reasons", []).insert(0, error)
+        if template is None and not error:
+            recovery["usable"] = False
+            recovery.setdefault("reasons", []).insert(
+                0, "compiler response did not contain a recoverable template for this task"
+            )
+        if template is not None:
+            row = dict(template)
+            row["task"] = task
+            templates.append(row)
+            _write_json(case_dir / "template.json", row)
+        task_calls[task] = {
+            "error": error,
+            "elapsed_s": elapsed,
+            "response_chars": len(response),
+            "stream_summary": stream,
+            "parsed": parsed,
+            "template": template,
+            "recovery": recovery,
+        }
+        _write_json(case_dir / "recovery.json", recovery)
+        log(
+            f"[training-mix:{style}:{task}] {'USABLE' if recovery['usable'] else 'UNUSABLE'} "
+            f"elapsed_s={elapsed:.2f} eval_count={int(stream.get('eval_count') or 0) if isinstance(stream, Mapping) else 0}"
+        )
+        for reason in recovery.get("reasons", []):
+            log(f"[training-mix:{style}:{task}] reason: {reason}")
+
+    parsed_catalog = {"catalog_version": 1, "templates": templates}
+    _write_json(root_dir / "parsed.json", parsed_catalog)
+    recovery = recover_catalog(parsed_catalog, style, mix)
     result = {
         "style": style,
-        "error": error,
-        "elapsed_s": elapsed,
-        "response_chars": len(response),
-        "stream_summary": stream,
-        "parsed": parsed,
+        "error": None,
+        "elapsed_s": total_elapsed,
+        "response_chars": total_chars,
+        "stream_summary": {
+            "eval_count": total_eval_count,
+            "done": all_done,
+            "task_count": len(task_calls),
+        },
+        "parsed": parsed_catalog,
         "recovery": recovery,
-        "catalog_id": sha256_json(parsed) if parsed is not None else None,
+        "catalog_id": sha256_json(parsed_catalog),
+        "task_calls": task_calls,
     }
-    _write_json(case_dir / "recovery.json", recovery)
+    _write_json(root_dir / "recovery.json", recovery)
     log(
         f"[training-mix:{style}] {'USABLE' if recovery['usable'] else 'UNUSABLE'} "
-        f"tasks={len(recovery['task_results'])} elapsed_s={elapsed:.2f}"
+        f"tasks={len(recovery['task_results'])} elapsed_s={total_elapsed:.2f}"
     )
     for reason in recovery.get("reasons", []):
         log(f"[training-mix:{style}] reason: {reason}")

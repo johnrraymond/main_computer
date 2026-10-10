@@ -1437,6 +1437,12 @@ def apply_deployment(
                 "private_key": str(admin["private_key"]),
             }
             env_values[HUB_ADMIN_BUNDLE_ENV] = base64.b64encode(canonical_bytes(bundle)).decode("ascii")
+        # The bridge signer is a separate, production-only bundle. Its assigned
+        # Hub administrator identity passed live escrow authorization above.
+        # Sync it on every deployment (including retries) so the Hub runtime
+        # replaces any legacy signer persisted at the same private path.
+        if bridge_signer is not None:
+            env_values[BRIDGE_SIGNER_ENV] = str(bridge_signer["bundle_b64"])
         _progress(f"deployment: synchronize {len(env_values)} environment variables")
         for index, (key, value) in enumerate(env_values.items(), start=1):
             _progress(f"deployment: env {index}/{len(env_values)} key={key}")
