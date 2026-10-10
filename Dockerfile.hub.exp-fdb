@@ -22,7 +22,7 @@ COPY . /app
 
 RUN set -eux; \
     python -m pip install --upgrade pip; \
-    python -m pip install --no-cache-dir -e . "foundationdb==${FDB_PYTHON_VERSION}" "cryptography>=42"; \
+    python -m pip install --no-cache-dir -e . "foundationdb==${FDB_PYTHON_VERSION}" "cryptography>=42" "eth-account==0.13.7"; \
     arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "$arch" in \
       amd64|x86_64) deb_arch="amd64" ;; \

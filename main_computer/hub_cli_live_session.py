@@ -59,13 +59,13 @@ def hub_uses_live_sessions(hub_url: str, *, timeout_s: float = 5.0) -> bool:
 
 
 def _officer_wallet(selector: str, *, cwd: Path | None = None) -> Any:
-    """Reuse the existing O0/O3 identity resolver without creating another wallet."""
-    from main_computer.captain_cli import _default_state_path, _load_json, resolve_captain_wallet
+    """Use Mother's verified mainnet officer wallet, not the public deployment JSON."""
+    from main_computer.captain_cli import resolve_captain_wallet
 
     root = (cwd or Path.cwd()).resolve()
-    deployment = _default_state_path("mainnet", root)
+    deployment = root / "runtime" / "deployments" / "mainnet" / "latest.json"
     wallet = resolve_captain_wallet(
-        selector, deployment=_load_json(deployment), deployment_path=deployment,
+        selector, deployment={}, deployment_path=deployment, network="mainnet",
     )
     if not wallet.private_key:
         raise RuntimeError(

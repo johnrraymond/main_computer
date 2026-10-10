@@ -140,8 +140,8 @@ def build_captain_options_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt", default="", help="Prompt/memo override. Otherwise free text before the first --option is used.")
     parser.add_argument("--wallet", default="", help="Wallet/officer selector or 0x address. Defaults to captain/O0.")
     parser.add_argument("--officer", default="", help="Officer selector, for example O1, first, second, or third.")
-    parser.add_argument("--private-key", default="", help="Private key for a non-dev backend wallet. Never printed.")
-    parser.add_argument("--private-state", type=Path, default=None, help="Private YAML/JSON state. Defaults to runtime/state/main_computer.private.yaml when present.")
+    parser.add_argument("--private-key", default="", help="Development-only wallet override. Mainnet/testnet officer keys come from verified Mother state.")
+    parser.add_argument("--private-state", type=Path, default=None, help="Development-only private state override; mainnet/testnet use verified Mother state.")
     parser.add_argument("--ring", default="3", help="Requested hub worker ring. Defaults to 3.")
     parser.add_argument("--ring0", dest="ring", action="store_const", const="0", help="Shortcut for --ring 0.")
     parser.add_argument("--ring1", dest="ring", action="store_const", const="1", help="Shortcut for --ring 1.")
@@ -560,6 +560,7 @@ def build_captain_runtime(
         deployment_path=deployment_path,
         private_key_override=options.private_key,
         private_state_path=getattr(options, "private_state", None),
+        network=network,
     )
     rpc_url = str(options.rpc_url or _chain_value(deployment, "rpc_url") or _chain_value(deployment, "host_rpc_url") or config.chain_rpc_url or "").strip()
     chain_id = int(options.chain_id or _chain_value(deployment, "chain_id") or config.chain_id or 0)
@@ -592,6 +593,78 @@ def build_captain_runtime(
         bridge_controller_address=bridge_controller_address,
     )
 
+def _mother_officer_wallet(selector: str, *, network: str, deployment_path: Path) -> CaptainWallet:
+    """Resolve signing authority from Mother's verified private-state closure only.
+
+    The deployment manifest is a public projection and is never consulted here.
+    No environment override, wallet-file fallback or development key is permitted.
+    """
+    from tools.mother.common.ethereum_identity import is_address, is_private_key, private_key_to_address
+    from tools.mother.common.models import OperationIdentity
+    from tools.mother.common.paths import MotherPaths
+    from tools.mother.common.private_state import read_private_state
+
+    repo_root = _repo_root_for_deployment_path(deployment_path)
+    paths = MotherPaths(runtime_state_root=repo_root / "runtime" / "state").resolve_private_state_paths()
+    operation = OperationIdentity(
+        operation_id=f"captain-wallet-{network}-inspect",
+        request_id="captain-wallet",
+        network=network,
+        operation_kind="MOTHER-OP-DIAGNOSE",
+    )
+    try:
+        verified = read_private_state(paths, operation=operation)
+        document = json.loads(verified.canonical_object_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise CaptainCliError(
+            f"Cannot verify Mother private state for {network} at {paths.identity_file} "
+            f"({type(exc).__name__}); refusing wallet authorization."
+        ) from exc
+    networks = document.get("networks") if isinstance(document, dict) else None
+    network_doc = networks.get(network) if isinstance(networks, dict) else None
+    wallets = network_doc.get("wallets") if isinstance(network_doc, dict) else None
+    if not isinstance(wallets, dict):
+        raise CaptainCliError(f"Mother has no authoritative {network} officer wallets.")
+
+    roles = ("captain", "o1", "o2", "o3")
+    raw = str(selector or "captain").strip()
+    office_index = _office_index_for_selector(_selector_key(raw))
+    if office_index is None and _ADDRESS_RE.fullmatch(raw):
+        for index, role in enumerate(roles):
+            entry = wallets.get(role)
+            if isinstance(entry, dict) and str(entry.get("address") or "").lower() == raw.lower():
+                office_index = index
+                break
+    if office_index is None or office_index >= len(roles):
+        raise CaptainCliError(f"No Mother {network} officer matches selector {selector!r}.")
+
+    role = roles[office_index]
+    entry = wallets.get(role)
+    if not isinstance(entry, dict):
+        raise CaptainCliError(f"Mother {network} officer {role} is missing.")
+    address = entry.get("address")
+    if not is_address(address) or int(address[2:], 16) == 0:
+        raise CaptainCliError(f"Mother {network} officer {role} has an invalid address.")
+    private_key = entry.get("private_key")
+    if not private_key:
+        raise CaptainCliError(
+            f"Mother {network} officer {role} has no private key for Hub multi-session authorization."
+        )
+    if not is_private_key(private_key):
+        raise CaptainCliError(f"Mother {network} officer {role} has an invalid private key.")
+    if private_key_to_address(private_key).lower() != address.lower():
+        raise CaptainCliError(f"Mother {network} officer {role} signing key does not match its address.")
+
+    office = _DEV_OFFICE_DEFAULTS[office_index]
+    return CaptainWallet(
+        selector=raw,
+        office=str(office["office"]),
+        title=str(office["title"]),
+        address=address,
+        private_key=private_key,
+    )
+
+
 def resolve_captain_wallet(
     selector: str,
     *,
@@ -599,7 +672,28 @@ def resolve_captain_wallet(
     deployment_path: Path,
     private_key_override: str = "",
     private_state_path: Path | None = None,
+    network: str = "",
 ) -> CaptainWallet:
+    # A public manifest may contain stale or incorrect network metadata: never
+    # let its contents redirect a mainnet/testnet wallet to development keys.
+    path_network = Path(deployment_path).parent.name.lower()
+    requested_network = str(network or "").strip().lower()
+    if path_network in {"mainnet", "testnet"} and requested_network and requested_network != path_network:
+        raise CaptainCliError(
+            f"Requested network {requested_network!r} conflicts with deployment path network {path_network!r}."
+        )
+    selected_network = requested_network or (
+        path_network if path_network in {"mainnet", "testnet"}
+        else _deployment_network_name(deployment_path, deployment)
+    )
+    if selected_network in {"mainnet", "testnet"}:
+        if private_key_override or private_state_path is not None:
+            raise CaptainCliError(
+                f"{selected_network} officer signing identities must come from verified Mother state; "
+                "--private-key and --private-state overrides are not supported."
+            )
+        return _mother_officer_wallet(selector, network=selected_network, deployment_path=deployment_path)
+
     raw = str(selector or "captain").strip()
     normalized = _selector_key(raw)
     offices = _office_records(deployment)
