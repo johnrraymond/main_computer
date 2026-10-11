@@ -582,6 +582,126 @@ class ExperimentalFoundationDbCreditLedger:
         return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
 
 
+    def record_completed_bridge_deposit(
+        self,
+        *,
+        account_id: str,
+        owner_address: str = "",
+        chain_completed_credit_wei: int | str,
+        deposit_id: str,
+        completion_tx_hash: str = "",
+        chain_id: int = 0,
+        contract_address: str = "",
+        completed_units: int = 0,
+        deposit_amount_units: int = 0,
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically reconcile completed escrow units into an FDB wallet account.
+
+        The chain's cumulative completed amount is authoritative.  Crediting
+        only its delta from the durable account watermark also makes replay of
+        an already-completed on-chain transaction safe after a Hub crash.
+        """
+
+        clean_id = clean_account_id(account_id)
+        clean_chain_completed_wei = positive_credit_wei(chain_completed_credit_wei)
+        clean_deposit_id = str(deposit_id or "").strip().lower()
+        if not clean_deposit_id:
+            raise ValueError("deposit_id is required.")
+        now = utc_now()
+        tx_hash = str(completion_tx_hash or "").strip().lower()
+        base_metadata = {
+            **dict(metadata or {}),
+            "deposit_id": clean_deposit_id,
+            "chain_completed_credit_wei": str(clean_chain_completed_wei),
+            "chain_completed_credits_display": credit_wei_to_decimal_text(clean_chain_completed_wei),
+            "completed_units": str(positive_int(completed_units)),
+            "deposit_amount_units": str(positive_int(deposit_amount_units)),
+            "completion_tx_hash": tx_hash,
+            "chain_id": positive_int(chain_id),
+            "contract_address": str(contract_address or "").strip().lower(),
+        }
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            # The watermark and spendable balance must change in one FDB
+            # transaction, including under retries/concurrent completion calls.
+            account_key = self._key("account", clean_id)
+            current = self._account_from_payload(
+                self._read_dict(tr, "account", clean_id), clean_id, now=now
+            )
+            self._add_conflict_key(tr, "add_read_conflict_key", account_key)
+            local_completed_wei = positive_credit_wei(current.bridge_completed_credit_wei)
+            if clean_chain_completed_wei < local_completed_wei:
+                raise ValueError(
+                    "Hub local bridge_completed_credit_wei is ahead of the chain-completed aggregate "
+                    f"for {clean_id}: local={credit_wei_to_decimal_text(local_completed_wei)} credits, "
+                    f"chain={credit_wei_to_decimal_text(clean_chain_completed_wei)} credits."
+                )
+
+            delta_wei = clean_chain_completed_wei - local_completed_wei
+            common = {
+                "chain_completed_credit_wei": str(clean_chain_completed_wei),
+                "chain_completed_credits_display": credit_wei_to_decimal_text(clean_chain_completed_wei),
+                "local_completed_credit_wei": str(local_completed_wei),
+                "local_completed_credits_display": credit_wei_to_decimal_text(local_completed_wei),
+                "deposit_id": clean_deposit_id,
+            }
+            if delta_wei == 0:
+                return {
+                    "idempotent": True,
+                    "delta_credit_wei": "0",
+                    "delta_credits_display": credit_wei_to_decimal_text(0),
+                    **common,
+                    "account": current.as_dict(),
+                }
+
+            account = HubCreditAccount(
+                account_id=current.account_id,
+                owner_address=owner_address or current.owner_address,
+                available_credit_wei=current.available_credit_wei + delta_wei,
+                held_credit_wei=current.held_credit_wei,
+                spent_credit_wei=current.spent_credit_wei,
+                earned_credit_wei=current.earned_credit_wei,
+                bridge_completed_credit_wei=clean_chain_completed_wei,
+                created_at=current.created_at,
+                updated_at=now,
+                metadata={**dict(current.metadata or {}), "funding_model": "hub_credit_bridge_escrow_wallet_v2"},
+            )
+            transaction = HubCreditTransaction(
+                transaction_id=stable_id(
+                    "ctx",
+                    {
+                        "account_id": clean_id,
+                        "type": "bridge_deposit_completed",
+                        "deposit_id": clean_deposit_id,
+                        "chain_completed_credit_wei": str(clean_chain_completed_wei),
+                    },
+                ),
+                account_id=clean_id,
+                transaction_type="bridge_deposit_completed",
+                credits=0,
+                credit_wei=delta_wei,
+                created_at=now,
+                deposit_id=clean_deposit_id,
+                memo=memo or f"bridge deposit completed for {clean_id}",
+                metadata=base_metadata,
+            )
+            self._write_dict(tr, "account", clean_id, account.as_dict())
+            self._write_dict(tr, "transaction", transaction.transaction_id, transaction.as_dict())
+            return {
+                "idempotent": False,
+                "delta_credit_wei": str(delta_wei),
+                "delta_credits_display": credit_wei_to_decimal_text(delta_wei),
+                **common,
+                "account": account.as_dict(),
+                "transaction": transaction.as_dict(),
+            }
+
+        result = _tx(self.db)
+        return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
+
     def record_deposit(self, deposit: CreditDeposit) -> dict[str, Any]:
         """Import an indexed bridge-escrow deposit exactly once.
 
