@@ -904,7 +904,12 @@ class StableHubPayoutLedgerDirectory:
                 account["owner_address"] = normalize_address(wallet_address)
                 accounts[clean_account] = account
             return dict(account)
-        initial_credits = STABLE_HUB_DEV_ACCOUNT_CREDITS if default_credits is None else default_credits
+        network = dict(getattr(self.topology, "network", {}) or {})
+        live_network = str(network.get("network_key") or "").lower() in {"mainnet", "testnet"}
+        # A live network must not mint development credits just because a
+        # requester wallet first appears. Actual on-chain funding requires a
+        # separate verified bridge adapter; absent that, it starts at zero.
+        initial_credits = (Decimal("0") if live_network else STABLE_HUB_DEV_ACCOUNT_CREDITS) if default_credits is None else default_credits
         if initial_credits < Decimal("0"):
             raise StableHubWorkerSessionError("initial payout account credits must be zero or greater.")
         initial_wei = credit_decimal_text_to_wei(_decimal_to_string(initial_credits))
@@ -912,7 +917,7 @@ class StableHubPayoutLedgerDirectory:
             account_id=clean_account,
             wallet_address=wallet_address,
             available_credit_wei=initial_wei,
-            metadata={"source": "stable_hub_dev_default" if default_credits is None else "stable_hub_fund_account"},
+            metadata={"source": "stable_hub_production_zero" if live_network and default_credits is None else ("stable_hub_dev_default" if default_credits is None else "stable_hub_fund_account")},
         )
         accounts[clean_account] = account
         self._event(data, "stable.work.payout.account_created", account_id=clean_account)

@@ -1,0 +1,52 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ARG FDB_VERSION=7.4.6
+ARG FDB_PYTHON_VERSION=7.4.6
+ARG TARGETARCH
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV FDB_API_VERSION=740
+ENV FOUNDATIONDB_CLIENT_LIBRARY_PATH=/usr/lib/libfdb_c.so
+ENV HUB_HEALTH_PORT=
+# Production must never seed requester accounts with development credits.
+ENV MAIN_COMPUTER_STABLE_HUB_DEV_ACCOUNT_CREDITS=0
+
+LABEL org.opencontainers.image.description="Main Computer Stable Hub with cross-Hub worker handoff and FoundationDB"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl wget \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /app
+
+RUN set -eux; \
+    python -m pip install --upgrade pip; \
+    python -m pip install --no-cache-dir -e . "foundationdb==${FDB_PYTHON_VERSION}" "cryptography>=42" "eth-account==0.13.7"; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$arch" in \
+      amd64|x86_64) deb_arch="amd64" ;; \
+      arm64|aarch64) deb_arch="arm64" ;; \
+      *) echo "Unsupported FoundationDB client architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/foundationdb-clients.deb \
+      "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-clients_${FDB_VERSION}-1_${deb_arch}.deb"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends /tmp/foundationdb-clients.deb; \
+    rm -f /tmp/foundationdb-clients.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    test -e "${FOUNDATIONDB_CLIENT_LIBRARY_PATH}"
+
+EXPOSE 8790 8785
+
+CMD ["python", "/app/run-stable-hub.py"]
+
+# Hub-Control birth keeps image health transport-only so a newborn container
+# remains inspectable while Hub Control performs the authoritative public
+# /api/hub/v1 health/identity/status proof, including FDB and Chain adoption.
+# Re-enable an endpoint-backed image healthcheck once startup is no longer under
+# lifecycle diagnosis.
+HEALTHCHECK --interval=2s --timeout=2s --start-period=0s --retries=30 \
+    CMD /bin/sh -c "exit 0"

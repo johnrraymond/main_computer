@@ -62,6 +62,7 @@ def stable_hub_contract() -> dict[str, str]:
         "worker_live_session_transport": "websocket",
         "worker_heartbeat": "live-connection-ping-pong",
         "rest_worker_heartbeat": "forbidden",
+        "wallet_funding": "not_implemented",  # No bridge credit minting until an audited adapter exists.
     }
 
 
