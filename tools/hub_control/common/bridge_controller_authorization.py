@@ -1,7 +1,8 @@
 """Authorize the Hub's committed administrator against its active escrow contract.
 
-Only add-hub.do calls this mutating boundary. No private keys are returned or
-persisted in Hub operations; an already-authorized controller is a no-op.
+Both add-hub and in-place redeployment use this mutating boundary. No private
+keys are returned or persisted in Hub operations; an already-authorized
+controller is a no-op.
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ def _send_owner_authorization(*, rpc: str, chain_id: int, escrow: str, admin: st
     try:
         submitted_hash = _hub_chain_rpc(rpc, "eth_sendRawTransaction", [raw_hex])
     except Exception as exc:
-        raise HubControlError("HUB_BRIDGE_AUTHORIZATION_SEND_UNCERTAIN", f"owner authorization submission failed or is uncertain; tx_hash={expected_hash}; check chain and retry add-hub: {type(exc).__name__}") from exc
+        raise HubControlError("HUB_BRIDGE_AUTHORIZATION_SEND_UNCERTAIN", f"owner authorization submission failed or is uncertain; tx_hash={expected_hash}; check chain before retrying the Hub operation: {type(exc).__name__}") from exc
     if not isinstance(submitted_hash, str) or submitted_hash.lower() != expected_hash.lower():
         raise HubControlError("HUB_BRIDGE_AUTHORIZATION_HASH_MISMATCH", "chain returned a different owner authorization transaction hash")
     return expected_hash
@@ -116,7 +117,7 @@ def ensure_bridge_controller(ctx: HubContext, *, network: str, target: Mapping[s
                 raise HubControlError("HUB_BRIDGE_AUTHORIZATION_REVERTED", f"owner authorization reverted: {tx_hash}")
             break
         if time.monotonic() >= deadline:
-            raise HubControlError("HUB_BRIDGE_AUTHORIZATION_RECEIPT_TIMEOUT", f"authorization tx not confirmed: {tx_hash}; retry add-hub after verifying chain state")
+            raise HubControlError("HUB_BRIDGE_AUTHORIZATION_RECEIPT_TIMEOUT", f"authorization tx not confirmed: {tx_hash}; retry the Hub operation after verifying chain state")
         time.sleep(min(poll_s, max(0, deadline - time.monotonic())))
     if not _contract_bool(rpc, escrow, admin_address):
         raise HubControlError("HUB_BRIDGE_AUTHORIZATION_UNVERIFIED", "successful owner transaction did not authorize assigned Hub admin")

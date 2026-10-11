@@ -74,6 +74,7 @@ SINGLE_NODE_STEPS = [
     "verify-bootstrap-evidence",
     "finalize-single-node-proof",
     "verify-single-node-proof",
+    "publish-officer-addresses",
     "ensure-rpc-route",
     POST_WORK_CLEANUP_STEP,
     PRISTINE_CLEANUP_STEP,
@@ -135,6 +136,7 @@ MUTATION_STEPS = {
     "execute-do",
     "execute-identity",
     "execute-bootstrap",
+    "publish-officer-addresses",
     "execute-replica-sync",
     "execute-validator-admission",
     "ensure-rpc-route",
@@ -280,6 +282,12 @@ def is_clean_or_pass(step: str, obj: dict[str, Any]) -> bool:
             and bool(pick(obj, "transaction_artifact.path"))
             and bool(pick(obj, "transaction_artifact.sha256", sha_key))
         )
+    if step == "publish-officer-addresses":
+        return (
+            obj.get("status") in {"PASS", "UPDATED"}
+            and obj.get("changed") is (obj.get("status") == "UPDATED")
+            and obj.get("write_performed") is (obj.get("status") == "UPDATED")
+        )
     if obj.get("clean") is True:
         return True
     if pick(obj, "summary.clean") is True:
@@ -313,6 +321,18 @@ def print_step_stop_guidance(step: str, obj: dict[str, Any] | None) -> None:
         print("Do not retry the mutation blindly. Diagnose/rollback first.")
     else:
         print("No live mutation was performed by this step. Fix the input/tooling issue, then rerun from the last valid artifact.")
+
+
+PRIVATE_STATE_CHANGED_ERROR = "MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_PRIVATE_STATE_CHANGED:"
+
+
+def is_private_state_binding_error(step: str, stdout: str, stderr: str) -> bool:
+    """Recognize only the detector's specific private-state-binding failure."""
+    return step == "detect-topology" and any(
+        line.strip().startswith(PRIVATE_STATE_CHANGED_ERROR)
+        for output in (stdout, stderr)
+        for line in output.splitlines()
+    )
 
 
 def short_summary(step: str, obj: dict[str, Any]) -> dict[str, Any]:
@@ -1046,6 +1066,8 @@ class Harness:
             "bootstrap_evidence_sha256": args.bootstrap_evidence_sha256,
             "single_node_proof_evidence": args.single_node_proof_evidence,
             "single_node_proof_evidence_sha256": args.single_node_proof_evidence_sha256,
+            "single_node_proof_verified": False,
+            "officer_address_publication": None,
             "replica_sync_release": args.replica_sync_release,
             "replica_sync_release_sha256": args.replica_sync_release_sha256,
             "replica_sync_evidence": args.replica_sync_evidence,
@@ -1354,6 +1376,21 @@ class Harness:
                     print(f"evidence_sha256={evidence_sha}")
             print(f"logs={self.run_dir}")
             print_step_stop_guidance(step, obj)
+            if is_private_state_binding_error(step, proc.stdout, proc.stderr):
+                print("\nMOTHER_MUTATE_HARNESS_PRIVATE_STATE_BINDING_FORWARD_AVAILABLE:")
+                print("The topology evidence has an obsolete Mother private-state binding.")
+                print("To copy the latest auto-selected evidence forward without resealing its topology, run:")
+                if self.args.network == "mainnet":
+                    print(quote_command([
+                        sys.executable,
+                        str(self.repo_root / "tools" / "mother_forward_topology_evidence_binding.py"),
+                        "--network", self.args.network,
+                        "--runtime-state-root", self.args.runtime_state_root,
+                    ]))
+                    print("Then rerun the harness without any explicit --baseline-evidence or --baseline-evidence-sha256.")
+                    print("Live topology validation and any necessary reseal remain separate steps.")
+                else:
+                    print("The existing evidence-forwarding script supports mainnet only; no command is offered for this network.")
             raise SystemExit(proc.returncode)
 
         if obj is None:
@@ -2019,6 +2056,7 @@ class Harness:
         self.state["single_node_proof_evidence_sha256"] = require("single-node proof evidence sha", pick(obj, "evidence.sha256"))
 
     def step_verify_single_node_proof(self) -> None:
+        self.state["single_node_proof_verified"] = False
         self.run("verify-single-node-proof", self.cmd(
             "verify-add-node-single-node-chain-and-hub-proof-evidence",
             "--network", self.args.network,
@@ -2034,6 +2072,39 @@ class Harness:
             "--transaction-max-age-seconds", str(self.args.transaction_max_age_seconds),
             "--baseline-max-age-seconds", str(self.args.baseline_max_age_seconds),
         ))
+        self.state["single_node_proof_verified"] = True
+
+    def step_publish_officer_addresses(self) -> None:
+        """Project Mother O0-O3 into latest.json only after proven fresh genesis.
+
+        Existing-chain rebootstrap must not republish identities; this operation
+        changes only the deployment manifest and never touches chain or Mother.
+        """
+        if self.args.operation != "add-node":
+            raise SystemExit("publish-officer-addresses is only valid for add-node")
+        baseline = Path(require("baseline_evidence", self.state["baseline_evidence"]))
+        if not baseline_requires_new_genesis(baseline):
+            print("\n=== publish-officer-addresses: skipped (existing genesis retained) ===")
+            return
+        if self.args.network not in {"mainnet", "testnet"}:
+            print("\n=== publish-officer-addresses: skipped (not testnet/mainnet) ===")
+            return
+        # --start-at=publish-officer-addresses is a supported recovery path.
+        # Do not infer prior verification merely from the presence of an artifact.
+        if not self.state.get("single_node_proof_verified"):
+            self.step_verify_single_node_proof()
+        rectifier = self.repo_root / "tools" / "wallet_address_rectifier.py"
+        if not rectifier.is_file():
+            raise SystemExit(f"MOTHER_OFFICER_PUBLISHER_MISSING: {rectifier}")
+        obj = self.run("publish-officer-addresses", [
+            sys.executable,
+            str(rectifier),
+            "--network", self.args.network,
+            "--apply",
+        ])
+        # The rectifier reads the verified Mother identity and verifies readback.
+        # Persist the result in harness output for resumability/diagnostics.
+        self.state["officer_address_publication"] = obj
 
     def resolved_add_node_sync_mode(self) -> str:
         explicit = getattr(self.args, "sync_mode", None)
@@ -2529,6 +2600,7 @@ class Harness:
             "verify-bootstrap-evidence": self.step_verify_bootstrap_evidence,
             "finalize-single-node-proof": self.step_finalize_single_node_proof,
             "verify-single-node-proof": self.step_verify_single_node_proof,
+            "publish-officer-addresses": self.step_publish_officer_addresses,
             "release-replica-sync": self.step_release_replica_sync,
             "verify-replica-sync-release": self.step_verify_replica_sync_release,
             "execute-replica-sync": self.step_execute_replica_sync,

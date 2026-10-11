@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import pytest
+from tools.mother.common.ethereum_identity import private_key_to_address
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,131 +74,104 @@ def test_dev_captain_wallet_defaults_to_local_office_key_without_printing_it() -
 
 
 
-def test_mainnet_captain_wallet_reads_private_state_key_without_manifest_secret(tmp_path) -> None:
+MOTHER_O0_KEY = "0x" + "1" * 64
+MOTHER_O3_KEY = "0x" + "4" * 64
+MOTHER_O0_ADDRESS = private_key_to_address(MOTHER_O0_KEY)
+MOTHER_O3_ADDRESS = private_key_to_address(MOTHER_O3_KEY)
+
+
+def _stub_verified_mother(monkeypatch, *, network="mainnet", captain=None, o3=None, fail=None):
+    """Stub only Mother's verified reader, never a YAML or manifest key source."""
+    from tools.mother.common import private_state as mother_private_state
+
+    document = {"networks": {network: {"wallets": {
+        "captain": captain if captain is not None else {
+            "address": MOTHER_O0_ADDRESS, "private_key": MOTHER_O0_KEY,
+        },
+        "o3": o3 if o3 is not None else {
+            "address": MOTHER_O3_ADDRESS, "private_key": MOTHER_O3_KEY,
+        },
+    }}}}
+    calls = []
+
+    def fake_read(paths, *, operation):
+        assert paths.identity_file.name == "identity.private.yaml"
+        assert paths.identity_file.parent.name == "mother"
+        assert operation.network == network
+        calls.append((paths, operation))
+        if fail is not None:
+            raise fail
+        return SimpleNamespace(canonical_object_bytes=json.dumps(document).encode("utf-8"))
+
+    monkeypatch.setattr(mother_private_state, "read_private_state", fake_read)
+    return calls
+
+
+def test_mainnet_captain_wallet_uses_verified_mother_and_ignores_manifest(tmp_path, monkeypatch) -> None:
+    calls = _stub_verified_mother(monkeypatch)
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
-    deployment_path.parent.mkdir(parents=True)
     deployment = {
-        "chain": {"chain_id": 42424240},
-        "offices": [
-            {
-                "office": "O0",
-                "title": "Captain",
-                "address": "0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F",
-            }
-        ],
+        "chain": {"chain_id": 42424240, "network_name": "dev"},
+        "offices": [{"office": "O0", "title": "Captain", "address": "0x" + "f" * 40,
+                     "private_key": "0x" + "2" * 64}],
     }
-    private_key = "0x" + "1" * 64
-    private_state = tmp_path / "runtime" / "state" / "main_computer.private.yaml"
-    private_state.parent.mkdir(parents=True)
-    private_state.write_text(
-        "\n".join(
-            [
-                "schema_version: 1",
-                "networks:",
-                "  mainnet:",
-                "    wallets:",
-                "      captain:",
-                "        address: \"0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F\"",
-                f"        private_key: \"{private_key}\"",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
+    monkeypatch.setenv("MAIN_COMPUTER_CAPTAIN_PRIVATE_KEY", "0x" + "3" * 64)
     wallet = resolve_captain_wallet(
-        "captain",
-        deployment=deployment,
-        deployment_path=deployment_path,
-        private_state_path=private_state,
+        "captain", deployment=deployment, deployment_path=deployment_path,
     )
-
-    assert wallet.address == "0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F"
-    assert wallet.private_key == private_key
-
-
-def test_mainnet_captain_wallet_prefers_private_state_when_manifest_has_dev_defaults(tmp_path) -> None:
-    deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
-    deployment_path.parent.mkdir(parents=True)
-    deployment = {
-        "chain": {"chain_id": 42424240},
-        "offices": [
-            {
-                "office": "O0",
-                "title": "Captain",
-                "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-            }
-        ],
-    }
-    private_key = "0x" + "2" * 64
-    private_state = tmp_path / "runtime" / "state" / "main_computer.private.yaml"
-    private_state.parent.mkdir(parents=True)
-    private_state.write_text(
-        "\n".join(
-            [
-                "schema_version: 1",
-                "networks:",
-                "  mainnet:",
-                "    wallets:",
-                "      captain:",
-                "        address: \"0x0e2d466Bd9252CF122F0100a862090bd4B3aCE75\"",
-                f"        private_key: \"{private_key}\"",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    wallet = resolve_captain_wallet(
-        "captain",
-        deployment=deployment,
-        deployment_path=deployment_path,
-        private_state_path=private_state,
-    )
-
-    assert wallet.address == "0x0e2d466Bd9252CF122F0100a862090bd4B3aCE75"
-    assert wallet.private_key == private_key
+    assert wallet.office == "O0"
+    assert wallet.address == MOTHER_O0_ADDRESS
+    assert wallet.private_key == MOTHER_O0_KEY
+    assert calls and calls[0][0].root == tmp_path / "runtime" / "state" / "mother"
 
 
-def test_private_state_key_must_match_selected_office_address(tmp_path) -> None:
-    deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
-    deployment_path.parent.mkdir(parents=True)
-    deployment = {
-        "chain": {"chain_id": 42424240},
-        "offices": [
-            {
-                "office": "O0",
-                "title": "Captain",
-                "address": "0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F",
-            }
-        ],
-    }
-    private_state = tmp_path / "runtime" / "state" / "main_computer.private.yaml"
-    private_state.parent.mkdir(parents=True)
-    private_state.write_text(
-        "\n".join(
-            [
-                "schema_version: 1",
-                "networks:",
-                "  mainnet:",
-                "    wallets:",
-                "      captain:",
-                "        address: \"0x0000000000000000000000000000000000000001\"",
-                "        private_key: \"0x1111111111111111111111111111111111111111111111111111111111111111\"",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
+def test_mainnet_o3_and_address_selector_use_mother(tmp_path, monkeypatch) -> None:
+    _stub_verified_mother(monkeypatch)
+    deployment_path = tmp_path / "runtime/deployments/mainnet/latest.json"
+    wallet = resolve_captain_wallet("o3", deployment={}, deployment_path=deployment_path)
+    assert wallet.office == "O3"
+    assert wallet.address == MOTHER_O3_ADDRESS
+    assert wallet.private_key == MOTHER_O3_KEY
+    same = resolve_captain_wallet(MOTHER_O3_ADDRESS, deployment={}, deployment_path=deployment_path)
+    assert same.office == "O3" and same.private_key == MOTHER_O3_KEY
+    with pytest.raises(CaptainCliError, match="No Mother mainnet officer matches"):
+        resolve_captain_wallet("0x" + "f" * 40, deployment={}, deployment_path=deployment_path)
 
-    wallet = resolve_captain_wallet(
-        "captain",
-        deployment=deployment,
-        deployment_path=deployment_path,
-        private_state_path=private_state,
-    )
 
-    assert wallet.private_key == ""
+def test_mainnet_invalid_key_address_fails_closed(tmp_path, monkeypatch) -> None:
+    _stub_verified_mother(monkeypatch, captain={
+        "address": MOTHER_O0_ADDRESS, "private_key": "0x" + "2" * 64,
+    })
+    with pytest.raises(CaptainCliError, match="signing key does not match"):
+        resolve_captain_wallet("o0", deployment={}, deployment_path=tmp_path / "runtime/deployments/mainnet/latest.json")
+
+
+def test_mainnet_missing_key_fails_closed(tmp_path, monkeypatch) -> None:
+    _stub_verified_mother(monkeypatch, captain={"address": MOTHER_O0_ADDRESS})
+    with pytest.raises(CaptainCliError, match="no private key"):
+        resolve_captain_wallet("captain", deployment={}, deployment_path=tmp_path / "runtime/deployments/mainnet/latest.json")
+
+
+def test_mainnet_corrupt_mother_fails_even_with_manifest_key(tmp_path, monkeypatch) -> None:
+    _stub_verified_mother(monkeypatch, fail=RuntimeError("VERIFICATION_MISMATCH"))
+    deployment = {"offices": [{"address": MOTHER_O0_ADDRESS, "private_key": MOTHER_O0_KEY}]}
+    with pytest.raises(CaptainCliError, match="Cannot verify Mother private state"):
+        resolve_captain_wallet("o0", deployment=deployment, deployment_path=tmp_path / "runtime/deployments/mainnet/latest.json")
+
+
+@pytest.mark.parametrize("override", ["private_key_override", "private_state_path"])
+def test_mainnet_rejects_key_override(tmp_path, monkeypatch, override) -> None:
+    calls = _stub_verified_mother(monkeypatch)
+    kwargs = {override: MOTHER_O0_KEY if override == "private_key_override" else tmp_path / "untrusted.yaml"}
+    with pytest.raises(CaptainCliError, match="overrides are not supported"):
+        resolve_captain_wallet("o0", deployment={}, deployment_path=tmp_path / "runtime/deployments/mainnet/latest.json", **kwargs)
+    assert not calls
+
+
+def test_testnet_reads_its_own_mother_network(tmp_path, monkeypatch) -> None:
+    _stub_verified_mother(monkeypatch, network="testnet")
+    wallet = resolve_captain_wallet("o0", deployment={}, deployment_path=tmp_path / "runtime/deployments/testnet/latest.json")
+    assert wallet.private_key == MOTHER_O0_KEY
 
 
 def test_hub_payload_defaults_to_ring3_worker_pull_market_quote() -> None:
@@ -465,6 +442,7 @@ def test_bridge_wallet_funding_import_payload_uses_deposit_receipt() -> None:
 
 
 def test_bare_captain_prompt_uses_mainnet_hub_request_path(tmp_path, monkeypatch) -> None:
+    _stub_verified_mother(monkeypatch)
     monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
     escrow = "0x2222222222222222222222222222222222222222"
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
@@ -489,7 +467,6 @@ def test_bare_captain_prompt_uses_mainnet_hub_request_path(tmp_path, monkeypatch
                         "office": "O0",
                         "title": "Captain",
                         "address": "0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F",
-                        "private_key": "0x" + "1" * 64,
                     }
                 ],
             }
@@ -538,10 +515,11 @@ def test_bare_captain_prompt_uses_mainnet_hub_request_path(tmp_path, monkeypatch
     assert all(hub_url == "https://mainnet-hub.greatlibrary.io" for hub_url, _path, _payload in calls)
     submit_payload = calls[-1][2]
     assert submit_payload["messages"] == [{"role": "user", "content": "is this thing on?"}]
-    assert submit_payload["account_id"] == "0xe81bc6ef15b991f1083db9c1a0899ef9ae00516f"
+    assert submit_payload["account_id"] == MOTHER_O0_ADDRESS.lower()
 
 
 def test_captain_smoke_falls_back_to_wallet_funding_import_when_hub_lacks_bridge_metadata(tmp_path, monkeypatch) -> None:
+    _stub_verified_mother(monkeypatch)
     monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
     escrow = "0x2222222222222222222222222222222222222222"
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
@@ -566,7 +544,6 @@ def test_captain_smoke_falls_back_to_wallet_funding_import_when_hub_lacks_bridge
                         "office": "O0",
                         "title": "Captain",
                         "address": "0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F",
-                        "private_key": "0x" + "1" * 64,
                     }
                 ],
             }
@@ -636,7 +613,7 @@ def test_captain_smoke_falls_back_to_wallet_funding_import_when_hub_lacks_bridge
         "/api/hub/v1/requests",
     ]
     import_payload = calls[2][1]
-    assert import_payload["wallet_address"] == "0xE81Bc6ef15b991F1083db9c1a0899Ef9AE00516F"
+    assert import_payload["wallet_address"] == MOTHER_O0_ADDRESS
     assert import_payload["contract_address"] == escrow
     assert import_payload["credits_granted_wei"] == "1000000000000000000"
     assert import_payload["metadata"]["completion_fallback"] is True
@@ -700,3 +677,41 @@ def test_captain_bridge_refund_is_signed_by_hub_not_local_controller(monkeypatch
     assert "withdrawal_id" not in payload
     assert "private_key" not in payload
     assert "99" * 32 not in json.dumps(payload)
+
+
+def test_mainnet_real_verified_mother_private_state(tmp_path) -> None:
+    """Exercise canonical Mother bootstrap, verification and Captain resolution together."""
+    from tools.mother.common.models import OperationIdentity
+    from tools.mother.common.paths import MotherPaths
+    from tools.mother.common.private_state import (
+        install_verified_private_state, prepare_private_state_bootstrap,
+    )
+
+    paths = MotherPaths(runtime_state_root=tmp_path / "runtime/state").resolve_private_state_paths()
+    operation = OperationIdentity(
+        operation_id="captain-verified-wallet-test", request_id="captain-test",
+        network="mainnet", operation_kind="MOTHER-OP-DIAGNOSE",
+    )
+    document = {
+        "kind": "main_computer.mother.private_state.v1", "schema_version": 1,
+        "networks": {"mainnet": {"chain_id": 42424240, "wallets": {
+            "captain": {"address": MOTHER_O0_ADDRESS, "private_key": MOTHER_O0_KEY},
+        }}},
+    }
+    closure = prepare_private_state_bootstrap(
+        paths, document, updated_at="2026-10-10T00:00:00Z",
+        updated_by_action_id=operation.operation_id, operation=operation,
+    )
+    install_verified_private_state(paths, closure, None, operation=operation)
+
+    deployment_path = tmp_path / "runtime/deployments/mainnet/latest.json"
+    # Neither public deployment state nor local environment keys exist.
+    wallet = resolve_captain_wallet("captain", deployment={}, deployment_path=deployment_path)
+    assert wallet.address == MOTHER_O0_ADDRESS
+    assert wallet.private_key == MOTHER_O0_KEY
+
+    # A modified Mother document without a fresh closure must not be trusted.
+    original = paths.identity_file.read_bytes()
+    paths.identity_file.write_bytes(original + b"\n# unsigned mutation\n")
+    with pytest.raises(CaptainCliError, match="Cannot verify Mother private state"):
+        resolve_captain_wallet("captain", deployment={}, deployment_path=deployment_path)

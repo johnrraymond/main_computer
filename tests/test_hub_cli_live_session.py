@@ -4,6 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import json
 
 from main_computer import hub_cli_live_session as live
 from main_computer.models import ChatMessage, ChatResponse
@@ -161,3 +162,43 @@ def test_captain_live_request_uses_new_route_and_auth_before_spend(monkeypatch, 
     assert payload["multisession_authorization"]["wallet_address"] == WALLET
     assert payload["messages"][0]["content"] == "report ready"
     assert len(calls) == 2
+
+
+def test_live_worker_wallet_uses_mother_even_without_public_deployment(monkeypatch, tmp_path) -> None:
+    from main_computer import captain_cli
+
+    def fake_resolve(selector, **kwargs):
+        assert selector == "o0"
+        assert kwargs["deployment"] == {}
+        assert kwargs["network"] == "mainnet"
+        assert kwargs["deployment_path"] == tmp_path / "runtime/deployments/mainnet/latest.json"
+        assert not kwargs["deployment_path"].exists()
+        return captain_cli.CaptainWallet("o0", "O0", "Captain", WALLET, KEY)
+
+    monkeypatch.setattr(captain_cli, "resolve_captain_wallet", fake_resolve)
+    wallet = live._officer_wallet("o0", cwd=tmp_path)
+    assert wallet.private_key == KEY
+
+
+def test_live_request_and_worker_share_mother_wallet_resolver(monkeypatch, tmp_path) -> None:
+    from main_computer import captain_cli
+    from tools.mother.common import private_state as mother_private_state
+
+    def fake_read(paths, *, operation):
+        assert paths.identity_file.parent.name == "mother"
+        assert operation.network == "mainnet"
+        return SimpleNamespace(canonical_object_bytes=json.dumps({
+            "networks": {"mainnet": {"wallets": {"captain": {
+                "address": WALLET, "private_key": KEY,
+            }}}},
+        }).encode())
+
+    monkeypatch.setattr(mother_private_state, "read_private_state", fake_read)
+    monkeypatch.setattr(live, "_hub_post", lambda _url, path, body, *, timeout_s: {
+        "ok": True, "key": {"id": "msk-o0", "status": "active", "wallet_address": WALLET}
+    })
+    monkeypatch.chdir(tmp_path)
+    auth = live.cli_request_authorization("https://example.invalid", officer="o0")
+    assert auth["wallet_address"] == WALLET
+    assert auth["key_id"] == "msk-o0"
+    assert live._officer_wallet("o0", cwd=tmp_path).address == WALLET

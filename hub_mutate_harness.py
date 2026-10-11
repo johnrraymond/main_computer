@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Operator harness for Hub inspection and membership mutation.
+"""Operator harness for Hub inspection, membership and code redeployment.
 
 This file is the normal Hub operator surface. Operators state only lifecycle
 intent and logical Hub identity; the harness owns run directories, operation
@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +109,7 @@ def _run_with_live_stderr(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Main Computer Hub operator harness")
-    parser.add_argument("operation", choices=("inspect", "add-hub", "remove-hub"))
+    parser.add_argument("operation", choices=("inspect", "add-hub", "remove-hub", "redeploy-hub", "redeploy-hubs"))
     parser.add_argument("--network", default="mainnet")
     parser.add_argument("--hub")
     parser.add_argument("--allow-full-deletion", action="store_true")
@@ -155,7 +156,11 @@ class Harness:
             self.state: dict[str, Any] = {}
             return
 
-        if not self.hub:
+        if self.operation == "redeploy-hub" and not self.hub:
+            raise HarnessError("redeploy-hub requires --hub")
+        if self.operation == "redeploy-hubs" and self.hub:
+            raise HarnessError("redeploy-hubs does not accept --hub; use redeploy-hub")
+        if not self.hub and self.operation not in {"redeploy-hubs"}:
             raise HarnessError(f"{self.operation} requires --hub")
         if self.allow_full_deletion and self.operation != "remove-hub":
             raise HarnessError("--allow-full-deletion applies only to remove-hub")
@@ -388,6 +393,9 @@ class Harness:
                 "live mutation requires both --execute-mutations and --yes-i-know-this-mutates-hub"
             )
 
+        if self.operation in {"redeploy-hub", "redeploy-hubs"}:
+            return self._run_redeploy()
+
         if self.operation == "inspect":
             if self._mutation_authorized():
                 raise HarnessError("inspect is read-only and does not accept mutation authorization flags")
@@ -426,6 +434,181 @@ class Harness:
         self._print_final_verification()
         print("HUB_MUTATE_HARNESS_COMPLETE")
         return 0
+
+    def _run_redeploy(self) -> int:
+        """In-place rollout: authorize assigned bridge controllers, then rebuild.
+
+        A queued deployment UUID is saved before waiting. Reinvoking the same
+        command resumes the exact queued build, not another build request.
+        """
+        from tools.hub_control.common.canonical import sha256_json
+        from tools.hub_control.common.models import HubContext
+        from tools.hub_control.redeploy import (
+            BuildSubmissionRejected, RedeployError, accepted_targets, deployment_history, force_rebuild, git_revision,
+            reconcile_build_submission, resolve_existing_hub, verify_runtime, wait_for_build,
+            synchronize_bridge_signer, failed_previous_build,
+        )
+        try:
+            ctx = HubContext.from_repo(self.repo_root)
+            accepted, members = accepted_targets(
+                ctx, self.network, self.hub if self.operation == "redeploy-hub" else "",
+            )
+            revision = git_revision(self.repo_root, self.network)
+            accepted_sha = sha256_json(accepted)
+            # Resolve every existing application before triggering any build.
+            targets = [resolve_existing_hub(ctx, self.network, member) for member in members]
+            identities = [
+                {"hub_id": target["hub_id"], "application_uuid": target["application_uuid"],
+                 "controller_id": target["controller_id"]}
+                for target in targets
+            ]
+            previous = self.state.get("redeploy")
+            if previous is None:
+                self.state["redeploy"] = {
+                    "accepted_sha256": accepted_sha,
+                    "revision": revision,
+                    "targets": [{**entry, "status": "pending", "deployment_uuid": None, "commit": None}
+                                for entry in identities],
+                }
+                self._write_state()
+            else:
+                if (previous.get("accepted_sha256") != accepted_sha
+                    or [{key: row[key] for key in ("hub_id", "application_uuid", "controller_id")}
+                        for row in previous.get("targets", [])] != identities):
+                    raise HarnessError(
+                        "redeploy resume authority changed (topology or application identity); "
+                        "refusing to continue the old rollout"
+                    )
+            rollout = self.state["redeploy"]
+            # Reconcile any interrupted POST before changing the desired Git
+            # revision or sending another request. In particular, the original
+            # HTTP 405 rollout left a legacy 'triggering' receipt without a UUID.
+            for target, item in zip(targets, rollout["targets"]):
+                if item["status"] != "triggering":
+                    continue
+                legacy_start = str(item.get("trigger_started_at") or "")
+                if not legacy_start:
+                    try:
+                        legacy_start = datetime.strptime(
+                            self.run_dir.name[:16], "%Y%m%dT%H%M%SZ"
+                        ).replace(tzinfo=timezone.utc).isoformat()
+                    except (ValueError, AttributeError) as exc:
+                        raise HarnessError("cannot reconstruct previous rollout start; no build requested") from exc
+                found_uuid = reconcile_build_submission(
+                    target,
+                    baseline_uuids=item.get("baseline_uuids"),
+                    started_after=legacy_start,
+                    revision=str(rollout["revision"]),
+                )
+                if found_uuid:
+                    item["deployment_uuid"] = found_uuid
+                    item["status"] = "queued"
+                    print(f"Recovered existing Coolify build {found_uuid} for {target['hub_id']}")
+                else:
+                    item["status"] = "pending"
+                    item["deployment_uuid"] = None
+                    print(f"Coolify confirms no previous build for {target['hub_id']}; retry enabled")
+                self._write_state()
+            # A failed deployment is terminal: Coolify rolled it back and no
+            # build is in flight. Retire only that exact UUID, on a later
+            # invocation, before deciding whether a revised source can roll out.
+            for target, item in zip(targets, rollout["targets"]):
+                if item["status"] == "queued" and item.get("deployment_uuid"):
+                    if failed_previous_build(target, str(item["deployment_uuid"])):
+                        print(f"Hub {target['hub_id']}: previous build "
+                              f"{item['deployment_uuid']} failed; safely enabling a new attempt", flush=True)
+                        item["status"] = "pending"
+                        item["last_failed_deployment_uuid"] = item["deployment_uuid"]
+                        item["deployment_uuid"] = None
+                        self._write_state()
+            # A source-code fix may itself produce a new commit between retries.
+            # Adopt that revision only if no Hub was queued or deployed under
+            # the previous one. Never mix versions in a partially built rollout.
+            if rollout["revision"] != revision:
+                if any(item["status"] != "pending" for item in rollout["targets"]):
+                    raise HarnessError(
+                        "redeploy Git revision changed after a build was queued; "
+                        "refusing to mix revisions in this rollout"
+                    )
+                print(f"Restarting unsubmitted rollout at new Git revision {revision}")
+                rollout["revision"] = revision
+                self._write_state()
+            print(f"\n=== {self.operation} preflight ===")
+            print(f"network:              {self.network}")
+            print(f"accepted generation:  {accepted['generation']} (unchanged)")
+            print(f"Git revision:         {revision}")
+            print("bridge authorization: verify each assigned admin; deployer signs only if needed")
+            for target in targets:
+                print(f"  {target['hub_id']}  controller={target['controller_id']}  "
+                      f"application={target['application_uuid']}")
+            if not self._mutation_authorized():
+                print("\nStopping before live mutation. Rerun with "
+                      "--execute-mutations --yes-i-know-this-mutates-hub")
+                return 0
+            for target, item in zip(targets, rollout["targets"]):
+                if item["status"] == "verified":
+                    print(f"Skipping verified Hub {target['hub_id']}")
+                    continue
+                print(f"\n=== redeploy: {target['hub_id']} ===", flush=True)
+                if item["status"] == "pending":
+                    # Persist the exact existing deployments before attempting
+                    # POST. On timeout/crash, the next run determines whether
+                    # Coolify actually queued a new build; no blind retries.
+                    print(f"Hub {target['hub_id']}: inspect existing Coolify deployments", flush=True)
+                    history = deployment_history(target)
+                    print(f"Hub {target['hub_id']}: synchronize verified Mother bridge signer", flush=True)
+                    synchronize_bridge_signer(ctx, target)
+                    item["baseline_uuids"] = [str(row["deployment_uuid"]) for row in history]
+                    item["trigger_started_at"] = datetime.now(timezone.utc).isoformat()
+                    item["status"] = "triggering"
+                    self._write_state()
+                    print(f"Hub {target['hub_id']}: submit forced Git rebuild", flush=True)
+                    try:
+                        item["deployment_uuid"] = force_rebuild(target)
+                    except BuildSubmissionRejected:
+                        # Explicit 4xx responses were rejected before queuing a
+                        # build. There is no ambiguous in-flight request to
+                        # preserve, so a corrected invocation can retry.
+                        item["status"] = "pending"
+                        self._write_state()
+                        raise
+                    item["status"] = "queued"
+                    self._write_state()
+                    print(f"Hub {target['hub_id']}: Coolify build queued "
+                          f"uuid={item['deployment_uuid']}", flush=True)
+                if item["status"] == "queued":
+                    print(f"Hub {target['hub_id']}: waiting for Coolify build "
+                          f"{item['deployment_uuid']}", flush=True)
+                    build = wait_for_build(target, str(item["deployment_uuid"]))
+                    actual_revision = str(build["commit"]).strip().lower()
+                    if actual_revision != revision:
+                        raise HarnessError(
+                            f"Hub {target['hub_id']} built revision {actual_revision}, "
+                            f"not requested revision {revision}; stopping rollout"
+                        )
+                    item["commit"] = actual_revision
+                    item["status"] = "built"
+                    self._write_state()
+                if item["status"] == "built":
+                    print(f"Hub {target['hub_id']}: verify Hub health and bridge signer", flush=True)
+                    verify_runtime(target)
+                    current, _ = accepted_targets(ctx, self.network)
+                    if sha256_json(current) != accepted_sha:
+                        raise HarnessError("accepted Hub topology changed during code rollout")
+                    item["status"] = "verified"
+                    self._write_state()
+                    print(f"Hub {target['hub_id']}: build and runtime verified")
+            self.state["last_completed_step"] = "final-inspect"
+            self._write_state()
+            print("HUB_REDEPLOY_HARNESS_COMPLETE")
+            return 0
+        except RedeployError as exc:
+            raise HarnessError(str(exc)) from exc
+        except Exception as exc:
+            from tools.hub_control.common.errors import HubControlError
+            if isinstance(exc, HubControlError):
+                raise HarnessError(f"{exc.code}: {exc.message}") from exc
+            raise
 
     def _run_inspect_only(self) -> int:
         proc = subprocess.run(

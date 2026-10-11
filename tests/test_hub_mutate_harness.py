@@ -973,3 +973,616 @@ def test_empty_topology_recheck_after_explicit_operator_seal(
     with pytest.raises(RuntimeError, match="entered pre-inspect"):
         resumed.run()
     assert seen == ["DRIFT", "PASS"]
+
+# Redeploy operations deliberately share only the operator harness, not the
+# membership-mutation stages. These tests fake the Coolify/Hub boundary.
+
+def _redeploy_args(tmp_path: Path, *, all_hubs: bool, execute: bool = False) -> argparse.Namespace:
+    return _args(
+        tmp_path,
+        "redeploy-hubs" if all_hubs else "redeploy-hub",
+        hub="" if all_hubs else "mainneta-hub1",
+        execute=execute,
+    )
+
+
+def _redeploy_fixture(monkeypatch: pytest.MonkeyPatch):
+    from tools.hub_control import redeploy
+
+    accepted = {
+        "schema": "main-computer.hub-accepted.v1",
+        "network": "mainnet",
+        "generation": 12,
+        "hubs": [
+            {"hub_id": "mainneta-hub1", "controller_id": "coolify-a"},
+            {"hub_id": "mainnetc-hub1", "controller_id": "coolify-c"},
+        ],
+    }
+    revision = "a" * 40
+    calls: list[tuple] = []
+
+    def selected(_ctx, _network, hub=""):
+        members = accepted["hubs"]
+        return accepted, [x for x in members if not hub or x["hub_id"] == hub]
+
+    def resolve(_ctx, _network, member):
+        calls.append(("preflight", member["hub_id"]))
+        return {
+            "hub_id": member["hub_id"],
+            "controller_id": member["controller_id"],
+            "application_uuid": "app-" + member["hub_id"],
+        }
+
+    def force(target):
+        calls.append(("force", target["hub_id"]))
+        return "deploy-" + target["hub_id"]
+
+    def wait(target, uuid):
+        calls.append(("wait", target["hub_id"], uuid))
+        return {"waited": True, "commit": revision, "status": "finished"}
+
+    def verify(target):
+        calls.append(("verify", target["hub_id"]))
+
+    monkeypatch.setattr(redeploy, "accepted_targets", selected)
+    monkeypatch.setattr(redeploy, "git_revision", lambda *_: revision)
+    monkeypatch.setattr(redeploy, "resolve_existing_hub", resolve)
+    monkeypatch.setattr(redeploy, "force_rebuild", force)
+    monkeypatch.setattr(redeploy, "deployment_history", lambda target: [])
+    monkeypatch.setattr(redeploy, "wait_for_build", wait)
+    monkeypatch.setattr(redeploy, "verify_runtime", verify)
+    monkeypatch.setattr(redeploy, "synchronize_bridge_signer", lambda ctx, target: calls.append(("signer", target["hub_id"])))
+    monkeypatch.setattr(redeploy, "failed_previous_build", lambda target, uuid: False)
+    return calls, accepted, redeploy
+
+
+def test_redeploy_parser_and_modes(tmp_path: Path) -> None:
+    assert MODULE._parser().parse_args(["redeploy-hub", "--hub", "mainneta-hub1"]).operation == "redeploy-hub"
+    assert MODULE._parser().parse_args(["redeploy-hubs"]).operation == "redeploy-hubs"
+    with pytest.raises(HarnessError, match="requires --hub"):
+        Harness(_args(tmp_path, "redeploy-hub", hub=""))
+    with pytest.raises(HarnessError, match="does not accept --hub"):
+        Harness(_args(tmp_path, "redeploy-hubs", hub="mainneta-hub1"))
+    with pytest.raises(HarnessError, match="only to remove-hub"):
+        Harness(_args(tmp_path, "redeploy-hubs", hub="", allow_full_deletion=True))
+
+
+def test_redeploy_single_does_not_touch_other_hubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, _, _ = _redeploy_fixture(monkeypatch)
+    harness = Harness(_redeploy_args(tmp_path, all_hubs=False, execute=True))
+    assert harness.run() == 0
+    assert [item for item in calls if item[0] == "force"] == [("force", "mainneta-hub1")]
+    assert harness.state["last_completed_step"] == "final-inspect"
+
+
+def test_redeploy_all_sequential_and_preserves_accepted_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, accepted, _ = _redeploy_fixture(monkeypatch)
+    original = json.dumps(accepted, sort_keys=True)
+    harness = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    assert harness.run() == 0
+    assert [x[0] for x in calls if x[0] != "preflight"] == [
+        "signer", "force", "wait", "verify", "signer", "force", "wait", "verify"
+    ]
+    assert json.dumps(accepted, sort_keys=True) == original
+    assert [t["status"] for t in harness.state["redeploy"]["targets"]] == ["verified", "verified"]
+
+
+def test_redeploy_dry_run_preflights_without_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, _, _ = _redeploy_fixture(monkeypatch)
+    harness = Harness(_redeploy_args(tmp_path, all_hubs=True))
+    assert harness.run() == 0
+    assert [x[0] for x in calls] == ["preflight", "preflight"]
+    assert harness.state["redeploy"]["targets"][0]["status"] == "pending"
+
+
+def test_redeploy_resumes_queued_build_without_resubmission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    def stop_after_first_queue(_target, _uuid):
+        raise redeploy.RedeployError("transient Coolify error")
+    monkeypatch.setattr(redeploy, "wait_for_build", stop_after_first_queue)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    with pytest.raises(HarnessError, match="transient Coolify error"):
+        first.run()
+    assert [x for x in calls if x[0] == "force"] == [("force", "mainneta-hub1")]
+    assert first.state["redeploy"]["targets"][0]["status"] == "queued"
+    monkeypatch.setattr(redeploy, "wait_for_build", lambda target, uuid: {"commit": "a" * 40, "waited": True})
+    resumed = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    assert resumed._resumed_existing_run
+    assert resumed.run() == 0
+    assert [x for x in calls if x[0] == "force"] == [
+        ("force", "mainneta-hub1"), ("force", "mainnetc-hub1")
+    ]
+
+
+def test_redeploy_legacy_405_receipt_auto_recovers_without_manual_edits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    # Emulate the old GET/405 failure which saved 'triggering' without a UUID
+    # or deployment baseline. Coolify confirms it never queued any build.
+    original_force = redeploy.force_rebuild
+    def rejected(_target):
+        raise redeploy.RedeployError("HTTP 405: This endpoint has changed to POST")
+    monkeypatch.setattr(redeploy, "force_rebuild", rejected)
+    with pytest.raises(HarnessError, match="HTTP 405"):
+        first.run()
+    first.state["redeploy"]["targets"][0].pop("baseline_uuids", None)
+    first.state["redeploy"]["targets"][0].pop("trigger_started_at", None)
+    first._write_state()
+    monkeypatch.setattr(redeploy, "force_rebuild", original_force)
+    resumed = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    assert resumed.run() == 0
+    assert resumed.state["last_completed_step"] == "final-inspect"
+    assert [c for c in calls if c[0] == 'force'] == [
+        ('force', 'mainneta-hub1'), ('force', 'mainnetc-hub1')
+    ]
+
+
+def test_redeploy_ambiguous_submission_recovers_existing_build_without_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    def ambiguous(_target):
+        raise redeploy.RedeployError("Coolify accepted POST but response was lost")
+    monkeypatch.setattr(redeploy, "force_rebuild", ambiguous)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=False, execute=True))
+    with pytest.raises(HarnessError, match="response was lost"):
+        first.run()
+    assert first.state["redeploy"]["targets"][0]["status"] == "triggering"
+    monkeypatch.setattr(redeploy, "deployment_history", lambda target: [{
+        "deployment_uuid": "deploy-mainneta-hub1",
+        "force_rebuild": True, "is_api": True, "restart_only": False, "commit": "a"*40,
+    }])
+    resumed = Harness(_redeploy_args(tmp_path, all_hubs=False, execute=True))
+    assert resumed.run() == 0
+    assert not any(c[0] == "force" for c in calls)
+    assert resumed.state["redeploy"]["targets"][0]["deployment_uuid"] == "deploy-mainneta-hub1"
+
+
+def test_redeploy_uncertain_submission_cannot_guess_with_untrusted_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    monkeypatch.setattr(redeploy, "force_rebuild", lambda target: (_ for _ in ()).throw(
+        redeploy.RedeployError("unknown response")))
+    first = Harness(_redeploy_args(tmp_path, all_hubs=False, execute=True))
+    with pytest.raises(HarnessError, match="unknown response"):
+        first.run()
+    monkeypatch.setattr(redeploy, "deployment_history", lambda target: [{
+        "deployment_uuid": "someone-else", "force_rebuild": False,
+        "is_api": False, "restart_only": True, "commit": "a"*40,
+    }])
+    with pytest.raises(HarnessError, match="cannot be attributed"):
+        Harness(_redeploy_args(tmp_path, all_hubs=False, execute=True)).run()
+    assert not any(c[0] == "force" for c in calls)
+
+
+def test_redeploy_405_receipt_adopts_updated_revision_if_no_build_was_queued(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    monkeypatch.setattr(redeploy, "force_rebuild", lambda target: (_ for _ in ()).throw(
+        redeploy.RedeployError("HTTP 405")))
+    first = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    with pytest.raises(HarnessError, match="HTTP 405"):
+        first.run()
+    monkeypatch.setattr(redeploy, "git_revision", lambda *_: "b"*40)
+    monkeypatch.setattr(redeploy, "force_rebuild", lambda target: (
+        calls.append(("force", target["hub_id"])) or "deploy-"+target["hub_id"]
+    ))
+    monkeypatch.setattr(redeploy, "wait_for_build", lambda target, uuid: {
+        "commit": "b"*40, "waited": True,
+    })
+    assert Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True)).run() == 0
+    assert [c for c in calls if c[0] == "force"] == [
+        ("force", "mainneta-hub1"), ("force", "mainnetc-hub1")
+    ]
+
+
+def test_redeploy_fail_first_hub_stops_before_second(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    monkeypatch.setattr(redeploy, "verify_runtime", lambda target: (_ for _ in ()).throw(redeploy.RedeployError("not healthy")))
+    with pytest.raises(HarnessError, match="not healthy"):
+        Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True)).run()
+    assert [x for x in calls if x[0] == "force"] == [("force", "mainneta-hub1")]
+
+
+def test_redeploy_freezes_topology_and_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, accepted, redeploy = _redeploy_fixture(monkeypatch)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=True))
+    assert first.run() == 0
+    accepted["generation"] += 1
+    with pytest.raises(HarnessError, match="authority changed"):
+        Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True)).run()
+    assert not [x for x in calls if x[0] == "force"]
+
+
+def test_redeploy_rejects_wrong_commit_and_stops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    monkeypatch.setattr(redeploy, "wait_for_build", lambda target, uuid: {"commit": "b" * 40, "waited": True})
+    with pytest.raises(HarnessError, match="not requested revision"):
+        Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True)).run()
+    assert [x for x in calls if x[0] == "force"] == [("force", "mainneta-hub1")]
+
+
+def test_redeploy_helpers_force_only_build_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    from tools.coolify_hub_service import CoolifyResponse
+    requests = []
+
+    class Client:
+        def request(self, method, path):
+            requests.append((method, path))
+            return CoolifyResponse(
+                ok=True, status=200, method=method, path=path,
+                body={"deployments": [{"deployment_uuid": "build-abc"}]},
+            )
+
+    monkeypatch.setattr(redeploy, "_client", lambda target: Client())
+    uuid = redeploy.force_rebuild({"hub_id": "mainneta-hub1", "application_uuid": "app-abc"})
+    assert uuid == "build-abc"
+    assert requests == [("POST", "/api/v1/deploy?uuid=app-abc&force=true")]
+
+
+def test_redeploy_helpers_never_fallback_to_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    from tools.coolify_hub_service import CoolifyResponse
+    requests = []
+
+    class Client:
+        def request(self, method, path):
+            requests.append((method, path))
+            return CoolifyResponse(ok=False, status=502, method=method, path=path, body={})
+
+    monkeypatch.setattr(redeploy, "_client", lambda target: Client())
+    with pytest.raises(redeploy.RedeployError, match="HTTP 502"):
+        redeploy.force_rebuild({"hub_id": "mainneta-hub1", "application_uuid": "app-abc"})
+    assert requests == [("POST", "/api/v1/deploy?uuid=app-abc&force=true")]
+
+
+def test_redeploy_coolify_method_rejection_never_retries_get(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    from tools.coolify_hub_service import CoolifyResponse
+    requests = []
+
+    class Client:
+        def request(self, method, path):
+            requests.append((method, path))
+            return CoolifyResponse(
+                ok=False, status=405, method=method, path=path,
+                body={"message": "This endpoint has changed to a POST request."},
+            )
+
+    monkeypatch.setattr(redeploy, "_client", lambda target: Client())
+    with pytest.raises(redeploy.RedeployError, match="HTTP 405"):
+        redeploy.force_rebuild({"hub_id": "mainneta-hub1", "application_uuid": "app-abc"})
+    assert requests == [("POST", "/api/v1/deploy?uuid=app-abc&force=true")]
+
+
+def test_redeploy_helper_rejects_absent_app_before_mutation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from tools.hub_control import redeploy
+    from tools.hub_control.common.models import HubContext
+    monkeypatch.setattr(redeploy, "load_private", lambda ctx: {})
+    monkeypatch.setattr(redeploy, "controller_coordinates", lambda *args, **kwargs: {"url": "http://coolify", "api_token": "redacted"})
+    monkeypatch.setattr(redeploy, "load_current_fdb_contract", lambda *args: argparse.Namespace(payload={}))
+    monkeypatch.setattr(redeploy, "load_current_chain_contract", lambda *args: argparse.Namespace(payload={}))
+    monkeypatch.setattr(redeploy, "inspect_deployment", lambda target: {"present": False})
+    with pytest.raises(redeploy.RedeployError, match="refusing to create"):
+        redeploy.resolve_existing_hub(HubContext.from_repo(tmp_path), "mainnet", {
+            "hub_id": "mainneta-hub1", "controller_id": "coolify-a", "public_url": "https://a.example",
+        })
+
+
+def test_redeploy_helper_rejects_nonmembers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    monkeypatch.setattr(redeploy, "read_accepted", lambda ctx, network: {
+        "schema": "main-computer.hub-accepted.v1", "network": network,
+        "generation": 1, "hubs": [{"hub_id": "mainneta-hub1"}],
+    })
+    from tools.hub_control.common.models import HubContext
+    with pytest.raises(redeploy.RedeployError, match="not in the accepted"):
+        redeploy.accepted_targets(HubContext.from_repo(tmp_path), "mainnet", "mainnetc-hub1")
+
+
+def test_redeploy_helper_requires_pushed_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    monkeypatch.setattr(redeploy, "_git_source_status", lambda *args, **kwargs: {"checked": True, "dirty": False})
+
+    def fake_run(argv, **kwargs):
+        if "rev-parse" in argv:
+            return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
+        return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main\n", "")
+
+    monkeypatch.setattr(redeploy.subprocess, "run", fake_run)
+    with pytest.raises(redeploy.RedeployError, match="not pushed"):
+        redeploy.git_revision(tmp_path, "mainnet")
+
+
+def test_redeploy_dirty_source_emits_existing_git_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tools.hub_control import redeploy
+    monkeypatch.setattr(redeploy, "_git_source_status", lambda *args, **kwargs: {
+        "checked": True, "dirty": True,
+        "paths": [
+            {"status": " M", "path": "Dockerfile.hub.exp-fdb"},
+            {"status": " M", "path": "main_computer/captain_cli.py"},
+            {"status": " M", "path": "main_computer/hub_cli_live_session.py"},
+        ],
+    })
+    with pytest.raises(redeploy.RedeployError, match="HUB_GIT_COMMIT_PUSH_COMMAND"):
+        redeploy.git_revision(tmp_path, "mainnet")
+    stderr = capsys.readouterr().err
+    assert "HUB_GIT_COMMIT_PUSH_COMMAND:" in stderr
+    assert (
+        "git add -- 'Dockerfile.hub.exp-fdb' 'main_computer/captain_cli.py' "
+        "'main_computer/hub_cli_live_session.py'; "
+        "if ($LASTEXITCODE -eq 0) { git commit -m 'Update Hub deployment source' }; "
+        "if ($LASTEXITCODE -eq 0) { git push origin HEAD }"
+    ) in stderr
+
+
+def test_redeploy_helper_blocks_uncommitted_hub_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    monkeypatch.setattr(redeploy, "_git_source_status", lambda *args, **kwargs: {
+        "checked": True, "dirty": True,
+        "paths": [{"path": "Dockerfile.hub.exp-fdb"}],
+    })
+    with pytest.raises(redeploy.RedeployError, match="Dockerfile.hub.exp-fdb"):
+        redeploy.git_revision(tmp_path, "mainnet")
+
+
+def test_redeploy_definite_http405_rejection_keeps_resume_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    def reject(_target):
+        raise redeploy.BuildSubmissionRejected("HTTP 405 use POST")
+    monkeypatch.setattr(redeploy, "force_rebuild", reject)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=False, execute=True))
+    with pytest.raises(HarnessError, match="HTTP 405"):
+        first.run()
+    assert first.state["redeploy"]["targets"][0]["status"] == "pending"
+    assert not any(call[0] == "force" for call in calls)
+
+
+def test_redeploy_history_api_is_read_only_and_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    from tools.coolify_hub_service import CoolifyResponse
+    calls = []
+
+    class Client:
+        def request(self, method, path):
+            calls.append((method, path))
+            skip = 0 if "skip=0" in path else 50
+            body = [{"deployment_uuid": f"build-{skip+i}", "created_at": "2026-10-10T16:00:00Z"}
+                    for i in range(50 if skip == 0 else 1)]
+            return CoolifyResponse(ok=True, status=200, method=method, path=path, body=body)
+
+    monkeypatch.setattr(redeploy, "_client", lambda target: Client())
+    result = redeploy.deployment_history({"hub_id": "mainneta-hub1", "application_uuid": "app-A"})
+    assert len(result) == 51
+    assert calls == [
+        ("GET", "/api/v1/deployments/applications/app-A?skip=0&take=50"),
+        ("GET", "/api/v1/deployments/applications/app-A?skip=50&take=50"),
+    ]
+
+
+
+def test_redeploy_history_accepts_actual_coolify_deployments_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Coolify returns {deployments: [...]} despite the generated OpenAPI list schema."""
+    from tools.hub_control import redeploy
+    from tools.coolify_hub_service import CoolifyResponse
+    calls = []
+
+    class Client:
+        def request(self, method, path):
+            calls.append((method, path))
+            return CoolifyResponse(
+                ok=True, status=200, method=method, path=path,
+                body={"deployments": [{
+                    "deployment_uuid": "prior-build", "created_at": "2026-10-10T12:00:00Z",
+                    "force_rebuild": True, "is_api": True, "restart_only": False,
+                }]},
+            )
+
+    monkeypatch.setattr(redeploy, "_client", lambda target: Client())
+    target = {"hub_id": "mainneta-hub1", "application_uuid": "app-A"}
+    records = redeploy.deployment_history(target)
+    assert [row["deployment_uuid"] for row in records] == ["prior-build"]
+    assert redeploy.reconcile_build_submission(
+        target, baseline_uuids=None, started_after="2026-10-10T16:00:00Z",
+        revision="a" * 40,
+    ) is None
+    assert all(method == "GET" for method, _ in calls)
+
+
+def test_redeploy_history_deployments_envelope_rejects_malformed_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    from tools.coolify_hub_service import CoolifyResponse
+
+    class Client:
+        def request(self, method, path):
+            return CoolifyResponse(ok=True, status=200, method=method, path=path,
+                                   body={"deployments": [{"not_a_deployment_uuid": "abc"}]})
+
+    monkeypatch.setattr(redeploy, "_client", lambda target: Client())
+    with pytest.raises(redeploy.RedeployError, match="omits UUID"):
+        redeploy.deployment_history({"hub_id": "mainneta-hub1", "application_uuid": "app-A"})
+
+
+def test_redeploy_history_failure_does_not_claim_no_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.hub_control import redeploy
+    from tools.coolify_hub_service import CoolifyResponse
+
+    class Client:
+        def request(self, method, path):
+            return CoolifyResponse(ok=False, status=503, method=method, path=path,
+                                   body={"message": "unavailable"})
+
+    monkeypatch.setattr(redeploy, "_client", lambda target: Client())
+    with pytest.raises(redeploy.RedeployError, match="no additional build requested"):
+        redeploy.deployment_history({"hub_id": "mainneta-hub1", "application_uuid": "app-A"})
+
+
+def test_redeploy_retired_failed_build_retries_only_on_next_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    def failed_wait(*_args):
+        raise redeploy.RedeployError("Coolify build failed")
+    monkeypatch.setattr(redeploy, "wait_for_build", failed_wait)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    with pytest.raises(HarnessError, match="Coolify build failed"):
+        first.run()
+    assert [x for x in calls if x[0] == "force"] == [("force", "mainneta-hub1")]
+    monkeypatch.setattr(redeploy, "failed_previous_build", lambda target, uuid: uuid == "deploy-mainneta-hub1")
+    monkeypatch.setattr(redeploy, "wait_for_build", lambda target, uuid: {
+        "waited": True, "commit": "a" * 40, "status": "finished",
+    })
+    second = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    assert second.run() == 0
+    assert [x for x in calls if x[0] == "force"] == [
+        ("force", "mainneta-hub1"), ("force", "mainneta-hub1"), ("force", "mainnetc-hub1"),
+    ]
+    assert second.state["redeploy"]["targets"][0]["last_failed_deployment_uuid"] == "deploy-mainneta-hub1"
+
+
+def test_redeploy_previous_build_is_read_only_and_requires_terminal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.hub_control import redeploy
+    from tools.coolify_hub_service import CoolifyResponse
+    seen = []
+    class Client:
+        def request(self, method, path, *_args):
+            seen.append((method, path))
+            return CoolifyResponse(ok=True, status=200, method=method, path=path, body={"status": "failed"})
+    monkeypatch.setattr(redeploy, "_client", lambda target: Client())
+    assert redeploy.failed_previous_build({"hub_id": "a"}, "example") is True
+    assert seen == [("GET", "/api/v1/deployments/example")]
+
+
+def test_redeploy_console_build_wait_enables_existing_progress_without_leaking_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.hub_control import redeploy
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_PROGRESS", raising=False)
+    monkeypatch.setattr(redeploy, "_client", lambda target: object())
+    def waiter(client, uuid):
+        assert os.environ.get("MAIN_COMPUTER_HUB_PROGRESS") == "1"
+        return {"waited": True, "commit": "a" * 40}
+    monkeypatch.setattr(redeploy, "_wait_for_coolify_deployment", waiter)
+    assert redeploy.wait_for_build({"hub_id": "a"}, "uuid")["waited"]
+    assert "MAIN_COMPUTER_HUB_PROGRESS" not in os.environ
+
+
+def test_redeploy_signer_sync_uses_only_verified_mother_and_one_coolify_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+    from tools.hub_control import redeploy
+    from tools.hub_control.common.models import HubContext
+    from tools.hub_control.common import admin_identity, deployment
+    from tools.mother.common import private_state
+    from tools import coolify_hub_service
+
+    hub = "mainneta-hub1"
+    address = "0x" + "a" * 40
+    network_state = {"networks": {"mainnet": {"hubs": {hub: {"hub_admin": {
+        "address": address, "private_key": "0x" + "b" * 64,
+    }}}}}}
+    import yaml
+    monkeypatch.setattr(private_state, "read_private_state", lambda *_args, **_kwargs: SimpleNamespace(
+        document_bytes=yaml.safe_dump(network_state).encode(),
+    ))
+    captured = []
+    monkeypatch.setattr(deployment, "_build_bridge_signer_for_deployment", lambda target: (
+        captured.append(("build", target["_hub_admin_wallet"]["address"])) or {
+            "bundle_b64": "encoded-value", "bundle_sha256": "hash",
+        }
+    ))
+    monkeypatch.setattr(deployment, "_verify_live_bridge_signer_contract", lambda *args: captured.append(("verified",)))
+    monkeypatch.setattr(redeploy, "_build_bridge_signer_for_deployment", deployment._build_bridge_signer_for_deployment)
+    monkeypatch.setattr(redeploy, "_verify_live_bridge_signer_contract", deployment._verify_live_bridge_signer_contract)
+    monkeypatch.setattr(redeploy, "ensure_bridge_controller", lambda _ctx, *, network, target, admin_address: (
+        captured.append(("authorize", network, admin_address, target["_hub_admin_wallet"]["address"])) or
+        {"verified": True, "already_authorized": False}
+    ))
+    monkeypatch.setattr(redeploy, "_client", lambda target: object())
+    monkeypatch.setattr(coolify_hub_service, "sync_application_env_var", lambda client, **kwargs: (
+        captured.append(("sync", kwargs["key"], kwargs["value"])) or {"ok": True}
+    ))
+    target = {"network": "mainnet", "hub_id": hub, "bridge_signer_required": True,
+              "hub_admin_address": address, "application_uuid": "app-a"}
+    redeploy.synchronize_bridge_signer(HubContext.from_repo(tmp_path), target)
+    assert captured == [
+        ("build", address), ("authorize", "mainnet", address, address),
+        ("verified",),
+        ("sync", "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64", "encoded-value"),
+    ]
+    with pytest.raises(redeploy.RedeployError, match="disagrees with Mother"):
+        redeploy.synchronize_bridge_signer(HubContext.from_repo(tmp_path), {**target, "hub_admin_address": "0x"+"c"*40})
+
+
+def test_redeploy_rejects_failed_onchain_authorization_before_coolify_or_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+    import yaml
+    from tools.hub_control import redeploy
+    from tools.hub_control.common.errors import HubControlError
+    from tools.hub_control.common.models import HubContext
+    from tools.mother.common import private_state
+
+    hub = "mainneta-hub1"
+    address = "0x" + "a" * 40
+    state = {"networks": {"mainnet": {"hubs": {hub: {"hub_admin": {
+        "address": address, "private_key": "0x" + "b" * 64,
+    }}}}}}
+    monkeypatch.setattr(private_state, "read_private_state", lambda *_args, **_kwargs: SimpleNamespace(
+        document_bytes=yaml.safe_dump(state).encode(),
+    ))
+    calls = []
+    monkeypatch.setattr(redeploy, "_build_bridge_signer_for_deployment", lambda _t: {
+        "bundle_b64": "bundle", "bridge_controller_address": address,
+    })
+    def reject(_ctx, *, network, target, admin_address):
+        calls.append(("authorize", network, admin_address))
+        raise HubControlError("HUB_BRIDGE_OWNER_MISMATCH", "deployer is not escrow owner")
+    monkeypatch.setattr(redeploy, "ensure_bridge_controller", reject)
+    monkeypatch.setattr(redeploy, "_verify_live_bridge_signer_contract", lambda *args: pytest.fail("must not verify"))
+    monkeypatch.setattr(redeploy, "_client", lambda _t: pytest.fail("must not touch Coolify"))
+    target = {"network": "mainnet", "hub_id": hub, "bridge_signer_required": True,
+              "hub_admin_address": address, "application_uuid": "app-a"}
+    with pytest.raises(HubControlError, match="deployer is not escrow owner"):
+        redeploy.synchronize_bridge_signer(HubContext.from_repo(tmp_path), target)
+    assert calls == [("authorize", "mainnet", address)]
+
+
+def test_redeploy_refuses_unverified_bridge_authorization_before_coolify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+    import yaml
+    from tools.hub_control import redeploy
+    from tools.hub_control.common.models import HubContext
+    from tools.mother.common import private_state
+
+    hub = "mainneta-hub1"
+    address = "0x" + "a" * 40
+    state = {"networks": {"mainnet": {"hubs": {hub: {"hub_admin": {
+        "address": address, "private_key": "0x" + "b" * 64,
+    }}}}}}
+    monkeypatch.setattr(private_state, "read_private_state", lambda *_args, **_kwargs: SimpleNamespace(
+        document_bytes=yaml.safe_dump(state).encode(),
+    ))
+    monkeypatch.setattr(redeploy, "_build_bridge_signer_for_deployment", lambda _t: {"bundle_b64": "bundle"})
+    monkeypatch.setattr(redeploy, "ensure_bridge_controller", lambda *_args, **_kwargs: {"verified": False})
+    monkeypatch.setattr(redeploy, "_verify_live_bridge_signer_contract", lambda *args: pytest.fail("must not verify"))
+    monkeypatch.setattr(redeploy, "_client", lambda _t: pytest.fail("must not touch Coolify"))
+    target = {"network": "mainnet", "hub_id": hub, "bridge_signer_required": True,
+              "hub_admin_address": address, "application_uuid": "app-a"}
+    with pytest.raises(redeploy.RedeployError, match="authorization not verified"):
+        redeploy.synchronize_bridge_signer(HubContext.from_repo(tmp_path), target)

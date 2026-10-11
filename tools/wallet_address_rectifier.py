@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Publish Mother-owned O0/O1/O2/O3 addresses to an existing deployment manifest.
+"""Synchronize Mother officers and published contracts into deployment latest.json.
 
-Only runtime/deployments/<network>/latest.json["offices"] may change.
-No chain reset, contract deployment, private-state mutation, or wallet creation.
+Only latest.json officers, contracts, and deployments are rectified. No chain
+reset, contract deployment, private-state mutation, or wallet creation.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from main_computer.contract_config import contract_address_map, load_contract_config
 from tools.mother.common.ethereum_identity import is_address, is_private_key, private_key_to_address
 from tools.mother.common.models import OperationIdentity
 from tools.mother.common.paths import MotherPaths
@@ -98,6 +99,47 @@ def _office_records_from_dev_chain_reset(repo_root: Path, addresses: list[str]) 
     return records
 
 
+def _published_contract_addresses(repo_root: Path, network: str) -> tuple[Path, dict[str, str]]:
+    """Read Mother's public contract publication without modifying it."""
+    loaded = load_contract_config(network, repo_root=repo_root, required=True)
+    assert loaded is not None  # required=True guarantees this
+    source, payload = loaded
+    addresses = contract_address_map(payload)
+    if not addresses:
+        raise RectifierError(f"Published {network} contract config has no addresses: {source}")
+    if any(int(address[2:], 16) == 0 for address in addresses.values()):
+        raise RectifierError(f"Published {network} contract config contains the zero address: {source}")
+    return source, addresses
+
+
+def _synchronize_contract_section(
+    original: dict[str, Any], addresses: dict[str, str], section: str
+) -> dict[str, Any]:
+    """Preserve unrelated records; never attach old deployment provenance to a new address."""
+    current = original.get(section, {})
+    if not isinstance(current, dict):
+        raise RectifierError(f"Deployment manifest has malformed {section} field")
+    updated = dict(current)
+    for name, address in addresses.items():
+        prior = current.get(name)
+        if prior is not None and not isinstance(prior, dict):
+            raise RectifierError(f"Deployment manifest has malformed {section}.{name} record")
+        if not isinstance(prior, dict):
+            updated[name] = {"address": address}
+            continue
+        old_address = prior.get("address")
+        if old_address == address:
+            continue
+        if isinstance(old_address, str) and old_address.lower() == address.lower():
+            # A checksum/casing change is not a new contract deployment.
+            updated[name] = {**prior, "address": address}
+        else:
+            # A different contract cannot inherit the old contract's transaction
+            # hash, constructor args, controller, or other deployment metadata.
+            updated[name] = {"address": address}
+    return updated
+
+
 def _read_manifest(path: Path, network: str) -> tuple[bytes, dict[str, Any]]:
     try:
         old_bytes = path.read_bytes()
@@ -145,16 +187,19 @@ def rectify(repo_root: Path, network: str, *, apply: bool) -> dict[str, Any]:
     old_bytes, manifest = _read_manifest(target, network)
     if manifest["chain"]["chain_id"] != chain_id:
         raise RectifierError(f"Mother {network} chain ID does not match the destination manifest")
+    contract_source, published_contracts = _published_contract_addresses(repo_root, network)
     previous = manifest.get("offices")
-    changed = previous != offices
     updated = dict(manifest)
     updated["offices"] = offices
-    # Preserve all other fields exactly as JSON values, including contracts,
-    # source, chain, deployer, generation/run_id, and transaction hashes.
-    if {k: v for k, v in updated.items() if k != "offices"} != {
-        k: v for k, v in manifest.items() if k != "offices"
+    updated["contracts"] = _synchronize_contract_section(manifest, published_contracts, "contracts")
+    updated["deployments"] = _synchronize_contract_section(manifest, published_contracts, "deployments")
+    # This operation can change only the three synchronized fields.
+    synchronized = {"offices", "contracts", "deployments"}
+    if {k: v for k, v in updated.items() if k not in synchronized} != {
+        k: v for k, v in manifest.items() if k not in synchronized
     }:
-        raise RectifierError("Non-office deployment metadata changed; refusing publication")
+        raise RectifierError("Unrelated deployment metadata changed; refusing publication")
+    changed = updated != manifest
     if apply and changed:
         replacement = (json.dumps(updated, indent=2, sort_keys=True) + "\n").encode("utf-8")
         _atomic_replace_if_unchanged(target, old_bytes, replacement)
@@ -165,6 +210,7 @@ def rectify(repo_root: Path, network: str, *, apply: bool) -> dict[str, Any]:
         "network": network,
         "source": str(repo_root / "runtime" / "state" / "mother" / "identity.private.yaml"),
         "mother_generation": generation,
+        "contract_source": str(contract_source),
         "manifest": str(target),
         "manifest_chain_id": manifest["chain"]["chain_id"],
         "status": "UPDATED" if apply and changed else ("DRIFT" if changed else "PASS"),
@@ -176,16 +222,33 @@ def rectify(repo_root: Path, network: str, *, apply: bool) -> dict[str, Any]:
              "to": r["address"]}
             for i, r in enumerate(offices)
         ],
+        "contracts": [
+            {
+                "contract": name,
+                "address": address,
+                "from_contracts": (
+                    manifest.get("contracts", {}).get(name, {}).get("address")
+                    if isinstance(manifest.get("contracts", {}), dict)
+                    and isinstance(manifest.get("contracts", {}).get(name), dict) else None
+                ),
+                "from_deployments": (
+                    manifest.get("deployments", {}).get(name, {}).get("address")
+                    if isinstance(manifest.get("deployments", {}), dict)
+                    and isinstance(manifest.get("deployments", {}).get(name), dict) else None
+                ),
+            }
+            for name, address in published_contracts.items()
+        ],
         "previous_manifest_sha256": hashlib.sha256(old_bytes).hexdigest(),
     }
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Copy Mother's O0-O3 officer addresses into an existing deployment latest.json (no chain operations)")
+    parser = argparse.ArgumentParser(description="Sync Mother's O0-O3 officers and published contracts into deployment latest.json (no chain operations)")
     parser.add_argument("--network", required=True, choices=("mainnet", "testnet"))
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--dry-run", action="store_true", help="Show changes only (default)")
-    modes.add_argument("--apply", action="store_true", help="Update only the offices array in the deployment manifest")
+    modes.add_argument("--apply", action="store_true", help="Synchronize offices, contracts, and deployments in the manifest")
     return parser
 
 

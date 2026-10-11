@@ -121,7 +121,11 @@ def test_verified_mother_successor_survives_retry_and_keeps_secrets_private(tmp_
 
 
 def test_add_hub_reserves_before_deployment_and_never_stores_secret_in_operation(tmp_path, monkeypatch):
-    monkeypatch.setattr(add_hub, "ensure_bridge_controller", lambda *a, **kw: {"verified": True, "already_authorized": True})
+    authorization_calls = []
+    def authorize(_ctx, *, network, target, admin_address):
+        authorization_calls.append((network, target["hub_admin_address"], admin_address))
+        return {"verified": True, "already_authorized": False}
+    monkeypatch.setattr(add_hub, "ensure_bridge_controller", authorize)
     ctx = _context(tmp_path)
     _bootstrap(ctx, _network())
     operation_id = "hub-add-mainnet-integration"
@@ -141,6 +145,7 @@ def test_add_hub_reserves_before_deployment_and_never_stores_secret_in_operation
     result = add_hub.do(ctx, "mainnet", operation_id, deployer=deployer, observer=observer)
     assert result["status"] == "deployed"
     assert seen[0][0] == seen[0][1]
+    assert authorization_calls == [("mainnet", seen[0][0], seen[0][0])]
     serialized = json.dumps(require_operation(ctx, "mainnet", operation_id))
     assert _key(1) not in serialized
     assert "private_key" not in serialized
@@ -325,3 +330,21 @@ def test_add_hub_pool_allocation_accepts_arbitrary_size_and_reuses_assigned():
         assert available_hub_admin(state, "hub-0")["address"] == seen[0]
         with pytest.raises(HubAdminPoolError, match="HUB_ADMIN_RESERVE_EXHAUSTED"):
             available_hub_admin(state, "another-hub")
+
+
+def test_add_hub_fails_before_coolify_when_bridge_authorization_fails(tmp_path, monkeypatch):
+    ctx = _context(tmp_path)
+    _bootstrap(ctx, _network())
+    operation_id = "hub-add-unauthorized-integration"
+    write_operation(ctx, {
+        "schema": ADD_OPERATION_SCHEMA, "operation_id": operation_id,
+        "network": "mainnet", "kind": "add-hub", "stage": "prepared",
+        "accepted_prestate": None, "target": {"hub_id": "mainneta-hub1", "network": "mainnet"},
+    })
+    def reject(*args, **kwargs):
+        raise HubControlError("HUB_BRIDGE_OWNER_MISMATCH", "deployer is not escrow owner")
+    monkeypatch.setattr(add_hub, "ensure_bridge_controller", reject)
+    with pytest.raises(HubControlError, match="deployer is not escrow owner"):
+        add_hub.do(ctx, "mainnet", operation_id,
+                   deployer=lambda _target: pytest.fail("Coolify must not be touched"))
+    assert require_operation(ctx, "mainnet", operation_id)["stage"] == "prepared"
