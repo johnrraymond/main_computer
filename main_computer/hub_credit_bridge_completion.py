@@ -700,6 +700,21 @@ class HubCreditBridgeCompletionService:
                 f"wallet_address does not match deposit account: wallet_address={requested_wallet}, deposit.account={before.account}"
             )
 
+        # Stable Hub's adapter persists an intent transaction before any chain
+        # side effect. An older completed escrow deposit without that intent
+        # must not become newly spendable money in Stable's separate ledger.
+        prepare = getattr(self.ledger, "prepare_bridge_deposit_completion", None)
+        if callable(prepare):
+            prepare(
+                account_id=wallet_account_id(before.account),
+                owner_address=before.account,
+                deposit_id=deposit_id,
+                chain_id=deployment.chain_id,
+                contract_address=deployment.contract_address,
+                deposit_amount_units=before.amount_units,
+                already_completed=before.completed,
+            )
+
         tx_hash = ""
         receipt: dict[str, Any] | None = None
         completion_sent = False
@@ -710,7 +725,14 @@ class HubCreditBridgeCompletionService:
             completion_sent = True
 
         after = client.deposit_record(deposit_id)
-        completed_units = positive_int(client.completed_deposit_units(after.account or before.account))
+        # A transaction receipt alone is not proof that the escrow now records
+        # this deposit as completed. The ledger must never credit a previously
+        # completed cumulative total to an uncompleted or replaced deposit.
+        if not after.exists or not after.completed:
+            raise RuntimeError(f"Bridge deposit completion is not confirmed on-chain: {deposit_id}")
+        if after.account != before.account or after.amount_units != before.amount_units:
+            raise RuntimeError(f"Bridge deposit changed during completion verification: {deposit_id}")
+        completed_units = positive_int(client.completed_deposit_units(after.account))
         chain_completed_credit_wei = completed_units
 
         account_id = wallet_account_id(after.account or before.account)

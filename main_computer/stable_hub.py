@@ -4,24 +4,35 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import secrets
 import sys
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+from main_computer.config import MainComputerConfig
+from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to_decimal_text, credit_wei_to_whole_credits_floor
+from main_computer.hub_credit_bridge_completion import (
+    HubCreditBridgeCompletionService,
+    load_bridge_deployment,
+    normalize_evm_address,
+)
+from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.stable_hub_msk import (
     StableHubMultiSessionKeyError,
     StableHubMultiSessionKeyService,
     StableHubMultiSessionKeyStore,
     stable_multisession_store_from_topology,
 )
+from main_computer.stable_hub_temporal import StableHubTemporalRuntime, TemporalLifecycleUnavailable, temporal_address
 from main_computer.stable_hub_topology import (
     StableHubNode,
     StableHubTopology,
@@ -62,7 +73,8 @@ def stable_hub_contract() -> dict[str, str]:
         "worker_live_session_transport": "websocket",
         "worker_heartbeat": "live-connection-ping-pong",
         "rest_worker_heartbeat": "forbidden",
-        "wallet_funding": "not_implemented",  # No bridge credit minting until an audited adapter exists.
+        "wallet_funding": "verified-bridge-completion-to-shared-fdb",
+        "refund_reconciliation": "disabled_pending_accounting_proof",
     }
 
 
@@ -262,6 +274,78 @@ class LiveWorkerSession:
             }
 
 
+class _StableHubBridgeLedgerAdapter:
+    """Narrow interface from existing escrow verification to Stable's atomic ledger.
+
+    The completion service reads escrow state and signs only authorized deposit
+    completion. This adapter has no chain-signing authority and cannot create
+    credits without the service's verified cumulative escrow result.
+    """
+
+    def __init__(self, ledger: StableHubPayoutLedgerDirectory) -> None:
+        self.ledger = ledger
+
+    def prepare_bridge_deposit_completion(
+        self,
+        *,
+        account_id: str,
+        owner_address: str,
+        deposit_id: str,
+        chain_id: int,
+        contract_address: str,
+        deposit_amount_units: int,
+        already_completed: bool,
+    ) -> dict[str, Any]:
+        if wallet_account_id(owner_address) != account_id:
+            raise ValueError("bridge account does not match deposit wallet")
+        return self.ledger.prepare_bridge_deposit_completion(
+            account_id=account_id,
+            wallet_address=owner_address,
+            deposit_id=deposit_id,
+            chain_id=chain_id,
+            contract_address=contract_address,
+            deposit_amount_units=deposit_amount_units,
+            already_completed=already_completed,
+        )
+
+    def record_completed_bridge_deposit(
+        self,
+        *,
+        account_id: str,
+        owner_address: str,
+        chain_completed_credit_wei: int,
+        deposit_id: str,
+        completion_tx_hash: str = "",
+        chain_id: int = 0,
+        contract_address: str = "",
+        completed_units: int = 0,
+        deposit_amount_units: int = 0,
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        del memo
+        if int(completed_units) != int(chain_completed_credit_wei):
+            raise ValueError("bridge completed units disagree with completed credit wei")
+        if wallet_account_id(owner_address) != account_id:
+            raise ValueError("bridge account does not match deposit wallet")
+        result = self.ledger.record_completed_bridge_deposit(
+            account_id=account_id,
+            wallet_address=owner_address,
+            chain_completed_credit_wei=chain_completed_credit_wei,
+            deposit_amount_units=deposit_amount_units,
+            deposit_id=deposit_id,
+            completion_tx_hash=completion_tx_hash,
+            chain_id=chain_id,
+            contract_address=contract_address,
+            metadata=metadata,
+        )
+        return {
+            **result,
+            "chain_completed_credits_display": credit_wei_to_decimal_text(int(chain_completed_credit_wei)),
+            "delta_credits_display": credit_wei_to_decimal_text(int(result["delta_credit_wei"])),
+        }
+
+
 class StableHubHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -274,6 +358,7 @@ class StableHubHTTPServer(ThreadingHTTPServer):
         multisession_key_store: StableHubMultiSessionKeyStore | None = None,
         worker_session_store: StableHubWorkerSessionStore | None = None,
         work_offer_timeout_seconds: float = 10.0,
+        bridge_completion_service: Any | None = None,
     ) -> None:
         super().__init__(server_address, StableHubRequestHandler)
         self.topology = topology
@@ -306,6 +391,25 @@ class StableHubHTTPServer(ThreadingHTTPServer):
             hub_id=hub.hub_id,
             store=self.worker_session_store,
         )
+        # A missing or invalid private signer bundle fails closed when the
+        # endpoint is used; a public Hub must never fall back to a mock credit
+        # importer or mint unverified requester balances.
+        bridge_config = replace(
+            MainComputerConfig.from_env(),
+            hub_network=str(topology.network.get("network_key") or "").strip(),
+        )
+        self.bridge_configuration = bridge_config
+        self.bridge_completion_override = bridge_completion_service is not None
+        self.credit_bridge_completion = bridge_completion_service or HubCreditBridgeCompletionService(
+            _StableHubBridgeLedgerAdapter(self.payout_ledger_directory), bridge_config
+        )
+        self.temporal_runtime = None
+        if temporal_address():
+            from main_computer.stable_hub_worker_sessions import stable_temporal_namespace_for_topology
+            self.temporal_runtime = StableHubTemporalRuntime(
+                address=temporal_address(), namespace=stable_temporal_namespace_for_topology(topology),
+                store=self.worker_session_store,
+            )
         self.work_offer_timeout_seconds = max(0.001, float(work_offer_timeout_seconds))
         self._live_worker_sessions_lock = threading.RLock()
         self.live_worker_sessions: dict[str, LiveWorkerSession] = {}
@@ -322,6 +426,11 @@ class StableHubHTTPServer(ThreadingHTTPServer):
         with self._live_worker_sessions_lock:
             return self.live_worker_sessions.pop(connection_id, None)
 
+
+    def server_close(self) -> None:
+        if self.temporal_runtime is not None:
+            self.temporal_runtime.close()
+        super().server_close()
 
 class StableHubRequestHandler(BaseHTTPRequestHandler):
     server: StableHubHTTPServer
@@ -1294,6 +1403,15 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        # Temporal is opt-in, but a configured runtime is mandatory for new paid
+        # work: reject before the worker offer and before any credit is spent.
+        if self.server.temporal_runtime is not None:
+            try:
+                self.server.temporal_runtime.require_ready()
+            except TemporalLifecycleUnavailable as exc:
+                self._send_json(503, {"ok": False, "error": "temporal_unavailable", "message": str(exc)})
+                return
+
         try:
             market_record = self.server.worker_market_directory.reserve_worker_capacity(
                 worker_id=worker_id,
@@ -1455,6 +1573,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             task_queue=task_queue,
             work=work,
             worker_acceptance=worker_acceptance,
+            temporal_intent=self.server.temporal_runtime is not None,
             payout={
                 "unit": str(charge_record.get("unit") or "credit"),
                 "pricing_mode": "stable_market_price",
@@ -1517,6 +1636,34 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/hub/v1/credits/multisession-keys/validate":
                 self._send_json(200, self.server.multisession_key_service.validate_key(self._read_json()))
                 return
+            if path == "/api/hub/v1/credits/wallet-funding/complete":
+                body = self._read_json()
+                if not self.server.bridge_completion_override:
+                    deployment = load_bridge_deployment(self.server.bridge_configuration)
+                    topology_chain_id = str(self.server.topology.network.get("chain_id") or "").strip()
+                    if not topology_chain_id or str(deployment.chain_id) != topology_chain_id:
+                        raise RuntimeError("bridge deployment chain does not match Stable Hub topology")
+                    if body.get("chain_id") not in (None, "") and str(body["chain_id"]) != str(deployment.chain_id):
+                        raise ValueError("bridge completion chain_id does not match deployment")
+                    if body.get("contract_address") not in (None, "") and normalize_evm_address(
+                        body["contract_address"], field_name="contract_address"
+                    ) != deployment.contract_address:
+                        raise ValueError("bridge completion contract_address does not match deployment")
+                result = self.server.credit_bridge_completion.complete_wallet_funding_deposit(body)
+                self._send_json(200, result)
+                return
+            if path in {
+                "/api/hub/v1/credits/wallet-funding/import",
+                "/api/hub/v1/credits/bridge-reconciliation/execute",
+                "/api/hub/v1/credits/bridge-reconciliation/record",
+            }:
+                self._send_json(501, {
+                    "ok": False,
+                    "error": "stable_hub_unverified_financial_operation_disabled",
+                    "path": path,
+                    "hub_id": self.server.hub.hub_id,
+                })
+                return
             if path == "/api/hub/v1/work/requests":
                 self._handle_work_request()
                 return
@@ -1562,6 +1709,14 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        except (FileNotFoundError, OSError) as exc:
+            self._send_json(503, {
+                "ok": False,
+                "error": "bridge_completion_unavailable",
+                "message": type(exc).__name__,
+                "hub_id": self.server.hub.hub_id,
+            })
+            return
         except RuntimeError as exc:
             self._send_json(
                 503,
@@ -1593,6 +1748,62 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/hub/v1/work/sessions/") and path.endswith("/stream"):
             self._handle_work_session_stream(path)
             return
+        if path == "/api/hub/v1/credits/wallet-funding/completion":
+            self._send_json(200, self.server.credit_bridge_completion.status())
+            return
+        if path == "/api/hub/v1/credits/balance":
+            query = parse_qs(urlparse(self.path).query)
+            wallet = str(query.get("wallet_address", [""])[0] or "").strip()
+            if not wallet:
+                self._send_json(400, {"ok": False, "error": "wallet_address is required"})
+                return
+            try:
+                wallet = normalize_evm_address(wallet, field_name="wallet_address")
+                account_id = wallet_account_id(wallet)
+            except ValueError as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+                return
+            stored = self.server.payout_ledger_directory.get_account(account_id)
+            if isinstance(stored, dict):
+                account = dict(stored)
+                if "available_credit_wei" not in account:
+                    account["available_credit_wei"] = str(credit_decimal_text_to_wei(str(account.get("available_credits", "0"))))
+                account.setdefault("wallet_address", wallet)
+            else:
+                account = {
+                    "account_id": account_id, "wallet_address": wallet,
+                    "owner_address": wallet, "available_credit_wei": "0",
+                    "held_credit_wei": "0", "spent_credit_wei": "0",
+                    "bridge_completed_credit_wei": "0",
+                }
+            available = int(account["available_credit_wei"])
+            account["available_credits"] = credit_wei_to_whole_credits_floor(available)
+            account["available_credits_display"] = credit_wei_to_decimal_text(available)
+            self._send_json(200, {
+                "ok": True, "wallet_address": wallet, "account_id": account_id,
+                "account": account, "unit": "compute_credit",
+                "funding_model": "hub_credit_bridge_escrow_wallet_v2",
+            })
+            return
+        if path == "/api/hub/v1/credits/charges":
+            query = parse_qs(urlparse(self.path).query)
+            request_id = str(query.get("request_id", [""])[0] or "").strip()
+            account_id = str(query.get("account_id", [""])[0] or "").strip()
+            try:
+                limit = min(500, max(1, int(query.get("limit", ["100"])[0])))
+            except (TypeError, ValueError):
+                self._send_json(400, {"ok": False, "error": "limit must be an integer"})
+                return
+            raw = self.server.payout_ledger_directory.store.load().get("payout_charges", {})
+            charges = [dict(item) for item in raw.values() if isinstance(item, dict)] if isinstance(raw, dict) else []
+            if request_id:
+                charges = [item for item in charges if item.get("request_id") == request_id]
+            if account_id:
+                charges = [item for item in charges if item.get("account_id") == account_id]
+            charges.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+            charges = charges[:limit]
+            self._send_json(200, {"ok": True, "charges": charges, "charge_count": len(charges)})
+            return
         if path == "/api/hub/v1/payout/status":
             self._send_json(
                 200,
@@ -1605,13 +1816,20 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/health":
+            runtime = self.server.temporal_runtime
+            ready = runtime is None or runtime.is_ready
             self._send_json(
-                200,
+                200 if ready else 503,
                 {
-                    "ok": True,
+                    "ok": ready,
                     "service": "main_computer.stable_hub",
                     "hub_id": self.server.hub.hub_id,
                     "cluster_id": self.server.topology.cluster_id,
+                    "temporal": {
+                        "configured": runtime is not None,
+                        "ready": runtime.is_ready if runtime is not None else False,
+                        "mode": "durable_lifecycle_observation_no_worker_reexecution",
+                    },
                 },
             )
             return
@@ -1650,6 +1868,7 @@ def create_stable_hub_server(
     multisession_key_store: StableHubMultiSessionKeyStore | None = None,
     worker_session_store: StableHubWorkerSessionStore | None = None,
     work_offer_timeout_seconds: float = 10.0,
+    bridge_completion_service: Any | None = None,
 ) -> StableHubHTTPServer:
     hub = topology.hub_by_id(hub_id)
     default_host, default_port = _url_host_port(hub.hub_url)
@@ -1661,6 +1880,7 @@ def create_stable_hub_server(
         multisession_key_store=multisession_key_store,
         worker_session_store=worker_session_store,
         work_offer_timeout_seconds=work_offer_timeout_seconds,
+        bridge_completion_service=bridge_completion_service,
     )
 
 

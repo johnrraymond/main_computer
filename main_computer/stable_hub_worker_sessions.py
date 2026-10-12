@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from functools import wraps
 import json
 import os
 import platform
@@ -68,6 +69,23 @@ def _shared_store_lock(store: Any) -> threading.Lock:
             lock = threading.Lock()
             _SHARED_STORE_LOCKS[key] = lock
         return lock
+
+
+def _atomic_stable_store_mutation(method: Any) -> Any:
+    """Replay a whole Stable directory mutation inside one FDB transaction.
+
+    The callback, not only its final save, must be retried on a read/write
+    conflict. Local JSON/in-memory stores retain their existing shared lock.
+    """
+
+    @wraps(method)
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        atomic = getattr(self.store, "atomic", None)
+        if callable(atomic):
+            return atomic(lambda: method(self, *args, **kwargs))
+        return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 class StableHubWorkerSessionStore(Protocol):
@@ -323,6 +341,9 @@ def _normalize_store(data: dict[str, Any] | None) -> dict[str, Any]:
     bridge_payouts = clean.get("bridge_payouts")
     if not isinstance(bridge_payouts, dict):
         bridge_payouts = {}
+    payout_deposit_intents = clean.get("payout_deposit_intents")
+    if not isinstance(payout_deposit_intents, dict):
+        payout_deposit_intents = {}
     payout_events = clean.get("payout_events")
     if not isinstance(payout_events, list):
         payout_events = []
@@ -356,6 +377,9 @@ def _normalize_store(data: dict[str, Any] | None) -> dict[str, Any]:
     }
     clean["bridge_payouts"] = {
         str(key): dict(value) for key, value in bridge_payouts.items() if isinstance(value, dict)
+    }
+    clean["payout_deposit_intents"] = {
+        str(key): dict(value) for key, value in payout_deposit_intents.items() if isinstance(value, dict)
     }
     clean["payout_events"] = [dict(value) for value in payout_events if isinstance(value, dict)]
     clean.setdefault("version", STABLE_WORKER_SESSION_STORE_VERSION)
@@ -510,6 +534,7 @@ class FoundationDbStableWorkerSessionStore:
         self._opened = False
         self._fdb: Any = None
         self._db: Any = None
+        self._transaction_local = threading.local()
 
     def _open(self) -> None:
         if self._opened:
@@ -561,30 +586,76 @@ class FoundationDbStableWorkerSessionStore:
         # original single-value store key.
         return self._legacy_key()
 
+    def atomic(self, action: Any) -> Any:
+        """Run and retry one complete read/modify/write in FoundationDB.
+
+        All Stable directories share the same chunked document. Its metadata
+        key is read normally (not as a snapshot) and written on every save,
+        allowing FDB conflict detection across different Hub processes.
+        """
+        self._open()
+        if getattr(self._transaction_local, "transaction", None) is not None:
+            return action()  # Nested operation joins the outer transaction.
+
+        @self._fdb.transactional
+        def _tx(tr: Any) -> Any:
+            _configure_fdb_transaction_safety(tr)
+            self._transaction_local.transaction = tr
+            try:
+                return action()
+            finally:
+                self._transaction_local.transaction = None
+
+        return _tx(self._db)
+
+    def _read_document(self, tr: Any, *, legacy_key: bytes, meta_key: bytes) -> dict[str, Any]:
+        meta = _json_loads(tr[meta_key].wait()) or {}
+        chunk_count = int(meta.get("chunk_count") or 0) if isinstance(meta, dict) else 0
+        if chunk_count > 0:
+            parts: list[bytes] = []
+            for index in range(chunk_count):
+                chunk = _fdb_value_bytes(tr[self._chunk_key(index)].wait())
+                if chunk is None:
+                    raise RuntimeError(f"Stable Hub FDB chunk {index} is missing.")
+                parts.append(chunk)
+            payload = json.loads(b"".join(parts).decode("utf-8"))
+            return _normalize_store(payload if isinstance(payload, dict) else {})
+        # Existing one-key snapshots remain readable and migrate on first save.
+        return _normalize_store(_json_loads(tr[legacy_key].wait()) or {})
+
+    def _write_document(self, tr: Any, data: dict[str, Any], *, legacy_key: bytes, meta_key: bytes) -> None:
+        encoded = _json_dumps(_normalize_store(data))
+        chunk_size = max(4096, int(STABLE_WORKER_SESSION_FDB_VALUE_CHUNK_BYTES))
+        chunks = [encoded[index : index + chunk_size] for index in range(0, len(encoded), chunk_size)] or [b"{}"]
+        previous_meta = _json_loads(tr[meta_key].wait()) or {}
+        previous_count = int(previous_meta.get("chunk_count") or 0) if isinstance(previous_meta, dict) else 0
+        for index, chunk in enumerate(chunks):
+            tr[self._chunk_key(index)] = chunk
+        for index in range(len(chunks), previous_count):
+            del tr[self._chunk_key(index)]
+        tr[meta_key] = _json_dumps(
+            {
+                "format": "chunked-json-v1",
+                "chunk_count": len(chunks),
+                "byte_count": len(encoded),
+                "chunk_size": chunk_size,
+                "updated_at": utc_now(),
+            }
+        )
+        del tr[legacy_key]
+
     def load(self) -> dict[str, Any]:
         self._open()
         legacy_key = self._legacy_key()
         meta_key = self._meta_key()
+        active = getattr(self._transaction_local, "transaction", None)
+        if active is not None:
+            return self._read_document(active, legacy_key=legacy_key, meta_key=meta_key)
 
         @self._fdb.transactional
         def _tx(tr: Any) -> dict[str, Any]:
             _configure_fdb_transaction_safety(tr)
-            meta = _json_loads(tr[meta_key].wait()) or {}
-            chunk_count = int(meta.get("chunk_count") or 0) if isinstance(meta, dict) else 0
-            if chunk_count > 0:
-                parts: list[bytes] = []
-                for index in range(chunk_count):
-                    chunk = _fdb_value_bytes(tr[self._chunk_key(index)].wait())
-                    if chunk is None:
-                        raise RuntimeError(f"Stable Hub FDB chunk {index} is missing.")
-                    parts.append(chunk)
-                payload = json.loads(b"".join(parts).decode("utf-8"))
-                return _normalize_store(payload if isinstance(payload, dict) else {})
-
-            # Migration path for snapshots/labs that still have the original
-            # one-key JSON document.  The next save writes the chunked form and
-            # deletes this legacy value.
-            return _normalize_store(_json_loads(tr[legacy_key].wait()) or {})
+            return self._read_document(tr, legacy_key=legacy_key, meta_key=meta_key)
 
         try:
             return _tx(self._db)
@@ -599,42 +670,17 @@ class FoundationDbStableWorkerSessionStore:
         self._open()
         legacy_key = self._legacy_key()
         meta_key = self._meta_key()
-        clean = _normalize_store(data)
-        encoded = _json_dumps(clean)
-        chunk_size = max(4096, int(STABLE_WORKER_SESSION_FDB_VALUE_CHUNK_BYTES))
-        chunks = [encoded[index : index + chunk_size] for index in range(0, len(encoded), chunk_size)] or [b"{}"]
+        active = getattr(self._transaction_local, "transaction", None)
+        if active is not None:
+            self._write_document(active, data, legacy_key=legacy_key, meta_key=meta_key)
+            return
+        # Deliberately disallow blind, out-of-transaction writes to live FDB:
+        # they can overwrite another Hub's account/session changes.
+        raise RuntimeError(
+            "FoundationDB Stable Hub save requires store.atomic(...); "
+            "a detached load/save would risk cross-Hub lost updates."
+        )
 
-        @self._fdb.transactional
-        def _tx(tr: Any) -> None:
-            _configure_fdb_transaction_safety(tr)
-            previous_meta = _json_loads(tr[meta_key].wait()) or {}
-            previous_count = int(previous_meta.get("chunk_count") or 0) if isinstance(previous_meta, dict) else 0
-
-            for index, chunk in enumerate(chunks):
-                tr[self._chunk_key(index)] = chunk
-            for index in range(len(chunks), previous_count):
-                del tr[self._chunk_key(index)]
-
-            tr[meta_key] = _json_dumps(
-                {
-                    "format": "chunked-json-v1",
-                    "chunk_count": len(chunks),
-                    "byte_count": len(encoded),
-                    "chunk_size": chunk_size,
-                    "updated_at": utc_now(),
-                }
-            )
-            del tr[legacy_key]
-
-        try:
-            _tx(self._db)
-        except Exception as exc:  # pragma: no cover - depends on live FDB timing/state
-            raise RuntimeError(
-                "FoundationDB worker live-session store save failed or timed out. "
-                f"cluster_file={self.cluster_file} namespace={self.namespace} "
-                f"timeout_ms={STABLE_WORKER_SESSION_FDB_TRANSACTION_TIMEOUT_MS} "
-                f"bytes={len(encoded)} chunks={len(chunks)}"
-            ) from exc
 
 
 def stable_worker_session_store_from_topology(
@@ -923,6 +969,198 @@ class StableHubPayoutLedgerDirectory:
         self._event(data, "stable.work.payout.account_created", account_id=clean_account)
         return dict(account)
 
+    @_atomic_stable_store_mutation
+    def prepare_bridge_deposit_completion(
+        self,
+        *,
+        account_id: str,
+        wallet_address: str,
+        deposit_id: str,
+        chain_id: int,
+        contract_address: str,
+        deposit_amount_units: int,
+        already_completed: bool,
+    ) -> dict[str, Any]:
+        """Persist intent BEFORE signing; distinguish new deposits from history.
+
+        An already-completed escrow deposit that this Stable ledger never
+        enrolled must not be replayed as fresh credit, even if it is the only
+        historical deposit. A crash after chain completion is retryable because
+        the intent was committed in FDB first.
+        """
+        account = str(account_id or "").strip()
+        wallet = normalize_address(wallet_address)
+        deposit = str(deposit_id or "").strip().lower()
+        contract = normalize_address(contract_address)
+        amount = int(deposit_amount_units)
+        chain = int(chain_id)
+        if not account or not wallet or not deposit or not contract or amount <= 0 or chain <= 0:
+            raise StableHubWorkerSessionError("bridge_deposit_intent_invalid")
+        with self._lock:
+            data = self.store.load()
+            intents = data.setdefault("payout_deposit_intents", {})
+            expected = {
+                "account_id": account,
+                "wallet_address": wallet,
+                "deposit_id": deposit,
+                "chain_id": chain,
+                "contract_address": contract,
+                "deposit_amount_units": str(amount),
+            }
+            existing = intents.get(deposit)
+            if isinstance(existing, dict):
+                if any(str(existing.get(key)) != str(value) for key, value in expected.items()):
+                    raise StableHubWorkerSessionError("bridge_deposit_intent_conflict")
+                return {"idempotent": True, "intent": dict(existing)}
+            # The account may have been funded and spent under the Experimental
+            # ledger, which Stable does not share. Do not silently re-mint it.
+            if already_completed:
+                raise StableHubWorkerSessionError("bridge_preexisting_completed_deposit_requires_reconciliation")
+            intent = {**expected, "status": "prepared", "created_at": utc_now()}
+            intents[deposit] = intent
+            self.store.save(data)
+            return {"idempotent": False, "intent": dict(intent)}
+
+    @_atomic_stable_store_mutation
+    def record_completed_bridge_deposit(
+        self,
+        *,
+        account_id: str,
+        wallet_address: str,
+        chain_completed_credit_wei: int | str,
+        deposit_id: str,
+        deposit_amount_units: int | str | None = None,
+        completion_tx_hash: str = "",
+        chain_id: int = 0,
+        contract_address: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record a *verified-by-caller* cumulative chain completion exactly once.
+
+        This internal accounting primitive neither reads a chain nor exposes
+        an HTTP crediting endpoint. Patch 2 must verify completion authority
+        before calling it. The account, credit delta, and cumulative watermark
+        are committed together in the Stable Hub FDB transaction.
+        """
+        clean_account = str(account_id or "").strip()
+        clean_wallet = normalize_address(wallet_address)
+        clean_deposit = str(deposit_id or "").strip().lower()
+        if not clean_account or not clean_wallet or not clean_deposit:
+            raise StableHubWorkerSessionError("account_id, wallet_address, and deposit_id are required.")
+        try:
+            chain_completed = int(chain_completed_credit_wei)
+        except (TypeError, ValueError) as exc:
+            raise StableHubWorkerSessionError("chain_completed_credit_wei must be an integer.") from exc
+        if chain_completed < 0 or str(chain_completed_credit_wei).strip() != str(chain_completed):
+            raise StableHubWorkerSessionError("chain_completed_credit_wei must be a nonnegative integer wei amount.")
+        now = utc_now()
+        with self._lock:
+            data = self.store.load()
+            account = self._ensure_account(
+                data, account_id=clean_account, wallet_address=clean_wallet, default_credits=Decimal("0")
+            )
+            owner = normalize_address(account.get("wallet_address") or account.get("owner_address") or "")
+            if owner and owner != clean_wallet:
+                raise StableHubWorkerSessionError("bridge_account_wallet_mismatch")
+            local_completed = int(account.get("bridge_completed_credit_wei", 0) or 0)
+            if chain_completed < local_completed:
+                raise StableHubWorkerSessionError("bridge_completed_watermark_ahead_of_chain")
+            delta = chain_completed - local_completed
+            # The Experimental ledger may have accounted for earlier deposits,
+            # charges, or refunds under a DIFFERENT FDB namespace. An unseeded
+            # Stable account cannot treat the entire historical escrow total as
+            # new spendable credit. Only the first individual verified deposit
+            # may initialize a fresh watermark; otherwise fail closed pending
+            # explicit migration/reconciliation of the historical account.
+            if deposit_amount_units is not None and local_completed == 0 and delta > 0:
+                try:
+                    first_deposit = int(deposit_amount_units)
+                except (TypeError, ValueError) as exc:
+                    raise StableHubWorkerSessionError("bridge_deposit_amount_invalid") from exc
+                if first_deposit <= 0 or str(deposit_amount_units).strip() != str(first_deposit):
+                    raise StableHubWorkerSessionError("bridge_deposit_amount_invalid")
+                if chain_completed != first_deposit:
+                    raise StableHubWorkerSessionError("bridge_historical_completion_requires_reconciliation")
+            if delta == 0:
+                return {
+                    "idempotent": True,
+                    "delta_credit_wei": "0",
+                    "chain_completed_credit_wei": str(chain_completed),
+                    "local_completed_credit_wei": str(local_completed),
+                    "deposit_id": clean_deposit,
+                    "account": dict(account),
+                }
+            if deposit_amount_units is not None:
+                intent = data.setdefault("payout_deposit_intents", {}).get(clean_deposit)
+                if not isinstance(intent, dict) or (
+                    str(intent.get("account_id")) != clean_account
+                    or str(intent.get("wallet_address")) != clean_wallet
+                    or str(intent.get("contract_address")) != normalize_address(contract_address)
+                    or str(intent.get("chain_id")) != str(int(chain_id))
+                    or str(intent.get("deposit_amount_units")) != str(int(deposit_amount_units))
+                ):
+                    raise StableHubWorkerSessionError("bridge_completion_missing_verified_intent")
+            previous_deposit = data.setdefault("payout_deposits", {}).get(clean_deposit)
+            if isinstance(previous_deposit, dict):
+                raise StableHubWorkerSessionError("bridge_deposit_replay_conflicts_with_watermark")
+            updated = self._account_payload(
+                account_id=clean_account,
+                wallet_address=clean_wallet,
+                available_credit_wei=int(account.get("available_credit_wei", "0") or 0) + delta,
+                held_credit_wei=account.get("held_credit_wei", 0),
+                spent_credit_wei=account.get("spent_credit_wei", 0),
+                earned_credit_wei=account.get("earned_credit_wei", 0),
+                bridge_completed_credit_wei=chain_completed,
+                created_at=str(account.get("created_at") or ""),
+                updated_at=now,
+                metadata={**dict(account.get("metadata") or {}), "funding_model": "hub_credit_bridge_escrow_wallet_v2"},
+            )
+            data.setdefault("payout_accounts", {})[clean_account] = updated
+            data["payout_deposits"][clean_deposit] = {
+                "deposit_id": clean_deposit,
+                "account_id": clean_account,
+                "payer_address": clean_wallet,
+                "credits_granted": credit_wei_to_whole_credits_floor(delta),
+                "credits_granted_wei": str(delta),
+                "credits_granted_display": credit_wei_to_decimal_text(delta),
+                "status": "bridge_completed",
+                "created_at": now,
+                "completion_tx_hash": str(completion_tx_hash or "").strip().lower(),
+                "chain_completed_credit_wei": str(chain_completed),
+                "chain_id": int(chain_id),
+                "contract_address": normalize_address(contract_address),
+                "metadata": dict(metadata or {}),
+            }
+            transaction = self._transaction(
+                data,
+                transaction_type="bridge_deposit_completed",
+                account_id=clean_account,
+                credit_wei=delta,
+                deposit_id=clean_deposit,
+                memo="verified cumulative bridge completion",
+                metadata={
+                    "completion_tx_hash": str(completion_tx_hash or "").strip().lower(),
+                    "chain_completed_credit_wei": str(chain_completed),
+                    "chain_id": int(chain_id),
+                    "contract_address": normalize_address(contract_address),
+                    **dict(metadata or {}),
+                },
+                transaction_id=stable_id(
+                    "ctx", {"type": "bridge_deposit_completed", "account_id": clean_account, "deposit_id": clean_deposit}
+                ),
+            )
+            self.store.save(data)
+            return {
+                "idempotent": False,
+                "delta_credit_wei": str(delta),
+                "chain_completed_credit_wei": str(chain_completed),
+                "local_completed_credit_wei": str(local_completed),
+                "deposit_id": clean_deposit,
+                "account": dict(updated),
+                "transaction": dict(transaction),
+            }
+
+    @_atomic_stable_store_mutation
     def fund_account(
         self,
         *,
@@ -1038,6 +1276,7 @@ class StableHubPayoutLedgerDirectory:
     ) -> dict[str, Any]:
         raise StableHubWorkerSessionError("credit holds are disabled; credits are spent directly when the request goes through.")
 
+    @_atomic_stable_store_mutation
     def spend_request_credit(
         self,
         *,
@@ -1100,6 +1339,19 @@ class StableHubPayoutLedgerDirectory:
                     "direct_spend": True,
                     "legacy_holds_cancelled": [],
                 }
+
+            # The logical request is uniquely charged per requester, even if
+            # a retry is routed to a different session or worker. A changed
+            # charge identity for the same request is a conflict, not revenue.
+            for prior in data.setdefault("payout_charges", {}).values():
+                if not isinstance(prior, dict):
+                    continue
+                if str(prior.get("account_id") or "") != clean_account:
+                    continue
+                if str(prior.get("request_id") or "") != request_id:
+                    continue
+                if str(prior.get("charge_id") or "") != charge_id:
+                    raise StableHubWorkerSessionError("request_charge_conflict")
 
             account = self._ensure_account(data, account_id=clean_account, wallet_address=wallet_address)
             available = int(account.get("available_credit_wei", "0") or 0)
@@ -1268,6 +1520,7 @@ class StableHubPayoutLedgerDirectory:
                 "requester_max_price": dict(max_price) if max_price else {},
             }
 
+    @_atomic_stable_store_mutation
     def record_worker_claim(self, *, worker_id: str, earning_ids: list[str] | None = None, idempotency_key: str = "") -> dict[str, Any]:
         worker_id = normalize_worker_id(worker_id)
         key = str(idempotency_key or "").strip()
@@ -1376,6 +1629,7 @@ class StableHubPayoutLedgerDirectory:
             self.store.save(data)
             return dict(claim)
 
+    @_atomic_stable_store_mutation
     def create_worker_settlement_batch(self, *, worker_id: str, claim_ids: list[str] | None = None, idempotency_key: str = "") -> dict[str, Any]:
         worker_id = normalize_worker_id(worker_id)
         key = str(idempotency_key or "").strip()
@@ -1465,6 +1719,7 @@ class StableHubPayoutLedgerDirectory:
             self.store.save(data)
             return dict(batch)
 
+    @_atomic_stable_store_mutation
     def settle_worker_settlement_batch(self, *, batch_id: str, settlement_reference: str = "", idempotency_key: str = "") -> dict[str, Any]:
         clean_batch = str(batch_id or "").strip()
         if not clean_batch:
@@ -1514,6 +1769,7 @@ class StableHubPayoutLedgerDirectory:
             self.store.save(data)
             return dict(batch)
 
+    @_atomic_stable_store_mutation
     def request_bridge_payout(self, *, worker_id: str, batch_id: str, idempotency_key: str = "") -> dict[str, Any]:
         worker_id = normalize_worker_id(worker_id)
         clean_batch = str(batch_id or "").strip()
@@ -1585,6 +1841,7 @@ class StableHubPayoutLedgerDirectory:
             self.store.save(data)
             return dict(payout)
 
+    @_atomic_stable_store_mutation
     def confirm_bridge_payout(self, *, bridge_payout_id: str, settlement_reference: str = "") -> dict[str, Any]:
         payout_id = str(bridge_payout_id or "").strip()
         if not payout_id:
@@ -1662,6 +1919,7 @@ class StableHubPayoutLedgerDirectory:
             self.store.save(data)
             return dict(payout)
 
+    @_atomic_stable_store_mutation
     def fail_bridge_payout(self, *, bridge_payout_id: str, reason: str = "") -> dict[str, Any]:
         payout_id = str(bridge_payout_id or "").strip()
         if not payout_id:
@@ -1805,6 +2063,7 @@ class StableHubWorkerMarketDirectory:
             ]
         return sorted(records, key=lambda record: str(record.get("worker_id") or ""))
 
+    @_atomic_stable_store_mutation
     def record_worker_live(
         self,
         *,
@@ -1860,6 +2119,7 @@ class StableHubWorkerMarketDirectory:
             self.store.save(data)
             return dict(record)
 
+    @_atomic_stable_store_mutation
     def record_worker_closed(
         self,
         *,
@@ -1887,6 +2147,7 @@ class StableHubWorkerMarketDirectory:
             self.store.save(data)
             return dict(record)
 
+    @_atomic_stable_store_mutation
     def reserve_worker_capacity(
         self,
         *,
@@ -1928,6 +2189,7 @@ class StableHubWorkerMarketDirectory:
             self.store.save(data)
             return dict(record)
 
+    @_atomic_stable_store_mutation
     def record_session_accepted(
         self,
         *,
@@ -1956,6 +2218,7 @@ class StableHubWorkerMarketDirectory:
             self.store.save(data)
             return dict(record)
 
+    @_atomic_stable_store_mutation
     def record_session_finished(
         self,
         *,
@@ -2057,6 +2320,7 @@ class StableHubAcceptedWorkSessionDirectory:
             record = data.get("accepted_sessions", {}).get(session_id)
             return dict(record) if isinstance(record, dict) else None
 
+    @_atomic_stable_store_mutation
     def get_session_for_request(self, *, requester_account_id: str, request_id: str) -> dict[str, Any] | None:
         clean_account = str(requester_account_id or "").strip()
         if not clean_account:
@@ -2123,6 +2387,7 @@ class StableHubAcceptedWorkSessionDirectory:
         matches.sort(key=lambda record: str(record.get("created_at") or ""))
         return matches
 
+    @_atomic_stable_store_mutation
     def record_accepted(
         self,
         *,
@@ -2141,6 +2406,7 @@ class StableHubAcceptedWorkSessionDirectory:
         work: dict[str, Any],
         worker_acceptance: dict[str, Any],
         payout: dict[str, Any] | None = None,
+        temporal_intent: bool = False,
     ) -> dict[str, Any]:
         session_id = normalize_session_id(session_id)
         request_id = normalize_request_id(request_id)
@@ -2151,6 +2417,8 @@ class StableHubAcceptedWorkSessionDirectory:
             session_id=session_id,
             task_queue=str(task_queue),
         )
+        if temporal_intent:
+            execution["temporal_mode"] = "enabled"
         record = {
             "session_id": session_id,
             "run_id": str(run_id),
@@ -2208,6 +2476,7 @@ class StableHubAcceptedWorkSessionDirectory:
             self.store.save(data)
             return dict(record)
 
+    @_atomic_stable_store_mutation
     def append_stream_event(self, session_id: str, event: dict[str, Any]) -> dict[str, Any]:
         """Append a requester-visible session stream event.
 
@@ -2295,6 +2564,7 @@ class StableHubAcceptedWorkSessionDirectory:
         record["stream_events"] = [*events, clean_event]
         return clean_event
 
+    @_atomic_stable_store_mutation
     def record_succeeded(
         self,
         *,
@@ -2342,6 +2612,7 @@ class StableHubAcceptedWorkSessionDirectory:
             self.store.save(data)
             return dict(record)
 
+    @_atomic_stable_store_mutation
     def record_failed(
         self,
         *,
@@ -2408,6 +2679,7 @@ class StableHubWorkerSessionDirectory:
             record = data.get("workers", {}).get(worker_id)
             return dict(record) if isinstance(record, dict) else None
 
+    @_atomic_stable_store_mutation
     def record_connected(
         self,
         *,
@@ -2443,6 +2715,7 @@ class StableHubWorkerSessionDirectory:
             self.store.save(data)
             return dict(record)
 
+    @_atomic_stable_store_mutation
     def record_pong(self, *, worker_id: str, connection_id: str) -> dict[str, Any]:
         worker_id = normalize_worker_id(worker_id)
         now = utc_now()
@@ -2463,6 +2736,7 @@ class StableHubWorkerSessionDirectory:
             self.store.save(data)
             return dict(record)
 
+    @_atomic_stable_store_mutation
     def record_closed(self, *, worker_id: str, connection_id: str, reason: str = "socket_closed") -> dict[str, Any] | None:
         worker_id = normalize_worker_id(worker_id)
         now = utc_now()
