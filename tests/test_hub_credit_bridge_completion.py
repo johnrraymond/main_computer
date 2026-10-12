@@ -495,3 +495,93 @@ def test_hub_bridge_reconciliation_rejects_unbound_deposit_before_signing(tmp_pa
         )
 
     assert client.deposit_reads == 0
+
+
+class _MemoryFdbTransaction(dict):
+    """Read/write byte values with the same boundary used by the FDB facade."""
+
+    def __getitem__(self, key):
+        value = self.get(key)
+        return SimpleNamespace(wait=lambda: value)
+
+    def get_range(self, start, stop):
+        return [
+            SimpleNamespace(key=key, value=value)
+            for key, value in sorted(self.items())
+            if start <= key < stop
+        ]
+
+
+def _memory_fdb_bridge_ledger():
+    from main_computer.exp_fdb_credit_ledger import ExperimentalFoundationDbCreditLedger
+
+    ledger = object.__new__(ExperimentalFoundationDbCreditLedger)
+    ledger.fdb = SimpleNamespace(transactional=lambda func: func)
+    ledger.db = _MemoryFdbTransaction()
+    ledger.namespace = "test"
+    ledger.pack = lambda *parts: b"/".join(str(part).encode() for part in ("test", *parts))
+    ledger.range_for = lambda *parts: slice(ledger.pack(*parts) + b"/", ledger.pack(*parts) + b"/\xff")
+    return ledger
+
+
+def test_fdb_wallet_funding_completion_handles_precompleted_chain_and_retry(tmp_path: Path) -> None:
+    """Recovery after an on-chain completion must credit FDB only once."""
+    ledger = _memory_fdb_bridge_ledger()
+    client = FakeBridgeClient(completed=True, completed_units=COMPUTE_CREDIT_BASE_UNITS)
+    config = MainComputerConfig(workspace=tmp_path, hub_root=tmp_path / "hub")
+    service = HubCreditBridgeCompletionService(
+        ledger, config, client=client, deployment=_deployment(tmp_path)
+    )
+    first = service.complete_wallet_funding_deposit({"deposit_id": DEPOSIT_ID, "wallet_address": WALLET})
+    second = service.complete_wallet_funding_deposit({"deposit_id": DEPOSIT_ID, "wallet_address": WALLET})
+
+    assert client.complete_calls == []
+    assert first["completion_sent"] is False
+    assert first["delta_credit_wei"] == str(COMPUTE_CREDIT_BASE_UNITS)
+    assert second["idempotent"] is True
+    assert second["delta_credit_wei"] == "0"
+    assert ledger.get_account(WALLET).bridge_completed_credit_wei == COMPUTE_CREDIT_BASE_UNITS
+    assert ledger.get_account(WALLET).available_credit_wei == COMPUTE_CREDIT_BASE_UNITS
+    transactions = ledger.list_transactions(account_id=WALLET)
+    assert len(transactions) == 1
+    assert transactions[0].transaction_type == "bridge_deposit_completed"
+
+
+def test_fdb_bridge_funding_uses_only_new_aggregate_delta_and_fractional_units() -> None:
+    ledger = _memory_fdb_bridge_ledger()
+    three_quarters = 3 * COMPUTE_CREDIT_BASE_UNITS // 4
+    first = ledger.record_completed_bridge_deposit(
+        account_id=WALLET, owner_address=WALLET,
+        chain_completed_credit_wei=three_quarters, deposit_id=DEPOSIT_ID,
+        chain_id=42424242, contract_address=CONTRACT,
+    )
+    assert first["delta_credits_display"] == "0.75"
+    assert first["account"]["available_credit_wei"] == str(three_quarters)
+    assert first["account"]["bridge_completed_credit_wei"] == str(three_quarters)
+
+    second = ledger.record_completed_bridge_deposit(
+        account_id=WALLET, owner_address=WALLET,
+        chain_completed_credit_wei=COMPUTE_CREDIT_BASE_UNITS, deposit_id="0x" + "cd" * 32,
+    )
+    assert second["delta_credit_wei"] == str(COMPUTE_CREDIT_BASE_UNITS // 4)
+    assert second["account"]["available_credit_wei"] == str(COMPUTE_CREDIT_BASE_UNITS)
+    assert second["account"]["bridge_completed_credit_wei"] == str(COMPUTE_CREDIT_BASE_UNITS)
+    assert len(ledger.list_transactions(account_id=WALLET)) == 2
+    assert ledger.status()["totals"]["available_credit_wei"] == str(COMPUTE_CREDIT_BASE_UNITS)
+
+    before = dict(ledger.db)
+    with pytest.raises(ValueError, match="ahead of the chain"):
+        ledger.record_completed_bridge_deposit(
+            account_id=WALLET, chain_completed_credit_wei=three_quarters,
+            deposit_id="0x" + "ef" * 32,
+        )
+    assert dict(ledger.db) == before
+
+
+def test_fdb_bridge_funding_rejects_missing_deposit_id_without_writing() -> None:
+    ledger = _memory_fdb_bridge_ledger()
+    with pytest.raises(ValueError, match="deposit_id is required"):
+        ledger.record_completed_bridge_deposit(
+            account_id=WALLET, chain_completed_credit_wei=COMPUTE_CREDIT_BASE_UNITS, deposit_id="",
+        )
+    assert not ledger.db

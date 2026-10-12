@@ -64,7 +64,7 @@ def load_bank(bank_dir: Path, *, split: str, variants=VARIANTS, max_groups: int 
         raise RuntimeError('BINARY_BANK_SCHEMA_INVALID')
     if split not in ('train', 'dev', 'predev', 'test'):
         raise ValueError('BINARY_BANK_INVALID_SPLIT')
-    if split == 'train' and tuple(variants) not in (VARIANTS, ('raw_rom', 'raw_rom_reverse')):
+    if split == 'train' and tuple(variants) not in (VARIANTS, ('raw_rom', 'raw_rom_reverse'), ('rom333', 'rom333_reverse')):
         raise RuntimeError('BINARY_TRAIN_REQUIRES_BOTH_ORIENTATIONS')
     filename = bank_dir / 'training-tasks.sqlite'
     if not filename.is_file():

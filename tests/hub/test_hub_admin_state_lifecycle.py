@@ -320,3 +320,104 @@ def test_projection_only_seal_allows_empty_receipt_but_rejects_state_change(tmp_
         seal.seal_topology(ctx, "mainnet", observe=lambda c, n: {
             **empty(c, n), "state_hubs_active": [A], "missing_hubs": [A],
         }, apply_state=True, projection_only=True)
+
+
+@pytest.mark.parametrize(
+    ("live_a", "c_dockerfile", "expected"),
+    [
+        (False, "/Dockerfile.hub.stable", "DRIFT"),
+        (True, "/Dockerfile.hub.stable", "PASS"),
+        (False, "/Dockerfile.unknown", "UNKNOWN"),
+    ],
+)
+def test_topology_check_identifies_stable_c_and_missing_a_as_drift(
+    tmp_path, monkeypatch, live_a, c_dockerfile, expected,
+):
+    """A manually deleted Experimental Hub must not hide a verified Stable Hub C."""
+    from tools.hub_control.common.deployment import hub_runtime_from_application
+
+    ctx = context(tmp_path)
+    net = state()
+    claim_hub_admin(net, A)
+    claim_hub_admin(net, C)
+    for hub_id, controller_id in ((A, "coolify-a"), (C, "coolify-c")):
+        net["hubs"][hub_id].update({
+            "status": "active", "controller_id": controller_id, "host_id": controller_id,
+            "public_url": f"https://{hub_id}.example.invalid",
+        })
+    net["coolify"] = {"controllers": {"coolify-a": {}, "coolify-c": {}}}
+    monkeypatch.setattr(check, "load_private", lambda _ctx: {"networks": {"mainnet": net}})
+    monkeypatch.setattr(check, "controller_coordinates", lambda _p, _n, controller, **_kw: {
+        "url": controller, "api_token": "token", "project_uuid": "project",
+    })
+    monkeypatch.setattr(check, "load_current_fdb_contract", lambda *_: SimpleNamespace(payload={"namespace": "mainnet"}))
+    monkeypatch.setattr(check, "load_current_chain_contract", lambda *_: SimpleNamespace(payload={"chain_id": 42424240, "rpc_url": "https://rpc.invalid"}))
+    monkeypatch.setattr(check, "load_hub_network_registry", lambda *_: SimpleNamespace(get=lambda _: SimpleNamespace(hub_url="https://shared.invalid", kind="mainnet")))
+    monkeypatch.setattr(check, "read_accepted", lambda *_: {
+        "generation": 17, "hubs": [{"hub_id": A}, {"hub_id": C}],
+    })
+
+    class HubApps:
+        def __init__(self, controller, token):
+            self.controller = controller
+
+        def request(self, method, path):
+            assert method == "GET"
+            app_c = {
+                "name": f"main-computer-{C}", "uuid": "stable-c-uuid",
+                "environment_name": "mainnet-hubs", "project_uuid": "project",
+                "dockerfile_location": c_dockerfile,
+            }
+            app_a = {
+                "name": f"main-computer-{A}", "uuid": "exp-a-uuid",
+                "environment_name": "mainnet-hubs", "project_uuid": "project",
+                "dockerfile_location": "/Dockerfile.hub.exp-fdb",
+            }
+            if path == "/api/v1/applications":
+                return SimpleNamespace(ok=True, status=200, body=(
+                    [app_c] if self.controller == "coolify-c" else [app_a] if live_a else []
+                ))
+            if path == "/api/v1/applications/stable-c-uuid":
+                assert self.controller == "coolify-c"
+                return SimpleNamespace(ok=True, status=200, body=app_c)
+            if path == "/api/v1/applications/exp-a-uuid":
+                assert self.controller == "coolify-a"
+                return SimpleNamespace(ok=True, status=200, body=app_a)
+            raise AssertionError(path)
+
+    seen = []
+
+    def observer(target, **kwargs):
+        seen.append((target["hub_id"], target.get("hub_runtime")))
+        assert target["hub_runtime"] == ("experimental" if target["hub_id"] == A else "stable")
+        return {"verified": True, "hub_running": True}
+
+    report = check.observe_topology(ctx, "mainnet", client_factory=HubApps, hub_observer=observer)
+    assert report["status"] == expected, report
+    if expected == "UNKNOWN":
+        assert any(e["code"] == "HUB_COOLIFY_RUNTIME_UNVERIFIED" for e in report["errors"])
+        assert "seal_command" not in report
+        assert seen == []
+    elif live_a:
+        assert report["errors"] == []
+        assert report["missing_hubs"] == []
+        assert seen == [(A, "experimental"), (C, "stable")]
+    else:
+        assert report["errors"] == []
+        assert report["missing_hubs"] == [A]
+        assert [h["hub_id"] for h in report["observed_hubs"]] == [C]
+        assert seen == [(C, "stable")]
+        assert "hub_topology_seal.py" in report["seal_command"]
+
+    assert hub_runtime_from_application({"dockerfile_location": "/Dockerfile.hub.exp-fdb"}) == "experimental"
+    assert hub_runtime_from_application({"application": {"dockerfile_location": "/Dockerfile.hub.stable"}}) == "stable"
+    with pytest.raises(ValueError, match="unrecognized Coolify Hub Dockerfile"):
+        hub_runtime_from_application({})
+
+
+def test_runtime_parser_rejects_unrecognized_dockerfile():
+    from tools.hub_control.common.deployment import hub_runtime_from_application
+    with pytest.raises(ValueError, match="unrecognized Coolify Hub Dockerfile"):
+        hub_runtime_from_application({"dockerfile_location": "/Dockerfile.unknown"})
+    # The safety gate is essential: an unrecognized Dockerfile never defaults
+    # to Experimental and never authorizes deletion of another accepted Hub.

@@ -315,7 +315,7 @@ def test_network_inspect_after_first_birth_proves_both_edges(tmp_path: Path) -> 
     )
     add_hub.finalize(ctx, "mainnet", operation_id, observer=_observer)
 
-    result = inspect_network(ctx, "mainnet", observer=_observer)
+    result = inspect_network(ctx, "mainnet", observer=_observer, runtime_resolver=lambda *_: "stable")
     assert result["status"] == "accepted"
     assert result["accepted_generation"] == 1
     assert result["topology_verification"]["verified"] is True
@@ -642,3 +642,55 @@ def test_add_hub_retry_after_failed_do_preserves_assigned_identity(tmp_path: Pat
     assert deployed["status"] == "deployed"
     assert deployed["details"]["hub_admin_address"] == expected_address
     assert require_operation(ctx, "mainnet", operation_id)["stage"] == "deployed"
+
+
+def test_inspect_accepted_hub_uses_coolify_stable_runtime(tmp_path: Path, monkeypatch) -> None:
+    from tools.hub_control import inspect as inspector
+    from types import SimpleNamespace
+
+    ctx = _ctx(tmp_path)
+    hub = {"hub_id": "mainnetc-hub1", "controller_id": "coolify-c"}
+    monkeypatch.setattr(inspector, "load_private", lambda *_: {"networks": {"mainnet": {}}})
+    monkeypatch.setattr(inspector, "controller_coordinates", lambda *a, **kw: {
+        "url": "https://coolify.invalid", "api_token": "token", "project_uuid": "project",
+    })
+    monkeypatch.setattr(inspector, "inspect_deployment", lambda _target: {
+        "present": True, "application_uuid": "stable-uuid", "placement_mismatch": False,
+    })
+    monkeypatch.setattr(inspector, "_client", lambda _target: object())
+    monkeypatch.setattr(inspector, "_inspect_frozen_application", lambda _client, target, uuid: {
+        "present": True, "dockerfile_location": "/Dockerfile.hub.stable",
+    })
+    assert inspector._accepted_hub_runtime(ctx, "mainnet", hub) == "stable"
+    monkeypatch.setattr(inspector, "_inspect_frozen_application", lambda *_: {
+        "present": True, "dockerfile_location": "/unrecognized",
+    })
+    with pytest.raises(ValueError, match="unrecognized Coolify Hub Dockerfile"):
+        inspector._accepted_hub_runtime(ctx, "mainnet", hub)
+
+
+def test_inspect_network_routes_to_selected_hub_runtime(tmp_path: Path, monkeypatch) -> None:
+    from tools.hub_control import inspect as inspector
+    from types import SimpleNamespace
+    ctx = _ctx(tmp_path)
+    member = {"hub_id": "mainnetc-hub1", "controller_id": "coolify-c",
+              "fdb_contract": {"sha256": "f"}, "chain_contract": {"sha256": "c"}}
+    monkeypatch.setattr(inspector, "read_accepted", lambda *a: {"generation": 17, "hubs": [member]})
+    monkeypatch.setattr(inspector, "load_current_fdb_contract", lambda *a: SimpleNamespace(
+        payload={"namespace": "mainnet"}, sha256="f", reference=lambda: {"sha256": "f"}))
+    monkeypatch.setattr(inspector, "load_current_chain_contract", lambda *a: SimpleNamespace(
+        payload={"chain_id": 42424240}, sha256="c", reference=lambda: {"sha256": "c"}))
+    seen = []
+
+    def observe(target, **kwargs):
+        seen.append(target.get("hub_runtime"))
+        return {"verified": True, "hub_running": True, "fdb_adoption_verified": True, "chain_adoption_verified": True}
+
+    result = inspector.inspect_network(ctx, "mainnet", observer=observe, runtime_resolver=lambda *_: "stable")
+    assert result["topology_verification"]["verified"] is True
+    assert seen == ["stable"]
+
+    result = inspector.inspect_network(ctx, "mainnet", observer=observe, runtime_resolver=lambda *_: (_ for _ in ()).throw(ValueError("unknown runtime")))
+    assert result["topology_verification"]["verified"] is False
+    assert result["hubs"][0]["verification"]["reason"] == "hub-runtime-unverified"
+    assert seen == ["stable"]

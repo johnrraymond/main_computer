@@ -31,7 +31,7 @@ from main_computer.hub_networks import load_hub_network_registry
 from tools import coolify_hub_service as coolify
 from tools.hub_control.common.canonical import canonical_bytes
 from tools.hub_control.common.chain_contract import load_current_chain_contract
-from tools.hub_control.common.deployment import observe_hub
+from tools.hub_control.common.deployment import observe_hub, hub_runtime_from_application
 from tools.hub_control.common.fdb_contract import load_current_fdb_contract
 from tools.hub_control.common.models import HubContext
 from tools.hub_control.common.placement import resolve_public_url
@@ -225,6 +225,11 @@ def observe_topology(
                 unknown.append(_error("HUB_COOLIFY_APP_DETAIL_UNAVAILABLE", f"{controller_id}: {app_name}: {type(exc).__name__}: {exc}"))
                 continue
             detail = detail_response.body
+            try:
+                hub_runtime = hub_runtime_from_application(detail)
+            except ValueError as exc:
+                unknown.append(_error("HUB_COOLIFY_RUNTIME_UNVERIFIED", f"{controller_id}: {hub_id}: {exc}"))
+                continue
             actual_name = str(detail.get("name") or "").strip()
             environment_name = _application_environment(detail) or _application_environment(item)
             project_uuid = _application_project(detail) or _application_project(item)
@@ -248,6 +253,7 @@ def observe_topology(
                     raise ValueError("live Hub has no matching wallet or historical association")
                 admin = str(active_wallet.get("address") or "")
                 target = {"network": network, "hub_id": hub_id, "public_url": url,
+                          "hub_runtime": hub_runtime,
                           "runtime_dir": rt_dir, "cluster_file_path": f"{rt_dir}/fdb.cluster",
                           "fdb_contract": fdb.payload, "chain_contract": chain.payload,
                           "bridge_signer_required": profile.kind == "mainnet",

@@ -138,6 +138,7 @@ def test_captain_live_request_uses_new_route_and_auth_before_spend(monkeypatch, 
     calls = []
     monkeypatch.setattr(captain, "build_captain_runtime", lambda *a, **k: runtime)
     monkeypatch.setattr(live, "hub_uses_live_sessions", lambda _url: True)
+    monkeypatch.setattr(live, "identify_hub_protocol", lambda _url, *, timeout_s: {"service": "main_computer.exp_fdb_hub"})
     monkeypatch.setattr(live, "issue_cli_multisession_authorization", lambda _url, *, wallet, timeout_s: (
         calls.append(("authorization", wallet.address)) or {"kind": "multisession_key", "wallet_address": WALLET, "key_id": "key-1"}
     ))

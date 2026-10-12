@@ -1,3 +1,5 @@
+# EXPERIMENTAL ONLY: Do not deploy this image as the network Hub.
+# Production uses Dockerfile.hub.stable and run-stable-hub.py.
 FROM python:3.12-slim
 
 WORKDIR /app

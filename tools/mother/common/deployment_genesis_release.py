@@ -36,7 +36,7 @@ _MAX_RELEASE_SECONDS = 900
 _BESU_IMAGE = "hyperledger/besu:latest"
 _INIT_IMAGE = "alpine:3.20"
 _FDB_IMAGE = "foundationdb/foundationdb:7.4.6"
-_HUB_DOCKERFILE = "Dockerfile.hub.exp-fdb"
+_HUB_DOCKERFILE = "Dockerfile.hub.stable"
 _HUB_PORT = 8790
 _FDB_PORT = 4550
 _HUB_SERVICE = "mother-super-node-hub"
@@ -292,6 +292,15 @@ def _first_genesis_compose(
     fdb_cluster = f"docker:docker@{_FDB_SERVICE}:{_FDB_PORT}"
     hub_root = f"/data/main-computer/hub/{node}"
     hub_rpc = f"http://{node}:8545"
+    stable_hub_topology = {
+        "kind": "main_computer.stable_hub_topology.v1",
+        "cluster_id": "main-computer-mainnet-hubs",
+        "network": {"network_key": "mainnet", "chain_id": str(chain_id), "chain_rpc_url": hub_rpc},
+        "storage": {"backend": "foundationdb", "cluster_file": f"{hub_root}/fdb.cluster", "namespace": f"main-computer-mainnet-{node}", "api_version": 740},
+        "entry_urls": [f"http://{_HUB_SERVICE}:{_HUB_PORT}"],
+        "hubs": [{"hub_id": _HUB_SERVICE, "hub_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}", "public_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}", "roles": ["entry", "execution"]}],
+    }
+    topology_b64 = base64.b64encode(canonical_json(stable_hub_topology)).decode("ascii")
     hub_bootstrap = "\n".join(
         [
             "set -eu",
@@ -309,7 +318,8 @@ def _first_genesis_compose(
             "  fi",
             "  sleep 1",
             "done",
-            "exec python /app/run-exp-fdb-hub.py",
+            f"printf '%s' '{topology_b64}' | base64 -d > {hub_root}/hub-topology.json",
+            "exec python /app/run-stable-hub.py",
         ]
     )
     indented_bootstrap = "\n".join("        " + line for line in hub_bootstrap.splitlines())
@@ -423,6 +433,9 @@ def _first_genesis_compose(
             f'      FDB_CLUSTER_FILE_CONTENTS: "{fdb_cluster}"',
             f'      MAIN_COMPUTER_HUB_CHAIN_ID: "{chain_id}"',
             f'      MAIN_COMPUTER_HUB_CHAIN_RPC_URL: "{hub_rpc}"',
+            '      MAIN_COMPUTER_HUB_CONTROL_HUB_ID: "mother-super-node-hub"',
+            f'      MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH: "{hub_root}/hub-topology.json"',
+            '      MAIN_COMPUTER_STABLE_HUB_DEV_ACCOUNT_CREDITS: "0"',
             '      MAIN_COMPUTER_HUB_CONTRACTS_PATH: "/app/main_computer/config/mainnet_contracts.json"',
             '      MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER: "true"',
             "    command:",
@@ -433,7 +446,7 @@ def _first_genesis_compose(
             "    healthcheck:",
             "      test:",
             "        - CMD-SHELL",
-            f"        - curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:{_HUB_PORT}/api/hub/v1/health >/dev/null || exit 1",
+            f"        - curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:{_HUB_PORT}/health >/dev/null || exit 1",
             "      interval: 15s",
             "      timeout: 10s",
             "      retries: 12",

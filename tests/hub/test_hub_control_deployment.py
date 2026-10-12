@@ -57,10 +57,10 @@ def test_application_payload_bootstraps_frozen_projection_before_launcher() -> N
     assert '"$MCT"' in command
     assert ">/data/main-computer/hub/mainneta-hub1/fdb.cluster" in command
     assert "base64 -d>/data/main-computer/hub/mainneta-hub1/hub-topology.json" in command
-    assert command.endswith("exec python /app/run-exp-fdb-hub.py'")
+    assert command.endswith("exec python /app/run-stable-hub.py'")
     assert "main_computer_mainnet" not in command
     assert payload["health_check_enabled"] is False
-    assert payload["health_check_path"] == "/api/hub/v1/health"
+    assert payload["health_check_path"] == "/health"
     assert payload["environment_name"] == "mainnet-hubs"
 
 
@@ -131,7 +131,7 @@ def test_hub_control_disables_coolify_rolling_health_gate() -> None:
     # Coolify is only the deployment/materialization gate here. Hub Control's
     # observer is the authoritative readiness and dependency-consumption proof.
     assert payload["health_check_enabled"] is False
-    assert payload["health_check_path"] == "/api/hub/v1/health"
+    assert payload["health_check_path"] == "/health"
 
 
 def test_deployment_uuid_parser_accepts_known_coolify_shapes() -> None:
@@ -466,7 +466,7 @@ def _init_hub_git_fixture(tmp_path: Path) -> None:
     package = tmp_path / "main_computer"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "exp_fdb_hub.py").write_text("from main_computer import hub\n", encoding="utf-8")
+    (package / "stable_hub.py").write_text("from main_computer import hub\n", encoding="utf-8")
     (package / "hub.py").write_text("HUB = True\n", encoding="utf-8")
     (package / "hub_networks.py").write_text("NETWORKS = True\n", encoding="utf-8")
     (package / "runtime_env_file.py").write_text("RUNTIME_ENV = True\n", encoding="utf-8")
@@ -475,9 +475,9 @@ def _init_hub_git_fixture(tmp_path: Path) -> None:
     config.mkdir()
     (config / "hub_networks.json").write_text("{}\n", encoding="utf-8")
     (config / "mainnet_contracts.json").write_text("{}\n", encoding="utf-8")
-    (tmp_path / "exp-fdb-hub.py").write_text("from main_computer.exp_fdb_hub import HUB\n", encoding="utf-8")
-    (tmp_path / "run-exp-fdb-hub.py").write_text("from main_computer.hub_networks import NETWORKS\n", encoding="utf-8")
-    (tmp_path / "Dockerfile.hub.exp-fdb").write_text("FROM python:3.12-slim\nCOPY . /app\n", encoding="utf-8")
+    (tmp_path / "run-stable-hub.py").write_text("from main_computer.stable_hub import HUB\n", encoding="utf-8")
+    
+    (tmp_path / "Dockerfile.hub.stable").write_text("FROM python:3.12-slim\nCOPY . /app\n", encoding="utf-8")
     (tmp_path / ".dockerignore").write_text(".git\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text("[project]\nname='hub-test'\nversion='0.0.0'\n", encoding="utf-8")
     _git(tmp_path, "add", ".")
@@ -528,7 +528,7 @@ def test_git_source_guard_blocks_relevant_uncommitted_changes_by_default(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _init_hub_git_fixture(tmp_path)
-    path = tmp_path / "Dockerfile.hub.exp-fdb"
+    path = tmp_path / "Dockerfile.hub.stable"
     path.write_text("FROM python:3.12-slim\n# local Hub change\n", encoding="utf-8")
 
     with pytest.raises(HubControlError) as exc_info:
@@ -537,12 +537,12 @@ def test_git_source_guard_blocks_relevant_uncommitted_changes_by_default(
         )
 
     assert exc_info.value.code == "HUB_DEPLOY_GIT_DIRTY"
-    assert "Dockerfile.hub.exp-fdb" in exc_info.value.message
+    assert "Dockerfile.hub.stable" in exc_info.value.message
     assert "--no-force-git" in exc_info.value.message
     stderr = capsys.readouterr().err
     assert "HUB_GIT_COMMIT_PUSH_COMMAND:" in stderr
     assert (
-        "git add -- 'Dockerfile.hub.exp-fdb'; "
+        "git add -- 'Dockerfile.hub.stable'; "
         "if ($LASTEXITCODE -eq 0) { git commit -m 'Update Hub deployment source' }; "
         "if ($LASTEXITCODE -eq 0) { git push origin HEAD }"
     ) in stderr
@@ -969,3 +969,48 @@ def test_synced_production_bridge_signer_overwrites_persisted_legacy_bundle(
     assert module._materialize_bridge_signer_bundle_from_env(destination)
     assert json.loads(destination.read_text())["bridge_controller"]["address"] == "0x" + "ab" * 20
     assert deployment.BRIDGE_SIGNER_ENV not in __import__("os").environ
+
+
+def test_stable_runtime_observer_checks_stable_identity_not_experimental_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = {**_observer_target(), "hub_runtime": "stable"}
+    called = []
+
+    def get(url: str, *, timeout_s: float) -> dict[str, Any]:
+        del timeout_s
+        called.append(url)
+        if url.endswith("/health"):
+            return {"ok": True, "service": "main_computer.stable_hub"}
+        if url.endswith("/hub-identity"):
+            return {
+                "service": "main_computer.stable_hub",
+                "hub_id": target["hub_id"],
+                "network": {"chain_id": "42424240", "chain_rpc_url": "https://mainnet-rpc.example.invalid"},
+                "storage": {"backend": "foundationdb", "cluster_file": target["cluster_file_path"], "namespace": "mainnet"},
+            }
+        if url.endswith("/topology"):
+            return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"]}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(deployment, "_get_json", get)
+    status = deployment.observe_hub(target, wait_timeout_s=0)
+    assert status["verified"] is True
+    assert status["bridge_signer_verified"] is False
+    assert status["wallet_funding_supported"] is False
+    assert not any(url.endswith("/status") for url in called)
+
+
+def test_stable_runtime_observer_rejects_exp_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = {**_observer_target(), "hub_runtime": "stable"}
+
+    def get(url: str, *, timeout_s: float) -> dict[str, Any]:
+        del timeout_s
+        if url.endswith("/health"):
+            return {"ok": True, "service": "main_computer.exp_fdb_hub"}
+        if url.endswith("/hub-identity"):
+            return {"service": "main_computer.exp_fdb_hub", "hub_id": target["hub_id"]}
+        return {"service": "main_computer.exp_fdb_hub", "hub_id": target["hub_id"]}
+
+    monkeypatch.setattr(deployment, "_get_json", get)
+    status = deployment.observe_hub(target, wait_timeout_s=0)
+    assert status["verified"] is False
+    assert status["checks"]["stable_identity"] is False

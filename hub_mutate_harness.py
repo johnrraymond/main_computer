@@ -449,11 +449,19 @@ class Harness:
             synchronize_bridge_signer, failed_previous_build,
         )
         try:
+            # Check Git before opening Mother state or contacting Coolify. The
+            # helper emits the existing add/commit/push instructions when Hub
+            # image inputs are dirty, and rejects HEADs not pushed to origin.
+            revision = git_revision(self.repo_root, self.network)
+            print(
+                f"Hub Git preflight: relevant source clean; HEAD {revision[:12]} "
+                "pushed to origin/main; no commit required for redeployment",
+                flush=True,
+            )
             ctx = HubContext.from_repo(self.repo_root)
             accepted, members = accepted_targets(
                 ctx, self.network, self.hub if self.operation == "redeploy-hub" else "",
             )
-            revision = git_revision(self.repo_root, self.network)
             accepted_sha = sha256_json(accepted)
             # Resolve every existing application before triggering any build.
             targets = [resolve_existing_hub(ctx, self.network, member) for member in members]
@@ -521,18 +529,79 @@ class Harness:
                         item["last_failed_deployment_uuid"] = item["deployment_uuid"]
                         item["deployment_uuid"] = None
                         self._write_state()
-            # A source-code fix may itself produce a new commit between retries.
-            # Adopt that revision only if no Hub was queued or deployed under
-            # the previous one. Never mix versions in a partially built rollout.
+            # A new Git revision can supersede a partially deployed revision,
+            # but only after every old build has a known terminal outcome. Never
+            # submit a new build while a prior build may still be running.
             if rollout["revision"] != revision:
+                old_revision = str(rollout["revision"])
                 if any(item["status"] != "pending" for item in rollout["targets"]):
-                    raise HarnessError(
-                        "redeploy Git revision changed after a build was queued; "
-                        "refusing to mix revisions in this rollout"
+                    if not self._mutation_authorized():
+                        print(f"Rollout revision changed {old_revision} -> {revision}; "
+                              "execution will settle old builds before starting a fresh rollout")
+                        return 0
+                    print(f"Hub rollout: revision changed {old_revision} -> {revision}; "
+                          "reconcile old builds before restarting all Hubs", flush=True)
+                    for target, item in zip(targets, rollout["targets"]):
+                        status = item["status"]
+                        if status not in {"pending", "queued", "built", "verified", "failed"}:
+                            raise HarnessError(
+                                f"cannot supersede {target['hub_id']} with unresolved status {status!r}; "
+                                "no additional build requested"
+                            )
+                        if status != "queued":
+                            continue
+                        uuid = str(item.get("deployment_uuid") or "")
+                        if not uuid:
+                            raise HarnessError(
+                                f"queued Hub {target['hub_id']} has no deployment UUID; "
+                                "no additional build requested"
+                            )
+                        print(f"Hub {target['hub_id']}: settle previous build {uuid} "
+                              f"at revision {old_revision}", flush=True)
+                        if failed_previous_build(target, uuid):
+                            item["status"] = "failed"
+                        else:
+                            try:
+                                build = wait_for_build(target, uuid)
+                            except RedeployError:
+                                # A build can fail while being polled. A confirmed
+                                # terminal failure is safe to supersede; an unknown
+                                # outcome must continue to block new builds.
+                                if not failed_previous_build(target, uuid):
+                                    raise
+                                item["status"] = "failed"
+                            else:
+                                actual = str(build["commit"]).strip().lower()
+                                if actual != old_revision.lower():
+                                    raise HarnessError(
+                                        f"Hub {target['hub_id']} built revision {actual}, "
+                                        f"not queued revision {old_revision}; no additional build requested"
+                                    )
+                                item["commit"] = actual
+                                item["status"] = "built"
+                        self._write_state()
+                        print(f"Hub {target['hub_id']}: previous build {item['status']}", flush=True)
+                    current, _ = accepted_targets(ctx, self.network)
+                    if sha256_json(current) != accepted_sha:
+                        raise HarnessError("accepted Hub topology changed while settling old builds")
+                    # Keep the old revision's receipt intact inside this same
+                    # run. The new revision gets new pending targets and UUIDs.
+                    self.state.setdefault("redeploy_history", []).append(
+                        json.loads(json.dumps(rollout))
                     )
-                print(f"Restarting unsubmitted rollout at new Git revision {revision}")
-                rollout["revision"] = revision
-                self._write_state()
+                    self.state["redeploy"] = {
+                        "accepted_sha256": accepted_sha,
+                        "revision": revision,
+                        "targets": [{**entry, "status": "pending", "deployment_uuid": None, "commit": None}
+                                    for entry in identities],
+                    }
+                    rollout = self.state["redeploy"]
+                    self._write_state()
+                    print(f"Hub rollout: starting new revision {revision} for all selected Hubs", flush=True)
+                else:
+                    print(f"Restarting unsubmitted rollout at new Git revision {revision}")
+                    rollout["revision"] = revision
+                    self._write_state()
             print(f"\n=== {self.operation} preflight ===")
             print(f"network:              {self.network}")
             print(f"accepted generation:  {accepted['generation']} (unchanged)")

@@ -3,14 +3,45 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .common.chain_contract import load_current_chain_contract
-from .common.deployment import observe_hub
+from .common.deployment import (
+    observe_hub, inspect_deployment, _inspect_frozen_application,
+    _client, hub_runtime_from_application,
+)
 from .common.errors import HubControlError
 from .common.fdb_contract import load_current_fdb_contract
 from .common.models import HubContext
 from .common.state import read_accepted
+from .common.privates import load_private, controller_coordinates
 
 
-def inspect_network(ctx: HubContext, network: str, *, observer=observe_hub) -> dict[str, Any]:
+def _accepted_hub_runtime(ctx: HubContext, network: str, hub: Mapping[str, Any]) -> str:
+    """Inspect an accepted Hub's existing Coolify application, without mutations."""
+    hub_id = str(hub.get("hub_id") or "")
+    controller_id = str(hub.get("controller_id") or "")
+    if not hub_id or not controller_id:
+        raise ValueError("accepted Hub lacks a Hub or controller ID")
+    coords = controller_coordinates(
+        load_private(ctx), network, controller_id,
+        base_dir=ctx.mother_private_path.parent,
+    )
+    target = {
+        "network": network,
+        "hub_id": hub_id,
+        "coolify": coords,
+        "application_name": f"main-computer-{hub_id}",
+        "environment_name": f"{network}-hubs",
+    }
+    found = inspect_deployment(target)
+    uuid = str(found.get("application_uuid") or "")
+    if not found.get("present") or not uuid or found.get("placement_mismatch") or found.get("migration_candidate"):
+        raise ValueError(f"accepted Hub {hub_id} has no verified Coolify application")
+    detail = _inspect_frozen_application(_client(target), target, uuid)
+    if not detail.get("present"):
+        raise ValueError(f"accepted Hub {hub_id} application disappeared")
+    return hub_runtime_from_application(detail)
+
+
+def inspect_network(ctx: HubContext, network: str, *, observer=observe_hub, runtime_resolver=_accepted_hub_runtime) -> dict[str, Any]:
     accepted = read_accepted(ctx, network)
     if accepted is None:
         return {
@@ -60,12 +91,23 @@ def inspect_network(ctx: HubContext, network: str, *, observer=observe_hub) -> d
         fdb_ref = hub.get("fdb_contract") if isinstance(hub.get("fdb_contract"), Mapping) else {}
         chain_ref = hub.get("chain_contract") if isinstance(hub.get("chain_contract"), Mapping) else {}
         dependency_current = fdb_ref.get("sha256") == fdb.sha256 and chain_ref.get("sha256") == chain.sha256
-        verification = observer(target, wait_timeout_s=0.0) if dependency_current else {
-            "verified": False,
-            "reason": "hub-dependency-contract-stale",
-            "fdb_adoption_verified": fdb_ref.get("sha256") == fdb.sha256,
-            "chain_adoption_verified": chain_ref.get("sha256") == chain.sha256,
-        }
+        if dependency_current:
+            try:
+                target["hub_runtime"] = runtime_resolver(ctx, network, hub)
+                verification = observer(target, wait_timeout_s=0.0)
+            except Exception as exc:
+                verification = {
+                    "verified": False,
+                    "reason": "hub-runtime-unverified",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+        else:
+            verification = {
+                "verified": False,
+                "reason": "hub-dependency-contract-stale",
+                "fdb_adoption_verified": fdb_ref.get("sha256") == fdb.sha256,
+                "chain_adoption_verified": chain_ref.get("sha256") == chain.sha256,
+            }
         all_verified = all_verified and verification.get("verified") is True
         observed.append(
             {

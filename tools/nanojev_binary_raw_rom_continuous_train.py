@@ -29,6 +29,9 @@ SCHEMA = 'nanojev.binary-consensus-continuous.raw-rom-six-residual-v1'
 
 DEFAULT_BANK = Path(r'C:\Users\subsi\NanoJev\runs\binary_consensus_raw_rom_bank_v1')
 DEFAULT_OUTPUT = Path(r'C:\Users\subsi\NanoJev\runs\three_backbone_clef_binary_raw_rom_residual_v1')
+DEFAULT_ROM333_OUTPUT = Path(r'C:\Users\subsi\NanoJev\runs\three_backbone_clef_rom333_residual_v1')
+DEFAULT_ROM333_CONTROL_OUTPUT = Path(r'C:\Users\subsi\NanoJev\runs\three_backbone_clef_rom333_arith_control_v1')
+DEFAULT_CONTROL_OUTPUT = Path(r'C:\Users\subsi\NanoJev\runs\three_backbone_clef_binary_raw_rom_arith_control_v1')
 
 
 def atomic_json(path, payload):
@@ -133,20 +136,41 @@ def train(args):
     validate_training_controls(args)
     if args.resume and args.output_dir is None:
         raise RuntimeError('BINARY_RESUME_REQUIRES_OUTPUT_DIR')
-    bank=load_bank(args.bank_dir,split='train')
+    if args.rom333:
+        from nanojev_binary_rom333_bank import load_rom333_bank
+        bank=load_rom333_bank(args.bank_dir,split='train')
+        variants=('rom333','rom333_reverse')
+        representation='rom333'
+    else:
+        bank=load_bank(args.bank_dir,split='train')
+        variants=VARIANTS
+        representation='raw_rom'
+    control_plan = None
+    control_runtime = None
+    if args.arithmetic_control:
+        import nanojev_binary_raw_rom_arithmetic_control as control_runtime
+        if (args.arithmetic_control_every < 1 or args.arithmetic_control_report_every < 1
+            or not math.isfinite(args.arithmetic_control_target_loss)
+            or args.arithmetic_control_target_loss <= 0):
+            raise RuntimeError('ROM_ARITH_CONTROL_INVALID_SCHEDULE_OR_TARGET')
+        control_plan = control_runtime.load_control_plan(
+            bank_dir=args.arithmetic_control_bank_dir, seed=args.seed,
+            expected_source=bank['source'])
     config={'target_loss':args.target_loss,'rolling_questions':args.rolling_questions,
             'grad_accumulation':args.grad_accumulation,'seed':args.seed,
             'shard_groups':args.shard_groups,'head_lr':args.head_lr,
             'training_policy':TRAINING_POLICY,'weight_decay':args.weight_decay,
-            'grad_clip':args.grad_clip,'evidence':{k:int(getattr(args,k)) for k in ('max_prompt_tokens','max_answer_tokens','prompt_evidence_tokens','answer_evidence_tokens','path_batch','tinystories_path_batch')},'variant':'raw_rom-both-orientations',
+            'grad_clip':args.grad_clip,'evidence':{k:int(getattr(args,k)) for k in ('max_prompt_tokens','max_answer_tokens','prompt_evidence_tokens','answer_evidence_tokens','path_batch','tinystories_path_batch')},'variant':representation+'-both-orientations',
             'objective':'plain-cross-entropy-no-label-smoothing-no-auxiliary'}
+    if control_plan is not None:
+        config['arithmetic_control'] = control_runtime.plan_identity(control_plan, args)
     shards=make_shards(bank,args.shard_groups)
     output=Path(args.output_dir).expanduser().resolve()
     if args.dry_run:
         print(json.dumps({'ok':True,'event':'binary_continuous_plan','source':bank['source'],
           'train_groups':bank['count'],'examples_per_pass':bank['count']*2,
           'shards':len(shards),'bankManifestSha256':bank['manifest_sha256'],
-          'config':config,'no_generation':True,'accuracy_computed':False},sort_keys=True))
+          'config':config,'no_generation':True,'accuracy_computed':False,'arithmetic_control':bool(control_plan)},sort_keys=True))
         return
     state_path=output/'state.json'
     if args.resume:
@@ -166,6 +190,8 @@ def train(args):
             raise RuntimeError('BINARY_OUTPUT_NOT_EMPTY: '+str(output))
         output.mkdir(parents=True,exist_ok=True)
         cursor={'pass_index':0,'shard_position':0,'offset':0,'global_step':0,'examples_seen':0}
+        if control_plan is not None:
+            cursor['arithmetic_control_steps'] = 0
         rolling=deque(maxlen=args.rolling_questions)
         checkpoint_dir=None
         atomic_json(output/'experiment.json',{'schema':SCHEMA,'bankManifestSha256':bank['manifest_sha256'],
@@ -179,7 +205,7 @@ def train(args):
     logger.emit('binary_train_start',resume=args.resume,bank=bank['bank_path'],
                 train_groups=bank['count'],train_examples_per_pass=bank['count']*2,
                 target_loss=args.target_loss,rolling_questions=args.rolling_questions,
-                source_champion='cycle-000136-reuse-002',representation='raw_rom',accuracy_computed=False)
+                source_champion='cycle-000136-reuse-002',representation=representation,accuracy_computed=False)
     import torch
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -187,7 +213,24 @@ def train(args):
     champion,_,objective=deps()
     head,bundles,optimizer,_=load_model(torch=torch,args=args,source=bank['source'],
                                       logger=logger,checkpoint=checkpoint_dir)
+    if args.rom333:
+        from nanojev_binary_rom333_bank import audit_token_visibility
+        audit_token_visibility(bank=bank,bundles=bundles,champion=champion,
+                               objective=objective,args=args,logger=logger)
     params=champion.joint_parameters(head,bundles[champion.TRAINABLE_LABEL].lm)
+    control_prepared = None
+    if control_plan is not None:
+        if 'arithmetic_control_steps' not in cursor:
+            raise RuntimeError('ROM_ARITH_CONTROL_CURSOR_MISSING')
+        control_prepared = control_runtime.prepare(
+            torch=torch, champion=champion, objective=objective, bundles=bundles,
+            args=args, plan=control_plan, logger=logger)
+        control_initial_loss = control_runtime.fixed_loss(
+            torch=torch, champion=champion, head=head, prepared=control_prepared)
+        logger.emit('rom_arithmetic_control_baseline_loss',
+                    fixed_loss=round(control_initial_loss, 8),
+                    control_steps=cursor['arithmetic_control_steps'],
+                    resume=args.resume, accuracy_computed=False)
     head.train()
     bundles[champion.TRAINABLE_LABEL].lm.eval()
     since_report=time.perf_counter()
@@ -210,7 +253,7 @@ def train(args):
                             rolling_loss=(sum(rolling)/len(rolling) if rolling else None))
                 continue
             shard_index=order[cursor['shard_position']]
-            sample_rows=shard_examples(shards[shard_index],args.seed,cursor['pass_index'],shard_index,variants=VARIANTS)
+            sample_rows=shard_examples(shards[shard_index],args.seed,cursor['pass_index'],shard_index,variants=variants)
             if cursor['offset']>len(sample_rows):
                 raise RuntimeError('BINARY_RESUME_OFFSET_OUT_OF_RANGE')
             cache=read_cache(torch=torch,cache_dir=cache_dir,bank_sha=bank['manifest_sha256'],
@@ -248,6 +291,34 @@ def train(args):
                 cursor['global_step']+=1
                 cursor['examples_seen']+=len(batch)
                 since_report_examples+=len(batch)
+                if (control_prepared is not None and
+                    cursor['global_step'] % args.arithmetic_control_every == 0):
+                    # A second training step on the SAME head and optimizer.
+                    # Binary rolling loss remains ROM-only, never mixed with
+                    # three-class arithmetic loss.
+                    optimizer_step_in_flight = True
+                    control_result = control_runtime.train_step(
+                        torch=torch, champion=champion, head=head,
+                        optimizer=optimizer, params=params, prepared=control_prepared,
+                        args=args, control_steps=cursor['arithmetic_control_steps'],
+                        logger=logger)
+                    optimizer_step_in_flight = False
+                    cursor['arithmetic_control_steps'] += 1
+                    control_n = cursor['arithmetic_control_steps']
+                    if (control_n == 1 or
+                        control_n % args.arithmetic_control_report_every == 0):
+                        control_loss = control_runtime.fixed_loss(
+                            torch=torch, champion=champion, head=head,
+                            prepared=control_prepared)
+                        logger.emit('rom_arithmetic_control_loss',
+                            rom_step=cursor['global_step'], control_steps=control_n,
+                            session_start_loss=round(control_initial_loss, 8),
+                            fixed_loss=round(control_loss, 8),
+                            batch_loss=round(control_result['batch_loss'], 8),
+                            gradient_norm=round(control_result['gradient_norm'], 6),
+                            target_loss=args.arithmetic_control_target_loss,
+                            target_reached=control_loss<=args.arithmetic_control_target_loss,
+                            accuracy_computed=False)
                 sufficient=len(rolling)==args.rolling_questions
                 mean_loss=sum(rolling)/len(rolling)
                 achieved=sufficient and mean_loss<=args.target_loss
@@ -300,8 +371,19 @@ def train(args):
 
 def parse(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--bank-dir',type=Path,default=DEFAULT_BANK)
-    p.add_argument('--output-dir',type=Path,default=DEFAULT_OUTPUT)
+    p.add_argument('--bank-dir',type=Path,default=None)
+    p.add_argument('--rom333',action='store_true',
+                   help='train English-like ROM3.3.3 instead of legacy JSON preROM')
+    p.add_argument('--output-dir',type=Path,default=None)
+    p.add_argument('--arithmetic-control',action='store_true',
+                   help='interleave the proven fixed-32 arithmetic learning task with raw-ROM training')
+    from nanojev_arithmetic_runtime import DEFAULT_BANK as ARITHMETIC_BANK
+    p.add_argument('--arithmetic-control-bank-dir',type=Path,default=ARITHMETIC_BANK)
+    p.add_argument('--arithmetic-control-every',type=int,default=4,
+                   help='one arithmetic optimizer step after every N ROM optimizer steps')
+    p.add_argument('--arithmetic-control-report-every',type=int,default=25,
+                   help='measure fixed-32 arithmetic training loss every N arithmetic steps')
+    p.add_argument('--arithmetic-control-target-loss',type=float,default=0.05)
     p.add_argument('--resume',action='store_true')
     p.add_argument('--dry-run',action='store_true',help='verify bank and print plan; no GPU/model')
     p.add_argument('--target-loss',type=float,default=0.20)
@@ -316,7 +398,7 @@ def parse(argv=None):
     p.add_argument('--head-lr',type=float,default=1e-4)
     p.add_argument('--weight-decay',type=float,default=.01)
     p.add_argument('--grad-clip',type=float,default=1.0)
-    p.add_argument('--max-prompt-tokens',type=int,default=512)
+    p.add_argument('--max-prompt-tokens',type=int,default=None)
     p.add_argument('--max-answer-tokens',type=int,default=64)
     p.add_argument('--prompt-evidence-tokens',type=int,default=6)
     p.add_argument('--answer-evidence-tokens',type=int,default=4)
@@ -325,6 +407,16 @@ def parse(argv=None):
     p.add_argument('--local-files-only',action='store_true',default=True)
     p.add_argument('--allow-model-download',dest='local_files_only',action='store_false')
     args=p.parse_args(argv)
+    if args.max_prompt_tokens is None:
+        args.max_prompt_tokens=768 if args.rom333 else 512
+    if args.bank_dir is None:
+        if args.rom333:
+            from nanojev_binary_rom333_bank import DEFAULT_OUTPUT as ROM333_BANK
+            args.bank_dir = ROM333_BANK
+        else:
+            args.bank_dir = DEFAULT_BANK
+    if args.output_dir is None:
+        args.output_dir = (DEFAULT_ROM333_CONTROL_OUTPUT if args.arithmetic_control else DEFAULT_ROM333_OUTPUT) if args.rom333 else (DEFAULT_CONTROL_OUTPUT if args.arithmetic_control else DEFAULT_OUTPUT)
     if args.keep_checkpoints < 1:
         p.error('--keep-checkpoints must be >= 1')
     return args

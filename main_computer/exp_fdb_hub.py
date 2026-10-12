@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# EXPERIMENTAL-ONLY: exp-fdb-hub.py is not the Hub intended for actual
+# network deployment. Production Hub Control must deploy Stable Hub
+# (main_computer.stable_hub via run-stable-hub.py), whose worker-home Hub
+# handoff is authoritative. Keep this module for isolated experiments/tests.
+
 import argparse
 import base64
 import hashlib

@@ -42,14 +42,13 @@ IS_BRIDGE_CONTROLLER_SELECTOR = "fbe5c12e"
 # the resulting Hub image are added explicitly.
 HUB_GIT_STATIC_PATHS = (
     ".dockerignore",
-    "Dockerfile.hub.exp-fdb",
-    "exp-fdb-hub.py",
-    "run-exp-fdb-hub.py",
+    "Dockerfile.hub.stable",
+    "run-stable-hub.py",
     "pyproject.toml",
     "main_computer/config/hub_networks.json",
 )
 HUB_GIT_ENTRY_MODULES = (
-    "main_computer.exp_fdb_hub",
+    "main_computer.stable_hub",
     "main_computer.hub_networks",
     "main_computer.runtime_env_file",
 )
@@ -480,7 +479,8 @@ def deployment_target(
         "chain_contract": chain_contract.payload,
         "git_repository": "https://github.com/johnrraymond/main_computer",
         "git_branch": "main",
-        "dockerfile_location": "/Dockerfile.hub.exp-fdb",
+        "dockerfile_location": "/Dockerfile.hub.stable",
+        "hub_runtime": "stable",
     }
 
 
@@ -692,11 +692,15 @@ def _inspect_frozen_application(client: Any, target: Mapping[str, Any], applicat
             f"frozen Hub application {application_uuid!r} is in Coolify environment {actual_environment!r}; "
             f"Hub Control requires {desired_environment!r}",
         )
+    body = response.body if isinstance(response.body, Mapping) else {}
+    app_body = body.get("application") if isinstance(body.get("application"), Mapping) else body
+    dockerfile = str(app_body.get("dockerfile_location") or "").strip()
     return {
         "present": True,
         "application_uuid": application_uuid,
         "application_name": actual_name or None,
         "environment_name": actual_environment or None,
+        "dockerfile_location": dockerfile or None,
     }
 
 
@@ -854,7 +858,7 @@ def _bootstrap_command(target: Mapping[str, Any]) -> str:
         f"mkdir -p {runtime_dir};"
         f"printf \"%s\\n\" \"${BOOTSTRAP_FDB_ENV}\">{cluster_file};"
         f"printf %s \"${BOOTSTRAP_TOPOLOGY_ENV}\"|base64 -d>{topology_file};"
-        "exec python /app/run-exp-fdb-hub.py'"
+        "exec python /app/run-stable-hub.py'"
     )
     if len(command) > 255:
         raise HubControlError(
@@ -906,7 +910,7 @@ def _application_payload(target: Mapping[str, Any]) -> dict[str, Any]:
         # observer to report the actual FDB/Chain/runtime failure. The image's
         # temporary Docker HEALTHCHECK remains the transport-level keepalive.
         "health_check_enabled": False,
-        "health_check_path": "/api/hub/v1/health",
+        "health_check_path": "/health",
         "instant_deploy": False,
     }
 
@@ -1504,7 +1508,103 @@ def _get_json(url: str, *, timeout_s: float) -> dict[str, Any]:
     return payload
 
 
+def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, request_timeout_s: float) -> dict[str, Any]:
+    """Verify Stable Hub identity and adopted FDB/chain topology, not exp-Hub APIs.
+
+    Stable Hub's bridge-funding API is NOT implemented here. Never report
+    bridge signer or wallet-funding capability as verified because the stable
+    identity does not contain such a proof.
+    """
+    base = str(target["public_url"]).rstrip("/")
+    deadline = time.monotonic() + max(0.0, wait_timeout_s)
+    attempt = 0
+    last_checks: dict[str, bool] = {}
+    errors: dict[str, str] = {}
+    _progress(f"stable runtime verification: begin hub={target.get('hub_id')} url={base}")
+    while True:
+        attempt += 1
+        responses: dict[str, dict[str, Any]] = {}
+        errors = {}
+        for label, path in (
+            ("health", "/health"),
+            ("identity", "/api/hub/v1/hub-identity"),
+            ("topology", "/api/hub/v1/topology"),
+        ):
+            try:
+                responses[label] = _get_json(base + path, timeout_s=request_timeout_s)
+            except Exception as exc:
+                errors[label] = f"{type(exc).__name__}: {exc}"
+        identity = responses.get("identity", {})
+        health = responses.get("health", {})
+        topo = responses.get("topology", {})
+        network = identity.get("network") if isinstance(identity.get("network"), Mapping) else {}
+        storage = identity.get("storage") if isinstance(identity.get("storage"), Mapping) else {}
+        fdb = target["fdb_contract"]
+        chain = target["chain_contract"]
+        checks = {
+            "healthy": health.get("ok") is True and health.get("service") == "main_computer.stable_hub",
+            "stable_identity": identity.get("service") == "main_computer.stable_hub" and identity.get("hub_id") == target["hub_id"],
+            "stable_topology": topo.get("service") == "main_computer.stable_hub" and topo.get("hub_id") == target["hub_id"],
+            "fdb_backend": storage.get("backend") == "foundationdb",
+            "fdb_cluster_file": str(storage.get("cluster_file") or "") == str(target["cluster_file_path"]),
+            "fdb_namespace": str(storage.get("namespace") or "") == str(fdb["namespace"]),
+            "chain_id": str(network.get("chain_id") or "") == str(chain["chain_id"]),
+            "chain_rpc": str(network.get("chain_rpc_url") or "").rstrip("/") == str(chain["rpc_url"]).rstrip("/"),
+        }
+        last_checks = checks
+        if all(checks.values()):
+            _progress(f"stable runtime verification: verified attempt={attempt}; bridge funding not verified")
+            return {
+                "verified": True,
+                "reason": "stable-hub-routing-and-topology-verified-bridge-funding-unavailable",
+                "hub_running": True,
+                "fdb_adoption_verified": True,
+                "chain_adoption_verified": True,
+                "bridge_signer_verified": False,
+                "hub_admin_verified": False,
+                "wallet_funding_supported": False,
+                "checks": checks,
+                "health": health,
+                "identity": identity,
+                "topology": topo,
+            }
+        if time.monotonic() >= deadline:
+            return {
+                "verified": False,
+                "reason": "stable-runtime-verification-timeout",
+                "hub_running": bool(checks["healthy"]),
+                "fdb_adoption_verified": all(checks[k] for k in ("stable_identity", "fdb_backend", "fdb_cluster_file", "fdb_namespace")),
+                "chain_adoption_verified": all(checks[k] for k in ("stable_identity", "chain_id", "chain_rpc")),
+                "bridge_signer_verified": False,
+                "hub_admin_verified": False,
+                "wallet_funding_supported": False,
+                "checks": last_checks,
+                "endpoint_errors": errors,
+            }
+        if attempt == 1 or attempt % 6 == 0:
+            _progress(f"stable runtime verification: attempt={attempt} missing={','.join(k for k,v in checks.items() if not v)} errors={errors}")
+        time.sleep(5.0)
+
+
+def hub_runtime_from_application(application: Mapping[str, Any]) -> str:
+    """Select the live verifier from the actual Coolify Dockerfile, never a default.
+
+    Unknown or missing Dockerfiles are not evidence of an Experimental Hub.
+    """
+    app = application.get("application")
+    if isinstance(app, Mapping):
+        application = app
+    dockerfile = str(application.get("dockerfile_location") or "").strip().lstrip("/")
+    if dockerfile == "Dockerfile.hub.stable":
+        return "stable"
+    if dockerfile == "Dockerfile.hub.exp-fdb":
+        return "experimental"
+    raise ValueError(f"unrecognized Coolify Hub Dockerfile {dockerfile!r}; live runtime not verified")
+
+
 def observe_hub(target: Mapping[str, Any], *, wait_timeout_s: float = 300.0, request_timeout_s: float = 12.0) -> dict[str, Any]:
+    if str(target.get("hub_runtime") or "").strip() == "stable":
+        return _observe_stable_hub(target, wait_timeout_s=wait_timeout_s, request_timeout_s=request_timeout_s)
     base = str(target["public_url"]).rstrip("/")
     started = time.monotonic()
     deadline = started + max(0.0, wait_timeout_s)

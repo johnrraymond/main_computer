@@ -110,7 +110,9 @@ def verify_admin_current_funding(chain_contract: Any, admin_address: str) -> dic
     rpc = str(chain_contract.payload.get("rpc_url") or "")
     if not rpc:
         raise HubControlError("HUB_ADMIN_BALANCE_UNVERIFIED", "Chain RPC URL not available")
-    minimum = 10_000 * WEI_PER_NATIVE
+    # A reused genesis-funded admin can spend gas; require an operating reserve,
+    # not its original 10,000-native genesis allocation.
+    minimum = WEI_PER_NATIVE
     try:
         raw = _rpc(rpc, "eth_getBalance", [admin_address, "latest"], timeout_s=12.0)
         if not isinstance(raw, str) or not raw.startswith("0x"):

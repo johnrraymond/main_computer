@@ -7,6 +7,7 @@ its viewport transport rather than implementing another WebSocket protocol.
 from __future__ import annotations
 
 import json
+import secrets
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -41,8 +42,8 @@ def _hub_post(hub_url: str, path: str, body: dict[str, Any], *, timeout_s: float
     return value
 
 
-def hub_uses_live_sessions(hub_url: str, *, timeout_s: float = 5.0) -> bool:
-    """Detect the deployed Hub implementation rather than guessing from hostname."""
+def identify_hub_protocol(hub_url: str, *, timeout_s: float = 5.0) -> dict[str, Any]:
+    """Read the Hub's advertised runtime and signing domain, not its hostname."""
     request = Request(
         hub_url.rstrip("/") + "/api/hub/v1/hub-identity",
         headers={"Accept": "application/json", "User-Agent": "main-computer-cli-live-session/1.0"},
@@ -55,7 +56,13 @@ def hub_uses_live_sessions(hub_url: str, *, timeout_s: float = 5.0) -> bool:
         raise RuntimeError(f"Cannot identify Hub protocol before worker/request submission: {exc}") from exc
     if not isinstance(identity, dict):
         raise RuntimeError("Hub identity response was not an object.")
-    return str(identity.get("service") or "") == "main_computer.exp_fdb_hub"
+    return identity
+
+
+def hub_uses_live_sessions(hub_url: str, *, timeout_s: float = 5.0) -> bool:
+    """Both Experimental and Stable Hubs accept authenticated live work."""
+    identity = identify_hub_protocol(hub_url, timeout_s=timeout_s)
+    return str(identity.get("service") or "") in {"main_computer.exp_fdb_hub", "main_computer.stable_hub"}
 
 
 def _officer_wallet(selector: str, *, cwd: Path | None = None) -> Any:
@@ -81,6 +88,7 @@ def issue_cli_multisession_authorization(
     *,
     wallet: Any,
     timeout_s: float = 15.0,
+    stable_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ask the Hub for its existing wallet's active key, without storing secrets.
 
@@ -91,20 +99,33 @@ def issue_cli_multisession_authorization(
     wallet_address = normalize_address(wallet.address)
     if not getattr(wallet, "private_key", ""):
         raise RuntimeError("An existing wallet private key is required for Hub multi-session authorization.")
+    stable = stable_identity is not None
+    chain_id = HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID
+    if stable:
+        if str(stable_identity.get("service") or "") != "main_computer.stable_hub":
+            raise RuntimeError("Signed Stable Hub authorization requires a verified Stable Hub identity.")
+        network = stable_identity.get("network")
+        chain_id = str(network.get("chain_id") or "").strip() if isinstance(network, dict) else ""
+        if not chain_id.isdecimal() or int(chain_id) <= 0:
+            raise RuntimeError("Stable Hub identity did not advertise a valid signing chain ID.")
     now = datetime.now(timezone.utc)
     message = {
         "purpose": "request_multi_session_key",
         "request_id": "msk_req_" + uuid.uuid4().hex,
         "wallet_address": wallet_address,
-        "chain_id": HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID,
+        "chain_id": chain_id,
         "origin": "main-computer-cli",
         "issued_at": now.isoformat().replace("+00:00", "Z"),
         "expires_at": (now + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
         "version": "main-computer-multisession-key-request-v1",
     }
+    if stable:
+        # Stable Hub requires signed user-side entropy and adds independent
+        # Hub entropy when issuing its multi-session key.
+        message["user_slug"] = "user_slug_" + secrets.token_hex(20)
     signed_request = build_personal_sign_blob(
         message=message, private_key=wallet.private_key,
-        wallet_address=wallet_address, chain_id=HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID,
+        wallet_address=wallet_address, chain_id=chain_id,
     )
     result = _hub_post(
         hub_url, "/api/hub/v1/credits/multisession-keys/request",
@@ -121,7 +142,8 @@ def issue_cli_multisession_authorization(
         "wallet_address": wallet_address,
         "key_id": key_id,
         "multisession_key_id": key_id,
-        "chain_id": HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID,
+        "chain_id": chain_id,
+        **({"cluster_id": str(stable_identity.get("cluster_id") or "")} if stable else {}),
     }
 
 
@@ -159,7 +181,11 @@ def serve_cli_live_worker(
 ) -> None:
     from main_computer.viewport_routes_energy import _WorkerHubLiveSessionClient
 
-    auth = issue_cli_multisession_authorization(hub_url, wallet=_officer_wallet(officer), timeout_s=timeout_s)
+    identity = identify_hub_protocol(hub_url, timeout_s=timeout_s)
+    auth = issue_cli_multisession_authorization(
+        hub_url, wallet=_officer_wallet(officer), timeout_s=timeout_s,
+        **({"stable_identity": identity} if identity.get("service") == "main_computer.stable_hub" else {}),
+    )
     ring = f"ring-{int(assigned_ring)}"
     market = {
         "rings": [ring], "capabilities": ["chat.completions"], "models": [model],

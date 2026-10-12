@@ -99,7 +99,12 @@ def git_revision(repo_root: Path, network: str) -> str:
     if len(remote) != 2 or remote[1] != "refs/heads/main" or len(local) != 40:
         raise RedeployError("cannot resolve origin/main Git revision")
     if local.lower() != remote[0].lower():
-        raise RedeployError("local HEAD is not pushed to origin/main; commit and push Hub source before redeploying")
+        raise RedeployError(
+            "Hub source has no uncommitted Hub inputs, but local HEAD is not pushed "
+            "to origin/main; no new commit is required for the current working tree. "
+            "If HEAD is the intended revision, run: git push origin HEAD "
+            "(resolve any remote divergence before retrying)"
+        )
     return local.lower()
 
 
@@ -141,6 +146,16 @@ def resolve_existing_hub(ctx: HubContext, network: str, member: Mapping[str, Any
     verified = _inspect_frozen_application(_client(target), target, uuid)
     if not verified.get("present"):
         raise RedeployError(f"Coolify application {uuid} disappeared during Hub preflight")
+    image_dockerfile = str(verified.get("dockerfile_location") or "").strip().lstrip("/")
+    if image_dockerfile and image_dockerfile != "Dockerfile.hub.stable":
+        raise RedeployError(
+            f"Hub {hub_id} is still configured with {image_dockerfile}; redeploy cannot convert "
+            "a Coolify application to Stable Hub. Use the existing remove-hub/add-hub "
+            "lifecycle to replace the application, then redeploy the Stable Hub."
+        )
+    # Never count an experimental image as a successfully deployed Stable Hub.
+    # Runtime verification uses Stable Hub's actual identity/health endpoints.
+    target["hub_runtime"] = "stable"
     return target
 
 

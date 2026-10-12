@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from main_computer.config import DEFAULT_HUB_NETWORK, MainComputerConfig
@@ -254,15 +254,30 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
 
     live_session_hub = False
     live_request_authorization: dict[str, Any] = {}
+    stable_session_hub = False
     if not options.no_hub:
         from main_computer.hub_cli_live_session import hub_uses_live_sessions
         live_session_hub = hub_uses_live_sessions(runtime.config.hub_url)
         if live_session_hub and effective_execute:
-            # Fail before funding or spending if the O0 key cannot authorize a request.
-            from main_computer.hub_cli_live_session import issue_cli_multisession_authorization
-            live_request_authorization = issue_cli_multisession_authorization(
-                runtime.config.hub_url, wallet=runtime.wallet, timeout_s=options.timeout_s,
+            # Discover the exact Stable Hub signing domain before any on-chain deposit.
+            from main_computer.hub_cli_live_session import (
+                identify_hub_protocol, issue_cli_multisession_authorization,
             )
+            hub_identity = identify_hub_protocol(runtime.config.hub_url, timeout_s=options.timeout_s)
+            stable_session_hub = hub_identity.get("service") == "main_computer.stable_hub"
+            if stable_session_hub:
+                live_request_authorization = issue_cli_multisession_authorization(
+                    runtime.config.hub_url, wallet=runtime.wallet, timeout_s=options.timeout_s,
+                    stable_identity=hub_identity,
+                )
+            else:
+                live_request_authorization = issue_cli_multisession_authorization(
+                    runtime.config.hub_url, wallet=runtime.wallet, timeout_s=options.timeout_s,
+                )
+            if stable_session_hub and use_bridge:
+                # Refund endpoint is explicitly unavailable on Stable Hub.
+                # Do not represent the legacy direct refund as enabled.
+                result["hub"]["bridge"]["refund_enabled"] = False
 
     if not options.no_hub:
         if use_bridge:
@@ -382,6 +397,10 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             submit_payload["ring"] = f"ring-{requested_ring}"
             submit_payload["capabilities"] = ["chat.completions"]
             submit_payload["multisession_authorization"] = live_request_authorization
+            if stable_session_hub:
+                submit_payload = build_stable_hub_request_payload(
+                    submit_payload, request_id=idempotency_key, max_credits=max_credits,
+                )
         result["hub"]["submit"] = _post_hub_json(
             runtime.config.hub_url,
             "/api/hub/v1/work/requests" if live_session_hub else "/api/hub/v1/requests",
@@ -390,20 +409,23 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
         )
         request_id = _submitted_request_id(result["hub"]["submit"])
         if request_id and options.poll_seconds and options.poll_seconds > 0:
-            result["hub"]["poll"] = _poll_hub_request(
-                runtime.config.hub_url,
-                request_id,
-                timeout_s=options.timeout_s,
-                poll_seconds=options.poll_seconds,
-            )
-            if _hub_request_state(result["hub"]["poll"]) == "completed":
-                result["hub"]["result"] = _pickup_hub_request_result(
-                    runtime.config.hub_url,
-                    request_id,
-                    account_id=account_id,
-                    client_node_id=options.client_node_id,
-                    timeout_s=options.timeout_s,
+            if stable_session_hub:
+                result["hub"]["poll"] = _poll_stable_work_session(
+                    result["hub"]["submit"], timeout_s=options.timeout_s,
+                    poll_seconds=options.poll_seconds,
                 )
+                if _hub_request_state(result["hub"]["poll"]) == "completed":
+                    result["hub"]["result"] = dict(result["hub"]["poll"].get("accepted_session") or {})
+            else:
+                result["hub"]["poll"] = _poll_hub_request(
+                    runtime.config.hub_url, request_id,
+                    timeout_s=options.timeout_s, poll_seconds=options.poll_seconds,
+                )
+                if _hub_request_state(result["hub"]["poll"]) == "completed":
+                    result["hub"]["result"] = _pickup_hub_request_result(
+                        runtime.config.hub_url, request_id, account_id=account_id,
+                        client_node_id=options.client_node_id, timeout_s=options.timeout_s,
+                    )
         if use_bridge:
             result["hub"]["balance_after_request"] = _fetch_hub_credit_balance(
                 runtime.config.hub_url,
@@ -412,7 +434,14 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             )
             if options.bridge_refund:
                 bridge = result["hub"]["bridge"]
-                if not request_id:
+                if stable_session_hub:
+                    # Stable Hub deliberately has no verified refund/reconciliation
+                    # contract. Never bypass it by signing a local chain refund.
+                    bridge["refund"] = {
+                        "ok": False, "skipped": True,
+                        "reason": "stable_hub_refund_reconciliation_not_implemented",
+                    }
+                elif not request_id:
                     bridge["refund"] = {"ok": False, "skipped": True, "reason": "hub request id was not returned"}
                 elif _hub_request_state(result.get("hub", {}).get("poll")) not in {"completed", "failed", "cancelled"}:
                     bridge["refund"] = {
@@ -1739,6 +1768,56 @@ def _post_hub_json(hub_url: str, path: str, payload: dict[str, Any], *, timeout_
     return data
 
 
+def build_stable_hub_request_payload(
+    legacy_payload: dict[str, Any], *, request_id: str, max_credits: int,
+) -> dict[str, Any]:
+    """Translate Captain's authenticated request into Stable Hub's exact schema."""
+    messages = legacy_payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise CaptainCliError("Stable Hub Captain work requires a nonempty message list.")
+    return {
+        "request_id": str(request_id),
+        "work": {
+            "ring": str(legacy_payload.get("ring") or "ring-3"),
+            "capabilities": ["chat.completions"],
+            "model": str(legacy_payload.get("model") or "hub-auto"),
+            "messages": messages,
+            "max_price": {"amount": str(max_credits), "unit": "compute_credit"},
+            "metadata": dict(legacy_payload.get("metadata") or {}),
+        },
+        "multisession_authorization": dict(legacy_payload.get("multisession_authorization") or {}),
+    }
+
+
+def _poll_stable_work_session(
+    accepted: dict[str, Any], *, timeout_s: float, poll_seconds: float,
+) -> dict[str, Any]:
+    """Poll the owner Hub's verified continuation URL, never the legacy REST route."""
+    url = str(accepted.get("continuation_url") or "")
+    expected_hub = accepted.get("execution_hub")
+    owner_url = str(expected_hub.get("hub_url") or "") if isinstance(expected_hub, dict) else ""
+    session_id = str(accepted.get("session_id") or "")
+    if not url or not owner_url or not session_id:
+        raise CaptainCliError("Stable Hub did not return a complete session continuation authority.")
+    parsed = urlparse(url)
+    owner = urlparse(owner_url)
+    if (parsed.scheme not in {"http", "https"} or parsed.scheme != owner.scheme
+        or parsed.netloc != owner.netloc or parsed.username or parsed.password
+        or parsed.query or parsed.fragment
+        or parsed.path != f"/api/hub/v1/work/sessions/{session_id}/stream"):
+        raise CaptainCliError("Stable Hub continuation URL does not match its execution Hub and session.")
+    deadline = time.monotonic() + max(0.0, float(poll_seconds))
+    while True:
+        current = _get_hub_json(owner_url, parsed.path, timeout_s=timeout_s)
+        if str(current.get("session_id") or "") != session_id:
+            raise CaptainCliError("Stable Hub continuation returned a different session ID.")
+        if _hub_request_state(current) in {"completed", "failed", "cancelled"}:
+            return current
+        if time.monotonic() >= deadline:
+            return current
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+
 def _poll_hub_request(hub_url: str, request_id: str, *, timeout_s: float, poll_seconds: float) -> dict[str, Any]:
     deadline = time.time() + max(0.0, poll_seconds)
     last: dict[str, Any] = {}
@@ -1804,7 +1883,8 @@ def _hub_request_state(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
     request = payload.get("request") if isinstance(payload.get("request"), dict) else payload
-    return str(request.get("state", "") if isinstance(request, dict) else "").strip().lower()
+    state = str(request.get("state") or request.get("status") or "").strip().lower() if isinstance(request, dict) else ""
+    return "completed" if state == "succeeded" else state
 
 
 def _is_hub_request_result_not_found_error(exc: BaseException) -> bool:
@@ -1876,6 +1956,7 @@ def _extract_ai_response_text(payload: Any) -> str:
             "message",
             "choice",
             "worker_result",
+            "accepted_session",
             "result_payload",
             "payload",
             "data",

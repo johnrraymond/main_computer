@@ -268,6 +268,39 @@ def test_hub_admin_current_funding_gate_blocks_insufficient_balance(monkeypatch)
     assert error.value.code == "HUB_ADMIN_INSUFFICIENT_FUNDS"
 
 
+@pytest.mark.parametrize("balance", [0, 1, 10**18 - 1])
+def test_hub_admin_current_funding_rejects_below_gas_reserve(monkeypatch, balance):
+    from tools.hub_control.common.admin_identity import verify_admin_current_funding
+    from tools.hub_control.common.models import DependencyContract
+    from tools.hub_control.common import chain_contract
+    contract = DependencyContract("chain", "mainnet", 1, "0" * 64, {"rpc_url": "https://rpc.invalid"})
+    calls = []
+    def fake_rpc(url, method, params, **kw):
+        calls.append(method)
+        return hex(balance) if method == "eth_getBalance" else "0x6000"
+    monkeypatch.setattr(chain_contract, "_rpc", fake_rpc)
+    with pytest.raises(HubControlError) as error:
+        verify_admin_current_funding(contract, _wallet(1)["address"])
+    assert error.value.code == "HUB_ADMIN_INSUFFICIENT_FUNDS"
+    assert calls == ["eth_getBalance"]
+
+
+@pytest.mark.parametrize("balance", [10**18, 10_000 * 10**18 - 1_044_645])
+def test_hub_admin_current_funding_accepts_spent_genesis_allocation(monkeypatch, balance):
+    from tools.hub_control.common.admin_identity import verify_admin_current_funding
+    from tools.hub_control.common.models import DependencyContract
+    from tools.hub_control.common import chain_contract
+    contract = DependencyContract("chain", "mainnet", 1, "0" * 64, {"rpc_url": "https://rpc.invalid"})
+    monkeypatch.setattr(chain_contract, "_rpc", lambda url, method, params, **kw:
+                        hex(balance) if method == "eth_getBalance" else "0x6000")
+    result = verify_admin_current_funding(contract, _wallet(1)["address"])
+    assert result["verified"] is True
+    assert result["balance_wei"] == balance
+    assert result["minimum_balance_wei"] == 10**18
+    assert result["native_reserve_present"] is True
+    assert result["hub_bridge_escrow_present"] is True
+
+
 def test_hub_admin_current_funding_gate_requires_both_contracts(monkeypatch):
     from tools.hub_control.common.admin_identity import verify_admin_current_funding
     from tools.hub_control.common.models import DependencyContract
@@ -284,6 +317,7 @@ def test_hub_admin_current_funding_gate_requires_both_contracts(monkeypatch):
     assert result["verified"] is True
     assert result["block"] == "latest"
     assert result["balance_wei"] == 10_000 * 10**18
+    assert result["minimum_balance_wei"] == 10**18
     assert len(seen) == 3
     assert all(params[-1] == "latest" for _, params in seen)
     monkeypatch.setattr(chain_contract, "_rpc", lambda url, method, params, **kw:

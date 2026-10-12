@@ -1047,6 +1047,35 @@ def test_redeploy_parser_and_modes(tmp_path: Path) -> None:
         Harness(_args(tmp_path, "redeploy-hubs", hub="", allow_full_deletion=True))
 
 
+def test_redeploy_reports_no_commit_needed_before_hub_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    original_resolve = redeploy.resolve_existing_hub
+
+    def resolve_after_git(ctx, network, member):
+        assert "no commit required for redeployment" in capsys.readouterr().out
+        return original_resolve(ctx, network, member)
+
+    monkeypatch.setattr(redeploy, "resolve_existing_hub", resolve_after_git)
+    assert Harness(_redeploy_args(tmp_path, all_hubs=False)).run() == 0
+    assert len([call for call in calls if call[0] == "preflight"]) == 1
+
+
+def test_redeploy_git_block_stops_before_hub_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, redeploy = _redeploy_fixture(monkeypatch)
+
+    def git_block(_root, _network):
+        raise redeploy.RedeployError("HUB_GIT_COMMIT_PUSH_COMMAND: git add -- 'Dockerfile.hub.exp-fdb'")
+
+    monkeypatch.setattr(redeploy, "git_revision", git_block)
+    monkeypatch.setattr(redeploy, "resolve_existing_hub", lambda *args: pytest.fail("must check Git first"))
+    with pytest.raises(HarnessError, match="HUB_GIT_COMMIT_PUSH_COMMAND"):
+        Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True)).run()
+
+
 def test_redeploy_single_does_not_touch_other_hubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls, _, _ = _redeploy_fixture(monkeypatch)
     harness = Harness(_redeploy_args(tmp_path, all_hubs=False, execute=True))
@@ -1178,6 +1207,101 @@ def test_redeploy_405_receipt_adopts_updated_revision_if_no_build_was_queued(
     assert [c for c in calls if c[0] == "force"] == [
         ("force", "mainneta-hub1"), ("force", "mainnetc-hub1")
     ]
+
+
+def test_redeploy_revision_change_settles_interrupted_build_then_redeploys_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, accepted, redeploy = _redeploy_fixture(monkeypatch)
+    old, new = "a" * 40, "b" * 40
+    revision = [old]
+    monkeypatch.setattr(redeploy, "git_revision", lambda *_: revision[0])
+    builds: dict[str, str] = {}
+    submissions: list[tuple[str, str, str]] = []
+
+    def force(target):
+        uuid = f"{revision[0][0]}-{target['hub_id']}"
+        builds[uuid] = revision[0]
+        submissions.append((target["hub_id"], revision[0], uuid))
+        return uuid
+
+    interrupt = [True]
+
+    def wait(target, uuid):
+        calls.append(("wait", target["hub_id"], uuid))
+        if target["hub_id"] == "mainnetc-hub1" and interrupt[0]:
+            raise KeyboardInterrupt
+        return {"commit": builds[uuid], "waited": True}
+
+    monkeypatch.setattr(redeploy, "force_rebuild", force)
+    monkeypatch.setattr(redeploy, "wait_for_build", wait)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    with pytest.raises(KeyboardInterrupt):
+        first.run()
+    assert [x["status"] for x in first.state["redeploy"]["targets"]] == ["verified", "queued"]
+    assert len(submissions) == 2
+    revision[0] = new
+    interrupt[0] = False
+    resumed = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    assert resumed._resumed_existing_run
+    assert resumed.run() == 0
+    assert [x[1] for x in submissions] == [old, old, new, new]
+    assert [x["status"] for x in resumed.state["redeploy"]["targets"]] == ["verified", "verified"]
+    assert resumed.state["redeploy"]["revision"] == new
+    historical = resumed.state["redeploy_history"]
+    assert len(historical) == 1
+    assert historical[0]["revision"] == old
+    assert [x["status"] for x in historical[0]["targets"]] == ["verified", "built"]
+    assert accepted["generation"] == 12
+
+
+def test_redeploy_revision_change_does_not_submit_if_old_build_uncertain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    revision = ["a" * 40]
+    monkeypatch.setattr(redeploy, "git_revision", lambda *_: revision[0])
+    wait_fail = [True]
+
+    def wait(target, uuid):
+        if target["hub_id"] == "mainnetc-hub1" and wait_fail[0]:
+            raise redeploy.RedeployError("Coolify poll lost connection")
+        return {"commit": "a" * 40, "waited": True}
+
+    monkeypatch.setattr(redeploy, "wait_for_build", wait)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    with pytest.raises(HarnessError, match="Coolify poll lost connection"):
+        first.run()
+    assert first.state["redeploy"]["targets"][1]["status"] == "queued"
+    calls_before = len([x for x in calls if x[0] == "force"])
+    revision[0] = "b" * 40
+    with pytest.raises(HarnessError, match="Coolify poll lost connection"):
+        Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True)).run()
+    assert len([x for x in calls if x[0] == "force"]) == calls_before
+    assert first.state["redeploy"]["revision"] == "a" * 40
+
+
+def test_redeploy_revision_change_dry_run_does_not_touch_prior_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, _, redeploy = _redeploy_fixture(monkeypatch)
+    first = Harness(_redeploy_args(tmp_path, all_hubs=True, execute=True))
+    def interrupt(target, uuid):
+        if target["hub_id"] == "mainnetc-hub1":
+            raise KeyboardInterrupt
+        return {"commit": "a" * 40, "waited": True}
+    monkeypatch.setattr(redeploy, "wait_for_build", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        first.run()
+    monkeypatch.setattr(redeploy, "git_revision", lambda *_: "b" * 40)
+    def no_wait(*_args, **_kwargs):
+        pytest.fail("dry-run must not settle in-flight deployments")
+    monkeypatch.setattr(redeploy, "wait_for_build", no_wait)
+    resumed = Harness(_redeploy_args(tmp_path, all_hubs=True))
+    assert resumed.run() == 0
+    assert resumed.state["redeploy"]["revision"] == "a" * 40
+    assert resumed.state["redeploy"]["targets"][1]["status"] == "queued"
+    assert "redeploy_history" not in resumed.state
 
 
 def test_redeploy_fail_first_hub_stops_before_second(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
