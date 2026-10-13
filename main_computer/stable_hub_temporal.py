@@ -18,6 +18,33 @@ TEMPORAL_TASK_QUEUE = "main-computer-stable-work-session-lifecycle"
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
 
 
+def temporal_workflow_is_completed(status: Any) -> bool:
+    """Recognize Temporal's COMPLETED enum without depending on its string form.
+
+    Temporal's protobuf enum value 2 means WORKFLOW_EXECUTION_STATUS_COMPLETED.
+    Python SDK versions can render that enum as "2" instead of "COMPLETED".
+    Do not eagerly import temporalio: Stable/Experimental Temporal is opt-in.
+    All other statuses, including FAILED, must remain fail-closed.
+    """
+    if isinstance(status, bool):
+        return False
+    if isinstance(status, int):
+        return status == 2
+    name = getattr(status, "name", None)
+    if isinstance(name, str):
+        value = name
+    elif isinstance(status, str):
+        value = status
+    else:
+        raw_value = getattr(status, "value", None)
+        return isinstance(raw_value, int) and not isinstance(raw_value, bool) and raw_value == 2
+    return value.strip().upper() in {
+        "COMPLETED", "WORKFLOW_EXECUTION_STATUS_COMPLETED",
+        "WORKFLOWEXECUTIONSTATUS.COMPLETED",
+        "WORKFLOWEXECUTIONSTATUS.WORKFLOW_EXECUTION_STATUS_COMPLETED",
+    }
+
+
 class TemporalLifecycleUnavailable(RuntimeError):
     """No verified Temporal runtime is available to supervise new paid work."""
 
@@ -94,7 +121,9 @@ class StableHubTemporalRuntime:
                 worker = Worker(client, task_queue=TEMPORAL_TASK_QUEUE, workflows=[WorkSessionWorkflow])
                 self._client = client
                 task = asyncio.create_task(worker.run())
-                self._ready.set()
+                # Do not accept paid work until at least one FDB/Temporal
+                # reconciliation pass succeeds (a live socket alone is insufficient).
+                self._ready.clear()
                 self._last_error = ""
                 try:
                     while not self._stopping.is_set() and not task.done():
@@ -123,9 +152,10 @@ class StableHubTemporalRuntime:
             self._last_error = f"fdb_reconciliation_{type(exc).__name__}"
             self._ready.clear()
             return
-        self._ready.set()
         sessions = document.get("accepted_sessions", {}) if isinstance(document, dict) else {}
         if not isinstance(sessions, dict):
+            self._last_error = "fdb_reconciliation_invalid_document"
+            self._ready.clear()
             return
         for session in list(sessions.values()):
             if not isinstance(session, dict):
@@ -137,6 +167,10 @@ class StableHubTemporalRuntime:
                 await self._ensure_workflow(client, session)
             except Exception as exc:
                 self._last_error = f"workflow_reconcile_{type(exc).__name__}"
+                self._ready.clear()
+                return
+        self._last_error = ""
+        self._ready.set()
 
     async def _ensure_workflow(self, client: Any, session: dict[str, Any]) -> None:
         session_id = str(session.get("session_id") or "")
@@ -164,6 +198,9 @@ class StableHubTemporalRuntime:
                     "request_id": request_id,
                 })
             except Exception:
-                # A previously completed workflow rejects a duplicate signal.
-                # A live workflow will be reconciled on the next pass.
-                pass
+                # Only an ALREADY COMPLETED lifecycle may legitimately reject
+                # a duplicate signal. Do not swallow an RPC outage as success:
+                # admission must fail closed until reconciliation works again.
+                description = await handle.describe()
+                if not temporal_workflow_is_completed(description.status):
+                    raise

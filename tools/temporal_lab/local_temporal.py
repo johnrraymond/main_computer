@@ -20,6 +20,9 @@ DEFAULT_VOLUME = "main-computer-temporal-dev-data"
 DEFAULT_GRPC_PORT = 7233
 DEFAULT_UI_PORT = 8233
 DEFAULT_DB_FILENAME = "/data/temporal.db"
+# Small, shell-equipped image for volume initialization. The Temporal CLI image
+# itself need not contain a shell or an id/chown utility.
+DEFAULT_VOLUME_HELPER_IMAGE = "busybox:1.36.1"
 
 
 class TemporalBootstrapError(RuntimeError):
@@ -97,10 +100,8 @@ def docker_container_running(container_name: str) -> bool:
 def build_run_command(config: TemporalConfig) -> list[str]:
     """Return the docker command used to create the local dev Temporal container.
 
-    The default is intentionally in-memory SQLite. On Docker Desktop for
-    Windows, the persisted SQLite dev-server path can fail before Temporal is
-    ready with "unable to open database file: out of memory (14)". Persistence
-    remains available as an explicit opt-in via ``--persist``.
+    In-memory state remains the default. With ``--persist``, the named Docker
+    volume is initialized before container creation to allow SQLite to write.
     """
 
     command = [
@@ -224,6 +225,135 @@ def print_ready(config: TemporalConfig) -> None:
     print(f'  $env:TEMPORAL_TASK_QUEUE="{config.task_queue}"')
 
 
+def _temporal_image_uid(image: str) -> int:
+    """Resolve the actual effective UID without assuming the image's USER is numeric.
+
+    Docker accepts named users (the Temporal CLI image declares ``USER
+    temporal``). Resolve such users by invoking ``id -u`` *inside that same
+    image*, with its configured user and no network or mounted data. Never
+    guess an ID or fall back to root on lookup failure.
+    """
+    command = ["docker", "image", "inspect", "--format", "{{.Config.User}}", image]
+    inspected = run_command(command, timeout=15)
+    if inspected.returncode != 0:
+        pulled = run_command(["docker", "pull", image], capture=False, timeout=240)
+        if pulled.returncode != 0:
+            raise TemporalBootstrapError(f"Unable to pull Temporal image {image!r}.")
+        inspected = run_command(command, timeout=15)
+    if inspected.returncode != 0:
+        raise TemporalBootstrapError(f"Unable to inspect the runtime user of {image!r}.")
+
+    user = (inspected.stdout or "").strip()
+    primary = (user.split(":", 1)[0] if user else "0")
+    if primary in ("root", "<no value>"):
+        return 0
+    if primary.isascii() and primary.isdecimal():
+        return int(primary)
+
+    # USER temporal (or temporal:group) is valid Docker metadata. Query its
+    # effective UID in the image that will actually run the Temporal server.
+    result = run_command(
+        ["docker", "run", "--rm", "--network", "none", "--entrypoint", "id", image, "-u"],
+        timeout=60,
+    )
+    resolved = (result.stdout or "").strip()
+    if result.returncode != 0 or not resolved.isascii() or not resolved.isdecimal():
+        detail = (result.stderr or result.stdout or "").strip()
+        raise TemporalBootstrapError(
+            f"Unable to resolve Docker user {user!r} in image {image!r}; "
+            f"persistent volume was not changed. {detail}".strip()
+        )
+    return int(resolved)
+
+
+def prepare_persistent_volume(config: TemporalConfig) -> None:
+    """Make the named volume writable by Temporal without deleting any state.
+
+    Docker volumes are usually root-owned on first creation, while Temporal's
+    runtime user may be unprivileged. A short-lived BusyBox container prepares
+    ownership. This also repairs a previously failed bootstrap on Windows.
+    """
+    uid = _temporal_image_uid(config.image)
+    mount = f"type=volume,src={config.volume},dst=/data"
+    result = run_command(
+        [
+            "docker", "run", "--rm", "--network", "none", "--user", "0:0",
+            "--entrypoint", "sh", "--mount", mount,
+            DEFAULT_VOLUME_HELPER_IMAGE, "-ec",
+            f"chown -R {uid} /data && chmod -R u+rwX /data",
+        ],
+        timeout=120,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise TemporalBootstrapError(
+            f"Cannot initialize persistent Temporal volume {config.volume!r} "
+            f"for UID {uid}. No data was deleted. {detail}".strip()
+        )
+    # Root's `test -w` proves nothing about Temporal's unprivileged runtime
+    # user. Check the volume from the resolved UID without mutating its files.
+    verified = run_command(
+        [
+            "docker", "run", "--rm", "--network", "none", "--user", str(uid),
+            "--entrypoint", "sh", "--mount", mount,
+            DEFAULT_VOLUME_HELPER_IMAGE, "-ec", "test -w /data",
+        ],
+        timeout=60,
+    )
+    if verified.returncode != 0:
+        detail = (verified.stderr or verified.stdout or "").strip()
+        raise TemporalBootstrapError(
+            f"Persistent Temporal volume {config.volume!r} is not writable "
+            f"by runtime UID {uid}; server not started. No data was deleted. {detail}".strip()
+        )
+
+
+def verify_running_persistence(config: TemporalConfig) -> None:
+    """Do not silently reuse an in-memory server for a durability test."""
+    inspected = run_command(
+        ["docker", "container", "inspect", config.container_name,
+         "--format", "{{json .}}"],
+        timeout=15,
+    )
+    if inspected.returncode != 0:
+        raise TemporalBootstrapError(
+            f"Cannot inspect running Temporal container {config.container_name!r}."
+        )
+    try:
+        details = json.loads((inspected.stdout or "").strip())
+    except (ValueError, TypeError) as exc:
+        raise TemporalBootstrapError("Docker returned invalid Temporal container metadata.") from exc
+    if not isinstance(details, dict):
+        raise TemporalBootstrapError("Docker returned invalid Temporal container metadata.")
+    mounts = details.get("Mounts")
+    if not isinstance(mounts, list) or not any(
+        isinstance(mount, dict)
+        and mount.get("Type") == "volume"
+        and mount.get("Name") == config.volume
+        and mount.get("Destination") == "/data"
+        and mount.get("RW") is True
+        for mount in mounts
+    ):
+        raise TemporalBootstrapError(
+            f"Running container {config.container_name!r} does not have writable "
+            f"volume {config.volume!r} mounted at /data. Stop it with "
+            "`python -m tools.temporal_lab.local_temporal down` (without "
+            "--delete-data), then retry `up --persist`."
+        )
+    command = (details.get("Config") or {}).get("Cmd")
+    if not isinstance(command, list) or not any(
+        arg == "--db-filename" and i + 1 < len(command)
+        and command[i + 1] == config.db_filename
+        for i, arg in enumerate(command)
+    ):
+        raise TemporalBootstrapError(
+            f"Running container {config.container_name!r} does not use "
+            f"the persistent SQLite database {config.db_filename!r}. Stop it "
+            "with `python -m tools.temporal_lab.local_temporal down` "
+            "(without --delete-data), then retry `up --persist`."
+        )
+
+
 def create_container(config: TemporalConfig) -> None:
     created = run_command(build_run_command(config), timeout=120)
     if created.returncode != 0:
@@ -244,14 +374,18 @@ def up(config: TemporalConfig, *, pull: bool, timeout_seconds: float) -> None:
         if pull_result.returncode != 0:
             raise TemporalBootstrapError(f"docker pull failed for image {config.image!r}.")
 
-    if docker_container_exists(config.container_name):
-        if not docker_container_running(config.container_name):
-            # Recreate stopped containers instead of restarting them. This lets
-            # the script recover from an older failed bootstrap whose container
-            # was created with a now-bad command, such as persisted SQLite.
-            remove_container(config.container_name)
-            create_container(config)
+    exists = docker_container_exists(config.container_name)
+    running = exists and docker_container_running(config.container_name)
+    if running:
+        if config.persist:
+            verify_running_persistence(config)
     else:
+        if config.persist:
+            # Prepare on both fresh checkouts and recovery after a failed run.
+            # No volume removal, DB rewrite, or in-memory fallback is permitted.
+            prepare_persistent_volume(config)
+        if exists:
+            remove_container(config.container_name)
         create_container(config)
 
     wait_for_temporal(config, timeout_seconds=timeout_seconds)
@@ -347,8 +481,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--persist",
         action="store_true",
         help=(
-            "Persist Temporal dev-server SQLite state in a Docker volume. "
-            "Off by default because it can fail on Docker Desktop/Windows."
+            "Persist Temporal dev-server SQLite state in an automatically "
+            "initialized Docker volume; does not erase previous workflow history."
         ),
     )
     parser.add_argument("--pull", action="store_true", help="Pull the Temporal image before starting.")

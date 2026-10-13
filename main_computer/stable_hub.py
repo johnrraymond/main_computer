@@ -605,75 +605,90 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             return
 
         payout = dict(accepted_session.get("payout") or {})
+        hold_id = str(payout.get("hold_id") or "")
+        store = self.server.payout_ledger_directory.store
+
+        def _atomic_terminal(action: Any) -> Any:
+            # The funds transition and accepted-session state change must
+            # commit (or conflict/retry) as one FoundationDB transaction.
+            atomic = getattr(store, "atomic", None)
+            return atomic(action) if callable(atomic) else action()
+
         if message_type == "worker.work.result":
             result_payload = message.get("result")
             if not isinstance(result_payload, dict):
                 result_payload = {"value": result_payload}
-            payout.update(
-                {
-                    "payment_status": str(payout.get("payment_status") or "spent"),
-                    "direct_spend": True,
-                    "released_credits": "0",
-                    "settlement_status": str(payout.get("settlement_status") or "earned"),
-                }
-            )
-            updated = self.server.accepted_work_session_directory.record_succeeded(
-                session_id=session_id,
-                worker_connection_id=connection_id,
-                worker_result={"type": message_type, "result": result_payload},
-                payout=payout,
-            )
+
+            def _record_success() -> dict[str, Any]:
+                final_payout = dict(payout)
+                if hold_id:
+                    payment = self.server.payout_ledger_directory.spend_request_credit(
+                        account_id=str(accepted_session.get("requester_account_id") or ""),
+                        wallet_address=str(accepted_session.get("requester_wallet_address") or ""),
+                        request_id=request_id, session_id=session_id,
+                        run_id=str(accepted_session.get("run_id") or ""),
+                        worker_id=worker_id, selected_price=dict(payout.get("selected_price") or {}),
+                        requester_max_price=(accepted_session.get("work") or {}).get("max_price"),
+                        partition=str(accepted_session.get("partition") or ""),
+                        hold_id=hold_id, result=result_payload,
+                        metadata={"pricing_mode": "stable_market_price", "hub_id": self.server.hub.hub_id},
+                    )
+                    charge = dict(payment.get("charge") or {})
+                    earning = dict(payment.get("worker_earning") or {})
+                    final_payout.update({
+                        "hold_status": "charged", "charge_id": charge.get("charge_id", ""),
+                        "worker_earning_id": earning.get("earning_id", ""),
+                        "charged_credits": str(charge.get("amount") or "0"),
+                        "payment_status": "charged", "settlement_status": "earned",
+                        "direct_spend": False, "released_credits": "0",
+                    })
+                return self.server.accepted_work_session_directory.record_succeeded(
+                    session_id=session_id, worker_connection_id=connection_id,
+                    worker_result={"type": message_type, "result": result_payload}, payout=final_payout,
+                )
+
+            updated = _atomic_terminal(_record_success)
             self.server.worker_market_directory.record_session_finished(
-                worker_id=worker_id,
-                connection_id=connection_id,
+                worker_id=worker_id, connection_id=connection_id,
             )
-            session.send_json(
-                {
-                    "type": "hub.work.result.accepted",
-                    "ok": True,
-                    "session_id": session_id,
-                    "request_id": request_id,
-                    "status": updated.get("status"),
-                    "payout": updated.get("payout", {}),
-                }
-            )
+            session.send_json({"type": "hub.work.result.accepted", "ok": True,
+                               "session_id": session_id, "request_id": request_id,
+                               "status": updated.get("status"), "payout": updated.get("payout", {})})
             return
 
         if message_type == "worker.work.failed":
             failure_payload = message.get("error")
             if not isinstance(failure_payload, dict):
-                failure_payload = {
-                    "error": str(failure_payload or message.get("message") or "worker_failed")
-                }
-            payout.update(
-                {
-                    "payment_status": str(payout.get("payment_status") or "spent"),
-                    "direct_spend": True,
-                    "failure_reason": "worker_failed",
-                    "released_credits": "0",
-                    "settlement_status": str(payout.get("settlement_status") or "earned"),
-                }
-            )
-            updated = self.server.accepted_work_session_directory.record_failed(
-                session_id=session_id,
-                worker_connection_id=connection_id,
-                worker_failure={"type": message_type, "error": failure_payload},
-                payout=payout,
-            )
+                failure_payload = {"error": str(failure_payload or message.get("message") or "worker_failed")}
+
+            def _record_failure() -> dict[str, Any]:
+                final_payout = dict(payout)
+                if hold_id:
+                    self.server.payout_ledger_directory.release_hold(
+                        hold_id=hold_id, session_id=session_id,
+                    )
+                    final_payout.update({
+                        "hold_status": "released", "payment_status": "released",
+                        "released_credits": str(payout.get("reserved_credits") or "0"),
+                        "settlement_status": "not_earned", "direct_spend": False,
+                        "charge_id": "", "worker_earning_id": "", "charged_credits": "0",
+                    })
+                else:
+                    # Preserve legacy pay-on-acceptance records as historical
+                    # accounting facts; never synthesize a second refund.
+                    final_payout["failure_reason"] = "worker_failed"
+                return self.server.accepted_work_session_directory.record_failed(
+                    session_id=session_id, worker_connection_id=connection_id,
+                    worker_failure={"type": message_type, "error": failure_payload}, payout=final_payout,
+                )
+
+            updated = _atomic_terminal(_record_failure)
             self.server.worker_market_directory.record_session_finished(
-                worker_id=worker_id,
-                connection_id=connection_id,
+                worker_id=worker_id, connection_id=connection_id,
             )
-            session.send_json(
-                {
-                    "type": "hub.work.failed.accepted",
-                    "ok": True,
-                    "session_id": session_id,
-                    "request_id": request_id,
-                    "status": updated.get("status"),
-                    "payout": updated.get("payout", {}),
-                }
-            )
+            session.send_json({"type": "hub.work.failed.accepted", "ok": True,
+                               "session_id": session_id, "request_id": request_id,
+                               "status": updated.get("status"), "payout": updated.get("payout", {})})
             return
 
         raise StableHubWorkerSessionError("unsupported worker terminal message.")
@@ -863,24 +878,48 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     )
             except Exception:
                 pass
+        except Exception as exc:
+            if getattr(exc, "code", None) != 1020:
+                raise
+            # FoundationDB aborted the transaction; do not claim connection
+            # or payment acceptance. The worker can reconnect and retry.
+            try:
+                sender = session.send_json if session is not None else self._ws_send_json
+                sender({"type": "hub.error", "ok": False,
+                        "error": "foundationdb_transaction_conflict",
+                        "retryable": True, "hub_id": self.server.hub.hub_id})
+            except OSError:
+                pass
         finally:
             if worker_id and connection_id:
-                closed_owner = self.server.worker_session_directory.record_closed(
-                    worker_id=worker_id,
-                    connection_id=connection_id,
-                    reason="socket_closed",
-                ) or {}
-                self.server.worker_market_directory.record_worker_closed(
-                    worker_id=worker_id,
-                    connection_id=connection_id,
-                    reason="socket_closed",
-                )
-                removed = self.server.remove_live_worker_session(connection_id)
-                if removed is not None:
-                    removed.mark_closed(
+                closed_owner: dict[str, Any] = {}
+                # An exhausted FDB conflict must not prevent local socket
+                # deregistration; a later reconnect replaces any stale owner.
+                try:
+                    closed_owner = self.server.worker_session_directory.record_closed(
+                        worker_id=worker_id, connection_id=connection_id,
                         reason="socket_closed",
-                        closed_at=str(closed_owner.get("closed_at") or ""),
+                    ) or {}
+                except Exception as exc:
+                    if getattr(exc, "code", None) != 1020:
+                        raise
+                    self._log_event("worker owner close deferred after FDB conflict")
+                try:
+                    self.server.worker_market_directory.record_worker_closed(
+                        worker_id=worker_id, connection_id=connection_id,
+                        reason="socket_closed",
                     )
+                except Exception as exc:
+                    if getattr(exc, "code", None) != 1020:
+                        raise
+                    self._log_event("worker market close deferred after FDB conflict")
+                finally:
+                    removed = self.server.remove_live_worker_session(connection_id)
+                    if removed is not None:
+                        removed.mark_closed(
+                            reason="socket_closed",
+                            closed_at=str(closed_owner.get("closed_at") or ""),
+                        )
 
 
 
@@ -1438,7 +1477,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         session_id = new_session_id()
         run_id = new_run_id()
         task_queue = stable_task_queue_for_partition(partition)
-        payout_payment: dict[str, Any] = {}
 
         offer = {
             "type": "hub.work.offer",
@@ -1516,78 +1554,61 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        try:
-            payout_payment = self.server.payout_ledger_directory.spend_request_credit(
+        # The worker has accepted the offer, but payment is not earned until
+        # an authenticated successful result. Reserve the maximum agreed price
+        # atomically with accepted-session creation; failures release the hold.
+        def _record_acceptance() -> dict[str, Any]:
+            reservation = self.server.payout_ledger_directory.create_hold(
                 account_id=str(validation.get("account_id") or ""),
                 wallet_address=str(validation.get("wallet_address") or ""),
-                request_id=request_id,
-                session_id=session_id,
-                run_id=run_id,
-                worker_id=worker_id,
+                request_id=request_id, session_id=session_id, worker_id=worker_id,
+                run_id=run_id, partition=partition,
                 selected_price=dict(selected_worker.get("price") or {}),
                 requester_max_price=(work.get("max_price") if isinstance(work, dict) else None),
-                partition=partition,
-                result={},
-                metadata={
+            )
+            price = dict(selected_worker.get("price") or {})
+            price["credit_wei"] = str(reservation["credit_wei"])
+            return self.server.accepted_work_session_directory.record_accepted(
+                session_id=session_id, run_id=run_id, request_id=request_id,
+                requester_msk_id=str(validation.get("multisession_key_id") or ""),
+                requester_account_id=str(validation.get("account_id") or ""),
+                requester_wallet_address=str(validation.get("wallet_address") or ""),
+                worker_id=worker_id, worker_connection_id=owner_connection_id,
+                owner_hub_id=owner_hub_id, owner_hub_url=owner_hub_url,
+                partition=partition, task_queue=task_queue, work=work,
+                worker_acceptance=worker_acceptance,
+                temporal_intent=self.server.temporal_runtime is not None,
+                payout={
+                    "unit": str(price.get("unit") or "credit"),
                     "pricing_mode": "stable_market_price",
-                    "selected_worker": selected_worker,
-                    "hub_id": self.server.hub.hub_id,
+                    "selected_price": price,
+                    "requester_max_price": dict(work.get("max_price") or {}),
+                    "hold_id": str(reservation["hold_id"]), "hold_status": "held",
+                    "reserved_credits": str(reservation.get("amount") or "0"),
+                    "charge_id": "", "worker_earning_id": "",
+                    "charged_credits": "0", "released_credits": "0",
+                    "settlement_status": "not_earned", "payment_status": "held",
+                    "direct_spend": False,
                 },
             )
+
+        try:
+            store = self.server.payout_ledger_directory.store
+            atomic = getattr(store, "atomic", None)
+            accepted_session = atomic(_record_acceptance) if callable(atomic) else _record_acceptance()
         except StableHubWorkerSessionError as exc:
             self.server.worker_market_directory.record_session_finished(
-                worker_id=worker_id,
-                connection_id=owner_connection_id,
+                worker_id=worker_id, connection_id=owner_connection_id,
             )
-            self._send_json(
-                402,
-                {
-                    "ok": False,
-                    "error": str(exc),
-                    "message": "Requester credits could not be spent for the selected worker.",
-                    "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "selected_worker": selected_worker,
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                },
-            )
+            self._send_json(402 if "funds" in str(exc) else 409, {
+                "ok": False, "error": str(exc),
+                "message": "Requester credit reservation or session acceptance failed.",
+                "request_id": request_id, "worker_id": worker_id,
+                "partition": partition, "hub_id": self.server.hub.hub_id,
+                "cluster_id": self.server.topology.cluster_id,
+            })
             return
 
-        charge_record = dict(payout_payment.get("charge") or {})
-        earning_record = dict(payout_payment.get("worker_earning") or {})
-
-        accepted_session = self.server.accepted_work_session_directory.record_accepted(
-            session_id=session_id,
-            run_id=run_id,
-            request_id=request_id,
-            requester_msk_id=str(validation.get("multisession_key_id") or ""),
-            requester_account_id=str(validation.get("account_id") or ""),
-            requester_wallet_address=str(validation.get("wallet_address") or ""),
-            worker_id=worker_id,
-            worker_connection_id=owner_connection_id,
-            owner_hub_id=owner_hub_id,
-            owner_hub_url=owner_hub_url,
-            partition=partition,
-            task_queue=task_queue,
-            work=work,
-            worker_acceptance=worker_acceptance,
-            temporal_intent=self.server.temporal_runtime is not None,
-            payout={
-                "unit": str(charge_record.get("unit") or "credit"),
-                "pricing_mode": "stable_market_price",
-                "selected_price": dict(payout_payment.get("selected_price") or {}),
-                "requester_max_price": dict(payout_payment.get("requester_max_price") or {}),
-                "charge_id": str(charge_record.get("charge_id") or ""),
-                "worker_earning_id": str(earning_record.get("earning_id") or ""),
-                "charged_credits": str(charge_record.get("amount") or "0"),
-                "released_credits": "0",
-                "settlement_status": str(earning_record.get("settlement_status") or "earned"),
-                "payment_status": str(charge_record.get("status") or "charged"),
-                "direct_spend": True,
-            },
-        )
         # Capacity was reserved before the offer was sent, so acceptance only
         # confirms the session record.  Terminal success/failure releases the slot.
         market_record = self.server.worker_market_directory.get_worker(worker_id) or market_record
@@ -1729,6 +1750,14 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        except Exception as exc:
+            if getattr(exc, "code", None) != 1020:
+                raise
+            self._send_json(503, {
+                "ok": False, "error": "foundationdb_transaction_conflict",
+                "retryable": True, "hub_id": self.server.hub.hub_id,
+            })
+            return
         self._send_json(
             404,
             {

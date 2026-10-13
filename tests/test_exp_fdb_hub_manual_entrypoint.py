@@ -261,7 +261,11 @@ def test_exp_fdb_hub_uses_lightweight_scheduler_lab_docker_stack() -> None:
     dockerfile = (repo / "tools" / "scheduler_lab" / "Dockerfile.worker-lab").read_text(encoding="utf-8")
     dockerignore = (repo / "tools" / ".dockerignore").read_text(encoding="utf-8")
 
-    assert "context: ../../tools" in compose
+    assert "context: ../.." in compose
+    assert "dockerfile: tools/scheduler_lab/Dockerfile.worker-lab" in compose
+    assert "COPY tools/scheduler_lab /workspace/tools/scheduler_lab" in dockerfile
+    assert "COPY main_computer/hub_credit_indexer.py" in dockerfile
+    assert "COPY main_computer/multisession_key_signing.py" in dockerfile
     assert "worker-lab" in compose
     assert "LAB_OUTPUT_DIR_HOST" in compose
     assert "LAB_NODES" in compose
@@ -281,7 +285,7 @@ def test_exp_fdb_hub_uses_lightweight_scheduler_lab_docker_stack() -> None:
     assert "playwright" not in dockerfile.lower()
     assert "chromium" not in dockerfile.lower()
     assert "pip install" not in dockerfile.lower()
-    assert "!scheduler_lab/**" in dockerignore
+    assert "!scheduler_lab/**" in dockerignore  # retained historical tools-only ignore, not used by repo-root build
 
 
 def test_exp_fdb_hub_launcher_allows_worker_lab_to_derive_duration_and_forced_alive(tmp_path, monkeypatch, capsys) -> None:

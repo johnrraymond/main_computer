@@ -297,3 +297,105 @@ def test_same_request_cannot_be_charged_again_with_changed_session_or_worker() -
     assert len(stores[0].load()["payout_charges"]) == 1
     assert len(stores[0].load()["worker_earnings"]) == 1
     assert a.get_account("account-one")["available_credit_wei"] == "700000000000000000"
+
+
+def _reserve(ledger: StableHubPayoutLedgerDirectory, request: str, amount: str = "0.75") -> dict[str, Any]:
+    return ledger.create_hold(
+        account_id="account-one", wallet_address="0x" + "ab" * 20,
+        request_id=request, session_id="sess_" + request,
+        worker_id="worker-one", selected_price={"amount": amount, "unit": "credit"},
+        requester_max_price={"amount": "1", "unit": "credit"},
+    )
+
+
+def test_cross_hub_reservations_never_overspend_available_balance() -> None:
+    db, stores, a, c = _two_hubs()
+    a.fund_account(account_id="account-one", wallet_address="0x" + "ab" * 20, credits="1", replace=True)
+    db.force_collision()
+
+    def attempt(ledger: StableHubPayoutLedgerDirectory, request: str) -> Any:
+        try:
+            return _reserve(ledger, request)
+        except StableHubWorkerSessionError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(attempt, a, "one")
+        second = pool.submit(attempt, c, "two")
+        outcomes = [first.result(), second.result()]
+    assert db.conflicts >= 1
+    assert sum(isinstance(item, dict) for item in outcomes) == 1
+    assert outcomes.count("requester_funds_unavailable") == 1
+    assert a.get_account("account-one")["available_credit_wei"] == "250000000000000000"
+    assert a.get_account("account-one")["held_credit_wei"] == "750000000000000000"
+    assert len(stores[0].load()["payout_charges"]) == 0
+    assert len(stores[0].load()["worker_earnings"]) == 0
+
+
+def test_cross_hub_success_settlement_charges_one_reserved_request() -> None:
+    _, stores, a, c = _two_hubs()
+    a.fund_account(account_id="account-one", wallet_address="0x" + "ab" * 20, credits="1", replace=True)
+    hold = _reserve(a, "success")
+    assert _reserve(c, "success")["hold_id"] == hold["hold_id"]
+    assert a.get_account("account-one")["spent_credit_wei"] == "0"
+    assert not stores[0].load()["worker_earnings"]
+    kwargs = dict(account_id="account-one", wallet_address="0x" + "ab" * 20,
+                  request_id="success", session_id="sess_success", run_id="run_success",
+                  worker_id="worker-one", selected_price={"amount": "0.75", "unit": "credit"},
+                  requester_max_price={"amount": "1", "unit": "credit"},
+                  partition="ring-1", hold_id=hold["hold_id"], result={"ok": True})
+    first = c.spend_request_credit(**kwargs)
+    replay = a.spend_request_credit(**kwargs)
+    assert first["idempotent"] is False and replay["idempotent"] is True
+    assert c.get_hold_for_request(account_id="account-one", request_id="success")["status"] == "charged"
+    account = a.get_account("account-one")
+    assert account["available_credit_wei"] == "250000000000000000"
+    assert account["held_credit_wei"] == "0"
+    assert account["spent_credit_wei"] == "750000000000000000"
+    assert len(stores[0].load()["payout_charges"]) == len(stores[0].load()["worker_earnings"]) == 1
+    with pytest.raises(StableHubWorkerSessionError, match="already_charged"):
+        a.release_hold(hold_id=hold["hold_id"], session_id="sess_success")
+
+
+def test_cross_hub_worker_failure_releases_hold_without_earning() -> None:
+    _, stores, a, c = _two_hubs()
+    a.fund_account(account_id="account-one", wallet_address="0x" + "ab" * 20, credits="1", replace=True)
+    hold = _reserve(a, "failed")
+    released = c.release_hold(hold_id=hold["hold_id"], session_id="sess_failed")
+    assert released["status"] == "released"
+    assert a.release_hold(hold_id=hold["hold_id"], session_id="sess_failed") == released
+    assert a.get_account("account-one")["available_credit_wei"] == "1000000000000000000"
+    assert a.get_account("account-one")["held_credit_wei"] == "0"
+    assert a.get_account("account-one")["spent_credit_wei"] == "0"
+    assert not stores[1].load()["payout_charges"]
+    assert not stores[1].load()["worker_earnings"]
+    with pytest.raises(StableHubWorkerSessionError, match="already_finalized"):
+        _reserve(a, "failed")
+
+
+def test_pending_holds_are_visible_in_read_only_payout_status() -> None:
+    _, _, a, _ = _two_hubs()
+    a.fund_account(account_id="account-one", wallet_address="0x" + "ab" * 20, credits="1", replace=True)
+    _reserve(a, "pending", "0.6")
+    status = a.status()
+    assert status["totals"]["total_held_credit_wei"] == "600000000000000000"
+    assert status["totals"]["total_available_credit_wei"] == "400000000000000000"
+    assert any(hold.get("request_id") == "pending" and hold.get("status") == "held" for hold in status["holds"])
+
+
+def test_incomplete_charge_record_fails_closed_instead_of_debiting_again() -> None:
+    _, stores, a, c = _two_hubs()
+    a.fund_account(account_id="account-one", wallet_address="0x" + "ab" * 20, credits="1", replace=True)
+    _spend(a, "inconsistent", "0.3")
+    before = dict(a.get_account("account-one") or {})
+
+    def delete_earning() -> None:
+        data = stores[0].load()
+        data["worker_earnings"].clear()
+        stores[0].save(data)
+
+    stores[0].atomic(delete_earning)
+    with pytest.raises(StableHubWorkerSessionError, match="request_charge_earning_inconsistent"):
+        _spend(c, "inconsistent", "0.3")
+    assert a.get_account("account-one")["available_credit_wei"] == before["available_credit_wei"]
+    assert a.get_account("account-one")["spent_credit_wei"] == before["spent_credit_wei"]

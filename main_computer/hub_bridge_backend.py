@@ -263,6 +263,7 @@ class DevChainHubBridgeBackend:
         deployment_path: Path,
         contracts_path: Path | None = None,
         network_key: str = "dev",
+        rpc_url_override: str | None = None,
     ) -> "DevChainHubBridgeBackend":
         try:
             adapter = DevChainBridgeAdapter.from_deployment(
@@ -270,6 +271,7 @@ class DevChainHubBridgeBackend:
                 deployment_path=deployment_path,
                 contracts_path=contracts_path,
                 network_key=network_key,
+                rpc_url_override=rpc_url_override,
             )
         except DevChainBridgeError as exc:
             raise HubBridgeBackendError(str(exc)) from exc
@@ -357,6 +359,7 @@ def build_hub_bridge_backend(
                     deployment_path=deployment_path,
                     contracts_path=resolved_contracts_path,
                     network_key=network_key,
+                    rpc_url_override=chain_rpc_url,
                 )
             try:
                 return BridgeSignerHubBridgeBackend.from_signer_bundle(

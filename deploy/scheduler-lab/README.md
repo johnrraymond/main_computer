@@ -245,3 +245,27 @@ heartbeat pressure still run. That is expected for early container wiring.
 
 Use `REQUEST_MODE=registration_only` when you only want worker registration,
 heartbeat, and poll pressure without requester submissions.
+
+## 2026 Experimental P0/P1 integration (live-session-v1)
+
+The legacy instructions above describe the historical HTTP worker-pull lab.
+The Experimental Hub parity environment uses authenticated WebSockets and
+requires a different execution mode. The existing Compose `worker-lab` service
+and the original `serve_exp_fdb_hubs()` orchestrator are retained.
+
+Run from the repository root with Docker Desktop, FoundationDB and the
+persistent Temporal Docker service available:
+
+```powershell
+$env:MAIN_COMPUTER_EXP_TEMPORAL_ADDRESS = '127.0.0.1:7233'
+python -m tools.exp_hub_lab.run_lab --serve-exp-docker-lab `
+  --docker-workers 10 --docker-requesters 2 --docker-live-concurrency 2
+```
+
+The integrated mode uses a repo-root Docker build context to include the
+`main_computer` package imported by the scheduler code. `live_session_v1`
+shares the verified P1 client and strict MSK contract. This verifies a generated
+cohort of real client sessions in bounded P1 scenarios, **not** the historical
+continuous worker-poll timing simulator. No real-chain or P2-B settlement is
+performed. See `tools/exp_hub_lab/README.md` for authentication, network
+isolation, evidence files and P2-A Temporal checkpoint instructions.

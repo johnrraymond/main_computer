@@ -5,8 +5,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /workspace
 
-COPY __init__.py /workspace/tools/__init__.py
-COPY scheduler_lab /workspace/tools/scheduler_lab
+# The original tools-only build context omitted main_computer, so the lab could
+# not import its wallet/accounting helpers on a clean image. Copy only the
+# Python modules the worker lab actually imports; never bake runtime state,
+# credentials, FDB cluster files, or Hub server dependencies into this image.
+COPY tools/__init__.py /workspace/tools/__init__.py
+COPY tools/scheduler_lab /workspace/tools/scheduler_lab
+COPY tools/exp_hub_lab/__init__.py /workspace/tools/exp_hub_lab/__init__.py
+COPY tools/exp_hub_lab/run_lab.py /workspace/tools/exp_hub_lab/run_lab.py
+COPY main_computer/__init__.py /workspace/main_computer/__init__.py
+COPY main_computer/config.py /workspace/main_computer/config.py
+COPY main_computer/contract_config.py /workspace/main_computer/contract_config.py
+COPY main_computer/credit_units.py /workspace/main_computer/credit_units.py
+COPY main_computer/hub_credit_models.py /workspace/main_computer/hub_credit_models.py
+COPY main_computer/hub_credit_ledger.py /workspace/main_computer/hub_credit_ledger.py
+COPY main_computer/hub_credit_indexer.py /workspace/main_computer/hub_credit_indexer.py
+COPY main_computer/multisession_key_signing.py /workspace/main_computer/multisession_key_signing.py
 
 RUN mkdir -p /lab-output && chmod 777 /lab-output
 

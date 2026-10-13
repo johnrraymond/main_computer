@@ -897,6 +897,27 @@ class ExperimentalFoundationDbRequestStateStore(_StateComponent):
 
         return HubRequestRecord.from_dict(_tx(self.db))
 
+    def claim_live_request(self, record: HubRequestRecord) -> tuple[HubRequestRecord, bool]:
+        """Atomically claim one idempotency identity for direct live execution.
+
+        FDB's read/write conflict handling serializes concurrent submissions from
+        different owner processes. Unlike create(), a retry cannot replace an
+        existing lifecycle record or clear its committed charge/hold fields.
+        """
+        incoming = record.as_dict()
+        request_id = incoming["request_id"]
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> tuple[dict[str, Any], bool]:
+            existing = self._read_record_payload(tr, request_id)
+            if isinstance(existing, dict):
+                return existing, False
+            self._write_record_payload(tr, incoming)
+            return incoming, True
+
+        payload, claimed = _tx(self.db)
+        return HubRequestRecord.from_dict(payload), claimed
+
     def get(self, request_id: str) -> HubRequestRecord | None:
         clean = str(request_id or "").strip()
         if not clean:

@@ -1663,54 +1663,68 @@ def check_cluster(
     topology_path: str | Path = DEFAULT_TOPOLOGY,
     timeout: float = 10.0,
 ) -> dict[str, Any]:
+    """Verify each concrete Hub, giving each its own readiness window.
+
+    Starting all children concurrently does not mean they finish initialization
+    concurrently. A single deadline for the whole sequential check can expire
+    while the first Hub is being verified, without ever probing the last Hub.
+    """
     topology = load_stable_hub_topology(topology_path)
-    deadline = time.monotonic() + timeout
     checks: list[dict[str, Any]] = []
     for hub in topology.hubs:
+        deadline = time.monotonic() + max(0.0, float(timeout))
         last_error = ""
         identity: dict[str, Any] | None = None
         health: dict[str, Any] | None = None
         while time.monotonic() < deadline:
+            request_url = f"{hub.hub_url.rstrip('/')}/health"
             try:
-                health = _read_json_url(f"{hub.hub_url.rstrip('/')}/health", timeout=1.0)
-                identity = _read_json_url(
-                    f"{hub.hub_url.rstrip('/')}/api/hub/v1/hub-identity",
-                    timeout=1.0,
-                )
-                if health.get("ok") is True and identity.get("hub_id") == hub.hub_id:
+                health = _read_json_url(request_url, timeout=1.0)
+                request_url = f"{hub.hub_url.rstrip('/')}/api/hub/v1/hub-identity"
+                identity = _read_json_url(request_url, timeout=1.0)
+                if (health.get("ok") is True
+                    and health.get("service") == "main_computer.stable_hub"
+                    and identity.get("service") == "main_computer.stable_hub"
+                    and identity.get("hub_id") == hub.hub_id
+                    and identity.get("cluster_id") == topology.cluster_id):
                     break
-                last_error = f"unexpected identity/health payload for {hub.hub_id}"
+                last_error = (
+                    f"GET {request_url}: unexpected stable Hub identity/health "
+                    f"(service={identity.get('service')!r}, hub_id={identity.get('hub_id')!r}, "
+                    f"cluster_id={identity.get('cluster_id')!r})"
+                )
+            except HTTPError as exc:
+                # An HTTP 404 can be an unexpected service or an incorrect route.
+                # Include the precise route and a bounded response for diagnosis.
+                response = exc.read(256).decode("utf-8", errors="replace").replace("\n", " ")
+                last_error = f"GET {request_url}: HTTP {exc.code} {response}"
             except (OSError, URLError, TimeoutError, json.JSONDecodeError, StableHubTopologyError) as exc:
-                last_error = str(exc)
-            time.sleep(0.1)
+                last_error = f"GET {request_url}: {type(exc).__name__}: {exc}"
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(0.1, remaining))
         else:
-            checks.append(
-                {
-                    "ok": False,
-                    "hub_id": hub.hub_id,
-                    "hub_url": hub.hub_url,
-                    "error": last_error or "timed out waiting for stable Hub",
-                }
-            )
+            checks.append({
+                "ok": False,
+                "hub_id": hub.hub_id,
+                "hub_url": hub.hub_url,
+                "error": last_error or "timed out waiting for stable Hub",
+            })
             continue
 
         assert identity is not None
-        assert health is not None
-        checks.append(
-            {
-                "ok": True,
-                "hub_id": hub.hub_id,
-                "hub_url": hub.hub_url,
-                "cluster_id": identity.get("cluster_id"),
-                "storage_namespace": (identity.get("storage") or {}).get("namespace"),
-                "auth": (identity.get("contract") or {}).get("auth"),
-                "worker_connection": (identity.get("contract") or {}).get("worker_connection"),
-            }
-        )
+        checks.append({
+            "ok": True,
+            "hub_id": hub.hub_id,
+            "hub_url": hub.hub_url,
+            "cluster_id": identity.get("cluster_id"),
+            "storage_namespace": (identity.get("storage") or {}).get("namespace"),
+            "auth": (identity.get("contract") or {}).get("auth"),
+            "worker_connection": (identity.get("contract") or {}).get("worker_connection"),
+        })
 
-    ok = all(bool(item.get("ok")) for item in checks)
     return {
-        "ok": ok,
+        "ok": all(bool(item.get("ok")) for item in checks),
         "mode": "check-cluster",
         "topology_path": str(topology_path),
         "cluster_id": topology.cluster_id,

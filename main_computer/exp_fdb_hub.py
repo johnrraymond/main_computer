@@ -54,7 +54,11 @@ from main_computer.hub import (
     HubServerHandler,
 )
 from main_computer.stable_hub import LiveWorkerSession, stable_hub_contract
+from main_computer.stable_hub_temporal import (
+    StableHubTemporalRuntime, TemporalLifecycleUnavailable,
+)
 from main_computer.hub_plex_models import HubAIRequest, HubRequestStatus, chat_response_from_payload
+from main_computer.hub_credit_models import make_report_token
 from main_computer.hub_plex_service import idempotent_request_id, stable_request_id
 from main_computer.runtime_env_file import apply_runtime_env_file
 from main_computer.stable_hub_topology import (
@@ -77,6 +81,7 @@ from main_computer.stable_hub_worker_sessions import (
     normalize_request_market_constraints,
     normalize_session_id,
     normalize_worker_market_profile,
+    stable_temporal_namespace_for_topology,
     stable_partition_key_for_work,
     stable_task_queue_for_partition,
 )
@@ -88,6 +93,9 @@ from main_computer.hub_credit_indexer import HubCreditIndexer
 DEFAULT_EXP_FDB_HUB_PORT = DEFAULT_HUB_PORT + 100
 DEFAULT_EXP_LIVE_SESSION_LOCAL_AI_TIMEOUT_SECONDS = 300.0
 DEFAULT_EXP_FDB_NAMESPACE = "main-computer-exp-fdb"
+# Opt-in independently of Stable. Never enable Temporal in Experimental merely
+# because the Stable Hub has an address configured.
+EXP_TEMPORAL_ADDRESS_ENV = "MAIN_COMPUTER_EXP_TEMPORAL_ADDRESS"
 DEFAULT_EXP_FDB_CLUSTER_FILE = Path(".foundationdb") / "docker.cluster"
 DEFAULT_EXP_FDB_HUB_ROOT = Path("runtime") / "exp-fdb-hub"
 DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR = Path("runtime") / "scheduler-lab" / "exp-fdb"
@@ -736,25 +744,60 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         worker_instance_id: str,
         selected_worker: dict[str, Any],
     ) -> Any:
-        existing = self.server.dispatcher.plex_service._idempotent_record(request)
-        if existing is not None:
-            return existing
         normalized = request.as_payload()
         request_id = (
             idempotent_request_id(request.client_node_id, request.idempotency_key)
             if request.idempotency_key
             else stable_request_id(normalized)
         )
-        record = self.server.dispatcher.plex_service._create_record(
+        plex = self.server.dispatcher.plex_service
+        store = self._exp_request_store()
+        existing = store.get(request_id)
+        if existing is not None:
+            return existing, False
+        # Use the same Stable request schema, but never overwrite a previously
+        # claimed record while a different HTTP handler is still in-flight.
+        from main_computer.hub_plex_models import HubRequestRecord
+        from main_computer.hub_plex_service import utc_now
+        now = utc_now()
+        record = HubRequestRecord(
             request_id=request_id,
-            request=request,
+            client_node_id=request.client_node_id,
+            model=str(request.model or ""),
+            state="dispatching",
+            created_at=now,
+            updated_at=now,
             security_mode="exp-live-session-direct-v1",
             hub_blind=False,
-            initial_state="dispatching",
-            initial_event_type="exp_live_session.selected",
+            events=[{"type": "exp_live_session.selected", "state": "dispatching", "created_at": now}],
+            idempotency_key=str(request.idempotency_key or "").strip(),
+            deadline_at=plex._deadline_at(request),
+            max_retries=plex._max_retries(request),
+            requested_worker_node_id=str(request.requested_worker_node_id or ""),
+            account_id=request.account_id,
+            max_credits=max(0, int(request.max_credits or 0)),
+            request_payload=normalized,
         )
-        self.server.dispatcher.plex_service._prepare_paid_request_spend(record, request)
-        return self._exp_request_store().update(
+        if callable(getattr(store, "claim_live_request", None)):
+            record, claimed = store.claim_live_request(record)
+        else:
+            # In-memory smoke runtimes keep their prior store interface.
+            # They do not establish cross-process FDB retry safety.
+            record = plex._create_record(
+                request_id=request_id, request=request,
+                security_mode="exp-live-session-direct-v1", hub_blind=False,
+                initial_state="dispatching", initial_event_type="exp_live_session.selected",
+            )
+            claimed = True
+        if not claimed:
+            return record, False
+        try:
+            plex._prepare_paid_request_spend(record, request)
+        except Exception:
+            store.update(request_id, state="failed", terminal_reason="credit_spend_prepare_failed",
+                         event_type="request.failed")
+            raise
+        updated = self._exp_request_store().update(
             request_id,
             state="dispatching",
             selected_worker_node_id=worker_id,
@@ -768,29 +811,113 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 "legacy_worker_pull_lease": False,
             },
         )
+        return updated, True
+
+    def _exp_reserve_live_session_credit(
+        self, *, request_id: str, selected_worker: dict[str, Any],
+    ) -> dict[str, Any]:
+        record = self._exp_request_store().get(request_id)
+        if record is None or not str(record.account_id or ""):
+            raise StableHubWorkerSessionError("Paid live-session request account is missing.")
+        credit_wei = self._exp_live_session_selected_credit_wei(selected_worker)
+        reserved = self.server.credit_ledger.create_hold_credit_wei(
+            account_id=record.account_id, request_id=request_id, credit_wei=credit_wei,
+            memo=f"reserve experimental work {request_id}",
+            metadata={"execution_mode": "exp-live-session-direct-v1"},
+        )
+        hold = dict(reserved["hold"])
+        self._exp_request_store().update(
+            request_id, hold_id=hold["hold_id"], event_type="payment.hold.created",
+            event={"hold_id": hold["hold_id"], "credit_wei": str(credit_wei), "status": hold["status"]},
+        )
+        return reserved
+
+    def _exp_release_live_session_credit(
+        self, *, request_id: str, reason: str,
+    ) -> dict[str, Any]:
+        record = self._exp_request_store().get(request_id)
+        if record is None:
+            raise StableHubWorkerSessionError("live-session request record does not exist.")
+        hold_id = str(getattr(record, "hold_id", "") or "")
+        if not hold_id:
+            return {}
+        released = self.server.credit_ledger.release_hold(hold_id=hold_id, reason=reason)
+        hold = dict(released.get("hold") or {})
+        account = dict(released.get("account") or {})
+        receipt = {
+            "request_id": request_id,
+            "account_id": record.account_id,
+            "hold_id": hold_id,
+            "status": "released",
+            "charge_id": "",
+            "worker_earning_id": "",
+            "charged_credits": 0,
+            "charged_credit_wei": "0",
+            "released_credits": int(hold.get("credits") or 0),
+            "released_credit_wei": str(hold.get("credit_wei") or "0"),
+            "account_available_credit_wei_after": str(account.get("available_credit_wei") or "0"),
+            "account_held_credit_wei_after": str(account.get("held_credit_wei") or "0"),
+        }
+        self._exp_request_store().update(
+            request_id, released_credits=receipt["released_credits"],
+            receipt=receipt, event_type="payment.hold.released", event=receipt,
+        )
+        return receipt
 
     def _exp_spend_live_session_credit(
-        self,
-        *,
-        request_id: str,
-        worker_id: str,
-        selected_worker: dict[str, Any],
-        result: dict[str, Any] | None = None,
+        self, *, request_id: str, worker_id: str,
+        selected_worker: dict[str, Any], result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Settle only successful work against this request's reserved credit."""
         record = self._exp_request_store().get(request_id)
         if record is None:
             raise StableHubWorkerSessionError("live-session request record does not exist.")
         if getattr(record, "charge_id", ""):
             return dict(getattr(record, "receipt", {}) or {})
+        hold_id = str(getattr(record, "hold_id", "") or "")
+        if not hold_id:
+            raise StableHubWorkerSessionError("Cannot settle live work without a credit hold.")
         credit_wei = self._exp_live_session_selected_credit_wei(selected_worker)
-        credit_units = self._exp_live_session_selected_credit_units(selected_worker)
-        receipt = self.server.dispatcher.plex_service._spend_paid_request_credit(
-            record=record,
-            worker_node_id=worker_id,
-            worker_credits=credit_units,
-            worker_credit_wei=credit_wei,
+        charged = self.server.credit_ledger.charge_hold_credit_wei(
+            hold_id=hold_id, charged_credit_wei=credit_wei, worker_node_id=worker_id,
+            memo=f"completed experimental work {request_id}",
+            metadata={"execution_mode": "exp-live-session-direct-v1"},
         )
-        return dict(receipt or {})
+        charge = dict(charged.get("charge") or {})
+        earning = dict(charged.get("worker_earning") or {})
+        account = dict(charged.get("account") or {})
+        receipt = {
+            "request_id": request_id,
+            "account_id": record.account_id,
+            "hold_id": hold_id,
+            "charge_id": str(charge.get("charge_id") or ""),
+            "charged_credits": int(charge.get("charged_credits") or 0),
+            "charged_credit_wei": str(charge.get("charged_credit_wei") or credit_wei),
+            "charged_credits_display": credit_wei_to_decimal_text(charge.get("charged_credit_wei") or credit_wei),
+            "released_credits": int(charge.get("released_credits") or 0),
+            "released_credit_wei": str(charge.get("released_credit_wei") or "0"),
+            "worker_earning_id": str(earning.get("earning_id") or ""),
+            "worker_commitment": str(earning.get("worker_commitment") or ""),
+            "unit": "compute_credit",
+            "direct_spend": False,
+            "credit_spend_mode": "hold_then_charge_on_success",
+            "account_available_credit_wei_after": str(account.get("available_credit_wei") or "0"),
+            "account_held_credit_wei_after": str(account.get("held_credit_wei") or "0"),
+        }
+        if receipt["worker_commitment"]:
+            receipt["report_token"] = make_report_token(
+                hub_secret=self.server.dispatcher.plex_service._feedback_secret(),
+                account_id=str(record.account_id), request_id=request_id,
+                worker_commitment=receipt["worker_commitment"],
+            )
+        self._exp_request_store().update(
+            request_id, hold_id=hold_id, charge_id=receipt["charge_id"],
+            charged_credits=receipt["charged_credits"],
+            released_credits=receipt["released_credits"],
+            worker_earning_id=receipt["worker_earning_id"], receipt=receipt,
+            event_type="payment.hold.charged", event=receipt,
+        )
+        return receipt
 
     def _exp_mark_live_session_request_running(
         self,
@@ -916,6 +1043,10 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         error: str,
         terminal_reason: str,
     ) -> dict[str, Any]:
+        existing = self._exp_request_store().get(request_id)
+        if existing is not None and str(existing.state or "") in {"completed", "failed", "cancelled", "expired"}:
+            return HubRequestStatus.from_record(existing, polling_url=f"/api/hub/v1/requests/{request_id}").as_dict()
+        receipt = self._exp_release_live_session_credit(request_id=request_id, reason=terminal_reason)
         record = self._exp_request_store().update(
             request_id,
             state="failed",
@@ -923,6 +1054,8 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             selected_worker_instance_id=worker_instance_id,
             error=str(error or terminal_reason),
             terminal_reason=str(terminal_reason or "worker_failed"),
+            released_credits=int(receipt.get("released_credits") or 0),
+            receipt=receipt,
             event_type="request.failed",
             event={
                 "worker_node_id": worker_id,
@@ -971,7 +1104,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             payout.update(
                 {
                     "status": "failed",
-                    "direct_spend": True,
+                    "direct_spend": False,
                     "legacy_worker_pull_lease": False,
                     "release_reason": str(terminal_reason or "worker_connection_lost"),
                 }
@@ -985,7 +1118,15 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                     terminal_reason=terminal_reason,
                 )
             except Exception:
-                request_status = {}
+                # Keep the session open rather than claiming failure with funds still held.
+                continue
+            failed_record = self._exp_request_store().get(request_id)
+            release_receipt = dict(getattr(failed_record, "receipt", {}) or {})
+            payout["hold_id"] = str(release_receipt.get("hold_id") or payout.get("hold_id") or "")
+            payout["charged_credits"] = 0
+            payout["charged_credit_wei"] = "0"
+            payout["released_credits"] = int(release_receipt.get("released_credits") or 0)
+            payout["released_credit_wei"] = str(release_receipt.get("released_credit_wei") or "0")
             try:
                 updated = self.server.exp_accepted_work_session_directory.record_failed(
                     session_id=session_id,
@@ -1236,13 +1377,107 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         return candidates[0]
 
     def _exp_select_worker_for_work(self, body: dict[str, Any]) -> dict[str, Any] | None:
-        # Requester routing is intentionally socket-only.  Durable/stale worker id
-        # rows are not a fallback and cannot make a worker selectable.
-        return self._exp_select_local_live_worker_for_work(body)
+        """Use Stable Hub's shared market, but require a matching live owner lease.
 
+        A durable market row alone never authorizes handoff: the independent
+        worker-owner record must still name exactly that connection and epoch.
+        The owning Hub additionally verifies its actual live WebSocket below.
+        """
+        selected = self.server.stable_worker_market_directory.select_worker_for_work(body)
+        if selected is None:
+            return None
+        worker_id = str(selected.get("worker_id") or "")
+        owner = self.server.stable_worker_session_directory.get_owner(worker_id) if worker_id else None
+        if not isinstance(owner, dict) or owner.get("status") != "live":
+            return None
+        try:
+            expected_hub = self.server.stable_topology.hub_by_id(str(owner.get("owner_hub_id") or ""))
+        except (KeyError, ValueError, StableHubWorkerSessionError):
+            return None
+        if str(expected_hub.hub_url or "") != str(owner.get("owner_hub_url") or ""):
+            return None
+        if (
+            str(owner.get("owner_hub_id") or "") != str(selected.get("owner_hub_id") or "")
+            or str(owner.get("owner_hub_url") or "") != str(selected.get("owner_hub_url") or "")
+            or str(owner.get("connection_id") or "") != str(selected.get("connection_id") or "")
+            or int(owner.get("lease_epoch") or 0) != int(selected.get("lease_epoch") or 0)
+        ):
+            return None
+        return selected
+
+
+    def _exp_replayed_live_request(self, body: dict[str, Any]) -> bool:
+        """Reply from the durable accepted session, without a new paid execution.
+
+        Authenticate before revealing even that a request id exists. An in-flight
+        claim without a session gets a retryable conflict, never another offer.
+        """
+        payload = dict(body)
+        request_token = str(payload.get("idempotency_key") or payload.get("request_id") or "").strip()
+        if not request_token:
+            return False
+        metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), dict) else {}
+        payload, metadata = self._apply_request_multisession_authorization(
+            body=payload, metadata=metadata,
+            required=bool(getattr(self.server.config, "hub_require_multisession_auth", False)),
+        )
+        from main_computer.hub_plex_models import clean_node_id
+        account = clean_node_id(str(payload.get("account_id") or ""), default="")
+        client = str(payload.get("client_node_id") or "exp-live-requester")
+        old = self._exp_request_store().find_by_idempotency_key(
+            client_node_id=client, idempotency_key=request_token,
+        )
+        if old is None:
+            return False
+        if str(old.account_id or "") != account:
+            raise HubCreditAuthorizationError("idempotency_requester_account_mismatch")
+        previous = dict(old.request_payload or {})
+        # Never return another request's result when a caller reused its token
+        # with different paid work. Compare the execution-defining inputs.
+        if "messages" in body:
+            from main_computer.hub_plex_models import chat_message_to_payload
+            clean_messages = [chat_message_to_payload(item) for item in body["messages"]
+                              if isinstance(item, dict)]
+            if clean_messages != previous.get("messages"):
+                raise StableHubWorkerSessionError("idempotency_request_payload_mismatch")
+        accepted = self.server.exp_accepted_work_session_directory.get_session_for_request(
+            requester_account_id=account, request_id=old.request_id,
+        )
+        if accepted is not None:
+            original_body = (accepted.get("work") or {}).get("request") or {}
+            for field in ("input", "ring", "capabilities", "required_capabilities",
+                          "max_credits", "max_price_credits", "model", "execution_limits",
+                          "requested_worker_node_id", "worker_node_id"):
+                if body.get(field) != original_body.get(field):
+                    raise StableHubWorkerSessionError("idempotency_request_payload_mismatch")
+        if accepted is None:
+            self._send_json({"ok": False, "error": "request_in_progress",
+                             "request_id": old.request_id, "retryable": True},
+                            status=HTTPStatus.CONFLICT)
+            return True
+        owner_url = str(accepted.get("owner_hub_url") or "").rstrip("/")
+        owner_id = str(accepted.get("owner_hub_id") or "")
+        response = self._exp_live_session_response(
+            accepted_session=accepted,
+            request_status=HubRequestStatus.from_record(
+                old, polling_url=f"/api/hub/v1/requests/{old.request_id}",
+            ).as_dict(), idempotent=True,
+        )
+        response["execution_hub"] = {"hub_id": owner_id, "hub_url": owner_url,
+                                     "local_owner": owner_id == self.server.stable_hub_node.hub_id,
+                                     "handoff": owner_id != self.server.stable_hub_node.hub_id}
+        response["worker_hub"] = dict(response["execution_hub"])
+        response["continuation_url"] = exp_work_session_continuation_url(owner_url, str(accepted["session_id"]))
+        response["continuation"]["hub_id"] = owner_id
+        response["continuation"]["hub_url"] = owner_url
+        response["hub_to_hub_handoff"] = owner_id != self.server.stable_hub_node.hub_id
+        self._send_json(response)
+        return True
 
     def _handle_exp_live_work_request(self) -> None:
         body = self._read_json()
+        if self._exp_replayed_live_request(body):
+            return
         selected_worker = self._exp_select_worker_for_work(body)
         if selected_worker is None:
             self._send_json(
@@ -1360,8 +1595,29 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             )
             return
         connection_id = str(selected_worker.get("connection_id") or "")
+        # Revalidate ownership at the actual socket boundary, including the lease
+        # epoch. A worker moved between Hubs must never receive an old offer.
+        current_owner = self.server.stable_worker_session_directory.get_owner(
+            str(selected_worker.get("worker_id") or "")
+        )
+        if (
+            not isinstance(current_owner, dict)
+            or current_owner.get("status") != "live"
+            or str(current_owner.get("owner_hub_id") or "") != self.server.stable_hub_node.hub_id
+            or str(current_owner.get("connection_id") or "") != connection_id
+            or int(current_owner.get("lease_epoch") or 0) != int(selected_worker.get("lease_epoch") or 0)
+        ):
+            self._send_json(
+                {"ok": False, "error": "worker_owner_changed", "hub_id": self.server.stable_hub_node.hub_id},
+                status=HTTPStatus.CONFLICT,
+            )
+            return
         live_session = self.server.get_live_worker_session(connection_id)
-        if live_session is None or not live_session.is_live:
+        if (
+            live_session is None
+            or not live_session.is_live
+            or str(live_session.worker_id or "") != str(selected_worker.get("worker_id") or "")
+        ):
             try:
                 self.server.stable_worker_market_directory.record_worker_closed(
                     worker_id=str(selected_worker.get("worker_id") or ""),
@@ -1381,6 +1637,21 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             )
             return
 
+        # P2-A: Fail closed on *new* paid work when configured Temporal is
+        # unavailable. Replays and remote routing remain above this boundary;
+        # only the owner Hub may create an acceptance/hold/worker offer.
+        runtime = getattr(self.server, "temporal_runtime", None)
+        if runtime is not None:
+            try:
+                runtime.require_ready()
+            except TemporalLifecycleUnavailable as exc:
+                self._send_json(
+                    {"ok": False, "error": "temporal_unavailable", "message": str(exc),
+                     "hub_id": self.server.stable_hub_node.hub_id},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+
         request_payload = self._exp_request_body_for_live_session(body, selected_worker=selected_worker)
         request = HubAIRequest.from_payload(
             request_payload,
@@ -1393,7 +1664,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         worker_instance_id = self._exp_worker_instance_id_for_connection(worker_id, connection_id)
 
         try:
-            record = self._exp_create_live_session_request_record(
+            record, claimed = self._exp_create_live_session_request_record(
                 request=request,
                 request_payload=request_payload,
                 worker_id=worker_id,
@@ -1413,6 +1684,14 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             return
 
         request_id = str(record.request_id or "")
+        if not claimed:
+            # Race loser: the transaction owner will publish the accepted session.
+            # This HTTP request must not issue an offer or reserve a second hold.
+            if not self._exp_replayed_live_request(body):
+                self._send_json({"ok": False, "error": "request_in_progress",
+                                 "request_id": request_id, "retryable": True},
+                                status=HTTPStatus.CONFLICT)
+            return
 
         session_id = new_session_id()
         run_id = new_run_id()
@@ -1629,34 +1908,67 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             "worker_earning_id": "",
             "unit": "compute_credit",
             "status": "pending_worker_acceptance",
-            "direct_spend": True,
+            "direct_spend": False,
             "legacy_worker_pull_lease": False,
         }
-        accepted = self.server.exp_accepted_work_session_directory.record_accepted(
-            session_id=session_id,
-            run_id=run_id,
-            request_id=request_id,
-            requester_msk_id=str(metadata.get("multisession_key_id") or ""),
-            requester_account_id=str(request.account_id or ""),
-            requester_wallet_address=str(metadata.get("wallet_address") or ""),
-            worker_id=worker_id,
-            worker_connection_id=connection_id,
-            owner_hub_id=self.server.stable_hub_node.hub_id,
-            owner_hub_url=self.server.stable_hub_node.hub_url,
-            partition=partition,
-            task_queue=task_queue,
-            work={
-                "request": body,
-                "exp_request_payload": request_payload,
-                "worker_instance_id": worker_instance_id,
-                "selected_worker": dict(selected_worker),
-                "direct_live_session": True,
-                "legacy_worker_pull_lease": False,
-            },
-            worker_acceptance={"status": "pending", "reason": "offer_sent"},
-            payout=payout,
-        )
+        try:
+            reservation = self._exp_reserve_live_session_credit(
+                request_id=request_id, selected_worker=dict(selected_worker),
+            )
+        except Exception as exc:
+            self._send_json(
+                {"ok": False, "error": "credit_hold_failed", "message": str(exc),
+                 "request_id": request_id, "hub_id": self.server.stable_hub_node.hub_id},
+                status=HTTPStatus.PAYMENT_REQUIRED,
+            )
+            return
+        payout["hold_id"] = str(reservation["hold"]["hold_id"])
+        payout["status"] = "held"
+        try:
+            accepted = self.server.exp_accepted_work_session_directory.record_accepted(
+                session_id=session_id,
+                run_id=run_id,
+                request_id=request_id,
+                requester_msk_id=str(metadata.get("multisession_key_id") or ""),
+                requester_account_id=str(request.account_id or ""),
+                requester_wallet_address=str(metadata.get("wallet_address") or ""),
+                worker_id=worker_id,
+                worker_connection_id=connection_id,
+                owner_hub_id=self.server.stable_hub_node.hub_id,
+                owner_hub_url=self.server.stable_hub_node.hub_url,
+                partition=partition,
+                task_queue=task_queue,
+                work={
+                    "request": body,
+                    "exp_request_payload": request_payload,
+                    "worker_instance_id": worker_instance_id,
+                    "selected_worker": dict(selected_worker),
+                    "direct_live_session": True,
+                    "legacy_worker_pull_lease": False,
+                },
+                worker_acceptance={"status": "pending", "reason": "offer_sent"},
+                payout=payout,
+                temporal_intent=getattr(self.server, "temporal_runtime", None) is not None,
+            )
+        except Exception as exc:
+            try:
+                self._exp_fail_live_session_request(
+                    request_id=request_id, worker_id=worker_id,
+                    worker_instance_id=worker_instance_id,
+                    error=str(exc), terminal_reason="accepted_session_record_failed",
+                )
+            except Exception:
+                pass
+            self._send_json(
+                {"ok": False, "error": "accepted_session_record_failed", "message": str(exc),
+                 "request_id": request_id, "hub_id": self.server.stable_hub_node.hub_id},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
 
+        if str(accepted.get("session_id") or "") != session_id:
+            self._send_json(self._exp_live_session_response(accepted_session=accepted, idempotent=True))
+            return
         try:
             acceptance = live_session.offer_work_and_wait_for_acceptance(
                 offer,
@@ -1697,11 +2009,6 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             )
             return
 
-        receipt = self._exp_spend_live_session_credit(
-            request_id=request_id,
-            worker_id=worker_id,
-            selected_worker=dict(selected_worker),
-        )
         request_status = self._exp_mark_live_session_request_running(
             request_id=request_id,
             session_id=session_id,
@@ -1711,19 +2018,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             worker_acceptance=dict(acceptance),
         )
         accepted = self.server.exp_accepted_work_session_directory.get_session(session_id) or accepted
-        if str(accepted.get("status") or "") not in {"succeeded", "failed", "cancelled"}:
-            payout = dict(accepted.get("payout") or payout)
-            payout.update(
-                {
-                    "status": "charged",
-                    "charge_id": str(receipt.get("charge_id") or ""),
-                    "worker_earning_id": str(receipt.get("worker_earning_id") or ""),
-                    "charged_credits": int(receipt.get("charged_credits") or 0),
-                    "charged_credit_wei": str(receipt.get("charged_credit_wei") or selected_credit_wei),
-                    "direct_spend": True,
-                    "legacy_worker_pull_lease": False,
-                }
-            )
+        # Worker acceptance never spends a hold. Terminal message owns settlement.
         self._send_json(self._exp_live_session_response(accepted_session=accepted, request_status=request_status))
 
     def _handle_exp_worker_delta_message(
@@ -1863,7 +2158,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                     "charged_credit_wei": str(receipt.get("charged_credit_wei") or ""),
                     "released_credits": 0,
                     "released_credit_wei": "0",
-                    "direct_spend": True,
+                    "direct_spend": False,
                     "legacy_worker_pull_lease": False,
                 }
             )
@@ -1888,12 +2183,6 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         if message_type == "worker.work.failed":
             error = message.get("error")
             error_text = str(error.get("error") if isinstance(error, dict) else error or message.get("message") or "worker_failed")
-            receipt = self._exp_spend_live_session_credit(
-                request_id=request_id,
-                worker_id=worker_id,
-                selected_worker=selected_worker,
-                result={"status": "failed", "error": error_text},
-            )
             request_status = self._exp_fail_live_session_request(
                 request_id=request_id,
                 worker_id=worker_id,
@@ -1901,6 +2190,8 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 error=error_text,
                 terminal_reason="worker_result_failed",
             )
+            failed_record = self._exp_request_store().get(request_id)
+            receipt = dict(getattr(failed_record, "receipt", {}) or {})
             payout = dict(accepted.get("payout") or {})
             payout.update(
                 {
@@ -1909,9 +2200,9 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                     "worker_earning_id": str(receipt.get("worker_earning_id") or ""),
                     "charged_credits": int(receipt.get("charged_credits") or 0),
                     "charged_credit_wei": str(receipt.get("charged_credit_wei") or ""),
-                    "released_credits": 0,
-                    "released_credit_wei": "0",
-                    "direct_spend": True,
+                    "released_credits": int(receipt.get("released_credits") or 0),
+                    "released_credit_wei": str(receipt.get("released_credit_wei") or "0"),
+                    "direct_spend": False,
                     "legacy_worker_pull_lease": False,
                     "release_reason": "worker_failed",
                 }
@@ -2109,14 +2400,26 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             connection_id = new_connection_id()
             worker_id = _exp_internal_settlement_route_key(authorization, connection_id=connection_id)
             market = self._market_profile_from_auth(auth_message)
-            owner = {
-                "status": "live",
-                "owner_hub_id": self.server.stable_hub_node.hub_id,
-                "owner_hub_url": self.server.stable_hub_node.hub_url,
-                "connection_id": connection_id,
-                "connected_at": datetime.now(timezone.utc).isoformat(),
-                "lease_epoch": 0,
-            }
+            # The same owner/market directories as production Stable Hub are
+            # authoritative for discovery, migration, and lease fencing.
+            worker_key_id = str(authorization.get("multisession_key_id") or authorization.get("key_id") or "")
+            worker_wallet = str(authorization.get("wallet_address") or "")
+            worker_account = str(authorization.get("account_id") or "")
+            owner = self.server.stable_worker_session_directory.record_connected(
+                worker_id=worker_id,
+                connection_id=connection_id,
+                multisession_key_id=worker_key_id,
+                wallet_address=worker_wallet,
+                account_id=worker_account,
+            )
+            self.server.stable_worker_market_directory.record_worker_live(
+                worker_id=worker_id,
+                owner=owner,
+                market_profile=market,
+                worker_msk_id=worker_key_id,
+                worker_wallet_address=worker_wallet,
+                worker_account_id=worker_account,
+            )
             session = LiveWorkerSession(
                 worker_id=worker_id,
                 connection_id=connection_id,
@@ -2177,6 +2480,9 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                             }
                         )
                         continue
+                    self.server.stable_worker_session_directory.record_pong(
+                        worker_id=worker_id, connection_id=connection_id,
+                    )
                     session.record_pong({"last_pong_at": datetime.now(timezone.utc).isoformat()})
                     session.send_json(
                         {
@@ -2284,16 +2590,41 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                     error=f"worker live-session connection {connection_id} closed before returning a terminal result",
                     terminal_reason="worker_connection_closed",
                 )
-                removed = self.server.remove_live_worker_session(connection_id)
-                if removed is not None:
-                    removed.mark_closed(
-                        reason="socket_closed",
-                        closed_at=datetime.now(timezone.utc).isoformat(),
+                try:
+                    self.server.stable_worker_session_directory.record_closed(
+                        worker_id=worker_id, connection_id=connection_id,
                     )
+                finally:
+                    try:
+                        self.server.stable_worker_market_directory.record_worker_closed(
+                            worker_id=worker_id, connection_id=connection_id,
+                        )
+                    finally:
+                        removed = self.server.remove_live_worker_session(connection_id)
+                        if removed is not None:
+                            removed.mark_closed(
+                                reason="socket_closed",
+                                closed_at=datetime.now(timezone.utc).isoformat(),
+                            )
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/health":
+            runtime = getattr(self.server, "temporal_runtime", None)
+            ready = runtime is None or runtime.is_ready
+            self._send_json({
+                "ok": ready, "service": "main_computer.exp_fdb_hub",
+                "hub_id": self.server.stable_hub_node.hub_id,
+                "cluster_id": self.server.stable_topology.cluster_id,
+                "temporal": {
+                    "configured": runtime is not None,
+                    "ready": bool(runtime.is_ready) if runtime is not None else False,
+                    "mode": "durable_lifecycle_observation_no_worker_reexecution",
+                    "namespace": runtime.namespace if runtime is not None else "",
+                },
+            }, status=HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE)
+            return
         if path == "/api/hub/v1/workers/live-session":
             self._handle_worker_live_session_websocket()
             return
@@ -2404,6 +2735,16 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
             hub_id=self.stable_hub_node.hub_id,
             store=self.stable_worker_session_store,
         )
+        # Same Stable supervisor, same FDB outbox and workflow identity. The
+        # worker lifecycle and credit mutations remain owned by the Hub/FDB.
+        address = os.environ.get(EXP_TEMPORAL_ADDRESS_ENV, "").strip()
+        self.temporal_runtime = None
+        if address:
+            self.temporal_runtime = StableHubTemporalRuntime(
+                address=address,
+                namespace=stable_temporal_namespace_for_topology(self.stable_topology),
+                store=self.stable_worker_session_store,
+            )
         self.registry = ExperimentalFoundationDbRegistry(
             self.fdb_state,
             root=self.hub_root,
@@ -2433,6 +2774,11 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
             secure_session_store=self.secure_session_store,
             feedback_store=self.feedback_store,
         )
+
+    def server_close(self) -> None:
+        if self.temporal_runtime is not None:
+            self.temporal_runtime.close()
+        super().server_close()
 
     def register_live_worker_session(self, session: LiveWorkerSession) -> None:
         with self.live_worker_sessions_lock:
@@ -2773,6 +3119,10 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
     print(f"FDB cluster file: {fdb_config.cluster_file}")
     print(f"FDB namespace: {fdb_config.namespace}")
     print(f"Stable live-session identity: {server.stable_hub_node.hub_id} {server.stable_hub_node.hub_url}")
+    print("Experimental Temporal lifecycle: " + (
+        f"configured ({server.temporal_runtime.namespace}); readiness required for new paid work"
+        if server.temporal_runtime is not None else "disabled (opt-in)"
+    ))
     print("Stable live-session topology: owner-hub forwarding enabled when topology exposes peer Hubs")
     ring_status = server.ring_admission_config.public_status()
     print(
@@ -2806,6 +3156,11 @@ def _effective_scheduler_lab_ring(args: argparse.Namespace) -> int | None:
     if bool(getattr(args, "payout_lab", False)) and str(getattr(args, "payout_lab_source", "seeded") or "seeded") == "hub-earned-credits":
         return 3
     return None
+
+
+def output_dir_for_live_lab(args: argparse.Namespace) -> Path:
+    path = Path(args.docker_output_dir or DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR)
+    return (path if path.is_absolute() else _repo_root_from_args(args) / path).resolve()
 
 
 def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequence[str]) -> subprocess.Popen[bytes]:
@@ -2864,8 +3219,24 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
         # "derive from the resolved observation window".
         env["FORCED_ALIVE_SECONDS"] = "duration"
 
+    live_mode = str(getattr(args, "docker_request_mode", "worker_pull_v0")) == "live_session_v1"
+    if live_mode:
+        if not bool(getattr(args, "require_multisession_auth", False)):
+            raise SystemExit("Docker live-session-v1 requires --require-multisession-auth")
+        if len(hub_base_urls) != 3:
+            raise SystemExit("Docker live-session-v1 requires exactly three Experimental Hubs")
+        if str(getattr(args, "host", "")) not in {"0.0.0.0", "::"}:
+            raise SystemExit("Docker live-session-v1 requires an explicit Docker-accessible --host 0.0.0.0 bind (DEV ONLY)")
+        # Internal ownership must remain on host-loopback endpoints. The Docker
+        # verifier maps socket connections to host.docker.internal only at its edge.
+        env["REQUEST_MODE"] = "live_session_v1"
+        env["LAB_AUTH_MODE"] = "multisession-wallet"
+        env["LAB_RING"] = "3"
+        env["EXP_HUB_LAB_DOCKER_HOST_LOOPBACK_MAP"] = "1"
+        env["LAB_LIVE_CONCURRENCY"] = str(int(getattr(args, "docker_live_concurrency", 3)))
+        env["LAB_LIVE_TIMEOUT_SECONDS"] = str(float(getattr(args, "docker_live_timeout_seconds", 30)))
     scheduler_ring = _effective_scheduler_lab_ring(args)
-    if scheduler_ring is not None:
+    if scheduler_ring is not None and not live_mode:
         env["LAB_RING"] = str(int(scheduler_ring))
 
     if args.docker_workers is not None:
@@ -2877,16 +3248,18 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
     else:
         env.pop("LAB_REQUESTERS", None)
 
-    command = resolve_container_runtime(cwd=repo_root, probe=False).compose_args(
-        "-f",
-        str(compose_file),
-        "--profile",
-        "worker-lab",
-        "up",
-        "--abort-on-container-exit",
-        "--exit-code-from",
-        "worker-lab",
-    )
+    runtime = resolve_container_runtime(cwd=repo_root, probe=False)
+    if live_mode:
+        # Use a run-scoped Compose project, not the historical scheduler-lab
+        # project. Attached Compose can wait indefinitely after its only worker
+        # has exited on Windows; detached mode lets us wait on the container.
+        run_key = _ensure_scheduler_lab_run_id(args).rsplit("-", 1)[-1]
+        project = "mc-exp-" + "".join(char for char in run_key.lower() if char.isalnum())[:12]
+        compose_base = runtime.compose_args("--project-name", project, "-f", str(compose_file), "--profile", "worker-lab")
+        command = [*compose_base, "up", "--detach"]
+    else:
+        compose_base = []
+        command = runtime.compose_args("-f", str(compose_file), "--profile", "worker-lab", "up", "--abort-on-container-exit", "--exit-code-from", "worker-lab")
     if not args.no_docker_build:
         command.append("--build")
     command.append("worker-lab")
@@ -2920,7 +3293,23 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
     print(f"Scheduler lab lease seconds: {float(args.lease_seconds):g}")
     print("Container command:")
     print("  " + " ".join(command))
-    return subprocess.Popen(command, cwd=str(repo_root), env=env)
+    startup_process = subprocess.Popen(command, cwd=str(repo_root), env=env)
+    if live_mode:
+        from main_computer.exp_fdb_docker_supervision import DetachedComposeWorker
+        timeout = float(getattr(args, "docker_run_timeout_seconds", 0.0) or 0.0)
+        if timeout <= 0:
+            # Scale with workers and their three P1 requests, rather than one
+            # fixed deadline that would reject a healthy 100-worker run.
+            workers = int(getattr(args, "docker_workers", None) or total_nodes)
+            concurrency = max(1, int(getattr(args, "docker_live_concurrency", 1)))
+            batches = (workers + concurrency - 1) // concurrency
+            timeout = max(120.0, batches * 3 * max(10.0, float(args.docker_live_timeout_seconds)) + 60.0)
+        return DetachedComposeWorker(
+            startup_process, compose_base=compose_base, container_base=runtime.container_args(),
+            repo_root=repo_root, environment=env, startup_timeout=120.0,
+            execution_timeout=timeout,
+        )
+    return startup_process
 
 
 
@@ -3243,11 +3632,24 @@ def _run_payout_lab_phase_in_thread(
 
 
 def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
+    from main_computer.exp_fdb_docker_supervision import (
+        RunJournal, verify_checkpoint_bounded, verify_live_chain_bounded,
+    )
     live_ports = parse_ports(args.ports if args.ports else args.port, default=DEFAULT_EXP_FDB_HUB_PORT)
+    journal = None
+    live_mode = bool(args.docker and getattr(args, "docker_request_mode", "") == "live_session_v1")
+    if live_mode:
+        # Check for an existing journal before launching another Hub/Docker
+        # workload. A repeated run ID must never authorize another payout.
+        run_id = _ensure_scheduler_lab_run_id(args)
+        journal = RunJournal(
+            output_dir_for_live_lab(args) / f"{run_id}-integrated-stages.json",
+            run_id=run_id, live_chain=bool(args.live_chain_smoke),
+        )
     ensure_foundationdb_smoke_loaded(args)
     servers = [create_exp_fdb_hub_server(args, port=port) for port in live_ports]
     threads: list[threading.Thread] = []
-    docker_process: subprocess.Popen[bytes] | None = None
+    docker_process = None
     payout_thread: threading.Thread | None = None
     payout_result: dict[str, object] | None = None
     try:
@@ -3258,21 +3660,107 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
         print(f"FoundationDB Hub ports listening: {', '.join(str(port) for port in live_ports)}")
         print(f"Multi-session auth required: {'yes' if getattr(args, 'require_multisession_auth', False) else 'no'}")
         if args.docker:
-            _ensure_scheduler_lab_run_id(args)
+            run_id = _ensure_scheduler_lab_run_id(args)
             hub_urls = docker_hub_base_urls(args, live_ports)
+            if journal:
+                journal.advance("docker_starting")
             docker_process = launch_scheduler_lab_docker(args, hub_base_urls=hub_urls)
+            if journal:
+                journal.advance("docker_running", container_project="mc-exp-" + run_id.rsplit("-", 1)[-1])
             if args.payout_lab:
                 setattr(args, "payout_lab_hub_base_url", f"http://127.0.0.1:{live_ports[0]}")
                 setattr(args, "payout_lab_hub_server", servers[0])
                 print("Starting optional payout settlement smoke lab concurrently with scheduler lab.")
                 payout_thread, payout_result = _run_payout_lab_phase_in_thread(args)
             return_code = docker_process.wait()
-            if payout_thread is not None:
-                payout_thread.join()
             if int(return_code) != 0:
+                if journal:
+                    journal.advance("docker_failed", return_code=int(return_code))
                 return int(return_code)
-            if payout_result is not None:
-                return int(payout_result.get("return_code") or 0)
+            print("Experimental Docker workload: completed", flush=True)
+            if journal:
+                summary_path = output_dir_for_live_lab(args) / f"{run_id}-live-summary.json"
+                try:
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    if summary.get("ok") is not True or summary.get("run_id") != run_id or summary.get("mode") != "live_session_v1" or int(summary.get("invariant_violations", -1)) != 0:
+                        raise RuntimeError(f"worker summary failed proof checks: {summary_path}")
+                    journal.advance("docker_completed", summary=str(summary_path),
+                                    requests_accepted=int(summary.get("requests_accepted", 0)))
+                except (OSError, ValueError, TypeError, RuntimeError) as exc:
+                    journal.advance("docker_evidence_failed", error=str(exc))
+                    return 1
+
+            if live_mode and servers[0].temporal_runtime is not None:
+                events_file = output_dir_for_live_lab(args) / f"{run_id}-live-events.jsonl"
+                checkpoint_path = output_dir_for_live_lab(args) / f"{run_id}-p2a-temporal-checkpoint.json"
+                try:
+                    first = next((json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()), {})
+                    session_ids = [item for item in first.get("session_ids", []) if item]
+                    if not session_ids:
+                        raise RuntimeError("Docker live lab has no terminal session for P2-A checkpoint")
+                    if journal:
+                        journal.advance("p2a_started", session_id=session_ids[0])
+                    print("Docker P2-A Temporal baseline: begin", flush=True)
+                    evidence = verify_checkpoint_bounded(
+                        repo_root=_repo_root_from_args(args),
+                        cluster_file=_cluster_file_from_args(args, repo_root=_repo_root_from_args(args)),
+                        session_id=session_ids[0], checkpoint=checkpoint_path,
+                        temporal_address=str(os.environ.get("MAIN_COMPUTER_EXP_TEMPORAL_ADDRESS") or "127.0.0.1:7233"),
+                        timeout=max(10.0, float(args.docker_live_timeout_seconds)),
+                    )
+                    if journal:
+                        journal.advance("p2a_completed", checkpoint=str(checkpoint_path), temporal_phase=str(evidence.get("phase")))
+                    print("Docker P2-A Temporal baseline: PASS " + str(checkpoint_path), flush=True)
+                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                    if journal:
+                        journal.advance("p2a_failed", error=f"{type(exc).__name__}: {exc}")
+                    print(f"Docker P2-A Temporal baseline: FAIL: {exc}", file=sys.stderr, flush=True)
+                    return 1
+
+            if bool(getattr(args, "live_chain_smoke", False)):
+                if not live_mode or any(server.temporal_runtime is None for server in servers):
+                    if journal:
+                        journal.advance("p2b_blocked", error="strict P1 live mode and configured Temporal required")
+                    print("Docker P2-B blocked: strict P1 live mode and Temporal supervisor are required", file=sys.stderr, flush=True)
+                    return 1
+                report_path = output_dir_for_live_lab(args) / f"{run_id}-p2b-live-chain-report.json"
+                try:
+                    if journal is None:
+                        raise RuntimeError("real-chain integration requires a durable stage journal")
+                    journal.advance("p2b_prepared", chain_id=int(args.live_chain_smoke_chain_id),
+                                    report=str(report_path))
+                    # Commit uncertainty BEFORE any process that could broadcast.
+                    # No retry is allowed for this run ID after this marker.
+                    journal.advance("p2b_executing", payout_outcome="unknown_requires_reconciliation")
+                    print("Docker P2-B live-chain settlement: begin (real authenticated handoff + XLag payout)", flush=True)
+                    report = verify_live_chain_bounded(
+                        repo_root=_repo_root_from_args(args),
+                        hub_urls=[f"http://127.0.0.1:{p}" for p in live_ports],
+                        dev_chain_state=Path(args.live_chain_smoke_state),
+                        rpc_url=str(args.live_chain_smoke_rpc), chain_id=int(args.live_chain_smoke_chain_id),
+                        timeout=max(90.0, float(args.docker_live_timeout_seconds) * 6),
+                        report_path=report_path,
+                    )
+                    journal.advance("p2b_verified", payout_outcome="verified",
+                                    report=str(report_path), tx_hash=str(report.get("dev_chain_tx_hash") or ""))
+                    print(f"Docker P2-B live-chain settlement: PASS tx={report.get('dev_chain_tx_hash')} report={report_path}", flush=True)
+                except Exception as exc:
+                    if journal:
+                        journal.advance("p2b_failed_requires_reconciliation", error=f"{type(exc).__name__}: {exc}")
+                    print(f"Docker P2-B live-chain settlement: FAIL: {type(exc).__name__}: {exc}; report={report_path}", file=sys.stderr, flush=True)
+                    return 1
+            if payout_thread is not None:
+                payout_thread.join(timeout=max(30.0, float(args.docker_live_timeout_seconds) * 6))
+                if payout_thread.is_alive():
+                    if journal:
+                        journal.advance("payout_lab_timeout", error="parallel payout-lab thread did not finish")
+                    return 1
+            if payout_result is not None and int(payout_result.get("return_code") or 0):
+                if journal:
+                    journal.advance("payout_lab_failed", error=str(payout_result.get("exception") or "payout-lab nonzero exit"))
+                return int(payout_result.get("return_code") or 1)
+            if journal:
+                journal.advance("completed")
             return 0
         if args.payout_lab:
             return run_payout_lab_phase(args)
@@ -3369,6 +3857,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--docker-ports", default="", help="Comma-separated ports advertised to Docker workers. May include intentionally dead ports not present in --ports.")
     parser.add_argument("--docker-hub-host", default=DEFAULT_EXP_FDB_DOCKER_HUB_HOST, help="Host name Docker containers use to reach the host exp hubs.")
     parser.add_argument("--docker-role", choices=["all", "workers", "requesters"], default="all", help="Scheduler lab role to run in Docker.")
+    parser.add_argument("--live-chain-smoke", action="store_true", help="Integrated lab ONLY: execute real dev-chain settlement after Docker work")
+    parser.add_argument("--live-chain-smoke-state", type=Path, default=Path("runtime/deployments/dev/latest.json"))
+    parser.add_argument("--live-chain-smoke-rpc", default="")
+    parser.add_argument("--live-chain-smoke-chain-id", type=int, default=0)
+    parser.add_argument("--docker-request-mode", choices=["worker_pull_v0", "live_session_v1"], default="worker_pull_v0",
+                        help="Worker lab protocol. live_session_v1 runs P1-authenticated live WebSockets (strict auth; isolated dev only).")
+    parser.add_argument("--docker-live-concurrency", type=int, default=3, help="Concurrent live verification scenarios inside Docker.")
+    parser.add_argument("--docker-live-timeout-seconds", type=float, default=30.0, help="Per operation timeout in Docker live-session mode.")
+    parser.add_argument("--docker-run-timeout-seconds", type=float, default=0.0, help="Live worker container deadline. 0 derives a bounded deadline from worker count and per-operation timeout.")
     parser.add_argument("--scheduler-lab-ring", type=int, default=None, help="Optional ring value for generated scheduler-lab nodes. Defaults to 3 for hub-earned payout end-to-end mode; otherwise worker-lab default applies.")
     parser.add_argument("--scheduler-lab-run-id", default="", help=argparse.SUPPRESS)
     parser.add_argument("--docker-total", type=int, default=120, help="Total generated scheduler lab nodes. Kept for compatibility; --nodes is preferred.")
@@ -3505,6 +4002,35 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--fdb-port must be 1..65535")
     if args.fdb_docker_start_timeout <= 0:
         raise SystemExit("--fdb-docker-start-timeout must be > 0")
+    if args.live_chain_smoke:
+        if not args.docker or args.docker_request_mode != "live_session_v1":
+            raise SystemExit("--live-chain-smoke requires authenticated --docker-request-mode live_session_v1")
+        if args.bridge_backend != "dev-chain" or not args.enable_smoke_bridge:
+            raise SystemExit("--live-chain-smoke requires explicit dev-chain backend and smoke bridge")
+        if not args.live_chain_smoke_rpc or args.live_chain_smoke_chain_id <= 0:
+            raise SystemExit("--live-chain-smoke requires preflighted RPC and chain id")
+    if getattr(args, "docker_request_mode", "worker_pull_v0") == "live_session_v1":
+        if not os.environ.get("MAIN_COMPUTER_EXP_TEMPORAL_ADDRESS", "").strip():
+            raise SystemExit("P2-A Docker live-session mode requires MAIN_COMPUTER_EXP_TEMPORAL_ADDRESS and a persistent Temporal server")
+        if not args.docker:
+            raise SystemExit("--docker-request-mode live_session_v1 requires --docker")
+        if args.docker_role != "all":
+            raise SystemExit("live_session_v1 requires --docker-role all")
+        if args.docker_live_concurrency <= 0 or args.docker_live_concurrency > 32:
+            raise SystemExit("--docker-live-concurrency must be 1..32")
+        if args.docker_live_timeout_seconds <= 0:
+            raise SystemExit("--docker-live-timeout-seconds must be > 0")
+        if args.docker_run_timeout_seconds < 0:
+            raise SystemExit("--docker-run-timeout-seconds must be >= 0")
+        if args.payout_lab:
+            raise SystemExit("P2-A live-session Docker lab does not include payout settlement; run payout lab separately")
+        if getattr(args, "topology", None):
+            raise SystemExit("live_session_v1 requires the local generated topology; do not set --topology")
+        if getattr(args, "hub_url", None) and str(args.hub_url).strip().rstrip("/") != "http://127.0.0.1":
+            raise SystemExit("live_session_v1 requires --hub-url http://127.0.0.1")
+        # The bind interface can be Docker-accessible, but authoritative
+        # owner-Hub URLs must remain reachable by the Windows-hosted peers.
+        args.hub_url = "http://127.0.0.1"
     if args.payout_lab:
         if args.payout_lab_source == "hub-earned-credits" and args.payout_lab_backend != "fdb":
             raise SystemExit("--payout-lab-source=hub-earned-credits requires --payout-lab-backend=fdb")

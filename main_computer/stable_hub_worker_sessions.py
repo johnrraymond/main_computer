@@ -22,8 +22,8 @@ from main_computer.hub_credit_models import make_worker_commitment, normalize_ad
 
 
 STABLE_WORKER_SESSION_STORE_VERSION = "main-computer-stable-hub-worker-live-sessions-v1"
-STABLE_WORKER_SESSION_FDB_TRANSACTION_TIMEOUT_MS = int(os.environ.get("MAIN_COMPUTER_STABLE_HUB_FDB_TIMEOUT_MS", "5000"))
-STABLE_WORKER_SESSION_FDB_RETRY_LIMIT = int(os.environ.get("MAIN_COMPUTER_STABLE_HUB_FDB_RETRY_LIMIT", "1"))
+STABLE_WORKER_SESSION_FDB_TRANSACTION_TIMEOUT_MS = int(os.environ.get("MAIN_COMPUTER_STABLE_HUB_FDB_TIMEOUT_MS", "20000"))
+STABLE_WORKER_SESSION_FDB_RETRY_LIMIT = int(os.environ.get("MAIN_COMPUTER_STABLE_HUB_FDB_RETRY_LIMIT", "30"))
 STABLE_WORKER_SESSION_FDB_VALUE_CHUNK_BYTES = int(
     os.environ.get("MAIN_COMPUTER_STABLE_HUB_FDB_VALUE_CHUNK_BYTES", "60000")
 )
@@ -1258,23 +1258,140 @@ class StableHubPayoutLedgerDirectory:
             hold = data.get("payout_holds", {}).get(hold_id)
             return dict(hold) if isinstance(hold, dict) else None
 
+    @_atomic_stable_store_mutation
     def create_hold(
-        self,
-        **_: Any,
+        self, *, account_id: str, wallet_address: str, request_id: str,
+        session_id: str, worker_id: str, selected_price: dict[str, Any],
+        run_id: str = "", partition: str = "",
+        requester_max_price: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise StableHubWorkerSessionError("credit holds are disabled; spend credits directly when the request goes through.")
+        """Reserve one request's price without earning or charging it.
 
-    def release_hold(
-        self,
-        **_: Any,
-    ) -> dict[str, Any]:
-        raise StableHubWorkerSessionError("credit holds are disabled; there is no hold to release.")
+        The reservation and account debit share an FDB transaction. Another
+        Hub cannot spend reserved funds, and a retry cannot reserve twice.
+        """
+        account_id = str(account_id or "").strip()
+        request_id = normalize_request_id(request_id)
+        session_id = normalize_session_id(session_id)
+        worker_id = normalize_worker_id(worker_id)
+        price = normalize_price(selected_price, field_name="selected worker price")
+        maximum = None
+        amount = self._amount_to_credit_wei(price.get("amount"), field_name="selected worker price.amount")
+        if requester_max_price:
+            maximum = normalize_price(requester_max_price, field_name="requester max_price")
+            if maximum.get("unit") != price.get("unit") or amount > self._amount_to_credit_wei(
+                maximum.get("amount"), field_name="requester max_price.amount"
+            ):
+                raise StableHubWorkerSessionError("selected worker price exceeds requester max_price.")
+        if not account_id:
+            raise StableHubWorkerSessionError("account_id is required.")
+        hold_id = _stable_digest_id("hold", self.cluster_id, account_id, request_id)
+        now = utc_now()
+        with self._lock:
+            data = self.store.load()
+            holds = data.setdefault("payout_holds", {})
+            existing = holds.get(hold_id)
+            if isinstance(existing, dict):
+                if (str(existing.get("session_id")) != session_id
+                    or str(existing.get("worker_id")) != worker_id
+                    or int(existing.get("credit_wei", "0")) != amount
+                    or str(existing.get("unit")) != str(price.get("unit"))):
+                    raise StableHubWorkerSessionError("request_hold_conflict")
+                if existing.get("status") != "held":
+                    raise StableHubWorkerSessionError("request_hold_already_finalized")
+                return dict(existing)
+            account = self._ensure_account(data, account_id=account_id, wallet_address=wallet_address)
+            if (normalize_address(account.get("wallet_address") or "")
+                and normalize_address(account.get("wallet_address") or "") != normalize_address(wallet_address)):
+                raise StableHubWorkerSessionError("request_account_wallet_mismatch")
+            available = int(account.get("available_credit_wei", "0"))
+            if available < amount:
+                raise StableHubWorkerSessionError("requester_funds_unavailable")
+            data["payout_accounts"][account_id] = self._account_payload(
+                account_id=account_id,
+                wallet_address=str(account.get("wallet_address") or wallet_address),
+                available_credit_wei=available - amount,
+                held_credit_wei=int(account.get("held_credit_wei", "0")) + amount,
+                spent_credit_wei=account.get("spent_credit_wei", 0),
+                earned_credit_wei=account.get("earned_credit_wei", 0),
+                bridge_completed_credit_wei=account.get("bridge_completed_credit_wei", 0),
+                created_at=str(account.get("created_at") or ""),
+                metadata=dict(account.get("metadata") or {}),
+            )
+            hold = {
+                "hold_id": hold_id, "status": "held", "account_id": account_id,
+                "wallet_address": normalize_address(wallet_address),
+                "request_id": request_id, "session_id": session_id,
+                "run_id": str(run_id), "partition": str(partition),
+                "selected_price": dict(price), "requester_max_price": dict(maximum or {}),
+                "worker_id": worker_id, "worker_node_id": worker_id,
+                "credit_wei": str(amount), "amount": credit_wei_to_decimal_text(amount),
+                "unit": price.get("unit"), "created_at": now, "updated_at": now,
+            }
+            holds[hold_id] = hold
+            self._event(data, "stable.work.payout.held", hold_id=hold_id,
+                        session_id=session_id, request_id=request_id, account_id=account_id)
+            self.store.save(data)
+            return dict(hold)
+
+    @_atomic_stable_store_mutation
+    def release_hold(self, *, hold_id: str, session_id: str) -> dict[str, Any]:
+        """Return reserved funds on failure; never invent a second refund."""
+        with self._lock:
+            data = self.store.load()
+            holds = data.setdefault("payout_holds", {})
+            hold = holds.get(hold_id)
+            if not isinstance(hold, dict) or str(hold.get("session_id")) != str(session_id):
+                raise StableHubWorkerSessionError("request_hold_missing_or_mismatched")
+            if hold.get("status") == "released":
+                return dict(hold)
+            if hold.get("status") != "held":
+                raise StableHubWorkerSessionError("request_hold_already_charged")
+            account_id = str(hold["account_id"])
+            account = data["payout_accounts"][account_id]
+            amount = int(hold["credit_wei"])
+            held = int(account.get("held_credit_wei", 0))
+            if held < amount:
+                raise StableHubWorkerSessionError("request_hold_account_inconsistent")
+            data["payout_accounts"][account_id] = self._account_payload(
+                account_id=account_id,
+                wallet_address=str(account.get("wallet_address") or ""),
+                available_credit_wei=int(account.get("available_credit_wei", 0)) + amount,
+                held_credit_wei=held - amount,
+                spent_credit_wei=account.get("spent_credit_wei", 0),
+                earned_credit_wei=account.get("earned_credit_wei", 0),
+                bridge_completed_credit_wei=account.get("bridge_completed_credit_wei", 0),
+                created_at=str(account.get("created_at") or ""),
+                metadata=dict(account.get("metadata") or {}),
+            )
+            hold = dict(hold, status="released", released_at=utc_now(), updated_at=utc_now())
+            holds[hold_id] = hold
+            self._event(data, "stable.work.payout.released", hold_id=hold_id,
+                        session_id=session_id, request_id=hold["request_id"], account_id=account_id)
+            self.store.save(data)
+            return dict(hold)
 
     def charge_hold(
-        self,
-        **_: Any,
+        self, *, hold_id: str, session_id: str, request_id: str,
+        worker_id: str, result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise StableHubWorkerSessionError("credit holds are disabled; credits are spent directly when the request goes through.")
+        """Convert exactly one reserved request to a charged worker earning."""
+        with self._lock:
+            hold = self.store.load().get("payout_holds", {}).get(hold_id)
+            if not isinstance(hold, dict):
+                raise StableHubWorkerSessionError("request_hold_missing_or_mismatched")
+            hold = dict(hold)
+        return self.spend_request_credit(
+            account_id=str(hold.get("account_id") or ""),
+            wallet_address=str(hold.get("wallet_address") or ""),
+            request_id=request_id, session_id=session_id,
+            run_id=str(hold.get("run_id") or ""), worker_id=worker_id,
+            selected_price=dict(hold.get("selected_price") or {
+                "amount": hold.get("amount"), "unit": hold.get("unit")
+            }), requester_max_price=dict(hold.get("requester_max_price") or {}) or None,
+            partition=str(hold.get("partition") or ""), hold_id=hold_id,
+            result=result,
+        )
 
     @_atomic_stable_store_mutation
     def spend_request_credit(
@@ -1289,6 +1406,7 @@ class StableHubPayoutLedgerDirectory:
         selected_price: dict[str, Any],
         requester_max_price: dict[str, Any] | None,
         partition: str,
+        hold_id: str = "",
         result: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -1316,7 +1434,7 @@ class StableHubPayoutLedgerDirectory:
                 "session_id": session_id,
                 "worker_id": worker_id,
                 "credit_wei": str(amount_wei),
-                "direct_spend": True,
+                "direct_spend": not bool(hold_id),
             },
         )
         earning_id = stable_id(
@@ -1331,12 +1449,14 @@ class StableHubPayoutLedgerDirectory:
             data = self.store.load()
             existing_charge = data.setdefault("payout_charges", {}).get(charge_id)
             existing_earning = data.setdefault("worker_earnings", {}).get(earning_id)
-            if isinstance(existing_charge, dict) and (not worker_id or isinstance(existing_earning, dict)):
+            if isinstance(existing_charge, dict):
+                if worker_id and not isinstance(existing_earning, dict):
+                    raise StableHubWorkerSessionError("request_charge_earning_inconsistent")
                 return {
                     "charge": dict(existing_charge),
                     "worker_earning": dict(existing_earning) if isinstance(existing_earning, dict) else {},
                     "idempotent": True,
-                    "direct_spend": True,
+                    "direct_spend": not bool(hold_id),
                     "legacy_holds_cancelled": [],
                 }
 
@@ -1356,7 +1476,21 @@ class StableHubPayoutLedgerDirectory:
             account = self._ensure_account(data, account_id=clean_account, wallet_address=wallet_address)
             available = int(account.get("available_credit_wei", "0") or 0)
             held = int(account.get("held_credit_wei", "0") or 0)
-            spendable = available + held
+            reservation = data.setdefault("payout_holds", {}).get(hold_id) if hold_id else None
+            if hold_id:
+                if (not isinstance(reservation, dict)
+                    or reservation.get("status") != "held"
+                    or str(reservation.get("account_id")) != clean_account
+                    or str(reservation.get("session_id")) != session_id
+                    or str(reservation.get("request_id")) != request_id
+                    or str(reservation.get("worker_id")) != worker_id
+                    or int(reservation.get("credit_wei", 0)) != amount_wei
+                    or str(reservation.get("unit")) != str(price.get("unit"))
+                    or (normalize_address(reservation.get("wallet_address") or "")
+                        != normalize_address(wallet_address))
+                    or held < amount_wei):
+                    raise StableHubWorkerSessionError("request_hold_missing_or_mismatched")
+            spendable = held if hold_id else available
             if spendable < amount_wei:
                 self._event(
                     data,
@@ -1372,29 +1506,20 @@ class StableHubPayoutLedgerDirectory:
                 self.store.save(data)
                 raise StableHubWorkerSessionError("requester_funds_unavailable")
 
+            # Never cancel unrelated reservations. Each accepted session owns
+            # exactly one held amount; a direct-spend compatibility call may use
+            # only the unreserved available balance.
             collapsed_holds: list[str] = []
-            holds = data.setdefault("payout_holds", {})
-            for hold_id, hold in list(holds.items()):
-                if not isinstance(hold, dict):
-                    continue
-                if str(hold.get("account_id") or "") != clean_account:
-                    continue
-                if str(hold.get("status") or "") != "held":
-                    continue
-                hold = dict(hold)
-                hold["status"] = "cancelled"
-                hold["release_reason"] = "legacy_hold_cancelled_for_direct_spend"
-                hold["released_at"] = now
-                hold["updated_at"] = now
-                hold["release_metadata"] = {"direct_spend": True, "request_id": request_id}
-                holds[str(hold_id)] = hold
-                collapsed_holds.append(str(hold_id))
+            if hold_id:
+                data["payout_holds"][hold_id] = dict(
+                    reservation, status="charged", charged_at=now, updated_at=now
+                )
 
             updated_account = self._account_payload(
                 account_id=account["account_id"],
                 wallet_address=account.get("wallet_address") or account.get("owner_address") or wallet_address or "",
-                available_credit_wei=spendable - amount_wei,
-                held_credit_wei=0,
+                available_credit_wei=available if hold_id else available - amount_wei,
+                held_credit_wei=held - amount_wei if hold_id else held,
                 spent_credit_wei=int(account.get("spent_credit_wei", "0") or 0) + amount_wei,
                 earned_credit_wei=account.get("earned_credit_wei", 0),
                 bridge_completed_credit_wei=account.get("bridge_completed_credit_wei", 0),
@@ -1405,7 +1530,7 @@ class StableHubPayoutLedgerDirectory:
 
             charge = {
                 "charge_id": charge_id,
-                "hold_id": "",
+                "hold_id": hold_id,
                 "session_id": session_id,
                 "run_id": str(run_id),
                 "account_id": clean_account,
@@ -1424,7 +1549,7 @@ class StableHubPayoutLedgerDirectory:
                 "status": "charged",
                 "created_at": now,
                 "metadata": {
-                    "direct_spend": True,
+                    "direct_spend": not bool(hold_id),
                     "legacy_holds_cancelled": collapsed_holds,
                     **json.loads(json.dumps(metadata or {})),
                 },
@@ -1432,7 +1557,7 @@ class StableHubPayoutLedgerDirectory:
             earning = {
                 "earning_id": earning_id,
                 "charge_id": charge_id,
-                "hold_id": "",
+                "hold_id": hold_id,
                 "session_id": session_id,
                 "run_id": str(run_id),
                 "account_id": clean_account,
@@ -1455,7 +1580,7 @@ class StableHubPayoutLedgerDirectory:
                 "batch_id": "",
                 "created_at": now,
                 "result": json.loads(json.dumps(result or {})),
-                "metadata": {"stable_hub": True, "direct_spend": True, **dict(metadata or {})},
+                "metadata": {"stable_hub": True, "direct_spend": not bool(hold_id), **dict(metadata or {})},
             }
             data.setdefault("payout_accounts", {})[account["account_id"]] = updated_account
             data.setdefault("payout_charges", {})[charge_id] = charge
@@ -1467,12 +1592,12 @@ class StableHubPayoutLedgerDirectory:
                 credit_wei=amount_wei,
                 request_id=request_id,
                 worker_id=worker_id,
-                hold_id="",
+                hold_id=hold_id,
                 memo=f"spent credits for stable work request {request_id}",
                 metadata={
                     "charge_id": charge_id,
                     "session_id": session_id,
-                    "direct_spend": True,
+                    "direct_spend": not bool(hold_id),
                     "legacy_holds_cancelled": collapsed_holds,
                     **dict(metadata or {}),
                 },
@@ -1485,7 +1610,7 @@ class StableHubPayoutLedgerDirectory:
                 worker_id=worker_id,
                 amount_wei=amount_wei,
                 reference_id=charge_id,
-                metadata={"request_id": request_id, "session_id": session_id, "direct_spend": True, **dict(metadata or {})},
+                metadata={"request_id": request_id, "session_id": session_id, "direct_spend": not bool(hold_id), **dict(metadata or {})},
             )
             self._bridge_audit_event(
                 data,
@@ -1493,7 +1618,7 @@ class StableHubPayoutLedgerDirectory:
                 worker_id=worker_id,
                 amount_wei=amount_wei,
                 reference_id=earning_id,
-                metadata={"request_id": request_id, "charge_id": charge_id, "account_id": clean_account, "direct_spend": True, **dict(metadata or {})},
+                metadata={"request_id": request_id, "charge_id": charge_id, "account_id": clean_account, "direct_spend": not bool(hold_id), **dict(metadata or {})},
             )
             self._event(
                 data,
@@ -1507,14 +1632,14 @@ class StableHubPayoutLedgerDirectory:
                 amount=charge["amount"],
                 credit_wei=charge["charged_credit_wei"],
                 unit=price.get("unit"),
-                direct_spend=True,
+                direct_spend=not bool(hold_id),
             )
             self.store.save(data)
             return {
                 "charge": dict(charge),
                 "worker_earning": dict(earning),
                 "idempotent": False,
-                "direct_spend": True,
+                "direct_spend": not bool(hold_id),
                 "legacy_holds_cancelled": collapsed_holds,
                 "selected_price": {**dict(price), "credit_wei": str(amount_wei)},
                 "requester_max_price": dict(max_price) if max_price else {},
@@ -1969,25 +2094,17 @@ class StableHubPayoutLedgerDirectory:
             deposits = list(data.get("payout_deposits", {}).values())
             bridge_audit = list(data.get("bridge_audit", {}).values())
             wallets = list(data.get("mock_chain_wallets", {}).values())
-            normalized_accounts: list[dict[str, Any]] = []
-            for account in accounts:
-                if not isinstance(account, dict):
-                    continue
-                account = dict(account)
-                available = int(account.get("available_credit_wei", 0) or 0)
-                held = int(account.get("held_credit_wei", 0) or 0)
-                if held:
-                    account["available_credit_wei"] = str(available + held)
-                    account["available_credits"] = credit_wei_to_whole_credits_floor(available + held)
-                    account["available_credits_display"] = credit_wei_to_decimal_text(available + held)
-                    account["held_credit_wei"] = "0"
-                    account["held_credits"] = 0
-                    account["held_credits_display"] = "0"
-                normalized_accounts.append(account)
-            accounts = normalized_accounts
-            holds = [{**hold, "status": "cancelled"} if isinstance(hold, dict) and str(hold.get("status") or "") == "held" else hold for hold in holds]
-            total_available = sum(int(account.get("available_credit_wei", 0) or 0) for account in accounts if isinstance(account, dict))
-            total_held = 0
+            # Report actual committed reservations. Previously this read-only
+            # projection hid held funds and relabeled live holds as cancelled,
+            # which concealed pending payment obligations from lab diagnostics.
+            total_available = sum(
+                int(account.get("available_credit_wei", 0) or 0)
+                for account in accounts if isinstance(account, dict)
+            )
+            total_held = sum(
+                int(account.get("held_credit_wei", 0) or 0)
+                for account in accounts if isinstance(account, dict)
+            )
             total_spent = sum(int(account.get("spent_credit_wei", 0) or 0) for account in accounts if isinstance(account, dict))
             total_earned = sum(int(item.get("earned_credit_wei", 0) or 0) for item in earnings if isinstance(item, dict))
             return {

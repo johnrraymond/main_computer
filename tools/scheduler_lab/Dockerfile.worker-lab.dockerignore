@@ -1,0 +1,22 @@
+# Dedicated Dockerfile-specific allowlist. The image never receives local
+# wallet files, FoundationDB cluster files, runtime secrets, or game assets.
+**
+!tools/
+!tools/__init__.py
+!tools/scheduler_lab/
+!tools/scheduler_lab/**
+!tools/exp_hub_lab/
+!tools/exp_hub_lab/__init__.py
+!tools/exp_hub_lab/run_lab.py
+!main_computer/
+!main_computer/__init__.py
+!main_computer/config.py
+!main_computer/contract_config.py
+!main_computer/credit_units.py
+!main_computer/hub_credit_models.py
+!main_computer/hub_credit_ledger.py
+!main_computer/hub_credit_indexer.py
+!main_computer/multisession_key_signing.py
+**/__pycache__/
+**/*.pyc
+**/*.pyo

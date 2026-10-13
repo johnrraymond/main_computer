@@ -216,25 +216,46 @@ Defaults:
 - storage: in-memory Temporal dev-server SQLite
 - public exposure: none; ports bind to `127.0.0.1`
 
-The bootstrap intentionally uses Temporal's in-memory dev server by default.
-This is the safest local path on Docker Desktop/Windows. The persisted SQLite
-dev-server mode can fail before Temporal starts with:
+The bootstrap uses Temporal's in-memory dev server by default for fast, disposable
+smoke tests. For P2-A crash and restart verification, **persistent** workflow
+history is mandatory:
 
-```text
-unable to create SQLite admin DB: unable to open database file: out of memory (14)
+```powershell
+python -m pip install -r tools/temporal_lab/requirements-temporal.txt
+python -m tools.temporal_lab.local_temporal up `
+  --pull `
+  --namespace main-computer-exp-handoff-parity `
+  --persist
 ```
 
-## Recover from a failed older bootstrap
+With `--persist`, the launcher now initializes or repairs the named Docker
+volume before creating the Temporal server. It resolves the image's runtime
+UID, including when Docker declares `USER temporal` rather than a numeric UID,
+then uses a temporary BusyBox helper to prepare `/data` and verifies that the
+unprivileged UID can write there. It supports fresh Docker volumes and recovery
+after failed bootstraps. **It never deletes or reformats an existing SQLite DB.**
+The helper uses the Docker image `busybox:1.36.1` and may pull it on first use.
 
-If a previous run left behind a stopped container created with persisted
-SQLite, the patched `up` command recreates it automatically. You can also clean
-it manually:
+`--persist` uses the named volume `main-computer-temporal-dev-data`, mounted at
+`/data`, with DB `/data/temporal.db`. Stop/restart does not remove that volume:
 
-```bash
-docker rm -f main-computer-temporal-dev
-docker volume rm -f main-computer-temporal-dev-data
-python -m tools.temporal_lab.local_temporal up --pull
+```powershell
+python -m tools.temporal_lab.local_temporal down
+python -m tools.temporal_lab.local_temporal up `
+  --namespace main-computer-exp-handoff-parity `
+  --persist
 ```
+
+**Do not use `down --delete-data` during P2-A**: that explicitly destroys the
+Temporal volume and its workflow history. The launcher also refuses to treat an
+already-running in-memory server as persistent. If a running container lacks
+the expected writable volume or `--db-filename` setting, stop it using the
+normal `down` command (without `--delete-data`) and start it with `--persist`.
+
+If persistence still fails, the launcher reports the initialization error or
+the actual server logs. Do not silently fall back to in-memory mode: that would
+invalidate the durability portion of P2-A acceptance. A persistent SQLite
+error is not automatically proof that permissions are its only possible cause.
 
 ## Check status
 
@@ -288,8 +309,9 @@ With `--persist`, the script mounts:
 - Docker volume: `main-computer-temporal-dev-data`
 - container database file: `/data/temporal.db`
 
-If persisted mode fails on your machine, remove the container and rerun without
-`--persist`.
+If persistent startup fails, inspect the reported image-user, volume-permission,
+or SQLite error. Do not switch to in-memory mode for the P2-A restart acceptance
+test; it cannot verify durable workflow history.
 
 ## Useful overrides
 
@@ -524,4 +546,5 @@ python .\scripts\smoke_temporal_fdb_hub_stress.py `
 ```
 
 If the stress smoke fails with a freeze detector message, read the `last_progress_label` in the failure and the JSON report at `runtime/temporal_lab/temporal_fdb_hub_stress_report.json` when available. A freeze failure means the lab stopped making meaningful market/chatter progress for longer than the configured timeout; it should not be treated as a normal test assertion failure.
+
 

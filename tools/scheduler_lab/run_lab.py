@@ -3903,7 +3903,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--problematic-requester-rate", type=float, default=float(os.environ.get("PROBLEMATIC_REQUESTER_RATE", "0.05")))
     parser.add_argument("--problematic-failure-multiplier", type=float, default=float(os.environ.get("PROBLEMATIC_FAILURE_MULTIPLIER", "4.0")))
     parser.add_argument("--disable-problematic", action="store_true")
-    parser.add_argument("--request-mode", choices=["worker_pull_v0", "legacy", "registration_only"], default=os.environ.get("REQUEST_MODE", "worker_pull_v0"))
+    parser.add_argument("--request-mode", choices=["worker_pull_v0", "legacy", "registration_only", "live_session_v1"], default=os.environ.get("REQUEST_MODE", "worker_pull_v0"))
     parser.add_argument(
         "--auth-mode",
         choices=["legacy", "multisession-wallet"],
@@ -4023,6 +4023,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         normalized_urls = normalize_hub_base_urls(args.hub_base_urls, args.hub_base_url)
         args.hub_base_urls = ",".join(normalized_urls)
         args.hub_base_url = normalized_urls[0]
+    if args.request_mode == "live_session_v1":
+        if lab_auth_mode(args) != "multisession-wallet":
+            raise SystemExit("live_session_v1 requires --auth-mode multisession-wallet")
+        from tools.scheduler_lab.live_session import run_live_session_lab
+        return run_live_session_lab(args)
     if args.b2bfailures < 0:
         raise SystemExit("--b2bfailures must be >= 0")
     if args.forced_alive is not None and args.forced_alive < 0:

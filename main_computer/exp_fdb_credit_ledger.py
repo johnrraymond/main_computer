@@ -234,25 +234,8 @@ class ExperimentalFoundationDbCreditLedger:
         return result
 
     def _account_without_holds(self, account: HubCreditAccount) -> HubCreditAccount:
-        if not account.held_credit_wei:
-            return account
-        return HubCreditAccount(
-            account_id=account.account_id,
-            owner_address=account.owner_address,
-            available_credits=account.available_credits,
-            held_credits=0,
-            spent_credits=account.spent_credits,
-            earned_credits=account.earned_credits,
-            bridge_completed_credits=account.bridge_completed_credits,
-            available_credit_wei=account.available_credit_wei + account.held_credit_wei,
-            held_credit_wei=0,
-            spent_credit_wei=account.spent_credit_wei,
-            earned_credit_wei=account.earned_credit_wei,
-            bridge_completed_credit_wei=account.bridge_completed_credit_wei,
-            created_at=account.created_at,
-            updated_at=account.updated_at,
-            metadata=dict(account.metadata or {}),
-        )
+        # Historical name retained for compatibility; a hold is a real reservation.
+        return account
 
     def _account_from_payload(self, payload: dict[str, Any] | None, account_id: str, *, now: str | None = None) -> HubCreditAccount:
         if isinstance(payload, dict):
@@ -285,23 +268,7 @@ class ExperimentalFoundationDbCreditLedger:
         accounts = [self._account_without_holds(_account_from_dict(item)) for item in snapshot["accounts"]]
         transactions = [_transaction_from_dict(item) for item in snapshot["transactions"]]
         deposits = list(snapshot.get("deposits", []))
-        holds = []
-        for item in snapshot["holds"]:
-            hold = _hold_from_dict(item)
-            if hold.status == "held":
-                hold = HubCreditHold(
-                    hold_id=hold.hold_id,
-                    account_id=hold.account_id,
-                    request_id=hold.request_id,
-                    credits=hold.credits,
-                    credit_wei=hold.credit_wei,
-                    status="cancelled",
-                    created_at=hold.created_at,
-                    expires_at=hold.expires_at,
-                    released_at=hold.released_at or utc_now(),
-                    charged_at=hold.charged_at,
-                )
-            holds.append(hold)
+        holds = [_hold_from_dict(item) for item in snapshot["holds"]]
         charges = [_charge_from_dict(item) for item in snapshot["charges"]]
         earnings = [_earning_from_dict(item) for item in snapshot["worker_earnings"]]
         claims = [_claim_from_dict(item) for item in snapshot["worker_claims"]]
@@ -414,7 +381,7 @@ class ExperimentalFoundationDbCreditLedger:
         if clean_request:
             holds = [hold for hold in holds if hold.request_id == clean_request]
         if active_only:
-            holds = []
+            holds = [hold for hold in holds if hold.status == "held"]
         holds.sort(key=lambda item: item.created_at, reverse=True)
         return holds[: max(0, int(limit or 100))]
 
@@ -788,60 +755,232 @@ class ExperimentalFoundationDbCreditLedger:
         return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
 
     def create_hold(
-        self,
-        *,
-        account_id: str,
-        request_id: str,
-        credits: int,
-        expires_at: str = "",
-        memo: str = "",
-        metadata: dict[str, Any] | None = None,
+        self, *, account_id: str, request_id: str, credits: int,
+        expires_at: str = "", memo: str = "", metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise RuntimeError("Credit holds are disabled. Spend credits directly when the request goes through.")
+        return self.create_hold_credit_wei(
+            account_id=account_id, request_id=request_id,
+            credit_wei=credit_count_to_wei(credits), expires_at=expires_at,
+            memo=memo, metadata=metadata,
+        )
 
     def create_hold_credit_wei(
-        self,
-        *,
-        account_id: str,
-        request_id: str,
-        credit_wei: int | str,
-        expires_at: str = "",
-        memo: str = "",
-        metadata: dict[str, Any] | None = None,
+        self, *, account_id: str, request_id: str, credit_wei: int | str,
+        expires_at: str = "", memo: str = "", metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise RuntimeError("Credit holds are disabled. Spend credits directly when the request goes through.")
+        clean_account = clean_account_id(account_id)
+        clean_request = str(request_id or "").strip()
+        amount = positive_credit_wei(credit_wei)
+        if not clean_request or amount <= 0:
+            raise ValueError("request_id and positive credit_wei are required for a hold.")
+        now = utc_now()
+        proposed = HubCreditHold(
+            hold_id="", account_id=clean_account, request_id=clean_request,
+            credits=0, credit_wei=amount, expires_at=expires_at, created_at=now,
+        )
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            account_key = self._key("account", clean_account)
+            self._add_conflict_key(tr, "add_read_conflict_key", account_key)
+            self._add_conflict_key(tr, "add_write_conflict_key", account_key)
+            existing = self._read_dict(tr, "hold", proposed.hold_id)
+            if isinstance(existing, dict):
+                hold = _hold_from_dict(existing)
+                if hold.credit_wei != amount or hold.account_id != clean_account:
+                    raise ValueError("Existing request hold does not match requested credit amount.")
+                if hold.status not in {"held", "charged"}:
+                    raise ValueError("Cannot reactivate a terminal released/cancelled hold.")
+                account = self._account_from_payload(self._read_dict(tr, "account", clean_account), clean_account, now=now)
+                return {"idempotent": True, "hold": hold.as_dict(), "account": account.as_dict()}
+            current = self._account_from_payload(self._read_dict(tr, "account", clean_account), clean_account, now=now)
+            if current.available_credit_wei < amount:
+                raise ValueError("Insufficient available Compute Credits to reserve request.")
+            account = HubCreditAccount(
+                account_id=clean_account, owner_address=current.owner_address,
+                available_credit_wei=current.available_credit_wei - amount,
+                held_credit_wei=current.held_credit_wei + amount,
+                spent_credit_wei=current.spent_credit_wei,
+                earned_credit_wei=current.earned_credit_wei,
+                bridge_completed_credit_wei=current.bridge_completed_credit_wei,
+                created_at=current.created_at, updated_at=now, metadata=current.metadata,
+            )
+            tx = HubCreditTransaction(
+                transaction_id=stable_id("ctx", {"type": "hold_created", "hold_id": proposed.hold_id}),
+                account_id=clean_account, transaction_type="hold_created", credits=0,
+                credit_wei=amount, request_id=clean_request, hold_id=proposed.hold_id,
+                created_at=now, memo=memo or "request credit reserved", metadata=dict(metadata or {}),
+            )
+            self._write_dict(tr, "account", clean_account, account.as_dict())
+            self._write_dict(tr, "hold", proposed.hold_id, proposed.as_dict())
+            self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
+            self._write_audit_event(
+                tr, event_type="hub.hold.created", wallet_address=account.owner_address,
+                account_id=clean_account, amount_wei=amount, reference_id=proposed.hold_id,
+                metadata={"request_id": clean_request, **dict(metadata or {})}, now=now,
+            )
+            return {"idempotent": False, "hold": proposed.as_dict(), "account": account.as_dict()}
+
+        return {"ok": True, **_tx(self.db)}
 
     def release_hold(
-        self,
-        *,
-        hold_id: str,
-        reason: str = "",
-        memo: str = "",
+        self, *, hold_id: str, reason: str = "", memo: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise RuntimeError("Credit holds are disabled. There are no active holds to release.")
+        clean_hold = str(hold_id or "").strip()
+        if not clean_hold:
+            raise ValueError("hold_id is required.")
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            payload = self._read_dict(tr, "hold", clean_hold)
+            if not isinstance(payload, dict):
+                raise ValueError("Hold not found.")
+            hold = _hold_from_dict(payload)
+            key = self._key("account", hold.account_id)
+            self._add_conflict_key(tr, "add_read_conflict_key", key)
+            self._add_conflict_key(tr, "add_write_conflict_key", key)
+            current = self._account_from_payload(self._read_dict(tr, "account", hold.account_id), hold.account_id, now=now)
+            if hold.status == "charged":
+                raise ValueError("A charged hold cannot be released.")
+            if hold.status != "held":
+                return {"idempotent": True, "hold": hold.as_dict(), "account": current.as_dict()}
+            if current.held_credit_wei < hold.credit_wei:
+                raise ValueError("Held balance is below the reservation: refusing release.")
+            released = HubCreditHold(
+                hold_id=hold.hold_id, account_id=hold.account_id, request_id=hold.request_id,
+                credits=0, credit_wei=hold.credit_wei, status="released",
+                created_at=hold.created_at, expires_at=hold.expires_at, released_at=now,
+            )
+            account = HubCreditAccount(
+                account_id=current.account_id, owner_address=current.owner_address,
+                available_credit_wei=current.available_credit_wei + hold.credit_wei,
+                held_credit_wei=current.held_credit_wei - hold.credit_wei,
+                spent_credit_wei=current.spent_credit_wei,
+                earned_credit_wei=current.earned_credit_wei,
+                bridge_completed_credit_wei=current.bridge_completed_credit_wei,
+                created_at=current.created_at, updated_at=now, metadata=current.metadata,
+            )
+            tx = HubCreditTransaction(
+                transaction_id=stable_id("ctx", {"type": "hold_released", "hold_id": clean_hold}),
+                account_id=hold.account_id, transaction_type="hold_released", credits=0,
+                credit_wei=hold.credit_wei, request_id=hold.request_id, hold_id=clean_hold,
+                created_at=now, memo=memo or reason or "request hold released", metadata=dict(metadata or {}),
+            )
+            self._write_dict(tr, "account", account.account_id, account.as_dict())
+            self._write_dict(tr, "hold", clean_hold, released.as_dict())
+            self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
+            self._write_audit_event(
+                tr, event_type="hub.hold.released", wallet_address=account.owner_address,
+                account_id=account.account_id, amount_wei=hold.credit_wei, reference_id=clean_hold,
+                metadata={"reason": reason, "request_id": hold.request_id, **dict(metadata or {})}, now=now,
+            )
+            return {"idempotent": False, "hold": released.as_dict(), "account": account.as_dict()}
+
+        return {"ok": True, **_tx(self.db)}
 
     def charge_hold(
-        self,
-        *,
-        hold_id: str,
-        charged_credits: int,
-        worker_node_id: str = "",
-        memo: str = "",
-        metadata: dict[str, Any] | None = None,
+        self, *, hold_id: str, charged_credits: int,
+        worker_node_id: str = "", memo: str = "", metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise RuntimeError("Credit holds are disabled. Spend credits directly when the request goes through.")
+        return self.charge_hold_credit_wei(
+            hold_id=hold_id, charged_credit_wei=credit_count_to_wei(charged_credits),
+            worker_node_id=worker_node_id, memo=memo, metadata=metadata,
+        )
 
     def charge_hold_credit_wei(
-        self,
-        *,
-        hold_id: str,
-        charged_credit_wei: int | str,
-        worker_node_id: str = "",
-        memo: str = "",
-        metadata: dict[str, Any] | None = None,
+        self, *, hold_id: str, charged_credit_wei: int | str,
+        worker_node_id: str = "", memo: str = "", metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        raise RuntimeError("Credit holds are disabled. Spend credits directly when the request goes through.")
+        clean_hold = str(hold_id or "").strip()
+        amount = positive_credit_wei(charged_credit_wei)
+        clean_worker = clean_worker_id(worker_node_id, default="") if worker_node_id else ""
+        if not clean_hold or amount <= 0:
+            raise ValueError("hold_id and positive charged_credit_wei are required.")
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            payload = self._read_dict(tr, "hold", clean_hold)
+            if not isinstance(payload, dict):
+                raise ValueError("Hold not found; refusing unreserved charge.")
+            hold = _hold_from_dict(payload)
+            if amount > hold.credit_wei:
+                raise ValueError("Charge exceeds reserved credit.")
+            charge_id = stable_id("chg", {"account_id": hold.account_id, "request_id": hold.request_id, "hold_id": clean_hold})
+            existing = self._read_dict(tr, "charge", charge_id)
+            key = self._key("account", hold.account_id)
+            self._add_conflict_key(tr, "add_read_conflict_key", key)
+            self._add_conflict_key(tr, "add_write_conflict_key", key)
+            account = self._account_from_payload(self._read_dict(tr, "account", hold.account_id), hold.account_id, now=now)
+            if isinstance(existing, dict):
+                charge = _charge_from_dict(existing)
+                if hold.status != "charged" or charge.charged_credit_wei != amount or charge.hold_id != clean_hold:
+                    raise ValueError("Inconsistent existing charge for hold.")
+                earning = self._read_dict(tr, "worker_earning", charge.worker_earning_id) if charge.worker_earning_id else None
+                if clean_worker and (not isinstance(earning, dict) or str(earning.get("worker_node_id")) != clean_worker):
+                    raise ValueError("Worker earning mismatches existing charge.")
+                return {"idempotent": True, "hold": hold.as_dict(), "charge": charge.as_dict(), "account": account.as_dict(), "worker_earning": earning}
+            if hold.status != "held":
+                raise ValueError("Cannot charge a terminal hold.")
+            if account.held_credit_wei < hold.credit_wei:
+                raise ValueError("Held balance is below the reservation: refusing charge.")
+            earning = WorkerEarning(
+                earning_id="", worker_node_id=clean_worker,
+                request_id=hold.request_id, credits=0,
+                worker_commitment=make_worker_commitment(worker_node_id=clean_worker, request_id=hold.request_id, epoch_salt=self.namespace),
+                earned_credit_wei=amount, status="earned", created_at=now,
+            ) if clean_worker else None
+            if earning and isinstance(self._read_dict(tr, "worker_earning", earning.earning_id), dict):
+                raise ValueError("Earning exists without its committed charge.")
+            rest = hold.credit_wei - amount
+            charged = HubCreditHold(
+                hold_id=hold.hold_id, account_id=hold.account_id, request_id=hold.request_id,
+                credits=0, credit_wei=hold.credit_wei, status="charged",
+                created_at=hold.created_at, expires_at=hold.expires_at, charged_at=now,
+            )
+            updated = HubCreditAccount(
+                account_id=account.account_id, owner_address=account.owner_address,
+                available_credit_wei=account.available_credit_wei + rest,
+                held_credit_wei=account.held_credit_wei - hold.credit_wei,
+                spent_credit_wei=account.spent_credit_wei + amount,
+                earned_credit_wei=account.earned_credit_wei,
+                bridge_completed_credit_wei=account.bridge_completed_credit_wei,
+                created_at=account.created_at, updated_at=now, metadata=account.metadata,
+            )
+            charge = RequestCharge(
+                charge_id=charge_id, account_id=hold.account_id, request_id=hold.request_id,
+                hold_id=clean_hold, charged_credits=0, charged_credit_wei=amount,
+                released_credit_wei=rest, worker_earning_id=earning.earning_id if earning else "", created_at=now,
+            )
+            tx = HubCreditTransaction(
+                transaction_id=stable_id("ctx", {"type": "request_charged", "charge_id": charge_id}),
+                account_id=account.account_id, transaction_type="request_charged", credits=0,
+                credit_wei=amount, request_id=hold.request_id, hold_id=clean_hold,
+                worker_node_id=clean_worker, created_at=now,
+                memo=memo or "charged completed request", metadata=dict(metadata or {}),
+            )
+            self._write_dict(tr, "account", updated.account_id, updated.as_dict())
+            self._write_dict(tr, "hold", clean_hold, charged.as_dict())
+            self._write_dict(tr, "charge", charge_id, charge.as_dict())
+            self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
+            self._write_audit_event(
+                tr, event_type="hub.hold.charged", wallet_address=account.owner_address,
+                account_id=account.account_id, worker_node_id=clean_worker,
+                amount_wei=amount, reference_id=charge_id,
+                metadata={"request_id": hold.request_id, "hold_id": clean_hold, **dict(metadata or {})}, now=now,
+            )
+            if earning:
+                self._write_dict(tr, "worker_earning", earning.earning_id, earning.as_private_dict())
+                self._write_audit_event(
+                    tr, event_type="hub.worker.earning.recorded", worker_node_id=clean_worker,
+                    amount_wei=amount, reference_id=earning.earning_id,
+                    metadata={"request_id": hold.request_id, "charge_id": charge_id, **dict(metadata or {})}, now=now,
+                )
+            return {"idempotent": False, "hold": charged.as_dict(), "charge": charge.as_dict(), "account": updated.as_dict(), "worker_earning": earning.as_private_dict() if earning else None}
+
+        return {"ok": True, **_tx(self.db)}
 
     def spend_request_credit(
         self,
@@ -872,12 +1011,7 @@ class ExperimentalFoundationDbCreditLedger:
         memo: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Atomically spend requester credits without creating or honoring holds.
-
-        Legacy active holds are collapsed back into spendable balance first so
-        older stuck requests cannot keep wallet funds trapped after the hold path
-        has been removed.
-        """
+        """Atomically spend unreserved credits only (legacy direct-spend callers)."""
 
         clean_account = clean_account_id(account_id)
         clean_request = str(request_id or "").strip()
@@ -920,7 +1054,7 @@ class ExperimentalFoundationDbCreditLedger:
                 }
 
             current = self._account_from_payload(self._read_dict(tr, "account", clean_account), clean_account, now=now)
-            spendable_wei = current.available_credit_wei + current.held_credit_wei
+            spendable_wei = current.available_credit_wei
             if spendable_wei < clean_wei:
                 raise ValueError(
                     f"Insufficient Compute Credits for account {clean_account}: "
@@ -928,26 +1062,7 @@ class ExperimentalFoundationDbCreditLedger:
                     f"{credit_wei_to_decimal_text(clean_wei)} credits required."
                 )
 
-            collapsed_holds: list[str] = []
-            if current.held_credit_wei > 0:
-                for item in self._list_dicts(tr, "hold"):
-                    hold = _hold_from_dict(item)
-                    if hold.account_id != clean_account or hold.status != "held":
-                        continue
-                    cancelled = HubCreditHold(
-                        hold_id=hold.hold_id,
-                        account_id=hold.account_id,
-                        request_id=hold.request_id,
-                        credits=hold.credits,
-                        credit_wei=hold.credit_wei,
-                        status="cancelled",
-                        created_at=hold.created_at,
-                        expires_at=hold.expires_at,
-                        released_at=now,
-                        charged_at=hold.charged_at,
-                    )
-                    self._write_dict(tr, "hold", cancelled.hold_id, cancelled.as_dict())
-                    collapsed_holds.append(cancelled.hold_id)
+            collapsed_holds: list[str] = []  # Never cancel another request's reservation.
 
             earning: WorkerEarning | None = None
             if clean_worker:
@@ -986,7 +1101,7 @@ class ExperimentalFoundationDbCreditLedger:
                 account_id=current.account_id,
                 owner_address=current.owner_address,
                 available_credit_wei=spendable_wei - clean_wei,
-                held_credit_wei=0,
+                held_credit_wei=current.held_credit_wei,
                 spent_credit_wei=current.spent_credit_wei + clean_wei,
                 earned_credit_wei=current.earned_credit_wei,
                 bridge_completed_credit_wei=current.bridge_completed_credit_wei,

@@ -124,6 +124,7 @@ class DevChainBridgeAdapter:
         contracts_path: Path | None = None,
         network_key: str = "dev",
         fallback_rpc_url: str | None = None,
+        rpc_url_override: str | None = None,
         allow_missing_signer: bool = False,
         command_runner: CommandRunner | None = None,
         status: StatusCallback | None = None,
@@ -162,8 +163,11 @@ class DevChainBridgeAdapter:
         if not _is_address(escrow_address):
             raise DevChainBridgeError(f"invalid HubCreditBridgeEscrow address in {contract_source}: {escrow_address!r}")
 
+        # An explicit RPC override is authoritative for a host-side lab. The
+        # deployment may prefer a Docker-only container_rpc_url otherwise.
         rpc_url = str(
-            contract_payload.get("chain_rpc_url")
+            rpc_url_override
+            or contract_payload.get("chain_rpc_url")
             or contract_chain.get("container_rpc_url")
             or contract_chain.get("rpc_url")
             or contract_chain.get("host_rpc_url")

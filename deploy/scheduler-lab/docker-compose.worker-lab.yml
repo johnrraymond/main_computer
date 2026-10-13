@@ -3,8 +3,8 @@ services:
     profiles:
       - worker-lab
     build:
-      context: ../../tools
-      dockerfile: scheduler_lab/Dockerfile.worker-lab
+      context: ../..
+      dockerfile: tools/scheduler_lab/Dockerfile.worker-lab
     image: main-computer-scheduler-lab-worker:local
     environment:
       HUB_BASE_URL: ${HUB_BASE_URL:-http://host.docker.internal:8100}
@@ -22,6 +22,11 @@ services:
       LAB_DURATION_SECONDS: ${LAB_DURATION_SECONDS:-300}
       LAB_WORKTIME: ${LAB_WORKTIME:-}
       LAB_RING: ${LAB_RING:-2}
+      REQUEST_MODE: ${REQUEST_MODE:-worker_pull_v0}
+      LAB_AUTH_MODE: ${LAB_AUTH_MODE:-legacy}
+      EXP_HUB_LAB_DOCKER_HOST_LOOPBACK_MAP: ${EXP_HUB_LAB_DOCKER_HOST_LOOPBACK_MAP:-0}
+      LAB_LIVE_CONCURRENCY: ${LAB_LIVE_CONCURRENCY:-3}
+      LAB_LIVE_TIMEOUT_SECONDS: ${LAB_LIVE_TIMEOUT_SECONDS:-30}
       LAB_FUNDED: ${LAB_FUNDED:-0}
       LAB_REQUEST_STARTUP_MODE: ${LAB_REQUEST_STARTUP_MODE:-auto}
       LAB_REQUEST_STARTUP_SPREAD_SECONDS: ${LAB_REQUEST_STARTUP_SPREAD_SECONDS:-3}
