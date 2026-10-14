@@ -294,6 +294,7 @@ class _StableHubBridgeLedgerAdapter:
         chain_id: int,
         contract_address: str,
         deposit_amount_units: int,
+        chain_completed_credit_wei: int,
         already_completed: bool,
     ) -> dict[str, Any]:
         if wallet_account_id(owner_address) != account_id:
@@ -305,6 +306,7 @@ class _StableHubBridgeLedgerAdapter:
             chain_id=chain_id,
             contract_address=contract_address,
             deposit_amount_units=deposit_amount_units,
+            chain_completed_credit_wei=chain_completed_credit_wei,
             already_completed=already_completed,
         )
 

@@ -705,6 +705,7 @@ class HubCreditBridgeCompletionService:
         # must not become newly spendable money in Stable's separate ledger.
         prepare = getattr(self.ledger, "prepare_bridge_deposit_completion", None)
         if callable(prepare):
+            chain_completed_before = positive_int(client.completed_deposit_units(before.account))
             prepare(
                 account_id=wallet_account_id(before.account),
                 owner_address=before.account,
@@ -712,6 +713,7 @@ class HubCreditBridgeCompletionService:
                 chain_id=deployment.chain_id,
                 contract_address=deployment.contract_address,
                 deposit_amount_units=before.amount_units,
+                chain_completed_credit_wei=chain_completed_before,
                 already_completed=before.completed,
             )
 

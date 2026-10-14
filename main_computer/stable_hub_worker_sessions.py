@@ -979,6 +979,7 @@ class StableHubPayoutLedgerDirectory:
         chain_id: int,
         contract_address: str,
         deposit_amount_units: int,
+        chain_completed_credit_wei: int,
         already_completed: bool,
     ) -> dict[str, Any]:
         """Persist intent BEFORE signing; distinguish new deposits from history.
@@ -994,8 +995,11 @@ class StableHubPayoutLedgerDirectory:
         contract = normalize_address(contract_address)
         amount = int(deposit_amount_units)
         chain = int(chain_id)
+        chain_completed = int(chain_completed_credit_wei)
         if not account or not wallet or not deposit or not contract or amount <= 0 or chain <= 0:
             raise StableHubWorkerSessionError("bridge_deposit_intent_invalid")
+        if chain_completed < 0:
+            raise StableHubWorkerSessionError("bridge_completed_watermark_invalid")
         with self._lock:
             data = self.store.load()
             intents = data.setdefault("payout_deposit_intents", {})
@@ -1008,14 +1012,43 @@ class StableHubPayoutLedgerDirectory:
                 "deposit_amount_units": str(amount),
             }
             existing = intents.get(deposit)
+            completed_deposits = data.setdefault("payout_deposits", {})
+            prior_deposit = completed_deposits.get(deposit)
+            if isinstance(prior_deposit, dict):
+                if (
+                    str(prior_deposit.get("account_id")) != account
+                    or str(prior_deposit.get("contract_address")) != contract
+                    or str(prior_deposit.get("chain_id")) != str(chain)
+                ):
+                    raise StableHubWorkerSessionError("bridge_deposit_intent_conflict")
+                return {"idempotent": True, "intent": dict(existing or {})}
+            account_record = data.setdefault("payout_accounts", {}).get(account)
+            if not isinstance(account_record, dict):
+                account_record = {}
+            owner = normalize_address(account_record.get("wallet_address") or account_record.get("owner_address") or "")
+            if owner and owner != wallet:
+                raise StableHubWorkerSessionError("bridge_account_wallet_mismatch")
+            local_completed = int(account_record.get("bridge_completed_credit_wei", 0) or 0)
             if isinstance(existing, dict):
                 if any(str(existing.get(key)) != str(value) for key, value in expected.items()):
                     raise StableHubWorkerSessionError("bridge_deposit_intent_conflict")
+                expected_chain_total = local_completed + (amount if already_completed else 0)
+                if chain_completed != expected_chain_total:
+                    raise StableHubWorkerSessionError("bridge_historical_completion_requires_reconciliation")
                 return {"idempotent": True, "intent": dict(existing)}
-            # The account may have been funded and spent under the Experimental
-            # ledger, which Stable does not share. Do not silently re-mint it.
             if already_completed:
                 raise StableHubWorkerSessionError("bridge_preexisting_completed_deposit_requires_reconciliation")
+            # Compare the escrow's cumulative completed total with Stable's
+            # durable watermark before completing this deposit. A higher chain
+            # total can represent credit already issued and spent by another
+            # ledger; completing first would strand a newly completed deposit.
+            if chain_completed != local_completed:
+                error = (
+                    "bridge_completed_watermark_ahead_of_chain"
+                    if chain_completed < local_completed
+                    else "bridge_historical_completion_requires_reconciliation"
+                )
+                raise StableHubWorkerSessionError(error)
             intent = {**expected, "status": "prepared", "created_at": utc_now()}
             intents[deposit] = intent
             self.store.save(data)
