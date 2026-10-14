@@ -399,3 +399,19 @@ def test_incomplete_charge_record_fails_closed_instead_of_debiting_again() -> No
         _spend(c, "inconsistent", "0.3")
     assert a.get_account("account-one")["available_credit_wei"] == before["available_credit_wei"]
     assert a.get_account("account-one")["spent_credit_wei"] == before["spent_credit_wei"]
+
+
+def test_identical_timestamps_do_not_overwrite_distinct_funding_deposits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An FDB account balance must never conceal a lost deposit audit entry."""
+    import main_computer.stable_hub_worker_sessions as stable
+    monkeypatch.setattr(stable, "utc_now", lambda: "2026-10-13T19:53:39.025658+00:00")
+    _, stores, a, _ = _two_hubs()
+    wallet = "0x" + "ab" * 20
+    a.fund_account(account_id="account-one", wallet_address=wallet, credits="1", replace=True)
+    a.fund_account(account_id="account-one", wallet_address=wallet, credits="0.25")
+    a.fund_account(account_id="account-one", wallet_address=wallet, credits="0.25")
+    data = stores[0].load()
+    assert a.get_account("account-one")["available_credit_wei"] == "1500000000000000000"
+    assert len(data["payout_deposits"]) == 3
+    assert len(data["payout_transactions"]) == 3
+    assert len({item["deposit_id"] for item in data["payout_deposits"].values()}) == 3

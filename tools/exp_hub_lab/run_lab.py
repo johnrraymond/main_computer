@@ -1288,10 +1288,33 @@ def _resolve_settlement_worker_from_handoff(
         earning_id = str(payout.get("worker_earning_id") or "").strip()
         if not earning_id:
             continue
-        request_id = str(item.get("request_id") or "").strip()
-        if not request_id:
-            raise ExpHubLabError(f"charged worker earning {earning_id} has no originating request ID")
-        expected.append((request_id, earning_id))
+        if ack.get("ok") is not True or payout.get("status") != "charged":
+            raise ExpHubLabError(f"earning {earning_id} has no successful terminal charge acknowledgement")
+
+        # The P1 client supplies a *caller-side* request_id when submitting work.
+        # The live Hub calculates its canonical request_id from the normalized
+        # accepted request; that canonical ID is stored in the FDB charge and
+        # worker_earning records.  Never query settlement using the caller ID.
+        offer = item.get("offer") if isinstance(item.get("offer"), dict) else {}
+        response = item.get("response") if isinstance(item.get("response"), dict) else {}
+        canonical_request_id = str(offer.get("request_id") or "").strip()
+        if not canonical_request_id:
+            raise ExpHubLabError(f"earning {earning_id} has no canonical offered request ID")
+        for source, reported_id in (("HTTP acceptance", response.get("request_id")),
+                                    ("terminal acknowledgement", ack.get("request_id"))):
+            if str(reported_id or "").strip() != canonical_request_id:
+                raise ExpHubLabError(
+                    f"earning {earning_id}: {source} request ID differs from the canonical offered request ID"
+                )
+        offer_session_id = str(offer.get("session_id") or "").strip()
+        if not offer_session_id or any(
+            str(payload.get("session_id") or "").strip() != offer_session_id
+            for payload in (response, ack)
+        ):
+            raise ExpHubLabError(f"earning {earning_id}: accepted/terminal session IDs do not agree")
+        if response.get("accepted") is not True:
+            raise ExpHubLabError(f"earning {earning_id}: HTTP request was not accepted")
+        expected.append((canonical_request_id, earning_id))
     if not expected or len(set(expected)) != len(expected):
         raise ExpHubLabError("handoff has no unique charged request/earning pairs")
     if len({earning_id for _, earning_id in expected}) != len(expected):
@@ -1324,6 +1347,8 @@ def _resolve_settlement_worker_from_handoff(
 
     auth = handoff.get("multi_session_auth") if isinstance(handoff.get("multi_session_auth"), dict) else {}
     wallet_address = str(auth.get("worker_wallet_address") or "").strip().lower()
+    if auth.get("required") is True and not wallet_address:
+        raise ExpHubLabError("strict P2-B settlement requires the authenticated worker wallet")
     if wallet_address:
         # P1's wallet-authenticated live worker uses this stable internal key.
         # It is deliberately distinct from the worker_id submitted over WS.

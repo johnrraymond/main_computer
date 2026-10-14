@@ -1203,6 +1203,9 @@ class StableHubPayoutLedgerDirectory:
                     "credit_wei": str(amount_wei),
                     "replace": bool(replace),
                     "created_at": utc_now(),
+                    # A clock tick is not an identity: concurrent grants can
+                    # have identical timestamps, especially on Windows.
+                    "nonce": secrets.token_hex(16),
                 },
             )
             deposit = {
@@ -1760,12 +1763,19 @@ class StableHubPayoutLedgerDirectory:
         key = str(idempotency_key or "").strip()
         with self._lock:
             data = self.store.load()
+            selected_ids = [str(item) for item in (claim_ids or []) if str(item)]
+            if len(selected_ids) != len(set(selected_ids)):
+                raise StableHubWorkerSessionError("duplicate_claim_ids")
+            batches = data.setdefault("payout_settlements", {})
             if key:
-                for batch in data.setdefault("payout_settlements", {}).values():
+                for batch in batches.values():
                     if isinstance(batch, dict) and batch.get("worker_id") == worker_id and batch.get("idempotency_key") == key:
+                        # An idempotency key identifies a financial intention, not
+                        # merely a prior response. Claim ordering is immaterial.
+                        if selected_ids and set(selected_ids) != set(batch.get("claim_ids") or []):
+                            raise StableHubWorkerSessionError("settlement_batch_idempotency_conflict")
                         return dict(batch)
             claims = data.setdefault("worker_claims", {})
-            selected_ids = [str(item) for item in (claim_ids or []) if str(item)]
             if not selected_ids:
                 selected_ids = [
                     cid
@@ -1793,6 +1803,15 @@ class StableHubPayoutLedgerDirectory:
                     "created_at": utc_now(),
                     "empty": True,
                 }
+            # Validate the entire intention before changing any claim. A
+            # pre-existing batch owns its claims even after being settled; the
+            # same earning must never be re-batched under a different key.
+            already_batched = {
+                str(claim_id)
+                for batch in batches.values()
+                if isinstance(batch, dict) and str(batch.get("status") or "") != "cancelled"
+                for claim_id in batch.get("claim_ids", [])
+            }
             amount_wei = 0
             unit = "credit"
             for claim_id in selected_ids:
@@ -1801,9 +1820,12 @@ class StableHubPayoutLedgerDirectory:
                     raise StableHubWorkerSessionError("worker claim is not settleable by this worker.")
                 if claim.get("status") != "claimed":
                     raise StableHubWorkerSessionError("worker claim is not settleable from its current status.")
+                if claim_id in already_batched or str(claim.get("settlement_status") or "not_settled") != "not_settled":
+                    raise StableHubWorkerSessionError("worker_claim_already_batched")
                 unit = str(claim.get("unit") or unit)
                 amount_wei += int(claim.get("claimed_credit_wei") or credit_decimal_text_to_wei(str(claim.get("amount", "0"))))
-                claim = dict(claim)
+            for claim_id in selected_ids:
+                claim = dict(claims[claim_id])
                 claim["settlement_status"] = "batched"
                 claims[claim_id] = claim
             batch_id = stable_id(
@@ -1917,6 +1939,24 @@ class StableHubPayoutLedgerDirectory:
                 claim = data.setdefault("worker_claims", {}).get(str(claim_id))
                 if isinstance(claim, dict):
                     earning_ids.extend([str(item) for item in claim.get("earning_ids", []) if str(item)])
+            clean_key = str(idempotency_key or "").strip()
+            payouts = data.setdefault("bridge_payouts", {})
+            for existing in payouts.values():
+                if not isinstance(existing, dict):
+                    continue
+                if str(existing.get("batch_id") or "") == clean_batch:
+                    # A failed or uncertain payout still owns the batch. A new
+                    # key must not create a second possible external payment.
+                    if str(existing.get("worker_id") or existing.get("worker_node_id") or "") != worker_id:
+                        raise StableHubWorkerSessionError("bridge_payout_batch_conflict")
+                    if str(existing.get("idempotency_key") or "").strip() != clean_key:
+                        raise StableHubWorkerSessionError("bridge_payout_batch_conflict")
+                    if int(existing.get("credit_wei") or 0) != amount_wei:
+                        raise StableHubWorkerSessionError("bridge_payout_amount_conflict")
+                    return dict(existing)
+                if (clean_key and str(existing.get("worker_id") or existing.get("worker_node_id") or "") == worker_id
+                        and str(existing.get("idempotency_key") or "").strip() == clean_key):
+                    raise StableHubWorkerSessionError("bridge_payout_idempotency_conflict")
             payout_id = stable_id(
                 "bpayout",
                 {
@@ -1925,11 +1965,13 @@ class StableHubPayoutLedgerDirectory:
                     "worker_node_id": worker_id,
                     "earning_ids": earning_ids,
                     "credit_wei": str(amount_wei),
-                    "idempotency_key": str(idempotency_key or ""),
+                    "idempotency_key": clean_key,
                 },
             )
-            existing = data.setdefault("bridge_payouts", {}).get(payout_id)
+            existing = payouts.get(payout_id)
             if isinstance(existing, dict):
+                if str(existing.get("batch_id") or "") != clean_batch:
+                    raise StableHubWorkerSessionError("bridge_payout_idempotency_conflict")
                 return dict(existing)
             payout = {
                 "bridge_payout_id": payout_id,
@@ -1947,7 +1989,7 @@ class StableHubPayoutLedgerDirectory:
                 "credits_display": credit_wei_to_decimal_text(amount_wei),
                 "status": "requested",
                 "bridge_status": "pending",
-                "idempotency_key": str(idempotency_key or ""),
+                "idempotency_key": clean_key,
                 "created_at": utc_now(),
                 "confirmed_at": "",
                 "failed_at": "",

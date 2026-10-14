@@ -384,8 +384,23 @@ def test_exp_hub_lab_full_e2e_renderer_reports_chain_and_payout_proofs() -> None
     assert "duplicate receipt idempotent: yes" in rendered
 
 
-def test_p2b_resolves_wallet_derived_worker_identity_from_committed_earnings(monkeypatch) -> None:
+def _p2b_verified_handoff_item(client_id: str, canonical_id: str, earning_id: str) -> dict:
+    """P1's caller-side request ID is not the Hub's durable request ID."""
+    session_id = "sess_" + canonical_id
+    return {
+        "request_id": client_id,
+        "offer": {"request_id": canonical_id, "session_id": session_id},
+        "response": {"ok": True, "accepted": True, "request_id": canonical_id, "session_id": session_id},
+        "terminal_ack": {
+            "ok": True, "request_id": canonical_id, "session_id": session_id,
+            "payout": {"status": "charged", "worker_earning_id": earning_id},
+        },
+    }
+
+
+def test_p2b_resolves_wallet_derived_worker_identity_from_canonical_earnings(monkeypatch) -> None:
     import hashlib
+    from urllib.parse import parse_qs, urlparse
     import tools.exp_hub_lab.run_lab as mod
 
     wallet = "0xAaaBbbCcc123"
@@ -394,33 +409,37 @@ def test_p2b_resolves_wallet_derived_worker_identity_from_committed_earnings(mon
         "worker_id": "worker_exp_handoff_lab_label_is_not_financial_identity",
         "multi_session_auth": {"worker_wallet_address": wallet},
         "requests": [
-            {"request_id": "req1", "terminal_ack": {"payout": {"worker_earning_id": "earn1"}}},
-            {"request_id": "req2", "terminal_ack": {"payout": {"worker_earning_id": "earn2"}}},
+            _p2b_verified_handoff_item("caller_req1", "hub_canonical_1", "earn1"),
+            _p2b_verified_handoff_item("caller_req2", "hub_canonical_2", "earn2"),
         ],
     }
     requested_urls = []
     def fetch(url, *, timeout):
         requested_urls.append(url)
-        req = "req1" if "request_id=req1" in url else "req2"
-        return {"ok": True, "worker_earnings": [{"earning_id": "earn1" if req == "req1" else "earn2",
-            "request_id": req, "worker_node_id": actual}]}
+        req = parse_qs(urlparse(url).query)["request_id"][0]
+        assert req in ("hub_canonical_1", "hub_canonical_2")
+        return {"ok": True, "worker_earnings": [{
+            "earning_id": "earn1" if req == "hub_canonical_1" else "earn2",
+            "request_id": req, "worker_node_id": actual,
+        }]}
     monkeypatch.setattr(mod, "_read_json_url", fetch)
     assert mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5) == (actual, ["earn1", "earn2"])
     assert len(requested_urls) == 2
-    assert all("worker_node_id=" not in u for u in requested_urls)
+    assert all("worker_node_id=" not in u and "caller_req" not in u for u in requested_urls)
 
 
 def test_p2b_rejects_earnings_for_different_worker_without_claiming(monkeypatch) -> None:
     import pytest
+    from urllib.parse import parse_qs, urlparse
     import tools.exp_hub_lab.run_lab as mod
     handoff = {"requests": [
-        {"request_id": "req1", "terminal_ack": {"payout": {"worker_earning_id": "earn1"}}},
-        {"request_id": "req2", "terminal_ack": {"payout": {"worker_earning_id": "earn2"}}},
+        _p2b_verified_handoff_item("caller_1", "hub_req1", "earn1"),
+        _p2b_verified_handoff_item("caller_2", "hub_req2", "earn2"),
     ]}
     def fetch(url, *, timeout):
-        req = "req1" if "request_id=req1" in url else "req2"
-        return {"ok": True, "worker_earnings": [{"earning_id": "earn1" if req == "req1" else "earn2",
-            "request_id": req, "worker_node_id": "live_a" if req == "req1" else "live_b"}]}
+        req = parse_qs(urlparse(url).query)["request_id"][0]
+        return {"ok": True, "worker_earnings": [{"earning_id": "earn1" if req == "hub_req1" else "earn2",
+            "request_id": req, "worker_node_id": "live_a" if req == "hub_req1" else "live_b"}]}
     monkeypatch.setattr(mod, "_read_json_url", fetch)
     with pytest.raises(mod.ExpHubLabError, match="different worker settlement identities"):
         mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
@@ -431,14 +450,14 @@ def test_p2b_rejects_wrong_wallet_or_unmatched_earning(monkeypatch) -> None:
     import tools.exp_hub_lab.run_lab as mod
     handoff = {
         "multi_session_auth": {"worker_wallet_address": "0xAABBCC"},
-        "requests": [{"request_id": "req1", "terminal_ack": {"payout": {"worker_earning_id": "earn1"}}}],
+        "requests": [_p2b_verified_handoff_item("caller_req1", "hub_req1", "earn1")],
     }
     monkeypatch.setattr(mod, "_read_json_url", lambda url, *, timeout: {
-        "ok": True, "worker_earnings": [{"earning_id": "earn1", "request_id": "req1", "worker_node_id": "live_wrong"}]})
+        "ok": True, "worker_earnings": [{"earning_id": "earn1", "request_id": "hub_req1", "worker_node_id": "live_wrong"}]})
     with pytest.raises(mod.ExpHubLabError, match="authenticated worker wallet"):
         mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
     monkeypatch.setattr(mod, "_read_json_url", lambda url, *, timeout: {
-        "ok": True, "worker_earnings": [{"earning_id": "earn_other", "request_id": "req1", "worker_node_id": "live_wrong"}]})
+        "ok": True, "worker_earnings": [{"earning_id": "earn_other", "request_id": "hub_req1", "worker_node_id": "live_wrong"}]})
     with pytest.raises(mod.ExpHubLabError, match="0 matching earning records"):
         mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
 
@@ -447,9 +466,56 @@ def test_p2b_rejects_duplicate_earning_identity(monkeypatch) -> None:
     import pytest
     import tools.exp_hub_lab.run_lab as mod
     handoff = {"requests": [
-        {"request_id": "req1", "terminal_ack": {"payout": {"worker_earning_id": "earn1"}}},
-        {"request_id": "req2", "terminal_ack": {"payout": {"worker_earning_id": "earn1"}}},
+        _p2b_verified_handoff_item("caller_req1", "hub_req1", "earn1"),
+        _p2b_verified_handoff_item("caller_req2", "hub_req2", "earn1"),
     ]}
     monkeypatch.setattr(mod, "_read_json_url", lambda url, *, timeout: pytest.fail("must fail before querying or claiming"))
     with pytest.raises(mod.ExpHubLabError, match="reused a worker earning ID"):
         mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
+
+
+def test_p2b_rejects_inconsistent_canonical_request_or_session(monkeypatch) -> None:
+    import pytest
+    import tools.exp_hub_lab.run_lab as mod
+    item = _p2b_verified_handoff_item("caller", "hub_actual", "earn1")
+    handoff = {"requests": [item]}
+    monkeypatch.setattr(mod, "_read_json_url", lambda url, *, timeout: pytest.fail("must fail before ledger lookup"))
+    item["response"]["request_id"] = "caller"
+    with pytest.raises(mod.ExpHubLabError, match="HTTP acceptance request ID differs"):
+        mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
+    item["response"]["request_id"] = "hub_actual"
+    item["terminal_ack"]["request_id"] = "hub_other"
+    with pytest.raises(mod.ExpHubLabError, match="terminal acknowledgement request ID differs"):
+        mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
+    item["terminal_ack"]["request_id"] = "hub_actual"
+    item["terminal_ack"]["session_id"] = "sess_other"
+    with pytest.raises(mod.ExpHubLabError, match="session IDs do not agree"):
+        mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
+    item["terminal_ack"]["session_id"] = "sess_hub_actual"
+    item["terminal_ack"]["payout"]["status"] = "failed"
+    with pytest.raises(mod.ExpHubLabError, match="no successful terminal charge"):
+        mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
+
+
+def test_p2b_rejects_missing_offered_request_id(monkeypatch) -> None:
+    import pytest
+    import tools.exp_hub_lab.run_lab as mod
+    item = _p2b_verified_handoff_item("caller_req", "hub_req", "earn1")
+    item["offer"].pop("request_id")
+    monkeypatch.setattr(mod, "_read_json_url", lambda url, *, timeout: pytest.fail("must fail before ledger lookup"))
+    with pytest.raises(mod.ExpHubLabError, match="no canonical offered request ID"):
+        mod._resolve_settlement_worker_from_handoff({"requests": [item]}, owner_url="http://owner", timeout=5)
+
+
+def test_p2b_strict_settlement_refuses_missing_authenticated_wallet(monkeypatch) -> None:
+    import pytest
+    import tools.exp_hub_lab.run_lab as mod
+    handoff = {
+        "multi_session_auth": {"required": True, "worker_wallet_address": ""},
+        "requests": [_p2b_verified_handoff_item("caller", "hub_actual", "earn1")],
+    }
+    monkeypatch.setattr(mod, "_read_json_url", lambda url, *, timeout: {
+        "ok": True, "worker_earnings": [{"earning_id": "earn1", "request_id": "hub_actual", "worker_node_id": "live_someone"}]})
+    with pytest.raises(mod.ExpHubLabError, match="requires the authenticated worker wallet"):
+        mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
+

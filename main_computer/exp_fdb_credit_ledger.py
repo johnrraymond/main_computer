@@ -385,13 +385,24 @@ class ExperimentalFoundationDbCreditLedger:
         holds.sort(key=lambda item: item.created_at, reverse=True)
         return holds[: max(0, int(limit or 100))]
 
-    def list_charges(self, *, request_id: str = "", limit: int = 100) -> list[RequestCharge]:
+    def list_charges(
+        self,
+        *,
+        account_id: str = "",
+        request_id: str = "",
+        limit: int = 100,
+    ) -> list[RequestCharge]:
+        # Match the shared Hub HTTP handler and Stable ledger query contract.
+        clean_account = clean_account_id(account_id, default="") if account_id else ""
         clean_request = str(request_id or "").strip()
+        clean_limit = min(500, max(1, int(limit or 100)))
         charges = [_charge_from_dict(item) for item in self._snapshot()["charges"]]
+        if clean_account:
+            charges = [charge for charge in charges if charge.account_id == clean_account]
         if clean_request:
             charges = [charge for charge in charges if charge.request_id == clean_request]
         charges.sort(key=lambda item: item.created_at, reverse=True)
-        return charges[: max(0, int(limit or 100))]
+        return charges[:clean_limit]
 
     def list_worker_earnings(self, *, worker_node_id: str = "", request_id: str = "", limit: int = 100) -> list[WorkerEarning]:
         clean_worker = clean_worker_id(worker_node_id, default="") if worker_node_id else ""
@@ -1172,12 +1183,61 @@ class ExperimentalFoundationDbCreditLedger:
         result = _tx(self.db)
         return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
 
+    @staticmethod
+    def _legacy_earning_settlement_owners(
+        claim_payloads: list[dict[str, Any]], payout_payloads: list[dict[str, Any]]
+    ) -> dict[str, set[str]]:
+        """Include pre-index claims/payouts when enforcing earning exclusivity.
+
+        We cannot infer that an earning is free merely because a newly introduced
+        ownership key is absent: older ledgers have no such keys. Failed bridge
+        payouts remain reserved until their chain outcome is reconciled.
+        """
+        owners: dict[str, set[str]] = {}
+        for payload in claim_payloads:
+            if not isinstance(payload, dict):
+                continue
+            claim = _claim_from_dict(payload)
+            if claim.status in {"claimed", "settled"}:
+                for earning_id in claim.earning_ids:
+                    owners.setdefault(earning_id, set()).add(f"worker claim {claim.claim_id}")
+        for payload in payout_payloads:
+            if not isinstance(payload, dict) or not str(payload.get("worker_node_id", "")).strip():
+                continue
+            if str(payload.get("status", "")) == "cancelled":
+                continue
+            payout_id = str(payload.get("payout_id", ""))
+            for earning_id in payload.get("earning_ids", []) or []:
+                if str(earning_id).strip():
+                    owners.setdefault(str(earning_id), set()).add(f"bridge payout {payout_id}")
+        return owners
+
+    def _earning_settlement_owner(
+        self, tr: Any, earning_id: str, legacy_owners: dict[str, set[str]]
+    ) -> str:
+        """Reads the per-earning FDB conflict key even for absent owners."""
+        indexed = self._read_dict(tr, "worker_earning_settlement_owner", earning_id)
+        if indexed is not None:
+            return f"{indexed.get('owner_type', 'settlement')} {indexed.get('owner_id', '')}"
+        prior = legacy_owners.get(earning_id, set())
+        return ", ".join(sorted(prior))
+
     def worker_claim_totals(self, worker_node_id: str) -> dict[str, Any]:
         clean_worker = clean_worker_id(worker_node_id)
-        earnings = [e for e in self.list_worker_earnings(worker_node_id=clean_worker, limit=10_000) if e.status == "earned"]
-        claims = [_claim_from_dict(item) for item in self._snapshot()["worker_claims"] if str(item.get("worker_node_id", "")) == clean_worker]
+        snapshot = self._snapshot()
+        earnings = [
+            _earning_from_dict(e)
+            for e in snapshot["worker_earnings"]
+            if str(e.get("worker_node_id", "")) == clean_worker and str(e.get("status", "")) == "earned"
+        ]
+        claims = [
+            _claim_from_dict(item)
+            for item in snapshot["worker_claims"]
+            if str(item.get("worker_node_id", "")) == clean_worker
+        ]
         claimed_ids = {earning_id for claim in claims for earning_id in claim.earning_ids if claim.status in {"claimed", "settled"}}
-        claimable = [earning for earning in earnings if earning.earning_id not in claimed_ids]
+        legacy_owners = self._legacy_earning_settlement_owners(snapshot["worker_claims"], snapshot["bridge_payouts"])
+        claimable = [earning for earning in earnings if earning.earning_id not in legacy_owners]
         return {
             "ok": True,
             "worker_node_id": clean_worker,
@@ -1200,29 +1260,68 @@ class ExperimentalFoundationDbCreditLedger:
         memo: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if not str(worker_node_id or "").strip():
+            raise ValueError("worker_node_id is required.")
         clean_worker = clean_worker_id(worker_node_id)
+        explicit_earning_ids = earning_ids is not None
         requested_ids = [str(item or "").strip() for item in (earning_ids or []) if str(item or "").strip()]
+        if len(requested_ids) != len(set(requested_ids)):
+            raise ValueError("earning_ids must not contain duplicates.")
+        requested_claim_credits = None if claim_credits is None else positive_int(claim_credits)
         clean_key = str(idempotency_key or "").strip()
         now = utc_now()
 
         @self.fdb.transactional
         def _tx(tr: Any) -> dict[str, Any]:
-            earnings = [_earning_from_dict(item) for item in self._list_dicts(tr, "worker_earning") if str(item.get("worker_node_id", "")) == clean_worker]
-            claims = [_claim_from_dict(item) for item in self._list_dicts(tr, "worker_claim") if str(item.get("worker_node_id", "")) == clean_worker]
+            earnings = [_earning_from_dict(item) for item in self._list_dicts(tr, "worker_earning")]
+            claims_payloads = self._list_dicts(tr, "worker_claim")
+            claims = [_claim_from_dict(item) for item in claims_payloads]
+            bridge_payloads = self._list_dicts(tr, "bridge_payout")
             if clean_key:
                 for claim in claims:
-                    if claim.idempotency_key == clean_key:
+                    if claim.worker_node_id == clean_worker and claim.idempotency_key == clean_key:
+                        if explicit_earning_ids and requested_ids != claim.earning_ids:
+                            raise ValueError("idempotency_key reused with different earning_ids.")
+                        if requested_claim_credits is not None and credit_count_to_wei(requested_claim_credits) != claim.claimed_credit_wei:
+                            raise ValueError("idempotency_key reused with different claim_credits.")
                         return {"idempotent": True, "claim": claim.as_dict(), "claimed_count": len(claim.earning_ids)}
 
-            claimed_ids = {earning_id for claim in claims for earning_id in claim.earning_ids if claim.status in {"claimed", "settled"}}
-            selected_ids = requested_ids or [earning.earning_id for earning in earnings if earning.status == "earned" and earning.earning_id not in claimed_ids]
-            selected = [earning for earning in earnings if earning.earning_id in set(selected_ids)]
-            if not selected:
+            legacy_owners = self._legacy_earning_settlement_owners(claims_payloads, bridge_payloads)
+            earnings_by_id = {earning.earning_id: earning for earning in earnings}
+            if explicit_earning_ids:
+                selected_ids = requested_ids
+            else:
+                selected_ids = [
+                    earning.earning_id for earning in earnings
+                    if earning.worker_node_id == clean_worker
+                    and earning.status == "earned"
+                    and earning.earning_id not in legacy_owners
+                    and not self._earning_settlement_owner(tr, earning.earning_id, legacy_owners)
+                ]
+            if not selected_ids:
+                if requested_claim_credits not in (None, 0):
+                    raise ValueError("claim_credits cannot be positive when no earnings are claimable.")
                 return {"idempotent": False, "claim": None, "claimed_count": 0}
 
+            selected: list[WorkerEarning] = []
+            for earning_id in selected_ids:
+                earning = earnings_by_id.get(earning_id)
+                if earning is None:
+                    raise KeyError(f"Unknown worker earning: {earning_id}")
+                if earning.worker_node_id != clean_worker:
+                    raise ValueError(f"Earning {earning_id} belongs to another worker.")
+                if earning.status != "earned":
+                    raise ValueError(f"Earning {earning_id} is not finalized/earned; status is {earning.status}.")
+                owner = self._earning_settlement_owner(tr, earning_id, legacy_owners)
+                if owner:
+                    raise ValueError(f"Earning {earning_id} has already been claimed or reserved by {owner}.")
+                selected.append(earning)
+
             claimed_wei = sum(earning.earned_credit_wei for earning in selected)
-            if claim_credits is not None and credit_count_to_wei(claim_credits) != claimed_wei:
+            if requested_claim_credits is not None and credit_count_to_wei(requested_claim_credits) != claimed_wei:
                 raise ValueError("claim_credits mismatch.")
+            if claimed_wei <= 0:
+                return {"idempotent": False, "claim": None, "claimed_count": 0}
             claim = WorkerClaim(
                 claim_id="",
                 worker_node_id=clean_worker,
@@ -1245,6 +1344,11 @@ class ExperimentalFoundationDbCreditLedger:
                 metadata={**dict(metadata or {}), "claim_id": claim.claim_id, "earning_ids": selected_ids},
             )
             self._write_dict(tr, "worker_claim", claim.claim_id, claim.as_dict())
+            for earning_id in selected_ids:
+                self._write_dict(tr, "worker_earning_settlement_owner", earning_id, {
+                    "earning_id": earning_id, "owner_type": "worker_claim", "owner_id": claim.claim_id,
+                    "worker_node_id": clean_worker, "created_at": now,
+                })
             self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
             return {"idempotent": False, "claim": claim.as_dict(), "claimed_count": len(selected_ids), "transaction": tx.as_dict()}
 
@@ -1368,6 +1472,15 @@ class ExperimentalFoundationDbCreditLedger:
                         continue
                     batch = _batch_from_dict(item)
                     if batch.worker_node_id == clean_worker and str(batch.metadata.get("idempotency_key", "")) == clean_key:
+                        # Idempotency is replay of the SAME financial intent, not
+                        # permission to substitute another claim set or payout rail.
+                        # Compare sets because claim ordering is not economic intent.
+                        if explicit_claim_ids and set(requested_claim_ids) != set(batch.claim_ids):
+                            raise ValueError("Settlement batch idempotency key reused with different claim_ids.")
+                        if precision != batch.precision_places:
+                            raise ValueError("Settlement batch idempotency key reused with different payout precision.")
+                        if clean_account_id(bridge_account_id) != batch.bridge_account_id:
+                            raise ValueError("Settlement batch idempotency key reused with different bridge account.")
                         return {
                             "idempotent": True,
                             "batch": batch.as_dict(),
@@ -1507,10 +1620,15 @@ class ExperimentalFoundationDbCreditLedger:
             claims_payloads = self._list_dicts(tr, "worker_claim")
             batch_payloads = self._list_dicts(tr, "worker_settlement_batch")
             if batch.status == "settled":
-                if settlement_reference and batch.settlement_reference and settlement_reference != batch.settlement_reference:
+                if settlement_reference and settlement_reference != (batch.settlement_reference or clean_batch_id):
                     raise ValueError(f"Settlement batch {clean_batch_id} is already settled with a different reference.")
-                if settlement_tx_hash and batch.settlement_tx_hash and settlement_tx_hash.lower() != batch.settlement_tx_hash.lower():
+                if settlement_tx_hash and settlement_tx_hash.lower() != batch.settlement_tx_hash.lower():
                     raise ValueError(f"Settlement batch {clean_batch_id} is already settled with a different tx hash.")
+                existing_key = str(batch.metadata.get("settle_idempotency_key") or "")
+                if clean_key and existing_key and clean_key != existing_key:
+                    raise ValueError("settlement_idempotency_key_conflict")
+                if payout_rail and payout_rail != batch.payout_rail:
+                    raise ValueError("settlement_payout_rail_conflict")
                 return {
                     "idempotent": True,
                     "batch": batch.as_dict(),
@@ -2157,6 +2275,134 @@ class ExperimentalFoundationDbCreditLedger:
         result = _tx(self.db)
         return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
 
+    def _request_settled_batch_bridge_payout(
+        self,
+        *,
+        wallet_address: str,
+        worker_node_id: str,
+        batch_id: str,
+        idempotency_key: str,
+        memo: str,
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """P3 opt-in batch payout. All identity/ownership decisions are one FDB txn.
+
+        Experimental's ordinary `settled` batch can ALREADY represent an executed
+        chain payment. Never convert such a receipt to a second payment. Only
+        batches explicitly settled on the internal bridge-preparation rail are
+        eligible for the separate bridge-payout execution phase.
+        """
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            raw = self._read_dict(tr, "worker_settlement_batch", batch_id)
+            if raw is None:
+                raise KeyError(f"Unknown worker settlement batch: {batch_id}")
+            batch = _batch_from_dict(raw)
+            if batch.worker_node_id != worker_node_id:
+                raise ValueError("settlement batch belongs to another worker.")
+            if batch.status != "settled":
+                raise ValueError("worker settlement batch must be settled before bridge payout.")
+            if (batch.payout_rail != "hub-internal-bridge-preparation" or batch.settlement_tx_hash
+                    or dict(batch.metadata.get("settlement_proof") or {})):
+                raise ValueError("settlement batch has external payment evidence; refusing a second payout.")
+            amount_wei = int(batch.total_credit_wei_published)
+            if amount_wei <= 0:
+                raise ValueError("settlement batch has no bridgeable credits.")
+            claims_by_id = {
+                str(item.get("claim_id")): _claim_from_dict(item)
+                for item in self._list_dicts(tr, "worker_claim")
+            }
+            earning_ids: list[str] = []
+            for claim_id in batch.claim_ids:
+                claim = claims_by_id.get(claim_id)
+                if claim is None or claim.worker_node_id != worker_node_id or claim.status != "settled":
+                    raise ValueError("settlement batch references a missing or unsettled worker claim.")
+                earning_ids.extend(claim.earning_ids)
+            if len(earning_ids) != len(set(earning_ids)):
+                raise ValueError("settlement batch contains duplicated worker earnings.")
+            # Also recognize payouts recorded before the new owner index existed.
+            owner = self._read_dict(tr, "worker_settlement_bridge_owner", batch_id)
+            previous = [
+                item for item in self._list_dicts(tr, "bridge_payout")
+                if str(item.get("batch_id") or "") == batch_id
+            ]
+            if len(previous) > 1:
+                raise ValueError("settlement batch has conflicting bridge payouts; reconciliation required.")
+            if owner:
+                owned_id = str(owner.get("payout_id") or "")
+                existing = self._read_dict(tr, "bridge_payout", owned_id)
+                if (not isinstance(existing, dict) or str(existing.get("batch_id") or "") != batch_id
+                        or (previous and str(previous[0].get("payout_id")) != owned_id)):
+                    raise ValueError("settlement batch bridge ownership is inconsistent; reconciliation required.")
+            else:
+                existing = previous[0] if previous else None
+            if existing is not None:
+                if (
+                    str(existing.get("batch_id") or "") != batch_id
+                    or str(existing.get("wallet_address") or "") != wallet_address
+                    or str(existing.get("worker_node_id") or "") != worker_node_id
+                    or str(existing.get("idempotency_key") or "") != idempotency_key
+                    or int(existing.get("credit_wei") or 0) != amount_wei
+                    or list(existing.get("earning_ids") or []) != earning_ids
+                ):
+                    raise ValueError("settlement batch payout already owned by a conflicting request.")
+                if not owner:
+                    self._write_dict(tr, "worker_settlement_bridge_owner", batch_id, {
+                        "batch_id": batch_id, "payout_id": existing["payout_id"], "created_at": now,
+                    })
+                return {"idempotent": True, "payout": existing}
+            if idempotency_key:
+                for other in self._list_dicts(tr, "bridge_payout"):
+                    if (
+                        str(other.get("idempotency_key") or "") == idempotency_key
+                        and str(other.get("worker_node_id") or "") == worker_node_id
+                    ):
+                        raise ValueError("bridge payout idempotency_key reused for a different batch.")
+            payout_id = stable_id("bpayout", {
+                "worker_node_id": worker_node_id,
+                "batch_id": batch_id,
+                "wallet_address": wallet_address,
+                "credit_wei": str(amount_wei),
+            })
+            payout = {
+                "payout_id": payout_id,
+                "bridge_payout_id": payout_id,
+                "wallet_address": wallet_address,
+                "account_id": "",
+                "worker_node_id": worker_node_id,
+                "batch_id": batch_id,
+                "earning_ids": earning_ids,
+                "credit_wei": str(amount_wei),
+                "credits": credit_wei_to_whole_credits_floor(amount_wei),
+                "status": "pending",
+                "bridge_status": "pending",
+                "payout_origin": "settled-batch",
+                "idempotency_key": idempotency_key,
+                "memo": memo,
+                "created_at": now,
+                "confirmed_at": "",
+                "failed_at": "",
+                "metadata": {**dict(metadata or {}), "batch_settlement_reference": batch.settlement_reference,
+                             "batch_settlement_proof_id": batch.settlement_proof_id,
+                             "dust_credit_wei": str(batch.dust_credit_wei)},
+            }
+            self._write_dict(tr, "bridge_payout", payout_id, payout)
+            self._write_dict(tr, "worker_settlement_bridge_owner", batch_id, {
+                "batch_id": batch_id, "payout_id": payout_id, "created_at": now,
+            })
+            event = self._write_audit_event(
+                tr, event_type="bridge.payout.requested", wallet_address=wallet_address,
+                worker_node_id=worker_node_id, amount_wei=amount_wei,
+                reference_id=payout_id,
+                metadata={"batch_id": batch_id, "earning_ids": earning_ids, **dict(metadata or {})},
+                now=now,
+            )
+            return {"idempotent": False, "payout": payout, "audit_event": event}
+
+        return {"ok": True, **_tx(self.db)}
+
     def request_bridge_payout(
         self,
         *,
@@ -2168,6 +2414,7 @@ class ExperimentalFoundationDbCreditLedger:
         idempotency_key: str = "",
         memo: str = "",
         metadata: dict[str, Any] | None = None,
+        batch_id: str = "",
     ) -> dict[str, Any]:
         clean_wallet = normalize_address(wallet_address)
         clean_account = clean_account_id(account_id, default="") if account_id else ""
@@ -2178,7 +2425,23 @@ class ExperimentalFoundationDbCreditLedger:
         if not clean_account and not clean_worker:
             raise ValueError("account_id or worker_node_id is required.")
         requested_earning_ids = [str(item or "").strip() for item in (earning_ids or []) if str(item or "").strip()]
+        if len(requested_earning_ids) != len(set(requested_earning_ids)):
+            raise ValueError("earning_ids must not contain duplicates.")
         clean_key = str(idempotency_key or "").strip()
+        clean_batch = str(batch_id or "").strip()
+        if clean_batch:
+            if not clean_worker or clean_account or requested_earning_ids or requested_wei:
+                raise ValueError("batch payout requires worker_node_id and batch_id, without account_id, earning_ids or credits.")
+            return self._request_settled_batch_bridge_payout(
+                wallet_address=clean_wallet, worker_node_id=clean_worker,
+                batch_id=clean_batch, idempotency_key=clean_key,
+                memo=memo, metadata=metadata,
+            )
+        request_intent = {
+            "wallet_address": clean_wallet, "account_id": clean_account,
+            "worker_node_id": clean_worker, "earning_ids": requested_earning_ids,
+            "requested_credit_wei": str(requested_wei),
+        }
         payout_id = stable_id("bpayout", {
             "wallet_address": clean_wallet,
             "account_id": clean_account,
@@ -2194,15 +2457,27 @@ class ExperimentalFoundationDbCreditLedger:
             existing = self._read_dict(tr, "bridge_payout", payout_id)
             if existing is not None:
                 return {"idempotent": True, "payout": existing}
+            if clean_key:
+                for previous in self._list_dicts(tr, "bridge_payout"):
+                    if (
+                        str(previous.get("idempotency_key") or "") == clean_key
+                        and str(previous.get("worker_node_id") or "") == clean_worker
+                        and str(previous.get("account_id") or "") == clean_account
+                    ):
+                        raise ValueError("bridge payout idempotency_key reused for a different request.")
             selected_earnings: list[WorkerEarning] = []
             amount_wei = requested_wei
             if clean_worker:
+                legacy_owners = self._legacy_earning_settlement_owners(
+                    self._list_dicts(tr, "worker_claim"), self._list_dicts(tr, "bridge_payout")
+                )
                 earnings = [
                     _earning_from_dict(item)
                     for item in self._list_dicts(tr, "worker_earning")
                     if str(item.get("worker_node_id", "")) == clean_worker
                     and str(item.get("status", "earned")) == "earned"
                     and (not requested_earning_ids or str(item.get("earning_id", "")) in set(requested_earning_ids))
+                    and not self._earning_settlement_owner(tr, str(item.get("earning_id", "")), legacy_owners)
                 ]
                 earnings.sort(key=lambda item: item.created_at)
                 if requested_earning_ids:
@@ -2230,7 +2505,9 @@ class ExperimentalFoundationDbCreditLedger:
                 account = self._account_from_payload(self._read_dict(tr, "account", clean_account), clean_account, now=now)
                 if account.owner_address and normalize_address(account.owner_address) != clean_wallet:
                     raise ValueError(f"Account {clean_account} belongs to {account.owner_address}, not {clean_wallet}.")
-                spendable_credit_wei = account.available_credit_wei + account.held_credit_wei
+                # Live reservations are not withdrawable. Earlier code treated
+                # held funds as spendable and erased every active hold.
+                spendable_credit_wei = account.available_credit_wei
                 if amount_wei <= 0:
                     amount_wei = spendable_credit_wei
                 if spendable_credit_wei < amount_wei or amount_wei <= 0:
@@ -2242,7 +2519,7 @@ class ExperimentalFoundationDbCreditLedger:
                     account_id=account.account_id,
                     owner_address=clean_wallet,
                     available_credit_wei=spendable_credit_wei - amount_wei,
-                    held_credit_wei=0,
+                    held_credit_wei=account.held_credit_wei,
                     spent_credit_wei=account.spent_credit_wei,
                     earned_credit_wei=account.earned_credit_wei,
                     bridge_completed_credit_wei=account.bridge_completed_credit_wei,
@@ -2260,6 +2537,9 @@ class ExperimentalFoundationDbCreditLedger:
                 "credit_wei": str(amount_wei),
                 "credits": credit_wei_to_whole_credits_floor(amount_wei),
                 "status": "pending",
+                "idempotency_key": clean_key,
+                "request_intent": request_intent,
+                "payout_origin": "legacy-direct",
                 "memo": memo,
                 "created_at": now,
                 "confirmed_at": "",
@@ -2267,6 +2547,11 @@ class ExperimentalFoundationDbCreditLedger:
                 "metadata": dict(metadata or {}),
             }
             self._write_dict(tr, "bridge_payout", payout_id, payout)
+            for earning in selected_earnings:
+                self._write_dict(tr, "worker_earning_settlement_owner", earning.earning_id, {
+                    "earning_id": earning.earning_id, "owner_type": "bridge_payout", "owner_id": payout_id,
+                    "worker_node_id": clean_worker, "created_at": now,
+                })
             event = self._write_audit_event(
                 tr,
                 event_type="bridge.payout.requested",
@@ -2308,9 +2593,25 @@ class ExperimentalFoundationDbCreditLedger:
             if payload is None:
                 raise KeyError(f"Unknown bridge payout: {clean_payout}")
             if str(payload.get("status", "")) == "confirmed":
+                for identity_field in ("settlement_reference", "settlement_tx_hash", "chain_id"):
+                    supplied = (metadata or {}).get(identity_field)
+                    existing = dict(payload.get("metadata") or {}).get(identity_field)
+                    if supplied not in (None, "") and str(supplied).lower() != str(existing or "").lower():
+                        raise ValueError(f"bridge_confirmation_{identity_field}_conflict")
                 return {"idempotent": True, "payout": payload}
             if str(payload.get("status", "")) != "pending":
                 raise ValueError(f"Cannot confirm bridge payout {clean_payout} with status {payload.get('status')}.")
+            if str(payload.get("payout_origin") or "") == "settled-batch":
+                batch_id = str(payload.get("batch_id") or "")
+                batch_payload = self._read_dict(tr, "worker_settlement_batch", batch_id)
+                if not isinstance(batch_payload, dict):
+                    raise ValueError("bridge payout batch missing; reconciliation required.")
+                batch = _batch_from_dict(batch_payload)
+                if (batch.status != "settled"
+                        or batch.payout_rail != "hub-internal-bridge-preparation"
+                        or batch.settlement_tx_hash
+                        or dict(batch.metadata.get("settlement_proof") or {})):
+                    raise ValueError("bridge payout batch has external execution evidence; reconciliation required.")
             wallet_address = normalize_address(str(payload.get("wallet_address", "")))
             amount_wei = int(payload.get("credit_wei", 0) or 0)
             wallet = self._wallet_payload(tr, wallet_address, now=now)

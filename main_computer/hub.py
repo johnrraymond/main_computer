@@ -4791,6 +4791,7 @@ class HubServerHandler(_JsonHandler):
                         idempotency_key=str(body.get("idempotency_key", "")),
                         memo=str(body.get("memo", "")),
                         metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                        **({"batch_id": str(body["batch_id"])} if body.get("batch_id") else {}),
                     )
                 )
                 return
