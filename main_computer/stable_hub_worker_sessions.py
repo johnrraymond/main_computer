@@ -13,6 +13,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol
 
+from main_computer.foundationdb_native_client_activation import activate_native_client_directory
+
 from main_computer.credit_units import (
     credit_decimal_text_to_wei,
     credit_wei_to_decimal_text,
@@ -466,9 +468,7 @@ def _activate_cached_foundationdb_native_client(repo_root: Path) -> Path | None:
 
     library = candidates[0]
     native_dir = str(library.parent)
-    os.environ["PATH"] = native_dir + os.pathsep + os.environ.get("PATH", "")
-    if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(native_dir)
+    activate_native_client_directory(native_dir)
     return library
 
 
