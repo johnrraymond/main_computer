@@ -1120,6 +1120,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             data=payload,
             headers={
                 "Content-Type": "application/json",
+                # Cloudflare blocks urllib's default Python-urllib User-Agent (1010).
+                # This is a transport signature, not Hub-to-Hub authentication.
+                "User-Agent": "main-computer-hub-handoff/1.0",
                 "X-Main-Computer-Stable-Hub-Handoff-From": self.server.hub.hub_id,
             },
             method="POST",
