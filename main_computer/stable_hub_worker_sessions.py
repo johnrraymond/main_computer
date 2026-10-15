@@ -21,6 +21,7 @@ from main_computer.credit_units import (
     credit_wei_to_whole_credits_floor,
 )
 from main_computer.hub_credit_models import make_worker_commitment, normalize_address, stable_id
+from main_computer.hub_credit_indexer import wallet_account_id
 
 
 STABLE_WORKER_SESSION_STORE_VERSION = "main-computer-stable-hub-worker-live-sessions-v1"
@@ -1442,6 +1443,7 @@ class StableHubPayoutLedgerDirectory:
         selected_price: dict[str, Any],
         requester_max_price: dict[str, Any] | None,
         partition: str,
+        worker_account_id: str = "",
         hold_id: str = "",
         result: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -1449,6 +1451,14 @@ class StableHubPayoutLedgerDirectory:
         request_id = normalize_request_id(request_id)
         session_id = normalize_session_id(session_id)
         worker_id = normalize_worker_id(worker_id)
+        # Paid live sessions pass the wallet-derived account validated by the
+        # Hub. worker_id here is only the Hub-created execution/connection slot.
+        # Standalone ledger calls without a live socket can name the account
+        # directly as worker_id.
+        earning_account_id = (
+            wallet_account_id(worker_account_id)
+            if worker_account_id else worker_id
+        )
         clean_account = str(account_id or "").strip()
         if not clean_account:
             raise StableHubWorkerSessionError("account_id is required.")
@@ -1476,7 +1486,8 @@ class StableHubPayoutLedgerDirectory:
         earning_id = stable_id(
             "earn",
             {
-                "worker_node_id": worker_id,
+                "worker_account_id": earning_account_id,
+                "requester_account_id": clean_account,
                 "request_id": request_id,
                 "earned_credit_wei": str(amount_wei),
             },
@@ -1571,7 +1582,8 @@ class StableHubPayoutLedgerDirectory:
                 "run_id": str(run_id),
                 "account_id": clean_account,
                 "request_id": request_id,
-                "worker_id": worker_id,
+                "worker_id": earning_account_id,
+                "worker_account_id": earning_account_id,
                 "worker_node_id": worker_id,
                 "amount": credit_wei_to_decimal_text(amount_wei),
                 "unit": price.get("unit"),
@@ -1598,7 +1610,8 @@ class StableHubPayoutLedgerDirectory:
                 "run_id": str(run_id),
                 "account_id": clean_account,
                 "request_id": request_id,
-                "worker_id": worker_id,
+                "worker_id": earning_account_id,
+                "worker_account_id": earning_account_id,
                 "worker_node_id": worker_id,
                 "worker_commitment": make_worker_commitment(
                     worker_node_id=worker_id,
@@ -1994,7 +2007,7 @@ class StableHubPayoutLedgerDirectory:
                 "bpayout",
                 {
                     "wallet_address": "",
-                    "account_id": "",
+                    "account_id": worker_id,
                     "worker_node_id": worker_id,
                     "earning_ids": earning_ids,
                     "credit_wei": str(amount_wei),
@@ -2010,7 +2023,7 @@ class StableHubPayoutLedgerDirectory:
                 "bridge_payout_id": payout_id,
                 "payout_id": payout_id,
                 "wallet_address": "",
-                "account_id": "",
+                "account_id": worker_id,
                 "worker_id": worker_id,
                 "worker_node_id": worker_id,
                 "batch_id": clean_batch,

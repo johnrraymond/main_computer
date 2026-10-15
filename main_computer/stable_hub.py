@@ -66,6 +66,8 @@ def stable_hub_contract() -> dict[str, str]:
 
     return {
         "auth": "multisession-wallet",
+        "worker_identity": "validated-wallet-account-address",
+        "worker_slot": "hub-generated-connection-id",
         "worker_connection": "long-lived-msk-session",
         "heartbeat": "connection-ping-pong",
         "availability_source": "live-worker-session-owner",
@@ -579,9 +581,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         accepted_session = self.server.accepted_work_session_directory.get_session(session_id)
         if accepted_session is None:
             raise StableHubWorkerSessionError("accepted work session does not exist.")
-        message_worker_id = message.get("worker_id")
-        if message_worker_id not in {None, ""} and normalize_worker_id(message_worker_id) != worker_id:
-            raise StableHubWorkerSessionError("worker terminal message worker_id mismatch.")
+        # Ignore client worker labels. The socket's connection_id and durable
+        # accepted session determine authorization for this terminal message.
         message_run_id = str(message.get("run_id") or "")
         if message_run_id and message_run_id != str(accepted_session.get("run_id") or ""):
             raise StableHubWorkerSessionError("worker terminal message run_id mismatch.")
@@ -629,7 +630,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                         wallet_address=str(accepted_session.get("requester_wallet_address") or ""),
                         request_id=request_id, session_id=session_id,
                         run_id=str(accepted_session.get("run_id") or ""),
-                        worker_id=worker_id, selected_price=dict(payout.get("selected_price") or {}),
+                        worker_id=worker_id,
+                        worker_account_id=str(payout.get("worker_account_id") or ""),
+                        selected_price=dict(payout.get("selected_price") or {}),
                         requester_max_price=(accepted_session.get("work") or {}).get("max_price"),
                         partition=str(accepted_session.get("partition") or ""),
                         hold_id=hold_id, result=result_payload,
@@ -706,7 +709,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             auth_message = self._ws_read_json_message()
             if auth_message.get("type") != "worker.auth":
                 raise StableHubWorkerSessionError("first worker live-session message must be worker.auth")
-            worker_id = normalize_worker_id(auth_message.get("worker_id"))
+            # A caller-supplied worker_id is never an identity or routing key.
+            # The signed authorization defines the account; the Hub owns sockets.
             authorization = auth_message.get("multisession_authorization")
             if not isinstance(authorization, dict):
                 key_id = str(auth_message.get("multisession_key_id") or "").strip()
@@ -726,7 +730,11 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            account_id = wallet_account_id(validation.get("wallet_address"))
+            if str(validation.get("account_id") or "") != account_id:
+                raise StableHubWorkerSessionError("worker_authorization_account_mismatch")
             connection_id = new_connection_id()
+            worker_id = connection_id  # Hub-generated, connection-scoped routing slot.
             key_id = str(validation.get("multisession_key_id") or authorization.get("multisession_key_id") or "")
             owner = self.server.worker_session_directory.record_connected(
                 worker_id=worker_id,
@@ -765,7 +773,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     "hub_id": self.server.hub.hub_id,
                     "hub_url": self.server.hub.hub_url,
                     "cluster_id": self.server.topology.cluster_id,
-                    "worker_id": worker_id,
+                    "account_id": account_id,
                     "connection_id": connection_id,
                     "owner": owner,
                     "market": market_record,
@@ -1138,13 +1146,11 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         )
         if validation.get("valid") is not True:
             raise StableHubWorkerSessionError("worker_payout_msk_invalid")
-        market_worker = self.server.worker_market_directory.get_worker(worker_id)
-        if not isinstance(market_worker, dict):
-            raise StableHubWorkerSessionError("worker_not_known_for_payout")
-        expected_key_id = str(market_worker.get("worker_msk_id") or "")
-        if expected_key_id and expected_key_id != str(validation.get("multisession_key_id") or ""):
-            raise StableHubWorkerSessionError("worker_payout_msk_does_not_match_worker")
-        return validation, market_worker
+        account_id = wallet_account_id(validation.get("wallet_address"))
+        if account_id != worker_id or str(validation.get("account_id") or "") != account_id:
+            raise StableHubWorkerSessionError("worker_payout_account_mismatch")
+        # No market/connection lookup: claims outlive sockets and are wallet-owned.
+        return validation, {"worker_account_id": account_id}
 
     def _handle_worker_payout_claim(self, worker_id: str) -> None:
         try:
@@ -1156,7 +1162,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 idempotency_key=str(body.get("idempotency_key") or ""),
             )
         except StableHubWorkerSessionError as exc:
-            self._send_json(403 if "msk" in str(exc) else 400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
+            self._send_json(403 if ("msk" in str(exc) or "account_mismatch" in str(exc)) else 400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
             return
         self._send_json(200, {"ok": True, "claim": claim, "hub_id": self.server.hub.hub_id, "cluster_id": self.server.topology.cluster_id})
 
@@ -1176,7 +1182,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     idempotency_key=str(body.get("idempotency_key") or ""),
                 )
         except StableHubWorkerSessionError as exc:
-            self._send_json(403 if "msk" in str(exc) else 400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
+            self._send_json(403 if ("msk" in str(exc) or "account_mismatch" in str(exc)) else 400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
             return
         self._send_json(200, {"ok": True, "settlement": batch, "hub_id": self.server.hub.hub_id, "cluster_id": self.server.topology.cluster_id})
 
@@ -1190,7 +1196,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 idempotency_key=str(body.get("idempotency_key") or ""),
             )
         except StableHubWorkerSessionError as exc:
-            self._send_json(403 if "msk" in str(exc) else 400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
+            self._send_json(403 if ("msk" in str(exc) or "account_mismatch" in str(exc)) else 400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
             return
         self._send_json(200, {"ok": True, "bridge_payout": payout, "hub_id": self.server.hub.hub_id, "cluster_id": self.server.topology.cluster_id})
 
@@ -1583,6 +1589,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 payout={
                     "unit": str(price.get("unit") or "credit"),
                     "pricing_mode": "stable_market_price",
+                    "worker_account_id": wallet_account_id(selected_worker.get("worker_wallet_address")),
                     "selected_price": price,
                     "requester_max_price": dict(work.get("max_price") or {}),
                     "hold_id": str(reservation["hold_id"]), "hold_status": "held",
