@@ -437,6 +437,11 @@ class StableHubHTTPServer(ThreadingHTTPServer):
         super().server_close()
 
 class StableHubRequestHandler(BaseHTTPRequestHandler):
+    # RFC 6455 upgrades require an HTTP/1.1 handshake.  BaseHTTPRequestHandler
+    # otherwise emits HTTP/1.0 even when the request is HTTP/1.1, which some
+    # reverse proxies accept as a 101 response without tunnelling frames.
+    # Every ordinary HTTP response below includes Content-Length.
+    protocol_version = "HTTP/1.1"
     server: StableHubHTTPServer
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
