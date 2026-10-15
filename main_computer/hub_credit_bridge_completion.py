@@ -16,6 +16,7 @@ from main_computer.contract_config import get_contract_record, load_contract_con
 from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_credit_models import normalize_address, positive_int
+from main_computer.hub_private_https import open_internal_https
 
 
 COMPUTE_CREDIT_BASE_UNITS = 10**18
@@ -209,7 +210,7 @@ class JsonRpcClient:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self.timeout_s) as response:
+            with open_internal_https(request, timeout=self.timeout_s, default_open=urlopen) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             body = _read_http_error_body(exc).strip()

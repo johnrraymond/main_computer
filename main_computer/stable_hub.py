@@ -26,6 +26,7 @@ from main_computer.hub_credit_bridge_completion import (
     normalize_evm_address,
 )
 from main_computer.hub_credit_indexer import wallet_account_id
+from main_computer.hub_private_https import open_internal_https
 from main_computer.stable_hub_msk import (
     StableHubMultiSessionKeyError,
     StableHubMultiSessionKeyService,
@@ -1128,7 +1129,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             method="POST",
         )
         try:
-            with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - topology-owned Hub URL
+            with open_internal_https(request, timeout=timeout_seconds, default_open=urlopen) as response:
                 response_body = response.read().decode("utf-8") or "{}"
                 decoded = json.loads(response_body)
                 if not isinstance(decoded, dict):
