@@ -983,12 +983,12 @@ class StableHubPayoutLedgerDirectory:
         chain_completed_credit_wei: int,
         already_completed: bool,
     ) -> dict[str, Any]:
-        """Persist intent BEFORE signing; distinguish new deposits from history.
+        """Enroll one verified escrow deposit, regardless of older chain totals.
 
-        An already-completed escrow deposit that this Stable ledger never
-        enrolled must not be replayed as fresh credit, even if it is the only
-        historical deposit. A crash after chain completion is retryable because
-        the intent was committed in FDB first.
+        The chain receipt and deposit record are verified by the completion
+        service before this method is called. Intent is persisted before any
+        controller transaction; retry after a controller/FDB failure resumes
+        this same deposit instead of treating it as new historical money.
         """
         account = str(account_id or "").strip()
         wallet = normalize_address(wallet_address)
@@ -996,62 +996,43 @@ class StableHubPayoutLedgerDirectory:
         contract = normalize_address(contract_address)
         amount = int(deposit_amount_units)
         chain = int(chain_id)
-        chain_completed = int(chain_completed_credit_wei)
         if not account or not wallet or not deposit or not contract or amount <= 0 or chain <= 0:
             raise StableHubWorkerSessionError("bridge_deposit_intent_invalid")
-        if chain_completed < 0:
-            raise StableHubWorkerSessionError("bridge_completed_watermark_invalid")
+        if wallet_account_id(wallet) != account:
+            raise StableHubWorkerSessionError("bridge_account_wallet_mismatch")
+        key = f"{chain}:{contract}:{deposit}"
+        expected = {
+            "account_id": account,
+            "wallet_address": wallet,
+            "deposit_id": deposit,
+            "chain_id": chain,
+            "contract_address": contract,
+            "deposit_amount_units": str(amount),
+        }
         with self._lock:
             data = self.store.load()
             intents = data.setdefault("payout_deposit_intents", {})
-            expected = {
-                "account_id": account,
-                "wallet_address": wallet,
-                "deposit_id": deposit,
-                "chain_id": chain,
-                "contract_address": contract,
-                "deposit_amount_units": str(amount),
-            }
-            existing = intents.get(deposit)
-            completed_deposits = data.setdefault("payout_deposits", {})
-            prior_deposit = completed_deposits.get(deposit)
-            if isinstance(prior_deposit, dict):
-                if (
-                    str(prior_deposit.get("account_id")) != account
-                    or str(prior_deposit.get("contract_address")) != contract
-                    or str(prior_deposit.get("chain_id")) != str(chain)
-                ):
+            existing = intents.get(key)
+            prior = data.setdefault("payout_deposits", {}).get(key)
+            if isinstance(prior, dict):
+                if any(str(prior.get(field)) != str(value) for field, value in expected.items()):
                     raise StableHubWorkerSessionError("bridge_deposit_intent_conflict")
-                return {"idempotent": True, "intent": dict(existing or {})}
-            account_record = data.setdefault("payout_accounts", {}).get(account)
-            if not isinstance(account_record, dict):
-                account_record = {}
+                return {"idempotent": True, "intent": dict(existing or expected)}
+            account_record = data.setdefault("payout_accounts", {}).get(account) or {}
             owner = normalize_address(account_record.get("wallet_address") or account_record.get("owner_address") or "")
             if owner and owner != wallet:
                 raise StableHubWorkerSessionError("bridge_account_wallet_mismatch")
-            local_completed = int(account_record.get("bridge_completed_credit_wei", 0) or 0)
             if isinstance(existing, dict):
-                if any(str(existing.get(key)) != str(value) for key, value in expected.items()):
+                if any(str(existing.get(field)) != str(value) for field, value in expected.items()):
                     raise StableHubWorkerSessionError("bridge_deposit_intent_conflict")
-                expected_chain_total = local_completed + (amount if already_completed else 0)
-                if chain_completed != expected_chain_total:
-                    raise StableHubWorkerSessionError("bridge_historical_completion_requires_reconciliation")
                 return {"idempotent": True, "intent": dict(existing)}
-            if already_completed:
-                raise StableHubWorkerSessionError("bridge_preexisting_completed_deposit_requires_reconciliation")
-            # Compare the escrow's cumulative completed total with Stable's
-            # durable watermark before completing this deposit. A higher chain
-            # total can represent credit already issued and spent by another
-            # ledger; completing first would strand a newly completed deposit.
-            if chain_completed != local_completed:
-                error = (
-                    "bridge_completed_watermark_ahead_of_chain"
-                    if chain_completed < local_completed
-                    else "bridge_historical_completion_requires_reconciliation"
-                )
-                raise StableHubWorkerSessionError(error)
-            intent = {**expected, "status": "prepared", "created_at": utc_now()}
-            intents[deposit] = intent
+            intent = {
+                **expected,
+                "status": "prepared",
+                "on_chain_completed_when_prepared": bool(already_completed),
+                "created_at": utc_now(),
+            }
+            intents[key] = intent
             self.store.save(data)
             return {"idempotent": False, "intent": dict(intent)}
 
@@ -1069,27 +1050,60 @@ class StableHubPayoutLedgerDirectory:
         contract_address: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Record a *verified-by-caller* cumulative chain completion exactly once.
+        """Atomically credit one independently verified completed chain deposit.
 
-        This internal accounting primitive neither reads a chain nor exposes
-        an HTTP crediting endpoint. Patch 2 must verify completion authority
-        before calling it. The account, credit delta, and cumulative watermark
-        are committed together in the Stable Hub FDB transaction.
+        One FDB commit publishes the deposit ID, its accounting transaction,
+        and the account balance. The contract's *cumulative* completed total
+        is diagnostic only: it must not determine this deposit's credit delta.
         """
         clean_account = str(account_id or "").strip()
         clean_wallet = normalize_address(wallet_address)
         clean_deposit = str(deposit_id or "").strip().lower()
-        if not clean_account or not clean_wallet or not clean_deposit:
-            raise StableHubWorkerSessionError("account_id, wallet_address, and deposit_id are required.")
+        clean_contract = normalize_address(contract_address)
+        chain = int(chain_id)
+        if not clean_account or not clean_wallet or not clean_deposit or not clean_contract or chain <= 0:
+            raise StableHubWorkerSessionError("bridge_deposit_identity_invalid")
+        if wallet_account_id(clean_wallet) != clean_account:
+            raise StableHubWorkerSessionError("bridge_account_wallet_mismatch")
         try:
+            amount = int(deposit_amount_units)
             chain_completed = int(chain_completed_credit_wei)
         except (TypeError, ValueError) as exc:
-            raise StableHubWorkerSessionError("chain_completed_credit_wei must be an integer.") from exc
-        if chain_completed < 0 or str(chain_completed_credit_wei).strip() != str(chain_completed):
-            raise StableHubWorkerSessionError("chain_completed_credit_wei must be a nonnegative integer wei amount.")
+            raise StableHubWorkerSessionError("bridge_deposit_amount_invalid") from exc
+        if (amount <= 0 or str(deposit_amount_units).strip() != str(amount)
+                or chain_completed < 0 or str(chain_completed_credit_wei).strip() != str(chain_completed)):
+            raise StableHubWorkerSessionError("bridge_deposit_amount_invalid")
+        key = f"{chain}:{clean_contract}:{clean_deposit}"
+        expected = {
+            "account_id": clean_account,
+            "wallet_address": clean_wallet,
+            "deposit_id": clean_deposit,
+            "chain_id": chain,
+            "contract_address": clean_contract,
+            "deposit_amount_units": str(amount),
+        }
         now = utc_now()
         with self._lock:
             data = self.store.load()
+            deposits = data.setdefault("payout_deposits", {})
+            previous_deposit = deposits.get(key)
+            if isinstance(previous_deposit, dict):
+                if any(str(previous_deposit.get(field)) != str(value) for field, value in expected.items()):
+                    raise StableHubWorkerSessionError("bridge_deposit_replay_identity_conflict")
+                account = data.setdefault("payout_accounts", {}).get(clean_account) or {}
+                return {
+                    "idempotent": True,
+                    "delta_credit_wei": "0",
+                    "chain_completed_credit_wei": str(chain_completed),
+                    "local_completed_credit_wei": str(account.get("bridge_completed_credit_wei", 0)),
+                    "deposit_id": clean_deposit,
+                    "account": dict(account),
+                }
+            intent = data.setdefault("payout_deposit_intents", {}).get(key)
+            if not isinstance(intent, dict) or any(
+                str(intent.get(field)) != str(value) for field, value in expected.items()
+            ):
+                raise StableHubWorkerSessionError("bridge_completion_missing_verified_intent")
             account = self._ensure_account(
                 data, account_id=clean_account, wallet_address=clean_wallet, default_credits=Decimal("0")
             )
@@ -1097,98 +1111,61 @@ class StableHubPayoutLedgerDirectory:
             if owner and owner != clean_wallet:
                 raise StableHubWorkerSessionError("bridge_account_wallet_mismatch")
             local_completed = int(account.get("bridge_completed_credit_wei", 0) or 0)
-            if chain_completed < local_completed:
-                raise StableHubWorkerSessionError("bridge_completed_watermark_ahead_of_chain")
-            delta = chain_completed - local_completed
-            # The Experimental ledger may have accounted for earlier deposits,
-            # charges, or refunds under a DIFFERENT FDB namespace. An unseeded
-            # Stable account cannot treat the entire historical escrow total as
-            # new spendable credit. Only the first individual verified deposit
-            # may initialize a fresh watermark; otherwise fail closed pending
-            # explicit migration/reconciliation of the historical account.
-            if deposit_amount_units is not None and local_completed == 0 and delta > 0:
-                try:
-                    first_deposit = int(deposit_amount_units)
-                except (TypeError, ValueError) as exc:
-                    raise StableHubWorkerSessionError("bridge_deposit_amount_invalid") from exc
-                if first_deposit <= 0 or str(deposit_amount_units).strip() != str(first_deposit):
-                    raise StableHubWorkerSessionError("bridge_deposit_amount_invalid")
-                if chain_completed != first_deposit:
-                    raise StableHubWorkerSessionError("bridge_historical_completion_requires_reconciliation")
-            if delta == 0:
-                return {
-                    "idempotent": True,
-                    "delta_credit_wei": "0",
-                    "chain_completed_credit_wei": str(chain_completed),
-                    "local_completed_credit_wei": str(local_completed),
-                    "deposit_id": clean_deposit,
-                    "account": dict(account),
-                }
-            if deposit_amount_units is not None:
-                intent = data.setdefault("payout_deposit_intents", {}).get(clean_deposit)
-                if not isinstance(intent, dict) or (
-                    str(intent.get("account_id")) != clean_account
-                    or str(intent.get("wallet_address")) != clean_wallet
-                    or str(intent.get("contract_address")) != normalize_address(contract_address)
-                    or str(intent.get("chain_id")) != str(int(chain_id))
-                    or str(intent.get("deposit_amount_units")) != str(int(deposit_amount_units))
-                ):
-                    raise StableHubWorkerSessionError("bridge_completion_missing_verified_intent")
-            previous_deposit = data.setdefault("payout_deposits", {}).get(clean_deposit)
-            if isinstance(previous_deposit, dict):
-                raise StableHubWorkerSessionError("bridge_deposit_replay_conflicts_with_watermark")
             updated = self._account_payload(
                 account_id=clean_account,
                 wallet_address=clean_wallet,
-                available_credit_wei=int(account.get("available_credit_wei", "0") or 0) + delta,
+                available_credit_wei=int(account.get("available_credit_wei", "0") or 0) + amount,
                 held_credit_wei=account.get("held_credit_wei", 0),
                 spent_credit_wei=account.get("spent_credit_wei", 0),
                 earned_credit_wei=account.get("earned_credit_wei", 0),
-                bridge_completed_credit_wei=chain_completed,
+                bridge_completed_credit_wei=local_completed + amount,
                 created_at=str(account.get("created_at") or ""),
                 updated_at=now,
-                metadata={**dict(account.get("metadata") or {}), "funding_model": "hub_credit_bridge_escrow_wallet_v2"},
+                metadata={**dict(account.get("metadata") or {}), "funding_model": "verified-individual-escrow-deposits-v1"},
             )
             data.setdefault("payout_accounts", {})[clean_account] = updated
-            data["payout_deposits"][clean_deposit] = {
-                "deposit_id": clean_deposit,
-                "account_id": clean_account,
+            deposits[key] = {
+                **expected,
                 "payer_address": clean_wallet,
-                "credits_granted": credit_wei_to_whole_credits_floor(delta),
-                "credits_granted_wei": str(delta),
-                "credits_granted_display": credit_wei_to_decimal_text(delta),
+                "credits_granted": credit_wei_to_whole_credits_floor(amount),
+                "credits_granted_wei": str(amount),
+                "credits_granted_display": credit_wei_to_decimal_text(amount),
                 "status": "bridge_completed",
                 "created_at": now,
                 "completion_tx_hash": str(completion_tx_hash or "").strip().lower(),
+                "funding_tx_hash": str((metadata or {}).get("funding_tx_hash") or "").strip().lower(),
                 "chain_completed_credit_wei": str(chain_completed),
-                "chain_id": int(chain_id),
-                "contract_address": normalize_address(contract_address),
                 "metadata": dict(metadata or {}),
             }
             transaction = self._transaction(
                 data,
                 transaction_type="bridge_deposit_completed",
                 account_id=clean_account,
-                credit_wei=delta,
+                credit_wei=amount,
                 deposit_id=clean_deposit,
-                memo="verified cumulative bridge completion",
+                memo="verified individual escrow deposit",
                 metadata={
                     "completion_tx_hash": str(completion_tx_hash or "").strip().lower(),
                     "chain_completed_credit_wei": str(chain_completed),
-                    "chain_id": int(chain_id),
-                    "contract_address": normalize_address(contract_address),
+                    "chain_id": chain,
+                    "contract_address": clean_contract,
                     **dict(metadata or {}),
                 },
-                transaction_id=stable_id(
-                    "ctx", {"type": "bridge_deposit_completed", "account_id": clean_account, "deposit_id": clean_deposit}
-                ),
+                transaction_id=stable_id("ctx", {"type": "bridge_deposit_completed", "deposit_key": key}),
             )
+            data["payout_deposit_intents"][key] = {
+                **intent, "status": "finalized", "finalized_at": now,
+                "funding_tx_hash": str((metadata or {}).get("funding_tx_hash") or "").strip().lower(),
+            }
+            # FDB's store.atomic() wraps this entire load/update/save in one
+            # conflict-checked transaction, including the finalized intent,
+            # deposit ID, account balance and accounting transaction.
             self.store.save(data)
             return {
                 "idempotent": False,
-                "delta_credit_wei": str(delta),
+                "delta_credit_wei": str(amount),
                 "chain_completed_credit_wei": str(chain_completed),
-                "local_completed_credit_wei": str(local_completed),
+                "local_completed_credit_wei": str(local_completed + amount),
                 "deposit_id": clean_deposit,
                 "account": dict(updated),
                 "transaction": dict(transaction),

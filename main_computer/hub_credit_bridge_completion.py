@@ -295,6 +295,54 @@ class HubCreditBridgeContractClient:
             amount_units=_decode_word_uint(words[4]),
         )
 
+    def verify_deposit_transaction(
+        self, tx_hash: str, *, deposit_id: str, deposit: DepositRecord
+    ) -> dict[str, Any]:
+        """Verify the exact successful CreditDeposited event on the configured chain.
+
+        Neither a client-supplied amount nor a bare transaction hash is funding
+        proof. The successful receipt must contain a deposit event emitted by
+        this escrow for the exact ID, owner, payer and amount returned by the
+        contract's authoritative depositRecord().
+        """
+        clean_hash = normalize_bytes32(tx_hash, field_name="tx_hash")
+        clean_id = normalize_bytes32(deposit_id)
+        receipt = self.rpc.transaction_receipt(clean_hash)
+        if not isinstance(receipt, dict):
+            raise ValueError("bridge_deposit_transaction_not_mined")
+        if _hex_to_int(receipt.get("status")) != 1 or receipt.get("blockNumber") is None:
+            raise ValueError("bridge_deposit_transaction_not_successful")
+        if (receipt.get("transactionHash") and
+                normalize_bytes32(receipt["transactionHash"], field_name="receipt.transactionHash") != clean_hash):
+            raise ValueError("bridge_deposit_transaction_hash_mismatch")
+        if normalize_evm_address(receipt.get("to"), field_name="receipt.to") != self.contract_address:
+            raise ValueError("bridge_deposit_transaction_wrong_contract")
+        try:
+            from eth_utils import keccak  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("eth-utils is required for verifying escrow receipt events") from exc
+        event_topic = "0x" + keccak(text="CreditDeposited(bytes32,address,address,uint256,string)").hex()
+        owner_topic = "0x" + _encode_address(deposit.account)
+        payer_topic = "0x" + _encode_address(deposit.payer)
+        for log in receipt.get("logs") or []:
+            if not isinstance(log, dict):
+                continue
+            try:
+                if normalize_evm_address(log.get("address"), field_name="event.address") != self.contract_address:
+                    continue
+                topics = [str(v).lower() for v in (log.get("topics") or [])]
+                if topics != [event_topic.lower(), clean_id, owner_topic.lower(), payer_topic.lower()]:
+                    continue
+                data = str(log.get("data") or "")
+                if not data.startswith("0x") or len(data) < 66:
+                    continue
+                if int(data[2:66], 16) != deposit.amount_units:
+                    continue
+                return receipt
+            except (TypeError, ValueError):
+                continue
+        raise ValueError("bridge_deposit_transaction_event_mismatch")
+
     def completed_deposit_units(self, account: str) -> int:
         result = self.rpc.eth_call(
             to=self.contract_address,
@@ -700,9 +748,19 @@ class HubCreditBridgeCompletionService:
                 f"wallet_address does not match deposit account: wallet_address={requested_wallet}, deposit.account={before.account}"
             )
 
-        # Stable Hub's adapter persists an intent transaction before any chain
-        # side effect. An older completed escrow deposit without that intent
-        # must not become newly spendable money in Stable's separate ledger.
+        # The reported funding transaction is evidence, not authority. Verify
+        # its mined escrow event against the independently fetched deposit
+        # record before signing completion or altering the FDB ledger.
+        funding_hash = normalize_bytes32(payload.get("tx_hash"), field_name="tx_hash")
+        verifier = getattr(client, "verify_deposit_transaction", None)
+        if not callable(verifier):
+            raise RuntimeError("bridge deposit receipt verification is unavailable")
+        funding_receipt = verifier(funding_hash, deposit_id=deposit_id, deposit=before)
+        if not isinstance(funding_receipt, dict):
+            raise RuntimeError("bridge deposit receipt verifier did not return verified evidence")
+
+        # Persist a deposit-scoped intent before signing a controller tx; a
+        # retry after on-chain completion can safely resume the same deposit.
         prepare = getattr(self.ledger, "prepare_bridge_deposit_completion", None)
         if callable(prepare):
             chain_completed_before = positive_int(client.completed_deposit_units(before.account))
@@ -752,6 +810,8 @@ class HubCreditBridgeCompletionService:
             metadata={
                 "mode": HUB_CREDIT_BRIDGE_COMPLETION_MODE,
                 "completion_sent": completion_sent,
+                "funding_tx_hash": funding_hash,
+                "funding_receipt_block_number": _hex_to_int(funding_receipt.get("blockNumber")),
                 "receipt_block_number": _hex_to_int(receipt.get("blockNumber")) if isinstance(receipt, dict) and receipt.get("blockNumber") else 0,
             },
         )
@@ -772,6 +832,7 @@ class HubCreditBridgeCompletionService:
             "idempotent": bool(ledger_result.get("idempotent")),
             "completion_sent": completion_sent,
             "completion_tx_hash": tx_hash,
+            "funding_tx_hash": funding_hash,
             "deployment": deployment.as_public_dict(),
             **ledger_result,
         }
