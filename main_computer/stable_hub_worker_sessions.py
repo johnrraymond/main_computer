@@ -2209,6 +2209,16 @@ class StableHubPayoutLedgerDirectory:
 
 
 
+def worker_market_identity(record: dict[str, Any]) -> tuple[str, str, int]:
+    """Identity of one market lease, not merely its reusable worker ID."""
+
+    return (
+        str(record.get("worker_id") or ""),
+        str(record.get("connection_id") or ""),
+        int(record.get("lease_epoch") or 0),
+    )
+
+
 class StableHubWorkerMarketDirectory:
     """Shared stable Hub market directory for live worker selection.
 
@@ -2360,6 +2370,18 @@ class StableHubWorkerMarketDirectory:
                 raise StableHubWorkerSessionError("worker_owner_changed")
             if lease_epoch is not None and int(record.get("lease_epoch") or 0) != int(lease_epoch):
                 raise StableHubWorkerSessionError("worker_owner_changed")
+            # Owner validation and capacity update must read the SAME FDB document
+            # in the SAME transaction. Selection's earlier read can be stale.
+            owner = data.get("workers", {}).get(worker_id)
+            if not isinstance(owner, dict) or owner.get("status") != "live":
+                raise StableHubWorkerSessionError("worker_not_live")
+            if (
+                str(owner.get("connection_id") or "") != str(connection_id)
+                or int(owner.get("lease_epoch") or 0) != int(record.get("lease_epoch") or 0)
+                or str(owner.get("owner_hub_id") or "") != str(record.get("owner_hub_id") or "")
+                or str(owner.get("owner_hub_url") or "") != str(record.get("owner_hub_url") or "")
+            ):
+                raise StableHubWorkerSessionError("worker_owner_changed")
             max_concurrency = int(record.get("max_concurrency") or 1)
             active_sessions = int(record.get("active_sessions") or 0)
             if active_sessions >= max_concurrency:
@@ -2426,13 +2448,22 @@ class StableHubWorkerMarketDirectory:
             self.store.save(data)
             return dict(record)
 
-    def select_worker_for_work(self, work: Any) -> dict[str, Any] | None:
+    def select_worker_for_work(
+        self,
+        work: Any,
+        *,
+        excluded_connections: set[tuple[str, str, int]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Select by market constraints, optionally excluding rejected leases."""
+        excluded = excluded_connections or set()
         constraints = normalize_request_market_constraints(work)
         required_ring = str(constraints["ring"])
         required_capabilities = set(str(value) for value in constraints["capabilities"])
         max_price = constraints.get("max_price")
         candidates: list[dict[str, Any]] = []
         for record in self.list_workers():
+            if worker_market_identity(record) in excluded:
+                continue
             if record.get("status") != "live":
                 continue
             if required_ring not in [str(value) for value in record.get("rings", [])]:

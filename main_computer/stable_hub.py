@@ -59,6 +59,7 @@ from main_computer.stable_hub_worker_sessions import (
     stable_partition_key_for_work,
     stable_task_queue_for_partition,
     stable_worker_session_store_from_topology,
+    worker_market_identity,
 )
 
 
@@ -711,8 +712,19 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         worker_id = ""
         connection_id = ""
         session: LiveWorkerSession | None = None
+        session_registered = False
+        diagnostic_attempt_id = "none"
+        termination_reason = "handler_exit"
+        last_message_type = ""
+        last_worker_pong_at = ""
         try:
             auth_message = self._ws_read_json_message()
+            raw_attempt_id = str(auth_message.get("diagnostic_attempt_id") or "")
+            diagnostic_attempt_id = "".join(
+                character for character in raw_attempt_id
+                if character.isalnum() or character in "_-"
+            )[:48] or "none"
+            last_message_type = str(auth_message.get("type") or "<missing-type>")
             if auth_message.get("type") != "worker.auth":
                 raise StableHubWorkerSessionError("first worker live-session message must be worker.auth")
             # A caller-supplied worker_id is never an identity or routing key.
@@ -725,6 +737,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 {"multisession_authorization": authorization}
             )
             if validation.get("valid") is not True:
+                termination_reason = f"auth_rejected:{str(validation.get('reason_code') or 'unknown')[:120]}"
                 self._ws_send_json(
                     {
                         "type": "hub.auth.rejected",
@@ -742,26 +755,36 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             connection_id = new_connection_id()
             worker_id = connection_id  # Hub-generated, connection-scoped routing slot.
             key_id = str(validation.get("multisession_key_id") or authorization.get("multisession_key_id") or "")
-            owner = self.server.worker_session_directory.record_connected(
-                worker_id=worker_id,
-                connection_id=connection_id,
-                multisession_key_id=key_id,
-                wallet_address=str(validation.get("wallet_address") or ""),
-                account_id=str(validation.get("account_id") or ""),
-            )
             raw_market_profile = auth_message.get("market")
             if not isinstance(raw_market_profile, dict):
                 raw_market_profile = auth_message.get("worker_market")
             market_profile = normalize_worker_market_profile(
                 raw_market_profile if isinstance(raw_market_profile, dict) else None
             )
-            market_record = self.server.worker_market_directory.record_worker_live(
-                worker_id=worker_id,
-                owner=owner,
-                market_profile=market_profile,
-                worker_msk_id=key_id,
-                worker_wallet_address=str(validation.get("wallet_address") or ""),
-                worker_account_id=str(validation.get("account_id") or ""),
+            # An owner must never be observable separately from market publication.
+            # The transaction callback performs durable operations only.
+            def _register_worker_records():
+                owner = self.server.worker_session_directory.record_connected(
+                    worker_id=worker_id,
+                    connection_id=connection_id,
+                    multisession_key_id=key_id,
+                    wallet_address=str(validation.get("wallet_address") or ""),
+                    account_id=str(validation.get("account_id") or ""),
+                )
+                market_record = self.server.worker_market_directory.record_worker_live(
+                    worker_id=worker_id,
+                    owner=owner,
+                    market_profile=market_profile,
+                    worker_msk_id=key_id,
+                    worker_wallet_address=str(validation.get("wallet_address") or ""),
+                    worker_account_id=str(validation.get("account_id") or ""),
+                )
+                return owner, market_record
+
+            store = self.server.worker_session_directory.store
+            atomic = getattr(store, "atomic", None)
+            owner, market_record = (
+                atomic(_register_worker_records) if callable(atomic) else _register_worker_records()
             )
             session = LiveWorkerSession(
                 worker_id=worker_id,
@@ -772,6 +795,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 market_profile=market_profile,
             )
             self.server.register_live_worker_session(session)
+            session_registered = True
+            termination_reason = "authenticated_socket_loop"
             session.send_json(
                 {
                     "type": "hub.auth.accepted",
@@ -801,7 +826,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             while True:
                 message = self._ws_read_json_message()
                 message_type = str(message.get("type") or "")
+                last_message_type = message_type or "<missing-type>"
                 if message_type == "worker.pong":
+                    last_worker_pong_at = datetime.now(timezone.utc).isoformat()
                     if str(message.get("connection_id") or connection_id) != connection_id:
                         session.send_json(
                             {
@@ -861,6 +888,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                         )
                     continue
                 if message_type == "worker.close":
+                    termination_reason = "worker.close"
                     break
                 session.send_json(
                     {
@@ -870,9 +898,11 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                         "received_type": message_type,
                     }
                 )
-        except (ConnectionError, OSError):
-            pass
+        except (ConnectionError, OSError) as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            termination_reason = f"{exc.__class__.__name__}: {detail[:240]}"
         except (StableHubWorkerSessionError, RuntimeError, ValueError) as exc:
+            termination_reason = f"{exc.__class__.__name__}: {str(exc)[:240]}"
             try:
                 if session is not None:
                     session.send_json(
@@ -896,7 +926,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 pass
         except Exception as exc:
             if getattr(exc, "code", None) != 1020:
+                termination_reason = f"unhandled_{exc.__class__.__name__}: {str(exc)[:240]}"
                 raise
+            termination_reason = "foundationdb_transaction_conflict"
             # FoundationDB aborted the transaction; do not claim connection
             # or payment acceptance. The worker can reconnect and retry.
             try:
@@ -907,28 +939,40 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             except OSError:
                 pass
         finally:
+            self._log_event(
+                "worker live-session ended "
+                f"attempt_id={diagnostic_attempt_id} "
+                f"connection_id={connection_id or 'none'} "
+                f"session_registered={session_registered} "
+                f"last_message_type={last_message_type!r} "
+                f"last_worker_pong_at={last_worker_pong_at or 'none'} "
+                f"reason={termination_reason!r}"
+            )
             if worker_id and connection_id:
                 closed_owner: dict[str, Any] = {}
                 # An exhausted FDB conflict must not prevent local socket
                 # deregistration; a later reconnect replaces any stale owner.
-                try:
-                    closed_owner = self.server.worker_session_directory.record_closed(
+                def _close_worker_records():
+                    owner = self.server.worker_session_directory.record_closed(
                         worker_id=worker_id, connection_id=connection_id,
                         reason="socket_closed",
                     ) or {}
-                except Exception as exc:
-                    if getattr(exc, "code", None) != 1020:
-                        raise
-                    self._log_event("worker owner close deferred after FDB conflict")
-                try:
                     self.server.worker_market_directory.record_worker_closed(
                         worker_id=worker_id, connection_id=connection_id,
                         reason="socket_closed",
                     )
+                    return owner
+
+                store = self.server.worker_session_directory.store
+                atomic = getattr(store, "atomic", None)
+                try:
+                    closed_owner = (
+                        atomic(_close_worker_records) if callable(atomic) else _close_worker_records()
+                    )
                 except Exception as exc:
                     if getattr(exc, "code", None) != 1020:
                         raise
-                    self._log_event("worker market close deferred after FDB conflict")
+                    self._log_event("worker owner/market close deferred after FDB conflict")
                 finally:
                     removed = self.server.remove_live_worker_session(connection_id)
                     if removed is not None:
@@ -1302,92 +1346,161 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         # Legacy payout holds are no longer authoritative.  Idempotency is handled by
         # accepted-session and direct charge records instead of pre-reserved credit.
 
-        # A Hub restart can leave a durable "live" market/owner entry for a
-        # connection whose WebSocket existed only in the old process.  The
-        # owner Hub can prove that *its own* socket is missing; the entry Hub
-        # cannot.  Retire only the exact stale connection (under the shared
-        # FDB transaction) and reselect so a reconnect is usable immediately.
+        # Market selection is advisory. Another transaction may close the
+        # selected socket before we read its owner, so exclude rejected leases
+        # and retry BEFORE sending any offer or accepting money.
         retired_missing_socket: tuple[str, dict[str, Any]] | None = None
-        while True:
-            selected_worker = self.server.worker_market_directory.select_worker_for_work(work)
-            if selected_worker is None:
-                if retired_missing_socket is not None:
-                    stale_worker_id, stale_owner = retired_missing_socket
-                    self._send_json(409, {
-                        "ok": False, "error": "worker_owner_not_local",
-                        "message": "Selected worker has no local live socket. Worker must reconnect.",
-                        "request_id": request_id, "worker_id": stale_worker_id,
-                        "partition": partition, "owner": stale_owner,
-                        "hub_id": self.server.hub.hub_id,
-                        "cluster_id": self.server.topology.cluster_id,
-                    })
-                else:
-                    self._send_json(409, {
-                        "ok": False, "error": "worker_not_live",
-                        "message": "No live worker matched the request market constraints.",
-                        "request_id": request_id, "partition": partition,
-                        "hub_id": self.server.hub.hub_id,
-                        "cluster_id": self.server.topology.cluster_id,
-                    })
-                return
+        rejected_selection: dict[str, Any] | None = None
+        excluded_connections: set[tuple[str, str, int]] = set()
+        max_selection_attempts = 64
+        market_record = None
 
+        for selection_attempt in range(1, max_selection_attempts + 1):
+            selected_worker = self.server.worker_market_directory.select_worker_for_work(
+                work, excluded_connections=excluded_connections,
+            )
+            if selected_worker is None:
+                break
             worker_id = normalize_worker_id(selected_worker.get("worker_id"))
+            identity = worker_market_identity(selected_worker)
             owner = self.server.worker_session_directory.get_owner(worker_id)
-            if not owner or owner.get("status") != "live":
-                self._send_json(409, {
-                    "ok": False, "error": "worker_not_live",
-                    "message": "Selected worker has no live owner record.",
+
+            def _reject_candidate(code: str, message: str) -> None:
+                nonlocal rejected_selection
+                excluded_connections.add(identity)
+                rejected_selection = {
+                    "ok": False, "error": code, "message": message,
                     "request_id": request_id, "worker_id": worker_id,
                     "partition": partition, "owner": owner,
+                    "selected_worker": selected_worker,
+                    "hub_id": self.server.hub.hub_id,
+                    "cluster_id": self.server.topology.cluster_id,
+                }
+                self._log_event(
+                    "worker_selection_retry "
+                    f"request_id={request_id} worker_id={worker_id} "
+                    f"connection_id={identity[1]} lease_epoch={identity[2]} "
+                    f"reason={code} attempt={selection_attempt}"
+                )
+
+            if not owner or owner.get("status") != "live":
+                _reject_candidate("worker_not_live", "Selected worker has no live owner record.")
+                continue
+            if (
+                str(owner.get("owner_hub_id") or "") != str(selected_worker.get("owner_hub_id") or "")
+                or str(owner.get("owner_hub_url") or "") != str(selected_worker.get("owner_hub_url") or "")
+                or str(owner.get("connection_id") or "") != identity[1]
+                or int(owner.get("lease_epoch") or 0) != identity[2]
+            ):
+                _reject_candidate("worker_owner_changed", "Selected worker owner record changed before work could be offered.")
+                continue
+            if str(owner.get("owner_hub_id") or "") != self.server.hub.hub_id:
+                break  # Remote owner validates its own socket and reserves capacity.
+
+            local_socket = self.server.get_live_worker_session(identity[1])
+            if local_socket is None or not local_socket.is_live:
+                # Retire exactly the stale local lease atomically. Never retire
+                # a newer reconnect or a socket that reappeared meanwhile.
+                def _retire_missing_socket() -> bool:
+                    current = self.server.worker_session_directory.get_owner(worker_id)
+                    if (
+                        not current or current.get("status") != "live"
+                        or str(current.get("owner_hub_id") or "") != self.server.hub.hub_id
+                        or str(current.get("connection_id") or "") != identity[1]
+                        or int(current.get("lease_epoch") or 0) != identity[2]
+                    ):
+                        return False
+                    active = self.server.get_live_worker_session(identity[1])
+                    if active is not None and active.is_live:
+                        return False
+                    self.server.worker_session_directory.record_closed(
+                        worker_id=worker_id, connection_id=identity[1],
+                        reason="local_socket_missing",
+                    )
+                    self.server.worker_market_directory.record_worker_closed(
+                        worker_id=worker_id, connection_id=identity[1],
+                        reason="local_socket_missing",
+                    )
+                    return True
+
+                store = self.server.worker_session_directory.store
+                atomic = getattr(store, "atomic", None)
+                retired = atomic(_retire_missing_socket) if callable(atomic) else _retire_missing_socket()
+                if retired:
+                    retired_missing_socket = (worker_id, dict(owner))
+                    self._log_event(f"retired missing local worker socket: {worker_id}")
+                else:
+                    # The connection may have reappeared while inspecting the
+                    # store; selection is re-evaluated on the next request.
+                    pass
+                _reject_candidate(
+                    "worker_owner_not_local",
+                    "Selected worker has no local live socket. Worker must reconnect.",
+                )
+                continue
+
+            # A configured Temporal runtime is required before reserving the
+            # first capacity slot. Never run readiness checks inside FDB atomic.
+            if self.server.temporal_runtime is not None:
+                try:
+                    self.server.temporal_runtime.require_ready()
+                except TemporalLifecycleUnavailable as exc:
+                    self._send_json(503, {"ok": False, "error": "temporal_unavailable", "message": str(exc)})
+                    return
+
+            try:
+                market_record = self.server.worker_market_directory.reserve_worker_capacity(
+                    worker_id=worker_id,
+                    connection_id=identity[1],
+                    lease_epoch=identity[2],
+                )
+            except StableHubWorkerSessionError as exc:
+                if str(exc) not in {
+                    "worker_not_live", "worker_owner_changed", "worker_capacity_unavailable"
+                }:
+                    raise
+                _reject_candidate(str(exc), "Selected worker no longer has an available live capacity slot.")
+                continue
+            break
+        else:
+            # Even a rapidly changing market must not create an unbounded loop.
+            self._send_json(409, {
+                "ok": False, "error": "worker_selection_unstable",
+                "message": "Worker market changed repeatedly during selection; retry the request.",
+                "request_id": request_id, "partition": partition,
+                "hub_id": self.server.hub.hub_id,
+                "cluster_id": self.server.topology.cluster_id,
+            })
+            return
+
+        if selected_worker is None:
+            if rejected_selection is not None:
+                self._send_json(409, rejected_selection)
+            elif retired_missing_socket is not None:
+                stale_worker_id, stale_owner = retired_missing_socket
+                self._send_json(409, {
+                    "ok": False, "error": "worker_owner_not_local",
+                    "message": "Selected worker has no local live socket. Worker must reconnect.",
+                    "request_id": request_id, "worker_id": stale_worker_id,
+                    "partition": partition, "owner": stale_owner,
                     "hub_id": self.server.hub.hub_id,
                     "cluster_id": self.server.topology.cluster_id,
                 })
-                return
-
-            if str(owner.get("owner_hub_id") or "") != self.server.hub.hub_id:
-                break  # Only the owner Hub is allowed to inspect a live socket.
-            stale_connection_id = str(owner.get("connection_id") or "")
-            if (
-                not stale_connection_id
-                or stale_connection_id != str(selected_worker.get("connection_id") or "")
-                or int(owner.get("lease_epoch") or 0) != int(selected_worker.get("lease_epoch") or 0)
-            ):
-                break  # Existing owner-changed response below handles this.
-            local_socket = self.server.get_live_worker_session(stale_connection_id)
-            if local_socket is not None and local_socket.is_live:
-                break
-
-            def _retire_missing_socket() -> bool:
-                current = self.server.worker_session_directory.get_owner(worker_id)
-                if (
-                    not current or current.get("status") != "live"
-                    or str(current.get("owner_hub_id") or "") != self.server.hub.hub_id
-                    or str(current.get("connection_id") or "") != stale_connection_id
-                    or int(current.get("lease_epoch") or 0) != int(owner.get("lease_epoch") or 0)
-                ):
-                    return False
-                # Re-check under the store's transaction; never close a socket
-                # that registered while the requester was selecting a worker.
-                active = self.server.get_live_worker_session(stale_connection_id)
-                if active is not None and active.is_live:
-                    return False
-                self.server.worker_session_directory.record_closed(
-                    worker_id=worker_id, connection_id=stale_connection_id,
-                    reason="local_socket_missing",
-                )
-                self.server.worker_market_directory.record_worker_closed(
-                    worker_id=worker_id, connection_id=stale_connection_id,
-                    reason="local_socket_missing",
-                )
-                return True
-
-            store = self.server.worker_session_directory.store
-            atomic = getattr(store, "atomic", None)
-            retired = atomic(_retire_missing_socket) if callable(atomic) else _retire_missing_socket()
-            if not retired:
-                break  # A concurrent reconnect/close changed the owner.
-            retired_missing_socket = (worker_id, dict(owner))
-            self._log_event(f"retired missing local worker socket: {worker_id}")
+            else:
+                self._send_json(409, {
+                    "ok": False, "error": "worker_not_live",
+                    "message": "No live worker matched the request market constraints.",
+                    "request_id": request_id, "partition": partition,
+                    "hub_id": self.server.hub.hub_id,
+                    "cluster_id": self.server.topology.cluster_id,
+                })
+            return
+        self._log_event(
+            "worker_selection_succeeded "
+            f"request_id={request_id} worker_id={worker_id} "
+            f"connection_id={identity[1]} lease_epoch={identity[2]} "
+            f"excluded={len(excluded_connections)}"
+        )
 
         owner_hub_id = str(owner.get("owner_hub_id") or "")
         owner_hub_url = str(owner.get("owner_hub_url") or "")
@@ -1467,81 +1580,11 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             self._send_json(owner_status if 400 <= owner_status <= 599 else 502, handoff_error)
             return
 
-        owner_connection_id = str(owner.get("connection_id") or "")
-        selected_connection_id = str(selected_worker.get("connection_id") or "")
-        owner_lease_epoch = int(owner.get("lease_epoch") or 0)
-        selected_lease_epoch = int(selected_worker.get("lease_epoch") or 0)
-        if (
-            not owner_connection_id
-            or owner_connection_id != selected_connection_id
-            or owner_lease_epoch != selected_lease_epoch
-        ):
-            self._send_json(
-                409,
-                {
-                    "ok": False,
-                    "error": "worker_owner_changed",
-                    "message": "Selected worker owner record changed before work could be offered.",
-                    "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "owner": owner,
-                    "selected_worker": selected_worker,
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                },
-            )
-            return
-
-        live_session = self.server.get_live_worker_session(owner_connection_id)
-        if live_session is None or not live_session.is_live:
-            self._send_json(
-                409,
-                {
-                    "ok": False,
-                    "error": "worker_owner_not_local",
-                    "message": "Owner record points at this Hub, but no local live socket is present. Worker must reconnect.",
-                    "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "owner": owner,
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                },
-            )
-            return
-
-        # Temporal is opt-in, but a configured runtime is mandatory for new paid
-        # work: reject before the worker offer and before any credit is spent.
-        if self.server.temporal_runtime is not None:
-            try:
-                self.server.temporal_runtime.require_ready()
-            except TemporalLifecycleUnavailable as exc:
-                self._send_json(503, {"ok": False, "error": "temporal_unavailable", "message": str(exc)})
-                return
-
-        try:
-            market_record = self.server.worker_market_directory.reserve_worker_capacity(
-                worker_id=worker_id,
-                connection_id=owner_connection_id,
-                lease_epoch=owner_lease_epoch,
-            )
-        except StableHubWorkerSessionError as exc:
-            self._send_json(
-                409,
-                {
-                    "ok": False,
-                    "error": str(exc),
-                    "message": "Selected worker no longer has an available live capacity slot.",
-                    "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "owner": owner,
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                },
-            )
-            return
+        # For the local owner, the selection loop above validated the socket
+        # and atomically reserved a capacity slot against the live owner lease.
+        owner_connection_id = identity[1]
+        live_session = local_socket
+        assert market_record is not None
 
         session_id = new_session_id()
         run_id = new_run_id()
