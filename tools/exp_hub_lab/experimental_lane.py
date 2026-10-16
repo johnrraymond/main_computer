@@ -7,10 +7,16 @@ accounting and a separate FoundationDB namespace. It never touches Mother.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager, redirect_stdout
 import json
 import os
+import secrets
 import socket
+import subprocess
+import sys
+import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Sequence
 
 
@@ -25,6 +31,119 @@ def _require_ports_free() -> None:
             if sock.connect_ex(("127.0.0.1", port)) == 0:
                 raise RuntimeError(f"Experimental Hub parity port {port} is already occupied. Refusing to start mixed Hub versions.")
 
+
+
+def _comparison_port_open(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _comparison_services_ready(*, stable_urls: tuple[str, ...], topology_path: Path,
+                               timeout: float) -> tuple[bool, bool]:
+    from tools.exp_hub_lab import run_lab as exp_lab
+    from tools.stable_hub_lab import run_lab as stable_lab
+    stable = stable_lab.check_cluster(topology_path=topology_path, timeout=timeout)
+    exp = exp_lab.check_cluster(hub_urls=EXP_URLS, timeout=timeout,
+                                require_multisession_auth=True)
+    return stable.get("ok") is True, exp.get("ok") is True
+
+
+@contextmanager
+def _comparison_cluster_session(*, cluster_file: Path, timeout: float):
+    """Own only local lab processes started here; reuse verified existing clusters."""
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    from tools.exp_hub_lab import run_lab as exp_lab
+    from tools.hub_crash_lab import run_lab as crash_lab
+    from tools.stable_hub_lab import run_lab as stable_lab
+
+    topology_path = exp_lab.DEFAULT_TOPOLOGY.resolve()
+    topology = load_stable_hub_topology(topology_path)
+    stable_urls = tuple(str(hub.hub_url).rstrip("/") for hub in topology.hubs)
+    expected_urls = tuple(f"http://127.0.0.1:{port}" for port in (8870, 8871, 8872))
+    if stable_urls != expected_urls or tuple(topology.entry_urls) != expected_urls:
+        raise RuntimeError("Comparison requires the isolated Stable smoke topology on localhost:8870-8872")
+    configured_cluster = Path(str(topology.storage["cluster_file"])).resolve()
+    cluster_file = cluster_file.resolve()
+    if configured_cluster != cluster_file:
+        raise RuntimeError(f"Comparison FDB cluster file {cluster_file} does not match Stable topology {configured_cluster}")
+    if not cluster_file.is_file():
+        raise RuntimeError(f"Missing local lab FoundationDB cluster file: {cluster_file}")
+    for url in (*stable_urls, *EXP_URLS):
+        parsed = urlparse(url)
+        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1":
+            raise RuntimeError(f"Comparison refuses non-loopback Hub URL: {url}")
+
+    # Reuse the crash lab's tested Docker/FDB lifecycle, not a separate bootstrap.
+    # Send startup diagnostics to stderr so --json remains machine readable.
+    with redirect_stdout(sys.stderr):
+        crash_lab._preflight_local_docker_fdb(cluster_file)
+
+    ports = [(urlparse(url).port or 0) for url in (*stable_urls, *EXP_URLS)]
+    occupancy = {port: _comparison_port_open(port) for port in ports}
+    stable_occupied = [occupancy[port] for port in ports[:3]]
+    exp_occupied = [occupancy[port] for port in ports[3:]]
+    if any(stable_occupied) and not all(stable_occupied):
+        raise RuntimeError("Some Stable comparison ports are occupied; refusing a mixed cluster: "
+                           + str({p: occupancy[p] for p in ports[:3]}))
+    if any(exp_occupied) and not all(exp_occupied):
+        raise RuntimeError("Some Experimental comparison ports are occupied; refusing a mixed cluster: "
+                           + str({p: occupancy[p] for p in ports[3:]}))
+
+    stable_reuse = all(stable_occupied)
+    exp_reuse = all(exp_occupied)
+    if stable_reuse or exp_reuse:
+        # Do not accidentally reuse an unrelated service listening on these ports.
+        is_stable, is_exp = _comparison_services_ready(stable_urls=stable_urls,
+                                                       topology_path=topology_path,
+                                                       timeout=min(timeout, 2.0))
+        if stable_reuse and not is_stable:
+            raise RuntimeError("Ports 8870-8872 are occupied by a cluster failing Stable identity/readiness; refusing to replace it")
+        if exp_reuse and not is_exp:
+            raise RuntimeError("Ports 8970-8972 are occupied by a cluster failing Experimental identity/readiness; refusing to replace it")
+
+    root = topology_path.parents[2]
+    output_dir = root / "runtime" / "exp-hub-lab" / "compare-handoff" / secrets.token_hex(8)
+    children: list[subprocess.Popen] = []
+    handles = []
+    try:
+        if not (stable_reuse and exp_reuse):
+            output_dir.mkdir(parents=True, exist_ok=True)
+        def spawn(name: str, command: list[str]) -> None:
+            log = output_dir / f"{name}.log"
+            handle = log.open("w", encoding="utf-8")
+            handles.append(handle)
+            children.append(subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL,
+                                             stdout=handle, stderr=subprocess.STDOUT,
+                                             env={**os.environ, "PYTHONUNBUFFERED": "1"}))
+            print(f"Compare handoff: started {name}; log={log}", file=sys.stderr, flush=True)
+
+        if not stable_reuse:
+            for hub in topology.hubs:
+                spawn(hub.hub_id, stable_lab._child_command(topology_path, hub.hub_id))
+        if not exp_reuse:
+            spawn("experimental-cluster", [sys.executable, "-u", "-m", "tools.exp_hub_lab.run_lab",
+                                           "--serve-exp-cluster", "--cluster-file", str(cluster_file)])
+
+        deadline = time.monotonic() + max(30.0, timeout * 2.0)
+        while True:
+            for child in children:
+                if child.poll() is not None:
+                    raise RuntimeError(f"Comparison Hub process exited during startup with code {child.returncode}; logs={output_dir}")
+            stable_ok, exp_ok = _comparison_services_ready(stable_urls=stable_urls,
+                                                            topology_path=topology_path,
+                                                            timeout=0.35)
+            if stable_ok and exp_ok:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"Comparison Hub readiness timed out: stable={stable_ok} experimental={exp_ok}; logs={output_dir}")
+            time.sleep(0.25)
+        print("Compare handoff: Stable and Experimental clusters ready", file=sys.stderr, flush=True)
+        yield
+    finally:
+        stable_lab._terminate_children(children)
+        for handle in handles:
+            handle.close()
 
 def run_lane(argv: Sequence[str]) -> int:
     from tools.exp_hub_lab import run_lab as exp_lab
@@ -203,17 +322,23 @@ def run_lane(argv: Sequence[str]) -> int:
     # demonstrated handoff assertions, not payment/accounting protocols.
     from tools.stable_hub_lab.run_lab import build_stable_hub_verification_result
     try:
-        stable = build_stable_hub_verification_result(
-            topology_path=exp_lab.DEFAULT_TOPOLOGY,
-            timeout=args.timeout,
-        )
+        with _comparison_cluster_session(cluster_file=args.cluster_file, timeout=args.timeout):
+            try:
+                stable = build_stable_hub_verification_result(
+                    topology_path=exp_lab.DEFAULT_TOPOLOGY,
+                    timeout=args.timeout,
+                )
+            except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
+                stable = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            try:
+                exp = exp_lab.verify_handoff(hub_urls=EXP_URLS, timeout=args.timeout, stress_requests=3,
+                                             require_multisession_auth=True)
+            except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
+                exp = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
-        stable = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    try:
-        exp = exp_lab.verify_handoff(hub_urls=EXP_URLS, timeout=args.timeout, stress_requests=3,
-                                     require_multisession_auth=True)
-    except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
-        exp = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        detail = f"Comparison cluster startup failed: {type(exc).__name__}: {exc}"
+        stable = {"ok": False, "error": detail}
+        exp = {"ok": False, "error": detail}
     exp_proof = dict(exp.get("proof") or {})
     stable_proof = dict(stable.get("proof") or {})
     result = {
@@ -235,6 +360,8 @@ def run_lane(argv: Sequence[str]) -> int:
         f"  experimental: {'PASS' if result['experimental']['ok'] else 'FAIL'}\n"
         f"  experimental remote forwarding: {result['experimental']['remote_handoff']}\n"
         f"  experimental owner continuation: {result['experimental']['owner_continuation']}\n"
-        f"  scope: {result['scope']}"
+        + (f"  stable error: {result['stable']['error']}\n" if result['stable']['error'] else "")
+        + (f"  experimental error: {result['experimental']['error']}\n" if result['experimental']['error'] else "")
+        + f"  scope: {result['scope']}"
     ))
     return 0 if result["ok"] else 1

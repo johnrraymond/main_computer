@@ -405,3 +405,86 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         hub3.server_close()
         thread1.join(timeout=2)
         thread3.join(timeout=2)
+
+
+def test_handoff_retires_missing_owner_socket_and_reselects_live_worker(tmp_path: Path, monkeypatch) -> None:
+    """The owner Hub, not the entry Hub, must retire a connection lost on restart."""
+    from types import SimpleNamespace
+
+    from main_computer.stable_hub_worker_sessions import StableHubWorkerSessionError
+
+    hub1_port, hub3_port = _free_port(), _free_port()
+    hub1_url, hub3_url = f"http://127.0.0.1:{hub1_port}", f"http://127.0.0.1:{hub3_port}"
+    topology_path = tmp_path / "hub-handoff-owner-socket-recovery.json"
+    _write_test_topology(topology_path, hub1_url=hub1_url, hub3_url=hub3_url)
+    msk_store = InMemoryStableMultiSessionKeyStore()
+    worker_store = InMemoryStableWorkerSessionStore()
+    hub1, thread1 = _start_server(
+        topology_path=topology_path, hub_id="dev-hub1", bind_port=hub1_port,
+        msk_store=msk_store, worker_store=worker_store,
+    )
+    hub3, thread3 = _start_server(
+        topology_path=topology_path, hub_id="dev-hub3", bind_port=hub3_port,
+        msk_store=msk_store, worker_store=worker_store,
+    )
+    try:
+        auth = _issue_msk(
+            hub1_url, private_key=REQUESTER_PRIVATE_KEY,
+            user_slug=REQUESTER_USER_SLUG,
+            request_id="remote-stale-worker-recovery-msk",
+        )
+        wallet = private_key_to_address(WORKER_PRIVATE_KEY)
+        for worker_id in ("conn_000_ghost", "conn_zzz_reconnect"):
+            owner = hub3.worker_session_directory.record_connected(
+                worker_id=worker_id, connection_id=worker_id,
+                multisession_key_id="msk_test", wallet_address=wallet,
+                account_id="acct_worker",
+            )
+            hub3.worker_market_directory.record_worker_live(
+                worker_id=worker_id, owner=owner,
+                market_profile={"rings": ["ring-2"], "capabilities": ["python"],
+                                "price": {"amount": "0.01", "unit": "credit"}},
+                worker_msk_id="msk_test", worker_wallet_address=wallet,
+                worker_account_id="acct_worker",
+            )
+        hub3.register_live_worker_session(
+            SimpleNamespace(connection_id="conn_zzz_reconnect", is_live=True)
+        )
+        selected: list[str] = []
+
+        def _deny_reservation(*, worker_id: str, connection_id: str, lease_epoch: int) -> None:
+            selected.append(worker_id)
+            raise StableHubWorkerSessionError("worker_capacity_unavailable")
+
+        monkeypatch.setattr(hub3.worker_market_directory, "reserve_worker_capacity", _deny_reservation)
+        status, result = _get_json_status(
+            hub1_url + "/api/hub/v1/hub-identity"
+        ) if False else (None, None)
+        # POST the ordinary requester-shaped work to Hub A. The old market
+        # record causes handoff to Hub C, which must prune it before selection.
+        try:
+            _post_json(hub1_url + "/api/hub/v1/work/requests", {
+                "request_id": "req_remote_stale_worker_recovery",
+                "multisession_authorization": {
+                    "kind": "multisession_key", "multisession_key_id": auth["key"]["id"],
+                },
+                "work": {"ring": "ring-2", "capabilities": ["python"],
+                         "max_price": {"amount": "0.10", "unit": "credit"}, "input": {}},
+            })
+        except HTTPError as exc:
+            status = exc.code
+            result = json.loads(exc.read().decode("utf-8"))
+        assert status == 409
+        assert result["handoff"]["routed"] is True
+        assert result["error"] == "worker_capacity_unavailable"
+        assert selected == ["conn_zzz_reconnect"]
+        assert hub3.worker_session_directory.get_owner("conn_000_ghost")["status"] == "closed"
+        assert hub3.worker_market_directory.get_worker("conn_000_ghost")["status"] == "closed"
+        assert hub3.worker_market_directory.get_worker("conn_zzz_reconnect")["status"] == "live"
+    finally:
+        hub1.shutdown()
+        hub3.shutdown()
+        hub1.server_close()
+        hub3.server_close()
+        thread1.join(timeout=2)
+        thread3.join(timeout=2)

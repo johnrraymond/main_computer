@@ -1,0 +1,906 @@
+{
+  "dictionary": [
+    [
+      "game",
+      "An interaction defined by players, available actions, information and payoff rules",
+      "game definition"
+    ],
+    [
+      "normal_form",
+      "Payoff tensor indexed by an action for each player",
+      "mathematical structure"
+    ],
+    [
+      "extensive_form",
+      "Tree of histories, acting player, observations and terminal rewards",
+      "mathematical structure"
+    ],
+    [
+      "information_set",
+      "Histories an actor cannot distinguish when acting",
+      "information"
+    ],
+    [
+      "private_type",
+      "Player property unobserved by other participants",
+      "information"
+    ],
+    [
+      "common_knowledge",
+      "A fact everyone knows, everyone knows everyone knows, and so on",
+      "information"
+    ],
+    [
+      "strategy",
+      "Rule mapping information sets or states to action distributions",
+      "policy"
+    ],
+    [
+      "mixed_strategy",
+      "Probability distribution over actions",
+      "policy"
+    ],
+    [
+      "belief",
+      "Probability assigned to unobserved state, action or type",
+      "information"
+    ],
+    [
+      "payoff",
+      "Specified numerical consequence for a player",
+      "utility"
+    ],
+    [
+      "utility",
+      "Jacket- and game-dependent numerical evaluation of outcome",
+      "utility"
+    ],
+    [
+      "expected_utility",
+      "Probability-weighted average of utility over uncertain outcomes",
+      "utility"
+    ],
+    [
+      "best_response",
+      "Maximizer of own expected utility given opponents strategy",
+      "solution concept"
+    ],
+    [
+      "nash_equilibrium",
+      "A strategy profile at which no player benefits by unilateral deviation",
+      "solution concept"
+    ],
+    [
+      "dominance",
+      "An action performs at least as well against every opponent action",
+      "solution concept"
+    ],
+    [
+      "pareto",
+      "A change improves someone without worsening anyone",
+      "solution concept"
+    ],
+    [
+      "regret",
+      "Utility of best available action minus utility of chosen action",
+      "metric"
+    ],
+    [
+      "exploitability",
+      "Improvement available to best-responding opponents, under specified conventions",
+      "metric"
+    ],
+    [
+      "jacket",
+      "Captain-specific commitments, priorities and constraints",
+      "conditioning"
+    ],
+    [
+      "scenario",
+      "Common exogenous situation presented to all compared captains",
+      "conditioning"
+    ],
+    [
+      "categorical_state",
+      "Low/medium/high and other nonnumeric observations",
+      "conditioning"
+    ],
+    [
+      "opponent_model",
+      "Explicit forecast or posterior about the opponents actions/types",
+      "conditioning"
+    ],
+    [
+      "rubric",
+      "Deterministic synthetic function mapping conditions to labeled values",
+      "teacher"
+    ],
+    [
+      "X",
+      "First utility operand after specified game-dependent projection",
+      "regression target"
+    ],
+    [
+      "Y",
+      "Second utility operand after specified game-dependent projection",
+      "regression target"
+    ],
+    [
+      "Z",
+      "X minus Y; preference margin before decision threshold",
+      "regression target"
+    ],
+    [
+      "LogBars",
+      "Native unary-like numerical scaffold in current NanoJev prompts",
+      "representation"
+    ],
+    [
+      "orientation",
+      "Forward or reversed presentation with unchanged semantic operand identities",
+      "representation"
+    ],
+    [
+      "transformation",
+      "Declared mapping with domain, codomain, assumptions and loss type",
+      "representation"
+    ],
+    [
+      "heldout_game",
+      "Game structure withheld from training for transfer measurement",
+      "evaluation"
+    ],
+    [
+      "heldout_jacket",
+      "Jacket withheld across all games to measure novel captain generalization",
+      "evaluation"
+    ],
+    [
+      "out_of_distribution",
+      "Input structure or scale unlike training distribution",
+      "evaluation"
+    ]
+  ],
+  "families": [
+    [
+      "matrix",
+      "Finite simultaneous strategic games",
+      "normal form",
+      "u_i:A_1 x ... x A_n -> R"
+    ],
+    [
+      "sequential",
+      "Sequential and repeated interaction",
+      "extensive form",
+      "history h, information sets I_i, discounted U_i"
+    ],
+    [
+      "information",
+      "Bayesian information and signaling",
+      "Bayesian/extensive",
+      "posterior proportional to likelihood times prior"
+    ],
+    [
+      "allocation",
+      "Resource-allocation and public goods",
+      "constrained optimization",
+      "max U_i(a_i,a_-i) subject to resource budget"
+    ],
+    [
+      "timing",
+      "Time, persistence and stochastic control",
+      "dynamic",
+      "V(s)=max_a E[r(s,a)+gamma V(s_next)]"
+    ],
+    [
+      "belief",
+      "Common knowledge, uncertain models and deception",
+      "belief hierarchy",
+      "beliefs over states and beliefs of others"
+    ],
+    [
+      "population",
+      "Congestion, populations and evolutionary adjustment",
+      "population",
+      "replicator: dx_i/dt=x_i(f_i - mean_f)"
+    ],
+    [
+      "security",
+      "Pursuit, evasion and security games",
+      "adversarial planning",
+      "max_min expected outcome subject to information constraints"
+    ],
+    [
+      "coalition",
+      "Bargaining, coalitions and mechanism design",
+      "cooperative/noncooperative",
+      "coalition value v(S), feasible allocations and outside options"
+    ]
+  ],
+  "games": [
+    [
+      "hawk_dove",
+      "Hawk-Dove",
+      "matrix",
+      "matrix",
+      "2x2 anti-coordination: T>R>S>P; (H,H) costly, unilateral H rewarded",
+      "simultaneous; two actions",
+      "executable",
+      "chicken, snowdrift"
+    ],
+    [
+      "chicken",
+      "Chicken",
+      "matrix",
+      "matrix",
+      "2x2 anti-coordination: T>R>S>P; mutual defiance worst",
+      "simultaneous; two actions",
+      "executable",
+      "hawk dove"
+    ],
+    [
+      "prisoners_dilemma",
+      "Prisoners Dilemma",
+      "matrix",
+      "matrix",
+      "T>R>P>S; defection dominates, cooperation Pareto improves DD",
+      "simultaneous; two actions",
+      "executable",
+      "PD"
+    ],
+    [
+      "stag_hunt",
+      "Stag Hunt",
+      "matrix",
+      "matrix",
+      "two coordination equilibria; R>T>=P>S; risky cooperative action",
+      "simultaneous; two actions",
+      "executable",
+      "assurance"
+    ],
+    [
+      "assurance",
+      "Assurance Game",
+      "matrix",
+      "matrix",
+      "coordination with cooperation requiring sufficient belief about partner",
+      "simultaneous; two actions",
+      "executable",
+      "stag hunt"
+    ],
+    [
+      "battle_sexes",
+      "Battle of the Sexes",
+      "matrix",
+      "matrix",
+      "two coordinated outcomes with asymmetric preferred equilibrium",
+      "asymmetric player payoffs; simultaneous",
+      "executable",
+      "coordination"
+    ],
+    [
+      "matching_pennies",
+      "Matching Pennies",
+      "matrix",
+      "matrix",
+      "zero-sum 2x2; no pure Nash equilibrium",
+      "opponent payoffs are negatives",
+      "executable",
+      "hide and seek"
+    ],
+    [
+      "deadlock",
+      "Deadlock",
+      "matrix",
+      "matrix",
+      "defection socially and individually favored: T>P>R>S",
+      "simultaneous; two actions",
+      "executable",
+      "dominance"
+    ],
+    [
+      "pure_coordination",
+      "Pure Coordination",
+      "matrix",
+      "matrix",
+      "matching actions reward both, mismatch penalized",
+      "simultaneous; two actions",
+      "executable",
+      "coordination"
+    ],
+    [
+      "repeated_pd",
+      "Repeated Prisoners Dilemma",
+      "sequential",
+      "repeated",
+      "U=sum_t gamma^t u_t; conditional cooperation, retaliation, forgiveness",
+      "discounted horizon or infinite with gamma<1",
+      "executable",
+      "tit for tat"
+    ],
+    [
+      "centipede",
+      "Centipede",
+      "sequential",
+      "sequential",
+      "backward induction over alternating take/pass choices",
+      "perfect information; finite horizon",
+      "catalog_only",
+      "take pass"
+    ],
+    [
+      "entry_deterrence",
+      "Entry Deterrence",
+      "sequential",
+      "sequential",
+      "entrant enter/stay; incumbent fight/accommodate; credible threats",
+      "sequential perfect information",
+      "catalog_only",
+      "entry game"
+    ],
+    [
+      "trust_game",
+      "Trust Game",
+      "sequential",
+      "trust",
+      "invest then reciprocate/appropriate, expected trust return vs outside option",
+      "binary reduced version; probability of reciprocity specified",
+      "executable",
+      "investment trust"
+    ],
+    [
+      "ultimatum",
+      "Ultimatum Game",
+      "coalition",
+      "bargain",
+      "responder accepts split or rejects with both losing",
+      "binary accept/reject reduced version",
+      "executable",
+      "fair division"
+    ],
+    [
+      "nash_bargaining",
+      "Nash Bargaining",
+      "coalition",
+      "bargain",
+      "maximize (u1-d1)(u2-d2) over individually rational feasible set",
+      "requires specified feasible set and disagreement utilities",
+      "catalog_only",
+      "bargain solution"
+    ],
+    [
+      "coalition_formation",
+      "Coalition Formation",
+      "coalition",
+      "threshold",
+      "v(S), participation threshold and allocation across members",
+      "simplified threshold reduced version",
+      "executable",
+      "coalitions"
+    ],
+    [
+      "principal_agent",
+      "Principal-Agent",
+      "coalition",
+      "sequential",
+      "contract induces effort under hidden action, incentives and participation",
+      "moral hazard; utility depends on contract",
+      "catalog_only",
+      "agency"
+    ],
+    [
+      "signaling",
+      "Signaling Game",
+      "information",
+      "bayes",
+      "P(type|signal) proportional P(signal|type)P(type); expected receiver action values",
+      "known prior and signal likelihoods",
+      "executable",
+      "Spence signaling"
+    ],
+    [
+      "cheap_talk",
+      "Cheap Talk",
+      "information",
+      "bayes",
+      "sender message without commitment; receiver posterior and incentives",
+      "message may be strategically selected",
+      "executable",
+      "Crawford Sobel"
+    ],
+    [
+      "inspection",
+      "Inspection Game",
+      "information",
+      "inspection",
+      "scan cost vs probabilistic detection benefit, strategic concealment",
+      "known detection probabilities; simplified two-action model",
+      "executable",
+      "hide inspect"
+    ],
+    [
+      "kuhn_poker",
+      "Kuhn Poker",
+      "information",
+      "bayes",
+      "imperfect-information betting; private cards and bluff probabilities",
+      "three-card poker; catalog only until full extensive game",
+      "catalog_only",
+      "poker"
+    ],
+    [
+      "colonel_blotto",
+      "Colonel Blotto",
+      "allocation",
+      "blotto",
+      "choose a_i>=0, sum_i a_i<=budget; payoff sum_i w_i 1[a_i>b_i]",
+      "ties score 0; two specified allocation plans",
+      "executable",
+      "resource allocation"
+    ],
+    [
+      "public_goods",
+      "Public Goods",
+      "allocation",
+      "threshold",
+      "contribution incurs cost, benefit depends on total contribution",
+      "threshold public-goods reduced case",
+      "executable",
+      "free rider"
+    ],
+    [
+      "volunteer_dilemma",
+      "Volunteers Dilemma",
+      "allocation",
+      "threshold",
+      "collective benefit if at least one volunteers; private volunteer cost",
+      "threshold one; binary contribution",
+      "executable",
+      "volunteer"
+    ],
+    [
+      "commons",
+      "Tragedy of the Commons",
+      "allocation",
+      "congestion",
+      "utility from extraction minus collective resource pressure",
+      "two extraction choices under aggregate load",
+      "executable",
+      "common pool"
+    ],
+    [
+      "routing",
+      "Routing / Congestion",
+      "allocation",
+      "congestion",
+      "individual route value decreases with crowding and capacity effects",
+      "two routes; aggregate load supplied",
+      "executable",
+      "Braess"
+    ],
+    [
+      "war_attrition",
+      "War of Attrition",
+      "timing",
+      "attrition",
+      "contest value less accumulated waiting cost vs immediate exit",
+      "one-step continue/exit choice",
+      "executable",
+      "attrition"
+    ],
+    [
+      "stochastic_game",
+      "Stochastic Game",
+      "timing",
+      "markov",
+      "Q(s,a)=r(s,a)+gamma sum_snext P(snext|s,a)V(snext)",
+      "specified one-step continuation values",
+      "executable",
+      "Markov game"
+    ],
+    [
+      "differential_game",
+      "Differential Game",
+      "timing",
+      "differential",
+      "state derivative f(x,u1,u2); integral cost and terminal utility",
+      "continuous state/actions; catalog only",
+      "catalog_only",
+      "optimal control"
+    ],
+    [
+      "bayesian_game",
+      "Bayesian Game",
+      "belief",
+      "bayes",
+      "expected payoff conditional on hidden opponent type prior and evidence",
+      "fixed type prior and observation likelihoods",
+      "executable",
+      "incomplete information"
+    ],
+    [
+      "electronic_mail",
+      "Electronic-Mail Game",
+      "belief",
+      "common_knowledge",
+      "higher-order beliefs from possibly missed acknowledgements",
+      "lack of common knowledge under unreliable messages",
+      "catalog_only",
+      "Rubinstein email"
+    ],
+    [
+      "byzantine_coordination",
+      "Byzantine Coordination",
+      "belief",
+      "common_knowledge",
+      "coordination under faulty or adversarial communication",
+      "needs explicit fault/communication model",
+      "catalog_only",
+      "Byzantine generals"
+    ],
+    [
+      "hypergame",
+      "Hypergame",
+      "belief",
+      "hyper",
+      "opponent may use a different perceived game/payoff model",
+      "declared alternate models and subjective priors",
+      "executable",
+      "perception games"
+    ],
+    [
+      "el_farol",
+      "El Farol Bar",
+      "population",
+      "congestion",
+      "attendance utility depends on how many others attend",
+      "threshold capacity and attendance forecast",
+      "executable",
+      "minority"
+    ],
+    [
+      "minority",
+      "Minority Game",
+      "population",
+      "congestion",
+      "reward for choosing underselected alternative",
+      "population share supplied",
+      "executable",
+      "minority"
+    ],
+    [
+      "evolutionary",
+      "Evolutionary Game",
+      "population",
+      "replicator",
+      "dx_i/dt=x_i(f_i(x)-mean_f(x)); fitness differences",
+      "population strategy fractions",
+      "catalog_only",
+      "replicator dynamics"
+    ],
+    [
+      "pursuit_evasion",
+      "Pursuit-Evasion",
+      "security",
+      "pursuit",
+      "intercept chance versus escape, risk and resource costs",
+      "simplified probabilistic intercept",
+      "executable",
+      "hide seek"
+    ],
+    [
+      "security_game",
+      "Stackelberg Security Game",
+      "security",
+      "inspection",
+      "defender allocates patrol coverage, attacker responds to distribution",
+      "coverage probability fixed for reduced example",
+      "executable",
+      "security patrol"
+    ],
+    [
+      "travelers_dilemma",
+      "Travelers Dilemma",
+      "matrix",
+      "matrix",
+      "claim low/high; lower claim plus reward, higher claim minus penalty",
+      "reduced two-claim instance, not full action space",
+      "executable",
+      "traveler"
+    ]
+  ],
+  "objective": {
+    "allocation_policy": "Probe determines starting frontier; no unvalidated fixed mix or automatic promotion.",
+    "constraints": [
+      "do not modify active checkpoints",
+      "no source-split contamination",
+      "do not present synthetic teachers as observed optimal strategies",
+      "track kernel and rubric versions with each task",
+      "do not truncate prompts at 256 tokens",
+      "legacy rehearsal must stay nonzero after trainer cutover"
+    ],
+    "curriculum": [
+      {
+        "aim": "retain native numerical skill",
+        "phase": "control",
+        "variants": [
+          "native"
+        ]
+      },
+      {
+        "aim": "add game rules and categorical state without hiding numbers",
+        "phase": "context",
+        "variants": [
+          "context_numeric",
+          "semantic_roles"
+        ]
+      },
+      {
+        "aim": "learn exact game/jacket-to-operand mapping",
+        "phase": "one_operand",
+        "variants": [
+          "infer_x",
+          "infer_y"
+        ]
+      },
+      {
+        "aim": "perform full inference",
+        "phase": "both_operands",
+        "variants": [
+          "infer_both",
+          "raw_story"
+        ]
+      },
+      {
+        "aim": "withheld jackets/scenarios then withheld game types",
+        "phase": "transfer",
+        "variants": [
+          "raw_story"
+        ]
+      }
+    ],
+    "evaluation": {
+      "metrics": [
+        "X_5pct",
+        "Y_5pct",
+        "joint_XY_5pct",
+        "joint_XY_10pct",
+        "OP_accuracy",
+        "paired_accuracy",
+        "decision_accuracy",
+        "regret",
+        "representation_gap",
+        "transfer_to_heldout_jacket",
+        "transfer_to_heldout_scenario",
+        "retention"
+      ],
+      "operand_tolerances": [
+        0.05,
+        0.1
+      ],
+      "promotion": "measure before activation; no numeric threshold hardwired into trainer",
+      "strict_orientation_pair": true
+    },
+    "goals": [
+      "extract X/Y when explicitly registered in native LogBar notation",
+      "bind numerical values to semantically described roles across orientations",
+      "infer missing X or Y from jacket + scenario + executable game rubric",
+      "infer both operands with no explicit target numerals",
+      "preserve correct operation identification despite categorical and prose context",
+      "generalize to withheld jackets, scenarios, and eventually whole game families",
+      "retain legacy arithmetic and earlier learned games after each expansion"
+    ],
+    "id": "game_transformations_supervised_v1",
+    "losses": {
+      "OP": "cross_entropy(existing 14-class classifier, subtract), separately evaluated",
+      "XY": "existing mix_v4 decoder sign/mantissa/exponent regression, exactly as existing trainer implements",
+      "decision": "diagnostic sign(X-Y) accuracy; NOT substitute for XY loss",
+      "invariance": "paired paraphrase/row-order agreement; proposed auxiliary objective, not yet wired",
+      "paired": "both forward and reversed representations supervised with unchanged X/Y",
+      "strategy": "regret against specified synthetic oracle; evaluation only, not learned equilibrium"
+    },
+    "model": "existing Qwen3-0.6B frozen backbone + mix_v4 XY decoder and operation head",
+    "sources": {
+      "catalogs": [
+        "https://gambitproject.readthedocs.io/en/stable/pygambit.html",
+        "https://github.com/google-deepmind/open_spiel/blob/master/docs/games.md"
+      ],
+      "local": [
+        "nanojev_altreg_attention_curriculum_mix_v4.py",
+        "nanojev_captain_numeracy_populate.py",
+        "nanojev_hawk_dove_captains_v1.py",
+        "nanojev_hawk_dove_scenarios_v1.py"
+      ]
+    },
+    "status": "design_and_verified_synthetic_dataset_not_active_training",
+    "target_schema": {
+      "OP": "subtract; all seeded tasks",
+      "X": "0..2000000 canonical utility projection for action A",
+      "Y": "0..2000000 canonical utility projection for action B",
+      "Z": "X-Y diagnostic",
+      "orientation": "both; preserve X/Y role under reordering"
+    },
+    "withheld_games": [
+      "travelers_dilemma",
+      "hypergame"
+    ]
+  },
+  "provenance": {
+    "note": "No synthetic captain numerical rubric is promoted to a verified transformation teacher",
+    "source": "nanojev_game_library_v1_source_generated_patch(2).zip",
+    "status": "catalog_and_teacher_design_only; captain runtime dependencies were not supplied"
+  },
+  "transforms": [
+    [
+      "payoff_to_expected",
+      "normal_form",
+      "expected_utility",
+      "exact_conditional",
+      "q*u(A,C)+(1-q)*u(A,D)",
+      "fixed opponent action belief q; linear expectation",
+      "expected payoff for each candidate action"
+    ],
+    [
+      "expected_to_ordinal",
+      "expected_utility",
+      "preference_margin",
+      "exact",
+      "Z=X-Y",
+      "same utility scale and actor",
+      "signed preference difference"
+    ],
+    [
+      "ordinal_to_choice",
+      "preference_margin",
+      "binary_choice",
+      "lossy",
+      "contest iff Z>0; yield iff Z<0",
+      "zero is indifference",
+      "decision cannot recover exact X and Y"
+    ],
+    [
+      "payoff_affine",
+      "normal_form",
+      "normal_form",
+      "strategic_equivalence",
+      "u_new=a*u+b where a>0",
+      "same positive a and action-independent b per player",
+      "best responses unchanged, raw differences rescaled"
+    ],
+    [
+      "swap_action_rows",
+      "normal_form",
+      "normal_form",
+      "strategic_isomorphism",
+      "swap action labels and corresponding rows",
+      "apply label permutation consistently",
+      "relabeling preserves strategic game"
+    ],
+    [
+      "swap_action_columns",
+      "normal_form",
+      "normal_form",
+      "strategic_isomorphism",
+      "swap opponent action labels and corresponding columns",
+      "apply label permutation consistently",
+      "relabeling preserves strategic game"
+    ],
+    [
+      "game_to_pairwise",
+      "action_values",
+      "paired_operands",
+      "exact",
+      "X=U(action A), Y=U(action B)",
+      "specified agent and information state",
+      "projection from values to X/Y"
+    ],
+    [
+      "pairwise_to_registers",
+      "paired_operands",
+      "native_registers",
+      "reversible_encoding",
+      "XXXXXX=X, YYYYYY=Y with native LogBars",
+      "bounded integer operand domain; LogBars checked",
+      "native head-compatible numeric surface"
+    ],
+    [
+      "register_to_roles",
+      "native_registers",
+      "semantic_bindings",
+      "semantic_equivalence",
+      "replace first/second register description with role name",
+      "values remain explicitly present in the prompt",
+      "numerical semantic binding task"
+    ],
+    [
+      "roles_to_story",
+      "semantic_bindings",
+      "natural_story",
+      "supervised_inference",
+      "derive X/Y from game rules, jacket and observed state",
+      "numerical labels withheld; deterministic teacher must supply labels",
+      "genuine semantic projection not a reversible text encoding"
+    ],
+    [
+      "story_paraphrase",
+      "natural_story",
+      "natural_story",
+      "semantic_equivalence_test",
+      "reword without altering facts, utilities, or information sets",
+      "manually or mechanically validate facts remain constant",
+      "invariance test"
+    ],
+    [
+      "orientation_swap",
+      "paired_operands",
+      "paired_operands",
+      "reversible_encoding",
+      "swap presentation order, preserve semantic X/Y identities",
+      "no relabeling of numerical meaning",
+      "paired orientation consistency"
+    ],
+    [
+      "bayes_update",
+      "prior_likelihood",
+      "posterior",
+      "exact_conditional",
+      "P(T|m)=P(m|T)P(T)/P(m)",
+      "positive evidence probability; likelihoods calibrated",
+      "posterior beliefs"
+    ],
+    [
+      "history_discount",
+      "stage_payoffs",
+      "discounted_value",
+      "exact_conditional",
+      "sum(t=0..H) gamma^t r_t",
+      "fixed gamma and horizon",
+      "continuation-value conversion"
+    ],
+    [
+      "blotto_allocate",
+      "allocation_vector",
+      "win_vector",
+      "exact_conditional",
+      "win_i=1[a_i>b_i], payoff=sum w_i win_i",
+      "allocation vector feasible and tie rule specified",
+      "battlefield values"
+    ],
+    [
+      "belief_to_expected",
+      "beliefs_and_payoffs",
+      "action_values",
+      "exact_conditional",
+      "Q(a)=sum_h P(h|I)u(a,h)",
+      "coherent probability distribution and payoff model",
+      "Bayesian expected value"
+    ],
+    [
+      "normal_to_extensive",
+      "normal_form",
+      "imperfect_info_tree",
+      "structural_equivalence",
+      "simultaneous moves represented by second mover unable to observe first",
+      "second-player decision nodes in one information set",
+      "normal form as information-set extensive game"
+    ],
+    [
+      "one_shot_to_repeated",
+      "normal_form",
+      "repeated_game",
+      "extension",
+      "add histories, contingent strategies, horizon, discount factor",
+      "not payoff-equivalent to one-shot game",
+      "new game with memory"
+    ],
+    [
+      "risk_to_jacket",
+      "objective_payoffs",
+      "jacket_values",
+      "provisional_teacher",
+      "synthetic captain disposition shifts relative action preference",
+      "must be visible as jacket text; no optimality claim",
+      "supervision for jacket-conditioned decisions"
+    ]
+  ]
+}

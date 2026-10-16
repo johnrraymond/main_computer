@@ -466,3 +466,70 @@ def test_owner_hub_returns_worker_not_live_when_no_market_candidate_matches() ->
     assert body["ok"] is False
     assert body["error"] == "worker_not_live"
     assert body["partition"] == "ring-2"
+
+
+def test_missing_owner_socket_is_retired_and_fresh_connection_is_selected(monkeypatch) -> None:
+    """A stale cheaper slot must not keep a reconnected wallet off the market."""
+    from types import SimpleNamespace
+
+    from main_computer.stable_hub_worker_sessions import StableHubWorkerSessionError
+
+    msk_store = InMemoryStableMultiSessionKeyStore()
+    worker_store = InMemoryStableWorkerSessionStore()
+    hub, thread = _start_server("dev-hub3", msk_store, worker_store)
+    try:
+        base = f"http://127.0.0.1:{hub.server_port}"
+        auth = _issue_msk(
+            base, private_key=REQUESTER_PRIVATE_KEY,
+            user_slug=REQUESTER_USER_SLUG,
+            request_id="ghost-owner-recovery-requester-msk",
+        )
+        wallet = private_key_to_address(WORKER_PRIVATE_KEY)
+        # Both records are on the owner Hub; only the newer socket exists.
+        for worker_id, price in (("conn_000_ghost", "0.01"), ("conn_zzz_fresh", "0.02")):
+            owner = hub.worker_session_directory.record_connected(
+                worker_id=worker_id, connection_id=worker_id,
+                multisession_key_id="msk_test_worker", wallet_address=wallet,
+                account_id="acct_worker",
+            )
+            hub.worker_market_directory.record_worker_live(
+                worker_id=worker_id, owner=owner,
+                market_profile={
+                    "rings": ["ring-2"], "capabilities": ["python"],
+                    "price": {"amount": price, "unit": "credit"},
+                    "max_concurrency": 1,
+                },
+                worker_msk_id="msk_test_worker", worker_wallet_address=wallet,
+                worker_account_id="acct_worker",
+            )
+        hub.register_live_worker_session(
+            SimpleNamespace(connection_id="conn_zzz_fresh", is_live=True)
+        )
+        selected_at_reservation: list[str] = []
+
+        def _deny_reservation(*, worker_id: str, connection_id: str, lease_epoch: int) -> None:
+            selected_at_reservation.append(worker_id)
+            raise StableHubWorkerSessionError("worker_capacity_unavailable")
+
+        monkeypatch.setattr(hub.worker_market_directory, "reserve_worker_capacity", _deny_reservation)
+        status, result = _post_json_status(base + "/api/hub/v1/work/requests", {
+            "request_id": "req_ghost_owner_recovery",
+            "multisession_authorization": {
+                "kind": "multisession_key", "multisession_key_id": auth["key"]["id"],
+            },
+            "work": {
+                "ring": "ring-2", "capabilities": ["python"],
+                "max_price": {"amount": "0.10", "unit": "credit"}, "input": {},
+            },
+        })
+        assert status == 409
+        assert result["error"] == "worker_capacity_unavailable"
+        assert selected_at_reservation == ["conn_zzz_fresh"]
+        assert hub.worker_session_directory.get_owner("conn_000_ghost")["status"] == "closed"
+        assert hub.worker_market_directory.get_worker("conn_000_ghost")["status"] == "closed"
+        assert hub.worker_session_directory.get_owner("conn_zzz_fresh")["status"] == "live"
+        assert hub.worker_market_directory.get_worker("conn_zzz_fresh")["status"] == "live"
+    finally:
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
