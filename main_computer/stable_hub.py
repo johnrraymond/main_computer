@@ -1302,40 +1302,92 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         # Legacy payout holds are no longer authoritative.  Idempotency is handled by
         # accepted-session and direct charge records instead of pre-reserved credit.
 
-        selected_worker = self.server.worker_market_directory.select_worker_for_work(work)
-        if selected_worker is None:
-            self._send_json(
-                409,
-                {
-                    "ok": False,
-                    "error": "worker_not_live",
-                    "message": "No live worker matched the request market constraints.",
-                    "request_id": request_id,
-                    "partition": partition,
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                },
-            )
-            return
+        # A Hub restart can leave a durable "live" market/owner entry for a
+        # connection whose WebSocket existed only in the old process.  The
+        # owner Hub can prove that *its own* socket is missing; the entry Hub
+        # cannot.  Retire only the exact stale connection (under the shared
+        # FDB transaction) and reselect so a reconnect is usable immediately.
+        retired_missing_socket: tuple[str, dict[str, Any]] | None = None
+        while True:
+            selected_worker = self.server.worker_market_directory.select_worker_for_work(work)
+            if selected_worker is None:
+                if retired_missing_socket is not None:
+                    stale_worker_id, stale_owner = retired_missing_socket
+                    self._send_json(409, {
+                        "ok": False, "error": "worker_owner_not_local",
+                        "message": "Selected worker has no local live socket. Worker must reconnect.",
+                        "request_id": request_id, "worker_id": stale_worker_id,
+                        "partition": partition, "owner": stale_owner,
+                        "hub_id": self.server.hub.hub_id,
+                        "cluster_id": self.server.topology.cluster_id,
+                    })
+                else:
+                    self._send_json(409, {
+                        "ok": False, "error": "worker_not_live",
+                        "message": "No live worker matched the request market constraints.",
+                        "request_id": request_id, "partition": partition,
+                        "hub_id": self.server.hub.hub_id,
+                        "cluster_id": self.server.topology.cluster_id,
+                    })
+                return
 
-        worker_id = normalize_worker_id(selected_worker.get("worker_id"))
-        owner = self.server.worker_session_directory.get_owner(worker_id)
-        if not owner or owner.get("status") != "live":
-            self._send_json(
-                409,
-                {
-                    "ok": False,
-                    "error": "worker_not_live",
+            worker_id = normalize_worker_id(selected_worker.get("worker_id"))
+            owner = self.server.worker_session_directory.get_owner(worker_id)
+            if not owner or owner.get("status") != "live":
+                self._send_json(409, {
+                    "ok": False, "error": "worker_not_live",
                     "message": "Selected worker has no live owner record.",
-                    "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "owner": owner,
+                    "request_id": request_id, "worker_id": worker_id,
+                    "partition": partition, "owner": owner,
                     "hub_id": self.server.hub.hub_id,
                     "cluster_id": self.server.topology.cluster_id,
-                },
-            )
-            return
+                })
+                return
+
+            if str(owner.get("owner_hub_id") or "") != self.server.hub.hub_id:
+                break  # Only the owner Hub is allowed to inspect a live socket.
+            stale_connection_id = str(owner.get("connection_id") or "")
+            if (
+                not stale_connection_id
+                or stale_connection_id != str(selected_worker.get("connection_id") or "")
+                or int(owner.get("lease_epoch") or 0) != int(selected_worker.get("lease_epoch") or 0)
+            ):
+                break  # Existing owner-changed response below handles this.
+            local_socket = self.server.get_live_worker_session(stale_connection_id)
+            if local_socket is not None and local_socket.is_live:
+                break
+
+            def _retire_missing_socket() -> bool:
+                current = self.server.worker_session_directory.get_owner(worker_id)
+                if (
+                    not current or current.get("status") != "live"
+                    or str(current.get("owner_hub_id") or "") != self.server.hub.hub_id
+                    or str(current.get("connection_id") or "") != stale_connection_id
+                    or int(current.get("lease_epoch") or 0) != int(owner.get("lease_epoch") or 0)
+                ):
+                    return False
+                # Re-check under the store's transaction; never close a socket
+                # that registered while the requester was selecting a worker.
+                active = self.server.get_live_worker_session(stale_connection_id)
+                if active is not None and active.is_live:
+                    return False
+                self.server.worker_session_directory.record_closed(
+                    worker_id=worker_id, connection_id=stale_connection_id,
+                    reason="local_socket_missing",
+                )
+                self.server.worker_market_directory.record_worker_closed(
+                    worker_id=worker_id, connection_id=stale_connection_id,
+                    reason="local_socket_missing",
+                )
+                return True
+
+            store = self.server.worker_session_directory.store
+            atomic = getattr(store, "atomic", None)
+            retired = atomic(_retire_missing_socket) if callable(atomic) else _retire_missing_socket()
+            if not retired:
+                break  # A concurrent reconnect/close changed the owner.
+            retired_missing_socket = (worker_id, dict(owner))
+            self._log_event(f"retired missing local worker socket: {worker_id}")
 
         owner_hub_id = str(owner.get("owner_hub_id") or "")
         owner_hub_url = str(owner.get("owner_hub_url") or "")
