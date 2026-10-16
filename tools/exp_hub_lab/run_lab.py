@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import importlib.util
 import json
 import os
@@ -1269,13 +1268,12 @@ def _worker_earning_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _resolve_settlement_worker_from_handoff(
     handoff: dict[str, Any], *, owner_url: str, timeout: float,
 ) -> tuple[str, list[str]]:
-    """Resolve authenticated worker settlement identity from committed earnings.
+    """Resolve authenticated wallet ownership from committed earning records.
 
-    P1's caller-side worker label is intentionally *not* the Experimental Hub's
-    settlement identity.  Experimental derives an internal key from the signed
-    worker wallet and stores earnings under it.  Resolve the authoritative key
-    from each charge's precise request/earning pair rather than trusting the
-    unregistered worker label or scanning unfiltered credits.
+    The caller's worker label and Hub-issued connection ID are routing handles,
+    not economic identities. The Experimental Hub records earnings under the
+    canonical authenticated wallet account ID. Resolve each earning from its
+    canonical request/earning pair and verify it belongs to that account.
 
     No claim or chain operation is permitted if records disagree.
     """
@@ -1350,10 +1348,10 @@ def _resolve_settlement_worker_from_handoff(
     if auth.get("required") is True and not wallet_address:
         raise ExpHubLabError("strict P2-B settlement requires the authenticated worker wallet")
     if wallet_address:
-        # P1's wallet-authenticated live worker uses this stable internal key.
-        # It is deliberately distinct from the worker_id submitted over WS.
-        expected_key = "live_" + hashlib.sha256(wallet_address.encode("utf-8")).hexdigest()[:32]
-        if worker_id != expected_key:
+        # Experimental commits earnings under the authenticated wallet account,
+        # not the connection ID and not the old wallet-hash route key.
+        expected_account_id = wallet_account_id(wallet_address)
+        if worker_id != expected_account_id:
             raise ExpHubLabError("committed earnings do not belong to the authenticated worker wallet")
     return worker_id, [earning_id for _, earning_id in expected]
 

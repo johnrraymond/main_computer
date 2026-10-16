@@ -902,6 +902,7 @@ def test_apply_deployment_syncs_assigned_bridge_signer_to_existing_coolify_app(
         "topology": {"hubs": []},
         "fdb_contract": {"connection_string": "test:test@127.0.0.1:4500", "namespace": "mainnet", "sha256": "fdb-sha"},
         "chain_contract": {"chain_id": 42424240, "rpc_url": "https://rpc.example.invalid", "sha256": "chain-sha"},
+        "private_https_routes": {"rpc.example.invalid": "10.116.0.3", "mainneta-hub1.example.invalid": "10.116.0.3"},
         "git_repository": "https://github.com/example/main_computer.git",
         "git_branch": "main",
         "dockerfile_location": "/Dockerfile.hub.exp-fdb",
@@ -945,6 +946,9 @@ def test_apply_deployment_syncs_assigned_bridge_signer_to_existing_coolify_app(
     assert result["bridge_signer"]["bridge_controller_address"] == controller
     assert synced[deployment.BRIDGE_SIGNER_ENV] == encoded
     assert events.index(("sync", deployment.BRIDGE_SIGNER_ENV)) < events.index(("deploy", "existing-hub"))
+    assert json.loads(synced["MAIN_COMPUTER_HUB_PRIVATE_HTTPS_ROUTES"]) == target["private_https_routes"]
+    assert synced["MAIN_COMPUTER_HUB_REQUIRE_PRIVATE_HTTPS_ROUTES"] == "true"
+    assert events.index(("sync", "MAIN_COMPUTER_HUB_PRIVATE_HTTPS_ROUTES")) < events.index(("deploy", "existing-hub"))
     assert deployment.BRIDGE_SIGNER_ENV in result["environment_variables"]
     assert encoded not in json.dumps(result)
     assert bridge_private_key not in json.dumps(result)

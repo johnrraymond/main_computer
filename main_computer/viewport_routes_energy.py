@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import copy
 import base64
+import hashlib
 import ipaddress
 import json
 import os
@@ -295,6 +296,7 @@ class _WorkerHubLiveSessionClient:
             separators=(",", ":"),
         )
         self.connection_id = ""
+        self.websocket_upgrade_status = ""
         self.accepted: dict[str, Any] = {}
         self.owner: dict[str, Any] = {}
         self.market: dict[str, Any] = {}
@@ -379,12 +381,23 @@ class _WorkerHubLiveSessionClient:
         deadline = time.monotonic() + self.timeout_s
         saw_accepted = False
         saw_pong = False
+        received_types: list[str] = []
         while time.monotonic() < deadline:
             try:
                 message = self._recv_json()
             except TimeoutError:
                 continue
             message_type = str(message.get("type") or "")
+            if len(received_types) < 12:
+                received_types.append(message_type or "<missing-type>")
+            if message_type == "hub.auth.rejected":
+                details = []
+                for field in ("reason_code", "user_message", "hub_id"):
+                    value = str(message.get(field) or "").strip()
+                    if value:
+                        details.append(f"{field}={value}")
+                suffix = f": {'; '.join(details)}" if details else "."
+                raise RuntimeError(f"Hub rejected worker.auth{suffix}")
             if message_type == "hub.error":
                 raise RuntimeError(str(message.get("error") or message))
             self._handle_hub_message(message)
@@ -396,9 +409,18 @@ class _WorkerHubLiveSessionClient:
                 break
 
         if not saw_accepted:
-            raise RuntimeError("Hub live-session did not accept worker.auth.")
+            raise RuntimeError(
+                "Hub live-session did not accept worker.auth "
+                f"after {self.timeout_s:g}s; hub={self.hub_url}; "
+                f"upgrade={self.websocket_upgrade_status or 'unknown'}; "
+                f"frames_received={received_types}."
+            )
         if not saw_pong:
-            raise RuntimeError("Hub live-session did not complete the initial ping/pong keepalive.")
+            raise RuntimeError(
+                "Hub live-session did not complete the initial ping/pong keepalive "
+                f"after {self.timeout_s:g}s; hub={self.hub_url}; "
+                f"frames_received={received_types}."
+            )
 
         self._reader_thread = threading.Thread(
             target=self._reader_loop,
@@ -870,21 +892,43 @@ class _WorkerHubLiveSessionClient:
             "\r\n"
         )
         sock.sendall(request.encode("ascii"))
-        response = b""
-        while b"\r\n\r\n" not in response:
-            chunk = sock.recv(4096)
+        # Read exactly the HTTP headers.  recv(4096) can consume an early
+        # websocket frame along with the upgrade and silently discard it.
+        response = bytearray()
+        while not response.endswith(b"\r\n\r\n"):
+            chunk = sock.recv(1)
             if not chunk:
-                raise RuntimeError(f"Hub live-session websocket handshake closed early: {response!r}")
-            response += chunk
+                raise RuntimeError(f"Hub live-session websocket handshake closed early: {bytes(response)!r}")
+            response.extend(chunk)
             if len(response) > 65536:
                 raise RuntimeError("Hub live-session websocket handshake response was too large.")
-        first_line = response.split(b"\r\n", 1)[0]
-        if b" 101 " not in first_line:
-            try:
-                detail = response.decode("utf-8", errors="replace")
-            except Exception:
-                detail = repr(response[:1000])
-            raise RuntimeError(f"Hub live-session websocket handshake failed: {detail[:1000]}")
+        first_line = bytes(response).split(b"\r\n", 1)[0]
+        self.websocket_upgrade_status = first_line.decode("latin-1", errors="replace")
+        if not (first_line.startswith(b"HTTP/1.1 101 ") or first_line == b"HTTP/1.1 101"):
+            detail = response.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                "Hub live-session websocket handshake was not HTTP/1.1 101: "
+                + detail[:1000]
+            )
+        header_lines = bytes(response).split(b"\r\n")[1:]
+        headers: dict[str, str] = {}
+        for line in header_lines:
+            if b":" not in line:
+                continue
+            name, value = line.split(b":", 1)
+            headers[name.strip().decode("ascii", errors="ignore").lower()] = value.strip().decode("latin-1")
+        expected_accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()
+        ).decode("ascii")
+        if (
+            headers.get("upgrade", "").lower() != "websocket"
+            or "upgrade" not in {token.strip().lower() for token in headers.get("connection", "").split(",")}
+            or headers.get("sec-websocket-accept") != expected_accept
+        ):
+            raise RuntimeError(
+                "Hub live-session websocket upgrade response was missing valid Upgrade, "
+                "Connection, or Sec-WebSocket-Accept headers."
+            )
         sock.settimeout(1.0)
         return sock
 

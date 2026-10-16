@@ -1,0 +1,45 @@
+CROSSED HAWK–DOVE SMOKE: TEN CAPTAINS × THREE SHARED SCENARIOS
+
+Each scenario's state, situation, opponent intelligence, question and Y target
+are held identical across the ten jackets. Only the jacket/X-teacher vary.
+
+SCENARIO s01 — Contested supply cache
+             X           Y           Z          Decision
+c01      1,100,000      940,000     +160,000      contest
+c02      1,160,000      940,000     +220,000      contest
+c03      1,440,000      940,000     +500,000      contest
+c04        960,000      940,000      +20,000      contest
+c05        780,000      940,000     -160,000      yield
+c06      1,080,000      940,000     +140,000      contest
+c07        720,000      940,000     -220,000      yield
+c08      1,020,000      940,000      +80,000      contest
+c09        820,000      940,000     -120,000      yield
+c10        900,000      940,000      -40,000      yield
+
+SCENARIO s02 — Disputed emergency docking corridor
+             X           Y           Z          Decision
+c01      1,300,000    1,300,000            0      indifferent
+c02      1,540,000    1,300,000     +240,000      contest
+c03      1,560,000    1,300,000     +260,000      contest
+c04      1,600,000    1,300,000     +300,000      contest
+c05      1,620,000    1,300,000     +320,000      contest
+c06      1,440,000    1,300,000     +140,000      contest
+c07      1,420,000    1,300,000     +120,000      contest
+c08        800,000    1,300,000     -500,000      yield
+c09      1,840,000    1,300,000     +540,000      contest
+c10      1,280,000    1,300,000      -20,000      yield
+
+SCENARIO s03 — Contested sensor relay
+             X           Y           Z          Decision
+c01        680,000      620,000      +60,000      contest
+c02        660,000      620,000      +40,000      contest
+c03        980,000      620,000     +360,000      contest
+c04        300,000      620,000     -320,000      yield
+c05        260,000      620,000     -360,000      yield
+c06        460,000      620,000     -160,000      yield
+c07        300,000      620,000     -320,000      yield
+c08        300,000      620,000     -320,000      yield
+c09        380,000      620,000     -240,000      yield
+c10        360,000      620,000     -260,000      yield
+
+Teacher-generated labels, not observed captain decisions or head predictions.

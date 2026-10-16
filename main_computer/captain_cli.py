@@ -5,8 +5,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
-import subprocess
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -16,7 +14,6 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from main_computer.config import DEFAULT_HUB_NETWORK, MainComputerConfig
-from main_computer.container_runtime import resolve_container_runtime
 from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to_decimal_text
 from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.hub_plex_service import PHASE9_EXECUTION_MODE, PHASE9_PRICING_MODE
@@ -316,12 +313,24 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
     if not options.no_hub:
         if use_bridge:
             bridge = result["hub"]["bridge"]
-            bridge["deposit"] = send_captain_bridge_deposit(
-                runtime,
-                deposit_credit_wei=bridge_credit_wei,
-                smoke_id=smoke_id,
-                timeout_s=options.timeout_s,
+            pending_path = _captain_pending_bridge_path(runtime, smoke_id=smoke_id, cwd=repo_cwd)
+            pending_deposit = _read_captain_pending_bridge(
+                pending_path, runtime=runtime, amount_wei=bridge_credit_wei
             )
+            if pending_deposit is None:
+                pending_deposit = send_captain_bridge_deposit(
+                    runtime,
+                    deposit_credit_wei=bridge_credit_wei,
+                    smoke_id=smoke_id,
+                    timeout_s=options.timeout_s,
+                )
+                pending_deposit = {
+                    **pending_deposit,
+                    "wallet_address": runtime.wallet.address,
+                    "amount_credit_wei": str(bridge_credit_wei),
+                }
+                _save_captain_pending_bridge(pending_path, pending_deposit)
+            bridge["deposit"] = pending_deposit
             completion_payload = {
                 "deposit_id": bridge["deposit"]["deposit_id"],
                 "wallet_address": runtime.wallet.address,
@@ -353,11 +362,15 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                     import_payload,
                     timeout_s=options.timeout_s,
                 )
+            # The Hub has confirmed the deposit's idempotent FDB credit.
+            # A retry after a lost HTTP response replays the same ID and is
+            # then safe to clear, rather than broadcasting another payment.
             result["hub"]["balance_after_bridge"] = _fetch_hub_credit_balance(
                 runtime.config.hub_url,
                 wallet_address=runtime.wallet.address,
                 timeout_s=options.timeout_s,
             )
+            pending_path.unlink(missing_ok=True)
         elif not options.no_stipend:
             result["hub"]["stipend"] = _post_hub_json(
                 runtime.config.hub_url,
@@ -836,46 +849,14 @@ def send_captain_smoke_transaction(
     timeout_s: float,
 ) -> dict[str, Any]:
     function_signature = "finalizeWalletSmokeTest(bytes32,string)" if runtime.wallet.is_office else "frobByAnyUser(bytes32,string)"
-    command = _cast_send_command(
-        repo_root=_repo_root_for_deployment_path(runtime.deployment_path),
-        network_name=_chain_value(runtime.deployment, "network"),
-        rpc_url=runtime.rpc_url,
-        private_key=runtime.wallet.private_key,
+    return send_captain_contract_transaction(
+        runtime,
         contract_address=runtime.xlag_address,
+        private_key=runtime.wallet.private_key,
         function_signature=function_signature,
         function_args=[smoke_id, memo],
+        timeout_s=timeout_s,
     )
-    completed = subprocess.run(
-        command,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=None,
-    )
-    if completed.returncode != 0:
-        raise CaptainCliError(
-            "captain smoke chain transaction failed.\n"
-            f"command={_redact_private_key(command)}\nstdout={completed.stdout}\nstderr={completed.stderr}"
-        )
-
-    tx_hash = _parse_transaction_hash((completed.stdout or "") + "\n" + (completed.stderr or ""))
-    rpc = JsonRpcClient(runtime.rpc_url, timeout_s=timeout_s)
-    receipt = _wait_for_receipt(rpc, tx_hash, timeout_s=max(1.0, timeout_s))
-    gas = _gas_summary(receipt)
-    return {
-        "function": function_signature,
-        "transaction_hash": tx_hash,
-        "block_number": gas["block_number"],
-        "gas_used": gas["gas_used"],
-        "gas_price_wei": gas["gas_price_wei"],
-        "gas_cost_wei": gas["gas_cost_wei"],
-        "gas_cost_native": gas["gas_cost_native"],
-        "receipt": receipt,
-        "command": _redact_private_key(command),
-    }
-
 
 
 
@@ -961,6 +942,79 @@ def _is_missing_bridge_completion_metadata_error(exc: BaseException) -> bool:
             or "metadata" in text
         )
     )
+
+def _captain_pending_bridge_path(runtime: CaptainRuntime, *, smoke_id: str, cwd: Path) -> Path:
+    identity = (
+        f"{runtime.chain_id}|{normalize_address(runtime.bridge_escrow_address)}|"
+        f"{normalize_address(runtime.wallet.address)}|{smoke_id}"
+    )
+    return cwd / "runtime" / "state" / "captain" / "pending-bridge-deposits" / (
+        hashlib.sha256(identity.encode("utf-8")).hexdigest() + ".json"
+    )
+
+
+def _read_captain_pending_bridge(
+    path: Path, *, runtime: CaptainRuntime, amount_wei: int
+) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CaptainCliError(f"Pending bridge funding record is unreadable: {path}") from exc
+    if not isinstance(raw, dict):
+        raise CaptainCliError(f"Pending bridge funding record is invalid: {path}")
+    deposit_id = str(raw.get("deposit_id") or "")
+    tx_hash = str(raw.get("transaction_hash") or "")
+    if (not _BYTES32_RE.fullmatch(deposit_id) or not _TX_HASH_RE.fullmatch(tx_hash)
+            or normalize_address(raw.get("wallet_address")) != normalize_address(runtime.wallet.address)
+            or str(raw.get("amount_credit_wei")) != str(amount_wei)):
+        raise CaptainCliError(f"Pending bridge funding record does not match this request: {path}")
+    return raw
+
+
+def _save_captain_pending_bridge(path: Path, deposit: dict[str, Any]) -> None:
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=path.name + ".", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            # The receipt may contain extra RPC fields; these are public data,
+            # never the signing key. Keep a minimal durable recovery record.
+            saved = {
+                "deposit_id": deposit["deposit_id"],
+                "transaction_hash": deposit["transaction_hash"],
+                "wallet_address": deposit["wallet_address"],
+                "amount_credit_wei": deposit["amount_credit_wei"],
+                "receipt": deposit.get("receipt", {}),
+            }
+            json.dump(saved, handle, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Windows can temporarily deny replacement of a recently observed file;
+        # preserve the recovery record and retry transient sharing denials.
+        attempts = 0
+        while True:
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as exc:
+                if getattr(exc, "winerror", None) not in (5, 32) or attempts >= 20:
+                    raise
+                attempts += 1
+                time.sleep(min(0.25, 0.01 * attempts))
+    except Exception as exc:
+        raise CaptainCliError(
+            f"Bridge deposit was sent, but its recovery record could not be saved. "
+            f"DO NOT send another deposit; inspect {temporary or path}: {exc}"
+        ) from exc
+    # On an unrecoverable publication failure, preserve the temporary JSON:
+    # it is the only local receipt needed to recover an already-sent deposit.
+
 
 def send_captain_bridge_deposit(
     runtime: CaptainRuntime,
@@ -1050,33 +1104,96 @@ def send_captain_contract_transaction(
     value_wei: int = 0,
     timeout_s: float,
 ) -> dict[str, Any]:
-    command = _cast_send_command(
-        repo_root=_repo_root_for_deployment_path(runtime.deployment_path),
-        network_name=_chain_value(runtime.deployment, "network"),
-        rpc_url=runtime.rpc_url,
-        private_key=private_key,
-        contract_address=contract_address,
-        function_signature=function_signature,
-        function_args=function_args,
-        value_wei=value_wei,
-    )
-    completed = subprocess.run(
-        command,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=None,
-    )
-    if completed.returncode != 0:
+    # Requester signing stays in this process; only the signed transaction goes
+    # to the configured RPC. No Foundry or container runtime is involved.
+    try:
+        from eth_account import Account
+        from eth_abi import encode
+        from eth_utils import keccak, to_checksum_address
+    except ImportError as exc:
         raise CaptainCliError(
-            "captain bridge transaction failed.\n"
-            f"command={_redact_private_key(command)}\nstdout={completed.stdout}\nstderr={completed.stderr}"
-        )
-    tx_hash = _parse_transaction_hash((completed.stdout or "") + "\n" + (completed.stderr or ""))
+            "eth-account is required for captain transaction signing. "
+            "Install the project requirements with python -m pip install -r requirements.txt."
+        ) from exc
+
+    try:
+        signer = Account.from_key(private_key)
+        if normalize_address(signer.address) != normalize_address(runtime.wallet.address):
+            raise CaptainCliError("Captain signing key does not match the requester wallet.")
+        contract = to_checksum_address(contract_address)
+        name, types_text = function_signature.rstrip(")").split("(", 1)
+        types = types_text.split(",") if types_text else []
+        if len(types) != len(function_args):
+            raise ValueError("argument count mismatch")
+        values = []
+        for typ, value in zip(types, function_args):
+            if typ.startswith("uint"):
+                values.append(int(value))
+            elif typ == "bytes32":
+                values.append(bytes.fromhex(value.removeprefix("0x")))
+            elif typ == "address":
+                values.append(to_checksum_address(value))
+            elif typ == "string":
+                values.append(value)
+            else:
+                raise ValueError("unsupported captain ABI type")
+        data = "0x" + (keccak(text=function_signature)[:4] + encode(types, values)).hex()
+        value = int(value_wei)
+        if value < 0:
+            raise ValueError("negative transaction value")
+    except CaptainCliError:
+        raise
+    except Exception:
+        raise CaptainCliError("Captain transaction key or ABI arguments are invalid.") from None
+
     rpc = JsonRpcClient(runtime.rpc_url, timeout_s=timeout_s)
-    receipt = _wait_for_receipt(rpc, tx_hash, timeout_s=max(1.0, timeout_s))
+    stage = "RPC preparation"
+    tx_hash = ""
+    try:
+        chain_id = rpc.chain_id()
+        if chain_id != int(runtime.chain_id):
+            raise CaptainCliError(
+                f"RPC chain id {chain_id} does not match captain deployment chain id {runtime.chain_id}."
+            )
+        nonce = rpc.get_transaction_count(signer.address)
+        gas_price = rpc.gas_price()
+        stage = "gas estimation"
+        gas_estimate = rpc.estimate_gas({
+            "from": signer.address, "to": contract, "value": hex(value), "data": data,
+            "gasPrice": hex(gas_price),
+        })
+        if gas_estimate <= 0 or gas_price < 0:
+            raise CaptainCliError("RPC returned invalid gas parameters.")
+        # Use the same legacy fee model as the existing Python Hub signer.
+        transaction = {
+            "chainId": chain_id, "nonce": nonce, "to": contract,
+            "value": value, "data": data,
+            "gas": (gas_estimate * 120 + 99) // 100 + 10_000,
+            "gasPrice": gas_price,
+        }
+        stage = "signing"
+        signed = Account.sign_transaction(transaction, private_key)
+        raw = getattr(signed, "raw_transaction", None)
+        if raw is None:
+            raw = getattr(signed, "rawTransaction", None)
+        if raw is None:
+            raise CaptainCliError("Python signer returned no raw transaction.")
+        tx_hash = "0x" + bytes(signed.hash).hex()
+        stage = "submission"
+        returned_hash = rpc.send_raw_transaction(bytes(raw))
+        if returned_hash.lower() != tx_hash.lower():
+            raise CaptainCliError("RPC returned a different transaction hash.")
+        stage = "receipt confirmation"
+        receipt = _wait_for_receipt(rpc, tx_hash, timeout_s=max(1.0, timeout_s))
+    except Exception as exc:
+        detail = str(exc).replace(private_key, "<redacted>") if private_key else str(exc)
+        if stage == "signing":
+            detail = "Python transaction signing failed."
+        recovery = (
+            f" Transaction hash: {tx_hash}. Check its status before retrying; submission is not retried automatically."
+            if tx_hash else " No transaction was submitted."
+        )
+        raise CaptainCliError(f"Captain transaction failed during {stage}: {detail}.{recovery}") from None
     gas = _gas_summary(receipt)
     return {
         "function": function_signature,
@@ -1087,7 +1204,8 @@ def send_captain_contract_transaction(
         "gas_cost_wei": gas["gas_cost_wei"],
         "gas_cost_native": gas["gas_cost_native"],
         "receipt": receipt,
-        "command": _redact_private_key(command),
+        "transport": "python-signed-json-rpc",
+        "command": [],
     }
 
 
@@ -1594,94 +1712,6 @@ def _default_dev_office_private_key(*, deployment: dict[str, Any], office_index:
     if str(default["address"]).lower() != address.lower():
         return ""
     return default["private_key"]
-
-
-def _cast_send_command(
-    *,
-    repo_root: Path,
-    network_name: Any,
-    rpc_url: str,
-    private_key: str,
-    contract_address: str,
-    function_signature: str,
-    function_args: list[str],
-    value_wei: int = 0,
-) -> list[str]:
-    value_args = ["--value", str(max(0, int(value_wei or 0)))] if int(value_wei or 0) > 0 else []
-    local_cast = shutil.which("cast")
-    if local_cast:
-        command = [
-            local_cast,
-            "send",
-            contract_address,
-            function_signature,
-            *function_args,
-            *value_args,
-            "--rpc-url",
-            rpc_url,
-            "--private-key",
-            private_key,
-            "--json",
-        ]
-        return command
-
-    runtime = resolve_container_runtime(cwd=repo_root, probe=False)
-    command = runtime.container_args("run", "--rm")
-    network = str(network_name or "").strip()
-    if network:
-        command.extend(["--network", network])
-    command.extend(
-        [
-            "-v",
-            f"{_docker_mount_path(repo_root)}:/workspace",
-            "-w",
-            "/workspace/contracts",
-            "--entrypoint",
-            "cast",
-            "ghcr.io/foundry-rs/foundry:latest",
-            "send",
-            contract_address,
-            function_signature,
-            *function_args,
-            *value_args,
-            "--rpc-url",
-            rpc_url,
-            "--private-key",
-            private_key,
-            "--json",
-        ]
-    )
-    return command
-
-
-def _docker_mount_path(path: Path) -> str:
-    resolved = Path(path).resolve()
-    if os.name == "nt":
-        return resolved.as_posix()
-    return str(resolved)
-
-
-def _parse_transaction_hash(output: str) -> str:
-    for text in [output]:
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            payload = None
-        if isinstance(payload, dict):
-            for key in ("transactionHash", "transaction_hash", "hash"):
-                value = str(payload.get(key) or "").strip()
-                if _TX_HASH_RE.fullmatch(value):
-                    return value
-            receipt = payload.get("receipt")
-            if isinstance(receipt, dict):
-                for key in ("transactionHash", "transaction_hash", "hash"):
-                    value = str(receipt.get(key) or "").strip()
-                    if _TX_HASH_RE.fullmatch(value):
-                        return value
-    match = _TX_HASH_RE.search(output)
-    if match:
-        return match.group(0)
-    raise CaptainCliError(f"could not parse transaction hash from cast output: {output!r}")
 
 
 def _wait_for_receipt(rpc: JsonRpcClient, tx_hash: str, *, timeout_s: float) -> dict[str, Any]:

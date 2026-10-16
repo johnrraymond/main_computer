@@ -66,6 +66,39 @@ class _FakeCancellableProcess:
         return self.poll()
 
 
+def test_worker_live_session_reports_hub_auth_rejection_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent_messages: list[dict[str, object]] = []
+    client = _WorkerHubLiveSessionClient(
+        hub_url="https://mainnet-hub.greatlibrary.io",
+        worker_id="captain-smoke-a",
+        auth_message={"type": "worker.auth"},
+    )
+    monkeypatch.setattr(client, "_open_socket", lambda: object())
+    monkeypatch.setattr(client, "_send_json", sent_messages.append)
+    monkeypatch.setattr(
+        client,
+        "_recv_json",
+        lambda: {
+            "type": "hub.auth.rejected",
+            "ok": False,
+            "reason_code": "multisession_key_expired",
+            "user_message": "Request a new worker authorization.",
+            "hub_id": "mainnetc-hub1",
+        },
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        client.start()
+
+    message = str(caught.value)
+    assert "multisession_key_expired" in message
+    assert "Request a new worker authorization." in message
+    assert "mainnetc-hub1" in message
+    assert "did not accept worker.auth" not in message
+    assert sent_messages == [{"type": "worker.auth"}]
+    assert client._reader_thread is None
+
+
 def test_worker_live_session_client_uses_executor_result_instead_of_echoing_prompt() -> None:
     sent_messages: list[dict[str, object]] = []
 

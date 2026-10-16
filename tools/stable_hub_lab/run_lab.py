@@ -18,6 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.multisession_key_signing import build_personal_sign_blob, private_key_to_address
 from main_computer.stable_hub_topology import (
     StableHubTopologyError,
@@ -772,7 +773,9 @@ def build_stable_hub_verification_result(
     worker_hub = topology.hub_by_id(str(worker_entry["hub_id"]))
     requester_hub = topology.hub_by_id(str(requester_entry["hub_id"]))
 
-    worker_id = "worker_" + secrets.token_urlsafe(12).rstrip("=")
+    # Deliberately send a non-authoritative client label. The Hub must select
+    # a new connection identity bound to the worker's signed wallet account.
+    worker_label = "worker_" + secrets.token_urlsafe(12).rstrip("=")
     request_id = "req_" + secrets.token_urlsafe(12).rstrip("=")
     worker_user_slug = _new_user_slug()
     requester_user_slug = _new_user_slug()
@@ -827,6 +830,7 @@ def build_stable_hub_verification_result(
     ping: dict[str, Any] = {}
     pong: dict[str, Any] = {}
     owner: dict[str, Any] = {}
+    market: dict[str, Any] = {}
     offer: dict[str, Any] = {}
     response: dict[str, Any] = {}
     continuation: dict[str, Any] = {}
@@ -834,6 +838,8 @@ def build_stable_hub_verification_result(
     entry_stream_body: dict[str, Any] = {}
     rest_ping_status = 0
     rest_ping_body: dict[str, Any] = {}
+    connection_id = ""
+    worker_account_id = wallet_account_id(worker_msk.get("wallet_address"))
 
     try:
         sock = _ws_connect(worker_hub.hub_url, "/api/hub/v1/workers/live-session", timeout=timeout)
@@ -841,7 +847,7 @@ def build_stable_hub_verification_result(
             sock,
             {
                 "type": "worker.auth",
-                "worker_id": worker_id,
+                "worker_id": worker_label,
                 "multisession_authorization": {
                     "kind": "multisession_key",
                     "multisession_key_id": worker_key_id,
@@ -853,6 +859,8 @@ def build_stable_hub_verification_result(
         ping = _ws_recv_json(sock)
         if accepted.get("type") != "hub.auth.accepted":
             raise StableHubTopologyError(f"worker auth failed during stable verification: {accepted}")
+        connection_id = str(accepted.get("connection_id") or "")
+        market = accepted.get("market") if isinstance(accepted.get("market"), dict) else {}
         if ping.get("type") != "hub.ping":
             raise StableHubTopologyError(f"worker did not receive hub.ping during stable verification: {ping}")
         _ws_send_json(
@@ -868,7 +876,7 @@ def build_stable_hub_verification_result(
             raise StableHubTopologyError(f"worker pong failed during stable verification: {pong}")
 
         public_owner_status, public_owner_body = _read_json_url_status(
-            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_id}/owner",
+            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{connection_id}/owner",
             timeout=timeout,
         )
         owner = accepted.get("owner") if isinstance(accepted.get("owner"), dict) else {}
@@ -923,8 +931,8 @@ def build_stable_hub_verification_result(
             timeout=timeout,
         )
         rest_ping_status, rest_ping_body = _post_json_url_status(
-            f"{worker_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_id}/ping",
-            {"worker_id": worker_id, "connection_id": accepted.get("connection_id")},
+            f"{worker_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{connection_id}/ping",
+            {"worker_id": connection_id, "connection_id": connection_id},
             timeout=timeout,
         )
     finally:
@@ -950,16 +958,31 @@ def build_stable_hub_verification_result(
         "msk_validation_key_id_only": bool(worker_msk_proof.get("validation_used_key_id_only"))
         and bool(requester_msk_proof.get("validation_used_key_id_only")),
         "worker_connected_over_live_websocket": accepted.get("type") == "hub.auth.accepted"
-        and accepted.get("connection_id") == ping.get("connection_id"),
+        and connection_id.startswith("conn_")
+        and connection_id != worker_label
+        and connection_id == ping.get("connection_id")
+        and accepted.get("account_id") == worker_account_id,
         "worker_pong_over_same_socket": pong.get("type") == "hub.pong.accepted" and pong.get("ok") is True,
-        "authenticated_worker_owner_claim_matches_worker_hub": owner.get("worker_id") == worker_id
+        "authenticated_worker_owner_claim_matches_worker_hub": owner.get("worker_id") == connection_id
+        and owner.get("connection_id") == connection_id
+        and owner.get("account_id") == worker_account_id
+        and str(owner.get("wallet_address") or "").lower() == str(worker_msk.get("wallet_address") or "").lower()
+        and owner.get("multisession_key_id") == worker_key_id
         and owner.get("owner_hub_id") == worker_hub.hub_id
         and owner.get("status") == "live"
         and worker_hub_claim.get("hub_id") == worker_hub.hub_id,
         "public_worker_owner_lookup_absent": public_owner_status == 404
         and public_owner_body.get("error") == "not_found",
         "worker_market_record_selectable_by_ring_price": offer.get("type") == "hub.work.offer"
-        and offer.get("worker_id") == worker_id
+        and offer.get("worker_id") == connection_id
+        and market.get("worker_id") == connection_id
+        and market.get("connection_id") == connection_id
+        and market.get("worker_account_id") == worker_account_id
+        and market.get("owner_hub_id") == worker_hub.hub_id
+        and market.get("status") == "live"
+        and market.get("rings") == market_profile["rings"]
+        and market.get("price") == market_profile["price"]
+        and set(work_request["work"]["capabilities"]).issubset(set(market.get("capabilities") or []))
         and offer.get("partition") == "ring-2"
         and offer.get("task_queue") == "main-computer-work-ring-2",
         "entry_hub_handed_off_to_owner_hub": handoff.get("routed") is True
@@ -969,6 +992,7 @@ def build_stable_hub_verification_result(
         and offer.get("work") == work_request["work"],
         "worker_accepted_over_same_socket": response.get("ok") is True
         and response.get("accepted") is True
+        and response.get("worker_id") == connection_id
         and response.get("session_id") == offer.get("session_id"),
         "accepted_session_stored_with_temporal_metadata": continuation.get("ok") is True
         and accepted_session.get("session_id") == response.get("session_id")
@@ -999,11 +1023,13 @@ def build_stable_hub_verification_result(
                 "wallet_address": requester_msk.get("wallet_address"),
             },
             "worker": {
-                "worker_id": worker_id,
+                "worker_id": connection_id,
+                "client_worker_label": worker_label,
+                "account_id": worker_account_id,
                 "hub_id": worker_hub.hub_id,
                 "hub_url": worker_hub.hub_url,
                 "multisession_key_id": worker_key_id,
-                "connection_id": accepted.get("connection_id"),
+                "connection_id": connection_id,
                 "market": market_profile,
             },
         },
@@ -1014,6 +1040,7 @@ def build_stable_hub_verification_result(
             "worker_ping": ping,
             "worker_pong": pong,
             "owner": owner,
+            "market": market,
             "offer": offer,
             "accepted_response": response,
             "continuation": continuation,
@@ -1096,7 +1123,9 @@ def build_stable_hub_integrated_market_stress_result(
     worker_hub = topology.hub_by_id(str(worker_entry["hub_id"]))
     requester_hub = topology.hub_by_id(str(requester_entry["hub_id"]))
 
-    worker_id = "worker_" + secrets.token_urlsafe(12).rstrip("=")
+    # The client label is deliberately not an identity. Payout ownership is
+    # the signed wallet account; dispatch ownership is a Hub-created socket ID.
+    worker_label = "worker_" + secrets.token_urlsafe(12).rstrip("=")
     scenario_id = "stress_" + secrets.token_urlsafe(8).rstrip("=")
     worker_user_slug = _new_user_slug()
     requester_user_slug = _new_user_slug()
@@ -1122,6 +1151,7 @@ def build_stable_hub_integrated_market_stress_result(
         timeout=timeout,
     )
     worker_key_id = str(worker_msk["multisession_key_id"])
+    worker_account_id = wallet_account_id(worker_msk.get("wallet_address"))
     requester_key_id = str(requester_msk["multisession_key_id"])
     market_profile = {
         "rings": ["ring-2"],
@@ -1140,7 +1170,7 @@ def build_stable_hub_integrated_market_stress_result(
             sock,
             {
                 "type": "worker.auth",
-                "worker_id": worker_id,
+                "worker_id": worker_label,
                 "multisession_authorization": {
                     "kind": "multisession_key",
                     "multisession_key_id": worker_key_id,
@@ -1152,6 +1182,19 @@ def build_stable_hub_integrated_market_stress_result(
         ping = _ws_recv_json(sock)
         if auth.get("type") != "hub.auth.accepted" or ping.get("type") != "hub.ping":
             raise StableHubTopologyError(f"worker auth failed during integrated stress: auth={auth} ping={ping}")
+        connection_id = str(auth.get("connection_id") or "")
+        owner = auth.get("owner") if isinstance(auth.get("owner"), dict) else {}
+        if (
+            not connection_id.startswith("conn_")
+            or connection_id == worker_label
+            or ping.get("connection_id") != connection_id
+            or auth.get("account_id") != worker_account_id
+            or owner.get("worker_id") != connection_id
+            or owner.get("connection_id") != connection_id
+            or owner.get("account_id") != worker_account_id
+            or owner.get("multisession_key_id") != worker_key_id
+        ):
+            raise StableHubTopologyError(f"worker wallet/connection ownership mismatch: {auth}")
         _ws_send_json(
             sock,
             {
@@ -1334,7 +1377,7 @@ def build_stable_hub_integrated_market_stress_result(
             }
         }
         claim = _post_json_url(
-            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_id}/payout/claim",
+            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_account_id}/payout/claim",
             {
                 **worker_auth,
                 "idempotency_key": f"{scenario_id}-claim",
@@ -1342,7 +1385,7 @@ def build_stable_hub_integrated_market_stress_result(
             timeout=timeout,
         )
         duplicate_claim = _post_json_url(
-            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_id}/payout/claim",
+            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_account_id}/payout/claim",
             {
                 **worker_auth,
                 "idempotency_key": f"{scenario_id}-claim",
@@ -1350,7 +1393,7 @@ def build_stable_hub_integrated_market_stress_result(
             timeout=timeout,
         )
         settlement = _post_json_url(
-            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_id}/payout/settlements",
+            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_account_id}/payout/settlements",
             {
                 **worker_auth,
                 "claim_ids": [claim.get("claim", {}).get("claim_id")],
@@ -1361,7 +1404,7 @@ def build_stable_hub_integrated_market_stress_result(
             timeout=timeout,
         )
         bridge = _post_json_url(
-            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_id}/payout/bridge",
+            f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_account_id}/payout/bridge",
             {
                 **worker_auth,
                 "batch_id": settlement.get("settlement", {}).get("batch_id"),
@@ -1415,9 +1458,23 @@ def build_stable_hub_integrated_market_stress_result(
     scenario_request_ids.discard("")
     scenario_session_ids.discard("")
 
+    # Holds reference transient connection IDs. Charges and earnings reference
+    # the durable worker wallet account; both executions can use different
+    # connections after reconnect. Only this scenario's requests count.
+    scenario_connection_ids = {
+        str(auth1.get("connection_id") or ""),
+        str(auth2.get("connection_id") or ""),
+    }
+    scenario_connection_ids.discard("")
+
     def _belongs_to_scenario(record: dict[str, Any]) -> bool:
+        identity = str(record.get("worker_id") or "")
+        account = str(record.get("worker_account_id") or "")
+        connection = str(record.get("worker_node_id") or "")
         return (
-            str(record.get("worker_id") or "") == worker_id
+            (identity == worker_account_id or identity in scenario_connection_ids)
+            and (not account or account == worker_account_id)
+            and (not connection or connection in scenario_connection_ids)
             and (
                 str(record.get("request_id") or "") in scenario_request_ids
                 or str(record.get("session_id") or "") in scenario_session_ids
@@ -1493,7 +1550,10 @@ def build_stable_hub_integrated_market_stress_result(
                 "multisession_key_id": requester_key_id,
             },
             "worker": {
-                "worker_id": worker_id,
+                "worker_id": worker_account_id,
+                "client_worker_label": worker_label,
+                "first_connection_id": auth1.get("connection_id"),
+                "reconnect_connection_id": auth2.get("connection_id"),
                 "first_hub_id": worker_hub.hub_id,
                 "reconnect_hub_id": requester_hub.hub_id,
                 "multisession_key_id": worker_key_id,

@@ -1602,7 +1602,7 @@ def test_redeploy_console_build_wait_enables_existing_progress_without_leaking_e
     assert "MAIN_COMPUTER_HUB_PROGRESS" not in os.environ
 
 
-def test_redeploy_signer_sync_uses_only_verified_mother_and_one_coolify_env(
+def test_redeploy_signer_and_vpn_routes_sync_from_mother_before_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from types import SimpleNamespace
@@ -1638,12 +1638,15 @@ def test_redeploy_signer_sync_uses_only_verified_mother_and_one_coolify_env(
     monkeypatch.setattr(coolify_hub_service, "sync_application_env_var", lambda client, **kwargs: (
         captured.append(("sync", kwargs["key"], kwargs["value"])) or {"ok": True}
     ))
+    routes = {"mainnet-rpc.greatlibrary.io": "10.116.0.3", "mainneta-hub1.greatlibrary.io": "10.116.0.3"}
     target = {"network": "mainnet", "hub_id": hub, "bridge_signer_required": True,
-              "hub_admin_address": address, "application_uuid": "app-a"}
+              "hub_admin_address": address, "application_uuid": "app-a", "private_https_routes": routes}
     redeploy.synchronize_bridge_signer(HubContext.from_repo(tmp_path), target)
     assert captured == [
         ("build", address), ("authorize", "mainnet", address, address),
         ("verified",),
+        ("sync", "MAIN_COMPUTER_HUB_PRIVATE_HTTPS_ROUTES", json.dumps(routes, sort_keys=True)),
+        ("sync", "MAIN_COMPUTER_HUB_REQUIRE_PRIVATE_HTTPS_ROUTES", "true"),
         ("sync", "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64", "encoded-value"),
     ]
     with pytest.raises(redeploy.RedeployError, match="disagrees with Mother"):

@@ -26,6 +26,7 @@ DEFAULT_STABLE_TESTS = (
     'tests/test_stable_hub_fdb_atomic_accounting.py',
     'tests/test_stable_hub_integrated_market_stress.py',
     'tests/test_stable_hub_credit_bridge_patch2.py',
+    'tests/test_stable_hub_historical_funding_acceptance.py',
 )
 STABLE_FILES = ('main_computer/stable_hub.py', 'main_computer/stable_hub_topology.py',
                 'main_computer/stable_hub_worker_sessions.py', 'tools/stable_hub_lab/run_lab.py')
@@ -109,6 +110,137 @@ def _wait_health(urls: list[str], *, service: str, cluster_id: str, deadline: fl
             time.sleep(.25)
     if pending:
         raise LabError(f'Health timeout waiting for {sorted(pending)}: {last_error}')
+
+
+def _docker_engine_status() -> tuple[bool, str]:
+    """Check the actual daemon, not merely the presence of docker.exe."""
+    try:
+        result = subprocess.run(
+            ['docker', 'info', '--format', '{{.ServerVersion}}'],
+            capture_output=True, text=True, timeout=7, errors='replace',
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return False, f'{type(exc).__name__}: {exc}'
+    return result.returncode == 0, (result.stderr or result.stdout or '').strip()[-400:]
+
+
+def _start_docker_desktop_for_local_lab() -> None:
+    """Start an existing Windows Docker Desktop install, without altering its configuration."""
+    if os.name != 'nt':
+        raise LabError('Local Docker FoundationDB requires a running Docker daemon; '
+                       'automatic Docker Desktop launch is supported on Windows only. No Hub started.')
+    candidates = [
+        Path(os.environ.get('PROGRAMFILES', '')) / 'Docker/Docker/Docker Desktop.exe',
+        Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs/DockerDesktop/Docker Desktop.exe',
+        Path(os.environ.get('LOCALAPPDATA', '')) / 'Docker/Docker Desktop.exe',
+    ]
+    desktop = next((path for path in candidates if path.is_file()), None)
+    if desktop is None:
+        raise LabError('Docker daemon is unavailable and Docker Desktop.exe was not found; '
+                       'install Docker Desktop or configure its location. No Hub started.')
+    print(f'Crash lab: starting installed Docker Desktop ({desktop})', flush=True)
+    try:
+        subprocess.Popen([str(desktop)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        raise LabError(f'Could not launch Docker Desktop: {exc}. No Hub started.') from exc
+    deadline = time.monotonic() + 150.0
+    detail = 'not ready'
+    while time.monotonic() < deadline:
+        ready, detail = _docker_engine_status()
+        if ready:
+            print('Crash lab: Docker engine ready', flush=True)
+            return
+        time.sleep(3.0)
+    raise LabError(f'Docker Desktop did not become ready within 150 seconds: {detail}. No Hub started.')
+
+
+def _local_fdb_coordinator_ready(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _require_local_docker_engine() -> None:
+    """Refuse to bootstrap a lab database on a remote Docker context."""
+    explicit_host = os.environ.get('DOCKER_HOST', '').strip()
+    if explicit_host:
+        endpoint = explicit_host
+    else:
+        try:
+            result = subprocess.run(
+                ['docker', 'context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'],
+                capture_output=True, text=True, timeout=7, errors='replace',
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise LabError(f'Cannot verify the local Docker endpoint: {exc}. No Hub started.') from exc
+        if result.returncode != 0:
+            raise LabError('Cannot verify Docker context endpoint: '
+                           f'{(result.stderr or result.stdout).strip()[-300:]}. No Hub started.')
+        endpoint = result.stdout.strip()
+    from urllib.parse import urlsplit
+    address = urlsplit(endpoint)
+    if not (address.scheme in ('npipe', 'unix')
+            or (address.scheme == 'tcp' and address.hostname in ('localhost', '127.0.0.1', '::1'))):
+        raise LabError(f'Docker endpoint {endpoint!r} is not local; refusing to start the lab FDB '
+                       'container outside this machine. No Hub started.')
+
+
+def _start_existing_local_fdb_bootstrap(cluster_file: Path, *, port: int) -> None:
+    """Reuse the repository's existing Docker FDB startup; never reset its container."""
+    from scripts.smoke_foundationdb_credit_ledger_primitives import (
+        parse_args, start_foundationdb_container, SmokeFailure,
+    )
+    args = parse_args([
+        '--cluster-file', str(cluster_file), '--fdb-port', str(port),
+        '--reuse-container', '--keep-container',
+        '--no-bootstrap-native-client',
+    ])
+    print(f'Crash lab: starting/reusing existing local FoundationDB on 127.0.0.1:{port}', flush=True)
+    try:
+        runtime = start_foundationdb_container(args)
+    except (SmokeFailure, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise LabError(f'Local FoundationDB bootstrap failed: {exc}. No Hub started.') from exc
+    if runtime.cluster_file.resolve() != cluster_file.resolve():
+        raise LabError('FoundationDB bootstrap selected the wrong cluster file. No Hub started.')
+
+
+def _preflight_local_docker_fdb(cluster_file: Path) -> None:
+    """Auto-start only the known loopback Docker FDB used by the isolated lab.
+
+    For all other cluster descriptors, never launch Docker or mutate the cluster.
+    """
+    description = cluster_file.read_text(encoding='utf-8').strip()
+    if '@' not in description:
+        raise LabError(f'Invalid FoundationDB cluster descriptor: {cluster_file}')
+    cluster_id, coordinators = description.split('@', 1)
+    if cluster_id != 'docker:docker':
+        return
+    if ',' in coordinators:
+        raise LabError('Automatic local Docker FDB startup requires one loopback coordinator; '
+                       'refusing ambiguous cluster file. No Hub started.')
+    host, separator, port_text = coordinators.strip().rpartition(':')
+    if not separator or not port_text.isdigit() or not 1 <= int(port_text) <= 65535:
+        raise LabError(f'Invalid FoundationDB coordinator in {cluster_file}: {coordinators}')
+    if host not in ('127.0.0.1', 'localhost'):
+        return  # A remote coordinator is not the Docker smoke container.
+    port = int(port_text)
+    if host != '127.0.0.1':
+        raise LabError('Automatic local Docker FDB startup requires 127.0.0.1, '
+                       'matching the existing bootstrap contract. No Hub started.')
+    ready, detail = _docker_engine_status()
+    if not ready:
+        print(f'Crash lab: Docker daemon unavailable ({detail}); starting Docker Desktop', flush=True)
+        _start_docker_desktop_for_local_lab()
+    if not _local_fdb_coordinator_ready(host, port):
+        _require_local_docker_engine()
+        _start_existing_local_fdb_bootstrap(cluster_file, port=port)
+    if not _local_fdb_coordinator_ready(host, port):
+        raise LabError(f'Local Docker FoundationDB coordinator {host}:{port} remained unreachable '
+                       'after bootstrap. No Hub started.')
+    print(f'Crash lab: local FoundationDB coordinator ready at {host}:{port}', flush=True)
 
 
 def _run_baseline(out: Path, stable_files: dict[str, str], *, timeout: float,
@@ -805,8 +937,10 @@ def main(argv: list[str] | None = None) -> int:
             raise LabError('--rounds must be 1..1000 and --timeout positive')
         root = ROOT.resolve()
         cluster_file = (ROOT / args.cluster_file).resolve()
-        if args.mode in ('restart', 'inflight', 'precommit', 'settlement', 'failover') and not cluster_file.is_file():
-            raise LabError(f'Existing FDB cluster file required; never auto-start/reset: {cluster_file}')
+        if args.mode in ('restart', 'inflight', 'precommit', 'settlement', 'failover'):
+            if not cluster_file.is_file():
+                raise LabError(f'Existing FDB cluster file required; never auto-start/reset: {cluster_file}')
+            _preflight_local_docker_fdb(cluster_file)
         stable_sources = stable_fingerprint(root)
         report['stable_source_sha256'] = stable_sources
         out = (ROOT / args.report_dir).resolve()

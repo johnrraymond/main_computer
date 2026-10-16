@@ -8,6 +8,7 @@ before installing signer material and rebuilding an existing Hub.
 from __future__ import annotations
 
 import subprocess
+import json
 import os
 from contextlib import contextmanager
 import urllib.parse
@@ -28,6 +29,7 @@ from .common.deployment import (
     BRIDGE_SIGNER_ENV,
     inspect_deployment,
     observe_hub,
+    private_https_routes,
 )
 from .common.errors import HubControlError
 from .common.chain_contract import load_current_chain_contract
@@ -155,6 +157,10 @@ def resolve_existing_hub(ctx: HubContext, network: str, member: Mapping[str, Any
         )
     # Never count an experimental image as a successfully deployed Stable Hub.
     # Runtime verification uses Stable Hub's actual identity/health endpoints.
+    accepted, _ = accepted_targets(ctx, network)
+    target["private_https_routes"] = private_https_routes(
+        ctx_private, network, accepted["hubs"], str(target["chain_contract"]["rpc_url"]),
+    )
     target["hub_runtime"] = "stable"
     return target
 
@@ -385,8 +391,23 @@ def synchronize_bridge_signer(ctx: HubContext, target: Mapping[str, Any]) -> Non
         print(f"Hub {hub_id}: deployer authorization confirmed on-chain", flush=True)
     _verify_live_bridge_signer_contract(build_target, signer)
     try:
+        client = _client(target)
+        uuid = str(target["application_uuid"])
+        routes = target.get("private_https_routes")
+        if not isinstance(routes, dict) or (network == "mainnet" and not routes):
+            raise RedeployError(f"Mother-derived private HTTPS routes missing for {hub_id}; no build requested")
         legacy.sync_application_env_var(
-            _client(target), application_uuid=str(target["application_uuid"]),
+            client, application_uuid=uuid,
+            key="MAIN_COMPUTER_HUB_PRIVATE_HTTPS_ROUTES",
+            value=json.dumps(routes, sort_keys=True), tried=[],
+        )
+        legacy.sync_application_env_var(
+            client, application_uuid=uuid,
+            key="MAIN_COMPUTER_HUB_REQUIRE_PRIVATE_HTTPS_ROUTES",
+            value="true" if routes else "false", tried=[],
+        )
+        legacy.sync_application_env_var(
+            client, application_uuid=uuid,
             key=BRIDGE_SIGNER_ENV, value=str(signer["bundle_b64"]), tried=[],
         )
     except Exception as exc:

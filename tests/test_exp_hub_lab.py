@@ -398,13 +398,13 @@ def _p2b_verified_handoff_item(client_id: str, canonical_id: str, earning_id: st
     }
 
 
-def test_p2b_resolves_wallet_derived_worker_identity_from_canonical_earnings(monkeypatch) -> None:
-    import hashlib
+def test_p2b_resolves_authenticated_wallet_account_from_canonical_earnings(monkeypatch) -> None:
     from urllib.parse import parse_qs, urlparse
+    from main_computer.hub_credit_indexer import wallet_account_id
     import tools.exp_hub_lab.run_lab as mod
 
-    wallet = "0xAaaBbbCcc123"
-    actual = "live_" + hashlib.sha256(wallet.lower().encode()).hexdigest()[:32]
+    wallet = "0x" + "AaBbCcDdEe" * 4
+    actual = wallet_account_id(wallet)
     handoff = {
         "worker_id": "worker_exp_handoff_lab_label_is_not_financial_identity",
         "multi_session_auth": {"worker_wallet_address": wallet},
@@ -449,11 +449,11 @@ def test_p2b_rejects_wrong_wallet_or_unmatched_earning(monkeypatch) -> None:
     import pytest
     import tools.exp_hub_lab.run_lab as mod
     handoff = {
-        "multi_session_auth": {"worker_wallet_address": "0xAABBCC"},
+        "multi_session_auth": {"worker_wallet_address": "0x" + "a" * 40},
         "requests": [_p2b_verified_handoff_item("caller_req1", "hub_req1", "earn1")],
     }
     monkeypatch.setattr(mod, "_read_json_url", lambda url, *, timeout: {
-        "ok": True, "worker_earnings": [{"earning_id": "earn1", "request_id": "hub_req1", "worker_node_id": "live_wrong"}]})
+        "ok": True, "worker_earnings": [{"earning_id": "earn1", "request_id": "hub_req1", "worker_node_id": "0x" + "b" * 40}]})
     with pytest.raises(mod.ExpHubLabError, match="authenticated worker wallet"):
         mod._resolve_settlement_worker_from_handoff(handoff, owner_url="http://owner", timeout=5)
     monkeypatch.setattr(mod, "_read_json_url", lambda url, *, timeout: {

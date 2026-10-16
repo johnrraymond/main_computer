@@ -4,6 +4,7 @@ No live chain, signing key, FDB cluster, or real credit transfer is used.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 from pathlib import Path
@@ -34,6 +35,7 @@ DEPOSIT = "0x" + "01" * 32
 SECOND_DEPOSIT = "0x" + "02" * 32
 CONTRACT = "0x" + "cd" * 20
 UNIT = 10**18
+FUNDING_TX = "0x" + "ee" * 32
 
 
 class FakeEscrow:
@@ -50,6 +52,13 @@ class FakeEscrow:
         if record is None:
             return DepositRecord(False, False, "", "", 0)
         return DepositRecord(True, record["completed"], WALLET, WALLET, record["amount"])
+
+    def verify_deposit_transaction(self, tx_hash: str, *, deposit_id: str, deposit: DepositRecord) -> dict:
+        if tx_hash != FUNDING_TX or deposit_id not in self.recorded:
+            raise ValueError("bridge_deposit_transaction_event_mismatch")
+        if deposit.amount_units != self.recorded[deposit_id]["amount"]:
+            raise ValueError("bridge_deposit_transaction_event_mismatch")
+        return {"status": "0x1", "blockNumber": "0xf", "transactionHash": tx_hash}
 
     def complete_deposit(self, deposit_id: str) -> dict:
         if not self.recorded[deposit_id]["completed"]:
@@ -80,7 +89,7 @@ def service(ledger: StableHubPayoutLedgerDirectory, chain: FakeEscrow) -> HubCre
 
 def complete(svc: HubCreditBridgeCompletionService, deposit_id: str = DEPOSIT) -> dict:
     return svc.complete_wallet_funding_deposit({
-        "deposit_id": deposit_id, "wallet_address": WALLET,
+        "deposit_id": deposit_id, "wallet_address": WALLET, "tx_hash": FUNDING_TX,
         "chain_id": 42424240, "contract_address": CONTRACT,
     })
 
@@ -99,7 +108,10 @@ def test_verified_chain_completion_credits_once_on_both_hubs() -> None:
     second = complete(service(c, chain), SECOND_DEPOSIT)
     assert second["delta_credit_wei"] == str(2 * UNIT)
     assert a.get_account(wallet_account_id(WALLET))["available_credit_wei"] == str(3 * UNIT)
-    assert len(stores[0].load()["payout_deposits"]) == 2
+    snapshot = stores[0].load()
+    assert len(snapshot["payout_deposits"]) == 2
+    assert {item["status"] for item in snapshot["payout_deposit_intents"].values()} == {"finalized"}
+    assert {item["funding_tx_hash"] for item in snapshot["payout_deposits"].values()} == {FUNDING_TX}
 
 
 def test_chain_success_then_ledger_unavailable_is_retryable_without_double_credit() -> None:
@@ -118,13 +130,15 @@ def test_chain_success_then_ledger_unavailable_is_retryable_without_double_credi
     assert chain.completions == 1
 
 
-def test_unmigrated_historical_escrow_completion_is_not_minted_twice() -> None:
+def test_unrelated_historical_total_does_not_block_individual_deposit() -> None:
     _, _, a, c = _two_hubs()
     chain = FakeEscrow(historical_units=7 * UNIT)
-    with pytest.raises(StableHubWorkerSessionError, match="historical_completion_requires_reconciliation"):
-        complete(service(a, chain))
+    first = complete(service(a, chain))
+    assert first["delta_credit_wei"] == str(UNIT)
+    assert first["chain_completed_credit_wei"] == str(8 * UNIT)
     assert chain.completions == 1
-    assert c.get_account(wallet_account_id(WALLET)) is None
+    assert c.get_account(wallet_account_id(WALLET))["available_credit_wei"] == str(UNIT)
+    assert complete(service(c, chain))["delta_credit_wei"] == "0"
 
 
 def test_unknown_deposit_and_wrong_wallet_never_create_credits() -> None:
@@ -179,7 +193,7 @@ def test_stable_http_wallet_balance_funding_charge_history_and_disabled_refunds(
         assert status == 200 and initial["account"]["available_credit_wei"] == "0"
         assert ledger.get_account(wallet_account_id(WALLET)) is None  # read-only
         status, funded = _json_request(base, "/api/hub/v1/credits/wallet-funding/complete", {
-            "deposit_id": DEPOSIT, "wallet_address": WALLET,
+            "deposit_id": DEPOSIT, "wallet_address": WALLET, "tx_hash": FUNDING_TX,
         })
         assert status == 200 and funded["delta_credit_wei"] == str(UNIT)
         status, after = _json_request(base, balance_path)
@@ -198,11 +212,42 @@ def test_stable_http_wallet_balance_funding_charge_history_and_disabled_refunds(
         for path in ("/api/hub/v1/credits/wallet-funding/import", "/api/hub/v1/credits/bridge-reconciliation/execute", "/api/hub/v1/credits/bridge-reconciliation/record"):
             status, result = _json_request(base, path, {})
             assert status == 501 and result["error"] == "stable_hub_unverified_financial_operation_disabled"
-        status, replay = _json_request(base, "/api/hub/v1/credits/wallet-funding/complete", {"deposit_id": DEPOSIT, "wallet_address": WALLET})
+        status, replay = _json_request(base, "/api/hub/v1/credits/wallet-funding/complete", {"deposit_id": DEPOSIT, "wallet_address": WALLET, "tx_hash": FUNDING_TX})
         assert status == 200 and replay["delta_credit_wei"] == "0"
         status, after_replay = _json_request(base, balance_path)
         assert after_replay["account"]["available_credit_wei"] == str(UNIT - UNIT // 4)
     finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_disabled_financial_posts_preserve_http11_connection() -> None:
+    """A rejected POST must not leave its JSON body to become a phantom request."""
+    topology = load_stable_hub_topology(Path("deploy/hub-topology/dev-topology.json"))
+    server = create_stable_hub_server(
+        topology=topology, hub_id="dev-hub1", bind_host="127.0.0.1", bind_port=0,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+    try:
+        for path in (
+            "/api/hub/v1/credits/wallet-funding/import",
+            "/api/hub/v1/credits/bridge-reconciliation/execute",
+            "/api/hub/v1/credits/bridge-reconciliation/record",
+        ):
+            conn.request("POST", path, body="{}", headers={"Content-Type": "application/json"})
+            response = conn.getresponse()
+            assert response.version == 11
+            assert response.status == 501
+            assert json.loads(response.read())["error"] == "stable_hub_unverified_financial_operation_disabled"
+        conn.request("GET", "/health")
+        response = conn.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read())["ok"] is True
+    finally:
+        conn.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
@@ -217,7 +262,7 @@ def test_missing_real_signer_bundle_fails_closed_without_calling_completion(monk
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        status, result = _json_request(f"http://127.0.0.1:{server.server_port}", "/api/hub/v1/credits/wallet-funding/complete", {"deposit_id": DEPOSIT, "wallet_address": WALLET})
+        status, result = _json_request(f"http://127.0.0.1:{server.server_port}", "/api/hub/v1/credits/wallet-funding/complete", {"deposit_id": DEPOSIT, "wallet_address": WALLET, "tx_hash": FUNDING_TX})
         assert status == 503 and result["error"] == "bridge_completion_unavailable"
         assert store.load().get("payout_accounts") is None
     finally:
@@ -238,11 +283,68 @@ def test_chain_receipt_without_completed_deposit_does_not_mint_credit() -> None:
     assert a.get_account(wallet_account_id(WALLET)) is None
 
 
-def test_single_historical_completed_deposit_cannot_be_imported_as_fresh_money() -> None:
-    _, _, a, _ = _two_hubs()
+def test_precompleted_verified_deposit_is_idempotent_on_shared_ledger() -> None:
+    _, _, a, c = _two_hubs()
     chain = FakeEscrow()
-    chain.recorded[DEPOSIT]["completed"] = True  # already completed under Experimental Hub
-    with pytest.raises(StableHubWorkerSessionError, match="preexisting_completed_deposit_requires_reconciliation"):
-        complete(service(a, chain))
-    assert a.get_account(wallet_account_id(WALLET)) is None
-    assert a.store.load().get("payout_deposit_intents", {}) == {}
+    chain.recorded[DEPOSIT]["completed"] = True
+    result = complete(service(a, chain))
+    assert result["delta_credit_wei"] == str(UNIT)
+    assert result["completion_sent"] is False
+    assert complete(service(c, chain))["delta_credit_wei"] == "0"
+    assert chain.completions == 0
+    assert a.get_account(wallet_account_id(WALLET))["available_credit_wei"] == str(UNIT)
+
+
+def test_actual_contract_client_requires_matching_mined_deposit_event(monkeypatch):
+    """Never infer deposit credit solely from a submitted transaction hash."""
+    import sys
+    from main_computer.hub_credit_bridge_completion import HubCreditBridgeContractClient
+    # Isolate receipt matching; the cryptographic topic computation is provided
+    # by the same eth_utils.keccak interface used in production.
+    fake_topic = bytes.fromhex("de" * 32)
+    monkeypatch.setitem(sys.modules, "eth_utils", SimpleNamespace(keccak=lambda **_kw: fake_topic))
+
+    def receipt(amount=UNIT, *, contract=CONTRACT, deposit=DEPOSIT, status="0x1"):
+        return {
+            "status": status, "blockNumber": "0x10", "transactionHash": FUNDING_TX,
+            "to": CONTRACT,
+            "logs": [{
+                "address": contract,
+                "topics": ["0x" + fake_topic.hex(), deposit, "0x" + WALLET[2:].rjust(64, "0"), "0x" + WALLET[2:].rjust(64, "0")],
+                "data": "0x" + f"{amount:064x}" + f"{64:064x}",
+            }],
+        }
+
+    class Rpc:
+        value = receipt()
+        def transaction_receipt(self, tx_hash):
+            assert tx_hash == FUNDING_TX
+            return self.value
+
+    rpc = Rpc()
+    client = HubCreditBridgeContractClient(
+        rpc_url="http://invalid.local", contract_address=CONTRACT,
+        chain_id=42424240, admin_private_key="", admin_address=WALLET,
+        rpc_client=rpc,
+    )
+    record = DepositRecord(True, False, WALLET, WALLET, UNIT)
+    assert client.verify_deposit_transaction(FUNDING_TX, deposit_id=DEPOSIT, deposit=record)["status"] == "0x1"
+    for changed in (receipt(amount=2*UNIT), receipt(contract="0x"+"ff"*20), receipt(deposit=SECOND_DEPOSIT), receipt(status="0x0")):
+        rpc.value = changed
+        with pytest.raises(ValueError, match="bridge_deposit_transaction_"):
+            client.verify_deposit_transaction(FUNDING_TX, deposit_id=DEPOSIT, deposit=record)
+    rpc.value = None
+    with pytest.raises(ValueError, match="not_mined"):
+        client.verify_deposit_transaction(FUNDING_TX, deposit_id=DEPOSIT, deposit=record)
+
+
+def test_funding_completion_rejects_missing_or_unverified_tx_hash_before_signing():
+    _, stores, a, _ = _two_hubs()
+    chain = FakeEscrow()
+    svc = service(a, chain)
+    with pytest.raises(ValueError, match="tx_hash"):
+        svc.complete_wallet_funding_deposit({"deposit_id": DEPOSIT, "wallet_address": WALLET})
+    with pytest.raises(ValueError, match="transaction_event_mismatch"):
+        svc.complete_wallet_funding_deposit({"deposit_id": DEPOSIT, "wallet_address": WALLET, "tx_hash": "0x" + "cc"*32})
+    assert chain.completions == 0
+    assert stores[0].load().get("payout_deposit_intents", {}) == {}

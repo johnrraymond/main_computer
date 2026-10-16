@@ -87,7 +87,7 @@ from main_computer.stable_hub_worker_sessions import (
 )
 from main_computer.hub_credit_bridge_completion import HubCreditBridgeCompletionService
 from main_computer.hub_admin_runtime import install_hub_admin_bundle
-from main_computer.hub_credit_indexer import HubCreditIndexer
+from main_computer.hub_credit_indexer import HubCreditIndexer, wallet_account_id
 
 
 DEFAULT_EXP_FDB_HUB_PORT = DEFAULT_HUB_PORT + 100
@@ -453,19 +453,17 @@ def _exp_public_stream_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _exp_internal_settlement_route_key(authorization: dict[str, Any], *, connection_id: str = "") -> str:
-    """Return an internal-only settlement key for the live connection.
+    """Return the Hub-issued routing slot, independent of account identity.
 
-    Request routing is no longer keyed by a caller supplied worker id.  The only
-    real runtime handle is the Hub-owned websocket connection.  Credit settlement
-    still needs a stable internal bucket, so derive an opaque key from the
-    authenticated wallet when present and fall back to this connection generation.
-    This value must never be emitted by requester endpoints.
+    An authenticated wallet can have concurrent independent worker connections.
+    Economic ownership is determined by validated account authorization, not
+    this ephemeral connection handle or a client-provided worker label.
     """
 
-    material = str(authorization.get("wallet_address") or authorization.get("account_id") or connection_id or "").strip().lower()
-    if not material:
-        raise StableHubWorkerSessionError("worker wallet authorization or Hub connection id is required for live-session settlement.")
-    return "live_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+    slot = str(connection_id or "").strip()
+    if not slot:
+        raise StableHubWorkerSessionError("Hub connection id is required for live-session routing.")
+    return slot
 
 
 def _exp_legacy_worker_route(path: str) -> bool:
@@ -879,7 +877,8 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             raise StableHubWorkerSessionError("Cannot settle live work without a credit hold.")
         credit_wei = self._exp_live_session_selected_credit_wei(selected_worker)
         charged = self.server.credit_ledger.charge_hold_credit_wei(
-            hold_id=hold_id, charged_credit_wei=credit_wei, worker_node_id=worker_id,
+            hold_id=hold_id, charged_credit_wei=credit_wei,
+            worker_node_id=wallet_account_id(selected_worker.get("worker_wallet_address")),
             memo=f"completed experimental work {request_id}",
             metadata={"execution_mode": "exp-live-session-direct-v1"},
         )
@@ -2404,7 +2403,9 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             # authoritative for discovery, migration, and lease fencing.
             worker_key_id = str(authorization.get("multisession_key_id") or authorization.get("key_id") or "")
             worker_wallet = str(authorization.get("wallet_address") or "")
-            worker_account = str(authorization.get("account_id") or "")
+            worker_account = wallet_account_id(worker_wallet)
+            if str(authorization.get("account_id") or "") != worker_account:
+                raise StableHubWorkerSessionError("worker_authorization_account_mismatch")
             owner = self.server.stable_worker_session_directory.record_connected(
                 worker_id=worker_id,
                 connection_id=connection_id,
@@ -2443,6 +2444,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                     "hub_id": self.server.stable_hub_node.hub_id,
                     "hub_url": self.server.stable_hub_node.hub_url,
                     "cluster_id": self.server.stable_topology.cluster_id,
+                    "account_id": worker_account,
                     "worker_session": {
                         "connected": True,
                         "privacy": "worker wallet and hub connection are internal",
@@ -2635,10 +2637,12 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             identity = dict(self.server.identity)
             multisession_required = bool(getattr(self.server.config, "hub_require_multisession_auth", False))
             identity["multi_session_auth_required"] = multisession_required
+            identity["worker_live_session_auth_required"] = True
             identity["auth"] = {
                 "multi_session_auth_required": multisession_required,
                 "multisession_auth_required": multisession_required,
                 "worker_routes": "required" if multisession_required else "optional",
+                "worker_live_session": "required",
                 "requester_routes": "required" if multisession_required else "optional",
                 "scheme": "multisession-wallet",
             }

@@ -1696,6 +1696,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 "/api/hub/v1/credits/bridge-reconciliation/execute",
                 "/api/hub/v1/credits/bridge-reconciliation/record",
             }:
+                # Consume the request body before replying on an HTTP/1.1
+                # keep-alive connection, otherwise its bytes become the next
+                # (malformed) request and can abort the client's 501 response.
+                self._read_json()
                 self._send_json(501, {
                     "ok": False,
                     "error": "stable_hub_unverified_financial_operation_disabled",

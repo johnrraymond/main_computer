@@ -209,7 +209,7 @@ def serve_cli_live_worker(
         if not (snapshot.get("accepted") or {}).get("ok"):
             raise RuntimeError("Hub did not accept the live worker WebSocket.")
         if verbose:
-            print(f"Connected authenticated live worker {worker_node_id} to {hub_url} on {ring}.")
+            print(f"Connected authenticated account {snapshot.get('accepted', {}).get('owner', {}).get('account_id', '')} to {hub_url} on {ring}; local label={worker_node_id}.")
             print("Waiting for WebSocket work offers. Keep this window open.")
         processed = 0
         last_session = ""

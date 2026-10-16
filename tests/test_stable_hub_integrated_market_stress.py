@@ -99,6 +99,18 @@ def test_stable_hub_integrated_market_stress_includes_payout_entropy(tmp_path: P
             thread.join(timeout=1.0)
 
     assert result["ok"] is True
+    worker = result["actors"]["worker"]
+    assert worker["worker_id"].startswith("0x")
+    assert worker["client_worker_label"].startswith("worker_")
+    assert worker["client_worker_label"] != worker["worker_id"]
+    assert worker["first_connection_id"].startswith("conn_")
+    assert worker["reconnect_connection_id"].startswith("conn_")
+    assert worker["first_connection_id"] != worker["reconnect_connection_id"]
+    claim = result["traffic"]["claim"]["claim"]
+    assert claim["worker_id"] == worker["worker_id"]
+    assert claim["status"] == "claimed"
+    assert len(claim["earning_ids"]) == 2
+    assert result["traffic"]["settlement"]["settlement"]["worker_id"] == worker["worker_id"]
     proof = result["proof"]
     assert proof["remote_handoff_succeeded_before_reconnect"] is True
     assert proof["worker_result_charged_payout_hold"] is True

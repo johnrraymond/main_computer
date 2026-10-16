@@ -1569,7 +1569,7 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hub-url", help="Main Computer hub base URL.")
     parser.add_argument("--hub-timeout-s", type=float, help="Hub HTTP timeout in seconds.")
     parser.add_argument("--hub-client-node-id", help="Client node id used when calling the hub.")
-    parser.add_argument("--hub-worker-node-id", help="Worker node id used for registration.")
+    parser.add_argument("--hub-worker-node-id", help="Optional local worker label (not used for Hub identity or settlement).")
     parser.add_argument("--hub-worker-endpoint", help="Public worker endpoint registered with the hub.")
     parser.add_argument("--hub-credits-per-request", type=int, help="Energy credits paid per completed hub request.")
     parser.add_argument("--hub-root", type=Path, help="Hub registry/runtime root.")

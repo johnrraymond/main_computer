@@ -21,6 +21,7 @@ from tools.stable_hub_lab import run_lab as stable_lab
 REGRESSION_FILES = (
     "tests/test_stable_hub_fdb_atomic_accounting.py",
     "tests/test_stable_hub_credit_bridge_patch2.py",
+    "tests/test_stable_hub_historical_funding_acceptance.py",
     "tests/test_stable_hub_temporal_captain_patch3.py",
     "tests/test_stable_hub_lab_contract.py",
     "tests/test_stable_hub_lab_verification.py",

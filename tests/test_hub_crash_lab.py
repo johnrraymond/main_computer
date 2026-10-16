@@ -779,3 +779,148 @@ def test_stable_charge_envelope_hook_pauses_only_after_fdb_commit(monkeypatch, t
     assert ledger.store.rows['chg_one']['request_id'] == 'req_one'
     assert calls == ['charge_written_uncommitted', 'fdb_commit_returned',
                      'crash_marker_observed']
+
+
+def _local_docker_cluster(tmp_path):
+    cluster = tmp_path / 'docker.cluster'
+    cluster.write_text('docker:docker@127.0.0.1:4550\n', encoding='utf-8')
+    return cluster
+
+
+def test_crash_lab_starts_missing_docker_and_fdb_before_baseline(tmp_path, monkeypatch):
+    cluster = _local_docker_cluster(tmp_path)
+    calls = []
+    responses = iter([(False, 'daemon stopped'), (True, '29.0')])
+    monkeypatch.setattr(lab, '_docker_engine_status', lambda: next(responses))
+    monkeypatch.setattr(lab, '_start_docker_desktop_for_local_lab',
+                        lambda: calls.append('docker_desktop_started'))
+    ready = iter([False, True])
+    monkeypatch.setattr(lab, '_local_fdb_coordinator_ready', lambda *_: next(ready))
+    monkeypatch.setattr(lab, '_require_local_docker_engine',
+                        lambda: calls.append('local_docker_verified'))
+    monkeypatch.setattr(lab, '_start_existing_local_fdb_bootstrap',
+                        lambda *a, **kw: calls.append('local_fdb_started'))
+    monkeypatch.setattr(lab, 'ROOT', tmp_path)
+    monkeypatch.setattr(lab, 'stable_fingerprint', lambda root: {})
+    def baseline(*args, **kwargs):
+        calls.append('baseline')
+        return {'ok': False, 'exit_code': 1}
+    monkeypatch.setattr(lab, '_run_baseline', baseline)
+    monkeypatch.setattr(lab, '_start', lambda *args, **kwargs: pytest.fail('Hub must not start'))
+
+    assert lab.main(['--mode', 'precommit', '--cluster-file', str(cluster),
+                     '--report-dir', str(tmp_path / 'reports')]) == 1
+    assert calls == ['docker_desktop_started', 'local_docker_verified', 'local_fdb_started', 'baseline']
+    report = json.loads((tmp_path / 'reports' / 'last-run.json').read_text())
+    assert 'Existing Stable tests did not pass' in report['error']
+    assert report['results'] == {}
+
+
+def test_crash_lab_reuses_running_docker_and_fdb(tmp_path, monkeypatch):
+    cluster = _local_docker_cluster(tmp_path)
+    monkeypatch.setattr(lab, '_docker_engine_status', lambda: (True, '29.0'))
+    monkeypatch.setattr(lab, '_local_fdb_coordinator_ready', lambda *_: True)
+    monkeypatch.setattr(lab, '_start_existing_local_fdb_bootstrap',
+                        lambda *_a, **_kw: pytest.fail('FDB already running'))
+    monkeypatch.setattr(lab, '_start_docker_desktop_for_local_lab',
+                        lambda: pytest.fail('Docker already running'))
+    lab._preflight_local_docker_fdb(cluster)
+
+
+def test_crash_lab_bootstraps_missing_fdb_using_existing_smoke_startup(tmp_path, monkeypatch):
+    cluster = _local_docker_cluster(tmp_path)
+    monkeypatch.setattr(lab, '_docker_engine_status', lambda: (True, '29.0'))
+    ready = iter([False, True])
+    monkeypatch.setattr(lab, '_local_fdb_coordinator_ready', lambda *_: next(ready))
+    called = []
+    monkeypatch.setattr(lab, '_require_local_docker_engine', lambda: None)
+    monkeypatch.setattr(lab, '_start_existing_local_fdb_bootstrap',
+                        lambda path, port: called.append((path, port)))
+    lab._preflight_local_docker_fdb(cluster)
+    assert called == [(cluster, 4550)]
+
+
+def test_crash_lab_existing_bootstrap_reuses_container_without_ledger_smoke(tmp_path, monkeypatch):
+    from scripts import smoke_foundationdb_credit_ledger_primitives as smoke
+    cluster = _local_docker_cluster(tmp_path)
+    observed = []
+    def fake_start(args):
+        observed.append(args)
+        return smoke.DockerFDBRuntime(container_name=args.fdb_container_name, cluster_file=cluster)
+    monkeypatch.setattr(smoke, 'start_foundationdb_container', fake_start)
+    monkeypatch.setattr(smoke, '_run_credit_ledger_primitive_smoke',
+                        lambda *_: pytest.fail('Never run the mutating ledger smoke'))
+    lab._start_existing_local_fdb_bootstrap(cluster, port=4550)
+    assert observed[0].reuse_container is True
+    assert observed[0].keep_container is True
+    assert observed[0].bootstrap_native_client is False
+    assert observed[0].fdb_port == 4550
+    assert Path(observed[0].cluster_file) == cluster
+
+
+def test_crash_lab_rejects_ambiguous_docker_coordinator_without_start(tmp_path, monkeypatch):
+    cluster = _local_docker_cluster(tmp_path)
+    cluster.write_text('docker:docker@127.0.0.1:4550,10.116.0.3:4550')
+    monkeypatch.setattr(lab, '_docker_engine_status', lambda: pytest.fail('no Docker access'))
+    with pytest.raises(lab.LabError, match='one loopback coordinator'):
+        lab._preflight_local_docker_fdb(cluster)
+
+
+def test_crash_lab_protects_remote_cluster_from_docker_startup(tmp_path, monkeypatch):
+    cluster = tmp_path / 'other.cluster'
+    for descriptor in ['mainnet:mainnet@10.116.0.3:4550',
+                       'docker:docker@10.116.0.3:4550']:
+        cluster.write_text(descriptor)
+        monkeypatch.setattr(lab, '_docker_engine_status', lambda: pytest.fail('No Docker on remote cluster'))
+        lab._preflight_local_docker_fdb(cluster)
+
+
+def test_crash_lab_stops_before_hubs_when_docker_launcher_fails(tmp_path, monkeypatch):
+    cluster = _local_docker_cluster(tmp_path)
+    monkeypatch.setattr(lab, '_docker_engine_status', lambda: (False, 'daemon stopped'))
+    def fail_launch():
+        raise lab.LabError('Docker Desktop did not become ready. No Hub started.')
+    monkeypatch.setattr(lab, '_start_docker_desktop_for_local_lab', fail_launch)
+    monkeypatch.setattr(lab, '_run_baseline', lambda *args, **kwargs: pytest.fail('baseline must not start'))
+    monkeypatch.setattr(lab, 'ROOT', tmp_path)
+    assert lab.main(['--mode', 'precommit', '--cluster-file', str(cluster),
+                     '--report-dir', str(tmp_path / 'reports')]) == 1
+    report = json.loads((tmp_path / 'reports' / 'last-run.json').read_text())
+    assert 'Docker Desktop did not become ready' in report['error']
+    assert report['results'] == {}
+
+
+def test_crash_lab_rejects_remote_docker_context_before_bootstrap(tmp_path, monkeypatch):
+    from subprocess import CompletedProcess
+    monkeypatch.delenv('DOCKER_HOST', raising=False)
+    monkeypatch.setattr(lab.subprocess, 'run', lambda cmd, **kwargs:
+                        CompletedProcess(cmd, 0, 'ssh://production.example:22\n', ''))
+    with pytest.raises(lab.LabError, match='not local'):
+        lab._require_local_docker_engine()
+
+
+def test_crash_lab_accepts_local_docker_desktop_context(monkeypatch):
+    from subprocess import CompletedProcess
+    monkeypatch.delenv('DOCKER_HOST', raising=False)
+    monkeypatch.setattr(lab.subprocess, 'run', lambda cmd, **kwargs:
+                        CompletedProcess(cmd, 0, 'npipe:////./pipe/dockerDesktopLinuxEngine\n', ''))
+    lab._require_local_docker_engine()
+
+
+def test_crash_lab_launches_installed_windows_docker_desktop(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    desktop = tmp_path / 'Docker' / 'Docker' / 'Docker Desktop.exe'
+    desktop.parent.mkdir(parents=True)
+    desktop.write_bytes(b'fixture')
+    fake_os = SimpleNamespace(name='nt', environ={
+        'PROGRAMFILES': str(tmp_path),
+        'LOCALAPPDATA': str(tmp_path),
+    })
+    monkeypatch.setattr(lab, 'os', fake_os)
+    launched = []
+    monkeypatch.setattr(lab.subprocess, 'Popen',
+                        lambda cmd, **kwargs: launched.append((cmd, kwargs)))
+    monkeypatch.setattr(lab, '_docker_engine_status', lambda: (True, '29.0'))
+    lab._start_docker_desktop_for_local_lab()
+    assert launched[0][0] == [str(desktop)]
+    assert launched[0][1]['stdout'] == lab.subprocess.DEVNULL

@@ -193,37 +193,48 @@ def test_two_hubs_cannot_double_spend_or_double_pay_one_available_balance() -> N
     assert len(stores[1].load()["payout_charges"]) == 1
 
 
-def test_cumulative_verified_bridge_watermark_is_atomic_and_replay_safe() -> None:
+def test_individual_verified_bridge_deposits_are_atomic_and_replay_safe() -> None:
     db, stores, a, c = _two_hubs()
     wallet = "0x" + "cd" * 20
-    db.force_collision()
-    def complete(ledger: StableHubPayoutLedgerDirectory) -> dict[str, Any]:
-        return ledger.record_completed_bridge_deposit(
-            account_id="bridged-account", wallet_address=wallet,
-            deposit_id="chain-deposit-1", chain_completed_credit_wei=10**18,
+    from main_computer.hub_credit_indexer import wallet_account_id
+    account_id = wallet_account_id(wallet)
+    contract = "0x" + "ee" * 20
+    chain_id = 42424240
+    def prepare(ledger, deposit_id, amount, cumulative):
+        ledger.prepare_bridge_deposit_completion(
+            account_id=account_id, wallet_address=wallet,
+            deposit_id=deposit_id, chain_id=chain_id, contract_address=contract,
+            deposit_amount_units=amount, chain_completed_credit_wei=cumulative,
+            already_completed=True,
         )
+    def credit(ledger, deposit_id, amount, cumulative):
+        return ledger.record_completed_bridge_deposit(
+            account_id=account_id, wallet_address=wallet,
+            deposit_id=deposit_id, deposit_amount_units=amount,
+            chain_completed_credit_wei=cumulative, chain_id=chain_id,
+            contract_address=contract,
+        )
+    prepare(a, "chain-deposit-1", 10**18, 10**18)
+    db.force_collision()
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(complete, a)
-        second = pool.submit(complete, c)
-        results = [first.result(), second.result()]
+        fa = pool.submit(credit, a, "chain-deposit-1", 10**18, 10**18)
+        fc = pool.submit(credit, c, "chain-deposit-1", 10**18, 10**18)
+        results = [fa.result(), fc.result()]
     assert sorted(result["idempotent"] for result in results) == [False, True]
     assert db.conflicts >= 1
-    assert a.get_account("bridged-account")["available_credit_wei"] == str(10**18)
-    further = c.record_completed_bridge_deposit(
-        account_id="bridged-account", wallet_address=wallet,
-        deposit_id="chain-deposit-2", chain_completed_credit_wei=3 * 10**18,
-    )
+    assert a.get_account(account_id)["available_credit_wei"] == str(10**18)
+    prepare(c, "chain-deposit-2", 2 * 10**18, 100 * 10**18)
+    further = credit(c, "chain-deposit-2", 2 * 10**18, 100 * 10**18)
     assert further["delta_credit_wei"] == str(2 * 10**18)
-    assert a.get_account("bridged-account")["bridge_completed_credit_wei"] == str(3 * 10**18)
-    with pytest.raises(StableHubWorkerSessionError, match="ahead_of_chain"):
-        a.record_completed_bridge_deposit(
-            account_id="bridged-account", wallet_address=wallet,
-            deposit_id="old-deposit", chain_completed_credit_wei=2 * 10**18,
-        )
+    assert a.get_account(account_id)["bridge_completed_credit_wei"] == str(3 * 10**18)
+    with pytest.raises(StableHubWorkerSessionError, match="replay_identity_conflict"):
+        credit(a, "chain-deposit-2", 3 * 10**18, 100 * 10**18)
     with pytest.raises(StableHubWorkerSessionError, match="wallet_mismatch"):
         a.record_completed_bridge_deposit(
-            account_id="bridged-account", wallet_address="0x" + "fe" * 20,
-            deposit_id="wrong-wallet", chain_completed_credit_wei=4 * 10**18,
+            account_id=account_id, wallet_address="0x" + "fe" * 20,
+            deposit_id="chain-deposit-1", deposit_amount_units=10**18,
+            chain_completed_credit_wei=10**18, chain_id=chain_id,
+            contract_address=contract,
         )
     saved = stores[0].load()
     assert len(saved["payout_deposits"]) == 2

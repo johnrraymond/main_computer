@@ -1,0 +1,918 @@
+SCENARIO s01 — Contested supply cache (shared-question comparison)
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c01 Crew-first mission pragmatist | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain places crew survival ahead of acquiring replaceable supplies and strongly dislikes unnecessary damage to the ship. However, the captain will defend supplies essential to the primary mission, even when doing so requires considerable risk. The captain weighs the consequences of a confrontation rather than resisting simply to appear aggressive.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,100,000  Y=940,000  OP=SUB  Z=160,000
+DECISION INDEX=0.582284  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c02 Ally-bound guardian | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain considers an explicit promise to aid an ally a binding commitment. The captain will accept meaningful risk to protect allied relief operations, but will not sacrifice the entire crew for a symbolic gesture when relief can be delivered by another route.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,160,000  Y=940,000  OP=SUB  Z=220,000
+DECISION INDEX=0.612299  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c03 Deterrence hardliner | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain fears that a concession to repeated coercion will invite more demands. The captain favors visibly resisting extortion, even at some immediate cost, but recognizes that destruction of the ship would eliminate its ability to deter anyone later.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,440,000  Y=940,000  OP=SUB  Z=500,000
+DECISION INDEX=0.739680  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c04 Patient strategist | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain accepts temporary losses when patience improves the eventual position. The captain prefers keeping options open to seizing marginal advantages, but will act promptly when delay would close the only path to a major objective.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=960,000  Y=940,000  OP=SUB  Z=20,000
+DECISION INDEX=0.510372  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c05 Civilian protector | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain views protecting noncombatants as an obligation, not a prize to be traded. The captain prefers de-escalation where civilians may be harmed, but will take substantial risks to secure an urgently needed medical evacuation route.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=780,000  Y=940,000  OP=SUB  Z=-160,000
+DECISION INDEX=0.417716  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c06 Expedition opportunist | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain actively seeks rare opportunities that can improve future ship capabilities. The captain accepts calculated risks for valuable salvage, but abandons low-value prizes quickly when crew danger or enemy strength rises.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,080,000  Y=940,000  OP=SUB  Z=140,000
+DECISION INDEX=0.572141  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c07 Treaty keeper | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain treats standing navigation agreements as binding except when their observance would make the primary mission impossible. The captain prefers negotiated passage, and resists only when the other ship exploits the agreement to coerce or endanger those under protection.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=720,000  Y=940,000  OP=SUB  Z=-220,000
+DECISION INDEX=0.387701  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c08 Deception skeptic | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain expects opponents to manufacture apparent opportunities. The captain is reluctant to commit the ship on uncertain signals and values corroboration, but will exploit a genuine opening when friendly support and mission necessity justify the risk.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,020,000  Y=940,000  OP=SUB  Z=80,000
+DECISION INDEX=0.541404  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c09 Mission absolutist | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain treats completion of the assigned primary mission as a decisive obligation. The captain will risk the ship to secure essential capabilities, yet sees no honor in losing personnel for objectives that do not affect mission completion.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=820,000  Y=940,000  OP=SUB  Z=-120,000
+DECISION INDEX=0.438058  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s01 — Contested supply cache
+c10 Coalition builder | common question=s01_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain values preserving workable relationships among independent vessels and prefers negotiated sharing to coercion. The captain will nevertheless contest monopolization of a vital resource when further concessions would undermine a coalition or prevent mission completion.
+
+SITUATION
+A rival vessel is contesting control of a supply cache.
+The cache offers only limited tactical benefit. Tactical judges the risk to our crew from contesting the cache to be low. The current mission can succeed without this cache. Our supporting ships are within effective supporting range. The rival is preparing to move on the cache soon.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements remain outside effective supporting range.
+
+QUESTION
+Should this captain contest the supply cache or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=900,000  Y=940,000  OP=SUB  Z=-40,000
+DECISION INDEX=0.479265  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "soon", "friendly_support": "in-range", "mission_dependency": "off", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "out-of-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+============================================================================
+CROSSED COMPARISON — s01: Contested supply cache
+All rows share the exact same scenario, state, opponent evidence and question.
+Only the jacket and its X teacher change. Y uses one common opponent teacher.
+CAPTAIN   JACKET                                 X          Y           Z  DECISION
+c01       Crew-first mission pragmatist  1,100,000    940,000     160,000  contest
+c02       Ally-bound guardian            1,160,000    940,000     220,000  contest
+c03       Deterrence hardliner           1,440,000    940,000     500,000  contest
+c04       Patient strategist               960,000    940,000      20,000  contest
+c05       Civilian protector               780,000    940,000    -160,000  yield
+c06       Expedition opportunist         1,080,000    940,000     140,000  contest
+c07       Treaty keeper                    720,000    940,000    -220,000  yield
+c08       Deception skeptic              1,020,000    940,000      80,000  contest
+c09       Mission absolutist               820,000    940,000    -120,000  yield
+c10       Coalition builder                900,000    940,000     -40,000  yield
+
+############################################################################
+
+SCENARIO s02 — Disputed emergency docking corridor (shared-question comparison)
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c01 Crew-first mission pragmatist | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain places crew survival ahead of acquiring replaceable supplies and strongly dislikes unnecessary damage to the ship. However, the captain will defend supplies essential to the primary mission, even when doing so requires considerable risk. The captain weighs the consequences of a confrontation rather than resisting simply to appear aggressive.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,300,000  Y=1,300,000  OP=SUB  Z=0
+DECISION INDEX=0.500000  PREFERENCE=indifferent
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c02 Ally-bound guardian | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain considers an explicit promise to aid an ally a binding commitment. The captain will accept meaningful risk to protect allied relief operations, but will not sacrifice the entire crew for a symbolic gesture when relief can be delivered by another route.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,540,000  Y=1,300,000  OP=SUB  Z=240,000
+DECISION INDEX=0.622142  PREFERENCE=contest
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c03 Deterrence hardliner | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain fears that a concession to repeated coercion will invite more demands. The captain favors visibly resisting extortion, even at some immediate cost, but recognizes that destruction of the ship would eliminate its ability to deter anyone later.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,560,000  Y=1,300,000  OP=SUB  Z=260,000
+DECISION INDEX=0.631892  PREFERENCE=contest
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c04 Patient strategist | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain accepts temporary losses when patience improves the eventual position. The captain prefers keeping options open to seizing marginal advantages, but will act promptly when delay would close the only path to a major objective.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,600,000  Y=1,300,000  OP=SUB  Z=300,000
+DECISION INDEX=0.651091  PREFERENCE=contest
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c05 Civilian protector | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain views protecting noncombatants as an obligation, not a prize to be traded. The captain prefers de-escalation where civilians may be harmed, but will take substantial risks to secure an urgently needed medical evacuation route.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,620,000  Y=1,300,000  OP=SUB  Z=320,000
+DECISION INDEX=0.660528  PREFERENCE=contest
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c06 Expedition opportunist | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain actively seeks rare opportunities that can improve future ship capabilities. The captain accepts calculated risks for valuable salvage, but abandons low-value prizes quickly when crew danger or enemy strength rises.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,440,000  Y=1,300,000  OP=SUB  Z=140,000
+DECISION INDEX=0.572141  PREFERENCE=contest
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c07 Treaty keeper | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain treats standing navigation agreements as binding except when their observance would make the primary mission impossible. The captain prefers negotiated passage, and resists only when the other ship exploits the agreement to coerce or endanger those under protection.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,420,000  Y=1,300,000  OP=SUB  Z=120,000
+DECISION INDEX=0.561942  PREFERENCE=contest
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c08 Deception skeptic | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain expects opponents to manufacture apparent opportunities. The captain is reluctant to commit the ship on uncertain signals and values corroboration, but will exploit a genuine opening when friendly support and mission necessity justify the risk.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=800,000  Y=1,300,000  OP=SUB  Z=-500,000
+DECISION INDEX=0.260320  PREFERENCE=yield
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c09 Mission absolutist | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain treats completion of the assigned primary mission as a decisive obligation. The captain will risk the ship to secure essential capabilities, yet sees no honor in losing personnel for objectives that do not affect mission completion.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,840,000  Y=1,300,000  OP=SUB  Z=540,000
+DECISION INDEX=0.755692  PREFERENCE=contest
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s02 — Disputed emergency docking corridor
+c10 Coalition builder | common question=s02_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain values preserving workable relationships among independent vessels and prefers negotiated sharing to coercion. The captain will nevertheless contest monopolization of a vital resource when further concessions would undermine a coalition or prevent mission completion.
+
+SITUATION
+A rival vessel is contesting access to an emergency docking corridor.
+Control of the emergency docking corridor would be highly valuable to our operations. Tactical warns that contesting the emergency docking corridor places our crew in serious danger. Our primary mission depends on securing the emergency docking corridor. Our supporting ships are outside effective supporting range. The rival is moving to take control of the emergency docking corridor now.
+
+OPPONENT INTELLIGENCE
+The opposing commander has shown mixed willingness to fight over disputed resources. Recent encounters suggest the opposing commander is escalating challenges. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest access to the docking corridor or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=1,280,000  Y=1,300,000  OP=SUB  Z=-20,000
+DECISION INDEX=0.489628  PREFERENCE=yield
+STATE: {"crew_danger": "high", "decision_horizon": "now", "friendly_support": "out-of-range", "mission_dependency": "on", "opponent_escalating": "on", "opponent_pressure": "medium", "opponent_support": "in-range", "resource_priority": "high"}
+No model, training, or database operations are performed.
+
+============================================================================
+CROSSED COMPARISON — s02: Disputed emergency docking corridor
+All rows share the exact same scenario, state, opponent evidence and question.
+Only the jacket and its X teacher change. Y uses one common opponent teacher.
+CAPTAIN   JACKET                                 X          Y           Z  DECISION
+c01       Crew-first mission pragmatist  1,300,000  1,300,000           0  indifferent
+c02       Ally-bound guardian            1,540,000  1,300,000     240,000  contest
+c03       Deterrence hardliner           1,560,000  1,300,000     260,000  contest
+c04       Patient strategist             1,600,000  1,300,000     300,000  contest
+c05       Civilian protector             1,620,000  1,300,000     320,000  contest
+c06       Expedition opportunist         1,440,000  1,300,000     140,000  contest
+c07       Treaty keeper                  1,420,000  1,300,000     120,000  contest
+c08       Deception skeptic                800,000  1,300,000    -500,000  yield
+c09       Mission absolutist             1,840,000  1,300,000     540,000  contest
+c10       Coalition builder              1,280,000  1,300,000     -20,000  yield
+
+############################################################################
+
+SCENARIO s03 — Contested sensor relay (shared-question comparison)
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c01 Crew-first mission pragmatist | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain places crew survival ahead of acquiring replaceable supplies and strongly dislikes unnecessary damage to the ship. However, the captain will defend supplies essential to the primary mission, even when doing so requires considerable risk. The captain weighs the consequences of a confrontation rather than resisting simply to appear aggressive.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=680,000  Y=620,000  OP=SUB  Z=60,000
+DECISION INDEX=0.531082  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c02 Ally-bound guardian | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain considers an explicit promise to aid an ally a binding commitment. The captain will accept meaningful risk to protect allied relief operations, but will not sacrifice the entire crew for a symbolic gesture when relief can be delivered by another route.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=660,000  Y=620,000  OP=SUB  Z=40,000
+DECISION INDEX=0.520735  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c03 Deterrence hardliner | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain fears that a concession to repeated coercion will invite more demands. The captain favors visibly resisting extortion, even at some immediate cost, but recognizes that destruction of the ship would eliminate its ability to deter anyone later.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=980,000  Y=620,000  OP=SUB  Z=360,000
+DECISION INDEX=0.679048  PREFERENCE=contest
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c04 Patient strategist | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain accepts temporary losses when patience improves the eventual position. The captain prefers keeping options open to seizing marginal advantages, but will act promptly when delay would close the only path to a major objective.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=300,000  Y=620,000  OP=SUB  Z=-320,000
+DECISION INDEX=0.339472  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c05 Civilian protector | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain views protecting noncombatants as an obligation, not a prize to be traded. The captain prefers de-escalation where civilians may be harmed, but will take substantial risks to secure an urgently needed medical evacuation route.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=260,000  Y=620,000  OP=SUB  Z=-360,000
+DECISION INDEX=0.320952  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c06 Expedition opportunist | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain actively seeks rare opportunities that can improve future ship capabilities. The captain accepts calculated risks for valuable salvage, but abandons low-value prizes quickly when crew danger or enemy strength rises.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=460,000  Y=620,000  OP=SUB  Z=-160,000
+DECISION INDEX=0.417716  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c07 Treaty keeper | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain treats standing navigation agreements as binding except when their observance would make the primary mission impossible. The captain prefers negotiated passage, and resists only when the other ship exploits the agreement to coerce or endanger those under protection.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=300,000  Y=620,000  OP=SUB  Z=-320,000
+DECISION INDEX=0.339472  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c08 Deception skeptic | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain expects opponents to manufacture apparent opportunities. The captain is reluctant to commit the ship on uncertain signals and values corroboration, but will exploit a genuine opening when friendly support and mission necessity justify the risk.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=300,000  Y=620,000  OP=SUB  Z=-320,000
+DECISION INDEX=0.339472  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c09 Mission absolutist | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain treats completion of the assigned primary mission as a decisive obligation. The captain will risk the ship to secure essential capabilities, yet sees no honor in losing personnel for objectives that do not affect mission completion.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=380,000  Y=620,000  OP=SUB  Z=-240,000
+DECISION INDEX=0.377858  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+----------------------------------------------------------------------------
+
+HAWK-DOVE CAPTAIN LADDER — RAW STORY TO NUMERICAL CONDENSATION
+SCENARIO s03 — Contested sensor relay
+c10 Coalition builder | common question=s03_hawk_dove | focus=y
+
+============================================================================
+L10  RAW CAPTAIN STORY — THE TARGET PRESENTATION
+============================================================================
+CAPTAIN JACKET
+This captain values preserving workable relationships among independent vessels and prefers negotiated sharing to coercion. The captain will nevertheless contest monopolization of a vital resource when further concessions would undermine a coalition or prevent mission completion.
+
+SITUATION
+A rival vessel is contesting control of a sensor relay.
+Securing the sensor relay would offer only a minor operational advantage. Tactical expects little danger to the crew if we contest the sensor relay. Our primary mission can succeed without control of the sensor relay. Our supporting ships are outside effective supporting range. There is time before the rival can take control of the sensor relay.
+
+OPPONENT INTELLIGENCE
+The opposing commander rarely presses contested claims. There is no evidence of recent escalation by the opposing commander. Enemy reinforcements are inside effective supporting range.
+
+QUESTION
+Should this captain contest the sensor relay or yield it?
+
+============================================================================
+TEACHER TARGETS — NOT PART OF ANY RAW STORY
+X=360,000  Y=620,000  OP=SUB  Z=-260,000
+DECISION INDEX=0.368108  PREFERENCE=yield
+STATE: {"crew_danger": "low", "decision_horizon": "later", "friendly_support": "out-of-range", "mission_dependency": "off", "opponent_escalating": "off", "opponent_pressure": "low", "opponent_support": "in-range", "resource_priority": "low"}
+No model, training, or database operations are performed.
+
+============================================================================
+CROSSED COMPARISON — s03: Contested sensor relay
+All rows share the exact same scenario, state, opponent evidence and question.
+Only the jacket and its X teacher change. Y uses one common opponent teacher.
+CAPTAIN   JACKET                                 X          Y           Z  DECISION
+c01       Crew-first mission pragmatist    680,000    620,000      60,000  contest
+c02       Ally-bound guardian              660,000    620,000      40,000  contest
+c03       Deterrence hardliner             980,000    620,000     360,000  contest
+c04       Patient strategist               300,000    620,000    -320,000  yield
+c05       Civilian protector               260,000    620,000    -360,000  yield
+c06       Expedition opportunist           460,000    620,000    -160,000  yield
+c07       Treaty keeper                    300,000    620,000    -320,000  yield
+c08       Deception skeptic                300,000    620,000    -320,000  yield
+c09       Mission absolutist               380,000    620,000    -240,000  yield
+c10       Coalition builder                360,000    620,000    -260,000  yield

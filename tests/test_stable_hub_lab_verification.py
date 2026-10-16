@@ -5,6 +5,7 @@ import socket
 import threading
 from pathlib import Path
 
+from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.stable_hub import create_stable_hub_server
 from main_computer.stable_hub_msk import InMemoryStableMultiSessionKeyStore
 from main_computer.stable_hub_topology import load_stable_hub_topology
@@ -101,7 +102,19 @@ def test_stable_hub_lab_verify_runs_realistic_requester_worker_traffic(tmp_path:
     assert all(proof.values())
     assert result["actors"]["requester"]["hub_id"] == "dev-hub1"
     assert result["actors"]["worker"]["hub_id"] == "dev-hub3"
+    worker = result["actors"]["worker"]
+    assert worker["worker_id"] == worker["connection_id"]
+    assert worker["worker_id"].startswith("conn_")
+    assert worker["client_worker_label"].startswith("worker_")
+    assert worker["client_worker_label"] != worker["worker_id"]
+    assert worker["account_id"] == wallet_account_id(result["traffic"]["owner"]["wallet_address"])
     traffic = result["traffic"]
+    assert traffic["worker_auth"]["account_id"] == worker["account_id"]
+    assert traffic["owner"]["worker_id"] == worker["connection_id"]
+    assert traffic["owner"]["multisession_key_id"] == worker["multisession_key_id"]
+    assert traffic["market"]["worker_id"] == worker["connection_id"]
+    assert traffic["market"]["worker_account_id"] == worker["account_id"]
+    assert traffic["offer"]["worker_id"] == worker["connection_id"]
     accepted_response = traffic["accepted_response"]
     assert accepted_response["accepted"] is True
     assert accepted_response["handoff"] == {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import ipaddress
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,7 +23,7 @@ from tools import coolify_hub_service as legacy
 from .canonical import canonical_bytes
 from .errors import HubControlError
 from .models import DependencyContract, HubContext, HubPlacement
-from .privates import controller_coordinates
+from .privates import controller_coordinates, controller_doc
 
 FDB_CLUSTER_ENV = "MAIN_COMPUTER_HUB_CONTROL_FDB_CLUSTER_CONTENTS"
 TOPOLOGY_B64_ENV = "MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64"
@@ -430,6 +432,50 @@ def render_runtime_topology(
     }
 
 
+def private_https_routes(private: Mapping[str, Any], network: str, hubs: list[Mapping[str, Any]], rpc_url: str) -> dict[str, str]:
+    """Derive deployed host routing strictly from Mother's controller VPN IPs.
+
+    Mainnet RPC's existing Traefik frontend on controller A was verified over
+    its VPN interface. Keep its canonical HTTPS hostname and contract unchanged.
+    No Docker container address and no public DNS response enters this mapping.
+    """
+    if network != "mainnet":
+        return {}
+
+    def vpn_address(controller_id: str) -> str:
+        raw = controller_doc(private, network, controller_id)
+        value = str(raw.get("vpn_ip") or "").strip()
+        try:
+            addr = ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise HubControlError("HUB_PRIVATE_VPN_IP_MISSING", f"{controller_id} has no valid Mother vpn_ip") from exc
+        if addr.version != 4 or not addr.is_private or addr.is_loopback or addr.is_link_local:
+            raise HubControlError("HUB_PRIVATE_VPN_IP_INVALID", f"{controller_id} has no private IPv4 VPN address")
+        return str(addr)
+
+    def https_host(url: str) -> str:
+        try:
+            parsed = urlsplit(str(url).strip())
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("not a canonical HTTPS hostname")
+            return parsed.hostname.lower()
+        except (ValueError, TypeError) as exc:
+            raise HubControlError("HUB_PRIVATE_ROUTE_URL_INVALID", f"Cannot pin private HTTPS route for {url!r}") from exc
+
+    routes = {https_host(rpc_url): vpn_address("coolify-a")}
+    for hub in hubs:
+        controller_id = str(hub.get("controller_id") or "").strip()
+        url = str(hub.get("public_url") or hub.get("hub_url") or "").strip()
+        if not controller_id or not url:
+            raise HubControlError("HUB_PRIVATE_ROUTE_PLACEMENT_MISSING", "Accepted Hub must have controller_id and public_url")
+        hostname = https_host(url)
+        address = vpn_address(controller_id)
+        if hostname in routes and routes[hostname] != address:
+            raise HubControlError("HUB_PRIVATE_ROUTE_CONFLICT", f"Conflicting controller VPN routes for {hostname}")
+        routes[hostname] = address
+    return routes
+
+
 def deployment_target(
     ctx: HubContext,
     private: Mapping[str, Any],
@@ -456,7 +502,12 @@ def deployment_target(
         and str(item.get("controller_id") or "").strip() == placement.controller_id
         for item in accepted_hubs
     )
+    private_routes = private_https_routes(
+        private, network, [*accepted_hubs, {"controller_id": placement.controller_id, "public_url": placement.public_url}],
+        str(chain_contract.payload["rpc_url"]),
+    )
     return {
+        "private_https_routes": private_routes,
         "controller_id": placement.controller_id,
         "host_id": placement.host_id,
         "coolify": coords,
@@ -1406,6 +1457,8 @@ def apply_deployment(
             "MAIN_COMPUTER_HUB_FDB_NAMESPACE": str(target["fdb_contract"]["namespace"]),
             "MAIN_COMPUTER_HUB_CHAIN_ID": str(target["chain_contract"]["chain_id"]),
             "MAIN_COMPUTER_HUB_CHAIN_RPC_URL": str(target["chain_contract"]["rpc_url"]),
+            "MAIN_COMPUTER_HUB_PRIVATE_HTTPS_ROUTES": json.dumps(target.get("private_https_routes", {}), sort_keys=True),
+            "MAIN_COMPUTER_HUB_REQUIRE_PRIVATE_HTTPS_ROUTES": "true" if target.get("private_https_routes") else "false",
             "MAIN_COMPUTER_HUB_CONTRACTS_PATH": f"/app/main_computer/config/{target['network']}_contracts.json",
             "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER": "false" if bridge_signer is not None else "true",
             "MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES": "true" if bridge_signer is not None else "false",
