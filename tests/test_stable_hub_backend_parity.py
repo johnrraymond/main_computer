@@ -163,14 +163,16 @@ def test_worker_capacity_reservation_rejects_second_same_epoch_claim() -> None:
     topology = _topology()
     store = InMemoryStableWorkerSessionStore()
     market = StableHubWorkerMarketDirectory(topology=topology, hub_id="dev-hub3", store=store)
+    from main_computer.stable_hub_worker_sessions import StableHubWorkerSessionDirectory
+    owner_dir = StableHubWorkerSessionDirectory(topology=topology, hub_id="dev-hub3", store=store)
+    owner = owner_dir.record_connected(
+        worker_id="worker-reserve-once", connection_id="conn-reserve",
+        multisession_key_id="msk-worker", wallet_address="0x" + "22" * 20,
+        account_id="acct-worker",
+    )
     market.record_worker_live(
         worker_id="worker-reserve-once",
-        owner={
-            "owner_hub_id": "dev-hub3",
-            "owner_hub_url": "http://127.0.0.1:8873",
-            "connection_id": "conn-reserve",
-            "lease_epoch": 7,
-        },
+        owner=owner,
         market_profile={"ring": "ring-1", "price": {"amount": "0.01", "unit": "credit"}, "max_concurrency": 1},
         worker_msk_id="msk-worker",
         worker_wallet_address="0x" + "22" * 20,
@@ -180,7 +182,7 @@ def test_worker_capacity_reservation_rejects_second_same_epoch_claim() -> None:
     reserved = market.reserve_worker_capacity(
         worker_id="worker-reserve-once",
         connection_id="conn-reserve",
-        lease_epoch=7,
+        lease_epoch=owner["lease_epoch"],
     )
     assert reserved["active_sessions"] == 1
 
@@ -188,7 +190,7 @@ def test_worker_capacity_reservation_rejects_second_same_epoch_claim() -> None:
         market.reserve_worker_capacity(
             worker_id="worker-reserve-once",
             connection_id="conn-reserve",
-            lease_epoch=7,
+            lease_epoch=owner["lease_epoch"],
         )
 
 

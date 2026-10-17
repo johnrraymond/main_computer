@@ -14,8 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from main_computer.mcel_dsl_compiler import compile_dsl_application
-from main_computer.mcel_projection_profiles.calculator_shadow_v1 import project_calculator_ir
-from main_computer.mcel_projection_profiles.code_editor_host_bound_v1 import project_code_editor_ir
+from main_computer.mcel_projection_profiles.host_bound_policy import policy_for_app, project_with_policy
 
 GENERATED_DIRECTORY_NAMES = frozenset({"contracts", "generated"})
 GENERATED_FILE_NAMES = frozenset({"mcel.generated.json"})
@@ -86,39 +85,27 @@ def materialize_generated_package_files(
         )
         return generated
 
-    if app_id == "calculator":
-        projection = project_calculator_ir(compiled.normalized_ir)
-        generated = dict(projection.files)
-        generated["mcel.generated.json"] = _ownership_bytes(
-            app_id=app_id,
-            generator=projection.profile_id,
-            semantic_fingerprint=str(compiled.semantic_fingerprint),
-            source_binding_fingerprint=str(compiled.source_binding_fingerprint),
-            generated=generated,
-            version=(
-                "mcel-calculator-promotion-rehearsal-v1"
-                if authoring_status == "dsl-authoritative"
-                else "mcel-calculator-host-bound-projection-v1"
-            ),
+    # A single IR projector handles every host-bound DSL-authoritative package.
+    # Legacy compatibility labels are data policies, not app-named generators.
+    if (manifest.get("projection") or {}).get("mountMode") != "host-bound":
+        raise ValueError(
+            f"DSL-authoritative package {app_id!r} requires a supported projection mount mode."
         )
-        return generated
-
-    if app_id == "code-editor":
-        projection = project_code_editor_ir(compiled.normalized_ir)
-        generated = dict(projection.files)
-        generated["mcel.generated.json"] = _ownership_bytes(
-            app_id=app_id,
-            generator=projection.profile_id,
-            semantic_fingerprint=str(compiled.semantic_fingerprint),
-            source_binding_fingerprint=str(compiled.source_binding_fingerprint),
-            generated=generated,
-            version="mcel-code-editor-host-bound-projection-v1",
-        )
-        return generated
-
-    raise ValueError(
-        f"DSL-authoritative package {app_id!r} has no registered in-memory projection materializer."
+    projection = project_with_policy(compiled.normalized_ir, expected_app_id=app_id)
+    policy = policy_for_app(app_id)
+    generated = dict(projection.files)
+    version = policy.ownership_version
+    if app_id == "calculator" and authoring_status == "dsl-shadow":
+        version = "mcel-calculator-host-bound-projection-v1"
+    generated["mcel.generated.json"] = _ownership_bytes(
+        app_id=app_id,
+        generator=projection.profile_id,
+        semantic_fingerprint=str(compiled.semantic_fingerprint),
+        source_binding_fingerprint=str(compiled.source_binding_fingerprint),
+        generated=generated,
+        version=version,
     )
+    return generated
 
 
 def _manifest(text_files: Mapping[str, str]) -> Mapping[str, Any]:

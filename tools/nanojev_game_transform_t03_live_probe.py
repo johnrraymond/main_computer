@@ -164,7 +164,20 @@ def run(args) -> tuple[dict, Path]:
 
 
 def main(argv=None) -> int:
-    run(parser().parse_args(argv))
+    # No-argument probe follows the newest V2 lineage once installed. Any
+    # explicit V1 arguments retain their original meanings and behavior.
+    import sys
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    v21_root = Path.home() / 'NanoJev/runs/game_transform_t03_tiered_v21'
+    v2_root = Path.home() / 'NanoJev/runs/game_transform_t03_tiered_v2'
+    if not arguments and (v21_root/'stage-00'/'latest.pt').is_file():
+        from tools import nanojev_game_transform_t03_tiered_v21 as v21
+        v21.run_probe(v21.parser().parse_args(['probe']))
+    elif not arguments and (v2_root/'stage-00'/'latest.pt').is_file():
+        from tools import nanojev_game_transform_t03_tiered_v2 as v2
+        v2.run_probe(v2.parser().parse_args(['probe']))
+    else:
+        run(parser().parse_args(arguments))
     return 0
 
 

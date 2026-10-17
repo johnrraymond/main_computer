@@ -414,6 +414,34 @@
       }
     }
 
+    // UI actions must use the verified, generated MCEL adapter whenever the
+    // host-bound authority is installed. A pending/failed MCEL mount must not
+    // silently fall back to direct facade calls (especially for writes).
+    // Direct invocation remains available to isolated standalone runtime tests.
+    function dispatchUiIntent(intentName, input = {}) {
+      const host = root && root.McelHostBoundApplicationRuntime;
+      if (host) {
+        const mounted = typeof host.getMount === "function" ? host.getMount("code-editor") : null;
+        if (!mounted || mounted.active !== true || typeof mounted.invoke !== "function") {
+          if (dom.root && dom.root.dataset) dom.root.dataset.codeEditorIntentRoute = "blocked-no-mcel-mount";
+          return replaceState(core.recordFailure(
+            state, intentName, new Error("MCEL Code Editor runtime binding is not mounted")
+          ));
+        }
+        if (dom.root && dom.root.dataset) dom.root.dataset.codeEditorIntentRoute = "generated-adapter";
+        return mounted.invoke(intentName, input);
+      }
+      const standalone = {
+        inspectWorkspace, openFile, editDraft, saveFile, discardDraft,
+        closeFile, previewAiderPlan, applyReviewedPatch
+      };
+      if (!Object.prototype.hasOwnProperty.call(standalone, intentName)) {
+        throw new Error(`Unsupported Code Editor UI intent: ${intentName}`);
+      }
+      if (dom.root && dom.root.dataset) dom.root.dataset.codeEditorIntentRoute = "standalone-facade";
+      return standalone[intentName](input);
+    }
+
     function mount(rootNode) {
       dom.root = rootNode || dom.root;
       if (!dom.root) return runtimeResult({mounted: false});
@@ -452,22 +480,22 @@
       dom.workspaceSummary = dom.root.querySelector("#code-editor-workspace-summary");
       dom.patchStatus = dom.root.querySelector("#code-editor-patch-status");
       dom.runtimeState = dom.root.querySelector("#code-studio-runtime-state");
-      bindButton("#file-map-refresh", () => inspectWorkspace({query: dom.fileMapSearch ? dom.fileMapSearch.value : ""}));
-      bindButton("#file-map-apply", () => openFile({path: selectedDomPath()}));
+      bindButton("#file-map-refresh", () => dispatchUiIntent("inspectWorkspace", {query: dom.fileMapSearch ? dom.fileMapSearch.value : ""}));
+      bindButton("#file-map-apply", () => dispatchUiIntent("openFile", {path: selectedDomPath()}));
       bindButton("#code-studio-mount-runtime", () => render());
-      bindButton("#code-studio-commit-runtime", () => saveFile({text: domDraftText()}));
-      bindButton("#code-studio-save-live-workspace", () => saveFile({text: domDraftText()}));
-      bindButton("#aider-preview", () => previewAiderPlan(domPatchInput()));
-      bindButton("#aider-run", () => applyReviewedPatch({
+      bindButton("#code-studio-commit-runtime", () => dispatchUiIntent("saveFile", {text: domDraftText()}));
+      bindButton("#code-studio-save-live-workspace", () => dispatchUiIntent("saveFile", {text: domDraftText()}));
+      bindButton("#aider-preview", () => dispatchUiIntent("previewAiderPlan", domPatchInput()));
+      bindButton("#aider-run", () => dispatchUiIntent("applyReviewedPatch", {
         reviewed: dom.reviewedToggle && dom.reviewedToggle.checked === true,
         approved: dom.reviewedToggle && dom.reviewedToggle.checked === true,
         confirmed: dom.reviewedToggle && dom.reviewedToggle.checked === true
       }));
-      bindButton("#code-studio-restore-live-workspace", () => discardDraft());
-      bindButton("#code-studio-clear-live-workspace", () => closeFile());
-      bindEnter(dom.fileMapSearch, () => inspectWorkspace({query: dom.fileMapSearch ? dom.fileMapSearch.value : ""}));
+      bindButton("#code-studio-restore-live-workspace", () => dispatchUiIntent("discardDraft"));
+      bindButton("#code-studio-clear-live-workspace", () => dispatchUiIntent("closeFile"));
+      bindEnter(dom.fileMapSearch, () => dispatchUiIntent("inspectWorkspace", {query: dom.fileMapSearch ? dom.fileMapSearch.value : ""}));
       bindInput(dom.sourceEditor, () => {
-        if (state.activeFile) editDraft({path: state.activeFile.path, text: dom.sourceEditor.value});
+        if (state.activeFile) dispatchUiIntent("editDraft", {path: state.activeFile.path, text: dom.sourceEditor.value});
       });
       bindInput(dom.reviewedToggle, () => render());
       bindLegacySourceFileClicks();
@@ -495,7 +523,7 @@
           else node.removeAttribute("aria-current");
         });
         if (dom.selectedFiles) dom.selectedFiles.value = path;
-        openFile({path, source: "authored-source-workspace"});
+        dispatchUiIntent("openFile", {path, source: "authored-source-workspace"});
       }, true);
     }
 
@@ -642,13 +670,13 @@
       if (dom.sourceEditor && !dom.sourceEditor.dataset.codeEditorRuntimeInputBound) {
         dom.sourceEditor.dataset.codeEditorRuntimeInputBound = "true";
         dom.sourceEditor.addEventListener("input", () => {
-          if (state.activeFile) editDraft({path: state.activeFile.path, text: dom.sourceEditor.value});
+          if (state.activeFile) dispatchUiIntent("editDraft", {path: state.activeFile.path, text: dom.sourceEditor.value});
         });
       }
       const applyDraft = dom.root.querySelector("[data-code-studio-apply-draft]");
       if (applyDraft && !applyDraft.dataset.codeEditorRuntimeBound) {
         applyDraft.dataset.codeEditorRuntimeBound = "true";
-        applyDraft.addEventListener("click", () => saveFile({text: domDraftText()}));
+        applyDraft.addEventListener("click", () => dispatchUiIntent("saveFile", {text: domDraftText()}));
       }
     }
 
@@ -717,7 +745,7 @@
           }
           if (!node.dataset.codeEditorRuntimeBound) {
             node.dataset.codeEditorRuntimeBound = "true";
-            node.addEventListener("dblclick", () => openFile({path}));
+            node.addEventListener("dblclick", () => dispatchUiIntent("openFile", {path}));
             node.addEventListener("click", () => {
               if (input && !input.disabled) input.checked = true;
               if (dom.selectedFiles && path) dom.selectedFiles.value = path;
@@ -897,7 +925,7 @@
         onReceipt: rememberMonacoReceipt,
         onChange: (nextText) => {
           if (!documentModel.placeholder && state.activeFile && state.activeFile.path === path) {
-            editDraft({path, text: nextText});
+            dispatchUiIntent("editDraft", {path, text: nextText});
           }
         }
       })).then((receipt) => {

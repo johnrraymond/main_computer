@@ -426,3 +426,66 @@ def test_identical_timestamps_do_not_overwrite_distinct_funding_deposits(monkeyp
     assert len(data["payout_deposits"]) == 3
     assert len(data["payout_transactions"]) == 3
     assert len({item["deposit_id"] for item in data["payout_deposits"].values()}) == 3
+
+
+def test_worker_capacity_requires_matching_owner_in_same_store_transaction() -> None:
+    from main_computer.stable_hub_worker_sessions import StableHubWorkerSessionDirectory
+
+    db, stores, ledger, _ = _two_hubs()
+    topology = ledger.topology
+    owner_dir = StableHubWorkerSessionDirectory(topology=topology, hub_id="dev-hub3", store=stores[0])
+    market_dir = StableHubWorkerMarketDirectory(topology=topology, hub_id="dev-hub3", store=stores[0])
+    owner = owner_dir.record_connected(
+        worker_id="worker-atomic-reserve", connection_id="conn_reserve",
+        multisession_key_id="msk", wallet_address="0x" + "12" * 20,
+        account_id="acct",
+    )
+    market_dir.record_worker_live(
+        worker_id="worker-atomic-reserve", owner=owner,
+        market_profile={"ring": "ring-2"}, worker_msk_id="msk",
+        worker_wallet_address="0x" + "12" * 20, worker_account_id="acct",
+    )
+    owner_dir.record_closed(worker_id="worker-atomic-reserve", connection_id="conn_reserve")
+    assert market_dir.get_worker("worker-atomic-reserve")["status"] == "live"
+    with pytest.raises(StableHubWorkerSessionError, match="worker_not_live"):
+        market_dir.reserve_worker_capacity(
+            worker_id="worker-atomic-reserve", connection_id="conn_reserve",
+            lease_epoch=owner["lease_epoch"],
+        )
+    assert market_dir.get_worker("worker-atomic-reserve")["active_sessions"] == 0
+
+
+def test_worker_owner_and_market_close_rollback_together_on_error() -> None:
+    from main_computer.stable_hub_worker_sessions import StableHubWorkerSessionDirectory
+
+    db, stores, ledger, _ = _two_hubs()
+    topology = ledger.topology
+    owner_dir = StableHubWorkerSessionDirectory(topology=topology, hub_id="dev-hub3", store=stores[0])
+    market_dir = StableHubWorkerMarketDirectory(topology=topology, hub_id="dev-hub3", store=stores[0])
+    owner = owner_dir.record_connected(
+        worker_id="worker-close-rollback", connection_id="conn_rollback",
+        multisession_key_id="msk", wallet_address="0x" + "12" * 20,
+        account_id="acct",
+    )
+    market_dir.record_worker_live(
+        worker_id="worker-close-rollback", owner=owner,
+        market_profile={"ring": "ring-2"}, worker_msk_id="msk",
+        worker_wallet_address="0x" + "12" * 20, worker_account_id="acct",
+    )
+
+    def abort_after_owner_close():
+        owner_dir.record_closed(worker_id="worker-close-rollback", connection_id="conn_rollback")
+        raise RuntimeError("injected fault between owner and market close")
+
+    with pytest.raises(RuntimeError, match="injected fault"):
+        stores[0].atomic(abort_after_owner_close)
+    assert owner_dir.get_owner("worker-close-rollback")["status"] == "live"
+    assert market_dir.get_worker("worker-close-rollback")["status"] == "live"
+
+    def close_both():
+        owner_dir.record_closed(worker_id="worker-close-rollback", connection_id="conn_rollback")
+        market_dir.record_worker_closed(worker_id="worker-close-rollback", connection_id="conn_rollback")
+
+    stores[0].atomic(close_both)
+    assert owner_dir.get_owner("worker-close-rollback")["status"] == "closed"
+    assert market_dir.get_worker("worker-close-rollback")["status"] == "closed"

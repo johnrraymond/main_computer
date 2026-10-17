@@ -533,3 +533,193 @@ def test_missing_owner_socket_is_retired_and_fresh_connection_is_selected(monkey
         hub.shutdown()
         hub.server_close()
         thread.join(timeout=2)
+
+
+def test_closed_owner_in_live_market_is_skipped_before_reservation(monkeypatch) -> None:
+    """The observed 409 race: owner closed, stale market row still live."""
+    from types import SimpleNamespace
+    from main_computer.stable_hub_worker_sessions import StableHubWorkerSessionError
+
+    hub, thread = _start_server("dev-hub3", InMemoryStableMultiSessionKeyStore(), InMemoryStableWorkerSessionStore())
+    try:
+        base = f"http://127.0.0.1:{hub.server_port}"
+        auth = _issue_msk(base, private_key=REQUESTER_PRIVATE_KEY,
+                          user_slug=REQUESTER_USER_SLUG, request_id="requester-stale-owner-msk")
+        wallet = private_key_to_address(WORKER_PRIVATE_KEY)
+        for worker_id, price in (("conn_a_stale", "0.01"), ("conn_b_live", "0.02")):
+            owner = hub.worker_session_directory.record_connected(
+                worker_id=worker_id, connection_id=worker_id,
+                multisession_key_id="msk_worker", wallet_address=wallet,
+                account_id="acct_worker",
+            )
+            hub.worker_market_directory.record_worker_live(
+                worker_id=worker_id, owner=owner,
+                market_profile={"ring": "ring-2", "price": {"amount": price, "unit": "credit"}},
+                worker_msk_id="msk_worker", worker_wallet_address=wallet,
+                worker_account_id="acct_worker",
+            )
+        hub.worker_session_directory.record_closed(worker_id="conn_a_stale", connection_id="conn_a_stale")
+        assert hub.worker_market_directory.get_worker("conn_a_stale")["status"] == "live"
+        hub.register_live_worker_session(SimpleNamespace(connection_id="conn_b_live", is_live=True))
+        reserved = []
+
+        def refuse_reservation(*, worker_id: str, connection_id: str, lease_epoch: int) -> None:
+            reserved.append((worker_id, connection_id, lease_epoch))
+            raise StableHubWorkerSessionError("worker_capacity_unavailable")
+
+        monkeypatch.setattr(hub.worker_market_directory, "reserve_worker_capacity", refuse_reservation)
+        status, response = _post_json_status(base + "/api/hub/v1/work/requests", {
+            "request_id": "req_skip_stale_owner",
+            "multisession_authorization": {
+                "kind": "multisession_key", "multisession_key_id": auth["key"]["id"],
+            },
+            "work": {"ring": "ring-2", "input": {}},
+        })
+        assert status == 409
+        assert response["error"] == "worker_capacity_unavailable"
+        assert len(reserved) == 1 and reserved[0][0] == "conn_b_live"
+        assert hub.worker_session_directory.get_owner("conn_a_stale")["status"] == "closed"
+    finally:
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
+
+
+def test_owner_closes_after_selection_retries_replacement(monkeypatch) -> None:
+    """Closing after a market read must reselect, not dispatch a stale offer."""
+    from types import SimpleNamespace
+    from main_computer.stable_hub_worker_sessions import StableHubWorkerSessionError
+
+    hub, thread = _start_server("dev-hub3", InMemoryStableMultiSessionKeyStore(), InMemoryStableWorkerSessionStore())
+    try:
+        base = f"http://127.0.0.1:{hub.server_port}"
+        auth = _issue_msk(base, private_key=REQUESTER_PRIVATE_KEY,
+                          user_slug=REQUESTER_USER_SLUG, request_id="requester-selection-race-msk")
+        wallet = private_key_to_address(WORKER_PRIVATE_KEY)
+        for worker_id, price in (("conn_a_race", "0.01"), ("conn_b_replacement", "0.02")):
+            owner = hub.worker_session_directory.record_connected(
+                worker_id=worker_id, connection_id=worker_id,
+                multisession_key_id="msk_worker", wallet_address=wallet, account_id="acct_worker",
+            )
+            hub.worker_market_directory.record_worker_live(
+                worker_id=worker_id, owner=owner,
+                market_profile={"ring": "ring-2", "price": {"amount": price, "unit": "credit"}},
+                worker_msk_id="msk_worker", worker_wallet_address=wallet, worker_account_id="acct_worker",
+            )
+        hub.register_live_worker_session(SimpleNamespace(connection_id="conn_b_replacement", is_live=True))
+        select = hub.worker_market_directory.select_worker_for_work
+        observed = []
+
+        def close_after_selection(work, *, excluded_connections=None):
+            selected = select(work, excluded_connections=excluded_connections)
+            if selected and selected["worker_id"] == "conn_a_race":
+                hub.worker_session_directory.record_closed(worker_id="conn_a_race", connection_id="conn_a_race")
+            return selected
+
+        def refuse_reservation(*, worker_id: str, connection_id: str, lease_epoch: int) -> None:
+            observed.append(worker_id)
+            raise StableHubWorkerSessionError("worker_capacity_unavailable")
+
+        monkeypatch.setattr(hub.worker_market_directory, "select_worker_for_work", close_after_selection)
+        monkeypatch.setattr(hub.worker_market_directory, "reserve_worker_capacity", refuse_reservation)
+        status, response = _post_json_status(base + "/api/hub/v1/work/requests", {
+            "request_id": "req_selection_close_race",
+            "multisession_authorization": {
+                "kind": "multisession_key", "multisession_key_id": auth["key"]["id"],
+            },
+            "work": {"ring": "ring-2", "input": {}},
+        })
+        assert status == 409
+        assert response["error"] == "worker_capacity_unavailable"
+        assert observed == ["conn_b_replacement"]
+    finally:
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
+
+
+def test_reselection_accepts_once_on_live_socket_after_closed_owner() -> None:
+    """HTTP request routes past a stale cheap owner and reaches the real WebSocket."""
+    hub, thread = _start_server("dev-hub3", InMemoryStableMultiSessionKeyStore(), InMemoryStableWorkerSessionStore())
+    sock = None
+    submit = None
+    result_queue = queue.Queue()
+    try:
+        base = f"http://127.0.0.1:{hub.server_port}"
+        worker_key = _issue_msk(base, private_key=WORKER_PRIVATE_KEY,
+                                user_slug=WORKER_USER_SLUG, request_id="reselect-worker-msk")
+        requester_key = _issue_msk(base, private_key=REQUESTER_PRIVATE_KEY,
+                                   user_slug=REQUESTER_USER_SLUG, request_id="reselect-requester-msk")
+        sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
+        _ws_send_json(sock, {
+            "type": "worker.auth",
+            "multisession_authorization": {
+                "kind": "multisession_key", "multisession_key_id": worker_key["key"]["id"],
+            },
+            "market": {"ring": "ring-2", "price": {"amount": "0.02", "unit": "credit"},
+                       "capabilities": ["python"], "max_concurrency": 1},
+        })
+        worker_auth = _ws_recv_json(sock)
+        ping = _ws_recv_json(sock)
+        assert worker_auth["type"] == "hub.auth.accepted"
+        assert ping["type"] == "hub.ping"
+        _ws_send_json(sock, {"type": "worker.pong", "ping_id": ping["ping_id"],
+                             "connection_id": worker_auth["connection_id"]})
+        assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
+        ghost_id = "conn_a_dead_cheaper"
+        owner = hub.worker_session_directory.record_connected(
+            worker_id=ghost_id, connection_id=ghost_id,
+            multisession_key_id="msk_worker", wallet_address=private_key_to_address(WORKER_PRIVATE_KEY),
+            account_id="acct_worker",
+        )
+        hub.worker_market_directory.record_worker_live(
+            worker_id=ghost_id, owner=owner,
+            market_profile={"ring": "ring-2", "price": {"amount": "0.01", "unit": "credit"},
+                            "capabilities": ["python"]},
+            worker_msk_id="msk_worker", worker_wallet_address=private_key_to_address(WORKER_PRIVATE_KEY),
+            worker_account_id="acct_worker",
+        )
+        hub.worker_session_directory.record_closed(worker_id=ghost_id, connection_id=ghost_id)
+        body = {
+            "request_id": "req_reselection_single_accept",
+            "multisession_authorization": {
+                "kind": "multisession_key", "multisession_key_id": requester_key["key"]["id"],
+            },
+            "work": {"ring": "ring-2", "capabilities": ["python"],
+                     "max_price": {"amount": "0.10", "unit": "credit"}, "input": {}},
+        }
+
+        def post():
+            try:
+                result_queue.put(_post_json_status(base + "/api/hub/v1/work/requests", body))
+            except BaseException as exc:
+                result_queue.put(exc)
+
+        submit = threading.Thread(target=post, daemon=True)
+        submit.start()
+        offer = _ws_recv_json(sock)
+        assert offer["type"] == "hub.work.offer"
+        assert offer["worker_id"] == worker_auth["connection_id"]
+        _ws_send_json(sock, {
+            "type": "worker.work.accepted", "session_id": offer["session_id"],
+            "request_id": offer["request_id"],
+        })
+        response = result_queue.get(timeout=5)
+        assert not isinstance(response, BaseException), response
+        status, result = response
+        assert status == 200, result
+        assert result["accepted"] is True
+        assert result["worker_id"] == worker_auth["connection_id"]
+        assert len(hub.worker_session_directory.store.load()["accepted_sessions"]) == 1
+    finally:
+        if sock is not None:
+            try:
+                _ws_send_json(sock, {"type": "worker.close"})
+            except OSError:
+                pass
+            sock.close()
+        if submit is not None:
+            submit.join(timeout=2)
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)

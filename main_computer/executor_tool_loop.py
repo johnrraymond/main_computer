@@ -35,6 +35,11 @@ Rules:
 - Keep commands focused and inspect before transforming.
 - After command_output is provided, either ask for the next execute_shell step or return a final answer.
 
+For safe, deterministic computation, you may request the existing MCEL Calculator core (not shell execution):
+{"action":"calculator.evaluate","expression":"3 m + 40 cm"}
+This read-only action requires no shell approval. Use calculator_result as the authoritative
+answer; do not invent results or claim that a rejected evaluation succeeded.
+
 When finished, return JSON only:
 {
   "action": "final",
@@ -44,7 +49,7 @@ When finished, return JSON only:
 
 
 TOOL_RESULT_OUTPUT_LIMIT = 12_000
-VALID_TOOL_ACTIONS = {"execute_shell", "docker_exec", "final"}
+VALID_TOOL_ACTIONS = {"execute_shell", "docker_exec", "final", "calculator.evaluate"}
 
 
 @dataclass(frozen=True)
@@ -187,6 +192,31 @@ def run_executor_tool_loop(
                 final_content=content or model_content,
                 steps=steps,
             )
+
+        if action == "calculator.evaluate":
+            from main_computer.mcel_calculator_ai_tool import (
+                CalculatorAiToolError, execute_calculator_ai_tool,
+            )
+            try:
+                receipt = execute_calculator_ai_tool(tool_request)
+            except CalculatorAiToolError as exc:
+                return ExecutorToolLoopResult(
+                    ok=False, status="invalid_tool_request", provider=provider_name,
+                    model=model_name, final_content="",
+                    steps=[*steps, ExecutorToolLoopStep(index=index, kind="error",
+                        tool_request=tool_request, error=str(exc))],
+                    tool_request=tool_request, error=str(exc),
+                )
+            steps.append(ExecutorToolLoopStep(
+                index=index, kind="calculator_result", tool_request=tool_request,
+                executor_result=receipt,
+            ))
+            messages.append(ChatMessage(role="assistant", content=model_content))
+            messages.append(ChatMessage(
+                role="user", content="calculator_result:\n" + json.dumps(receipt, ensure_ascii=False)
+                + "\nReport the Calculator result exactly; do not recalculate it.",
+            ))
+            continue
 
         request_mapping = _executor_request_mapping(tool_request, uploads)
         try:

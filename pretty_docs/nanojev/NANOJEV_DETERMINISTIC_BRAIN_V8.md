@@ -1,0 +1,134 @@
+# NanoJev V8 — Level-Local Deterministic Brain
+
+## Execution invariant
+
+Given one **executable native-v6 T08 question**, public input bindings, and two
+PRNG seeds, the engine must complete its scheduled mutations **at the current
+level**, close that level's checkpoint, descend exactly once, and finally run
+its derived T00 expression. The independent game oracle is used **only after**
+the T00 runner has executed, never to generate intermediate answers.
+
+```
+(T08, public_inputs, mutation_seed, order_seed)
+     ↓  bind public facts and choose bounded edits
+T08:  schedule(X',Y',Z'...) → CLOSED M8
+     ↓  consume M8, no T08 reparse
+T07:  schedule(X',Y',Z'...) → CLOSED M7
+     ↓
+     ...
+T00:  schedule(X',Y',Z'...) → CLOSED M0
+     ↓
+     execute OP(X,Y) → typed Z → independent oracle verification
+```
+
+`X`, `Y`, and optional `Z1`, `Z2` are *mutation slot names*; the actual operand
+footprint is derived symbolically and stored separately as `X`, `Y`, `XY`, or
+`INVARIANT`. A single edit can be XY-coupled. Source paths selected for a
+checkpoint are disjoint. Every schedule must finish its dependency gate
+`Z_DOMAIN` before the level can descend. The same input and seeds must replay
+exactly; changing only the **order seed** may change the trace but cannot
+change any completed checkpoint or the final mathematical answer. Changing
+the **mutation seed** may change the source variables and answer.
+
+The current grammar only permits bounded edits to scalar public parameters and
+matrix payoff cells. It does **not** yet permit arbitrary operator replacement,
+structural graph changes, or unseen natural-language grammar.
+
+## Build everything from source
+
+From the `main_computer` root, after applying the source-only V8 patch:
+
+```powershell
+$py = 'C:\Users\subsi\NanoJev\.venv\Scripts\python.exe'
+& $py -m tools.nanojev_game_math_smoke --generate --verify-all --report
+$db = 'runtime/game-math-source-smoke-v8/game_transformations.sqlite3'
+```
+
+The generated databases are disposable. The database build continues to
+preserve the older V1–V7 curricula. The V8 proof bank is isolated in
+`deterministic_brain_v8.sqlite3`; it does not modify NanoJev's active training
+head or checkpoints.
+
+## Run any supported native-v6 T08 question
+
+Choose a game (the first stored case for that game), or use an exact case ID:
+
+```powershell
+& $py -m tools.nanojev_deterministic_brain_v8 `
+    --database $db --game-id captain_ship_defense `
+    --mutation-seed 17 --order-seed 11 --verify --trace
+
+# Exact case ID:
+& $py -m tools.nanojev_deterministic_brain_v8 `
+    --database $db --case <case-id> --mutation-seed 17 --order-seed 29
+```
+
+Use a standalone UTF-8 T08 prompt with `--prompt-file t08.txt` instead of
+`--database`; only native-v6 controlled grammar is currently accepted.
+
+An optional public-input JSON file modifies the **observations before** the
+PRNG mutations. Examples:
+
+```json
+{"parameters":{"r":4.5}}
+```
+
+or, for a two-by-two matrix:
+
+```json
+{"U":[[[4,-13],[-16,-7]],[[-24,2],[0,-1]]]}
+```
+
+Use `--inputs inputs.json`. You cannot inject `X`, `Y`, `OP`, or `Z` this way.
+For a matrix you must provide the entire `U` array; for scalars you may
+supply only the parameters you want to override. All allowed observations are
+checked for structure and the mixed-strategy interior domain before descent.
+
+## Seed tests
+
+```powershell
+# Same changes, potentially different legal order:
+& $py -m tools.nanojev_deterministic_brain_v8 --database $db `
+    --game-id captain_ship_defense --mutation-seed 17 --order-seed 11
+& $py -m tools.nanojev_deterministic_brain_v8 --database $db `
+    --game-id captain_ship_defense --mutation-seed 17 --order-seed 29
+
+# New source perturbations and potentially a different T00 answer:
+& $py -m tools.nanojev_deterministic_brain_v8 --database $db `
+    --game-id captain_ship_defense --mutation-seed 18 --order-seed 11
+```
+
+The CLI prints canonical T00, result, nine checkpoint hashes, and mutation
+orders; add `--trace` for the full mutation and descent history. The default
+is post-T00 oracle verification; `--no-verify` is for testing the execution
+path without the independent oracle.
+
+## Verification boundary
+
+- Passed: V8 level-local interpreter for all **1,136** native-v6 T08 cases in
+  the full-size, 16-instances-per-game source build, post-T00 oracle verified.
+- Passed: 33 executable games; full-size V8 proof bank stores 66 seeded runs,
+  594 checkpoint records, and both the T00 answer and schedule traces.
+- Passed: cold source rebuild with two initially empty directories at the
+  four-instances-per-game setting; generated artifacts are byte-identical.
+- Passed: isolated V8 focused tests for replay, early-oracle rejection,
+  canonical schedule commutation, XY-coupled source paths, typed input binding,
+  and incomplete-checkpoint rejection.
+- Legacy V1–V7 datasets and mathematical proofs remain generated by the v8
+  smoke. The combined older regression command exceeded the execution budget
+  and is **not** claimed as an end-to-end suite pass.
+- Unsupported: V4 synthetic pilot natural-language T08 prompts, V5 positional
+  transformation T08 prompts, and 196 catalog-only games still needing their
+  mathematical oracles. This implementation should not be described as a
+  general unrestricted-story parser or as a trained NanoJev head.
+
+## Cold rebuild audit
+
+```powershell
+& $py -m tools.nanojev_game_math_rebuild_audit --instances-per-game 4
+& $py -m tools.nanojev_game_math_rebuild_audit --instances-per-game 16
+```
+
+The second command performs two full-size fresh builds and should be run on the
+user workstation; the verified independent cold-rebuild audit was at four
+instances per game.

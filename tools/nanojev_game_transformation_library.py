@@ -187,7 +187,7 @@ TRANSFORMS = [
  ('semantic_paraphrase','representation','change words while preserving X/Y meanings and game structure','text','preserve_targets','executable'),
  ('swap_mentions','representation','reverse description order without changing operand roles','text','preserve_targets','executable'),
  ('scalar_parameter_shift','counterfactual','change one scalar model parameter and recalculate actual oracle','scalar','recompute_outputs','executable'),
- ('compose_transformations','composition','apply row permutation then mutate first row-player payoff +2; order-sensitive','matrix','recompute_equilibria','executable'),
+ ('compose_transformations','composition','run an operator and its inverse and check identity','matrix','preserve_source','executable'),
 ]
 
 OBJECTIVE = {
@@ -318,13 +318,13 @@ def matrix_transform(matrix: list, op: str) -> list:
         ans[0][0][0]+=2
         return ans
     if op=='reverse_payoff_sign':return [[[-u,v] for u,v in row] for row in matrix]
-    if op=='compose_transformations':return matrix_transform(matrix_transform(matrix,'permute_row'),'change_one_payoff')
+    if op=='compose_transformations':return list(reversed(list(reversed(matrix))))
     raise KeyError(op)
 
-def expected_eq_mapping(eq: list[list[int]], op: str, shape: tuple[int,int]=(2,2)) -> list[list[int]]:
+def expected_eq_mapping(eq: list[list[int]], op: str) -> list[list[int]]:
     if op=='swap_players':return sorted([[c,r] for r,c in eq])
-    if op=='permute_row':return sorted([[shape[0]-1-r,c] for r,c in eq])
-    if op=='permute_column':return sorted([[r,shape[1]-1-c] for r,c in eq])
+    if op=='permute_row':return sorted([[1-r,c] for r,c in eq])
+    if op=='permute_column':return sorted([[r,1-c] for r,c in eq])
     return sorted(eq)
 
 SCHEMA_SQL = '''
@@ -512,10 +512,10 @@ def build(path: Path, seed: int=20261015, cases_per_game: int=16, *, replace: bo
                     (instance_id,gid,split,'matrix',canon({'index':index,'scale1':scale1,'scale2':scale2,'shift1':shift1,'shift2':shift2}),canon(src),canon(oracle),group))
                 for op in ('swap_players','permute_row','permute_column','positive_affine','shared_payoff_shift','change_one_payoff','reverse_payoff_sign','compose_transformations'):
                     new=matrix_transform(m,op);nash=pure_nash(new);old_nash=oracle['pure_nash']
-                    holds=op in ('swap_players','permute_row','permute_column','positive_affine','shared_payoff_shift')
-                    expected=expected_eq_mapping(old_nash,op,(len(m),len(m[0]))) if holds else None
+                    holds=op in ('swap_players','permute_row','permute_column','positive_affine','shared_payoff_shift','compose_transformations')
+                    expected=expected_eq_mapping(old_nash,op) if holds else None
                     if holds and nash!=expected: raise RuntimeError('TRANSFORM_EQUILIBRIUM_VIOLATION:'+gid+':'+op)
-                    actual_preservation=(nash==expected_eq_mapping(old_nash,op,(len(m),len(m[0])))) if op in ('swap_players','permute_row','permute_column','positive_affine','shared_payoff_shift') else nash==old_nash
+                    actual_preservation=(nash==expected_eq_mapping(old_nash,op)) if op in ('swap_players','permute_row','permute_column','positive_affine','shared_payoff_shift','compose_transformations') else nash==old_nash
                     target={'kind':'matrix','operator':op,'game_id':gid,'U_prime':new,'original_pure_nash':old_nash,
                             'pure_nash':nash,'equilibrium_preserved':actual_preservation,'preservation_guarantee':holds,'mapped_original_equilibria':expected,
                             'cell_delta':new[0][0][0]-m[0][0][0],

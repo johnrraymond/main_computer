@@ -169,7 +169,7 @@ def _ws_recv_json(sock: socket.socket) -> dict:
         return decoded
 
 
-def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory() -> None:
+def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory(capsys) -> None:
     msk_store = InMemoryStableMultiSessionKeyStore()
     worker_store = InMemoryStableWorkerSessionStore()
     hub1, thread1 = _start_server("dev-hub1", msk_store, worker_store)
@@ -188,6 +188,7 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory()
             sock,
             {
                 "type": "worker.auth",
+                "diagnostic_attempt_id": "diag-normal-close",
                 "multisession_authorization": {
                     "kind": "multisession_key",
                     "multisession_key_id": msk_id,
@@ -329,6 +330,11 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory()
         closed_market = hub1.worker_market_directory.get_worker(accepted["connection_id"])
         assert closed_market is not None
         assert closed_market["status"] == "closed"
+        log = capsys.readouterr().err
+        assert "attempt_id=diag-normal-close" in log
+        assert f"connection_id={accepted['connection_id']}" in log
+        assert "session_registered=True" in log
+        assert "reason='worker.close'" in log
     finally:
         if sock is not None:
             sock.close()
@@ -339,6 +345,60 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory()
         thread1.join(timeout=2)
         thread3.join(timeout=2)
 
+
+
+def test_worker_live_session_logs_correlated_abrupt_tcp_eof(capsys) -> None:
+    msk_store = InMemoryStableMultiSessionKeyStore()
+    worker_store = InMemoryStableWorkerSessionStore()
+    hub, thread = _start_server("dev-hub3", msk_store, worker_store)
+    sock: socket.socket | None = None
+    try:
+        hub_url = f"http://127.0.0.1:{hub.server_port}"
+        issued = _post_json(
+            f"{hub_url}/api/hub/v1/credits/multisession-keys/request",
+            {"signed_request": _signed_msk_request(request_id="stable-worker-eof-diagnostic")},
+        )
+        sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
+        _ws_send_json(sock, {
+            "type": "worker.auth",
+            "diagnostic_attempt_id": "diag-abrupt-eof",
+            "multisession_authorization": {
+                "kind": "multisession_key",
+                "multisession_key_id": issued["key"]["id"],
+            },
+            "market": {"rings": ["ring-2"], "capabilities": ["python"]},
+        })
+        accepted = _ws_recv_json(sock)
+        ping = _ws_recv_json(sock)
+        assert accepted["type"] == "hub.auth.accepted"
+        _ws_send_json(sock, {
+            "type": "worker.pong",
+            "connection_id": accepted["connection_id"],
+            "ping_id": ping["ping_id"],
+        })
+        assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
+
+        sock.shutdown(socket.SHUT_RDWR)
+        sock.close()
+        sock = None
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            owner = hub.worker_session_directory.get_owner(accepted["connection_id"])
+            if owner and owner.get("status") == "closed":
+                break
+            time.sleep(0.05)
+        log = capsys.readouterr().err
+        assert "attempt_id=diag-abrupt-eof" in log
+        assert f"connection_id={accepted['connection_id']}" in log
+        assert "session_registered=True" in log
+        assert "last_message_type='worker.pong'" in log
+        assert "reason='ConnectionError: websocket closed'" in log
+    finally:
+        if sock is not None:
+            sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
 
 def test_worker_rest_polling_heartbeat_is_not_exposed() -> None:
     msk_store = InMemoryStableMultiSessionKeyStore()

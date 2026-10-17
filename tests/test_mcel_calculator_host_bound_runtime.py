@@ -59,6 +59,7 @@ def test_calculator_host_bound_projection_is_virtual_and_presentation_free() -> 
         prefix + "contracts/layout.js",
         prefix + "contracts/observation.js",
         prefix + "contracts/surface.js",
+        prefix + "contracts/surface-bundle.json",
     }
 
 
@@ -208,10 +209,10 @@ const manifest = {{
 }};
 const values = {{
   CalculatorDomain: {{appId: "calculator"}},
-  CalculatorIntents: Object.freeze({{switchMode: {{id: "intent:calculator.switch-mode"}}}}),
+  CalculatorIntents: Object.freeze({{switchMode: {{id: "intent:calculator.switch-mode", sourceName: "switchMode", runtimeMethod: "switchMode", executionBinding: "calculator-runtime.switch-mode"}}}}),
   CalculatorAdapter: {{
     appId: "calculator",
-    bindings: Object.freeze({{switchMode: {{runtimeMethod: "switchMode"}}}}),
+    bindings: Object.freeze({{switchMode: {{intentId: "intent:calculator.switch-mode", runtimeMethod: "switchMode", executionBinding: "calculator-runtime.switch-mode"}}}}),
     invoke(name, ...args) {{
       const binding = this.bindings[name];
       return globalThis.MainComputerCalculatorRuntime[binding.runtimeMethod](...args);

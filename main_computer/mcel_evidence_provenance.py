@@ -20,6 +20,7 @@ SNAPSHOT_SCOPE = "snapshot-source-roots-v2"
 # root; selected checked-in website sources remain included.
 _SNAPSHOT_SOURCE_ROOTS = (
     PurePosixPath("main_computer"),
+    PurePosixPath("mcel_apps"),
     PurePosixPath("tests"),
     PurePosixPath("pretty_docs"),
     PurePosixPath("contracts"),

@@ -84,6 +84,7 @@ from main_computer.stable_hub_worker_sessions import (
     stable_temporal_namespace_for_topology,
     stable_partition_key_for_work,
     stable_task_queue_for_partition,
+    worker_market_identity,
 )
 from main_computer.hub_credit_bridge_completion import HubCreditBridgeCompletionService
 from main_computer.hub_admin_runtime import install_hub_admin_bundle
@@ -1376,33 +1377,35 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         return candidates[0]
 
     def _exp_select_worker_for_work(self, body: dict[str, Any]) -> dict[str, Any] | None:
-        """Use Stable Hub's shared market, but require a matching live owner lease.
-
-        A durable market row alone never authorizes handoff: the independent
-        worker-owner record must still name exactly that connection and epoch.
-        The owning Hub additionally verifies its actual live WebSocket below.
-        """
-        selected = self.server.stable_worker_market_directory.select_worker_for_work(body)
-        if selected is None:
-            return None
-        worker_id = str(selected.get("worker_id") or "")
-        owner = self.server.stable_worker_session_directory.get_owner(worker_id) if worker_id else None
-        if not isinstance(owner, dict) or owner.get("status") != "live":
-            return None
-        try:
-            expected_hub = self.server.stable_topology.hub_by_id(str(owner.get("owner_hub_id") or ""))
-        except (KeyError, ValueError, StableHubWorkerSessionError):
-            return None
-        if str(expected_hub.hub_url or "") != str(owner.get("owner_hub_url") or ""):
-            return None
-        if (
-            str(owner.get("owner_hub_id") or "") != str(selected.get("owner_hub_id") or "")
-            or str(owner.get("owner_hub_url") or "") != str(selected.get("owner_hub_url") or "")
-            or str(owner.get("connection_id") or "") != str(selected.get("connection_id") or "")
-            or int(owner.get("lease_epoch") or 0) != int(selected.get("lease_epoch") or 0)
-        ):
-            return None
-        return selected
+        """Ignore stale shared market records, retaining lease and Hub fencing."""
+        excluded: set[tuple[str, str, int]] = set()
+        for attempt in range(64):
+            selected = self.server.stable_worker_market_directory.select_worker_for_work(
+                body, excluded_connections=excluded,
+            )
+            if selected is None:
+                return None
+            identity = worker_market_identity(selected)
+            worker_id = identity[0]
+            owner = self.server.stable_worker_session_directory.get_owner(worker_id) if worker_id else None
+            valid = isinstance(owner, dict) and owner.get("status") == "live"
+            if valid:
+                try:
+                    expected_hub = self.server.stable_topology.hub_by_id(str(owner.get("owner_hub_id") or ""))
+                    valid = str(expected_hub.hub_url or "") == str(owner.get("owner_hub_url") or "")
+                except (KeyError, ValueError, StableHubWorkerSessionError):
+                    valid = False
+            if valid:
+                valid = (
+                    str(owner.get("owner_hub_id") or "") == str(selected.get("owner_hub_id") or "")
+                    and str(owner.get("owner_hub_url") or "") == str(selected.get("owner_hub_url") or "")
+                    and str(owner.get("connection_id") or "") == identity[1]
+                    and int(owner.get("lease_epoch") or 0) == identity[2]
+                )
+            if valid:
+                return selected
+            excluded.add(identity)
+        return None
 
 
     def _exp_replayed_live_request(self, body: dict[str, Any]) -> bool:
@@ -2406,21 +2409,27 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             worker_account = wallet_account_id(worker_wallet)
             if str(authorization.get("account_id") or "") != worker_account:
                 raise StableHubWorkerSessionError("worker_authorization_account_mismatch")
-            owner = self.server.stable_worker_session_directory.record_connected(
-                worker_id=worker_id,
-                connection_id=connection_id,
-                multisession_key_id=worker_key_id,
-                wallet_address=worker_wallet,
-                account_id=worker_account,
-            )
-            self.server.stable_worker_market_directory.record_worker_live(
-                worker_id=worker_id,
-                owner=owner,
-                market_profile=market,
-                worker_msk_id=worker_key_id,
-                worker_wallet_address=worker_wallet,
-                worker_account_id=worker_account,
-            )
+            def _register_worker_records():
+                owner = self.server.stable_worker_session_directory.record_connected(
+                    worker_id=worker_id,
+                    connection_id=connection_id,
+                    multisession_key_id=worker_key_id,
+                    wallet_address=worker_wallet,
+                    account_id=worker_account,
+                )
+                self.server.stable_worker_market_directory.record_worker_live(
+                    worker_id=worker_id,
+                    owner=owner,
+                    market_profile=market,
+                    worker_msk_id=worker_key_id,
+                    worker_wallet_address=worker_wallet,
+                    worker_account_id=worker_account,
+                )
+                return owner
+
+            store = self.server.stable_worker_session_directory.store
+            atomic = getattr(store, "atomic", None)
+            owner = atomic(_register_worker_records) if callable(atomic) else _register_worker_records()
             session = LiveWorkerSession(
                 worker_id=worker_id,
                 connection_id=connection_id,
@@ -2592,22 +2601,28 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                     error=f"worker live-session connection {connection_id} closed before returning a terminal result",
                     terminal_reason="worker_connection_closed",
                 )
-                try:
+                def _close_worker_records():
                     self.server.stable_worker_session_directory.record_closed(
                         worker_id=worker_id, connection_id=connection_id,
                     )
+                    self.server.stable_worker_market_directory.record_worker_closed(
+                        worker_id=worker_id, connection_id=connection_id,
+                    )
+
+                store = self.server.stable_worker_session_directory.store
+                atomic = getattr(store, "atomic", None)
+                try:
+                    if callable(atomic):
+                        atomic(_close_worker_records)
+                    else:
+                        _close_worker_records()
                 finally:
-                    try:
-                        self.server.stable_worker_market_directory.record_worker_closed(
-                            worker_id=worker_id, connection_id=connection_id,
+                    removed = self.server.remove_live_worker_session(connection_id)
+                    if removed is not None:
+                        removed.mark_closed(
+                            reason="socket_closed",
+                            closed_at=datetime.now(timezone.utc).isoformat(),
                         )
-                    finally:
-                        removed = self.server.remove_live_worker_session(connection_id)
-                        if removed is not None:
-                            removed.mark_closed(
-                                reason="socket_closed",
-                                closed_at=datetime.now(timezone.utc).isoformat(),
-                            )
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)

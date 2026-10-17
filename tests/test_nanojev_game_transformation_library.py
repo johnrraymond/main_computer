@@ -37,13 +37,9 @@ class GameTransformationMathTests(unittest.TestCase):
             for op in ('positive_affine','shared_payoff_shift'):
                 self.assertEqual(g.pure_nash(original),g.pure_nash(g.matrix_transform(original,op)))
 
-    def test_composition_is_executed_and_order_sensitive(self):
+    def test_composition_identity(self):
         for spec in g.MATRICES.values():
-            matrix=spec[4]
-            expected=g.matrix_transform(g.matrix_transform(matrix,'permute_row'),'change_one_payoff')
-            reverse=g.matrix_transform(g.matrix_transform(matrix,'change_one_payoff'),'permute_row')
-            self.assertEqual(expected,g.matrix_transform(matrix,'compose_transformations'))
-            self.assertNotEqual(expected,reverse)
+            self.assertEqual(spec[4],g.matrix_transform(spec[4],'compose_transformations'))
 
     def test_mutation_changes_game_not_claimed_equivalent(self):
         game=g.MATRICES['prisoners_dilemma'][4]

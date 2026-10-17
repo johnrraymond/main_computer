@@ -44,8 +44,11 @@ def editor_server(tmp_path: Path):
     repo = tmp_path / "main_computer_test"
     project = repo / "apps" / "demo"
     project.mkdir(parents=True)
-    (project / "index.html").write_text("<h1>Before</h1>\n", encoding="utf-8")
-    (project / "app.js").write_text("console.log('before');\n", encoding="utf-8")
+    # Source-hash contracts operate on bytes, not newline-normalized text.
+    # Path.write_text() converts LF to CRLF on Windows and invalidates the
+    # expected SHA-256 values used by the transaction-route tests below.
+    (project / "index.html").write_bytes(b"<h1>Before</h1>\n")
+    (project / "app.js").write_bytes(b"console.log('before');\n")
     shutil.copy2(ROOT / "new_patch.py", repo / "new_patch.py")
 
     server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=repo))
@@ -56,6 +59,12 @@ def editor_server(tmp_path: Path):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_editor_server_fixture_preserves_exact_source_bytes(editor_server) -> None:
+    _, _, project = editor_server
+    assert (project / "index.html").read_bytes() == b"<h1>Before</h1>\n"
+    assert (project / "app.js").read_bytes() == b"console.log('before');\n"
 
 
 def test_project_manifest_exposes_transaction_hashes(editor_server) -> None:

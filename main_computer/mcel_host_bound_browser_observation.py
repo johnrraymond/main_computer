@@ -104,8 +104,8 @@ def run_host_bound_browser_observation(
     repo = Path(repo_root).resolve()
     diagnostics: list[Mapping[str, Any]] = []
     runtime_build_before = (repo / "runtime/build/mcel").exists()
-    source_before = _source_tree_fingerprint(profile, repo)
     provenance = build_repository_provenance(repo)
+    source_before = _source_tree_fingerprint(profile, provenance)
     try:
         browser_report = _run_playwright(
             profile,
@@ -130,12 +130,13 @@ def run_host_bound_browser_observation(
             "checks": {},
         }
 
-    source_after = _source_tree_fingerprint(profile, repo)
+    source_after = _source_tree_fingerprint(profile, build_repository_provenance(repo))
     runtime_build_after = (repo / "runtime/build/mcel").exists()
     intent_results = list(browser_report.get("intentResults") or [])
     checks = {
         "freshChromiumObservation": browser_report.get("freshChromiumObservation") is True,
         "generatedAdapterMounted": browser_report.get("generatedAdapterMounted") is True,
+        "generatedAdapterModuleExecuted": browser_report.get("generatedAdapterModuleExecuted") is True,
         "runtimeFacadeAvailable": browser_report.get("runtimeFacadeAvailable") is True,
         "intentsObserved": len(intent_results) == len(profile.intent_payloads),
         "allIntentsPassed": bool(intent_results) and all(item.get("status") == "pass" for item in intent_results),
@@ -270,18 +271,23 @@ def _run_playwright(
                       getPackage: (requestedAppId) => records.find((record) => record && record.appId === requestedAppId) || null
                     });
                     window.McelApplicationPackages = packageCatalog;
-                    const adapter = modules.adapter && modules.adapter[adapterExport];
-                    if (!adapter) throw new Error(`${appId} adapter export is unavailable: ${adapterExport}`);
-                    adapter.invoke = (intentName, ...args) => {
-                      const binding = adapter.bindings[String(intentName || "")];
-                      if (!binding) throw new Error(`Unknown ${appId} intent: ${intentName}`);
-                      const facade = window[runtimeFacade];
-                      const method = facade && facade[binding.runtimeMethod];
-                      if (typeof method !== "function") {
-                        throw new Error(`${appId} runtime method is unavailable: ${binding.runtimeMethod}`);
-                      }
-                      return method(...args);
-                    };
+                    // Execute the actual IR-generated ESM adapter. The prior
+                    // harness replaced invoke() with a synthetic function, so
+                    // browser parity could pass without running generated code.
+                    const adapterSource = modules.__generatedAdapterSource;
+                    if (typeof adapterSource !== "string" || !adapterSource.trim()) {
+                      throw new Error(`${appId} generated adapter source is unavailable.`);
+                    }
+                    const bytes = new TextEncoder().encode(adapterSource);
+                    let binary = "";
+                    for (const byte of bytes) binary += String.fromCharCode(byte);
+                    const namespace = await import(`data:text/javascript;base64,${btoa(binary)}`);
+                    const adapter = namespace[adapterExport];
+                    if (!adapter || typeof adapter.invoke !== "function") {
+                      throw new Error(`${appId} generated adapter export is unavailable: ${adapterExport}`);
+                    }
+                    modules.adapter = {[adapterExport]: adapter};
+                    delete modules.__generatedAdapterSource;
                     window.__mcelHostBoundInjectedModules = modules;
                     const loader = async (_url, entry, label) => {
                       const values = window.__mcelHostBoundInjectedModules[label];
@@ -320,6 +326,7 @@ def _run_playwright(
             )
             page.wait_for_timeout(250)
             result = page.evaluate(profile.browser_observation_script, {"operationPrefix": operation_prefix})
+            result["generatedAdapterModuleExecuted"] = True
             result["url"] = f"browser:set-content:{profile.route}"
             result["browser"] = {
                 "engine": "playwright-chromium",
@@ -401,15 +408,9 @@ def _browser_injected_projection(
             export.export_name,
             profile=profile,
         )
-    bindings = _extract_adapter_bindings(read(profile.adapter_route), profile=profile)
-    modules["adapter"] = {
-        profile.adapter_export: {
-            "schema": "mcel.semantic-adapter.v1",
-            "appId": profile.app_id,
-            "adapterId": profile.adapter_id,
-            "bindings": bindings,
-        }
-    }
+    # The browser imports this exact virtual generated ESM module, rather
+    # than reconstructing an invoke() implementation inside the harness.
+    modules["__generatedAdapterSource"] = read(profile.adapter_route)
     return manifest, modules
 
 
@@ -478,28 +479,24 @@ def _capability_accounting_closed(
     return accounting["status"] == "closed" and local_provider_free
 
 
-def _source_tree_fingerprint(profile: HostBoundBrowserObservationProfile, repo: Path) -> str:
-    digest = __import__("hashlib").sha256()
+def _source_tree_fingerprint(
+    profile: HostBoundBrowserObservationProfile,
+    provenance: Mapping[str, Any],
+) -> str:
+    """Bind the source-integrity check to MCEL's canonical source selection.
+
+    The canonical provenance builder excludes mutable runtime directories before
+    traversal (or uses Git-selected files). Never walk the entire checkout here:
+    checking exclusions *after* Path.rglob has already visited a directory can
+    stall indefinitely on large Windows development trees.
+    """
+
+    import hashlib
+
+    digest = hashlib.sha256()
     digest.update(profile.source_tree_fingerprint_salt.encode("utf-8"))
     digest.update(b"\0")
-    excluded_prefixes = {
-        "runtime/",
-        "tools/patching/reports/",
-        ".pytest_cache/",
-    }
-    for path in sorted(repo.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(repo).as_posix()
-        if any(rel.startswith(prefix) for prefix in excluded_prefixes):
-            continue
-        if "/__pycache__/" in f"/{rel}" or rel.endswith((".pyc", ".pyo")):
-            continue
-        content = path.read_bytes()
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
+    digest.update(str(provenance["fingerprint"]).encode("ascii"))
     return "sha256:" + digest.hexdigest()
 
 

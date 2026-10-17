@@ -49,7 +49,9 @@
     const data = await requestJson("/api/applications/editor/files", payload, options);
     return {
       ok: true,
-      repoDir: data.repo_dir || payload.repo_dir,
+      // The server may return an absolute diagnostic path. Client state owns
+      // only the requested workspace-relative repository identity.
+      repoDir: payload.repo_dir,
       path: data.path || payload.path || "",
       files: data.files || data.entries || [],
       raw: data
@@ -78,8 +80,35 @@
     };
   }
 
+  // A successful HTTP response is not proof that an authorized source write
+  // happened. Bind the server's transaction receipt to the requested path and
+  // exact before/after bytes before the editor declares its draft clean.
+  async function requireAppliedSaveReceipt(data, request) {
+    const projectRoot = String(request.project_root || ".").replace(/\\/g, "/").replace(/^\.\//, "");
+    const relativePath = String(request.path || "").replace(/\\/g, "/");
+    const expectedPath = projectRoot === "." ? relativePath : `${projectRoot}/${relativePath}`;
+    const expectedAfter = await sha256Text(request.replacement_text);
+    const receipt = data && data.receipt;
+    const files = receipt && receipt.files;
+    const entry = Array.isArray(files) && files.length === 1 ? files[0] : null;
+    const changed = data && data.changedFiles;
+    if (!data || data.schema !== "mcel-code-editor-file-save-v1" || data.state !== "applied" ||
+        !/^[a-f0-9]{32}$/.test(String(data.handle || "")) ||
+        !receipt || receipt.ok !== true || receipt.rollback_required !== false ||
+        !/^[a-f0-9]{24}$/.test(String(receipt.transaction_id || "")) ||
+        !entry || entry.operation !== "modify" ||
+        entry.path !== expectedPath || data.savedPath !== expectedPath ||
+        !Array.isArray(changed) || changed.length !== 1 || changed[0] !== expectedPath ||
+        entry.before_sha256 !== request.expected_before_sha256 ||
+        entry.after_sha256 !== expectedAfter || entry.written_sha256 !== expectedAfter) {
+      throw new Error("Code Editor save did not return an independently hash-matched applied-write receipt");
+    }
+    return data;
+  }
+
   async function saveFile(request = {}, options = {}) {
     const data = await requestJson("/api/applications/editor/project/file/save", request, options);
+    await requireAppliedSaveReceipt(data, request);
     return {
       ok: true,
       repoDir: data.repo_dir || request.repo_dir || ".",

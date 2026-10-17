@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from main_computer.mcel_app_authoring_profiles import get_app_authoring_profile
+from main_computer.mcel_app_authoring_profiles import AppAuthoringProfileError, get_app_authoring_profile
 from main_computer.mcel_application_packages import build_application_package_catalog
 from main_computer.mcel_dsl_compiler import DEFAULT_CANDIDATE_ROOT, compile_dsl_application
 
@@ -54,7 +54,13 @@ def compile_application(
     if len(records) != 1:
         raise AppCompileError(f"Application {app_id!r} was not discovered exactly once.")
     record = records[0]
-    profile = get_app_authoring_profile(app_id)
+    # DSL compilation is app-neutral. Projection/promotion mechanics can still
+    # require a profile, but must not prevent semantic validation of a package
+    # whose own manifest declares an authoritative DSL source.
+    try:
+        profile = get_app_authoring_profile(app_id)
+    except AppAuthoringProfileError:
+        profile = None
     manifest_path = repo / record.manifest
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -64,7 +70,22 @@ def compile_application(
     source_reference = str(authoring.get("source") or "").strip()
     authoring_status = str(authoring.get("status") or "")
     promoted = authoring_status == "dsl-authoritative"
-    if source_reference:
+    if profile is None:
+        if authoring_status != "dsl-authoritative":
+            raise AppCompileError(
+                f"Application {app_id!r} has no authoring profile and is not DSL-authoritative."
+            )
+        if not source_reference:
+            raise AppCompileError(
+                f"Application {app_id!r} has no profile and declares no DSL source."
+            )
+        package_root = (repo / record.package_root).resolve()
+        source = (package_root / source_reference).resolve()
+        if not source.is_relative_to(package_root):
+            raise AppCompileError(
+                f"Application {app_id!r} DSL source escapes its package root."
+            )
+    elif source_reference:
         source = (repo / record.package_root / source_reference).resolve()
     elif profile.candidate_source is not None:
         source = (repo / profile.candidate_source).resolve() if not profile.candidate_source.is_absolute() else profile.candidate_source.resolve()
@@ -73,7 +94,7 @@ def compile_application(
     if not source.is_file():
         raise AppCompileError(f"Application DSL source is missing: {_display(source, repo)}")
     effective_compare = compare_ir_path
-    if effective_compare is None and profile.fixture_ir is not None:
+    if effective_compare is None and profile is not None and profile.fixture_ir is not None:
         effective_compare = (repo / profile.fixture_ir).resolve() if not profile.fixture_ir.is_absolute() else profile.fixture_ir.resolve()
     compiled = compile_dsl_application(
         source,
@@ -97,8 +118,10 @@ def compile_application(
             if authoring_status == "dsl-shadow"
             else "legacy-explicit-package"
         ),
-        "candidateFrontend": profile.authoring_frontend,
-        "applicationProfile": profile.profile_id,
+        "candidateFrontend": profile.authoring_frontend if profile else "mcel.dsl.v1",
+        "applicationProfile": profile.profile_id if profile else None,
+        "profileFreeCompilation": profile is None,
+        "projectionProfileRegistered": profile is not None,
         "promotionExecuted": promoted,
         "source": _display(source, repo),
         "semanticFingerprint": compiled.semantic_fingerprint,

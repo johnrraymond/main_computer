@@ -192,8 +192,10 @@ def serve_cli_live_worker(
         "price": {"amount": str(credits_per_request), "unit": "compute_credit"},
         "max_concurrency": 1, "active_sessions": 0,
     }
+    diagnostic_attempt_id = "worker_attempt_" + uuid.uuid4().hex[:16]
     auth_message = {
         "type": "worker.auth", "chain_id": auth["chain_id"],
+        "diagnostic_attempt_id": diagnostic_attempt_id,
         "status": "available", "model": model, "models": [model],
         "queue_depth": 0, "active_requests": 0, "max_concurrency": 1,
         "capabilities": {"provider": "ollama", "assigned_ring": int(assigned_ring),
@@ -205,11 +207,21 @@ def serve_cli_live_worker(
         timeout_s=timeout_s, work_executor=lambda offer: _chat_result(chat_fn, offer),
     )
     try:
+        if verbose:
+            print(
+                f"Worker live-session attempt={diagnostic_attempt_id} "
+                f"started_at={datetime.now(timezone.utc).isoformat()}"
+            )
         snapshot = client.start()
         if not (snapshot.get("accepted") or {}).get("ok"):
             raise RuntimeError("Hub did not accept the live worker WebSocket.")
         if verbose:
-            print(f"Connected authenticated account {snapshot.get('accepted', {}).get('owner', {}).get('account_id', '')} to {hub_url} on {ring}; local label={worker_node_id}.")
+            print(
+                f"Connected authenticated account "
+                f"{snapshot.get('accepted', {}).get('owner', {}).get('account_id', '')} "
+                f"to {hub_url} on {ring}; local label={worker_node_id}; "
+                f"attempt={diagnostic_attempt_id}."
+            )
             print("Waiting for WebSocket work offers. Keep this window open.")
         processed = 0
         last_session = ""
@@ -225,9 +237,18 @@ def serve_cli_live_worker(
                     if max_requests is not None and processed >= int(max_requests):
                         return
             time.sleep(max(0.1, float(poll_interval_s)))
-        raise RuntimeError(f"Hub worker live-session disconnected: {client.last_error or client.close_reason or 'socket closed'}")
+        raise RuntimeError(
+            f"Hub worker live-session disconnected attempt={diagnostic_attempt_id} "
+            f"closed_at={datetime.now(timezone.utc).isoformat()}: "
+            f"{client.last_error or client.close_reason or 'socket closed'}"
+        )
     except KeyboardInterrupt:
         if verbose:
             print("\nHub worker live-session stopped.")
+    except Exception as exc:
+        raise RuntimeError(
+            f"Hub worker live-session attempt={diagnostic_attempt_id} "
+            f"failed_at={datetime.now(timezone.utc).isoformat()}: {exc}"
+        ) from exc
     finally:
         client.close(reason="cli_worker_exit")

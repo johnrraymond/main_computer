@@ -52,6 +52,7 @@ SCRIPT_PATHS = (
     Path("main_computer/web/applications/scripts/calculator-core.js"),
     Path("main_computer/web/applications/scripts/calculator-view-model.js"),
     Path("main_computer/web/applications/scripts/calculator-capabilities.js"),
+    Path("main_computer/web/applications/scripts/mcel-semantic-layout-inference.js"),
     Path("main_computer/web/applications/scripts/calculator.js"),
 )
 MODULE_EXPORTS = (
@@ -336,6 +337,20 @@ def build_calculator_runtime_parity_profile(
         app_id=APP_ID,
         default_dsl_source=DEFAULT_DSL_SOURCE,
         project_ir=project_calculator_ir,
+        # The surface bundle is part of the current generated contract set.
+        # Keep the exact inventory on the Calculator profile rather than
+        # changing the shared default for unrelated host-bound applications.
+        projection_expected_files=(
+            "contracts/acceptance.js",
+            "contracts/adapter.js",
+            "contracts/domain.js",
+            "contracts/intents.js",
+            "contracts/layout.js",
+            "contracts/observation.js",
+            "contracts/surface.js",
+            "contracts/surface-bundle.json",
+            "generated/mcel.application.normalized.json",
+        ),
         expected_intents=EXPECTED_INTENTS,
         local_lanes=LOCAL_LANES,
         route=ROUTE,

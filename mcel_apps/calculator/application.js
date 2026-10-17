@@ -42,16 +42,22 @@ const CALCULATOR_SEMANTIC_SURFACE = {
     },
     {
       id: "arithmetic",
+      focusModes: ["basic"],
+      presentationRole: "work",
       role: "deterministic-arithmetic-lane",
       selector: ".calculator-basic-pane"
     },
     {
       id: "graphing",
+      focusModes: ["graphing"],
+      presentationRole: "work",
       role: "deterministic-graphing-lane",
       selector: "#calculator-graphing-panel"
     },
     {
       id: "mathics",
+      focusModes: [],
+      presentationRole: "support",
       role: "explicit-symbolic-lane",
       selector: "#calculator-mathics-panel"
     },
@@ -62,6 +68,8 @@ const CALCULATOR_SEMANTIC_SURFACE = {
     },
     {
       id: "chat",
+      focusModes: [],
+      presentationRole: "context",
       role: "calculation-context-companion",
       selector: "#calculator-chat-panel"
     }

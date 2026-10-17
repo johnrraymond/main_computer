@@ -110,6 +110,52 @@
       return calculatorEmbeddedChatController;
     }
 
+    // Source authority: the generated MCEL surface/layout contracts, not
+    // hand-authored viewport breakpoints or an application-named layout table.
+    let calculatorInferredLayout = null;
+    function applyCalculatorInferredLayout() {
+      const engine = window.McelSemanticLayoutInference;
+      const mount = window.McelHostBoundApplicationRuntime?.getMount?.("calculator");
+      if (!mount?.active || !engine) return null;
+      const semanticSurface = mount.modules?.surface?.semanticSurface;
+      const layoutGrammar = mount.modules?.layout?.layoutGrammar;
+      const workspace = calculatorShell?.querySelector(".calculator-workspace");
+      const width = workspace?.getBoundingClientRect?.().width || 0;
+      if (!semanticSurface || !layoutGrammar || width <= 0) return null;
+      const mode = calculatorModeGraphing.classList.contains("active") ? "graphing" : "basic";
+      const hierarchy = new Map((layoutGrammar.regions || []).map(region => [region.id, region]));
+      const primary = (semanticSurface.regions || []).find(region => region.primary === true);
+      const visibleRegions = (hierarchy.get(primary?.id)?.children || []).filter(id => {
+        const declared = (semanticSurface.regions || []).find(region => region.id === id);
+        const element = declared?.selector && calculatorApp.querySelector(declared.selector);
+        return !!element && !element.hidden && window.getComputedStyle(element).display !== "none";
+      });
+      const plan = engine.inferWorkspaceLayout({
+        semanticSurface, layoutGrammar, mode, width, visibleRegions
+      });
+      engine.applyWorkspaceLayout(calculatorApp, plan, calculatorInferredLayout);
+      calculatorInferredLayout = plan;
+      calculatorApp.dataset.mcelLayoutStatus = plan.unmetMinWidth.length ? "constrained" : "pass";
+      return plan;
+    }
+
+    calculatorApp?.addEventListener("mcel:host-bound-mounted", event => {
+      if (event.detail?.appId === "calculator") applyCalculatorInferredLayout();
+    });
+    calculatorApp?.addEventListener("mcel:host-bound-unmounted", event => {
+      if (event.detail?.appId !== "calculator") return;
+      window.McelSemanticLayoutInference?.clearWorkspaceLayout(calculatorApp, calculatorInferredLayout);
+      calculatorInferredLayout = null;
+      calculatorApp.dataset.mcelLayoutStatus = "unmounted";
+    });
+    if (typeof ResizeObserver !== "undefined" && calculatorShell) {
+      const observedWorkspace = calculatorShell.querySelector(".calculator-workspace");
+      if (observedWorkspace) {
+        const observer = new ResizeObserver(() => applyCalculatorInferredLayout());
+        observer.observe(observedWorkspace);
+      }
+    }
+
     function applyCalculatorModeSwitchViewModel(viewModel) {
       calculatorModeBasic.classList.toggle("active", !!viewModel.buttons?.basicActive);
       calculatorModeGraphing.classList.toggle("active", !!viewModel.buttons?.graphingActive);
@@ -120,6 +166,7 @@
       calculatorGraphingPanel.hidden = !!viewModel.panels?.graphingHidden;
       calculatorMathicsPanel.hidden = !!viewModel.panels?.mathicsHidden;
       if (calculatorChatPanel) calculatorChatPanel.hidden = !!viewModel.panels?.chatHidden;
+      applyCalculatorInferredLayout();
       calculatorResult.textContent = viewModel.statusText || "ready";
       if (calculatorChatPanel && viewModel.shouldMountChat) {
         mountCalculatorEmbeddedChat();
@@ -363,15 +410,40 @@
       }
     }
 
+    // Calculator is governed by default.  Standalone compatibility is an
+    // explicit integration mode, never an automatic response to a missing or
+    // failed MCEL mount.  A live MCEL host/catalog always takes precedence.
+    function calculatorExecutionMode() {
+      if (window.MainComputerCalculatorStandaloneMode === true
+          && !window.McelHostBoundApplicationRuntime
+          && !window.McelApplicationPackages) {
+        return "standalone";
+      }
+      return "governed";
+    }
+
     function calculatorSemanticAdapter() {
       const hostRuntime = window.McelHostBoundApplicationRuntime;
       const mount = hostRuntime && typeof hostRuntime.getMount === "function"
         ? hostRuntime.getMount("calculator")
         : null;
-      if (!mount || mount.active !== true || typeof mount.invoke !== "function") {
+      const bindingReport = mount?.bindingReport;
+      const declaredIntents = mount?.modules?.intents;
+      const adapterBindings = mount?.modules?.adapter?.bindings;
+      if (!mount || mount.active !== true || typeof mount.invoke !== "function"
+          || bindingReport?.status !== "bound"
+          || !declaredIntents || !adapterBindings
+          || bindingReport.intentCount !== Object.keys(declaredIntents).length
+          || bindingReport.intentCount !== Object.keys(adapterBindings).length) {
         return null;
       }
       return {
+        hasIntent(intentName) {
+          return Object.prototype.hasOwnProperty.call(adapterBindings, intentName);
+        },
+        executionBinding(intentName) {
+          return String(adapterBindings[intentName]?.executionBinding || "");
+        },
         executeIntent(intentId, payload) {
           return Promise.resolve(mount.invoke(intentId, payload || {})).then((result) => {
             if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "ok")) {
@@ -383,24 +455,62 @@
       };
     }
 
-    function executeCalculatorSemanticIntent(intentId, payload, fallback) {
-      const adapter = calculatorSemanticAdapter();
-      if (!adapter || typeof adapter.executeIntent !== "function") {
-        try {
-          return Promise.resolve(typeof fallback === "function" ? fallback() : null);
-        } catch (error) {
-          return Promise.reject(error);
-        }
+    function recordCalculatorIntentOutcome(intentId, route, status, execution, binding = "") {
+      if (calculatorApp?.dataset) {
+        calculatorApp.dataset.calculatorIntentRoute = route;
+        calculatorApp.dataset.calculatorLastIntent = intentId;
+        calculatorApp.dataset.calculatorLastIntentStatus = status;
       }
-      return adapter.executeIntent(intentId, payload || {}).then((execution) => {
-        if (!execution?.ok && execution?.failure) {
-          console.warn(
-            `Calculator semantic intent ${intentId} ${execution.status}:`,
-            execution.failure.message || execution.failure.failureClass
-          );
-        }
-        return execution;
-      });
+      if (calculatorApp && typeof CustomEvent === "function") {
+        calculatorApp.dispatchEvent(new CustomEvent("mcel:calculator-intent-result", {
+          bubbles: true,
+          detail: {appId: "calculator", intentName: intentId, route, status,
+            executionBinding: binding, ok: execution?.ok === true,
+            failureClass: execution?.failure?.failureClass || null}
+        }));
+      }
+      return execution;
+    }
+
+    function calculatorIntentFailure(intentId, failureClass, message, route = "blocked-no-mcel-mount") {
+      const execution = {ok: false, status: "refused", failure: {failureClass, message}};
+      if (calculatorResult) calculatorResult.textContent = message;
+      return recordCalculatorIntentOutcome(intentId, route, "refused", execution);
+    }
+
+    function executeCalculatorSemanticIntent(intentId, payload, fallback) {
+      if (calculatorExecutionMode() === "standalone") {
+        return Promise.resolve().then(() => {
+          if (typeof fallback !== "function") {
+            return calculatorIntentFailure(intentId, "CALCULATOR_STANDALONE_HANDLER_UNAVAILABLE",
+              `Calculator standalone handler unavailable: ${intentId}.`, "standalone-refused");
+          }
+          return recordCalculatorIntentOutcome(intentId, "explicit-standalone", "pass",
+            {ok: true, status: "pass", result: fallback()});
+        }).catch((error) => calculatorIntentFailure(intentId, "CALCULATOR_STANDALONE_ERROR",
+          error?.message || String(error), "standalone-error"));
+      }
+      const adapter = calculatorSemanticAdapter();
+      if (!adapter) {
+        return Promise.resolve(calculatorIntentFailure(intentId, "MCEL_CALCULATOR_MOUNT_REQUIRED",
+          "Calculator MCEL runtime is not ready."));
+      }
+      if (!adapter.hasIntent(intentId)) {
+        return Promise.resolve(calculatorIntentFailure(intentId, "MCEL_CALCULATOR_UNDECLARED_INTENT",
+          `Calculator MCEL intent is not declared: ${intentId}.`, "blocked-undeclared-intent"));
+      }
+      const binding = adapter.executionBinding(intentId);
+      return Promise.resolve().then(() => adapter.executeIntent(intentId, payload || {}))
+        .then((execution) => {
+          if (execution?.ok === false) {
+            const message = execution?.failure?.message || `Calculator intent refused: ${intentId}.`;
+            if (calculatorResult) calculatorResult.textContent = message;
+            return recordCalculatorIntentOutcome(intentId, "generated-adapter", "refused", execution, binding);
+          }
+          return recordCalculatorIntentOutcome(intentId, "generated-adapter", "pass", execution, binding);
+        })
+        .catch((error) => calculatorIntentFailure(intentId, "MCEL_CALCULATOR_RUNTIME_ERROR",
+          error?.message || String(error), "generated-adapter-error"));
     }
 
     function applyReadyCalculatorState(state, focusTarget = calculatorDisplay) {

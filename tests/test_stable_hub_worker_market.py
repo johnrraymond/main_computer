@@ -207,3 +207,34 @@ def test_market_directory_excludes_closed_over_budget_missing_capability_and_ful
     )
 
     assert selected is None
+
+
+def test_selection_excludes_exact_rejected_lease_without_excluding_reconnected_worker() -> None:
+    topology = load_stable_hub_topology(DEV_TOPOLOGY)
+    store = InMemoryStableWorkerSessionStore()
+    market = StableHubWorkerMarketDirectory(topology=topology, hub_id="dev-hub3", store=store)
+    for worker_id, connection, price in (
+        ("worker-a", "conn_old", "0.01"),
+        ("worker-b", "conn_good", "0.02"),
+    ):
+        market.record_worker_live(
+            worker_id=worker_id,
+            owner=_owner(worker_id=worker_id, connection_id=connection),
+            market_profile={"ring": "ring-2", "price": {"amount": price, "unit": "credit"}},
+            worker_msk_id="msk", worker_wallet_address="0x" + "11" * 20,
+            worker_account_id="acct",
+        )
+    work = {"ring": "ring-2"}
+    assert market.select_worker_for_work(work)["worker_id"] == "worker-a"
+    selected = market.select_worker_for_work(work, excluded_connections={("worker-a", "conn_old", 1)})
+    assert selected is not None and selected["worker_id"] == "worker-b"
+    # A newer lease of the same worker must be allowed through the filter.
+    market.record_worker_live(
+        worker_id="worker-a",
+        owner={**_owner(worker_id="worker-a", connection_id="conn_new"), "lease_epoch": 2},
+        market_profile={"ring": "ring-2", "price": {"amount": "0.01", "unit": "credit"}},
+        worker_msk_id="msk", worker_wallet_address="0x" + "11" * 20,
+        worker_account_id="acct",
+    )
+    selected = market.select_worker_for_work(work, excluded_connections={("worker-a", "conn_old", 1)})
+    assert selected is not None and selected["connection_id"] == "conn_new"

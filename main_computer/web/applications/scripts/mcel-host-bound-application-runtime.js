@@ -137,7 +137,47 @@ var McelHostBoundApplicationRuntime = (() => {
     if (!modules.adapter.bindings || typeof modules.adapter.bindings !== "object") {
       throw new Error("Host-bound MCEL adapter bindings are unavailable.");
     }
+    if (!modules.intents || typeof modules.intents !== "object" || Array.isArray(modules.intents)) {
+      throw new Error("Host-bound MCEL declared intents are unavailable.");
+    }
     return modules;
+  }
+
+  // This is a binding check, not an application-behavior proof. It runs before
+  // any MCEL mount is published and never invokes a consequential operation.
+  function verifyRuntimeBindings(appId, modules, facade) {
+    const intents = modules.intents;
+    const bindings = modules.adapter.bindings;
+    const declared = Object.keys(intents).sort();
+    const generated = Object.keys(bindings).sort();
+    if (!declared.length || JSON.stringify(declared) !== JSON.stringify(generated)) {
+      throw new Error(`Host-bound MCEL ${appId} intent and adapter binding sets differ.`);
+    }
+    const entries = [];
+    for (const intentName of declared) {
+      const intent = Object.hasOwn(intents, intentName) ? intents[intentName] : null;
+      const binding = Object.hasOwn(bindings, intentName) ? bindings[intentName] : null;
+      const methodName = safeString(binding?.runtimeMethod);
+      if (!intent || !binding || typeof intent !== "object" || typeof binding !== "object"
+          || !safeString(intent.id) || safeString(binding.intentId) !== safeString(intent.id)
+          || safeString(intent.sourceName) !== intentName
+          || !methodName || methodName !== safeString(intent.runtimeMethod)
+          || !safeString(binding.executionBinding)
+          || safeString(binding.executionBinding) !== safeString(intent.executionBinding)) {
+        throw new Error(`Host-bound MCEL ${appId} intent binding contract mismatch: ${intentName}.`);
+      }
+      if (!Object.hasOwn(facade, methodName) || typeof facade[methodName] !== "function") {
+        throw new Error(`Host-bound MCEL ${appId} runtime method is unavailable: ${methodName}.`);
+      }
+      entries.push(Object.freeze({intentName, intentId: safeString(intent.id), runtimeMethod: methodName}));
+    }
+    return Object.freeze({
+      schema: "mcel.host-bound-runtime-binding-report.v1",
+      appId,
+      status: "bound",
+      intentCount: entries.length,
+      entries: Object.freeze(entries)
+    });
   }
 
   function resolveRoot(manifest, request) {
@@ -173,22 +213,30 @@ var McelHostBoundApplicationRuntime = (() => {
     const manifestUrl = absoluteUrl(record.runtimeProjection.manifestUrl);
     const manifest = verifyManifest(record, catalog, await readManifest(record, request));
     const root = resolveRoot(manifest, request);
-    resolveFacade(manifest);
+    const facade = resolveFacade(manifest);
     setRootStatus(root, "loading");
     root.dataset.mcelHostBoundApp = appId;
     root.dataset.mcelHostBoundProjection = safeString(record.runtimeProjection.fingerprint);
 
     const loader = request.moduleLoader || ((url) => import(url));
-    const [domain, intents, adapter, surface, layout, observation, acceptance] = await Promise.all([
-      loadDeclaredModule(manifestUrl, manifest.modules.domain, loader, "domain"),
-      loadDeclaredModule(manifestUrl, manifest.modules.intents, loader, "intents"),
-      loadDeclaredModule(manifestUrl, manifest.modules.adapter, loader, "adapter"),
-      loadDeclaredModule(manifestUrl, manifest.modules.surface, loader, "surface"),
-      loadDeclaredModule(manifestUrl, manifest.modules.layout, loader, "layout"),
-      loadDeclaredModule(manifestUrl, manifest.modules.observation, loader, "observation"),
-      loadDeclaredModule(manifestUrl, manifest.modules.acceptance, loader, "acceptance")
-    ]);
-    const modules = verifyModules(appId, {domain, intents, adapter, surface, layout, observation, acceptance});
+    let modules;
+    let bindingReport;
+    try {
+      const [domain, intents, adapter, surface, layout, observation, acceptance] = await Promise.all([
+        loadDeclaredModule(manifestUrl, manifest.modules.domain, loader, "domain"),
+        loadDeclaredModule(manifestUrl, manifest.modules.intents, loader, "intents"),
+        loadDeclaredModule(manifestUrl, manifest.modules.adapter, loader, "adapter"),
+        loadDeclaredModule(manifestUrl, manifest.modules.surface, loader, "surface"),
+        loadDeclaredModule(manifestUrl, manifest.modules.layout, loader, "layout"),
+        loadDeclaredModule(manifestUrl, manifest.modules.observation, loader, "observation"),
+        loadDeclaredModule(manifestUrl, manifest.modules.acceptance, loader, "acceptance")
+      ]);
+      modules = verifyModules(appId, {domain, intents, adapter, surface, layout, observation, acceptance});
+      bindingReport = verifyRuntimeBindings(appId, modules, facade);
+    } catch (error) {
+      setRootStatus(root, "error", error?.message || String(error));
+      throw error;
+    }
     let active = true;
 
     const mount = Object.freeze({
@@ -199,6 +247,7 @@ var McelHostBoundApplicationRuntime = (() => {
       record: deepFreeze(clonePlain(record)),
       manifest: deepFreeze(clonePlain(manifest)),
       modules: Object.freeze(modules),
+      bindingReport,
       get active() {
         return active;
       },
@@ -228,7 +277,8 @@ var McelHostBoundApplicationRuntime = (() => {
     dispatchLifecycle(root, "mcel:host-bound-mounted", {
       appId,
       fingerprint: record.runtimeProjection.fingerprint,
-      intentCount: Object.keys(adapter.bindings).length
+      intentCount: bindingReport.intentCount,
+      bindingStatus: bindingReport.status
     });
     return mount;
   }
