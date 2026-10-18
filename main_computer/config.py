@@ -117,6 +117,8 @@ class MainComputerConfig:
     model: str = DEFAULT_OLLAMA_MODEL
     patch_level: str = DEFAULT_PATCH_LEVEL
     ollama_base_url: str = "http://localhost:11434"
+    nanojev_base_url: str = "http://127.0.0.1:9765"
+    nanojev_timeout_s: float = 600.0
     ollama_timeout_s: float = 600.0
     ollama_think: bool | str | None = DEFAULT_OLLAMA_THINK
     openai_base_url: str | None = None
@@ -212,6 +214,8 @@ class MainComputerConfig:
         if not model:
             if provider == "openai":
                 model = os.environ.get("OPENAI_MODEL", "gpt-5.2")
+            elif provider == "nanojev":
+                model = "nanojev-clef"
             else:
                 model = DEFAULT_OLLAMA_MODEL
         try:
@@ -316,6 +320,8 @@ class MainComputerConfig:
             model=model,
             patch_level=os.environ.get("MAIN_COMPUTER_PATCH_LEVEL", read_patch_level()),
             ollama_base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+            nanojev_base_url=os.environ.get("MAIN_COMPUTER_NANOJEV_BASE_URL", "http://127.0.0.1:9765"),
+            nanojev_timeout_s=max(1.0, float(os.environ.get("MAIN_COMPUTER_NANOJEV_TIMEOUT_S", "600"))),
             ollama_timeout_s=max(1.0, ollama_timeout_s),
             ollama_think=parse_ollama_think(os.environ.get("MAIN_COMPUTER_OLLAMA_THINK")),
             openai_base_url=os.environ.get("OPENAI_BASE_URL"),
