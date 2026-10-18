@@ -22,7 +22,7 @@ from main_computer.rag_trust_contract_chat import (
     chat_response_from_trust_result,
     run_trust_contract_chat_request,
 )
-from main_computer.providers import HubProvider, LLMProvider, OllamaProvider, OpenAIProvider
+from main_computer.providers import HubProvider, LLMProvider, OllamaProvider, OpenAIProvider, NanoJevClefProvider
 
 
 SYSTEM_PROMPT = """You are Main Computer, the central local AI layer for this Windows workspace.
@@ -63,6 +63,10 @@ class MainComputer:
             )
         elif config.provider == "openai":
             provider = OpenAIProvider(model=config.model, base_url=config.openai_base_url, fallback=config.fallback)
+        elif config.provider == "nanojev":
+            provider = NanoJevClefProvider(
+                model=config.model, base_url=config.nanojev_base_url, timeout_s=config.nanojev_timeout_s
+            )
         elif config.provider == "hub":
             provider = HubProvider(
                 model=config.model,
@@ -77,6 +81,13 @@ class MainComputer:
             raise ValueError(f"Unknown provider: {config.provider}")
 
         return cls(config=config, catalog=catalog, provider=provider)
+
+    def solve(self, *, capability: str, payload: dict) -> dict:
+        """Dispatch typed computation to a capable local provider, without Hub I/O."""
+        native_solve = getattr(self.provider, "solve", None)
+        if not callable(native_solve):
+            raise ValueError(f"Provider {self.provider.name!r} does not offer structured solve")
+        return native_solve(capability=capability, payload=payload)
 
     def context_pack(self, prompt: str) -> WorkspaceContextPack:
         return self.catalog.build_context_pack(prompt)

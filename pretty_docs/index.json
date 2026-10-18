@@ -13,6 +13,12 @@
       "order": 15
     },
     {
+      "path": "mother-network-operations.md",
+      "title": "Mother Network Operations — Current Deployment Status",
+      "kind": "markdown",
+      "order": 16
+    },
+    {
       "path": "mcel-ai-authoring-language-executive-overview.md",
       "title": "MCEL AI Authoring Language Executive Overview",
       "kind": "markdown",
@@ -485,6 +491,126 @@
       "title": "Verge Cluster Scenario Dossiers",
       "kind": "markdown",
       "order": 99
+    },
+    {
+      "path": "mother.md",
+      "title": "Mother — architecture specification",
+      "kind": "markdown",
+      "order": 900
+    },
+    {
+      "path": "mother-o.md",
+      "title": "Mother O — architecture specification",
+      "kind": "markdown",
+      "order": 901
+    },
+    {
+      "path": "mother-o-f.md",
+      "title": "Mother O F — architecture specification",
+      "kind": "markdown",
+      "order": 902
+    },
+    {
+      "path": "mother-o-f-m.md",
+      "title": "Mother O F M — architecture specification",
+      "kind": "markdown",
+      "order": 903
+    },
+    {
+      "path": "hub.md",
+      "title": "Hub — architecture specification",
+      "kind": "markdown",
+      "order": 904
+    },
+    {
+      "path": "hub-o.md",
+      "title": "Hub O — architecture specification",
+      "kind": "markdown",
+      "order": 905
+    },
+    {
+      "path": "hub-o-f.md",
+      "title": "Hub O F — architecture specification",
+      "kind": "markdown",
+      "order": 906
+    },
+    {
+      "path": "hub-o-f-m.md",
+      "title": "Hub O F M — architecture specification",
+      "kind": "markdown",
+      "order": 907
+    },
+    {
+      "path": "fdb.md",
+      "title": "Fdb — architecture specification",
+      "kind": "markdown",
+      "order": 908
+    },
+    {
+      "path": "fdb-o.md",
+      "title": "Fdb O — architecture specification",
+      "kind": "markdown",
+      "order": 909
+    },
+    {
+      "path": "fdb-o-f.md",
+      "title": "Fdb O F — architecture specification",
+      "kind": "markdown",
+      "order": 910
+    },
+    {
+      "path": "fdb-o-f-m.md",
+      "title": "Fdb O F M — architecture specification",
+      "kind": "markdown",
+      "order": 911
+    },
+    {
+      "path": "hub-chain.md",
+      "title": "Hub Chain — architecture specification",
+      "kind": "markdown",
+      "order": 912
+    },
+    {
+      "path": "hub-chain-o.md",
+      "title": "Hub Chain O — architecture specification",
+      "kind": "markdown",
+      "order": 913
+    },
+    {
+      "path": "hub-chain-o-f.md",
+      "title": "Hub Chain O F — architecture specification",
+      "kind": "markdown",
+      "order": 914
+    },
+    {
+      "path": "hub-chain-o-f-m.md",
+      "title": "Hub Chain O F M — architecture specification",
+      "kind": "markdown",
+      "order": 915
+    },
+    {
+      "path": "hub-fdb.md",
+      "title": "Hub Fdb — architecture specification",
+      "kind": "markdown",
+      "order": 916
+    },
+    {
+      "path": "hub-fdb-o.md",
+      "title": "Hub Fdb O — architecture specification",
+      "kind": "markdown",
+      "order": 917
+    },
+    {
+      "path": "hub-fdb-o-f.md",
+      "title": "Hub Fdb O F — architecture specification",
+      "kind": "markdown",
+      "order": 918
+    },
+    {
+      "path": "hub-fdb-o-f-m.md",
+      "title": "Hub Fdb O F M — architecture specification",
+      "kind": "markdown",
+      "order": 919
     }
   ]
 }

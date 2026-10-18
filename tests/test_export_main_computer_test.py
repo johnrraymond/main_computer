@@ -38,8 +38,16 @@ class ExportMainComputerTestTests(unittest.TestCase):
             "hub-chain-o-f.md",
             "hub-chain-o-f-m.md",
         ):
-            self.assertIn(f'"{hub_doc}"', script)
-            self.assertTrue((ROOT / hub_doc).exists())
+            self.assertNotIn(f'  "{hub_doc}",', script)
+            self.assertTrue((ROOT / "pretty_docs" / hub_doc).exists())
+        for family in ("mother", "fdb", "hub", "hub-fdb", "hub-chain"):
+            for suffix in ("", "-o", "-o-f", "-o-f-m"):
+                document = f"{family}{suffix}.md"
+                self.assertNotIn(f'  "{document}",', script)
+                self.assertTrue((ROOT / "pretty_docs" / document).is_file())
+        self.assertFalse((ROOT / "mother.md").exists())
+        self.assertFalse((ROOT / "hub.md").exists())
+        self.assertFalse((ROOT / "fdb.md").exists())
         self.assertIn('"prod-command.py"', script)
         self.assertIn('"docker-compose.onlyoffice.yml"', script)
         self.assertIn('"docker-compose.applications.yml"', script)
@@ -143,7 +151,14 @@ class ExportMainComputerTestTests(unittest.TestCase):
         self.assertIn('$ArchiveRoot = Join-Path $installerReHomeRunRoot "z"', script)
         self.assertIn('$installerReHomeExtractRoot = Join-Path $installerReHomeRunRoot "x"', script)
         self.assertIn('$tempRoot = Join-Path $installerReHomeRunRoot "s"', script)
-        self.assertIn('[System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $installerReHomeExtractRoot)', script)
+        self.assertIn(
+            'Expand-Archive -LiteralPath $mainResult.ZipPath -DestinationPath $installerReHomeExtractRoot -Force',
+            script,
+        )
+        self.assertIn(
+            'Expand-Archive -LiteralPath $gameResult.ZipPath -DestinationPath $installerReHomeExtractRoot -Force',
+            script,
+        )
         self.assertIn('Write-Output $installerReHomeRepoRoot', script)
         self.assertIn('$ArchiveRoot = Join-Path (Split-Path -Parent $SourceRoot) "archive"', script)
 
@@ -176,14 +191,14 @@ class ExportMainComputerTestTests(unittest.TestCase):
         self.assertIn("Wait-Event -Timeout 1", script)
         self.assertIn("Start-FollowExportLoop", script)
         self.assertIn("Invoke-ExportSnapshot", script)
-        self.assertIn("Test-FollowEventAllowed", script)
+        self.assertIn("Get-FollowEventComponents", script)
         self.assertIn("[AllowEmptyCollection()]", script)
         self.assertIn("[System.Collections.Generic.List[string]]$RecursiveRoots", script)
         self.assertIn("[System.Collections.Generic.List[System.IO.FileSystemWatcher]]$Watchers", script)
         self.assertIn("[System.Collections.Generic.List[string]]$SubscriptionSourceIdentifiers", script)
         self.assertIn("Unregister-Event -SourceIdentifier $sourceIdentifier", script)
         self.assertNotIn("SubscriptionId", script)
-        self.assertIn("detected export input changes; exporting after", script)
+        self.assertIn("detected {0} export input changes; exporting after", script)
         self.assertIn("--follow cannot be combined with -InstallerReHome", script)
 
     def test_pretty_docs_seed_files_exist(self) -> None:

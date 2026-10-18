@@ -265,6 +265,7 @@ function createHostBoundApplicationBuilder(metadata) {
   let zones = [];
   let semanticSurface = null;
   let layoutGrammar = null;
+  let layoutTree = null;
   const states = [];
   const capabilities = [];
   const intents = [];
@@ -434,6 +435,7 @@ function createHostBoundApplicationBuilder(metadata) {
             surface: appScopedRef(metadata, "surface", "workspace"),
             zones,
             ...(layoutGrammar ? {layoutGrammar: deepClone(layoutGrammar, "layoutGrammar")} : {}),
+            ...(layoutTree ? {layoutTree: deepClone(layoutTree, "layoutTree")} : {}),
             orderedChildren: surfaceNodes.map((node) => ({ref: node.id})),
           },
         ],
@@ -510,6 +512,9 @@ function createHostBoundApplicationBuilder(metadata) {
       },
       grammar(options) {
         layoutGrammar = deepClone(options || {}, "layoutGrammar");
+      },
+      tree(options) {
+        layoutTree = deepClone(options || {}, "layoutTree");
       },
     },
     proof: {
@@ -720,6 +725,7 @@ function createDsl(metadata, source) {
         kind: "layout",
         surface: ref(options.surface),
         orderedChildren,
+        ...(options.tree ? {layoutTree: deepClone(options.tree, `layout:${name}.tree`)} : {}),
         source,
       };
       const handle = new LayoutHandle(record);

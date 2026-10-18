@@ -254,6 +254,40 @@ function declareCodeEditor(app) {
   });
   app.presentation.semanticSurface(CODE_EDITOR_SEMANTIC_SURFACE);
   app.layout.grammar(CODE_EDITOR_LAYOUT_GRAMMAR);
+  // Canonical shell and dockable workbench authority. Each structural slot
+  // is declared in the DSL; source CSS supplies only the interior widgets.
+  app.layout.tree({
+    schema: "mcel.layout-tree.v1",
+    root: {id: "editor-shell", selector: ".code-studio-shell", role: "group", maxColumns: 1,
+      variants: [
+        {tracks:["minmax(0, 1fr)"],areas:["title", "workbench", "proof", "footer"]},
+        {tracks:["minmax(0, 1fr)"],areas:["title", "workbench", "footer"]}
+      ],
+      children: [
+        {id: "title", selector: ".code-studio-titlebar", role: "region", verifyControls: false},
+        {id: "workbench", selector: ".code-studio-body", role: "group", maxColumns: 4,
+          variants: [
+            {tracks:["44px","260px","minmax(0, 1fr)","320px"],
+              areas:["rail sidebar editor inspector"]},
+            {tracks:["44px","160px","minmax(0, 1fr)","200px"],
+              areas:["rail sidebar editor inspector"]},
+            // Responsive authored CSS hides the inspector in the compact mode.
+            // Exclude that region from the canonical area map, rather than
+            // resurrecting it or rejecting every otherwise valid candidate.
+            {tracks:["44px","160px","minmax(0, 1fr)"],
+              areas:["rail sidebar editor"]}
+          ],
+          children: [
+            {id: "rail", selector: ".code-studio-activitybar", role: "control-grid", requireVisible: true,
+              maxColumns: 1, minTargetWidth: 40, atomicText: true},
+            {id: "sidebar", selector: ".code-studio-sidebar", role: "region", verifyControls: false},
+            {id: "editor", selector: ".code-studio-editor-group", role: "region", verifyControls: false},
+            {id: "inspector", selector: ".code-studio-inspector", role: "region", verifyControls: false}
+          ]},
+        {id: "proof", selector: ".code-studio-proof-dock", role: "region", verifyControls: false},
+        {id: "footer", selector: ".code-studio-statusbar", role: "region", verifyControls: false}
+      ]}
+  });
 
   app.state.rendererLocal("workspace", app.field.record(), {
     initial: {id: "", title: "", root: "", files: []},

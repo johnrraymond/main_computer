@@ -51,9 +51,12 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
     config = MainComputerConfig(
         workspace=Path(args.workspace) if args.workspace else base.workspace,
         provider=args.provider or base.provider,
-        model=args.model or base.model,
+        model=args.model or ("nanojev-clef" if (args.provider or base.provider) == "nanojev"
+                             and base.provider != "nanojev" else base.model),
         patch_level=base.patch_level,
         ollama_base_url=args.ollama_base_url or base.ollama_base_url,
+        nanojev_base_url=getattr(args, "nanojev_base_url", None) or base.nanojev_base_url,
+        nanojev_timeout_s=getattr(args, "nanojev_timeout_s", None) if getattr(args, "nanojev_timeout_s", None) is not None else base.nanojev_timeout_s,
         ollama_timeout_s=args.ollama_timeout_s if args.ollama_timeout_s is not None else base.ollama_timeout_s,
         ollama_think=base.ollama_think,
         openai_base_url=args.openai_base_url or base.openai_base_url,
@@ -845,7 +848,11 @@ def _run_data_engage_computer(args: argparse.Namespace, option_tokens: list[str]
         print(f"Model: {worker_config.model}")
         print("Ring: 3")
         print("Submit Data work in another window, for example:")
-        print('  main-computer data "What is 4 + 9" --god-mode --agent')
+        if worker_config.provider == "nanojev":
+            print("  python -m tools.nanojev_hub_request --payload-file .\\clef_request.json")
+            print("  Add --submit to authorize a credit-bearing request.")
+        else:
+            print('  main-computer data "What is 4 + 9" --god-mode --agent')
 
     try:
         serve_hub_worker_pull(
@@ -866,6 +873,7 @@ def _run_data_engage_computer(args: argparse.Namespace, option_tokens: list[str]
             verbose=engage_options.verbose,
             max_requests=engage_options.max_requests,
             officer="o3",
+            solve_fn=worker.solve if worker_config.provider == "nanojev" else None,
         )
     except RuntimeError as exc:
         print(f"ERROR: {exc}")
@@ -1386,6 +1394,7 @@ def cmd_project(args: argparse.Namespace) -> int:
 def cmd_providers(args: argparse.Namespace) -> int:
     print("ollama | default | local HTTP API | model default: gemma4:26b-a4b-it-q4_K_M")
     print("openai | optional | OpenAI Python SDK | requires OPENAI_API_KEY")
+    print("nanojev | local | CLEF native solution provider (structured, not chat)")
     print("hub | remote | Main Computer hub broker | set MAIN_COMPUTER_HUB_URL or --hub-url")
     return 0
 
@@ -1561,7 +1570,9 @@ def cmd_conductor(args: argparse.Namespace) -> int:
 
 def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", help="Workspace root to scan.")
-    parser.add_argument("--provider", choices=["ollama", "openai", "hub"], help="LLM provider.")
+    parser.add_argument("--provider", choices=["ollama", "openai", "hub", "nanojev"], help="AI/solution provider.")
+    parser.add_argument("--nanojev-base-url", help="Local CLEF service origin (default: http://127.0.0.1:9765).")
+    parser.add_argument("--nanojev-timeout-s", type=float, help="CLEF HTTP timeout in seconds.")
     parser.add_argument("--model", help="Provider model name.")
     parser.add_argument("--ollama-base-url", help="Ollama base URL.")
     parser.add_argument("--ollama-timeout-s", type=float, help="Ollama HTTP timeout in seconds.")

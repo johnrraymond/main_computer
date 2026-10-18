@@ -54,7 +54,9 @@ def test_current_catalog_references_real_requirements_contracts() -> None:
 
     by_id = {block.block_id: block for block in contracts}
     assert metadata["schema"] == runner.BINDING_SCHEMA
-    assert metadata["bindingCount"] == 16
+    assert metadata["bindingCount"] == len(bindings)
+    assert "calculator.acceptance.full-semantic-runtime" in bindings
+    assert "calculator.acceptance.layout-inference" in bindings
     assert set(bindings) <= set(by_id)
     assert all(
         str(by_id[contract_id].status).lower() in runner.ENFORCEABLE_STATUSES
@@ -272,7 +274,9 @@ def test_cli_lists_contracts_without_running_pytest() -> None:
     assert completed.returncode == 0, completed.stderr
     assert "file-explorer.acceptance.read-only-browse-preview" in completed.stdout
     assert "calculator.acceptance.no-hidden-mutation" in completed.stdout
-    assert "unbound" in completed.stdout
+    assert "calculator.acceptance.full-semantic-runtime" in completed.stdout
+    assert "calculator.acceptance.layout-inference" in completed.stdout
+    assert "calculator.binding.acceptance.full-semantic-runtime" in completed.stdout
     package_contracts, _package_bindings, _metadata = runner.load_package_acceptance(ROOT)
     assert any(block.block_id in completed.stdout for block in package_contracts)
 

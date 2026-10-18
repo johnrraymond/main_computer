@@ -86,98 +86,30 @@ console.log(JSON.stringify({wideRows:wide.rows.length,narrowRows:narrow.rows.len
     assert data["narrowRows"] > data["wideRows"]
 
 
-def test_live_calculator_uses_inferred_layout_after_mcel_mount():
-    sync_api = pytest.importorskip("playwright.sync_api")
-    profile = build_calculator_browser_observation_profile()
-    manifest, modules = _browser_injected_projection(profile, ROOT)
-    catalog = build_repository_browser_catalog_payload(ROOT)
-    executable = (os.getenv("MCEL_CHROMIUM_EXECUTABLE") or os.getenv("CHROMIUM_EXECUTABLE")
-                  or shutil.which("chromium") or shutil.which("chromium-browser"))
-    options = {"headless": True}
-    if executable:
-        options.update({"executable_path": executable, "args": ["--no-sandbox", "--disable-dev-shm-usage"]})
-    with sync_api.sync_playwright() as playwright:
-        browser = playwright.chromium.launch(**options)
-        try:
-            page = browser.new_page(viewport={"width": 1600, "height": 1050})
-            page.set_content(_host_bound_observation_html(profile, ROOT), wait_until="domcontentloaded")
-            page.evaluate("""() => {
-              const root=document.querySelector('#calculator-app');
-              root.style.display='grid'; root.style.width='1450px'; root.style.maxWidth='none';
-              root.style.height='950px';
-              const shell=root.querySelector('.calculator-shell');
-              shell.style.maxWidth='none';
-            }""")
-            mounted = page.evaluate("""async ({manifest, modules, catalog}) => {
-              const records = catalog.packages;
-              const packageCatalog = {
-                catalogFingerprint: catalog.catalogFingerprint || catalog.fingerprint || '',
-                listPackages: () => records.slice(),
-                getPackage: id => records.find(r => r.appId===id) || null
-              };
-              window.McelApplicationPackages = packageCatalog;
-              const source = modules.__generatedAdapterSource;
-              const raw = new TextEncoder().encode(source);
-              let binary = ''; for (const byte of raw) binary += String.fromCharCode(byte);
-              const adapter = (await import(`data:text/javascript;base64,${btoa(binary)}`)).CalculatorAdapter;
-              modules.adapter = {CalculatorAdapter: adapter};
-              delete modules.__generatedAdapterSource;
-              const mount = await window.McelHostBoundApplicationRuntime.mountApplication({
-                appId:'calculator', manifest, root:document.querySelector('#calculator-app'), packageCatalog,
-                moduleLoader: async (_url, entry, label) => modules[label]
-              });
-              await mount.invoke('switchMode',{mode:'graphing'});
-              const root = document.querySelector('#calculator-app');
-              const grid = root.querySelector('.calculator-workspace');
-              return {status:root.dataset.mcelLayoutStatus, authority:root.dataset.mcelLayoutAuthority,
-                 layout: grid.style.gridTemplateAreas, width:grid.getBoundingClientRect().width};
-            }""", {"manifest": manifest, "modules": modules, "catalog": catalog})
-            assert mounted["authority"] == "inferred", mounted
-            assert "graphing" in mounted["layout"], mounted
-            first = mounted["layout"]
-            page.evaluate("""() => {
-              const root = document.querySelector('#calculator-app');
-              root.style.width='490px';
-            }""")
-            # ResizeObserver is asynchronous: wait until the computed plan reflects the new width.
-            page.wait_for_function("""(before) => {
-              const root=document.querySelector('#calculator-app');
-              return root.dataset.mcelLayoutAuthority==='inferred'
-                && root.querySelector('.calculator-workspace').style.gridTemplateAreas!==before;
-            }""", arg=first, timeout=10000)
-            after = page.evaluate("""() => ({
-              area:document.querySelector('.calculator-workspace').style.gridTemplateAreas,
-              mode:document.querySelector('#calculator-app').dataset.mcelLayoutMode,
-              authority:document.querySelector('#calculator-app').dataset.mcelLayoutAuthority
-            })""")
-            assert after["mode"] == "graphing"
-            assert after["authority"] == "inferred"
-            assert after["area"] != first
-            geometry = page.evaluate("""() => {
-              const root=document.querySelector('#calculator-app');
-              const workspace=root.querySelector('.calculator-workspace');
-              const graph=root.querySelector('#calculator-graphing-panel').getBoundingClientRect();
-              const arithmetic=root.querySelector('.calculator-basic-pane').getBoundingClientRect();
-              return {workspaceWidth:workspace.clientWidth, scrollWidth:workspace.scrollWidth,
-                graphTop:graph.top, arithmeticTop:arithmetic.top,
-                graphBottom:graph.bottom, arithmeticBottom:arithmetic.bottom};
-            }""")
-            assert geometry["graphTop"] < geometry["arithmeticTop"], geometry
-            assert geometry["graphBottom"] <= geometry["arithmeticTop"] + 1, geometry
-            assert geometry["scrollWidth"] <= geometry["workspaceWidth"] + 2, geometry
-            basic = page.evaluate("""async () => {
-              await window.McelHostBoundApplicationRuntime.getMount('calculator').invoke('switchMode',{mode:'basic'});
-              const root=document.querySelector('#calculator-app');
-              return {mode:root.dataset.mcelLayoutMode,
-                rows:Number(root.dataset.mcelLayoutRows),
-                areas:root.querySelector('.calculator-workspace').style.gridTemplateAreas};
-            }""")
-            assert basic["mode"] == "basic"
-            assert "arithmetic" in basic["areas"]
-            assert "graphing" not in basic["areas"]
-            assert "chat" in basic["areas"]
-        finally:
-            browser.close()
+def test_live_calculator_mount_uses_canonical_workspace_authority():
+    # The standalone semantic inference API remains available, but a host-bound
+    # application with a canonical shell tree must not run two CSS authorities.
+    from test_mcel_package_canonical_layout_mount import _browser, _page, payload, async_mount
+    for browser in _browser():
+        page = _page(browser, "calculator")
+        page.evaluate("""() => {
+          const root=document.querySelector('#calculator-app');
+          root.style.display='grid';root.style.width='1100px';
+          root.querySelector('#calculator-graphing-panel').hidden=false;
+          root.querySelector('#calculator-mathics-panel').hidden=false;
+          root.querySelector('#calculator-chat-panel').hidden=false;
+        }""")
+        result=page.evaluate(async_mount,payload("calculator"))
+        assert result["status"] == "pass",result
+        record=page.evaluate("""() => {
+          const root=document.querySelector('#calculator-app');
+          return {canonical:root.querySelector('.calculator-shell').dataset.mcelCanonicalLayoutAuthority,
+            structure:root.querySelector('.calculator-workspace').style.getPropertyValue('grid-template-areas'),
+            inferred:root.querySelector('.calculator-workspace').dataset.mcelLayoutAuthority || null};
+        }""")
+        assert record["canonical"] == "mcel-layout-tree.v1",record
+        assert "graphing" in record["structure"],record
+        assert record["inferred"] is None,record
 
 
 def test_same_planner_infers_code_editor_workbench_without_application_rules(tmp_path):

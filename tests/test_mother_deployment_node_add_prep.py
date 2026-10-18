@@ -1960,7 +1960,7 @@ def test_add_node_rollback_cli_exposes_release_execute_and_verify() -> None:
 
 
 def test_mother_docs_define_golden_test_path_as_operator_directed() -> None:
-    mother_doc = Path(__file__).resolve().parents[1] / "mother.md"
+    mother_doc = Path(__file__).resolve().parents[1] / "pretty_docs" / "mother.md"
     text = mother_doc.read_text(encoding="utf-8")
 
     assert "The golden test path is operator-directed add/delete evidence" in text

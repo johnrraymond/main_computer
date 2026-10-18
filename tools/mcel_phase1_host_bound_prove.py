@@ -119,6 +119,17 @@ def run_host_bound_proof(*, repo: Path, app_id: str, headed: bool = False) -> di
     provenance_after = build_repository_provenance(repo)
     if provenance_after["fingerprint"] != provenance_before["fingerprint"]:
         raise HostBoundPhaseOneError("Authoritative source changed during browser proof.")
+    acceptance_contracts = {
+        str(item.get("contractId")): {
+            "status": item.get("status"),
+            "enforceable": item.get("enforceable") is True,
+            "executed": item.get("executed") is True,
+            "summary": item.get("summary") or {},
+            "bindingId": item.get("bindingId"),
+        }
+        for item in entries[0].get("contracts") or []
+        if item.get("contractId")
+    }
     pending_contracts = sorted(
         str(contract.get("contractId"))
         for contract in entries[0].get("contracts") or []
@@ -132,6 +143,7 @@ def run_host_bound_proof(*, repo: Path, app_id: str, headed: bool = False) -> di
         "truthStatus": TRUTH_SCOPE,
         "fullSemanticRuntimeProven": False,
         "pendingAcceptanceContracts": pending_contracts,
+        "acceptanceContracts": acceptance_contracts,
         "proofScope": "package-scoped acceptance + host-bound generated-adapter browser parity + IR-native intent proof; not the package-host truth gate",
         "semanticFingerprint": compiled.semantic_fingerprint,
         "packageFingerprint": record.fingerprint,

@@ -13,6 +13,7 @@ from typing import Any, Iterator
 import pytest
 
 from tools.mother.common.coolify_state import (
+    CoolifyController,
     CoolifyObservationError,
     get_coolify_json,
     list_coolify_controllers,
@@ -353,3 +354,61 @@ def test_observe_all_skips_disabled_controller_and_has_no_mutating_surface(tmp_p
         for forbidden in ("post", "put", "patch", "delete", "deploy", "start", "stop", "restart", "create"):
             assert forbidden not in help_text
         assert all(item["method"] == "GET" for item in _CoolifyHandler.requests)
+
+
+def test_direct_controller_normalizes_trailing_slashes_and_preserves_authentication() -> None:
+    # This is the construction path used by testnet registration before commit.
+    with _server() as base_url:
+        for input_url in (base_url, base_url + "/", base_url + "///"):
+            _CoolifyHandler.requests = []
+            controller = CoolifyController(
+                network="testnet", controller_id="coolify-b",
+                base_url=input_url, api_token=TOKEN, enabled=True,
+                project_name_hint="My first project", mutation_authority="observe-only",
+            )
+            assert controller.base_url == base_url
+            observed = get_coolify_json(controller, "/api/v1/projects", authenticated=True, timeout=2)
+            assert observed.status == 200
+            assert observed.redirect_hint == ""
+            assert _CoolifyHandler.requests == [{
+                "method": "GET", "path": "/api/v1/projects",
+                "authorization": f"Bearer {TOKEN}",
+            }]
+
+
+def test_redirect_hint_reports_destination_class_not_untrusted_location() -> None:
+    # The existing redirect fixture points at a different host/port and has
+    # a sensitive-looking path. Never surface a raw Location value.
+    with _server(redirect=True) as base_url:
+        controller = CoolifyController(
+            network="testnet", controller_id="coolify-b",
+            base_url=base_url + "/", api_token=TOKEN, enabled=True,
+            project_name_hint="My first project", mutation_authority="observe-only",
+        )
+        observed = get_coolify_json(controller, "/api/v1/version", authenticated=True, timeout=2)
+        assert observed.status == 302
+        assert observed.redirect_hint == "different host or port"
+        assert "/steal" not in observed.redirect_hint
+        assert TOKEN not in repr(observed)
+        assert len(_CoolifyHandler.requests) == 1
+
+
+def test_tls_handshake_failure_has_actionable_code_without_leaking_exception() -> None:
+    import ssl
+    import urllib.error
+
+    controller = CoolifyController(
+        network="testnet", controller_id="coolify-b",
+        base_url="https://127.0.0.1:8000/", api_token=TOKEN,
+        enabled=True, project_name_hint="My first project",
+        mutation_authority="observe-only",
+    )
+
+    def failed_tls(request, *, timeout):
+        assert request.full_url == "https://127.0.0.1:8000/api/v1/projects"
+        raise urllib.error.URLError(ssl.SSLError("secret=" + TOKEN))
+
+    with pytest.raises(CoolifyObservationError) as caught:
+        get_coolify_json(controller, "/api/v1/projects", authenticated=True, opener=failed_tls)
+    assert caught.value.code == "MOTHER_COOLIFY_TLS_FAILED"
+    assert TOKEN not in str(caught.value)

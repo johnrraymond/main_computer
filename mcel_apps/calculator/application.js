@@ -230,6 +230,46 @@ function declareCalculator(app) {
   });
   app.presentation.semanticSurface(CALCULATOR_SEMANTIC_SURFACE);
   app.layout.grammar(CALCULATOR_LAYOUT_GRAMMAR);
+  // Canonical structural ownership begins at the Calculator shell, not only
+  // its scientific keypad. Alternative workspace area maps are selected by
+  // live visibility and measured fit; hidden modes cannot be called verified.
+  app.layout.tree({
+    schema: "mcel.layout-tree.v1",
+    root: {id: "shell", selector: ".calculator-shell", role: "group", maxColumns: 1,
+      children: [
+        {id: "mode", selector: ".calculator-mode-switch", role: "region", verifyControls: false},
+        {id: "workspace", selector: ".calculator-workspace", role: "group", maxColumns: 3,
+          variants: [
+            {tracks: ["minmax(0, 1fr)","minmax(0, 1fr)","minmax(0, 1fr)"],
+              areas: ["basic graphing mathics", "chat chat chat"]},
+            {tracks: ["minmax(0, 1fr)","minmax(0, 1fr)"],
+              areas: ["graphing graphing", "basic mathics", "chat chat"]},
+            {tracks: ["minmax(0, 1fr)"],
+              areas: ["graphing", "basic", "mathics", "chat"]},
+            {tracks: ["minmax(0, 1fr)","minmax(0, 1fr)"],areas: ["basic chat"]},
+            {tracks: ["minmax(0, 1fr)"],areas: ["basic", "chat"]}
+          ],
+          children: [
+            {id: "basic", selector: ".calculator-basic-pane", role: "region", verifyControls: false},
+            {id: "graphing", selector: "#calculator-graphing-panel", role: "group", maxColumns: 1,
+              variants: [{tracks:["minmax(0, 1fr)"],areas:["scientific-prompt", "expression", "graph", "status", "lower-controls"]}],
+              children: [
+                {id: "scientific-prompt", selector: ".calculator-scientific-prompt", role: "region", verifyControls: false},
+                {id: "expression", selector: ".calculator-graph-expression-label", role: "region", verifyControls: false},
+                {id: "graph", selector: "#calculator-graph-canvas", role: "region", verifyControls: false},
+                {id: "status", selector: "#calculator-graph-status", role: "region", verifyControls: false},
+                {id: "lower-controls", selector: "#calculator-scientific-keypad", role: "group", maxColumns: 2,
+                  children: [
+                    {id: "graph-controls", selector: ".calculator-graph-controls", role: "region"},
+                    {id: "function-buttons", selector: ".calculator-scientific-functions", role: "control-grid",
+                      maxColumns: 3, minTargetWidth: 40, atomicText: true}
+                  ]}
+              ]},
+            {id: "mathics", selector: "#calculator-mathics-panel", role: "region", verifyControls: false},
+            {id: "chat", selector: "#calculator-chat-panel", role: "region", verifyControls: false}
+          ]}
+      ]}
+  });
 
   app.state.rendererLocal("mode", app.field.string(), {initial: "basic"});
   app.state.rendererLocal("arithmetic-expression", app.field.string(), {initial: ""});

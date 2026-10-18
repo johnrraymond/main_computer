@@ -64,7 +64,7 @@
         if (/calculator\.mode-|calculator\.mode\./.test(text)) {
           return {purpose: "calculator.mode-switch", role: "mode-switch"};
         }
-        if (/calculator\.key\.digit|data-calc-key="[0-9]"|\bdigit\b/.test(text)) {
+        if (/^[0-9]$/.test(String(record?.element?.getAttribute?.("data-calc-key") || "")) || /calculator\.key\.digit|data-calc-key="[0-9]"|\bdigit\b/.test(text)) {
           return {purpose: "calculator.keypad.digit-entry", role: "digit-entry"};
         }
         if (/calculator\.key\.(add|subtract|multiply|divide|percent|decimal|open-paren|close-paren)|data-calc-key|operator/.test(text)) {
@@ -79,11 +79,11 @@
         if (/calculator\.graphing\.(draw|reset|function|token)|data-calc-graph/.test(text)) {
           return {purpose: /reset/.test(text) ? "calculator.graphing.reset-view" : "calculator.graphing.local-graph-action", role: /reset/.test(text) ? "reset-view" : "graphing-action"};
         }
-        if (/calculator\.(prompt|qa|mathics).*(ask|model)|ask model|ask about results/.test(text)) {
+        if (/calculator[-.]ask-model|calculator\.(prompt|qa|mathics).*(ask|model)|calculator[-.]qa[-.]ask|ask model|ask about results/.test(text)) {
           return {purpose: "calculator.analysis.ask-model", role: "analysis-action", risk: "analysis"};
         }
         if (/calculator\.mathics\.(evaluate|clear|example)|data-mathics-example|mathics/.test(text)) {
-          return {purpose: /clear/.test(text) ? "calculator.mathics.clear" : "calculator.mathics.evaluate", role: /clear/.test(text) ? "clear" : "evaluate"};
+          return {purpose: /clear/.test(text) ? "calculator.mathics.clear" : "calculator.mathics.evaluate", role: /clear/.test(text) ? "clear" : "evaluate", risk: /clear/.test(text) ? "safe" : "analysis"};
         }
         if (/calculator/.test(text)) {
           return {purpose: "calculator.local-action", role: "calculator-action"};
@@ -255,6 +255,48 @@
                 kind: "panel",
                 risk: "none",
                 proofPolicy: "inspect-only"
+              });
+              return true;
+            }
+          },
+          {
+            id: "calculator.detect-graph-canvas",
+            phase: "purpose-inference",
+            priority: 85,
+            when(record, blackboard) {
+              return nonRootCalculatorSurface(record, blackboard) && record?.tag === "canvas" && /(graph|plot|canvas)/.test(source(record));
+            },
+            apply(record, blackboard) {
+              addPurpose(record, blackboard, "calculator.graph-surface", "graph-surface", "component.canvas-output", "calculator.detect-graph-canvas", {
+                kind: "canvas-output", risk: "none", proofPolicy: "inspect-only"
+              });
+              return true;
+            }
+          },
+          {
+            id: "calculator.detect-result-qa-panel",
+            phase: "purpose-inference",
+            priority: 83,
+            when(record, blackboard) {
+              return nonRootCalculatorSurface(record, blackboard) && !executableControl(record) && /(calculator-qa-panel|result-qa|calculator-result-question)/.test(source(record));
+            },
+            apply(record, blackboard) {
+              addPurpose(record, blackboard, "calculator.result-qa-panel", "result-qa-panel", "component.panel", "calculator.detect-result-qa-panel", {
+                kind: "panel", risk: "none", proofPolicy: "inspect-only"
+              });
+              return true;
+            }
+          },
+          {
+            id: "calculator.detect-chat-panel",
+            phase: "purpose-inference",
+            priority: 81,
+            when(record, blackboard) {
+              return nonRootCalculatorSurface(record, blackboard) && !executableControl(record) && /(calculator-chat-panel|calculator-chat-context)/.test(source(record));
+            },
+            apply(record, blackboard) {
+              addPurpose(record, blackboard, "calculator.chat-panel", "chat-context", "component.panel", "calculator.detect-chat-panel", {
+                kind: "panel", risk: "none", proofPolicy: "inspect-only"
               });
               return true;
             }

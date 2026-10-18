@@ -725,18 +725,29 @@ def _bridge_preflight_signer() -> dict[str, Any]:
     }
 
 
-def test_contract_deployer_command_is_copy_paste_mainnet_operator_without_secret_literal() -> None:
+def test_contract_deployer_command_uses_verified_mother_without_private_yaml_or_secret_literal() -> None:
     command = deployment._render_contract_deployer_command(_bridge_preflight_target())
 
-    assert command.startswith("$env:MAINNET_DEPLOYER_PRIVATE_KEY = python -c ")
-    assert "runtime/state/main_computer.private.yaml" in command
-    assert "python .\\tools\\mainnet-operator.py deploy-contracts" in command
-    assert "--target-environment mainnet" in command
+    assert command.startswith("python -m tools.mother_contract_deploy ")
+    assert "--network 'mainnet'" in command
     assert "--chain-id 42424240" in command
     assert "--rpc-url 'https://mainnet-rpc.greatlibrary.io'" in command
-    assert "--private-key-env MAINNET_DEPLOYER_PRIVATE_KEY" in command
-    assert "--offices $offices --yes" in command
+    assert "--yes" in command
+    assert "runtime/state/main_computer.private.yaml" not in command
+    assert "python -c" not in command
+    assert "PRIVATE_KEY" not in command
     assert "0x" + "11" * 32 not in command
+
+
+def test_contract_deployer_command_rejects_unsupported_network_and_quotes_rpc() -> None:
+    target = _bridge_preflight_target()
+    target["network"] = "development'; Write-Host unsafe"
+    assert deployment._render_contract_deployer_command(target) == ""
+    target["network"] = "testnet"
+    target["chain_contract"]["rpc_url"] = "https://host.invalid/a'b"
+    command = deployment._render_contract_deployer_command(target)
+    assert "--network 'testnet'" in command
+    assert "--rpc-url 'https://host.invalid/a''b'" in command
 
 
 def test_bridge_signer_live_preflight_blocks_missing_escrow_and_emits_deployer_command(
@@ -766,7 +777,7 @@ def test_bridge_signer_live_preflight_blocks_missing_escrow_and_emits_deployer_c
     assert calls == ["eth_chainId", "eth_getCode"]
     stderr = capsys.readouterr().err
     assert "HUB_CONTRACT_DEPLOYER_COMMAND:" in stderr
-    assert "mainnet-operator.py deploy-contracts" in stderr
+    assert "python -m tools.mother_contract_deploy" in stderr
     assert "rerun the same add-hub command" in stderr
 
 

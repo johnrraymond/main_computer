@@ -158,6 +158,7 @@ def project_host_bound_ir(
         "layoutId": str(layout.get("id") or ""),
         "surface": str(_mapping(layout.get("surface")).get("ref") or ""),
         "layoutGrammar": layout_grammar,
+        **({"layoutTree": layout["layoutTree"]} if "layoutTree" in layout else {}),
         "orderedChildren": [
             str(_mapping(item).get("ref") or "") for item in layout.get("orderedChildren") or []
         ],

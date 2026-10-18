@@ -1,6 +1,6 @@
 # Mainnet chain reset and contract redeploy runbook
 
-Status: operator runbook, stabilized 2026-07-08.
+Status: updated 2026-10-17. For existing mainnet contract redeploy only; **not a chain creation or reset procedure**. See `pretty_docs/mother-network-operations.md` for current authority and network inventory.
 
 Use this when the named `mainnet` chain has been deliberately reset or replaced
 and the operator needs to publish a fresh set of deployment facts.
@@ -10,17 +10,12 @@ cannot erase old contracts from its history. A dead/replaced chain can abandon
 old local deployment manifests, generate or reuse a new funded deployer, deploy a
 new contract set, and make the app point at the new public deployment files.
 
-## Source-of-truth split
+## Source of truth
 
-`runtime/state/main_computer.private.yaml` is private operator state. It should
-contain only things that are private or operationally sensitive:
-
-```text
-Coolify API tokens
-private RPC/operator host topology
-wallet private keys and generated private wallet material
-manual operator placement choices
-```
+Mother's verified `runtime/state/mother/identity.private.yaml`, its metadata,
+and its private recovery manifest own network identity and controller bindings.
+Do not restore `runtime/state/main_computer.private.yaml` as deployment authority.
+Private keys must never enter public deployment artifacts.
 
 Contract addresses are public deployment facts. They belong in public deployment
 and config artifacts, not in private YAML:
@@ -34,9 +29,7 @@ main_computer/config/mainnet_contracts.json
 Wallet credit balances are also not private-state authority. They are chain or
 application ledger facts and should not be preserved as private YAML fields.
 
-After a deployment or cleanup run, `sync_private_state.py` should keep the
-private file focused on secrets/topology and should not reintroduce contract
-addresses or wallet credit mirrors.
+Do not synchronize deployment manifests back into private identity state.
 
 ## Safety checklist
 
@@ -63,64 +56,58 @@ deployment on a deliberately reset chain, but it is a degraded network state.
 Persistent mainnet operation should converge to multiple observed validators and
 a non-zero peer count.
 
-## Bring up the chain surface
+## Establish a verified, already-running chain first
 
-Apply the Coolify-managed QBFT service that exposes the operator RPC. For a
-minimal one-instance bring-up:
+The previous instructions that invoked `tools/coolify_qbft_network.py` are
+retired: that executor was deleted. **This runbook cannot create, reset, or
+repair Besu services.** Never attempt to reconstruct it with old Allfather or
+Coolify cluster scripts.
 
-```powershell
-python .\tools\coolify_qbft_network.py apply mainnet `
-  --allow-mainnet `
-  --instances validator-rpc-1
-```
-
-Then inspect live reality:
+Inspect Mother's current controller binding and deployment-plan state:
 
 ```powershell
-python .\tools\coolify_qbft_network.py observe-chain mainnet --allow-mainnet
+python -m tools.mother_coolify controllers
+python -m tools.mother_deploy plan --network mainnet
 ```
 
-The observation command uses private state only as a decoder/template. The live
-truth comes from RPC and Coolify observations. A degraded report is expected if
-only `validator-rpc-1` is deployed; it should still report the expected chain id
-and advancing blocks before contract deployment proceeds.
+These are read-only orientation checks, not proof of live chain health or
+permission to mutate. Independently verify the **intended** RPC endpoint,
+chain ID, observed validator membership, and advancing block height. A plan
+alone is not live deployment evidence. If the chain is down or the intended
+RPC route is unknown, stop; use a separately reviewed, authorized Mother
+repair operation before deploying any contracts.
 
-## Reuse existing private keys
+## Identity authority: Mother
 
-If the intended new private keys already exist, do not run key preparation again.
-Set the deployer key environment variable from the private YAML or from your
-operator secret store:
+The legacy `mainnet-operator.py prepare-keys` command has been retired. Do not
+create, rotate, or reassign officer keys through
+`runtime/state/main_computer.private.yaml` or by editing Mother YAML by hand.
+Mother's committed identity is `runtime/state/mother/identity.private.yaml`,
+accompanied by its metadata and recovery manifest. Its verified reader checks
+the predecessor-bound identity generation.
 
-```powershell
-$env:MAINNET_DEPLOYER_PRIVATE_KEY = "<private deployer key>"
-```
+For an existing mainnet, obtain the approved deployer secret through the
+existing secure operator workflow. Set `MAINNET_DEPLOYER_PRIVATE_KEY` in your
+process environment, not as a command-line literal. Obtain the four officer
+addresses from the verified Mother identity. Never print the deployer key.
 
-Build the office list from the private state when those wallet entries are the
-intended governance wallets:
+The `reserve-starter` identity writer is a generation-one operation and **must
+not** be used to rotate identities in an existing mainnet. A network-specific
+verified state transition is required for any subsequent identity change.
 
-```powershell
-$offices = python -c "import yaml; s=yaml.safe_load(open('runtime/state/main_computer.private.yaml', encoding='utf-8')); w=s['networks']['mainnet']['wallets']; print(','.join(w[r]['address'] for r in ('captain','o1','o2','o3')))"
-```
+The B-only testnet was registered by `tools/mother_identity.py register-testnet`
+in verified Mother generation 23 as of 2026-10-17. Repeating registration is
+not a deployment procedure; do not re-register an existing network to obtain
+Besu containers. Mother automatically uses its verified predecessor binding
+for an authorized successor; manual generation acknowledgment is optional.
 
-## Generate missing private keys
-
-Only use this when keys are missing or a deliberate key rotation is intended:
-
-```powershell
-python .\tools\mainnet-operator.py prepare-keys --network mainnet
-```
-
-The key-preparation command is intentionally idempotent. It preserves existing
-wallet entries. To rotate a role, clear that role deliberately first, then run
-`prepare-keys`.
-
-Generated public wallet summaries are written under:
-
-```text
-runtime/deployments/mainnet/key-material/
-```
-
-Private keys remain private operator state and must not be committed.
+The contract operator below remains a separate explicit operator command. It
+accepts `--offices` as four approved addresses and a deployer-key environment
+variable; it does not read either Mother or legacy private state itself.
+**Do not use Hub Control-generated contract deployment commands that still
+extract credentials from the legacy private-state YAML** until that remaining
+caller is migrated to verified Mother identity. This manual contract path must
+use independently verified addresses and a securely supplied deployer key.
 
 ## Deploy contracts
 
@@ -166,29 +153,18 @@ deployment machinery with `tools/dev-chain-reset.py`. The app-facing mainnet
 source of truth remains the network-scoped `runtime/deployments/mainnet/` and
 `main_computer/config/mainnet_contracts.json` files.
 
-## Clean private state after deployment
+## Verify public deployment results
 
-After the deploy has written public manifests, sync the private file without live
-probing:
-
-```powershell
-python .\tools\sync_private_state.py --no-live-check --write
-```
-
-Then check that the private YAML did not regain public contract state or wallet
-credit mirrors:
-
-```powershell
-Select-String -Path .\runtime\state\main_computer.private.yaml `
-  -Pattern "contracts|AlphaBetaLockout|XLagBridgeReserve|HubCreditBridgeEscrow|credits"
-```
-
-The public files should contain the deployed contract addresses:
+After contract deployment, inspect the public deployment manifests:
 
 ```powershell
 Get-Content .\main_computer\config\mainnet_contracts.json
 Get-Content .\runtime\deployments\mainnet\latest.json
 ```
+
+Do not run the deleted legacy synchronizer or manually rewrite Mother's
+committed identity to synchronize contract addresses. Changes to Mother state
+require a predecessor-bound, verified Mother state transition.
 
 ## Validator-RPC canary funding proof
 
@@ -270,11 +246,8 @@ Besu image tags are pinned before long-lived operation
 public RPC exposure has TLS, rate-limit, and method policy
 ```
 
-Re-run:
-
-```powershell
-python .\tools\coolify_qbft_network.py observe-chain mainnet --allow-mainnet
-```
+Recheck the live network through an approved Mother observation and the
+intended RPC endpoint; do not call the deleted `coolify_qbft_network.py` tool.
 
 The goal is to move from a degraded single-observed-validator deployment to the
 documented mainnet shape: multiple validators, separated RPC surface, and a Hub

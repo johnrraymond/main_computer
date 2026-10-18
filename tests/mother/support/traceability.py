@@ -38,9 +38,9 @@ _RANGE_SEPARATORS = r"(?:through|[–—])"
 def find_repo_root(start: Path | None = None) -> Path:
     candidate = (start or Path(__file__)).resolve()
     for parent in (candidate, *candidate.parents):
-        if all((parent / name).is_file() for name in DOC_NAMES):
+        if all((parent / "pretty_docs" / name).is_file() for name in DOC_NAMES):
             return parent
-    raise RuntimeError("unable to locate repository root containing mother*.md")
+    raise RuntimeError("unable to locate repository root containing pretty_docs/mother*.md")
 
 
 @dataclass(frozen=True)
@@ -56,10 +56,10 @@ class MotherDocuments:
         repo = root or find_repo_root()
         return cls(
             root=repo,
-            mother=(repo / "mother.md").read_text(encoding="utf-8"),
-            operations=(repo / "mother-o.md").read_text(encoding="utf-8"),
-            functionalities=(repo / "mother-o-f.md").read_text(encoding="utf-8"),
-            modules=(repo / "mother-o-f-m.md").read_text(encoding="utf-8"),
+            mother=(repo / "pretty_docs" / "mother.md").read_text(encoding="utf-8"),
+            operations=(repo / "pretty_docs" / "mother-o.md").read_text(encoding="utf-8"),
+            functionalities=(repo / "pretty_docs" / "mother-o-f.md").read_text(encoding="utf-8"),
+            modules=(repo / "pretty_docs" / "mother-o-f-m.md").read_text(encoding="utf-8"),
         )
 
 

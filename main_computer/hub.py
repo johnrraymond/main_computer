@@ -5243,6 +5243,7 @@ def serve_hub_worker_pull(
     verbose: bool = True,
     max_requests: int | None = None,
     officer: str = "o0",
+    solve_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> None:
     """Run a foreground worker-pull loop that lets a local provider service hub requests."""
 
@@ -5257,8 +5258,12 @@ def serve_hub_worker_pull(
             officer=officer, verbose=verbose, max_requests=max_requests,
             timeout_s=min(15.0, max(3.0, config.hub_timeout_s)),
             poll_interval_s=poll_interval_s,
+            provider_name=config.provider, solve_fn=solve_fn,
         )
         return
+
+    if config.provider == "nanojev":
+        raise RuntimeError("NanoJev/CLEF requires the existing Hub's authenticated live-session transport")
 
     clean_hub_url = (hub_url or config.hub_url).rstrip("/")
     clean_worker_instance_id = config.hub_worker_node_id

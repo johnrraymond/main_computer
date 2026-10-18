@@ -173,11 +173,56 @@ def _chat_result(chat_fn: Callable[[Sequence[ChatMessage]], ChatResponse], offer
     }
 
 
+def _clef_result(
+    solve_fn: Callable[..., dict[str, Any]], offer: dict[str, Any],
+    *, model: str,
+) -> dict[str, Any]:
+    """Execute native CLEF work; never reinterpret a chat prompt as a solution.
+
+    The complete typed result lives in `solution` and remains available from
+    the Stable Hub's accepted-session record. Its terminal chat stream may have
+    empty content, since this operation is not a chat completion.
+    """
+    from main_computer.providers.nanojev import CLEF_CAPABILITIES
+
+    work = offer.get("work")
+    if not isinstance(work, dict):
+        raise ValueError("CLEF offer requires a work object")
+    caps = work.get("capabilities")
+    if not isinstance(caps, list) or len(caps) != 1 or caps[0] not in CLEF_CAPABILITIES:
+        raise ValueError("CLEF offer must require exactly one native CLEF capability")
+    capability = caps[0]
+    if work.get("model") not in (None, "", model):
+        raise ValueError("CLEF offer requested a different model")
+    inputs = work.get("input")
+    if not isinstance(inputs, dict) or inputs.get("kind") != capability:
+        raise ValueError("CLEF offer input.kind must equal its required capability")
+    payload = inputs.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("CLEF offer input.payload must be a non-empty JSON object")
+    solution = solve_fn(capability=capability, payload=payload)
+    if (not isinstance(solution, dict) or solution.get("provider") != "nanojev"
+            or solution.get("capability") != capability
+            or solution.get("schema") != "main-computer.nanojev-solution.v1"
+            or not isinstance(solution.get("model"), dict)
+            or solution["model"].get("family") != model):
+        raise ValueError("CLEF provider returned an invalid solution envelope")
+    return {
+        "status": "success",
+        "solution": solution,
+        "response": {
+            "role": "assistant", "content": "", "provider": "nanojev", "model": model,
+        },
+        "transport": "websocket-live-session",
+    }
+
+
 def serve_cli_live_worker(
     *, hub_url: str, worker_node_id: str, model: str, chat_fn: Callable[[Sequence[ChatMessage]], ChatResponse],
     assigned_ring: int, credits_per_request: Any, officer: str,
     verbose: bool = True, max_requests: int | None = None,
     timeout_s: float = 10.0, poll_interval_s: float = 0.25,
+    provider_name: str = "ollama", solve_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> None:
     from main_computer.viewport_routes_energy import _WorkerHubLiveSessionClient
 
@@ -186,9 +231,21 @@ def serve_cli_live_worker(
         hub_url, wallet=_officer_wallet(officer), timeout_s=timeout_s,
         **({"stable_identity": identity} if identity.get("service") == "main_computer.stable_hub" else {}),
     )
+    from main_computer.providers.nanojev import CLEF_CAPABILITIES, CLEF_MODEL
+
+    if provider_name == "nanojev":
+        if model != CLEF_MODEL or not callable(solve_fn):
+            raise ValueError("NanoJev Hub worker requires nanojev-clef and a native solve function")
+        capabilities = list(CLEF_CAPABILITIES)
+        executor = lambda offer: _clef_result(solve_fn, offer, model=model)
+    elif provider_name in {"ollama", "openai"}:
+        capabilities = ["chat.completions"]
+        executor = lambda offer: _chat_result(chat_fn, offer)
+    else:
+        raise ValueError(f"Hub worker cannot advertise unsupported provider {provider_name!r}")
     ring = f"ring-{int(assigned_ring)}"
     market = {
-        "rings": [ring], "capabilities": ["chat.completions"], "models": [model],
+        "rings": [ring], "capabilities": capabilities, "models": [model],
         "price": {"amount": str(credits_per_request), "unit": "compute_credit"},
         "max_concurrency": 1, "active_sessions": 0,
     }
@@ -198,13 +255,13 @@ def serve_cli_live_worker(
         "diagnostic_attempt_id": diagnostic_attempt_id,
         "status": "available", "model": model, "models": [model],
         "queue_depth": 0, "active_requests": 0, "max_concurrency": 1,
-        "capabilities": {"provider": "ollama", "assigned_ring": int(assigned_ring),
-                         "capabilities": ["chat.completions"]},
+        "capabilities": {"provider": provider_name, "assigned_ring": int(assigned_ring),
+                         "capabilities": capabilities},
         "market": market, "multisession_authorization": auth,
     }
     client = _WorkerHubLiveSessionClient(
         hub_url=hub_url, worker_id=worker_node_id, auth_message=auth_message,
-        timeout_s=timeout_s, work_executor=lambda offer: _chat_result(chat_fn, offer),
+        timeout_s=timeout_s, work_executor=executor,
     )
     try:
         if verbose:

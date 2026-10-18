@@ -1198,31 +1198,15 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(command[command.index("--port") + 1], "8785")
         self.assertEqual(command[command.index("--hub-root") + 1], "/data/main-computer/hub/mainnet-exp-fdb")
 
-    def test_hub_coolify_runbook_documents_exp_fdb_only_deploys(self) -> None:
-        runbook = REPO_ROOT / "pretty_docs" / "hub-coolify-deploy-runbook.md"
-
+    def test_current_mother_runbook_identifies_hub_authority(self) -> None:
+        runbook = REPO_ROOT / "pretty_docs" / "mother-network-operations.md"
         text = runbook.read_text(encoding="utf-8")
-
-        self.assertIn("coolify_hub_service.py plan test", text)
-        self.assertIn("coolify_hub_service.py apply test", text)
-        self.assertIn("main-computer-test-hub", text)
-        self.assertIn("runtime/coolify-local-docker/api-token.txt", text)
-        self.assertIn("coolify_hub_service.py plan mainnet", text)
-        self.assertIn("coolify_hub_service.py apply mainnet", text)
-        self.assertIn("--hub-implementation exp-fdb", text)
-        self.assertIn("--fdb-cluster-file /data/main-computer/fdb/fdb.cluster", text)
-        self.assertIn("--coolify-environment-name \"testnet-hub\"", text)
-        self.assertIn("--coolify-server-uuid \"c11j1nrxs7m2q6of6jmbxoxm\"", text)
-        self.assertIn("--git-repo https://github.com/johnrraymond/main_computer", text)
-        self.assertIn("--fdb-cluster-file /data/main-computer/hub/testnet-exp-fdb/fdb.cluster", text)
-        self.assertIn("--enable-bridge-writes", text)
-        self.assertIn("--sync-bridge-signer", text)
-        self.assertIn("/Dockerfile.hub.exp-fdb", text)
-        self.assertIn("main-computer-mainnet-hub", text)
-        self.assertNotIn("Dockerfile.hub.mainnet", text)
-        self.assertNotIn("Dockerfile.hub.testnet", text)
-
-
+        self.assertIn("hub_mutate_harness.py", text)
+        self.assertIn("tools/hub_control/", text)
+        self.assertIn("fdb_mutate_harness.py", text)
+        self.assertIn("tools.mother_coolify", text)
+        self.assertIn("Coolify B", text)
+        self.assertIn("Besu not deployed", text)
 
     def test_verify_action_is_read_only_and_does_not_require_git_repo(self) -> None:
         args = coolify_hub_service.parse_args(

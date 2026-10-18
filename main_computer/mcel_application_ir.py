@@ -1013,6 +1013,22 @@ def _write_set_diagnostics(
                         related_semantic_ids=(intent_id, target_id),
                     )
                 )
+    for layout in candidate.get("layouts", []):
+        if isinstance(layout, Mapping) and "layoutTree" in layout:
+            for problem in _executable_layout_tree_errors(layout["layoutTree"]):
+                diagnostics.append(_diagnostic(
+                    code="MCEL_IR_EXECUTABLE_LAYOUT_INVALID",
+                    rule_version="mcel.layout-tree.v1",
+                    stage="compile",
+                    repair_stage="layout",
+                    app_id=app_id,
+                    semantic_path=str(layout.get("id") or "layouts") + ".layoutTree",
+                    summary="Executable semantic layout tree is invalid.",
+                    problem=problem,
+                    source=_node_source(layout),
+                    observed=None,
+                    expected={"schema": "mcel.layout-tree.v1"},
+                ))
     return diagnostics
 
 
@@ -1447,3 +1463,92 @@ def _json_path(parts: Iterable[Any]) -> str:
 
 def _one_id(value: Any) -> tuple[str, ...]:
     return (str(value),) if isinstance(value, str) and value else ()
+
+# Optional canonical MCEL layout ownership.  Unlike legacy host data attributes,
+# this declaration travels with the fingerprinted, normalized application IR.
+# A missing tree retains the prior host-bound presentation authority.
+def _executable_layout_tree_errors(tree: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(tree, Mapping) or tree.get("schema") != "mcel.layout-tree.v1":
+        return ["layoutTree requires schema mcel.layout-tree.v1"]
+    if set(tree) != {"schema", "root"}:
+        errors.append("layoutTree only supports schema and root")
+    ids: set[str] = set()
+    count = 0
+
+    def visit(node: Any, depth: int) -> None:
+        nonlocal count
+        count += 1
+        if count > 64 or depth > 10:
+            errors.append("layoutTree exceeds 64 nodes or 10 nested levels")
+            return
+        if not isinstance(node, Mapping):
+            errors.append("layoutTree nodes must be records")
+            return
+        role = node.get("role")
+        allowed = {"id", "selector", "role", "children", "maxColumns", "minTargetWidth", "gap", "atomicText", "variants", "verifyControls", "requireVisible"}
+        if set(node) - allowed:
+            errors.append("layoutTree node has unsupported properties")
+        ident, selector = node.get("id"), node.get("selector")
+        if not isinstance(ident, str) or not ident or ident in ids:
+            errors.append("layoutTree node IDs must be nonempty and unique")
+        else:
+            ids.add(ident)
+        if not isinstance(selector, str) or not selector.strip():
+            errors.append("layoutTree node selectors must be nonempty strings")
+        if role not in {"group", "control-grid", "region"}:
+            errors.append("layoutTree roles must be group, control-grid or region")
+        columns = node.get("maxColumns", 3)
+        if not isinstance(columns, int) or isinstance(columns, bool) or not 1 <= columns <= 8:
+            errors.append("layoutTree maxColumns must be integer 1..8")
+        width = node.get("minTargetWidth", 40)
+        if isinstance(width, bool) or not isinstance(width, (int, float)) or not 24 <= width <= 256:
+            errors.append("layoutTree minTargetWidth must be 24..256 CSS pixels")
+        gap = node.get("gap", 8)
+        if isinstance(gap, bool) or not isinstance(gap, (int, float)) or not 0 <= gap <= 64:
+            errors.append("layoutTree gap must be 0..64 CSS pixels")
+        if "atomicText" in node and not isinstance(node["atomicText"], bool):
+            errors.append("layoutTree atomicText must be boolean")
+        if "requireVisible" in node and not isinstance(node["requireVisible"], bool):
+            errors.append("layoutTree requireVisible must be boolean")
+        if "verifyControls" in node and not isinstance(node["verifyControls"], bool):
+            errors.append("layoutTree verifyControls must be boolean")
+        variants = node.get("variants", [])
+        if "variants" in node:
+            if role != "group" or not isinstance(variants, list) or not 1 <= len(variants) <= 8:
+                errors.append("layoutTree variants require a group with 1..8 alternatives")
+            else:
+                child_ids = {c.get("id") for c in node.get("children", []) if isinstance(c, Mapping)}
+                for variant in variants:
+                    if not isinstance(variant, Mapping) or set(variant) != {"tracks", "areas"}:
+                        errors.append("layoutTree variant must contain tracks and areas")
+                        continue
+                    tracks, areas = variant.get("tracks"), variant.get("areas")
+                    if (not isinstance(tracks, list) or not 1 <= len(tracks) <= 8
+                        or any(not isinstance(t, str) or not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]+)?px|minmax\(0,\s*[0-9]+(?:\.[0-9]+)?fr\))", t) for t in tracks)):
+                        errors.append("layoutTree variant has invalid CSS tracks")
+                    if not isinstance(areas, list) or not 1 <= len(areas) <= 12 or any(not isinstance(row, str) for row in areas):
+                        errors.append("layoutTree variant areas must be 1..12 rows")
+                        continue
+                    rows = [row.split() for row in areas]
+                    if not isinstance(tracks, list) or any(len(row) != len(tracks) for row in rows):
+                        errors.append("layoutTree variant area width differs from track count")
+                    if any(area != "." and area not in child_ids for row in rows for area in row):
+                        errors.append("layoutTree variant refers to unknown child area")
+                    for area in set(x for row in rows for x in row if x != "."):
+                        points = [(r,c) for r,row in enumerate(rows) for c,value in enumerate(row) if value==area]
+                        if points and len(points) != (max(r for r,c in points)-min(r for r,c in points)+1)*(max(c for r,c in points)-min(c for r,c in points)+1):
+                            errors.append("layoutTree variant area must be rectangular")
+        children = node.get("children", [])
+        if not isinstance(children, list):
+            errors.append("layoutTree children must be a list")
+            return
+        if role == "group" and not children:
+            errors.append("layoutTree group must declare children")
+        if role != "group" and children:
+            errors.append("only layoutTree group may declare children")
+        for child in children:
+            visit(child, depth + 1)
+
+    visit(tree.get("root"), 0)
+    return errors

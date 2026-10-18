@@ -199,6 +199,168 @@ var McelHostBoundApplicationRuntime = (() => {
     return facade;
   }
 
+  // The generated layout module, not the host HTML, is the layout authority.
+  // Inactive app panes remain deferred until measurable; that is not a PASS.
+  function bindCanonicalLayout(root, modules, request, appId) {
+    const tree = modules.layout?.layoutTree;
+    if (!tree) return Object.freeze({status: "not-declared", dispose() {}});
+    const engine = request.layoutEngine || globalThis.McelSemanticLayoutInference;
+    if (!engine || typeof engine.mountCanonicalLayoutTree !== "function"
+        || typeof engine.unmountCanonicalLayoutTree !== "function") {
+      throw new Error(`MCEL ${appId} canonical layout runtime is unavailable.`);
+    }
+    if (tree.schema !== "mcel.layout-tree.v1" || typeof tree.root?.selector !== "string") {
+      throw new Error(`MCEL ${appId} generated layout tree is invalid.`);
+    }
+    let matching;
+    try {
+      matching = [...(root.querySelectorAll?.(tree.root.selector) || [])];
+      if (root.matches?.(tree.root.selector)) matching.unshift(root);
+    } catch (error) {
+      throw new Error(`MCEL ${appId} layout host selector is invalid: ${error.message}`);
+    }
+    if (matching.length !== 1 || !root.contains?.(matching[0]) && matching[0] !== root) {
+      throw new Error(`MCEL ${appId} requires exactly one owned layout root: ${tree.root.selector}`);
+    }
+    const host = matching[0];
+    if (typeof host.getBoundingClientRect !== "function") {
+      throw new Error(`MCEL ${appId} layout host cannot be measured.`);
+    }
+    host.dataset.mcelCanonicalLayoutClaimed = "mcel.layout-tree.v1";
+    let state = "deferred";
+    let report = null;
+    let active = false;
+    let disposed = false;
+    let observer;
+    let mutationObserver;
+    function hostIsHidden() {
+      for (let el = host; el; el = el.parentElement) {
+        const css = el.ownerDocument?.defaultView?.getComputedStyle?.(el);
+        if (el.hidden || css?.display === "none" || css?.visibility === "hidden") return true;
+        if (el === root) break;
+      }
+      return false;
+    }
+    function missingRequiredRegions() {
+      const missing=[];
+      function walk(node) {
+        if (node.requireVisible) {
+          let target;
+          try {target=host.matches(node.selector)?host:host.querySelector(node.selector);}
+          catch (_) {target=null;}
+          let hidden=!target || !(target.getBoundingClientRect().width>0);
+          for (let el=target; !hidden && el; el=el.parentElement) {
+            const css=el.ownerDocument?.defaultView?.getComputedStyle?.(el);
+            if (el.hidden || css?.display==="none" || css?.visibility==="hidden") hidden=true;
+            if (el===root) break;
+          }
+          if (hidden) missing.push(node.id);
+        }
+        for (const child of node.children||[]) walk(child);
+      }
+      walk(tree.root);
+      return missing;
+    }
+    function publish(status, reason = "") {
+      state = status;
+      root.dataset.mcelHostBoundLayoutStatus = status;
+      root.dataset.mcelHostBoundLayoutSchema = "mcel.layout-tree.v1";
+      if (reason) root.dataset.mcelHostBoundLayoutDetail = reason;
+      else delete root.dataset.mcelHostBoundLayoutDetail;
+      dispatchLifecycle(root, "mcel:host-bound-layout", {appId, status, reason,
+        layoutTree: tree.schema, evaluated: status === "pass"});
+    }
+    function refresh() {
+      if (disposed) return report;
+      if (!(host.getBoundingClientRect().width > 0)) {
+        if (active) { engine.unmountCanonicalLayoutTree(host); active = false; }
+        if (hostIsHidden()) {
+          publish("deferred", "layout-root-not-visible");
+          return report;
+        }
+        publish("refused", "visible-layout-root-has-zero-width");
+        throw new Error(`MCEL ${appId} visible canonical layout root has zero width.`);
+      }
+      const waiting=missingRequiredRegions();
+      if (waiting.length) {
+        if (active) { engine.unmountCanonicalLayoutTree(host); active=false; }
+        publish("deferred", `layout regions not yet visible: ${waiting.join(",")}`);
+        return {status:"deferred", waiting};
+      }
+      try {
+        if (active) { engine.unmountCanonicalLayoutTree(host); active = false; }
+        const result = engine.mountCanonicalLayoutTree(host, tree);
+        if (result?.status !== "pass") {
+          publish("refused", String(result?.reason || "no-conformant-layout"));
+          throw new Error(`MCEL ${appId} canonical layout refused: ${result?.reason || "no-conformant-layout"}`);
+        }
+        active = true;
+        report = result;
+        publish(result.initial?.independent === "pass" ? "pass" : "observed-only");
+        return result;
+      } catch (error) {
+        publish("refused", error.message || String(error));
+        throw error;
+      }
+    }
+    // Rendered but hidden application panels have no meaningful dimensions.
+    // Do not certify them, but react when the host becomes measurable.
+    if (host.getBoundingClientRect().width <= 0 && typeof ResizeObserver !== "function") {
+      delete host.dataset.mcelCanonicalLayoutClaimed;
+      throw new Error(`MCEL ${appId} hidden layout cannot be observed until visible.`);
+    }
+    refresh();
+    if (typeof ResizeObserver === "function") {
+      let lastWidth = host.getBoundingClientRect().width;
+      observer = new ResizeObserver(() => {
+        if (disposed) return;
+        const width = host.getBoundingClientRect().width;
+        if (Math.abs(width - lastWidth) < 1) return;
+        lastWidth = width;
+        try { refresh(); } catch (error) {
+          setRootStatus(root, "error", error.message || String(error));
+        }
+      });
+      observer.observe(host);
+    }
+    if (typeof MutationObserver === "function") {
+      mutationObserver = new MutationObserver(records => {
+        if (disposed) return;
+        // The host can change application modes without changing root width.
+        // Re-evaluate on a genuine hidden-region transition, never on MCEL's
+        // own generated inline CSS or diagnostic data attributes.
+        const changedVisibility=records.some(record => record.attributeName === "hidden");
+        if (state !== "deferred" && !changedVisibility) return;
+        try { refresh(); } catch (error) {
+          setRootStatus(root, "error", error.message || String(error));
+        }
+      });
+      // Observe required child readiness as well as hidden ancestors; only
+      // retry while deferred, so MCEL's own accepted styles cannot loop.
+      mutationObserver.observe(host, {subtree: true, attributes: true,
+        attributeFilter: ["hidden", "class", "style"]});
+      for (let el = host.parentElement; el; el = el.parentElement) {
+        mutationObserver.observe(el, {attributes: true, attributeFilter: ["hidden", "class", "style"]});
+        if (el === root) break;
+      }
+    }
+    return {
+      get status() {return state;}, get report() {return report;}, refresh,
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        observer?.disconnect();
+        mutationObserver?.disconnect();
+        if (active) engine.unmountCanonicalLayoutTree(host);
+        active = false;
+        delete host.dataset.mcelCanonicalLayoutClaimed;
+        delete root.dataset.mcelHostBoundLayoutStatus;
+        delete root.dataset.mcelHostBoundLayoutSchema;
+        delete root.dataset.mcelHostBoundLayoutDetail;
+      }
+    };
+  }
+
   async function mountApplication(request = {}) {
     const catalog = packageCatalogAuthority(request.packageCatalog);
     const appId = safeString(request.appId || request.packageRecord?.appId);
@@ -237,6 +399,13 @@ var McelHostBoundApplicationRuntime = (() => {
       setRootStatus(root, "error", error?.message || String(error));
       throw error;
     }
+    let layoutBinding;
+    try {
+      layoutBinding = bindCanonicalLayout(root, modules, request, appId);
+    } catch (error) {
+      setRootStatus(root, "error", error?.message || String(error));
+      throw error;
+    }
     let active = true;
 
     const mount = Object.freeze({
@@ -248,6 +417,12 @@ var McelHostBoundApplicationRuntime = (() => {
       manifest: deepFreeze(clonePlain(manifest)),
       modules: Object.freeze(modules),
       bindingReport,
+      get layoutStatus() { return layoutBinding.status; },
+      get layoutReport() { return layoutBinding.report || null; },
+      refreshLayout() {
+        if (!active) throw new Error(`Host-bound MCEL application ${appId} is unmounted.`);
+        return layoutBinding.refresh?.() || null;
+      },
       get active() {
         return active;
       },
@@ -265,6 +440,7 @@ var McelHostBoundApplicationRuntime = (() => {
       unmount() {
         if (!active) return false;
         active = false;
+        layoutBinding.dispose();
         mounts.delete(appId);
         setRootStatus(root, "unmounted");
         dispatchLifecycle(root, "mcel:host-bound-unmounted", {appId});
@@ -278,7 +454,8 @@ var McelHostBoundApplicationRuntime = (() => {
       appId,
       fingerprint: record.runtimeProjection.fingerprint,
       intentCount: bindingReport.intentCount,
-      bindingStatus: bindingReport.status
+      bindingStatus: bindingReport.status,
+      layoutStatus: layoutBinding.status
     });
     return mount;
   }

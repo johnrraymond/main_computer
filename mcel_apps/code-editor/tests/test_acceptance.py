@@ -22,4 +22,12 @@ def test_code_editor_authoritative_dsl_compiles_and_projects_deterministically()
     second = project_code_editor_ir(compiled.normalized_ir)
     assert first.files == second.files
     assert first.file_hashes == second.file_hashes
-    assert len(first.files) == 8
+    expected = {
+        "contracts/domain.js", "contracts/intents.js", "contracts/adapter.js",
+        "contracts/surface.js", "contracts/layout.js", "contracts/surface-bundle.json",
+        "contracts/observation.js", "contracts/acceptance.js",
+        "generated/mcel.application.normalized.json",
+    }
+    assert set(first.files) == expected
+    assert set(first.file_hashes) == expected
+    assert b'"layoutTree"' in first.files["contracts/layout.js"]

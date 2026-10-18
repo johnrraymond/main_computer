@@ -215,7 +215,6 @@ main_computer/git_tools.py
 git_dirty.py
 .githooks/pre-commit
 .gitignore
-tools/sync_private_state.py
 tests/test_git_tools_project_panel.py
 tests/test_git_page_wizard_workflow.py
 tests/test_git_tools_server_panel.py

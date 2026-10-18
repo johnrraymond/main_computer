@@ -1112,45 +1112,30 @@ def _bridge_signer_required(target: Mapping[str, Any]) -> bool:
 
 
 def _render_contract_deployer_command(target: Mapping[str, Any]) -> str:
-    """Return the existing mainnet contract deployer as one copy/paste PowerShell line.
+    """Emit a replayable contract deployment command backed by verified Mother identity.
 
-    The command reads private authority from the established private-state file
-    at execution time.  No private key is embedded in or printed by this helper.
-    ``mainnet-operator deploy-contracts`` intentionally deploys the complete root
-    contract set so the public deployment manifest remains complete.
+    No signer or wallet is extracted into PowerShell, embedded in the command,
+    or obtained from the retired Main Computer private-state document.
+    The Mother wrapper delegates to the existing mainnet-operator deployer.
     """
 
     network = str(target.get("network") or "mainnet").strip() or "mainnet"
+    if network not in {"mainnet", "testnet"}:
+        return ""
     chain = target.get("chain_contract") if isinstance(target.get("chain_contract"), Mapping) else {}
     chain_id = int(chain.get("chain_id") or 0)
     rpc_url = str(chain.get("rpc_url") or "").strip()
     if not chain_id or not rpc_url:
         return ""
 
-    env_name = f"{network.upper().replace('-', '_')}_DEPLOYER_PRIVATE_KEY"
-    state_path = "runtime/state/main_computer.private.yaml"
-    key_expr = (
-        "import yaml; "
-        f"s=yaml.safe_load(open(r'{state_path}',encoding='utf-8')); "
-        f"print(s['networks']['{network}']['wallets']['deployer']['private_key'])"
-    )
-    office_expr = (
-        "import yaml; "
-        f"s=yaml.safe_load(open(r'{state_path}',encoding='utf-8')); "
-        f"w=s['networks']['{network}']['wallets']; "
-        "print(','.join(str(w[r]['address']) for r in ('captain','o1','o2','o3')))"
-    )
     return (
-        f'$env:{env_name} = python -c "{key_expr}"; '
-        f'$offices = python -c "{office_expr}"; '
-        "python .\\tools\\mainnet-operator.py deploy-contracts "
-        f"--target-environment {network} "
+        "python -m tools.mother_contract_deploy "
+        f"--network {_powershell_single_quote(network)} "
         f"--chain-id {chain_id} "
         f"--rpc-url {_powershell_single_quote(rpc_url)} "
         f"--container-rpc-url {_powershell_single_quote(rpc_url)} "
         "--external-docker-network bridge "
-        f"--private-key-env {env_name} "
-        "--offices $offices --yes"
+        "--yes"
     )
 
 

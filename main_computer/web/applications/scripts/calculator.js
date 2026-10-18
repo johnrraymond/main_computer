@@ -120,6 +120,9 @@
       const semanticSurface = mount.modules?.surface?.semanticSurface;
       const layoutGrammar = mount.modules?.layout?.layoutGrammar;
       const workspace = calculatorShell?.querySelector(".calculator-workspace");
+      // A projected canonical tree owns this workspace. The older semantic
+      // workspace planner must not race its generated CSS or claim authority.
+      if (workspace?.closest('[data-mcel-canonical-layout-claimed]')) return null;
       const width = workspace?.getBoundingClientRect?.().width || 0;
       if (!semanticSurface || !layoutGrammar || width <= 0) return null;
       const mode = calculatorModeGraphing.classList.contains("active") ? "graphing" : "basic";

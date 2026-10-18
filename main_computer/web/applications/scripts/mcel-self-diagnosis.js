@@ -1033,7 +1033,7 @@
         findings,
         "critical",
         "visual-integrity-violation",
-        "Rendered semantic surfaces collide, bleed, or overwrite readable content.",
+        "Rendered semantic surfaces have text-integrity, collision, or content-containment violations.",
         {visualIntegrityViolations},
         "layout.visualIntegrityProbe"
       );
@@ -2015,6 +2015,122 @@
     return boxes;
   }
 
+  // A text Range covering the complete label can fit inside a control even when
+  // overflow-wrap:anywhere has broken a single semantic word across lines.
+  // Observe character positions read-only; no CSS overrides or DOM probes.
+  function detectAtomicControlLabelSplits(root, context = {}) {
+    if (!isElement(root)) return [];
+    const violations = [];
+    const controls = queryAll('button, [role="button"]', root);
+    for (const el of controls) {
+      if (!isElement(el) || isLayoutProbeIgnoredElement(el, context.appId)) continue;
+      if (isDocumentFloatingMenuElement(el, context.appId)) continue;
+      const policy = String(el.getAttribute?.("data-mcel-text-fit") || "").trim().toLowerCase();
+      if (policy === "allow-intraword-wrap" || policy === "multiline-anywhere") continue;
+      const box = computeBox(el);
+      if (!box.visible || box.width < 4 || box.height < 4) continue;
+      const styles = getComputedStyleSafe(el);
+      if (styles.visibility === "hidden" || styles.display === "none") continue;
+      const doc = el.ownerDocument || getDocument();
+      if (!doc?.createRange || !doc?.createTreeWalker) continue;
+      const nodeFilter = doc.defaultView?.NodeFilter?.SHOW_TEXT || 4;
+      const walker = doc.createTreeWalker(el, nodeFilter);
+      const range = doc.createRange();
+      const failures = [];
+      try {
+        let node;
+        while ((node = walker.nextNode())) {
+          // Atomic words within each text node. Whitespace-separated multi-line
+          // labels are intentional unless a semantic contract says otherwise.
+          const source = String(node.data || "");
+          for (const match of source.matchAll(/[A-Za-z]{2,}/g)) {
+            const characters = [];
+            const lineTops = [];
+            for (let at = 0; at < match[0].length; at += 1) {
+              range.setStart(node, match.index + at);
+              range.setEnd(node, match.index + at + 1);
+              const rect = range.getBoundingClientRect();
+              if (!(rect.width > 0 && rect.height > 0)) continue;
+              let line = lineTops.findIndex((top) => Math.abs(top - rect.top) <= 2);
+              if (line < 0) {
+                line = lineTops.length;
+                lineTops.push(rect.top);
+              }
+              characters.push({character: match[0][at], line, x: rect.left, y: rect.top});
+            }
+            if (lineTops.length < 2) continue;
+            const fragments = [];
+            for (const char of characters) {
+              if (!fragments[char.line]) fragments[char.line] = "";
+              fragments[char.line] += char.character;
+            }
+            failures.push({word: match[0], lineCount: lineTops.length, fragments: fragments.filter(Boolean),
+              characterPositions: characters.map(({character, line, x, y}) => ({
+                character, line: line + 1, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100
+              }))});
+          }
+        }
+      } catch {
+        // Unknown measurement is not evidence of a clean control. Existing
+        // diagnostic-no-throw policy handles unexpected collector errors.
+      } finally {
+        try { range.detach?.(); } catch {}
+      }
+      if (!failures.length) continue;
+      const parent = el.parentElement;
+      const parentStyles = parent ? getComputedStyleSafe(parent) : {};
+      const padding = Number.parseFloat(styles.paddingLeft || 0) + Number.parseFloat(styles.paddingRight || 0);
+      const clientWidth = Number(el.clientWidth || 0);
+      const contentWidth = Math.max(0, clientWidth - (Number.isFinite(padding) ? padding : 0));
+      const controlId = String(el.getAttribute?.("data-mc-widget-id") || el.getAttribute?.("data-mcel-control-id") || el.id || "");
+      const selector = selectorFor(el);
+      const repairConcepts = [
+        {
+          id: "preserve-atomic-control-label",
+          hypothesis: "Permissive word wrapping permits an atomic control label to break.",
+          proposedChangeType: "text-fit-policy",
+          requiredChecks: ["Label remains intact", "No clipping or overflow", "Other control labels remain readable"]
+        },
+        {
+          id: "derive-control-intrinsic-minimum",
+          hypothesis: "The control has insufficient usable width for its unbroken label.",
+          proposedChangeType: "intrinsic-control-sizing",
+          requiredChecks: ["Unbroken label fits", "Minimum pointer target remains usable", "No adjacent control collision"]
+        },
+        {
+          id: "reconsider-parent-track-allocation",
+          hypothesis: "Parent grid or flex allocation may be constraining the control width.",
+          proposedChangeType: "layout-constraint-review",
+          requiredChecks: ["All affected labels fit", "Responsive layout remains valid", "No sibling or workspace regression"]
+        }
+      ].map((concept) => ({...concept, status: "proposed-unverified", applicationAuthorized: false}));
+      violations.push({
+        type: "atomic-control-label-split",
+        appId: context.appId || "",
+        selector, controlId, label: textPreview(el),
+        semanticPolicy: policy || "atomic-control-words",
+        fragments: failures,
+        geometry: {
+          buttonWidth: Math.round(box.width * 100) / 100,
+          clientWidth, contentWidth: Math.round(contentWidth * 100) / 100,
+          scrollWidth: Number(el.scrollWidth || 0),
+          parentWidth: parent ? Math.round(parent.getBoundingClientRect().width * 100) / 100 : 0,
+          parentGridColumns: String(parentStyles.gridTemplateColumns || "")
+        },
+        css: {
+          whiteSpace: String(styles.whiteSpace || ""),
+          overflowWrap: String(styles.overflowWrap || ""),
+          wordBreak: String(styles.wordBreak || ""),
+          font: String(styles.font || ""),
+          padding: String(styles.padding || "")
+        },
+        repairConcepts
+      });
+      if (violations.length >= 16) break;
+    }
+    return violations;
+  }
+
   function elementsAreRelated(first, second) {
     if (!isElement(first) || !isElement(second)) return false;
     return first === second || first.contains(second) || second.contains(first);
@@ -2095,6 +2211,7 @@
   function detectVisualIntegrityViolations(root, context = {}) {
     if (!isElement(root)) return [];
     const violations = [
+      ...detectAtomicControlLabelSplits(root, context),
       ...detectVisualStackOverlaps(root, context),
       ...detectReadableTextIntegrityViolations(root, context)
     ];
@@ -2503,6 +2620,7 @@
         detectLayoutCollisions,
         detectContentFitViolations,
         detectVisualIntegrityViolations,
+        detectAtomicControlLabelSplits,
         collectReadableTextBoxes,
         clippedPaintBox,
         clippedRangeBox,

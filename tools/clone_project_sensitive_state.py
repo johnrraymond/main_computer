@@ -58,6 +58,9 @@ MOTHER_STATE_ROOTS = (
 # Evidence is intentionally retained sparsely: every receipt explicitly
 # referenced by current state plus the newest receipt in each immediate
 # evidence category. Historical unreferenced receipts are not cloned.
+# The retired state must not be copied OR read as an evidence-reference source.
+RETIRED_LEGACY_STATE_PATH = Path("runtime/state/main_computer.private.yaml")
+
 CURRENT_STATE_REFERENCE_DIRS = (
     Path("runtime/state"),
     Path("runtime/state/mother"),
@@ -134,7 +137,6 @@ EXPLICIT_SECRET_FILES = (
     Path("local.secrets"),
     Path(".git-credentials"),
     Path("runtime/deployment/.env"),
-    Path("runtime/state/main_computer.private.yaml"),
     Path("runtime/state/mother-bootstrap.private.yaml"),
     Path("runtime/applications_service/applications.env"),
     Path("runtime/coolify-local-docker/credentials.txt"),
@@ -372,6 +374,8 @@ def iter_current_state_reference_files(repo_root: Path) -> Iterable[Path]:
         except OSError:
             continue
         for path in children:
+            if path == repo_root / RETIRED_LEGACY_STATE_PATH:
+                continue
             if path in seen or not path.is_file():
                 continue
             if path.suffix.lower() not in CURRENT_STATE_REFERENCE_SUFFIXES:

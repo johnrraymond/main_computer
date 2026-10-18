@@ -272,6 +272,36 @@
         (Array.isArray(currentState.annotations) && currentState.annotations.some((item) => item.reviewed === true));
     }
 
+    // Carry only explicitly reviewed diagnostic evidence into the existing
+    // repair-context export. Proposed concepts are hypotheses, never changes.
+    function reviewedDiagnosticRepairConcepts(findings, reviewedFindingIds) {
+      const reviewed = new Set(Array.isArray(reviewedFindingIds) ? reviewedFindingIds.map(safeString) : []);
+      if (!reviewed.size) return [];
+      const concepts = [];
+      for (const finding of Array.isArray(findings) ? findings : []) {
+        const findingId = safeString(finding?.id || finding?.code || "");
+        if (!reviewed.has(findingId)) continue;
+        const violations = finding?.evidence?.visualIntegrityViolations || [];
+        for (const violation of Array.isArray(violations) ? violations : []) {
+          if (violation?.type !== "atomic-control-label-split") continue;
+          for (const concept of Array.isArray(violation.repairConcepts) ? violation.repairConcepts : []) {
+            concepts.push({
+              findingId,
+              targetSelector: safeString(violation.selector),
+              controlId: safeString(violation.controlId),
+              observedLabel: safeString(violation.label),
+              evidenceType: "atomic-control-label-split",
+              ...clonePlain(concept),
+              status: "proposed-unverified",
+              applicationAuthorized: false
+            });
+            if (concepts.length >= 48) return concepts;
+          }
+        }
+      }
+      return concepts;
+    }
+
     function hasRuntimeMethod(methodName) {
       return Boolean(methodName && runtimeBindings && typeof runtimeBindings[methodName] === "function");
     }
@@ -431,6 +461,11 @@
           aspectId: normalizeAspectId(payload.aspectId || result.aspectId),
           reviewedFindingIds: clonePlain(payload.reviewedFindingIds || result.reviewedFindingIds || []),
           annotationIds: clonePlain(payload.annotationIds || result.annotationIds || []),
+          proposedRepairConcepts: reviewedDiagnosticRepairConcepts(
+            currentState.validation?.findings,
+            payload.reviewedFindingIds || result.reviewedFindingIds || []
+          ),
+          applicationAuthorized: false,
           patchApplicationBoundary: "external-new-patch-workflow",
           generatedAt: observedAt
         };

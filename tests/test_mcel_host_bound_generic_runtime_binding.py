@@ -46,16 +46,30 @@ const originalFacade = globalThis.MainComputerCodeEditorRuntime;
 if (mode === "missing-method") {
   globalThis.MainComputerCodeEditorRuntime = Object.freeze({...originalFacade, saveFile: undefined});
 }
+const layoutHost = {
+  hidden: true,
+  dataset: {},
+  getBoundingClientRect: () => ({width: 0, height: 0})
+};
+globalThis.ResizeObserver = class {
+  observe() {} disconnect() {}
+};
 const root = {
   dataset: {},
   matches: (selector) => selector === "#code-editor-app",
+  querySelectorAll: (selector) => selector === ".code-studio-shell" ? [layoutHost] : [],
+  contains: (node) => node === layoutHost,
   dispatchEvent: () => true
+};
+const layoutEngine = {
+  mountCanonicalLayoutTree() { throw Error("Hidden layout must remain deferred"); },
+  unmountCanonicalLayoutTree() {}
 };
 vm.runInThisContext(fs.readFileSync(__HOST_RUNTIME__, "utf8"), {filename: "mcel-host-bound-application-runtime.js"});
 (async () => {
   try {
     const mount = await McelHostBoundApplicationRuntime.mountApplication({
-      appId: "code-editor", root, manifest, packageCatalog: catalog,
+      appId: "code-editor", root, manifest, packageCatalog: catalog, layoutEngine,
       moduleLoader: async (_url, entry, label) => {
         const source = sources[entry.path];
         if (typeof source !== "string") throw Error(`Missing source ${entry.path}`);

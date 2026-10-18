@@ -943,27 +943,28 @@ evidence:
 ```mcel-acceptance
 id: calculator.acceptance.full-semantic-runtime
 app: calculator
-status: planned
-target: fullApplicationSemanticReady
+status: specified
+target: host-bound-full-application-semantic-readiness
 requires:
-  - Calculator semantic adapter is registered in the MCEL domain-adapter registry.
-  - evaluateExpression, drawGraph, resetGraph, switchMode, enterToken, clearExpression, evaluateMathics, and askResultQuestion have explicit readiness classifications.
-  - Runtime state exposes current mode, arithmetic expression, arithmetic result, graph expression, graph ranges, graph status, Mathics status, and Q&A status.
-  - Receipts distinguish local deterministic compute, model-provider calls, and bounded backend symbolic evaluation.
-  - MCEL truth gate should eventually report fullApplicationSemanticReady for Calculator before Calculator becomes the reference complete app.
+  - Calculator's canonical DSL and normalized IR, rather than the retired legacy adapter registry, provide semantic authority for eleven bound runtime intents.
+  - The mounted generated adapter refuses silent fallback and classifies all local, model-provider, Mathics, and Q&A effects.
+  - Mode, expression, result, graph expression/range, Mathics context, and result Q&A context are declared and observable within their appropriate local or provider boundaries.
+  - Browser observations demonstrate all eleven intents with closed effect accounting and independent source provenance.
+  - The existing JavaScript arithmetic core is invoked through the read-only MCEL AI tool intent and returns a verifiable result without shell execution.
+  - The host-bound proof scope is not represented as equivalent to the package-host repository-wide semantic-runtime truth gate.
 ```
 
 ```mcel-acceptance
 id: calculator.acceptance.layout-inference
 app: calculator
-status: planned
-target: mcel-lab-layout-inference
+status: specified
+target: mcel-lab-semantic-layout-inference
 requires:
-  - MCEL Lab infers mode-toolbar, arithmetic-panel, keypad, result-status, graphing-panel, graph-canvas, Mathics panel, Q&A panel, and chat panel.
-  - Graph canvas is classified as canvas-output/graph-surface.
-  - Keypad controls are classified as local safe actions.
-  - Model ask and Mathics evaluate controls are classified as explicit helper/backend boundaries.
-  - Helper panels do not erase the active primary compute surface.
+  - MCEL Lab classifies Calculator's mode toolbar, keypad, output/status, graphing surface/canvas, Mathics, result Q&A, and chat context with proper control and helper boundaries.
+  - Graph canvas is classified as canvas-output/graph-surface and local keypad operations are classified as safe inspect-only actions.
+  - Model requests and Mathics evaluation are classified as explicit analysis/backend boundaries rather than safe local computation.
+  - The common MCEL semantic layout planner infers arrangements from declarative regions and constraints without application-name branches.
+  - Independent browser observation verifies that basic/graphing mode and viewport changes preserve the active primary computation surface without overlaps or horizontal overflow.
 ```
 
 ```mcel-acceptance

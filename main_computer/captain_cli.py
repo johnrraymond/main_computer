@@ -25,7 +25,6 @@ from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_r
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _BYTES32_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
-PRIVATE_STATE_RELATIVE_PATH = Path("runtime") / "state" / "main_computer.private.yaml"
 _TX_HASH_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 
 DEFAULT_STATE_FILE = Path("runtime/deployments/dev/latest.json")
@@ -138,7 +137,7 @@ def build_captain_options_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wallet", default="", help="Wallet/officer selector or 0x address. Defaults to captain/O0.")
     parser.add_argument("--officer", default="", help="Officer selector, for example O1, first, second, or third.")
     parser.add_argument("--private-key", default="", help="Development-only wallet override. Mainnet/testnet officer keys come from verified Mother state.")
-    parser.add_argument("--private-state", type=Path, default=None, help="Development-only private state override; mainnet/testnet use verified Mother state.")
+    parser.add_argument("--private-state", type=Path, default=None, help="Retired option; legacy YAML wallet-state overrides are no longer supported.")
     parser.add_argument("--ring", default="3", help="Requested hub worker ring. Defaults to 3.")
     parser.add_argument("--ring0", dest="ring", action="store_const", const="0", help="Shortcut for --ring 0.")
     parser.add_argument("--ring1", dest="ring", action="store_const", const="1", help="Shortcut for --ring 1.")
@@ -736,6 +735,12 @@ def resolve_captain_wallet(
             )
         return _mother_officer_wallet(selector, network=selected_network, deployment_path=deployment_path)
 
+    if private_state_path is not None:
+        raise CaptainCliError(
+            "--private-state is retired; development wallets must use an explicit "
+            "--private-key, environment variable, wallet file, or local dev-chain default."
+        )
+
     raw = str(selector or "captain").strip()
     normalized = _selector_key(raw)
     offices = _office_records(deployment)
@@ -764,30 +769,6 @@ def resolve_captain_wallet(
         private_key = _normalize_private_key(office_record.get("private_key") or office_record.get("privateKey"))
     if not private_key and office_record is not None:
         private_key = _private_key_from_wallet_path(deployment_path=deployment_path, record=office_record)
-    if not private_key:
-        address_was_default_dev_office = (
-            office_index is not None
-            and not _ADDRESS_RE.fullmatch(raw)
-            and _deployment_uses_non_dev_chain(deployment)
-            and _is_default_dev_office_address(office_index=office_index, address=address)
-        )
-        private_state_wallet = _wallet_record_from_private_state(
-            deployment_path=deployment_path,
-            private_state_path=private_state_path,
-            deployment=deployment,
-            office_index=office_index,
-            selector=normalized,
-            address=address,
-            allow_address_override=address_was_default_dev_office,
-        )
-        private_key = _normalize_private_key(private_state_wallet.get("private_key") or private_state_wallet.get("privateKey") or "")
-        private_state_address = str(private_state_wallet.get("address") or "").strip()
-        if (
-            private_key
-            and address_was_default_dev_office
-            and _ADDRESS_RE.fullmatch(private_state_address)
-        ):
-            address = private_state_address
     if not private_key and office_index is not None:
         private_key = _default_dev_office_private_key(deployment=deployment, office_index=office_index, address=address)
 
@@ -1479,211 +1460,6 @@ def _deployment_network_name(deployment_path: Path, deployment: dict[str, Any] |
     if resolved.parent.name:
         return resolved.parent.name
     return ""
-
-
-def _private_state_candidate_paths(*, deployment_path: Path, private_state_path: Path | None) -> list[Path]:
-    repo_root = _repo_root_for_deployment_path(deployment_path)
-    candidates: list[Path] = []
-    env_path = str(os.environ.get("MAIN_COMPUTER_PRIVATE_STATE_PATH") or "").strip()
-    if env_path:
-        raw = Path(env_path)
-        candidates.append(raw if raw.is_absolute() else repo_root / raw)
-    if private_state_path is not None:
-        raw = Path(private_state_path)
-        candidates.append(raw if raw.is_absolute() else repo_root / raw)
-    candidates.append(repo_root / PRIVATE_STATE_RELATIVE_PATH)
-
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(candidate)
-    return unique
-
-
-def _strip_yaml_comment(value: str) -> str:
-    in_single = False
-    in_double = False
-    escaped = False
-    out: list[str] = []
-    for char in value:
-        if escaped:
-            out.append(char)
-            escaped = False
-            continue
-        if char == "\\" and in_double:
-            out.append(char)
-            escaped = True
-            continue
-        if char == "'" and not in_double:
-            in_single = not in_single
-            out.append(char)
-            continue
-        if char == '"' and not in_single:
-            in_double = not in_double
-            out.append(char)
-            continue
-        if char == "#" and not in_single and not in_double:
-            break
-        out.append(char)
-    return "".join(out).rstrip()
-
-
-def _parse_private_state_scalar(value: str) -> Any:
-    text = _strip_yaml_comment(value).strip()
-    if text in {"", "null", "Null", "NULL", "~"}:
-        return None
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-        return text[1:-1]
-    return text
-
-
-def _parse_simple_private_state_yaml(text: str) -> dict[str, Any]:
-    """Parse the private-state subset used for nested wallet key maps.
-
-    The runtime package keeps core dependencies minimal, so the captain command
-    does not require PyYAML just to read operator wallet keys.  This parser is
-    intentionally small: it handles indented mapping entries with scalar values,
-    which is enough for networks.<network>.wallets.<role>.{address,private_key}.
-    """
-
-    root: dict[str, Any] = {}
-    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        raw = line.rstrip()
-        if raw.lstrip().startswith("- "):
-            continue
-        stripped = raw.strip()
-        if ":" not in stripped:
-            continue
-        indent = len(raw) - len(raw.lstrip(" "))
-        key, value = stripped.split(":", 1)
-        key = key.strip().strip('"').strip("'")
-        if not key:
-            continue
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        if not stack:
-            stack = [(-1, root)]
-        parent = stack[-1][1]
-        value = value.strip()
-        if not value or value.startswith("#"):
-            child: dict[str, Any] = {}
-            parent[key] = child
-            stack.append((indent, child))
-        else:
-            parent[key] = _parse_private_state_scalar(value)
-    return root
-
-
-def _load_private_state(path: Path) -> dict[str, Any]:
-    text = Path(path).read_text(encoding="utf-8")
-    stripped = text.lstrip()
-    if stripped.startswith("{"):
-        payload = json.loads(text)
-    else:
-        payload = _parse_simple_private_state_yaml(text)
-    return payload if isinstance(payload, dict) else {}
-
-
-def _wallet_role_candidates(*, office_index: int | None, selector: str) -> list[str]:
-    aliases_by_office = {
-        0: ("captain", "o0", "office0", "officer0"),
-        1: ("o1", "first", "first_officer", "office1", "officer1"),
-        2: ("o2", "second", "second_officer", "office2", "officer2"),
-        3: ("o3", "third", "third_officer", "office3", "officer3"),
-    }
-    candidates: list[str] = []
-    if selector:
-        candidates.append(selector)
-    if office_index in aliases_by_office:
-        candidates.extend(aliases_by_office[int(office_index)])
-    unique: list[str] = []
-    for item in candidates:
-        key = _selector_key(item)
-        if key and key not in unique:
-            unique.append(key)
-    return unique
-
-
-def _deployment_uses_non_dev_chain(deployment: dict[str, Any]) -> bool:
-    try:
-        return int(_chain_value(deployment, "chain_id") or 0) != 42424242
-    except (TypeError, ValueError):
-        return True
-
-
-def _is_default_dev_office_address(*, office_index: int | None, address: str) -> bool:
-    if office_index is None or office_index < 0 or office_index >= len(_DEV_OFFICE_DEFAULTS):
-        return False
-    return str(_DEV_OFFICE_DEFAULTS[office_index].get("address") or "").lower() == str(address or "").lower()
-
-
-def _wallet_record_from_private_state(
-    *,
-    deployment_path: Path,
-    private_state_path: Path | None,
-    deployment: dict[str, Any],
-    office_index: int | None,
-    selector: str,
-    address: str,
-    allow_address_override: bool = False,
-) -> dict[str, Any]:
-    network = _deployment_network_name(deployment_path, deployment)
-    if not network:
-        return {}
-
-    for path in _private_state_candidate_paths(deployment_path=deployment_path, private_state_path=private_state_path):
-        if not path.exists():
-            continue
-        state = _load_private_state(path)
-        networks = state.get("networks") if isinstance(state.get("networks"), dict) else {}
-        network_state = networks.get(network) if isinstance(networks.get(network), dict) else {}
-        wallets = network_state.get("wallets") if isinstance(network_state.get("wallets"), dict) else {}
-        for role in _wallet_role_candidates(office_index=office_index, selector=selector):
-            entry = wallets.get(role)
-            if not isinstance(entry, dict):
-                continue
-            private_key = _normalize_private_key(entry.get("private_key") or entry.get("privateKey") or "")
-            if not private_key:
-                continue
-            entry_address = str(entry.get("address") or "").strip()
-            if (
-                not allow_address_override
-                and entry_address
-                and _ADDRESS_RE.fullmatch(entry_address)
-                and normalize_address(entry_address) != normalize_address(address)
-            ):
-                continue
-            result = dict(entry)
-            result["private_key"] = private_key
-            return result
-    return {}
-
-
-def _private_key_from_private_state(
-    *,
-    deployment_path: Path,
-    private_state_path: Path | None,
-    deployment: dict[str, Any],
-    office_index: int | None,
-    selector: str,
-    address: str,
-) -> str:
-    record = _wallet_record_from_private_state(
-        deployment_path=deployment_path,
-        private_state_path=private_state_path,
-        deployment=deployment,
-        office_index=office_index,
-        selector=selector,
-        address=address,
-    )
-    return _normalize_private_key(record.get("private_key") or record.get("privateKey") or "")
 
 
 def _private_key_from_wallet_path(*, deployment_path: Path, record: dict[str, Any]) -> str:

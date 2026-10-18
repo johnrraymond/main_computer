@@ -7,6 +7,8 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
+import socket
+import ssl
 import time
 from typing import Any, Callable, Iterable, Mapping
 import urllib.error
@@ -71,7 +73,9 @@ class CoolifyController:
     def __post_init__(self) -> None:
         _identifier(self.network, "network")
         _identifier(self.controller_id, "controller_id")
-        _normalize_base_url(self.base_url)
+        # Normalize at construction, not only while reading committed state.
+        # Other Mother deployers also concatenate controller.base_url with API paths.
+        object.__setattr__(self, "base_url", _normalize_base_url(self.base_url))
         if type(self.api_token) is not str:
             raise TypeError("api_token must be a string")
         if type(self.enabled) is not bool:
@@ -100,6 +104,7 @@ class CoolifyHttpObservation:
     byte_length: int
     elapsed_ms: int
     content_type: str
+    redirect_hint: str = ""
 
     @property
     def ok(self) -> bool:
@@ -151,6 +156,33 @@ def _normalize_base_url(value: object) -> str:
     if "\\" in parsed.path or "\x00" in parsed.path:
         raise CoolifyObservationError("MOTHER_COOLIFY_INVALID_CONTROLLER", "Coolify URL path is unsafe")
     return text
+
+
+
+def _safe_redirect_hint(location: object, *, base_url: str, requested_path: str) -> str:
+    """Describe a denied redirect without reflecting a remote URL or its secrets.
+
+    Never emit Location verbatim: query strings, userinfo and even path segments
+    may contain credentials. The API observer must not follow redirects.
+    """
+    if not isinstance(location, str) or not location:
+        return "Location header absent"
+    try:
+        target = urllib.parse.urlsplit(location)
+        origin = urllib.parse.urlsplit(base_url)
+        if target.scheme and target.scheme not in {"http", "https"}:
+            return "unsupported redirect scheme"
+        if target.netloc and (target.hostname != origin.hostname or target.port != origin.port):
+            return "different host or port"
+        if target.scheme and target.scheme != origin.scheme:
+            return "HTTPS upgrade" if target.scheme == "https" else "HTTP downgrade"
+        if target.path == requested_path:
+            return "same API path"
+        if target.path in {"/login", "/login/", "/auth/login"}:
+            return "interactive login page"
+    except ValueError:
+        return "invalid redirect target"
+    return "different path"
 
 
 def _document(private_state: PrivateStateReadResult) -> dict[str, Any]:
@@ -287,7 +319,7 @@ def get_coolify_json(
     if authenticated and not controller.api_token.strip():
         raise CoolifyObservationError("MOTHER_COOLIFY_TOKEN_MISSING", "Coolify API token is missing")
 
-    url = controller.base_url + safe_path
+    url = _normalize_base_url(controller.base_url) + safe_path
     headers = {
         "Accept": "application/json",
         "User-Agent": "main-computer-mother-coolify-observer/1",
@@ -296,6 +328,7 @@ def get_coolify_json(
         headers["Authorization"] = f"Bearer {controller.api_token}"
     request = urllib.request.Request(url, headers=headers, method="GET")
     started = time.monotonic()
+    redirect_hint = ""
     try:
         try:
             response = _open(opener, request, float(timeout))
@@ -304,11 +337,28 @@ def get_coolify_json(
             raw = response.read(max_response_bytes + 1)
             response.close()
         except urllib.error.HTTPError as exc:
-            status = int(exc.code)
-            content_type = str(exc.headers.get("Content-Type", "")) if exc.headers else ""
-            raw = exc.read(max_response_bytes + 1)
+            try:
+                status = int(exc.code)
+                content_type = str(exc.headers.get("Content-Type", "")) if exc.headers else ""
+                raw = exc.read(max_response_bytes + 1)
+                if 300 <= status < 400:
+                    redirect_hint = _safe_redirect_hint(
+                        exc.headers.get("Location") if exc.headers else None,
+                        base_url=controller.base_url,
+                        requested_path=safe_path,
+                    )
+            finally:
+                exc.close()
     except urllib.error.URLError as exc:
-        raise CoolifyObservationError("MOTHER_COOLIFY_REQUEST_FAILED", f"Coolify GET failed: {exc.reason}") from exc
+        reason = exc.reason
+        if isinstance(reason, ssl.SSLError):
+            code = "MOTHER_COOLIFY_TLS_FAILED"
+        elif isinstance(reason, (TimeoutError, socket.timeout)):
+            code = "MOTHER_COOLIFY_TIMEOUT"
+        else:
+            code = "MOTHER_COOLIFY_REQUEST_FAILED"
+        # Never interpolate raw network exceptions; URLs may contain credentials.
+        raise CoolifyObservationError(code, f"Coolify GET failed ({code})") from exc
     except OSError as exc:
         raise CoolifyObservationError("MOTHER_COOLIFY_REQUEST_FAILED", "Coolify GET failed") from exc
 
@@ -331,6 +381,7 @@ def get_coolify_json(
         byte_length=len(raw),
         elapsed_ms=elapsed_ms,
         content_type=content_type,
+        redirect_hint=redirect_hint,
     )
 
 

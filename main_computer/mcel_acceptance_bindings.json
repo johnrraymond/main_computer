@@ -102,6 +102,30 @@
       "notes": "Covers failed refresh receipts, recovery classification, retry guidance, and prohibited-action alternatives."
     },
     {
+      "id": "calculator.binding.acceptance.full-semantic-runtime",
+      "appId": "calculator",
+      "acceptanceContractId": "calculator.acceptance.full-semantic-runtime",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_calculator_completion_contracts.py::test_full_semantic_runtime_declares_all_governed_lanes_and_observable_state",
+        "tests/test_mcel_calculator_governed_ui_authority.py",
+        "tests/test_mcel_calculator_ai_tool.py::test_model_issued_action_round_trips_through_actual_ai_tool_dispatcher"
+      ],
+      "notes": "Canonical DSL/IR, all eleven runtime intents, actual mounted adapter with fail-closed UI, and headless deterministic AI tool dispatch. Full browser parity is independently rechecked by the host-bound Phase One proof."
+    },
+    {
+      "id": "calculator.binding.acceptance.layout-inference",
+      "appId": "calculator",
+      "acceptanceContractId": "calculator.acceptance.layout-inference",
+      "runner": "pytest",
+      "selectors": [
+        "tests/test_mcel_calculator_completion_contracts.py::test_layout_semantics_cover_lab_surface_and_explicit_controls",
+        "tests/test_mcel_calculator_completion_contracts.py::test_mcel_lab_calculator_classifies_keypad_canvas_and_helper_boundaries",
+        "tests/test_mcel_semantic_layout_inference.py"
+      ],
+      "notes": "Execute MCEL Lab classification rules, generic semantic layout inference, wide/narrow mode adaptation, and observed Chromium geometry."
+    },
+    {
       "id": "calculator.binding.acceptance.no-hidden-mutation",
       "appId": "calculator",
       "acceptanceContractId": "calculator.acceptance.no-hidden-mutation",
