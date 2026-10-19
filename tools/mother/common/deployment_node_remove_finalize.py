@@ -396,7 +396,7 @@ def _validate_do_evidence(
         )
     required = [
         document.get("status") == "pass",
-        document.get("next_phase") == "remove-node-finalize-mainnet",
+        document.get("next_phase") == f"remove-node-finalize-{document.get('network')}",
         summary.get("clean") is True,
         summary.get("complete") is True,
         summary.get("service_deletion_is_first") is bool(single_node_decommission),
@@ -447,8 +447,8 @@ def build_node_remove_finalize_evidence(
     opener: Any = _DEFAULT_OPENER,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    if network != "mainnet":
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_NETWORK_INVALID", "node-removal finalize is restricted to mainnet")
+    if network not in {"mainnet", "testnet"}:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_NETWORK_INVALID", "node-removal finalize requires a supported Mother network")
     if not (0 < timeout <= 300):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_FINALIZE_TIMING_INVALID", "timeout must be greater than 0 and at most 300 seconds")
     if not (1 <= max_response_bytes <= 16 * 1024 * 1024):
@@ -719,9 +719,9 @@ def build_node_remove_finalize_evidence(
             "routing_or_topology_published": False,
             "public_endpoint_created": False,
             "manual_ssh_required": False,
-            "next_phase": "remove-node-finalized-mainnet" if complete else "manual-review-required",
+            "next_phase": f"remove-node-finalized-{network}" if complete else "manual-review-required",
         },
-        "next_phase": "remove-node-finalized-mainnet" if complete else "manual-review-required",
+        "next_phase": f"remove-node-finalized-{network}" if complete else "manual-review-required",
         "public_endpoint_created": False,
         "routing_or_topology_published": False,
     }

@@ -880,7 +880,7 @@ def _normalize_remove_finalize_baseline(
         )
 
     network = _identifier(document.get("network"), "baseline network")
-    expected_next_phase = "remove-node-finalized-mainnet"
+    expected_next_phase = f"remove-node-finalized-{network}"
     validator_vote_required = bool(summary.get("validator_removal_vote_required", not bool(summary.get("single_node_decommission"))))
     proof_payload_ok = (
         authority.get("validator_removal_vote_proven_by_proof_payload") is True
@@ -1243,8 +1243,8 @@ def build_node_remove_prep_transaction(
     created_at: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    if network != "mainnet":
-        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_NETWORK_INVALID", "node removal prep is currently restricted to mainnet")
+    if network not in {"mainnet", "testnet"}:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_NETWORK_INVALID", "node removal prep requires a supported Mother network")
     target = _identifier(target_node, "target node")
     if mode != "soft":
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_PREP_MODE_INVALID", "only soft node-removal prep is implemented")

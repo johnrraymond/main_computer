@@ -41,7 +41,7 @@ _TRANSACTION_DIRECTORY = ("actions", "deployment-node-add-prep-transactions")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_NODE_ORDER_RE = re.compile(r"^mainnet([a-z]+)-super([0-9]+)$")
+_NODE_ORDER_RE = re.compile(r"^(?:mainnet|testnet)([a-z]+)-super([0-9]+)$")
 
 
 class MotherDeploymentNodeAddPrepError(RuntimeError):
@@ -725,8 +725,8 @@ def build_node_add_prep_transaction(
     created_at: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    if network != "mainnet":
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_NETWORK_INVALID", "node-add prep is currently restricted to mainnet")
+    if network not in {"mainnet", "testnet"}:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_PREP_NETWORK_INVALID", "node-add prep requires a supported Mother network")
     target = _identifier(target_node, "target node")
     host = _identifier(target_host, "target host")
     if mode not in {"initial", "soft", "reactivate"}:

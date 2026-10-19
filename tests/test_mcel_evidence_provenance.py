@@ -34,9 +34,9 @@ def test_snapshot_fingerprint_ignores_mutable_state_but_tracks_source(tmp_path: 
     second = provenance.build_repository_provenance(tmp_path)
 
     assert first == second
-    assert first["schema"] == "mcel-repository-provenance-v2"
+    assert first["schema"] == "mcel-repository-provenance-v3"
     assert first["algorithm"] == "sha256-source-path-content-v2"
-    assert first["scope"] == "snapshot-source-roots-v2"
+    assert first["scope"] == "snapshot-mcel-authority-v3"
     assert first["selectionMethod"] == "snapshot-source-roots"
     assert "runtime/websites" in first["sourceRoots"]
     assert first["fileCount"] == 2
@@ -58,7 +58,7 @@ def test_git_selection_mode_uses_selected_source_paths(
     tracked = tmp_path / "main_computer" / "tracked.py"
     tracked.parent.mkdir()
     tracked.write_text("tracked\n", encoding="utf-8")
-    untracked = tmp_path / "tests" / "new_test.py"
+    untracked = tmp_path / "tests" / "test_mcel_new_test.py"
     untracked.parent.mkdir()
     untracked.write_text("new\n", encoding="utf-8")
     ignored_state = tmp_path / "runtime" / "state" / "local.db"
@@ -70,7 +70,7 @@ def test_git_selection_mode_uses_selected_source_paths(
         "_git_selected_relative_paths",
         lambda _root: [
             PurePosixPath("main_computer/tracked.py"),
-            PurePosixPath("tests/new_test.py"),
+            PurePosixPath("tests/test_mcel_new_test.py"),
         ],
     )
 
@@ -79,7 +79,7 @@ def test_git_selection_mode_uses_selected_source_paths(
     second = provenance.build_repository_provenance(tmp_path)
 
     assert first == second
-    assert first["scope"] == "git-tracked-and-unignored-source-v2"
+    assert first["scope"] == "git-tracked-and-unignored-mcel-authority-v3"
     assert first["selectionMethod"] == "git-tracked-and-unignored"
     assert first["sourceRoots"] == []
     assert first["fileCount"] == 2
@@ -122,12 +122,12 @@ def test_extract_repository_provenance_supports_flog_envelope() -> None:
     evidence = {
         "schema": "mcel-runtime-flog-report-v2",
         "repositoryProvenance": {
-            "schema": "mcel-repository-provenance-v2",
+            "schema": "mcel-repository-provenance-v3",
             "algorithm": "sha256-source-path-content-v2",
             "fingerprint": "abc",
             "fileCount": 3,
             "totalBytes": 12,
-            "scope": "snapshot-source-roots-v2",
+            "scope": "snapshot-mcel-authority-v3",
             "selectionMethod": "snapshot-source-roots",
             "sourceRoots": ["main_computer", "tests"],
         },
@@ -139,3 +139,100 @@ def test_extract_repository_provenance_supports_flog_envelope() -> None:
     assert extracted["fileCount"] == 3
     assert extracted["selectionMethod"] == "snapshot-source-roots"
     assert extracted["sourceRoots"] == ["main_computer", "tests"]
+
+
+def test_mcel_authority_scope_ignores_unrelated_mutable_subsystems(tmp_path: Path) -> None:
+    """Mother and NanoJev work must not invalidate an MCEL release candidate."""
+    main = tmp_path / "main_computer" / "mcel_truth_audit.py"
+    main.parent.mkdir(parents=True)
+    main.write_text("authority = 1\n", encoding="utf-8")
+    app = tmp_path / "mcel_apps" / "calculator" / "application.json"
+    app.parent.mkdir(parents=True)
+    app.write_text('{"version": 1}', encoding="utf-8")
+    mother = tmp_path / "mother_mutate_harness.py"
+    mother.write_text("mother = 1\n", encoding="utf-8")
+    mother_test = tmp_path / "tests" / "test_mother_final_node_cleanup.py"
+    mother_test.parent.mkdir(parents=True)
+    mother_test.write_text("def test_mother(): pass\n", encoding="utf-8")
+    nanojev = tmp_path / "docs" / "nanojev-training.md"
+    nanojev.parent.mkdir(parents=True)
+    nanojev.write_text("# training\n", encoding="utf-8")
+    start = provenance.build_repository_provenance(tmp_path)
+    mother.write_text("mother = 2\n", encoding="utf-8")
+    mother_test.write_text("def test_mother(): assert True\n", encoding="utf-8")
+    nanojev.write_text("# revised\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_mother_new.py").write_text("pass\n", encoding="utf-8")
+    assert provenance.build_repository_provenance(tmp_path) == start
+
+    # Both substantive app changes and newly introduced MCEL authority files
+    # MUST invalidate previous evidence.
+    app.write_text('{"version": 2}', encoding="utf-8")
+    assert provenance.build_repository_provenance(tmp_path)["fingerprint"] != start["fingerprint"]
+    app.write_text('{"version": 1}', encoding="utf-8")
+    assert provenance.build_repository_provenance(tmp_path)["fingerprint"] == start["fingerprint"]
+    (tmp_path / "main_computer" / "mcel_new_verifier.py").write_text("x = 1\n", encoding="utf-8")
+    assert provenance.build_repository_provenance(tmp_path)["fingerprint"] != start["fingerprint"]
+
+
+def test_mcel_authority_scope_covers_runtime_host_broker_and_fixtures() -> None:
+    included = (
+        "main_computer/mcel_truth_audit.py",
+        "main_computer/web/applications/scripts/calculator-core.js",
+        "mcel_apps/calculator/application.js",
+        "deploy/local-platform/site-runtimes/mcel-runtime.js",
+        "runtime/websites/home/index.html",
+        "game_projects/webgl-demo/game.json",
+        "tools/mcel_app_promote.py",
+        "tools/patching/reviewed_patch.py",
+        "new_patch.py",
+        "tests/test_mcel_portable_promotion.py",
+        "pretty_docs/mcel-repository-truth-audit.md",
+    )
+    excluded = (
+        "mother_mutate_harness.py",
+        "tools/mother/common/deployment_node_remove.py",
+        "tests/test_mother_final_node_cleanup.py",
+        "docs/nanojev-training.md",
+        "README_NANOJEV_QWEN_CONTINUOUS_V1.md",
+    )
+    for name in included:
+        assert provenance.is_mcel_authority_source(PurePosixPath(name)), name
+    for name in excluded:
+        assert not provenance.is_mcel_authority_source(PurePosixPath(name)), name
+
+
+def test_version2_provenance_is_refused_after_scope_change(tmp_path: Path) -> None:
+    (tmp_path / "main_computer").mkdir()
+    (tmp_path / "main_computer" / "mcel.py").write_text("x=1\n", encoding="utf-8")
+    current = provenance.build_repository_provenance(tmp_path)
+    assert provenance.compare_repository_provenance({**current, "schema":
+        "mcel-repository-provenance-v2"}, current)["status"] == "unsupported"
+
+
+def test_real_git_mcelscope_excludes_mother_but_includes_untracked_mcel(
+    tmp_path: Path,
+) -> None:
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        import pytest
+        pytest.skip("Git not installed")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    app = tmp_path / "main_computer" / "mcel_portable_certification.py"
+    app.parent.mkdir(parents=True)
+    app.write_text("pass\n", encoding="utf-8")
+    unrelated = tmp_path / "mother_mutate_harness.py"
+    unrelated.write_text("pass\n", encoding="utf-8")
+    test_mother = tmp_path / "tests" / "test_mother_clean.py"
+    test_mother.parent.mkdir(parents=True)
+    test_mother.write_text("pass\n", encoding="utf-8")
+    start = provenance.build_repository_provenance(tmp_path)
+    assert start["scope"] == provenance.GIT_SCOPE
+    assert start["fileCount"] == 1
+    unrelated.write_text("print(2)\n", encoding="utf-8")
+    test_mother.write_text("print(3)\n", encoding="utf-8")
+    assert provenance.build_repository_provenance(tmp_path)["fingerprint"] == start["fingerprint"]
+    new_mcel_test = tmp_path / "tests" / "test_mcel_new.py"
+    new_mcel_test.write_text("pass\n", encoding="utf-8")
+    assert provenance.build_repository_provenance(tmp_path)["fingerprint"] != start["fingerprint"]

@@ -52,7 +52,7 @@ _ADD_POST_ADMISSION_TOPOLOGY_DIRECTORY = ("evidence", "deployment-node-add-post-
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
-_NODE_HINT_RE = re.compile(r"\bmainnet[a-z]+-super[0-9]+\b")
+_NODE_HINT_RE = re.compile(r"\b(?:mainnet|testnet)[a-z]+-super[0-9]+\b")
 _CANONICAL_HISTORY_PROOF_CONTRACT = "mother-add-node-validator-admission-canonical-block-history-v1"
 _CANONICAL_HISTORY_REQUIRED_PROOF_FIELDS = (
     "first_block_number",

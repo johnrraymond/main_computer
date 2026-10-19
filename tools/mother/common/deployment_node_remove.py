@@ -26,7 +26,10 @@ from .private_state import PrivateStateReadResult
 
 
 _KIND = "main_computer.mother.deployment_node_remove.v1"
-_ALLOWED_CONTROLLERS = frozenset({"coolify-a", "coolify-c"})
+_ALLOWED_CONTROLLERS_BY_NETWORK = {
+    "mainnet": frozenset({"coolify-a", "coolify-c"}),
+    "testnet": frozenset({"coolify-b"}),
+}
 _NODE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _UUID_RE = re.compile(r"^[A-Za-z0-9_-]{8,96}$")
 
@@ -52,15 +55,15 @@ def _validate(
     poll_interval_seconds: float,
     max_response_bytes: int,
 ) -> None:
-    if network != "mainnet":
+    if network not in _ALLOWED_CONTROLLERS_BY_NETWORK:
         raise _error(
             "MOTHER_DEPLOY_NODE_REMOVE_NETWORK_INVALID",
-            "node removal is restricted to mainnet",
+            "node removal requires a supported Mother network",
         )
-    if controller_id not in _ALLOWED_CONTROLLERS:
+    if controller_id not in _ALLOWED_CONTROLLERS_BY_NETWORK[network]:
         raise _error(
             "MOTHER_DEPLOY_NODE_REMOVE_CONTROLLER_INVALID",
-            "controller_id must be coolify-a or coolify-c",
+            "controller_id is not permitted for the selected network",
         )
     if not _NODE_RE.fullmatch(node):
         raise _error(
@@ -175,7 +178,7 @@ def _http(
     opener: Any,
 ) -> dict[str, Any]:
     request = urllib.request.Request(
-        controller.base_url + endpoint,
+        controller.base_url.rstrip("/") + endpoint,
         headers={
             "Accept": "application/json",
             "Authorization": f"Bearer {controller.api_token}",

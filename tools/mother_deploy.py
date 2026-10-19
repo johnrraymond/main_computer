@@ -549,7 +549,7 @@ def _parser() -> argparse.ArgumentParser:
         help="prepare an explicit add-node transaction from canonical topology evidence",
         allow_abbrev=False,
     )
-    add_node_prep.add_argument("network", choices=["mainnet"])
+    add_node_prep.add_argument("network", choices=["mainnet", "testnet"])
     add_node_prep.add_argument("--node", required=True, help="explicit absent node name to add; never inferred from a deprecated fixture stage")
     add_node_prep.add_argument("--host", required=True, help="explicit target Coolify controller/host for the added node")
     add_node_prep.add_argument("--mode", default="soft", choices=["initial", "soft", "reactivate"])
@@ -566,7 +566,7 @@ def _parser() -> argparse.ArgumentParser:
         help="locally reserve a missing add-node validator identity in Mother private state",
         allow_abbrev=False,
     )
-    add_node_reserve_identity.add_argument("network", choices=["mainnet"])
+    add_node_reserve_identity.add_argument("network", choices=["mainnet", "testnet"])
     add_node_reserve_identity.add_argument("--node", required=True, help="explicit node identity to reserve; never inferred")
     add_node_reserve_identity.add_argument("--host", required=True, help="target Coolify controller/host for the reserved node")
     add_node_reserve_identity.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
@@ -586,7 +586,7 @@ def _parser() -> argparse.ArgumentParser:
         help="execute the released generic add-node standby-service creation phase",
         allow_abbrev=False,
     )
-    add_node_do.add_argument("network", choices=["mainnet"])
+    add_node_do.add_argument("network", choices=["mainnet", "testnet"])
     add_node_do.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     add_node_do.add_argument("--operation-id")
     add_node_do.add_argument("--release", required=True)
@@ -602,7 +602,7 @@ def _parser() -> argparse.ArgumentParser:
         help="execute the released generic add-node identity-install phase",
         allow_abbrev=False,
     )
-    add_node_identity.add_argument("network", choices=["mainnet"])
+    add_node_identity.add_argument("network", choices=["mainnet", "testnet"])
     add_node_identity.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     add_node_identity.add_argument("--operation-id")
     add_node_identity.add_argument("--release", required=True)
@@ -621,7 +621,7 @@ def _parser() -> argparse.ArgumentParser:
         help="execute the released operator-directed empty-topology single-node chain+Hub bootstrap phase",
         allow_abbrev=False,
     )
-    add_node_single_node_bootstrap.add_argument("network", choices=["mainnet"])
+    add_node_single_node_bootstrap.add_argument("network", choices=["mainnet", "testnet"])
     add_node_single_node_bootstrap.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     add_node_single_node_bootstrap.add_argument("--operation-id")
     add_node_single_node_bootstrap.add_argument("--release", required=True)
@@ -644,7 +644,7 @@ def _parser() -> argparse.ArgumentParser:
         help="write the read-only final proof/topology artifact for an operator-directed single-node add",
         allow_abbrev=False,
     )
-    add_node_single_node_chain_and_hub_proof.add_argument("network", choices=["mainnet"])
+    add_node_single_node_chain_and_hub_proof.add_argument("network", choices=["mainnet", "testnet"])
     add_node_single_node_chain_and_hub_proof.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     add_node_single_node_chain_and_hub_proof.add_argument("--operation-id")
     add_node_single_node_chain_and_hub_proof.add_argument("--bootstrap-evidence", required=True)
@@ -664,7 +664,7 @@ def _parser() -> argparse.ArgumentParser:
         help="execute the released generic add-node non-validator replica-sync phase",
         allow_abbrev=False,
     )
-    add_node_replica_sync.add_argument("network", choices=["mainnet"])
+    add_node_replica_sync.add_argument("network", choices=["mainnet", "testnet"])
     add_node_replica_sync.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     add_node_replica_sync.add_argument("--operation-id")
     add_node_replica_sync.add_argument("--release", required=True)
@@ -688,7 +688,7 @@ def _parser() -> argparse.ArgumentParser:
         help="execute the released generic add-node validator admission and activation phase",
         allow_abbrev=False,
     )
-    add_node_validator_admission.add_argument("network", choices=["mainnet"])
+    add_node_validator_admission.add_argument("network", choices=["mainnet", "testnet"])
     add_node_validator_admission.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     add_node_validator_admission.add_argument("--operation-id")
     add_node_validator_admission.add_argument("--release", required=True)
@@ -713,7 +713,7 @@ def _parser() -> argparse.ArgumentParser:
         help="write the read-only finalized topology proof after clean validator admission",
         allow_abbrev=False,
     )
-    add_node_post_admission_observe.add_argument("network", choices=["mainnet"])
+    add_node_post_admission_observe.add_argument("network", choices=["mainnet", "testnet"])
     add_node_post_admission_observe.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     add_node_post_admission_observe.add_argument("--operation-id")
     add_node_post_admission_observe.add_argument("--validator-admission-evidence", required=True)
@@ -727,7 +727,7 @@ def _parser() -> argparse.ArgumentParser:
         help="execute a released pre-admission add-node rollback by deleting only the created standby service",
         allow_abbrev=False,
     )
-    add_node_rollback.add_argument("network", choices=["mainnet"])
+    add_node_rollback.add_argument("network", choices=["mainnet", "testnet"])
     add_node_rollback.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     add_node_rollback.add_argument("--operation-id")
     add_node_rollback.add_argument("--release", required=True)
@@ -745,7 +745,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify a prepared generic Mother add-node transaction without live mutation",
         allow_abbrev=False,
     )
-    verify_node_add_prep.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_prep.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_prep.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_prep.add_argument("--operation-id")
     verify_node_add_prep.add_argument("--transaction", required=True)
@@ -757,7 +757,7 @@ def _parser() -> argparse.ArgumentParser:
         help="mint an explicit expiring release for a verified generic Mother add-node prep transaction",
         allow_abbrev=False,
     )
-    release_node_add_do.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_do.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     release_node_add_do.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     release_node_add_do.add_argument("--operation-id")
     release_node_add_do.add_argument("--transaction", required=True)
@@ -773,7 +773,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify a generic Mother add-node do release before live service creation",
         allow_abbrev=False,
     )
-    verify_node_add_do_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_do_release_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_do_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_do_release_parser.add_argument("--operation-id")
     verify_node_add_do_release_parser.add_argument("--release", required=True)
@@ -786,7 +786,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify generic Mother add-node do evidence after standby service creation",
         allow_abbrev=False,
     )
-    verify_node_add_do_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_do_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_do_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_do_evidence_parser.add_argument("--operation-id")
     verify_node_add_do_evidence_parser.add_argument("--evidence", required=True)
@@ -800,7 +800,7 @@ def _parser() -> argparse.ArgumentParser:
         help="mint an explicit expiring release for generic Mother add-node identity installation",
         allow_abbrev=False,
     )
-    release_node_add_identity.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_identity.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     release_node_add_identity.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     release_node_add_identity.add_argument("--operation-id")
     release_node_add_identity.add_argument("--add-do-evidence", required=True)
@@ -818,7 +818,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify a generic Mother add-node identity release before live env installation",
         allow_abbrev=False,
     )
-    verify_node_add_identity_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_identity_release_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_identity_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_identity_release_parser.add_argument("--operation-id")
     verify_node_add_identity_release_parser.add_argument("--release", required=True)
@@ -833,7 +833,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify generic Mother add-node identity evidence after environment installation",
         allow_abbrev=False,
     )
-    verify_node_add_identity_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_identity_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_identity_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_identity_evidence_parser.add_argument("--operation-id")
     verify_node_add_identity_evidence_parser.add_argument("--evidence", required=True)
@@ -850,7 +850,7 @@ def _parser() -> argparse.ArgumentParser:
         help="mint an explicit expiring release for operator-directed empty-topology single-node chain+Hub bootstrap",
         allow_abbrev=False,
     )
-    release_node_add_single_node_bootstrap.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_single_node_bootstrap.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     release_node_add_single_node_bootstrap.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     release_node_add_single_node_bootstrap.add_argument("--operation-id")
     release_node_add_single_node_bootstrap.add_argument("--identity-evidence", required=True)
@@ -872,7 +872,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify an operator-directed single-node bootstrap release before live chain+Hub bootstrap",
         allow_abbrev=False,
     )
-    verify_node_add_single_node_bootstrap_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_single_node_bootstrap_release_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_single_node_bootstrap_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_single_node_bootstrap_release_parser.add_argument("--operation-id")
     verify_node_add_single_node_bootstrap_release_parser.add_argument("--release", required=True)
@@ -889,7 +889,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify operator-directed single-node chain+Hub bootstrap evidence",
         allow_abbrev=False,
     )
-    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--operation-id")
     verify_node_add_single_node_bootstrap_evidence_parser.add_argument("--evidence", required=True)
@@ -907,7 +907,7 @@ def _parser() -> argparse.ArgumentParser:
         help="write clean single-node bootstrap evidence from an already-healthy service without PATCH/deploy",
         allow_abbrev=False,
     )
-    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--operation-id")
     adopt_node_add_single_node_bootstrap_live_proof_parser.add_argument("--evidence", required=True)
@@ -927,7 +927,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify the read-only final single-node add proof/topology evidence",
         allow_abbrev=False,
     )
-    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--operation-id")
     verify_node_add_single_node_chain_and_hub_proof_parser.add_argument("--evidence", required=True)
@@ -948,7 +948,7 @@ def _parser() -> argparse.ArgumentParser:
         help="read-only check that Mother topology evidence still matches live Coolify services",
         allow_abbrev=False,
     )
-    detect_mother_topology_staleness_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    detect_mother_topology_staleness_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     detect_mother_topology_staleness_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     detect_mother_topology_staleness_parser.add_argument("--operation-id")
     detect_mother_topology_staleness_parser.add_argument("--topology-evidence", required=True)
@@ -962,7 +962,7 @@ def _parser() -> argparse.ArgumentParser:
         help="write read-only empty-current-topology evidence after stale Mother topology is proven absent live",
         allow_abbrev=False,
     )
-    adopt_empty_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_empty_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     adopt_empty_current_topology_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     adopt_empty_current_topology_parser.add_argument("--operation-id")
     adopt_empty_current_topology_parser.add_argument("--topology-evidence", required=True)
@@ -978,7 +978,7 @@ def _parser() -> argparse.ArgumentParser:
         help="write read-only fresh empty-topology evidence after all old super nodes were deleted; next bootstrap must generate new genesis",
         allow_abbrev=False,
     )
-    adopt_fresh_empty_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_fresh_empty_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     adopt_fresh_empty_topology_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     adopt_fresh_empty_topology_parser.add_argument("--operation-id")
     adopt_fresh_empty_topology_parser.add_argument("--topology-evidence", required=True)
@@ -995,7 +995,7 @@ def _parser() -> argparse.ArgumentParser:
         help="write read-only current-topology evidence from exact live Coolify primary services",
         allow_abbrev=False,
     )
-    seal_live_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    seal_live_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     seal_live_current_topology_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     seal_live_current_topology_parser.add_argument("--operation-id")
     seal_live_current_topology_parser.add_argument("--topology-evidence", required=True)
@@ -1017,7 +1017,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify read-only empty-current-topology rectification evidence",
         allow_abbrev=False,
     )
-    verify_empty_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_empty_current_topology_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_empty_current_topology_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_empty_current_topology_parser.add_argument("--operation-id")
     verify_empty_current_topology_parser.add_argument("--evidence", required=True)
@@ -1028,7 +1028,7 @@ def _parser() -> argparse.ArgumentParser:
         help="mint an explicit expiring release for generic Mother add-node replica synchronization",
         allow_abbrev=False,
     )
-    release_node_add_replica_sync.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_replica_sync.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     release_node_add_replica_sync.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     release_node_add_replica_sync.add_argument("--operation-id")
     release_node_add_replica_sync.add_argument("--identity-evidence", required=True)
@@ -1049,7 +1049,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify a generic Mother add-node replica-sync release before live sync",
         allow_abbrev=False,
     )
-    verify_node_add_replica_sync_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_replica_sync_release_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_replica_sync_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_replica_sync_release_parser.add_argument("--operation-id")
     verify_node_add_replica_sync_release_parser.add_argument("--release", required=True)
@@ -1066,7 +1066,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify generic Mother add-node replica-sync evidence after synchronization",
         allow_abbrev=False,
     )
-    verify_node_add_replica_sync_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_replica_sync_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_replica_sync_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_replica_sync_evidence_parser.add_argument("--operation-id")
     verify_node_add_replica_sync_evidence_parser.add_argument("--evidence", required=True)
@@ -1084,7 +1084,7 @@ def _parser() -> argparse.ArgumentParser:
         help="read-only adopt live replica-sync proof after a timeout/unclean execution",
         allow_abbrev=False,
     )
-    adopt_node_add_replica_sync_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_node_add_replica_sync_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     adopt_node_add_replica_sync_live_proof_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     adopt_node_add_replica_sync_live_proof_parser.add_argument("--operation-id")
     adopt_node_add_replica_sync_live_proof_parser.add_argument("--failed-evidence", required=True)
@@ -1101,7 +1101,7 @@ def _parser() -> argparse.ArgumentParser:
         help="mint an explicit expiring release for generic add-node validator admission",
         allow_abbrev=False,
     )
-    release_node_add_validator_admission.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_validator_admission.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     release_node_add_validator_admission.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     release_node_add_validator_admission.add_argument("--operation-id")
     release_node_add_validator_admission.add_argument("--replica-sync-evidence", required=True)
@@ -1123,7 +1123,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify a generic add-node validator-admission release before live votes",
         allow_abbrev=False,
     )
-    verify_node_add_validator_admission_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_validator_admission_release_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_validator_admission_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_validator_admission_release_parser.add_argument("--operation-id")
     verify_node_add_validator_admission_release_parser.add_argument("--release", required=True)
@@ -1142,7 +1142,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify generic add-node validator-admission evidence after live votes",
         allow_abbrev=False,
     )
-    verify_node_add_validator_admission_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_validator_admission_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_validator_admission_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_validator_admission_evidence_parser.add_argument("--operation-id")
     verify_node_add_validator_admission_evidence_parser.add_argument("--evidence", required=True)
@@ -1162,7 +1162,7 @@ def _parser() -> argparse.ArgumentParser:
         help="read-only adopt durable live add-node validator-admission proof after a timeout/unclean execution",
         allow_abbrev=False,
     )
-    adopt_node_add_validator_admission_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    adopt_node_add_validator_admission_live_proof_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     adopt_node_add_validator_admission_live_proof_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     adopt_node_add_validator_admission_live_proof_parser.add_argument("--operation-id")
     adopt_node_add_validator_admission_live_proof_parser.add_argument("--failed-evidence", required=True)
@@ -1178,7 +1178,7 @@ def _parser() -> argparse.ArgumentParser:
         help="mint an explicit expiring release for failed pre-admission add-node rollback",
         allow_abbrev=False,
     )
-    release_node_add_rollback.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_add_rollback.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     release_node_add_rollback.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     release_node_add_rollback.add_argument("--operation-id")
     release_node_add_rollback.add_argument("--failed-evidence", required=True)
@@ -1193,7 +1193,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify a generic Mother add-node rollback release before live service deletion",
         allow_abbrev=False,
     )
-    verify_node_add_rollback_release_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_rollback_release_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_rollback_release_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_rollback_release_parser.add_argument("--operation-id")
     verify_node_add_rollback_release_parser.add_argument("--release", required=True)
@@ -1205,7 +1205,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify generic Mother add-node rollback evidence after service deletion",
         allow_abbrev=False,
     )
-    verify_node_add_rollback_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_add_rollback_evidence_parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_add_rollback_evidence_parser.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_add_rollback_evidence_parser.add_argument("--operation-id")
     verify_node_add_rollback_evidence_parser.add_argument("--evidence", required=True)
@@ -1224,7 +1224,7 @@ def _parser() -> argparse.ArgumentParser:
         help="prepare an explicit node-removal transaction from canonical baseline evidence",
         allow_abbrev=False,
     )
-    remove_node_prep.add_argument("network", choices=["mainnet"])
+    remove_node_prep.add_argument("network", choices=["mainnet", "testnet"])
     remove_node_prep.add_argument("--node", required=True, help="explicit node name to remove; never inferred from host or ordinal")
     remove_node_prep.add_argument("--mode", default="soft", choices=["soft"])
     remove_node_prep.add_argument("--baseline-evidence", required=True)
@@ -1240,7 +1240,7 @@ def _parser() -> argparse.ArgumentParser:
         help="execute a released Mother node-removal plan; mutates only after release acknowledgement",
         allow_abbrev=False,
     )
-    remove_node_do.add_argument("network", choices=["mainnet"])
+    remove_node_do.add_argument("network", choices=["mainnet", "testnet"])
     remove_node_do.add_argument("--release", required=True)
     remove_node_do.add_argument("--acknowledge-release-sha256", required=True)
     remove_node_do.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
@@ -1257,6 +1257,10 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="preserve temporary static-node writer services for inspection; default deletes them after successful remove-node precleanup",
     )
+    remove_node_do.add_argument("--rpc-will-work-post-remove", action="store_true",
+                                help="explicit external RPC continuity assertion when target host loses its last RPC node")
+    remove_node_do.add_argument("--acknowledge-final-node-shutdown", action="store_true",
+                                help="optional legacy acknowledgement of final network-node shutdown; a verified zero-survivor topology needs no flag")
     remove_node_do.add_argument("--execute", action="store_true", help="required to perform live mutation")
 
     remove_node_finalize = remove_node_subparsers.add_parser(
@@ -1264,7 +1268,7 @@ def _parser() -> argparse.ArgumentParser:
         help="finalize a completed Mother node-removal do evidence artifact with read-only checks",
         allow_abbrev=False,
     )
-    remove_node_finalize.add_argument("network", choices=["mainnet"])
+    remove_node_finalize.add_argument("network", choices=["mainnet", "testnet"])
     remove_node_finalize.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     remove_node_finalize.add_argument("--operation-id")
     remove_node_finalize.add_argument("--do-evidence", required=True)
@@ -1278,7 +1282,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify a prepared Mother node-removal transaction without live mutation",
         allow_abbrev=False,
     )
-    verify_node_remove_prep.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_remove_prep.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_remove_prep.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_remove_prep.add_argument("--operation-id")
     verify_node_remove_prep.add_argument("--transaction", required=True)
@@ -1290,7 +1294,7 @@ def _parser() -> argparse.ArgumentParser:
         help="mint an explicit expiring release for a verified Mother remove-node prep transaction",
         allow_abbrev=False,
     )
-    release_node_remove_do.add_argument("--network", default="mainnet", choices=["mainnet"])
+    release_node_remove_do.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     release_node_remove_do.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     release_node_remove_do.add_argument("--operation-id")
     release_node_remove_do.add_argument("--transaction", required=True)
@@ -1306,7 +1310,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify a Mother remove-node do release without live mutation",
         allow_abbrev=False,
     )
-    verify_node_remove_do_release.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_remove_do_release.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_remove_do_release.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_remove_do_release.add_argument("--operation-id")
     verify_node_remove_do_release.add_argument("--release", required=True)
@@ -1319,7 +1323,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify persisted Mother remove-node do evidence",
         allow_abbrev=False,
     )
-    verify_node_remove_do_evidence.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_remove_do_evidence.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_remove_do_evidence.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_remove_do_evidence.add_argument("--operation-id")
     verify_node_remove_do_evidence.add_argument("--evidence", required=True)
@@ -1333,7 +1337,7 @@ def _parser() -> argparse.ArgumentParser:
         help="verify Mother node-removal finalize evidence",
         allow_abbrev=False,
     )
-    verify_node_remove_finalize.add_argument("--network", default="mainnet", choices=["mainnet"])
+    verify_node_remove_finalize.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     verify_node_remove_finalize.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
     verify_node_remove_finalize.add_argument("--operation-id")
     verify_node_remove_finalize.add_argument("--evidence", required=True)
@@ -6552,6 +6556,8 @@ def _cmd_remove_node_do(args: argparse.Namespace, private_state) -> int:
         poll_interval_seconds=args.poll_interval_seconds,
         allow_missing_service=args.allow_missing_service,
         preserve_static_node_precleanup_services=args.preserve_static_node_precleanup_services,
+        rpc_will_work_post_remove=args.rpc_will_work_post_remove,
+        acknowledge_final_node_shutdown=args.acknowledge_final_node_shutdown,
         progress=progress,
         operation=_operation("execute-node-remove-do", args.network, args.operation_id),
     )

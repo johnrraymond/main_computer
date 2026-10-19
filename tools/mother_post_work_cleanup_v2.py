@@ -791,7 +791,7 @@ def _run_cleanup1_coolify(
             controller=controller,
             controller_id=controller_id,
             endpoint=f"/api/v1/projects/{urllib.parse.quote(str(controller_config['project_uuid']), safe='')}/environments",
-            expected_name="mainnet",
+            expected_name=network,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             opener=opener,
@@ -805,7 +805,9 @@ def _run_cleanup1_coolify(
             final_validator_set=final_validator_set,
             chain_id=chain_id,
         )
-        body = _temporary_service_body(controller_config, service_name, compose)
+        body = _temporary_service_body(
+            controller_config, service_name, compose, environment_name=network
+        )
         body["environment_uuid"] = environment_uuid
         body["description"] = "Ephemeral Mother cleanup1 QBFT satisfied pending-vote cleanup"
         body["instant_deploy"] = False

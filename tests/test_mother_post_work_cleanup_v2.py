@@ -292,7 +292,16 @@ def test_rejects_unclean_topology_evidence(tmp_path: Path) -> None:
 
 
 
-def test_cleanup1_exited_temporary_service_counts_as_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("network", "node", "controller_id", "chain_id"),
+    [
+        ("mainnet", "mainnetc-super1", "coolify-c", 42424240),
+        ("testnet", "testnetb-super1", "coolify-b", 42424241),
+    ],
+)
+def test_cleanup1_exited_temporary_service_counts_as_pass(
+    monkeypatch: pytest.MonkeyPatch, network: str, node: str, controller_id: str, chain_id: int,
+) -> None:
     monkeypatch.setattr(
         post_work_cleanup_v2,
         "resolve_coolify_controller",
@@ -303,24 +312,26 @@ def test_cleanup1_exited_temporary_service_counts_as_pass(monkeypatch: pytest.Mo
         "_controller_config",
         lambda *args, **kwargs: {"project_uuid": "project-uuid"},
     )
-    monkeypatch.setattr(
-        post_work_cleanup_v2,
-        "_resolve_environment_uuid",
-        lambda **kwargs: "environment-uuid",
-    )
+    seen_environments: list[str] = []
+
+    def resolve_environment(**kwargs):  # noqa: ANN001
+        seen_environments.append(kwargs["expected_name"])
+        return "environment-uuid"
+
+    monkeypatch.setattr(post_work_cleanup_v2, "_resolve_environment_uuid", resolve_environment)
     monkeypatch.setattr(
         post_work_cleanup_v2,
         "_cleanup1_compose",
         lambda **kwargs: "services:\n  cleanup1: {}\n",
     )
-    monkeypatch.setattr(
-        post_work_cleanup_v2,
-        "_temporary_service_body",
-        lambda controller_config, service_name, compose: {
-            "name": service_name,
-            "docker_compose_raw": compose,
-        },
-    )
+    service_bodies: list[dict] = []
+
+    def service_body(controller_config, service_name, compose, *, environment_name):  # noqa: ANN001
+        result = {"name": service_name, "docker_compose_raw": compose, "environment_name": environment_name}
+        service_bodies.append(result)
+        return result
+
+    monkeypatch.setattr(post_work_cleanup_v2, "_temporary_service_body", service_body)
     monkeypatch.setattr(
         post_work_cleanup_v2,
         "_application_uuid",
@@ -371,17 +382,17 @@ def test_cleanup1_exited_temporary_service_counts_as_pass(monkeypatch: pytest.Mo
 
     result = post_work_cleanup_v2._run_cleanup1_coolify(
         object(),
-        network="mainnet",
+        network=network,
         service={
-            "node": "mainnetc-super1",
-            "controller_id": "coolify-c",
+            "node": node,
+            "controller_id": controller_id,
             "service_uuid": "lacn9nce720smwusl4wyqhyt",
         },
         final_validator_set=[
             "0x9b809f05f8d68da17e697cd6ab040d4320494611",
             "0xc539f2b771eea73fe61ae4251ef5ba861d9745f6",
         ],
-        chain_id=42424240,
+        chain_id=chain_id,
         mode="execute",
         timeout=1.0,
         max_response_bytes=1024,
@@ -395,6 +406,9 @@ def test_cleanup1_exited_temporary_service_counts_as_pass(monkeypatch: pytest.Mo
     assert result["reason"] is None
     assert result["health"]["reason"] == "temporary-service-exited"
     assert result["health"]["service_status"] == "exited"
+    assert seen_environments == [network]
+    assert len(service_bodies) == 1
+    assert service_bodies[0]["environment_name"] == network
 
 def test_cleanup_all_runs_cleanup1_through_coolify_and_stops_before_helper_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runtime, topology, topology_sha = _evidence_tree(tmp_path)

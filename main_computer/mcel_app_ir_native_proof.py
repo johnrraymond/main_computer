@@ -10,6 +10,7 @@ Application IR cannot yet execute by itself.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -40,7 +41,17 @@ def run_app_ir_native_intent_proof(
     try:
         profile = get_app_authoring_profile(app_id)
     except AppAuthoringProfileError as exc:
-        raise AppIrNativeProofError(str(exc)) from exc
+        # A proof-only profile must not turn a profile-free DSL application into
+        # an application-specific authoring/projection/promotion pipeline.
+        if app_id != "code-editor":
+            raise AppIrNativeProofError(str(exc)) from exc
+        from main_computer.mcel_code_editor_ir_native_proof import run_code_editor_ir_native_intent_proof
+        from main_computer.mcel_projection_profiles.code_editor_host_bound_v1 import PROFILE_ID
+        profile = SimpleNamespace(
+            profile_id="mcel.code-editor.real-effects-proof-profile.v1",
+            projection_profile=PROFILE_ID,
+            run_ir_native_proof=run_code_editor_ir_native_intent_proof,
+        )
     if record.app_id != app_id:
         raise AppIrNativeProofError("Package record identity does not match the requested application.")
     if profile.run_ir_native_proof is None:

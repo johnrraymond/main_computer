@@ -282,7 +282,11 @@ def _first_genesis_compose(
     hub_git_repository: str,
     hub_git_ref: str,
     p2p_port: int = 30303,
+    service_profile: str = "integrated",
+    network: str = "mainnet",
 ) -> str:
+    if service_profile not in {"integrated", "chain-only"}:
+        raise MotherDeploymentGenesisReleaseError("MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", "unsupported genesis service profile")
     p2p_port = int(p2p_port)
     if not 1 <= p2p_port <= 65535:
         raise MotherDeploymentGenesisReleaseError("MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", "p2p_port must be a valid TCP/UDP port")
@@ -323,7 +327,7 @@ def _first_genesis_compose(
         ]
     )
     indented_bootstrap = "\n".join("        " + line for line in hub_bootstrap.splitlines())
-    return "\n".join(
+    compose = "\n".join(
         [
             f"name: {node}",
             "",
@@ -464,6 +468,30 @@ def _first_genesis_compose(
             "  mother-hub-data:",
             "",
         ]
+    )
+    if service_profile == "integrated":
+        return compose
+    # Reuse the *exact* validator/init service definitions from the integrated
+    # profile, but do not carry Hub/FDB services or volumes into chain birth.
+    boundary = f"\n  {_FDB_SERVICE}:\n"
+    if compose.count(boundary) != 1 or compose.count("\nvolumes:\n") != 1:
+        raise MotherDeploymentGenesisReleaseError(
+            "MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", "cannot isolate common Besu services"
+        )
+    chain_services = compose.split(boundary, 1)[0]
+    chain_services = chain_services.replace(
+        f"{node},{_HUB_SERVICE},mother-genesis-proof-guardian",
+        f"{node},mother-genesis-proof-guardian",
+    )
+    network_name = _identifier(network, "network")
+    # The selected network gets its own existing external Docker network.
+    # This is never applied to the legacy integrated mainnet profile.
+    return (
+        chain_services
+        + "\n\nvolumes:\n  mother-config:\n  mother-data:\n"
+        + "\nnetworks:\n  default:\n"
+        + f"    name: mc-qbft-{network_name}-network\n"
+        + "    external: true\n"
     )
 
 

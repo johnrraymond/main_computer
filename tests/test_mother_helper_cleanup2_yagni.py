@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
+import pytest
 
 from tools.mother.common.paths import MotherPaths
 from tools.mother.common.private_state import (
@@ -1588,3 +1589,42 @@ def test_cleanup2_yagni_parser_accepts_cleanup_on_clean() -> None:
 
     assert args.cleanup_on_clean is True
 
+
+
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_cleanup2_temporary_service_selects_own_network_environment(
+    monkeypatch: pytest.MonkeyPatch, network: str,
+) -> None:
+    import tools.mother_helper_cleanup2_yagni as cleanup2
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(cleanup2, "_controller", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        cleanup2, "_controller_config",
+        lambda *args, **kwargs: {"project_uuid": "project1", "server_uuid": "server1"},
+    )
+
+    def resolve_environment(**kwargs):  # noqa: ANN001
+        seen["expected_name"] = kwargs["expected_name"]
+        return "env-" + kwargs["expected_name"]
+
+    monkeypatch.setattr(cleanup2, "_resolve_environment_uuid", resolve_environment)
+
+    def reject_create(_controller, method, endpoint, *, body, **kwargs):  # noqa: ANN001
+        assert (method, endpoint) == ("POST", "/api/v1/services")
+        seen["body"] = dict(body)
+        return {
+            "status": 503, "ok": False, "response_sha256": "0" * 64,
+            "byte_length": 2, "elapsed_ms": 0, "payload": {},
+        }
+
+    monkeypatch.setattr(cleanup2, "_http", reject_create)
+    result = cleanup2._run_cleanup2_for_controller(
+        object(), network=network, controller_id="coolify-b" if network == "testnet" else "coolify-a",
+        targets=[], timeout=1.0, max_response_bytes=8192, max_wait_seconds=0,
+        poll_interval_seconds=0, opener=None, progress=None,
+    )
+    assert result["status"] == "failed" and result["reason"] == "create-failed"
+    assert seen["expected_name"] == network
+    assert seen["body"]["environment_uuid"] == "env-" + network
+    assert seen["body"]["environment_name"] == network

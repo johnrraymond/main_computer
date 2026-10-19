@@ -27,9 +27,8 @@ from tools.mother.common.paths import MotherPaths
 from tools.mother.common.private_state import read_private_state
 from tools.mother.common.deployment_validator_rpc_canary_funding import (
     MotherDeploymentValidatorRpcCanaryFundingError,
-    _network_state,
-    _shared_rpc_route_host,
-    _target_controller_id,
+    resolve_network_rpc_route,
+    resolve_network_rpc_node_controller,
     execute_shared_rpc_route_rewire,
 )
 
@@ -39,33 +38,31 @@ class RpcRouteEnsureError(RuntimeError):
 
 
 def route_plan(private_state: Any, *, network: str, node: str, controller_id: str) -> dict[str, Any]:
-    """Resolve a single, explicitly specified controller-local backend; no network I/O."""
-    if network != "mainnet":
-        raise RpcRouteEnsureError(f"unsupported network {network!r}; only mainnet owns this shared RPC route")
-    if controller_id not in {"coolify-a", "coolify-c"}:
-        raise RpcRouteEnsureError(f"unsupported controller {controller_id!r}")
-    if not node or not isinstance(node, str):
-        raise RpcRouteEnsureError("node is required")
-    state = _network_state(private_state)
-    if state.get("chain_id") != 42424240:
-        raise RpcRouteEnsureError("mainnet chain ID does not match 42424240")
-    if re.fullmatch(r"mainnet[ac]-super[1-9][0-9]*", node) is None:
-        raise RpcRouteEnsureError(f"unsupported validator-RPC backend {node!r}")
-    actual_controller = _target_controller_id(state, node)
+    """Resolve a Mother-owned RPC backend/route for either network, without I/O."""
+    try:
+        contract = resolve_network_rpc_route(private_state, network)
+        actual_controller = resolve_network_rpc_node_controller(
+            private_state, network=network, node=node,
+        )
+    except MotherDeploymentValidatorRpcCanaryFundingError as exc:
+        raise RpcRouteEnsureError(f"{exc.code}: {exc}") from exc
+    if network == "mainnet" and controller_id not in {"coolify-a", "coolify-c"}:
+        raise RpcRouteEnsureError(f"unsupported mainnet controller {controller_id!r}")
     if actual_controller != controller_id:
         raise RpcRouteEnsureError(
             f"node {node!r} belongs to {actual_controller!r}, not {controller_id!r}"
         )
-    # Only network validator names may serve as controller-local backends.
-    route_host = _shared_rpc_route_host(state)
+    if contract is None:
+        return {
+            "network": network, "controller_id": controller_id, "node": node,
+            "mode": "verified-unpublished-route", "host": None, "url": None,
+            "backend_url": f"http://{node}:8545",
+            "expected_chain_id": 42424240 if network == "mainnet" else 42424241,
+        }
     return {
-        "network": network,
-        "controller_id": controller_id,
-        "node": node,
-        "host": route_host,
-        "url": f"https://{route_host}",
-        "backend_url": f"http://{node}:8545",
-        "expected_chain_id": 42424240,
+        "network": network, "controller_id": controller_id, "node": node,
+        "host": contract["host"], "url": f"https://{contract['host']}",
+        "backend_url": f"http://{node}:8545", "expected_chain_id": contract["chain_id"],
     }
 
 
@@ -83,12 +80,19 @@ def ensure_route(
     **kwargs: Any,
 ) -> dict[str, Any]:
     plan = route_plan(private_state, network=network, node=node, controller_id=controller_id)
+    if plan.get("mode") == "verified-unpublished-route":
+        return {
+            "status": "pass", "clean": True, "ensured": False,
+            "mode": "verified-unpublished-route", "route": plan,
+            "proof": {"published_route_absent_in_verified_mother_state": True},
+        }
     if not execute:
         return {"status": "pass", "clean": True, "ensured": False, "mode": "plan-only", "route": plan}
     result = execute_shared_rpc_route_rewire(
         private_state,
         controller_id=controller_id,
         target_node=node,
+        **({"network": network} if network != "mainnet" else {}),
         timeout=timeout,
         max_response_bytes=max_response_bytes,
         max_wait_seconds=max_wait_seconds,
@@ -118,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--network", default="mainnet")
     parser.add_argument("--runtime-state-root", default=str(ROOT / "runtime" / "state"))
     parser.add_argument("--node", required=True)
-    parser.add_argument("--controller-id", required=True, choices=["coolify-a", "coolify-c"])
+    parser.add_argument("--controller-id", required=True, choices=["coolify-a", "coolify-b", "coolify-c"])
     parser.add_argument("--execute", action="store_true", help="install/repair the persistent Traefik route")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--max-response-bytes", type=int, default=4 * 1024 * 1024)

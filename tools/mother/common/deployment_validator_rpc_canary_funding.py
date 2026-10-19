@@ -190,6 +190,83 @@ def _network_state(private_state: PrivateStateReadResult) -> Mapping[str, Any]:
     return mainnet
 
 
+def resolve_network_rpc_route(private_state: PrivateStateReadResult, network: str) -> dict[str, Any] | None:
+    """Resolve Mother route from the verified canonical document."""
+    return route_contract_from_document(_private_state_document(private_state), network)
+
+
+def route_contract_from_document(document: Mapping[str, Any], network: str) -> dict[str, Any] | None:
+    """One route policy for both networks; mainnet retains its legacy implicit route."""
+    networks = document.get("networks")
+    selected = networks.get(network) if isinstance(networks, Mapping) else None
+    expected_ids = {"mainnet": 42424240, "testnet": 42424241}
+    if not isinstance(selected, Mapping) or selected.get("chain_id") != expected_ids.get(network):
+        raise _error(
+            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+            f"Mother network {network!r} has no verified chain identity",
+        )
+    route = selected.get("rpc_route")
+    if route is None or route == {}:
+        if network != "mainnet":
+            return None
+        # Historical mainnet route was implicit. Do not change its hostname.
+        host = _shared_rpc_route_host(selected)
+        implicit = True
+    else:
+        if not isinstance(route, Mapping):
+            raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", "rpc_route must be an object")
+        if route.get("published") is False or route.get("mode") == "unpublished":
+            return None
+        host = next((route.get(key) for key in ("host", "hostname", "public_host")
+                     if isinstance(route.get(key), str) and route.get(key)), None)
+        if not isinstance(host, str) or re.fullmatch(r"[a-z0-9][a-z0-9.-]*", host) is None:
+            raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", "published rpc_route requires a safe hostname")
+        implicit = False
+    return {"network": network, "chain_id": selected["chain_id"], "host": host, "implicit": implicit}
+
+
+def resolve_network_rpc_node_controller(
+    private_state: PrivateStateReadResult, *, network: str, node: str
+) -> str:
+    """Bind an RPC backend to its Mother-owned controller, never by hostname guess."""
+    networks = _private_state_document(private_state).get("networks")
+    selected = networks.get(network) if isinstance(networks, Mapping) else None
+    if not isinstance(selected, Mapping):
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", f"missing {network} network")
+    if not (isinstance(node, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,100}", node)):
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", "RPC backend node has an unsafe name")
+    if network == "mainnet":
+        return _target_controller_id(selected, node)
+    nodes = selected.get("nodes")
+    record = nodes.get(node) if isinstance(nodes, Mapping) else None
+    controller_id = record.get("host") if isinstance(record, Mapping) else None
+    if not controller_id:
+        deployment = selected.get("deployment")
+        targets = deployment.get("targets") if isinstance(deployment, Mapping) else None
+        target = targets.get(node) if isinstance(targets, Mapping) else None
+        ref = target.get("controller_ref") if isinstance(target, Mapping) else None
+        prefix = f"networks.{network}.coolify.controllers."
+        if isinstance(ref, str) and ref.startswith(prefix):
+            controller_id = ref[len(prefix):]
+    coolify = selected.get("coolify")
+    controllers = coolify.get("controllers") if isinstance(coolify, Mapping) else None
+    wire = controllers.get(controller_id) if isinstance(controllers, Mapping) else None
+    if not (isinstance(controller_id, str) and re.fullmatch(r"coolify-[a-z][a-z0-9-]*", controller_id)):
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", f"unsafe {network} RPC backend/controller {node!r}")
+    if not (isinstance(wire, Mapping) and wire.get("enabled", True) is True):
+        # For an unpublished route, planning is a read-only no-op. Mother can
+        # verify its exact registered target without requiring Coolify metadata
+        # that only the live writer needs. A published route never uses this.
+        deployment = selected.get("deployment")
+        targets = deployment.get("targets") if isinstance(deployment, Mapping) else None
+        target = targets.get(node) if isinstance(targets, Mapping) else None
+        reference = target.get("controller_ref") if isinstance(target, Mapping) else None
+        if not (resolve_network_rpc_route(private_state, network) is None
+                and reference == f"networks.{network}.coolify.controllers.{controller_id}"):
+            raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", f"unverified {network} RPC backend/controller {node!r}")
+    return controller_id
+
+
 def _target_controller_id(mainnet: Mapping[str, Any], node: str) -> str:
     nodes = mainnet.get("nodes")
     node_record = nodes.get(node) if isinstance(nodes, Mapping) else None
@@ -1062,8 +1139,8 @@ def _render_shared_rpc_traefik_dynamic_config(target: Mapping[str, Any]) -> str:
     route_host = str(target["route_host"])
     target_url = str(target["target_url"])
     controller_id = str(target["controller_id"])
-    router_base = _traefik_resource_id("mother", "mainnet", "rpc", controller_id)
-    service_id = _traefik_resource_id("mother", "mainnet", "rpc", "svc", controller_id)
+    router_base = _traefik_resource_id("mother", str(target.get("network", "mainnet")), "rpc", controller_id)
+    service_id = _traefik_resource_id("mother", str(target.get("network", "mainnet")), "rpc", "svc", controller_id)
     lines = [
         "# Generated by Mother validator-RPC route wiring.",
         "# Source of truth: Mother-owned shared network RPC route.",
@@ -1221,9 +1298,19 @@ def _route_writer_script(target: Mapping[str, Any]) -> str:
     dynamic_config = _render_shared_rpc_traefik_dynamic_config(target)
     dynamic_config_b64 = base64.b64encode(dynamic_config.encode("utf-8")).decode("ascii")
     target_path = f"/traefik/dynamic/{target['dynamic_file']}"
-    legacy_target_path = f"/traefik/dynamic/{target['legacy_dynamic_file']}"
+    legacy_file = target.get("legacy_dynamic_file")
+    if legacy_file is None:
+        # New network publications have no historical route file to remove.
+        # Preserve the original script byte-for-byte for legacy mainnet routes.
+        legacy_target_path = ""
+        template = _ROUTE_WRITER_PY.replace(
+            '    f"rm -f \'{LEGACY_TARGET_PATH}\'\\n"\n    f"test ! -e \'{LEGACY_TARGET_PATH}\'\\n"\n', "",
+        )
+    else:
+        legacy_target_path = f"/traefik/dynamic/{legacy_file}"
+        template = _ROUTE_WRITER_PY
     return (
-        _ROUTE_WRITER_PY
+        template
         .replace("__ROUTE_HOST__", repr(str(target["route_host"])))
         .replace("__TARGET_HOST__", repr(str(target["target_host"])))
         .replace("__TARGET_PORT__", repr(int(target["target_port"])))
@@ -1295,11 +1382,11 @@ sleep 900
     return text
 
 
-def _route_writer_application_body(controller: Mapping[str, Any], name: str, compose: str) -> dict[str, Any]:
+def _route_writer_application_body(controller: Mapping[str, Any], name: str, compose: str, *, network: str = "mainnet") -> dict[str, Any]:
     return {
         "project_uuid": controller["project_uuid"],
         "server_uuid": controller["server_uuid"],
-        "environment_name": "mainnet",
+        "environment_name": network,
         "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
         "name": name,
         "description": "Ephemeral Mother shared validator-RPC Traefik route writer",
@@ -1312,49 +1399,56 @@ def execute_shared_rpc_route_rewire(
     *,
     controller_id: str,
     target_node: str,
+    network: str = "mainnet",
     timeout: float = 30.0,
     max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
     max_wait_seconds: float = 300.0,
     poll_interval_seconds: float = 5.0,
     opener: Any = _DEFAULT_OPENER,
 ) -> dict[str, Any]:
-    """Repoint one controller's Mother-owned mainnet RPC route and prove it locally."""
-    if controller_id not in {_A_CONTROLLER, _C_CONTROLLER}:
-        raise _error(
-            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
-            f"unsupported shared RPC controller {controller_id!r}",
-        )
-    mainnet = _network_state(private_state)
-    resolved_controller_id = _target_controller_id(mainnet, target_node)
+    """Repoint a published Mother network RPC route and prove it on that controller."""
+    contract = resolve_network_rpc_route(private_state, network)
+    if contract is None:
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", f"{network} has no published RPC route")
+    if network == "mainnet" and controller_id not in {_A_CONTROLLER, _C_CONTROLLER}:
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", f"unsupported shared RPC controller {controller_id!r}")
+    resolved_controller_id = resolve_network_rpc_node_controller(
+        private_state, network=network, node=target_node,
+    )
     if resolved_controller_id != controller_id:
         raise _error(
             "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
             f"RPC replacement node {target_node!r} resolves to {resolved_controller_id!r}, not {controller_id!r}",
         )
-    chain_id = mainnet.get("chain_id")
-    if chain_id != 42424240:
-        raise _error(
-            "MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
-            "Mother private state does not bind mainnet chain_id 42424240",
-        )
-    route_key = "a" if controller_id == _A_CONTROLLER else "c"
+    route_key = ("a" if controller_id == _A_CONTROLLER else "c") if network == "mainnet" else controller_id.removeprefix("coolify-")
     target = {
         "key": route_key,
         "node": target_node,
         "controller_id": controller_id,
-        "route_host": _shared_rpc_route_host(mainnet),
+        "route_host": contract["host"],
         "target_host": target_node,
         "target_port": 8545,
         "target_url": f"http://{target_node}:8545",
-        "expected_chain_id": chain_id,
-        "dynamic_file": f"mother-mainnet-rpc-route-{controller_id}.yml",
-        "legacy_dynamic_file": f"main-computer-mainnet-rpc-public-entry-{route_key}.yml",
+        "expected_chain_id": contract["chain_id"],
+        "dynamic_file": f"mother-{network}-rpc-route-{controller_id}.yml",
+        "legacy_dynamic_file": (
+            f"main-computer-mainnet-rpc-public-entry-{route_key}.yml" if network == "mainnet"
+            else None
+        ),
+        "network": network,
     }
-    controller = resolve_coolify_controller(private_state, "mainnet", controller_id)
-    controller_config = _controller(private_state, controller_id)
+    controller = resolve_coolify_controller(private_state, network, controller_id)
+    controller_config = load_controller_config(
+        private_state, network=network, controller_id=controller_id,
+        allowed_controllers=({_A_CONTROLLER, _C_CONTROLLER} if network == "mainnet" else {controller_id}),
+        error_factory=_error,
+        rejected_code="MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+        invalid_code="MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED",
+        placement_description="network RPC writer placement",
+    )
     receipts: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
-    service_name = f"mother-mainnet-rpc-route-{route_key}"
+    service_name = f"mother-{network}-rpc-route-{route_key}"
     service_uuid: str | None = None
     proof: dict[str, Any] | None = None
     cleanup_deleted = False
@@ -1363,15 +1457,15 @@ def execute_shared_rpc_route_rewire(
             controller=controller,
             controller_id=controller_id,
             endpoint=f"/api/v1/projects/{controller_config['project_uuid']}/environments",
-            expected_name="mainnet",
+            expected_name=network,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             opener=opener,
             observations=observations,
-            phase=f"{route_key}_shared_rpc_route_writer-mainnet-environment-resolution",
+            phase=f"{route_key}_shared_rpc_route_writer-{network}-environment-resolution",
         )
         compose = _route_writer_compose(service_name, target)
-        create_body = _route_writer_application_body(controller_config, service_name, compose)
+        create_body = _route_writer_application_body(controller_config, service_name, compose, network=network)
         create_body["environment_uuid"] = environment_uuid
         create_response = _request_mutation(
             controller=controller,
@@ -1430,7 +1524,11 @@ def execute_shared_rpc_route_rewire(
             "dynamic_file": target["dynamic_file"],
             "legacy_dynamic_file": target["legacy_dynamic_file"],
             "result_channel": "coolify-service-detail-health",
-            "proof": "coolify-proxy wrote the Mother-owned route, retired the legacy QBFT route, and proved eth_chainId through the local Traefik hostname route",
+            "proof": (
+                "coolify-proxy wrote the Mother-owned route, retired the legacy QBFT route, and proved eth_chainId through the local Traefik hostname route"
+                if network == "mainnet"
+                else "coolify-proxy wrote the Mother-owned network RPC route and proved eth_chainId through the local Traefik hostname route"
+            ),
         }
         if proof.get("healthy") is not True:
             raise _error(

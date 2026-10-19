@@ -556,6 +556,8 @@ def _find_reset_chain_identity_source(args: argparse.Namespace) -> tuple[Path, d
             document = _read_json_object(path)
         except SystemExit:
             continue
+        if not _evidence_matches_network(document, args, path=path):
+            continue
         identity = _chain_identity_from_document(document)
         if identity is None:
             continue
@@ -697,6 +699,219 @@ def rebuild_pristine_empty_add_baseline(args: argparse.Namespace) -> Path | None
     return out_path
 
 
+def initialize_verified_first_birth_baseline(args: argparse.Namespace) -> Path | None:
+    """Create testnet's *first* topology baseline, never a topology reseal.
+
+    Only permitted for Mother's untouched clean-start testnet with no prior
+    testnet topology or bootstrap evidence.  Complete live Coolify inventory
+    must prove no network resources before an empty baseline is written.  The
+    normal topology detector subsequently repeats its read-only checks.
+    """
+    if args.operation != "add-node" or _network(args) != "testnet":
+        return None
+
+    from tools.mother.common.coolify_state import list_coolify_controllers
+    from tools.mother.common.models import OperationIdentity
+    from tools.mother.common.paths import MotherPaths
+    from tools.mother.common.private_state import read_private_state
+    from tools.mother_detect_topology_v2 import ENDPOINTS, query_live_coolify_inventory
+
+    evidence_root = Path(args.runtime_state_root) / "mother" / "evidence"
+    # Never silently treat a rejected first-birth proof as an absent baseline.
+    # Existing accepted topology or mutation evidence requires explicit recovery,
+    # even when the Coolify resource has subsequently disappeared.
+    for path in evidence_root.rglob("*.json") if evidence_root.is_dir() else ():
+        try:
+            document = _read_json_object(path)
+        except SystemExit:
+            # A possibly relevant, unreadable testnet evidence file must not
+            # disappear from the chain-birth history by parse failure.
+            if "testnet" in path.name.lower() and any(
+                label in str(path.parent).lower()
+                for label in ("topology", "deployment-node-add", "deployment-node-remove")
+            ):
+                raise SystemExit(
+                    "MOTHER_MUTATE_HARNESS_TESTNET_FIRST_BIRTH_UNREADABLE_EVIDENCE: "
+                    f"cannot classify prior testnet evidence {path}"
+                )
+            continue
+        if document.get("network") != "testnet":
+            continue
+        kind = str(document.get("kind", ""))
+        if ("topology" in kind or "deployment_node_add" in kind or "deployment_node_remove" in kind):
+            raise SystemExit(
+                "MOTHER_MUTATE_HARNESS_TESTNET_FIRST_BIRTH_PRIOR_EVIDENCE: "
+                f"prior testnet topology/deployment evidence exists at {path} "
+                f"(kind={kind!r}, status={document.get('status')!r}); "
+                "refusing to initialize a second empty-chain baseline"
+            )
+
+    operation = OperationIdentity(
+        operation_id=f"mother-harness-testnet-first-birth-{int(time.time())}",
+        request_id="mother-harness-testnet-first-birth",
+        network="testnet",
+        operation_kind="MOTHER-OP-EVIDENCE-EXPORT",
+    )
+    paths = MotherPaths(runtime_state_root=args.runtime_state_root).resolve_private_state_paths()
+    state = read_private_state(paths, operation=operation)
+    state_doc = json.loads(state.canonical_object_bytes.decode("utf-8"))
+    network_doc = (state_doc.get("networks") or {}).get("testnet")
+    if not isinstance(network_doc, dict):
+        raise SystemExit(
+            "MOTHER_MUTATE_HARNESS_TESTNET_FIRST_BIRTH_NO_NETWORK: "
+            "verified Mother state has no networks.testnet"
+        )
+    deployment = network_doc.get("deployment") or {}
+    target = (deployment.get("targets") or {}).get(args.node)
+    chain_id = network_doc.get("chain_id")
+    clean_start_gates = (
+        ("deployment.mode", deployment.get("mode") == "clean-start"),
+        # Registration reserves all starter identities before first birth.
+        # The pre-reservation awaiting-offline-plan value is no longer eligible.
+        ("deployment.status", deployment.get("status") == "identity-reserved-awaiting-executor"),
+        ("deployment.targets.<node>", isinstance(target, dict)),
+        ("target.status", isinstance(target, dict) and target.get("status") == "absent-awaiting-redeployment"),
+        ("target.live_resource_uuid", isinstance(target, dict) and target.get("live_resource_uuid") is None),
+        ("network.chain_id", isinstance(chain_id, int) and not isinstance(chain_id, bool) and chain_id > 0),
+        ("target.controller_ref", isinstance(target, dict) and target.get("controller_ref") == f"networks.testnet.coolify.controllers.{args.host}"),
+    )
+    failed_gates = [name for name, passed in clean_start_gates if not passed]
+    if failed_gates:
+        raise SystemExit(
+            "MOTHER_MUTATE_HARNESS_TESTNET_FIRST_BIRTH_STATE_NOT_CLEAN_START: "
+            "verified Mother identity did not satisfy clean-start prerequisites: "
+            + ", ".join(failed_gates)
+        )
+    controllers = [
+        controller for controller in list_coolify_controllers(state)
+        if controller.network == "testnet" and controller.enabled
+    ]
+    if not controllers:
+        raise SystemExit(
+            "MOTHER_MUTATE_HARNESS_TESTNET_FIRST_BIRTH_NO_CONTROLLER: "
+            "verified Mother state has no enabled testnet controller"
+        )
+    if any(not controller.api_token.strip() for controller in controllers):
+        raise SystemExit(
+            "MOTHER_MUTATE_HARNESS_TESTNET_FIRST_BIRTH_NO_CONTROLLER_TOKEN: "
+            "one or more enabled testnet controllers lack stored authentication"
+        )
+    probes, timed_out = query_live_coolify_inventory(
+        controllers, network="testnet",
+        timeout=float(args.timeout), max_response_bytes=int(args.max_response_bytes),
+        overall_timeout=max(60.0, float(args.timeout) * 2),
+    )
+    expected = {(controller.controller_id, name) for controller in controllers for name, _ in ENDPOINTS}
+    observed = {(probe.controller_id, probe.endpoint_label) for probe in probes}
+    # Project and server records may legitimately mention the registered
+    # testnet environment without representing a deployed testnet resource.
+    # Services/applications/resources must have no testnet matches at all;
+    # any endpoint with node hints or exact service names fails closed.
+    incomplete = (
+        timed_out or observed != expected or len(probes) != len(expected)
+        or any(not probe.ok for probe in probes)
+    )
+    if incomplete:
+        raise SystemExit(
+            "MOTHER_MUTATE_HARNESS_TESTNET_FIRST_BIRTH_UNPROVEN: "
+            "Coolify B inventory timed out, failed, or omitted an endpoint; refusing empty topology initialization"
+        )
+    occupied = [
+        f"{probe.controller_id}/{probe.endpoint_label}"
+        for probe in probes
+        if probe.live_node_hints or probe.exact_service_nodes
+        or (probe.endpoint_label in {"services", "applications", "resources"} and probe.matches)
+    ]
+    if occupied:
+        raise SystemExit(
+            "MOTHER_MUTATE_HARNESS_TESTNET_FIRST_BIRTH_OCCUPIED: "
+            "Coolify reports possible testnet services or nodes at "
+            + ", ".join(sorted(occupied))
+            + "; refusing empty topology initialization"
+        )
+
+    # Prove the identity was not replaced while Coolify was being queried.
+    fresh_state = read_private_state(paths, operation=operation)
+    if fresh_state.binding != state.binding:
+        raise SystemExit("MOTHER_MUTATE_HARNESS_FIRST_BIRTH_STATE_CHANGED: Mother state changed during live inventory")
+
+    completed_at = _utc_timestamp()
+    topology = {
+        "source": "mother-clean-start-live-inventory",
+        "chain_id": chain_id,
+        "genesis_sha256": None,
+        "genesis_lineage": "fresh-required",
+        "fresh_genesis_required": True,
+        "nodes": [],
+        "services": {},
+        "validator_count": 0,
+        "validator_set": [],
+        "baseline_topology_used_as_live": False,
+    }
+    document = {
+        "kind": EMPTY_RECTIFICATION_EVIDENCE_KIND,
+        "schema_version": 1,
+        "completed_at": completed_at,
+        "status": "pass",
+        "failure": None,
+        "network": "testnet",
+        "mother_binding": {
+            "generation": state.binding.generation,
+            "content_sha256": state.binding.content_hash.digest,
+            "manifest_sha256": state.binding.recovery_manifest_hash.digest,
+        },
+        "mode": "verified-first-birth-clean-start",
+        "chain_id": chain_id,
+        "genesis_sha256": None,
+        "genesis_lineage": "fresh-required",
+        "fresh_genesis_required": True,
+        "current_topology": topology,
+        "final_topology": topology,
+        "authority": {
+            "empty_topology_marked_by_evidence": True,
+            "live_mutation_authorized": False,
+            "live_mutation_performed": False,
+        },
+        "policy": {
+            "allowed_http_methods": ["GET"],
+            "coolify_control_plane_only": True,
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "routing_or_topology_published": False,
+            "public_endpoint_created": False,
+            "chain_mutation_performed": False,
+            "private_keys_materialized": False,
+            "secrets_in_output": False,
+        },
+        "summary": {
+            "clean": True,
+            "complete": True,
+            "fresh_genesis_required": True,
+            "empty_topology_marked_by_evidence": True,
+            "final_nodes": [],
+            "final_validator_count": 0,
+            "final_validator_set": [],
+            "network_access_performed": True,
+            "live_mutation_performed": False,
+            "next_phase": "add-node-prep-testnet",
+            "inventory_controller_count": len(controllers),
+            "inventory_probe_count": len(probes),
+        },
+        "next_phase": "add-node-prep-testnet",
+    }
+    document["live_topology_empty_rectification_sha256"] = _digest_without(
+        document, "live_topology_empty_rectification_sha256"
+    )
+    payload = canonical_json(document)
+    out_dir = evidence_root / EMPTY_RECTIFICATION_EVIDENCE_DIRECTORY
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{_stamp_for_filename(completed_at)}-{hashlib.sha256(payload).hexdigest()[:16]}-testnet-first-birth.json"
+    with out_path.open("xb") as handle:
+        handle.write(payload)
+    print("MOTHER_MUTATE_HARNESS_FIRST_BIRTH_BASELINE: verified Mother clean-start and complete empty Coolify testnet inventory")
+    return out_path
+
+
 def _remove_finalize_targets_node(document: dict[str, Any], node: str) -> bool:
     if document.get("kind") != REMOVE_FINALIZE_EVIDENCE_KIND:
         return False
@@ -763,7 +978,7 @@ def _baseline_path_recency(path: Path) -> float:
     return path.stat().st_mtime
 
 
-def _successful_live_current_topology_baseline(path: Path) -> bool:
+def _successful_live_current_topology_baseline(path: Path, *, network: str = "mainnet") -> bool:
     if path.parent.name != LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY:
         return True
     try:
@@ -773,7 +988,7 @@ def _successful_live_current_topology_baseline(path: Path) -> bool:
     return (
         document.get("kind") == LIVE_CURRENT_TOPOLOGY_EVIDENCE_KIND
         and document.get("status") == "pass"
-        and document.get("next_phase") == "topology-baseline-ready-mainnet"
+        and document.get("next_phase") == f"topology-baseline-ready-{network}"
         and pick(document, "summary.clean") is True
         and pick(document, "summary.complete") is True
         and pick(document, "summary.live_topology_sealed") is True
@@ -802,16 +1017,47 @@ def _remove_auto_baseline_supported(path: Path) -> bool:
     return document.get("kind") == expected_kind
 
 
+def _evidence_matches_network(document: dict[str, Any], args: argparse.Namespace, *, path: Path) -> bool:
+    """Only borrow topology from the requested network.
+
+    Older mainnet fixtures/evidence can lack a network field.  Preserve that
+    legacy mainnet behavior, but never promote unlabelled evidence to testnet.
+    Explicitly labelled evidence is authoritative regardless of its filename.
+    """
+    network = document.get("network")
+    requested = _network(args)
+    if network is not None:
+        return network == requested
+    if requested != "mainnet":
+        return False
+    # Unlabelled legacy mainnet evidence is not safe if it identifies testnet.
+    if re.search(r"testnet[a-z]+-super\d+|testnet", path.name, re.IGNORECASE):
+        return False
+    for key in ("final_topology", "current_topology", "post_add_topology", "post_removal_topology"):
+        topology = document.get(key)
+        if isinstance(topology, dict):
+            nodes = topology.get("nodes")
+            if isinstance(nodes, list) and any(str(n).startswith("testnet") for n in nodes):
+                return False
+    return True
+
+
 def _auto_baseline_matches(args: argparse.Namespace, patterns: list[Path]) -> list[Path]:
     matches: list[Path] = []
     for pattern in patterns:
-        matches.extend(
-            path
-            for path in pattern.parent.glob(pattern.name)
-            if path.is_file()
-            and _successful_live_current_topology_baseline(path)
-            and (args.operation != "remove-node" or _remove_auto_baseline_supported(path))
-        )
+        for path in pattern.parent.glob(pattern.name):
+            if not path.is_file():
+                continue
+            try:
+                document = _read_json_object(path)
+            except SystemExit:
+                continue
+            if (
+                _evidence_matches_network(document, args, path=path)
+                and _successful_live_current_topology_baseline(path, network=_network(args))
+                and (args.operation != "remove-node" or _remove_auto_baseline_supported(path))
+            ):
+                matches.append(path)
     return matches
 
 
@@ -831,7 +1077,9 @@ def _matching_remove_finalize_files(args: argparse.Namespace) -> list[Path]:
     return [
         path
         for path in directory.glob("*.json")
-        if path.is_file() and _remove_finalize_path_targets_node(path, target_node)
+        if path.is_file()
+        and _remove_finalize_path_targets_node(path, target_node)
+        and _evidence_matches_network(_read_json_object(path), args, path=path)
     ]
 
 
@@ -1001,6 +1249,13 @@ def resolve_baseline_arguments(args: argparse.Namespace) -> None:
         path = Path(baseline)
         if not path.is_file():
             raise SystemExit(f"baseline evidence does not exist: {path}")
+        document = _read_json_object(path)
+        if not _evidence_matches_network(document, args, path=path):
+            raise SystemExit(
+                f"MOTHER_MUTATE_HARNESS_BASELINE_NETWORK_MISMATCH: "
+                f"baseline belongs to {document.get('network', 'unlabelled legacy evidence')!r}, "
+                f"requested {_network(args)!r}"
+            )
         args.baseline_evidence = str(path)
         if not baseline_sha:
             args.baseline_evidence_sha256 = canonical_sha256_file(path)
@@ -1016,15 +1271,24 @@ def resolve_baseline_arguments(args: argparse.Namespace) -> None:
     if selected is None:
         rebuild_error: str | None = None
         try:
-            selected = rebuild_pristine_empty_add_baseline(args)
+            if args.operation == "add-node" and _network(args) == "testnet":
+                # A rejected first birth is a real safety gate.  Do not quietly
+                # fall through to a reset-backup based reconstruction.
+                selected = initialize_verified_first_birth_baseline(args)
+            else:
+                selected = rebuild_pristine_empty_add_baseline(args)
+        except SystemExit:
+            raise
         except Exception as exc:  # pragma: no cover - exact private-state failures are environment-specific.
-            rebuild_error = f"{type(exc).__name__}: {exc}"
+            # Never include exception messages: a private-state reader could
+            # contain credential material in its exception text.
+            rebuild_error = type(exc).__name__
         if selected is None:
             rendered = "\n".join(f"  {pattern}" for pattern in patterns)
             backup_rendered = "\n".join(f"  {pattern}" for pattern in _reset_backup_evidence_patterns(args))
             details = f"\nSearched:\n{rendered}\nReset/backup evidence searched for pristine-empty rebuild:\n{backup_rendered}"
             if rebuild_error:
-                details += f"\nPristine-empty rebuild failed: {rebuild_error}"
+                details += f"\nFirst-birth or pristine-empty verification raised: {rebuild_error}"
             raise SystemExit(
                 "MOTHER_MUTATE_HARNESS_AUTO_BASELINE_NOT_FOUND: no baseline evidence was supplied "
                 f"and no {reason} was found.{details}"
@@ -1259,6 +1523,8 @@ class Harness:
         ]
         if self.args.rpc_will_work_post_remove:
             argv.append("--rpc-will-work-post-remove")
+        if self.args.acknowledge_final_node_shutdown:
+            argv.append("--acknowledge-final-node-shutdown")
         return argv
 
     def fresh_empty_topology_refresh_cmd(self) -> list[str]:
@@ -2089,6 +2355,12 @@ class Harness:
         if self.args.network not in {"mainnet", "testnet"}:
             print("\n=== publish-officer-addresses: skipped (not testnet/mainnet) ===")
             return
+        # The initial testnet release is chain-only: no contract deployment
+        # manifest exists yet.  Officer publication belongs to the later
+        # contract deployment lifecycle, not Besu's first-block proof.
+        if self.args.network == "testnet":
+            print("\n=== publish-officer-addresses: skipped (testnet chain-only release) ===")
+            return
         # --start-at=publish-officer-addresses is a supported recovery path.
         # Do not infer prior verification merely from the presence of an artifact.
         if not self.state.get("single_node_proof_verified"):
@@ -2363,6 +2635,8 @@ class Harness:
             "--max-wait-seconds", str(capped_remove_do_max_wait_seconds(self.args.max_wait_seconds)),
             "--poll-interval-seconds", str(self.args.poll_interval_seconds),
             *(["--allow-missing-service"] if self.args.allow_missing_service else []),
+            *(["--rpc-will-work-post-remove"] if self.args.rpc_will_work_post_remove else []),
+            *(["--acknowledge-final-node-shutdown"] if self.args.acknowledge_final_node_shutdown else []),
             "--execute",
         ))
         self.state["remove_do_evidence"] = require("remove do evidence path", pick(obj, "evidence.path"))
@@ -2440,7 +2714,16 @@ class Harness:
             "--poll-interval-seconds", str(self.args.poll_interval_seconds),
             "--execute",
         ])
-        if obj.get("ensured") is not True:
+        unpublished_testnet_route = (
+            self.args.network == "testnet"
+            and obj.get("status") == "pass"
+            and obj.get("clean") is True
+            and obj.get("ensured") is False
+            and obj.get("mode") == "verified-unpublished-route"
+            and (obj.get("route") or {}).get("network") == "testnet"
+            and (obj.get("proof") or {}).get("published_route_absent_in_verified_mother_state") is True
+        )
+        if obj.get("ensured") is not True and not unpublished_testnet_route:
             raise SystemExit("MOTHER_MUTATE_HARNESS_RPC_ROUTE_NOT_ENSURED")
         self.state["rpc_route_ensure"] = obj
 
@@ -2450,6 +2733,101 @@ class Harness:
             return
 
         completion_evidence, completion_evidence_sha256, workflow = self._post_work_cleanup_evidence()
+
+        # A verified final-node removal already establishes the empty current
+        # topology.  The non-empty seal command explicitly refuses zero nodes;
+        # repeating that seal would turn successful deletion into an error.
+        if self.args.operation == "remove-node":
+            finalized = _read_harness_json(completion_evidence, label="remove finalize evidence")
+            summary = finalized.get("summary")
+            topology = finalized.get("final_topology")
+            if (
+                finalized.get("kind") == REMOVE_FINALIZE_EVIDENCE_KIND
+                and finalized.get("network") == self.args.network
+                and finalized.get("status") == "pass"
+                and isinstance(summary, dict)
+                and summary.get("single_node_decommission") is True
+            ):
+                if not (
+                    summary.get("clean") is True
+                    and summary.get("complete") is True
+                    and summary.get("topology_current") is True
+                    and summary.get("target_service_absent") is True
+                    and summary.get("final_validator_count") == 0
+                    and summary.get("survivor_nodes") == []
+                    and summary.get("target_node") == self.args.node
+                    and isinstance(topology, dict)
+                    and topology.get("nodes") == []
+                    and topology.get("services") == {}
+                    and topology.get("validator_set") == []
+                ):
+                    raise SystemExit(
+                        "MOTHER_MUTATE_HARNESS_EMPTY_REMOVAL_EVIDENCE_CONTRADICTORY: "
+                        "final-node cleanup requires complete, current, empty removal evidence"
+                    )
+
+                verified = self.run(
+                    f"{POST_WORK_CLEANUP_STEP}-verify-final-empty",
+                    self.cmd(
+                        "verify-remove-node-finalize-evidence",
+                        "--network", self.args.network,
+                        "--runtime-state-root", self.args.runtime_state_root,
+                        "--evidence", completion_evidence,
+                        "--max-age-seconds", str(self.args.evidence_max_age_seconds),
+                        "--do-max-age-seconds", str(self.args.evidence_max_age_seconds),
+                    ),
+                )
+                if not (
+                    verified.get("clean") is True
+                    and verified.get("single_node_decommission") is True
+                    and verified.get("target_service_absent") is True
+                    and verified.get("final_validator_set") == []
+                ):
+                    raise SystemExit("MOTHER_MUTATE_HARNESS_EMPTY_REMOVAL_NOT_VERIFIED")
+
+                observed = self.run(
+                    f"{POST_WORK_CLEANUP_STEP}-verify-live-empty",
+                    self.cmd(
+                        "detect-mother-topology-staleness",
+                        "--network", self.args.network,
+                        "--runtime-state-root", self.args.runtime_state_root,
+                        "--topology-evidence", completion_evidence,
+                        "--acknowledge-topology-evidence-sha256", completion_evidence_sha256,
+                        "--max-age-seconds", str(self.args.baseline_max_age_seconds),
+                        "--timeout", str(self.args.timeout),
+                        "--max-response-bytes", str(self.args.max_response_bytes),
+                    ),
+                )
+                if not (
+                    observed.get("status") == "pass"
+                    and pick(observed, "summary.clean") is True
+                    and pick(observed, "summary.topology_current") is True
+                    and observed.get("expected_nodes") == []
+                    and observed.get("observed_live_primary_nodes") == []
+                    and observed.get("observed_live_node_hints") == []
+                ):
+                    raise SystemExit(
+                        "MOTHER_MUTATE_HARNESS_EMPTY_REMOVAL_LIVE_TOPOLOGY_NOT_VERIFIED"
+                    )
+
+                print(f"\n=== {POST_WORK_CLEANUP_STEP}: verified empty network ===")
+                print(json.dumps({
+                    "status": "pass",
+                    "summary": {
+                        "clean": True,
+                        "single_node_decommission": True,
+                        "target_service_absent": True,
+                        "survivor_nodes": [],
+                        "rpc_continuity_required": False,
+                        "nonempty_topology_seal_required": False,
+                        "remaining_service_cleanup_targets": 0,
+                    },
+                    "completion_evidence": completion_evidence,
+                    "completion_evidence_sha256": completion_evidence_sha256,
+                }, indent=2, sort_keys=True))
+                self.state["post_work_cleanup_results"] = []
+                return
+
         cleanup_evidence, cleanup_evidence_sha256 = self.write_cleanup_topology_evidence(
             step_name=f"{POST_WORK_CLEANUP_STEP}-topology-seal",
             topology_evidence=completion_evidence,
@@ -2645,6 +3023,15 @@ class Harness:
                 self.step_detect_topology()
             return
 
+        # Resuming after the last node was already deleted must validate the
+        # finalization evidence, not demand that the deleted validator answer RPC.
+        # The cleanup step independently re-verifies evidence and live inventory.
+        if (
+            self.args.start_at == POST_WORK_CLEANUP_STEP
+            and self.state.get("remove_finalize_evidence")
+        ):
+            return
+
         gate = "preflight-paranoia-validator-set"
         route_steps = REMOVE_STEPS
         if self.args.start_at in route_steps:
@@ -2719,6 +3106,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-at", choices=STEP_ORDER, default="detect-topology")
     parser.add_argument("--skip-staleness-detection", action="store_true")
     parser.add_argument("--skip-preflight-paranoia", action="store_true")
+    parser.add_argument(
+        "--acknowledge-final-node-shutdown",
+        action="store_true",
+        help=(
+            "remove-node only: optional legacy acknowledgement of final-node shutdown; "
+            "the verified final-node topology now permits removal without this flag"
+        ),
+    )
     parser.add_argument(
         "--rpc-will-work-post-remove",
         action="store_true",

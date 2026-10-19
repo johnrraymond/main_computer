@@ -57,6 +57,7 @@ except ImportError:  # Direct script execution from the repository root.
 REPORT_SCHEMA = "mcel-repository-truth-audit-v1"
 REPORT_VERSION = "mcel-repository-truth-audit-v1"
 DEFAULT_MAX_EVIDENCE_AGE_HOURS = 7 * 24
+DEFAULT_PORTABLE_CERTIFICATE = Path("runtime/reports/mcel-portable/mcel-portable-certification.json")
 DEFAULT_OUTPUT_DIR = Path("runtime/reports/mcel-truth-audit")
 DEFAULT_RUNTIME_EVIDENCE = Path(
     "runtime/reports/flog/mcel-runtime/mcel-runtime-flog-report.json"
@@ -1214,6 +1215,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Runtime surfaces proven: `{summary.get('runtimeSurfaceProvenCount', 0)}`",
             f"- Semantic runtimes proven: `{summary.get('semanticRuntimeProvenCount', 0)}`",
             f"- Promotion-ready apps: `{summary.get('promotionReadyCount', 0)}`",
+            f"- Portable package certification: `{summary.get('portableCertificationStatus', 'not-evaluated')}`",
+            f"- Portable promotion eligible: `{', '.join(summary.get('portablePromotionEligibleAppIds', [])) or 'none'}`",
+            f"- Active portable releases: `{', '.join(summary.get('portableActivePromotionAppIds', [])) or 'none'}`",
+            f"- Active release status: `{summary.get('portableActivePromotionStatus', 'not-evaluated')}`",
             "",
             "## App truth",
             "",
@@ -1307,6 +1312,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             "- Evidence carrying a different repository fingerprint is rejected and cannot prove app truth.",
             "- Use `--require-repo-match` to reject otherwise unbound legacy evidence.",
             "- `--release-gate` selects the canonical report paths and enables check, freshness, acceptance, and exact-repository policies together; `--latest-*` discovery ignores declared partial reports.",
+            "- `--release-gate` also requires exact repository-bound portable proof for Calculator and Code Editor.",
+            "- Portable-package certification is a separate bounded-fixture claim; it never changes app authoring or production authority.",
             "- Promotion readiness is advisory and never mutates the app-surface registry.",
             "",
         ]
@@ -1406,6 +1413,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--portable-certificate", type=Path,
+        help=f"Canonical source-bound 19-intent portable certificate (default: {DEFAULT_PORTABLE_CERTIFICATE}).",
+    )
+    parser.add_argument(
+        "--require-portable-certification", action="store_true",
+        help="Block Calculator/Code Editor portable promotion without a current, independently verified certificate.",
+    )
+    parser.add_argument(
+        "--require-portable-promotion", action="store_true",
+        help="Require active, source-bound portable release slots for Calculator and Code Editor; does not imply host-route promotion.",
+    )
+    parser.add_argument(
         "--no-write",
         action="store_true",
         help="Do not write JSON/Markdown artifacts.",
@@ -1430,6 +1449,120 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     return parser.parse_args(argv)
 
+
+def apply_portable_certification(
+    report: dict[str, Any], *, repo: Path, certificate_path: Path,
+    required: bool, now: str, max_evidence_age_hours: float,
+) -> dict[str, Any]:
+    """Independent proof gate, separate from browser truth's maturity authority.
+
+    This marks portable-package *promotion eligibility*, never mutates package
+    manifests, registry maturity, or the browser truth snapshot.
+    """
+    if str(repo) not in sys.path:
+        sys.path.insert(0,str(repo))
+    from main_computer.mcel_portable_certification import verify_certificate
+
+    if not certificate_path.is_absolute():
+        certificate_path=repo/certificate_path
+    if not certificate_path.is_file():
+        verdict={"status":"missing","passed":False,"reasons":["portable-certificate-missing"],"eligibleAppIds":[]}
+    else:
+        try:
+            certificate=json.loads(certificate_path.read_text(encoding="utf-8"))
+            evaluation_time=_parse_timestamp(now)
+            from datetime import datetime, timezone
+            moment=datetime.fromtimestamp(evaluation_time,timezone.utc) if evaluation_time else None
+            verdict=verify_certificate(certificate,repo,now=moment,max_age_hours=max_evidence_age_hours)
+        except (OSError,ValueError,TypeError,KeyError,OverflowError) as exc:
+            verdict={"status":"refused","passed":False,"reasons":["portable-certificate-unreadable",str(exc)],"eligibleAppIds":[]}
+
+    eligible=[]
+    for app in report.get("apps",[]):
+        if app.get("appId") not in ("calculator","code-editor"):
+            continue
+        truth_ok=not bool(_safe_dict(app.get("enforcement")).get("blocking"))
+        promoted=(verdict.get("passed") is True and app["appId"] in verdict.get("eligibleAppIds",[]) and truth_ok)
+        app["portablePromotion"]={
+            "eligible": promoted, "status":"eligible" if promoted else "refused",
+            "scope":"independent-package-bounded-semantic-fixtures",
+            "sourceAuthorityModified":False,
+            "reasons":[] if promoted else (["app-truth-policy-blocking"] if not truth_ok else list(verdict.get("reasons",[]))),
+        }
+        if promoted:eligible.append(app["appId"])
+
+    report["portableCertification"]={
+        "schema":"mcel.portable-audit-verdict.v1",
+        "path":_repo_display_path(certificate_path,repo),
+        "required":required,
+        "status":verdict.get("status","refused"),
+        "passed":verdict.get("passed") is True,
+        "reasons":list(verdict.get("reasons",[])),
+        "eligibleAppIds":sorted(eligible),
+        "repositoryFingerprint":verdict.get("repositoryFingerprint"),
+        "packageFingerprints":verdict.get("packageFingerprints"),
+    }
+    summary=report["summary"]
+    summary["portablePromotionEligibleAppIds"]=sorted(eligible)
+    summary["portableCertificationStatus"]=verdict.get("status","refused")
+    report["configuration"]["requirePortableCertification"]=required
+    if required and sorted(eligible)!=["calculator","code-editor"]:
+        report["auditLevelReasons"].append(_audit_reason(
+            "audit-portable-certification-not-proven",
+            "Independent Calculator and Code Editor 19-intent source-bound proof is missing or refused.",
+            category="required-evidence-gap",source="mcel-portable-certification",
+            detail={"status":verdict.get("status"),"reasons":verdict.get("reasons",[]),
+                    "eligibleAppIds":sorted(eligible)},
+        ))
+        summary["status"]="fail"
+        summary["blockingReasonCount"]+=1
+    return report
+
+
+def apply_active_portable_promotion(report: dict[str, Any], *, repo: Path,
+                                    required: bool) -> dict[str, Any]:
+    """Verify actual portable release activation separately from semantic maturity."""
+    from main_computer.mcel_portable_promotion import validate_active
+    active=[]
+    outcomes={}
+    summary=report.get("summary") or {}
+    bindings=summary.get("evidenceBindingStatuses") or {}
+    prerequisites_exact=(bindings.get("runtime")=="exact" and
+        bindings.get("acceptance")=="exact" and
+        (report.get("portableCertification") or {}).get("passed") is True and
+        summary.get("status")=="pass")
+    for app_id in ("calculator", "code-editor"):
+        result=validate_active(repo,app_id)
+        if result.get("valid") is True and not prerequisites_exact:
+            result={"status":"refused","valid":False,"appId":app_id,
+                    "reasons":["canonical-evidence-or-certificate-not-exact"]}
+        outcomes[app_id]=result
+        if result.get("valid") is True:
+            active.append(app_id)
+    for app in report.get("apps",[]):
+        if app.get("appId") in outcomes:
+            item=outcomes[app["appId"]]
+            app["portableRelease"]={"status":item.get("status"),"active":item.get("valid") is True,
+                                    "transactionId":item.get("transactionId"),
+                                    "reasons":item.get("reasons",[]),
+                                    "productionHostRouteChanged":False}
+    report["activePortableReleases"]={"schema":"mcel.portable-package-promotion-audit.v1",
+        "status":"pass" if len(active)==2 else "incomplete", "required":required,
+        "activeAppIds":sorted(active),"applications":outcomes,
+        "productionHostRouteChanged":False}
+    report["summary"]["portableActivePromotionAppIds"]=sorted(active)
+    report["summary"]["portableActivePromotionStatus"]="pass" if len(active)==2 else "incomplete"
+    report["configuration"]["requirePortablePromotion"]=required
+    if required and len(active)!=2:
+        report["auditLevelReasons"].append(_audit_reason(
+            "audit-portable-active-promotion-incomplete",
+            "Calculator and Code Editor do not both have current validated portable package releases.",
+            category="required-evidence-gap",source="mcel-portable-promotion",
+            detail={"activeAppIds":active,"applications":outcomes},
+        ))
+        report["summary"]["status"]="fail"
+        report["summary"]["blockingReasonCount"]+=1
+    return report
 
 def run_audit(args: argparse.Namespace, *, repo: Path | None = None) -> dict[str, Any]:
     repo = (repo or repo_root_from_script()).resolve()
@@ -1524,6 +1657,14 @@ def run_audit(args: argparse.Namespace, *, repo: Path | None = None) -> dict[str
         max_evidence_age_hours=float(args.max_evidence_age_hours),
     )
     report["configuration"]["releaseGate"] = release_gate
+    portable_path=getattr(args,"portable_certificate",None) or DEFAULT_PORTABLE_CERTIFICATE
+    report=apply_portable_certification(
+        report,repo=repo,certificate_path=portable_path,
+        required=bool(getattr(args,"require_portable_certification",False) or release_gate),
+        now=now,max_evidence_age_hours=float(args.max_evidence_age_hours),
+    )
+    report=apply_active_portable_promotion(report,repo=repo,
+        required=bool(getattr(args,"require_portable_promotion",False)))
     return report
 
 
@@ -1540,6 +1681,7 @@ def _print_summary(report: Mapping[str, Any], paths: Mapping[str, str] | None) -
     print(f"runtime_surface_proven: {summary.get('runtimeSurfaceProvenCount', 0)}")
     print(f"semantic_runtime_proven: {summary.get('semanticRuntimeProvenCount', 0)}")
     print(f"promotion_ready: {summary.get('promotionReadyAppIds', [])}")
+    print(f"portable_active_releases: {summary.get('portableActivePromotionAppIds', [])}")
     print(f"evidence_bindings: {summary.get('evidenceBindingStatuses', {})}")
     print(f"evidence_statuses: {summary.get('evidenceInputStatuses', {})}")
     if paths:

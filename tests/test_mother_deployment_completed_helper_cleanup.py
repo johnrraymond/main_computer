@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import yaml
+import pytest
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -13,6 +14,9 @@ from tools.mother.common.deployment_completed_helper_cleanup import (
     _component_summary,
     _is_completed_helper_name,
     _remove_completed_helpers_from_compose,
+    _temporary_service_body,
+    _environment_uuid,
+    MotherDeploymentCompletedHelperCleanupError,
     _restart_existing_helper_application,
 )
 from tools.mother.common.paths import MotherPaths
@@ -1531,3 +1535,17 @@ def test_existing_helper_restart_is_child_only() -> None:
     assert opener.requests == [("POST", "/api/v1/applications/genesisguardian123/restart")]
     assert not any("/api/v1/services/" in path and path.endswith("/start") for _, path in opener.requests)
 
+
+
+def test_temporary_service_environment_is_network_scoped() -> None:
+    config = {"project_uuid": "project1", "server_uuid": "server1"}
+    mainnet = _temporary_service_body(config, "helper", "services:\n  helper: {}\n")
+    testnet = _temporary_service_body(config, "helper", "services:\n  helper: {}\n", environment_name="testnet")
+    assert mainnet["environment_name"] == "mainnet"
+    assert testnet["environment_name"] == "testnet"
+    assert mainnet["docker_compose_raw"] == testnet["docker_compose_raw"]
+    inventory = {"environments": [{"name": "mainnet", "uuid": "env-mainnet"}, {"name": "testnet", "uuid": "env-testnet"}]}
+    assert _environment_uuid(inventory, "mainnet") == "env-mainnet"
+    assert _environment_uuid(inventory, "testnet") == "env-testnet"
+    with pytest.raises(MotherDeploymentCompletedHelperCleanupError):
+        _environment_uuid({"environments": [{"name": "mainnet", "uuid": "env-mainnet"}]}, "testnet")

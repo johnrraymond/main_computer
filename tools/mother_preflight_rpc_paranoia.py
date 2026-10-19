@@ -3,13 +3,13 @@
 
 The check answers one narrow question before a node is removed:
 
-    Will removing this node remove the final Mother node from its controller?
+    Which RPC services, if any, remain on the selected network after removal?
 
-If not, the controller still has a local node available for its RPC route and
-this preflight passes.  If yes, but other Mother nodes survive on other
-controllers, the operator must explicitly acknowledge that public DNS/upstream
-RPC routing has already been adjusted so canonical RPC will still work after
-this controller disappears from service.
+If no nodes survive on the selected network, RPC continuity is inapplicable:
+removing the final node passes without an RPC assertion or extra shutdown flag.
+If nodes remain on this controller, the local route survives. If only nodes on
+other controllers remain, the operator must explicitly acknowledge that public
+DNS/upstream RPC routing has been adjusted to preserve canonical RPC.
 
 This script never mutates DNS, Coolify, Traefik, validators, services, or
 Mother state.  ``--rpc-will-work-post-remove`` is an operator assertion, not a
@@ -76,6 +76,7 @@ def evaluate_rpc_remove_boundary(
     services: list[Mapping[str, str]],
     node: str,
     rpc_will_work_post_remove: bool,
+    acknowledge_final_node_shutdown: bool = False,
 ) -> dict[str, Any]:
     """Evaluate the controller-removal boundary without performing I/O."""
 
@@ -107,14 +108,28 @@ def evaluate_rpc_remove_boundary(
     no_rpc_survivors = not survivors
     acknowledgement_required = controller_removed_from_topology and not no_rpc_survivors
     acknowledged = bool(rpc_will_work_post_remove)
+    shutdown_acknowledged = bool(acknowledge_final_node_shutdown)
 
-    if no_rpc_survivors:
-        status = "no-rpc-survivors"
+    # A final-node removal has no RPC continuity requirement.  The topology,
+    # not an operator flag, determines whether any RPC service can survive.
+    # Retain the optional legacy shutdown flag but reject contradictory claims.
+    if shutdown_acknowledged and not no_rpc_survivors:
+        status = "final-node-shutdown-ack-misapplied"
         clean = False
-        code = "MOTHER_PREFLIGHT_RPC_PARANOIA_NO_RPC_SURVIVORS"
+        code = "MOTHER_PREFLIGHT_RPC_PARANOIA_FINAL_NODE_ACK_MISAPPLIED"
+        message = "final-node shutdown acknowledgement is only valid when no Mother nodes survive"
+    elif no_rpc_survivors and acknowledged:
+        status = "final-node-shutdown-ack-conflict"
+        clean = False
+        code = "MOTHER_PREFLIGHT_RPC_PARANOIA_FINAL_NODE_ACK_CONFLICT"
+        message = "cannot assert post-remove RPC continuity when no Mother nodes survive"
+    elif no_rpc_survivors:
+        status = "pass"
+        clean = True
+        code = None
         message = (
-            f"refusing RPC continuity approval for removal of {node_name!r}: "
-            "no Mother node would remain after removal"
+            f"removal of {node_name!r} decommissions the final Mother node; "
+            "RPC continuity is not applicable and node-hosted RPC will be unavailable"
         )
     elif acknowledgement_required and not acknowledged:
         status = "rpc-post-remove-ack-required"
@@ -152,7 +167,11 @@ def evaluate_rpc_remove_boundary(
         "controller_removed_from_topology": controller_removed_from_topology,
         "rpc_will_work_post_remove_acknowledged": acknowledged,
         "acknowledgement_required": acknowledgement_required,
-        "post_remove_rpc_probe_required": controller_removed_from_topology,
+        "post_remove_rpc_probe_required": controller_removed_from_topology and not no_rpc_survivors,
+        "final_node_shutdown_acknowledged": shutdown_acknowledged,
+        "final_node_shutdown_required": no_rpc_survivors,
+        "rpc_continuity_check_required": bool(survivors),
+        "post_remove_node_count": len(survivors),
     }
 
 
@@ -164,6 +183,7 @@ def run_preflight_rpc_paranoia(
     topology_evidence: str | Path | None = None,
     acknowledged_topology_evidence_sha256: str | None = None,
     rpc_will_work_post_remove: bool = False,
+    acknowledge_final_node_shutdown: bool = False,
 ) -> dict[str, Any]:
     network_name = str(network or "").strip()
     if not network_name:
@@ -184,6 +204,7 @@ def run_preflight_rpc_paranoia(
         services=services,
         node=node,
         rpc_will_work_post_remove=bool(rpc_will_work_post_remove),
+        acknowledge_final_node_shutdown=bool(acknowledge_final_node_shutdown),
     )
 
     return {
@@ -224,6 +245,10 @@ def run_preflight_rpc_paranoia(
             ),
             "dns_or_upstream_routing_verified_by_this_script": False,
             "post_remove_rpc_probe_required": decision["post_remove_rpc_probe_required"],
+            "final_node_shutdown_acknowledged": decision["final_node_shutdown_acknowledged"],
+            "final_node_shutdown_required": decision["final_node_shutdown_required"],
+            "node_hosted_rpc_unavailable_post_remove": decision["final_node_shutdown_required"],
+            "rpc_continuity_check_required": decision["rpc_continuity_check_required"],
         },
         "policy": {
             "network_mutation_performed": False,
@@ -245,6 +270,9 @@ def run_preflight_rpc_paranoia(
             ],
             "acknowledgement_required": decision["acknowledgement_required"],
             "post_remove_rpc_probe_required": decision["post_remove_rpc_probe_required"],
+            "final_node_shutdown_acknowledged": decision["final_node_shutdown_acknowledged"],
+            "final_node_shutdown_required": decision["final_node_shutdown_required"],
+            "rpc_continuity_check_required": decision["rpc_continuity_check_required"],
             "network_mutation_performed": False,
         },
     }
@@ -253,8 +281,8 @@ def run_preflight_rpc_paranoia(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Read-only Mother RPC preflight for remove-node. Blocks removal of the final node "
-            "from a controller unless post-remove canonical RPC continuity is explicitly acknowledged."
+            "Read-only Mother RPC preflight for remove-node. Final-network-node removal "
+            "needs no RPC continuity check; host exit with surviving remote nodes needs an override."
         )
     )
     parser.add_argument("--runtime-state-root", required=True)
@@ -262,6 +290,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--node", required=True)
     parser.add_argument("--topology-evidence")
     parser.add_argument("--acknowledge-topology-evidence-sha256")
+    parser.add_argument(
+        "--acknowledge-final-node-shutdown",
+        action="store_true",
+        help=(
+            "Optional legacy final-node acknowledgement (no longer required when the verified "
+            "topology shows no surviving nodes). Does not bypass any other removal checks."
+        ),
+    )
     parser.add_argument(
         "--rpc-will-work-post-remove",
         action="store_true",
@@ -283,13 +319,19 @@ def main(argv: list[str] | None = None) -> int:
             topology_evidence=args.topology_evidence,
             acknowledged_topology_evidence_sha256=args.acknowledge_topology_evidence_sha256,
             rpc_will_work_post_remove=args.rpc_will_work_post_remove,
+            acknowledge_final_node_shutdown=args.acknowledge_final_node_shutdown,
         )
     except MotherPreflightRpcParanoiaError as exc:
         print(f"MOTHER_PREFLIGHT_RPC_PARANOIA_FAILED: {exc}", file=sys.stderr)
         return 1
 
     if result["status"] == "pass":
-        if result["summary"]["controller_removed_from_topology"]:
+        if result["summary"]["final_node_shutdown_required"]:
+            print(
+                "MOTHER_PREFLIGHT_RPC_PARANOIA_FINAL_NODE: "
+                "RPC continuity is inapplicable; node-hosted RPC will be unavailable after removal."
+            )
+        elif result["summary"]["controller_removed_from_topology"]:
             print(
                 "MOTHER_PREFLIGHT_RPC_PARANOIA_CLEAN_ACKNOWLEDGED: "
                 f"{result['summary']['target_node']} is the last Mother node on "

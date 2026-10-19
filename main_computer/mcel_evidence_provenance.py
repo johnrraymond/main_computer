@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Deterministic source-state provenance for MCEL runtime and acceptance evidence."""
+"""Deterministic MCEL-authority source provenance for runtime and acceptance evidence."""
 
 import hashlib
 import os
@@ -10,10 +10,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 
-PROVENANCE_SCHEMA = "mcel-repository-provenance-v2"
+PROVENANCE_SCHEMA = "mcel-repository-provenance-v3"
 FINGERPRINT_ALGORITHM = "sha256-source-path-content-v2"
-GIT_SCOPE = "git-tracked-and-unignored-source-v2"
-SNAPSHOT_SCOPE = "snapshot-source-roots-v2"
+GIT_SCOPE = "git-tracked-and-unignored-mcel-authority-v3"
+SNAPSHOT_SCOPE = "snapshot-mcel-authority-v3"
 
 # Snapshot exports do not retain .git metadata. These roots define the source
 # authority in that mode. Mutable runtime state is deliberately not a source
@@ -191,6 +191,59 @@ def is_repository_fingerprint_file(relative: PurePosixPath) -> bool:
     return True
 
 
+# Versioned source-authority boundary: MCEL evidence must be invalidated by
+# changes to the apps, the shared application/host/verifier implementation, and
+# the actual browser fixtures, not every independent subsystem in the monorepo.
+# The package generator and promotion host proofs independently verify compiled
+# semantic fingerprints and packaged asset bytes in addition to this boundary.
+#
+# Keep this selector shared by Git and exported-snapshot modes. Changing the
+# selector changes PROVENANCE_SCHEMA and *requires new evidence*.
+_MCEL_AUTHORITY_ROOTS = (
+    PurePosixPath("main_computer"),  # conservative: includes shared host dependencies
+    PurePosixPath("mcel_apps"),
+    PurePosixPath("deploy/local-platform"),
+    PurePosixPath("runtime/websites"),  # canonical surface inputs
+    PurePosixPath("game_projects/webgl-demo"),  # Code Editor host fixture
+    PurePosixPath("tools/patching"),  # reviewed-patch machinery
+)
+_MCEL_AUTHORITY_FILES = frozenset(
+    {
+        ".gitattributes", ".gitignore", "conftest.py", "new_patch.py",
+        "new_diff.py", "pyproject.toml", "requirements.txt",
+        "docker-compose.applications.yml",
+    }
+)
+_MCEL_AUTHORITY_PREFIXES = (
+    ("tools", "mcel"), ("tools", "flog"),
+    ("tools", "code_editor"), ("tests", "test_mcel"),
+    ("tests", "test_flog"), ("tests", "test_code_editor"),
+    ("pretty_docs", "mcel"),
+)
+
+
+def is_mcel_authority_source(relative: PurePosixPath) -> bool:
+    """Conservative MCEL input boundary; independent Mother code is excluded.
+
+    Included subtrees cover generated packages, shared application code, host
+    runtime and verifier code, site inputs, and browser/effect fixtures. The
+    predicate is pure so a newly created matching file changes the hash too.
+    """
+    if not is_repository_fingerprint_file(relative):
+        return False
+    if any(_is_under(relative, root) for root in _MCEL_AUTHORITY_ROOTS):
+        return True
+    parts = relative.parts
+    if len(parts) == 1:
+        return relative.name in _MCEL_AUTHORITY_FILES
+    if len(parts) >= 2:
+        category, name = parts[:2]
+        if any(category == prefix and name.startswith(stem)
+               for prefix, stem in _MCEL_AUTHORITY_PREFIXES):
+            return True
+    return False
+
+
 def _safe_relative_from_git(raw: str) -> PurePosixPath | None:
     normalized = PurePosixPath(raw.replace("\\", "/"))
     if normalized.is_absolute() or not normalized.parts or ".." in normalized.parts:
@@ -231,7 +284,7 @@ def _git_selected_relative_paths(root: Path) -> list[PurePosixPath] | None:
             continue
         text = os.fsdecode(raw)
         relative = _safe_relative_from_git(text)
-        if relative is None or not is_repository_fingerprint_file(relative):
+        if relative is None or not is_mcel_authority_source(relative):
             continue
         path = root.joinpath(*relative.parts)
         if path.is_symlink() or not path.is_file():
@@ -264,7 +317,7 @@ def _walk_source_root(root: Path, source_root: PurePosixPath) -> Iterable[PurePo
             if path.is_symlink() or not path.is_file():
                 continue
             relative = _relative_posix(path, root)
-            if is_repository_fingerprint_file(relative):
+            if is_mcel_authority_source(relative):
                 yield relative
 
 
@@ -276,7 +329,7 @@ def _snapshot_selected_relative_paths(root: Path) -> list[PurePosixPath]:
         if path.is_symlink() or not path.is_file():
             continue
         relative = _relative_posix(path, root)
-        if is_repository_fingerprint_file(relative):
+        if is_mcel_authority_source(relative):
             selected.add(relative)
 
     for source_root in _SNAPSHOT_SOURCE_ROOTS:

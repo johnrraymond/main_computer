@@ -10,6 +10,11 @@ Normal mutation lifecycle:
     accepted/live pre-inspect -> prep -> mutation gate -> do
     -> operation-scoped FDB proof -> finalize -> accepted/live post-inspect
 
+The initial create-cluster transaction starts from independently inspected
+``unborn`` state, infers the first service's controller from its name, and
+uses the same proof/finalization machinery.  Cluster identity is frozen in
+the harness resume state before any live mutation.
+
 A second invocation of the same high-level command automatically resumes the
 matching unfinished harness run.  Low-level ``tools.fdb_control`` commands are
 retained only as internal implementation/evidence and are not printed during
@@ -21,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shlex
 import subprocess
 import sys
@@ -48,7 +54,7 @@ def quote_command(argv: list[str]) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Main Computer FDB operator harness")
-    parser.add_argument("operation", choices=("inspect", "add-service", "remove-service"))
+    parser.add_argument("operation", choices=("inspect", "create-cluster", "add-service", "remove-service"))
     parser.add_argument("--network", default="mainnet")
     parser.add_argument("--service")
     parser.add_argument("--allow-full-deletion", action="store_true")
@@ -119,6 +125,7 @@ class Harness:
             "starting_generation": None,
             "starting_status": None,
             "rebirth": False,
+            "cluster_id": secrets.token_hex(8) if self.operation == "create-cluster" else None,
             "target_generation": None,
             "resolved_controller": None,
             "resolved_host": None,
@@ -182,6 +189,8 @@ class Harness:
 
     def prep_cmd(self) -> list[str]:
         command = self.control_cmd(self.operation, "prep", self.network, "--service", self.service)
+        if self.operation == "create-cluster":
+            command.extend(("--infer-placement", "--cluster-id", self._required_state("cluster_id")))
         if self.operation == "remove-service" and self.allow_full_deletion:
             command.append("--allow-full-deletion")
         return command
@@ -379,7 +388,7 @@ class Harness:
             details = details if isinstance(details, dict) else {}
             print(f"status:              {result.get('status')}")
 
-            if self.operation == "add-service":
+            if self.operation in {"add-service", "create-cluster"}:
                 if details.get("rebirth"):
                     print("first-service rebirth: yes")
                 if details.get("action"):
@@ -423,9 +432,9 @@ class Harness:
 
         if step == "operation-inspect":
             key = (
-                "add_service_verification"
-                if self.operation == "add-service"
-                else "remove_service_verification"
+                "birth_verification"
+                if self.operation == "create-cluster"
+                else ("add_service_verification" if self.operation == "add-service" else "remove_service_verification")
             )
             verification = result.get(key)
             verification = verification if isinstance(verification, dict) else {}
@@ -436,7 +445,7 @@ class Harness:
             reason = verification.get("reason")
             if reason not in (None, ""):
                 print(f"proof reason:         {reason}")
-            if self.operation == "add-service":
+            if self.operation in {"add-service", "create-cluster"}:
                 status = verification.get("coolify_status") or verification.get("status")
                 if status not in (None, ""):
                     print(f"service status:       {status}")
@@ -501,6 +510,14 @@ class Harness:
     def _validate_step(self, step: str, result: dict[str, Any]) -> None:
         if step == "pre-inspect":
             status = result.get("status")
+            if self.operation == "create-cluster":
+                if status != "unborn" or result.get("accepted") is not None:
+                    raise HarnessError(f"create-cluster requires an unborn FDB network; observed {status!r}")
+                self.state["starting_generation"] = 0
+                self.state["starting_status"] = "unborn"
+                self.state["starting_cluster"] = None
+                self.state["starting_coordinators"] = []
+                return
             if self.operation == "add-service" and status == "accepted-empty":
                 verification = result.get("empty_topology_verification")
                 if not isinstance(verification, dict) or verification.get("verified") is not True:
@@ -527,6 +544,33 @@ class Harness:
             operation_id = _text(details.get("operation_id"), "prep operation_id")
             self.state["operation_id"] = operation_id
             self.state["target_generation"] = details.get("target_generation")
+            if self.operation == "create-cluster":
+                target = _mapping(details.get("target"), "prep.details.target")
+                request = _mapping(target.get("request"), "prep birth request")
+                if request.get("network") != self.network:
+                    raise HarnessError("birth prepared for the wrong network")
+                cluster = _mapping(request.get("cluster"), "prep birth cluster")
+                if cluster.get("description") != f"main_computer_{self.network}" or cluster.get("cluster_id") != self.state.get("cluster_id"):
+                    raise HarnessError("birth cluster identity differs from frozen harness intent")
+                services = request.get("services")
+                if not isinstance(services, list) or len(services) != 1 or not isinstance(services[0], dict):
+                    raise HarnessError("birth prep must contain exactly one service")
+                service = services[0]
+                if service.get("service_id") != self.service:
+                    raise HarnessError("birth prep resolved a different service identity")
+                host = _text(service.get("host_id"), "birth host")
+                endpoint = f"{_text(service.get('address'), 'birth address')}:{service.get('port')}"
+                if request.get("coordinator_service_ids") != [self.service] or request.get("redundancy_mode") != "single":
+                    raise HarnessError("initial birth must have exactly one coordinator and single redundancy")
+                self.state["resolved_host"] = host
+                self.state["resolved_controller"] = host
+                self.state["resolved_endpoint"] = endpoint
+                self.state["target_generation"] = 1
+                self.state["target_coordinators"] = [endpoint]
+                self.state["coordinators_changed"] = True
+                self._print_prepared_boundary()
+                self._prepared_boundary_printed = True
+                return
             target_coordinators = details.get("target_coordinators")
             full_deletion = bool(details.get("full_deletion"))
             if not isinstance(target_coordinators, list):
@@ -557,16 +601,23 @@ class Harness:
             return
 
         if step == "do":
-            wanted = "deployed" if self.operation == "add-service" else "removed"
+            wanted = "deployed" if self.operation in {"add-service", "create-cluster"} else "removed"
             if result.get("status") not in {wanted, "already-finalized", "finalized"}:
                 raise HarnessError(f"do did not reach {wanted!r}: {result}")
             return
 
         if step == "operation-inspect":
-            key = "add_service_verification" if self.operation == "add-service" else "remove_service_verification"
+            key = ("birth_verification" if self.operation == "create-cluster" else
+                   "add_service_verification" if self.operation == "add-service" else "remove_service_verification")
             verification = _mapping(result.get(key), key)
             if verification.get("verified") is not True:
                 raise HarnessError(f"{key} did not verify the requested mutation: {verification}")
+            if self.operation == "create-cluster":
+                if verification.get("reason") != "fdb-observer-proof-satisfied":
+                    raise HarnessError("birth proof was not satisfied by the FDB observer")
+                if verification.get("service_id") != self.service:
+                    raise HarnessError("birth proof verifies a different service")
+                return
             expected_reason = (
                 "fdb-add-service-proof-satisfied"
                 if self.operation == "add-service"
@@ -587,6 +638,12 @@ class Harness:
             if details.get("verified") is not True:
                 raise HarnessError("finalize did not report verified=true")
             expected_generation = int(self._required_state("starting_generation")) + 1
+            if self.operation == "create-cluster":
+                # Birth finalize publishes generation 1. The control-layer result
+                # exposes accepted_state_path, not accepted_generation.
+                if not details.get("accepted_state_path"):
+                    raise HarnessError("birth finalize did not publish an accepted state")
+                return
             if details.get("accepted_generation") != expected_generation:
                 raise HarnessError(
                     f"finalize generation mismatch: expected {expected_generation}, got {details.get('accepted_generation')}"
@@ -594,6 +651,24 @@ class Harness:
             return
 
         if step == "final-inspect":
+            if self.operation == "create-cluster":
+                self._require_accepted_verified(result, label="birth final-inspect")
+                if result.get("accepted_generation") != 1:
+                    raise HarnessError("newly born FDB cluster must have accepted generation 1")
+                cluster = _mapping(result.get("cluster"), "birth accepted cluster")
+                if cluster.get("description") != f"main_computer_{self.network}" or cluster.get("cluster_id") != self.state.get("cluster_id"):
+                    raise HarnessError("accepted birth identity differs from frozen harness intent")
+                if result.get("coordinators") != self.state.get("target_coordinators"):
+                    raise HarnessError("accepted birth coordinator differs from prepared coordinator")
+                services = result.get("services")
+                if not isinstance(services, list) or len(services) != 1 or not isinstance(services[0], dict):
+                    raise HarnessError("accepted birth must contain exactly one service")
+                service = services[0]
+                if service.get("service_id") != self.service or service.get("host_id") != self.state.get("resolved_host") or service.get("endpoint") != self.state.get("resolved_endpoint"):
+                    raise HarnessError("accepted birth service differs from prepared placement")
+                self.state["final_cluster"] = cluster
+                self.state["final_coordinators"] = result["coordinators"]
+                return
             full_deletion = bool(self.state.get("full_deletion"))
             if full_deletion:
                 if result.get("status") != "accepted-empty":

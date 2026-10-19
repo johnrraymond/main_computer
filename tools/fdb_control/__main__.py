@@ -32,6 +32,8 @@ from .remove_service import finalize as remove_finalize
 from .remove_service import plan_from_operation as remove_plan_from_operation
 from .remove_service import prep as remove_prep
 from .live_inspect import verify_accepted_cluster, verify_add_service, verify_birth, verify_remove_service
+from .common.privates import load_private_infrastructure, resolve_controller_coordinates, resolve_host_fdb_address
+from .common.service_placement import parse_service_identity, resolve_host_for_placement
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -45,12 +47,13 @@ def _parser() -> argparse.ArgumentParser:
     prep = stages.add_parser("prep")
     prep.add_argument("network")
     prep.add_argument("--service", required=True)
-    prep.add_argument("--host", required=True)
-    prep.add_argument("--address", required=True)
+    prep.add_argument("--infer-placement", action="store_true")
+    prep.add_argument("--host", default="")
+    prep.add_argument("--address", default="")
     prep.add_argument("--port", type=int, default=4550)
     prep.add_argument("--machine-id", default="")
     prep.add_argument("--zone-id", default="")
-    prep.add_argument("--cluster-description", required=True)
+    prep.add_argument("--cluster-description", default="")
     prep.add_argument("--cluster-id", required=True)
     prep.add_argument("--redundancy", default="single")
     prep.add_argument("--storage-engine", default="ssd")
@@ -131,28 +134,49 @@ def main(argv: list[str] | None = None) -> int:
 
 def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "create-cluster" and args.stage == "prep":
+        host, address = args.host, args.address
+        description = args.cluster_description
+        project_uuid, server_uuid = args.project_uuid, args.server_uuid
+        if args.infer_placement:
+            if any((host, address, description, project_uuid, server_uuid, args.environment_name,
+                    args.environment_uuid, args.project_name, args.server_name, args.destination_uuid,
+                    args.machine_id, args.zone_id)) or args.port != 4550:
+                raise ValueError("inferred birth does not accept explicit infrastructure overrides")
+            parsed = parse_service_identity(args.network, args.service)
+            if parsed.ordinal != 1:
+                raise ValueError("initial cluster birth requires a first service named <network><placement>-fdb1")
+            private_doc = load_private_infrastructure(ctx)
+            resolved = resolve_host_for_placement(private_doc, args.network, parsed.placement_token)
+            host = resolved.host_id
+            address, _ = resolve_host_fdb_address(private_doc, args.network, host)
+            coordinates = resolve_controller_coordinates(private_doc, args.network, host)
+            project_uuid = coordinates["project_uuid"]
+            server_uuid = coordinates["server_uuid"]
+            description = f"main_computer_{args.network}"
+        elif not all((host, address, description)):
+            raise ValueError("create-cluster requires --host, --address and --cluster-description unless --infer-placement is set")
         service = ServicePlacement(
             service_id=args.service,
-            host_id=args.host,
-            address=args.address,
+            host_id=host,
+            address=address,
             port=args.port,
-            machine_id=args.machine_id or args.host,
-            zone_id=args.zone_id or args.host,
+            machine_id=args.machine_id or host,
+            zone_id=args.zone_id or host,
         )
         request = CreateClusterRequest(
             network=args.network,
-            cluster=ClusterIdentity(args.cluster_description, args.cluster_id),
+            cluster=ClusterIdentity(description, args.cluster_id),
             services=(service,),
             coordinator_service_ids=(service.service_id,),
             redundancy_mode=args.redundancy,
             storage_engine=args.storage_engine,
         )
         deployment = CreateClusterDeployment(
-            project_uuid=args.project_uuid,
+            project_uuid=project_uuid,
             project_name=args.project_name,
             environment_name=args.environment_name,
             environment_uuid=args.environment_uuid,
-            server_uuid=args.server_uuid,
+            server_uuid=server_uuid,
             server_name=args.server_name,
             destination_uuid=args.destination_uuid,
             image=args.image,

@@ -792,7 +792,7 @@ def test_report_attaches_gate_truth_without_changing_surface_verdict(flog):
 
     assert report["summary"]["status"] == "pass"
     assert report["summary"]["truthStatusCounts"] == {"runtime-proven": 1}
-    assert report["repositoryProvenance"]["schema"] == "mcel-repository-provenance-v2"
+    assert report["repositoryProvenance"]["schema"] == "mcel-repository-provenance-v3"
     assert report["repositoryProvenance"]["algorithm"] == "sha256-source-path-content-v2"
     assert report["repositoryProvenance"]["fingerprint"]
     assert report["repositoryProvenance"]["selectionMethod"] in {

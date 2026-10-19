@@ -2970,6 +2970,63 @@ def _write_evidence(paths: PrivateStatePaths, evidence: Mapping[str, Any], *, op
     return destination, digest
 
 
+def _rpc_route_operation(private_state: PrivateStateReadResult, network: str) -> str:
+    """One network-scoped decision; no published route means no writer action."""
+    from .deployment_validator_rpc_canary_funding import (
+        MotherDeploymentValidatorRpcCanaryFundingError,
+        route_contract_from_document,
+    )
+    from .deployment_genesis import _document as _verified_document
+    try:
+        route = route_contract_from_document(_verified_document(private_state), network)
+    except MotherDeploymentValidatorRpcCanaryFundingError as exc:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_ROUTE_CONTRACT_UNSUPPORTED", str(exc)) from exc
+    return "rewire-shared" if route is not None else "already-unpublished"
+
+
+def _rpc_removal_boundary(
+    target: Mapping[str, Any],
+    survivors: list[Mapping[str, Any]],
+    *,
+    rpc_will_work_post_remove: bool,
+    acknowledge_final_node_shutdown: bool,
+) -> dict[str, Any]:
+    """Select the same three RPC cases for either Mother network.
+
+    Every recorded Mother primary node is a Besu/RPC service; no inference is
+    made from validator membership or from the existence of a Coolify project.
+    """
+    local = sorted(
+        (item for item in survivors if item.get("controller_id") == target.get("controller_id")),
+        key=lambda item: str(item.get("node") or ""),
+    )
+    remote = [item for item in survivors if item.get("controller_id") != target.get("controller_id")]
+    if not survivors:
+        if rpc_will_work_post_remove:
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ACK_CONFLICT", "no RPC node survives the network shutdown")
+        # No node survives on this network: there is no RPC continuity to preserve.
+        # The verified release topology is sufficient to select network shutdown.
+        choice = "network-shutdown"
+    elif acknowledge_final_node_shutdown:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_SHUTDOWN_ACK_MISAPPLIED", "network nodes survive removal")
+    elif local:
+        choice = "same-controller-survivor"
+    elif not rpc_will_work_post_remove:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ACK_REQUIRED", "target controller loses its last RPC; explicit post-remove continuity override required")
+    else:
+        choice = "remote-controller-survivor"
+    return {
+        "case": choice,
+        "target_controller_id": str(target.get("controller_id") or ""),
+        "network_survivor_count": len(survivors),
+        "local_rpc_survivor_count": len(local),
+        "remote_rpc_survivor_count": len(remote),
+        "operator_rpc_continuity_acknowledged": bool(rpc_will_work_post_remove),
+        "network_shutdown_acknowledged": bool(acknowledge_final_node_shutdown),
+        "rpc_continuity_verified_by_live_probe": False,
+    }
+
+
 def execute_node_remove_do_release(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -2984,6 +3041,8 @@ def execute_node_remove_do_release(
     poll_interval_seconds: float = 5.0,
     allow_missing_service: bool = False,
     preserve_static_node_precleanup_services: bool = False,
+    rpc_will_work_post_remove: bool = False,
+    acknowledge_final_node_shutdown: bool = False,
     max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
     opener: Any = _DEFAULT_OPENER,
     now: datetime | None = None,
@@ -3001,9 +3060,21 @@ def execute_node_remove_do_release(
         now=now,
     )
     _emit_progress(progress, "release-verified", network=inspected.get("network"), target_node=inspected.get("target_node"), survivor_count=len(inspected.get("survivor_nodes") or []))
+    # Check the selected verified network's routing contract BEFORE claiming
+    # the one-use release.  An unpublished testnet route needs no mutation.
+    release, _, _ = _canonical_under(paths, Path(inspected["release_path"]), _RELEASE_DIRECTORY, "node-removal do release")
+    rpc_boundary = _rpc_removal_boundary(
+        release["target"], release["survivors"],
+        rpc_will_work_post_remove=rpc_will_work_post_remove,
+        acknowledge_final_node_shutdown=acknowledge_final_node_shutdown,
+    )
+    route_operation = (
+        _rpc_route_operation(private_state, str(inspected["network"]))
+        if rpc_boundary["case"] == "same-controller-survivor"
+        else rpc_boundary["case"]
+    )
     if inspected["release_already_claimed"]:
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RELEASE_ALREADY_CONSUMED", "this node-removal do release is already claimed")
-    release, _, _ = _canonical_under(paths, Path(inspected["release_path"]), _RELEASE_DIRECTORY, "node-removal do release")
     digest = inspected["node_remove_do_release_sha256"]
     claim = {
         "kind": _CLAIM_KIND,
@@ -3058,7 +3129,7 @@ def execute_node_remove_do_release(
             for controller_id in sorted(controller_ids)
         }
         _emit_progress(progress, "controllers-resolved", controller_ids=sorted(controller_ids))
-        if release["network"] == "mainnet":
+        if route_operation == "rewire-shared" and rpc_boundary["case"] == "same-controller-survivor":
             target_controller_id = str(release["target"]["controller_id"])
             local_rpc_survivors = sorted(
                 (item for item in release["survivors"] if str(item.get("controller_id")) == target_controller_id),
@@ -3743,7 +3814,7 @@ def execute_node_remove_do_release(
                 f"remove-voter cleanup failed after validator-removal proof: {first_cleanup_failure.get('message')}",
             )
 
-        if release["network"] == "mainnet":
+        if route_operation == "rewire-shared" and rpc_boundary["case"] == "same-controller-survivor":
             if not isinstance(rpc_route_survivor, Mapping):
                 raise _fail(
                     "MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_ROUTE_SURVIVOR_REQUIRED",
@@ -3755,6 +3826,7 @@ def execute_node_remove_do_release(
                     private_state,
                     controller_id=str(release["target"]["controller_id"]),
                     target_node=str(rpc_route_survivor["node"]),
+                    **({"network": release["network"]} if release["network"] != "mainnet" else {}),
                     timeout=timeout,
                     max_response_bytes=max_response_bytes,
                     max_wait_seconds=max_wait_seconds,
@@ -3778,6 +3850,29 @@ def execute_node_remove_do_release(
                 "verified_before_service_deletion": True,
                 "source": "mother-owned-shared-rpc-route-rewire",
             })
+        elif rpc_boundary["case"] == "remote-controller-survivor":
+            routing_receipts.append({
+                "ordinal": 2,
+                "phase": "withdraw-rpc-routing",
+                "status": "external-continuity-operator-acknowledged",
+                "live_mutation_performed": False,
+                "verified_before_service_deletion": True,
+                "rpc_continuity_verified_by_live_probe": False,
+                "source": "explicit-rpc-will-work-post-remove-assertion",
+            })
+        elif rpc_boundary["case"] == "network-shutdown":
+            routing_receipts.append({
+                "ordinal": 2,
+                "phase": "withdraw-rpc-routing",
+                "status": "network-shutdown-authorized",
+                "live_mutation_performed": False,
+                "verified_before_service_deletion": True,
+                "source": (
+                    "explicit-final-node-shutdown-authorization"
+                    if rpc_boundary["network_shutdown_acknowledged"]
+                    else "verified-final-node-network-topology"
+                ),
+            })
         else:
             routing_receipts.append({
                 "ordinal": 2,
@@ -3785,7 +3880,7 @@ def execute_node_remove_do_release(
                 "status": "already-unpublished",
                 "live_mutation_performed": False,
                 "verified_before_service_deletion": True,
-                "source": "source_baseline_evidence",
+                "source": "verified-mother-network-no-published-rpc-route",
             })
 
         _emit_progress(progress, "target-service-delete-start", target_node=release["target"]["node"], service_uuid=release["target"]["service_uuid"])
@@ -3964,8 +4059,10 @@ def execute_node_remove_do_release(
     rpc_route_rewire_mutated = bool(
         isinstance(rpc_route_rewire, Mapping) and rpc_route_rewire.get("status") == "pass"
     )
-    routing_withdrawal_verified = bool(routing_receipts) and all(
-        item.get("verified_before_service_deletion") is True for item in routing_receipts
+    routing_withdrawal_verified = (
+        not bool(release.get("policy", {}).get("single_node_decommission"))
+        and bool(routing_receipts)
+        and all(item.get("verified_before_service_deletion") is True for item in routing_receipts)
     )
     live_mutation = (
         static_node_precleanup_mutated
@@ -4038,6 +4135,7 @@ def execute_node_remove_do_release(
         "remove_voter_cleanup_failures": remove_voter_cleanup_failures,
         "final_survivor_health_checks": final_survivor_health_checks,
         "rpc_route_rewire": rpc_route_rewire,
+        "rpc_removal_boundary": rpc_boundary,
         "service_removal": service_removal,
         "authority": {
             "release_consumed": True,
@@ -4118,9 +4216,9 @@ def execute_node_remove_do_release(
             "routing_or_topology_published": False,
             "public_endpoint_created": bool(proof_endpoints) if 'proof_endpoints' in locals() else False,
             "manual_ssh_required": False,
-            "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
+            "next_phase": f"remove-node-finalize-{release['network']}" if complete else "manual-review-required",
         },
-        "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
+        "next_phase": f"remove-node-finalize-{release['network']}" if complete else "manual-review-required",
         "live_mutation_performed": live_mutation,
         "service_deletion_performed": service_deleted,
         "validator_removal_vote_performed": validator_vote_performed,
@@ -4311,9 +4409,22 @@ def resume_node_remove_do_after_validator_proof(
     service_removal: dict[str, Any] | None = None
     failure: dict[str, str] | None = None
     route_rewire_performed = False
+    prior_boundary = prior.get("rpc_removal_boundary") if isinstance(prior.get("rpc_removal_boundary"), Mapping) else {}
+    rpc_boundary = _rpc_removal_boundary(
+        target, survivors,
+        rpc_will_work_post_remove=prior_boundary.get("operator_rpc_continuity_acknowledged") is True,
+        acknowledge_final_node_shutdown=prior_boundary.get("network_shutdown_acknowledged") is True,
+    )
+    if prior_boundary and prior_boundary.get("case") != rpc_boundary["case"]:
+        raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_RPC_BOUNDARY_CHANGED", "saved RPC removal boundary does not match recovery topology")
+    route_operation = (
+        _rpc_route_operation(private_state, network)
+        if rpc_boundary["case"] == "same-controller-survivor"
+        else rpc_boundary["case"]
+    )
 
     try:
-        if network == "mainnet":
+        if route_operation == "rewire-shared" and rpc_boundary["case"] == "same-controller-survivor":
             target_controller_id = str(target["controller_id"])
             local_rpc_survivors = sorted(
                 (item for item in survivors if str(item.get("controller_id")) == target_controller_id),
@@ -4331,6 +4442,7 @@ def resume_node_remove_do_after_validator_proof(
                         private_state,
                         controller_id=target_controller_id,
                         target_node=str(rpc_survivor["node"]),
+                        **({"network": network} if network != "mainnet" else {}),
                         timeout=timeout,
                         max_response_bytes=max_response_bytes,
                         max_wait_seconds=max_wait_seconds,
@@ -4357,6 +4469,30 @@ def resume_node_remove_do_after_validator_proof(
                     "mother-owned-shared-rpc-route-rewire-post-proof-resume"
                     if route_rewire_performed
                     else "mother-owned-shared-rpc-route-rewire-prior-proof"
+                ),
+            })
+
+        if rpc_boundary["case"] in ("remote-controller-survivor", "network-shutdown"):
+            routing_receipts = [item for item in routing_receipts if item.get("phase") != "withdraw-rpc-routing"]
+            routing_receipts.append({
+                "ordinal": 2,
+                "phase": "withdraw-rpc-routing",
+                "status": (
+                    "external-continuity-operator-acknowledged"
+                    if rpc_boundary["case"] == "remote-controller-survivor"
+                    else "network-shutdown-authorized"
+                ),
+                "live_mutation_performed": False,
+                "verified_before_service_deletion": True,
+                "rpc_continuity_verified_by_live_probe": False,
+                "source": (
+                    "explicit-rpc-will-work-post-remove-assertion"
+                    if rpc_boundary["case"] == "remote-controller-survivor"
+                    else (
+                        "explicit-final-node-shutdown-authorization"
+                        if rpc_boundary["network_shutdown_acknowledged"]
+                        else "verified-final-node-network-topology"
+                    )
                 ),
             })
 
@@ -4391,8 +4527,8 @@ def resume_node_remove_do_after_validator_proof(
         isinstance(payload, Mapping) and payload.get("vote_submitted") is True
         for payload in proof_payloads.values()
     )
-    routing_verified = bool(routing_receipts) and (
-        network != "mainnet" or any(
+    routing_verified = (bool(survivors) and bool(routing_receipts)) and (
+        (route_operation != "rewire-shared" or rpc_boundary["case"] != "same-controller-survivor") or any(
             item.get("phase") == "withdraw-rpc-routing" and item.get("verified_before_service_deletion") is True
             for item in routing_receipts
         )
@@ -4406,13 +4542,14 @@ def resume_node_remove_do_after_validator_proof(
         "failure": failure,
         "routing_topology_withdrawal_receipts": routing_receipts,
         "rpc_route_rewire": dict(rpc_route_rewire) if isinstance(rpc_route_rewire, Mapping) else None,
+        "rpc_removal_boundary": rpc_boundary,
         "service_removal": service_removal,
         "resume_source_evidence": {
             "path": str(Path(evidence_path).resolve(strict=False)),
             "sha256": prior_digest,
             "stage": "post-validator-removal-proof",
         },
-        "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
+        "next_phase": f"remove-node-finalize-{network}" if complete else "manual-review-required",
         "live_mutation_performed": bool(
             route_rewire_performed or service_deleted
         ),
@@ -4444,7 +4581,7 @@ def resume_node_remove_do_after_validator_proof(
         "live_mutation_performed": bool(
             route_rewire_performed or service_deleted
         ),
-        "next_phase": "remove-node-finalize-mainnet" if complete else "manual-review-required",
+        "next_phase": f"remove-node-finalize-{network}" if complete else "manual-review-required",
     })
     resumed["summary"] = summary
     evidence_out, evidence_sha = _write_evidence(paths, resumed, operation=operation)
@@ -4498,6 +4635,17 @@ def verify_node_remove_do_evidence(
     )
     if verified_release["node_remove_do_release_sha256"] != release.get("sha256"):
         raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "evidence release binding changed")
+    boundary = document.get("rpc_removal_boundary")
+    if boundary is not None:
+        if not isinstance(boundary, Mapping):
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "RPC removal boundary is invalid")
+        expected_boundary = _rpc_removal_boundary(
+            release_document["target"], release_document["survivors"],
+            rpc_will_work_post_remove=boundary.get("operator_rpc_continuity_acknowledged") is True,
+            acknowledge_final_node_shutdown=boundary.get("network_shutdown_acknowledged") is True,
+        )
+        if dict(boundary) != expected_boundary:
+            raise _fail("MOTHER_DEPLOY_NODE_REMOVE_DO_EVIDENCE_INVALID", "RPC removal boundary does not match the released topology")
     summary = document.get("summary")
     authority = document.get("authority")
     policy = document.get("policy")

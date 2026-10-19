@@ -1190,11 +1190,18 @@ def _docker_orphan_cleanup_compose(
     return compose
 
 
-def _temporary_service_body(controller_config: Mapping[str, Any], name: str, compose: str) -> dict[str, Any]:
+def _temporary_service_body(
+    controller_config: Mapping[str, Any],
+    name: str,
+    compose: str,
+    *,
+    environment_name: str = "mainnet",
+) -> dict[str, Any]:
+    environment = _identifier(environment_name, "environment_name")
     return {
         "project_uuid": controller_config["project_uuid"],
         "server_uuid": controller_config["server_uuid"],
-        "environment_name": "mainnet",
+        "environment_name": environment,
         "docker_compose_raw": base64.b64encode(compose.encode("utf-8")).decode("ascii"),
         "name": name,
         "description": "Ephemeral Mother cleanup of completed helper orphan containers",
@@ -1351,7 +1358,7 @@ def _run_docker_orphan_container_cleanup(
             controller=controller,
             controller_id=controller_id,
             endpoint=f"/api/v1/projects/{urllib.parse.quote(str(controller_config['project_uuid']), safe='')}/environments",
-            expected_name="mainnet",
+            expected_name=network,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
             opener=opener,
@@ -1363,7 +1370,9 @@ def _run_docker_orphan_container_cleanup(
             node=node,
             helper_names=helper_names,
         )
-        body = _temporary_service_body(controller_config, service_name, compose)
+        body = _temporary_service_body(
+            controller_config, service_name, compose, environment_name=network
+        )
         body["environment_uuid"] = environment_uuid
         create_response = _http(
             controller,

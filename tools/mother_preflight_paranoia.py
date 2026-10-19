@@ -192,7 +192,61 @@ def _string_list(value: Any, label: str) -> list[str] | None:
     return list(dict.fromkeys(items))
 
 
-def _preflight_topology_nodes(document: Mapping[str, Any], topology: Mapping[str, Any]) -> list[str]:
+def _completed_final_node_decommission_is_empty(
+    document: Mapping[str, Any], topology: Mapping[str, Any],
+) -> bool:
+    """Recognize the canonical empty topology emitted by remove-node finalize.
+
+    This is an add-node baseline only. The generic service-backed topology
+    parser must continue to reject arbitrary empty node lists.
+    """
+    if document.get("kind") != "main_computer.mother.deployment_node_remove_finalize_evidence.v1":
+        return False
+    summary = document.get("summary")
+    target = document.get("target")
+    observation = document.get("target_service_observation")
+    previous = document.get("pre_removal_topology")
+    authority = document.get("authority")
+    if not all(isinstance(value, Mapping) for value in (summary, target, observation, previous, authority)):
+        return False
+    assert isinstance(summary, Mapping)
+    assert isinstance(target, Mapping)
+    assert isinstance(observation, Mapping)
+    assert isinstance(previous, Mapping)
+    assert isinstance(authority, Mapping)
+    node = target.get("node")
+    return bool(
+        isinstance(node, str)
+        and node
+        and summary.get("single_node_decommission") is True
+        and summary.get("target_service_absent") is True
+        and summary.get("service_deletion_performed") is True
+        and summary.get("final_validator_count") == 0
+        and summary.get("final_validator_set") == []
+        and summary.get("survivor_nodes") == []
+        and summary.get("survivor_nodes_observed") == []
+        and summary.get("validator_removal_vote_required") is False
+        and authority.get("single_node_decommission") is True
+        and authority.get("target_service_absence_proven") is True
+        and observation.get("absent") is True
+        and observation.get("node") == node
+        and observation.get("service_uuid") == target.get("service_uuid")
+        and previous.get("nodes") == [node]
+        and isinstance(previous.get("validator_set"), list)
+        and len(previous["validator_set"]) == 1
+        and document.get("survivors") == []
+        and document.get("final_topology") is topology
+        and topology.get("nodes") == []
+        and topology.get("services") == {}
+        and topology.get("validator_set") == []
+        and topology.get("validator_count") == 0
+    )
+
+
+def _preflight_topology_nodes(
+    document: Mapping[str, Any], topology: Mapping[str, Any], *,
+    allow_completed_final_node_decommission: bool = False,
+) -> list[str]:
     summary = document.get("summary")
     candidates: list[Any] = []
     if isinstance(summary, Mapping):
@@ -206,6 +260,8 @@ def _preflight_topology_nodes(document: Mapping[str, Any], topology: Mapping[str
         if nodes:
             return nodes
         if isinstance(summary, Mapping) and summary.get("empty_topology_marked_by_evidence") is True:
+            return []
+        if allow_completed_final_node_decommission and _completed_final_node_decommission_is_empty(document, topology):
             return []
 
     observations = document.get("service_observations")
@@ -277,6 +333,7 @@ def _load_acknowledged_current_topology_for_preflight(
     network: str,
     topology_evidence: str | Path | None,
     acknowledged_sha256: str | None,
+    allow_completed_final_node_decommission: bool = False,
 ) -> dict[str, Any] | None:
     if topology_evidence is None:
         return None
@@ -315,7 +372,10 @@ def _load_acknowledged_current_topology_for_preflight(
         return None
 
     topology = _topology_document(document)
-    nodes = _preflight_topology_nodes(document, topology)
+    nodes = _preflight_topology_nodes(
+        document, topology,
+        allow_completed_final_node_decommission=allow_completed_final_node_decommission,
+    )
     services = _preflight_service_records(document, topology, nodes)
     return {
         "path": path,
@@ -328,8 +388,14 @@ def _load_acknowledged_current_topology_for_preflight(
         "current_topology_marker_accepted": True,
         "empty_topology_accepted_for_add_node": (
             isinstance(summary, Mapping)
-            and summary.get("empty_topology_marked_by_evidence") is True
             and nodes == []
+            and (
+                summary.get("empty_topology_marked_by_evidence") is True
+                or (
+                    allow_completed_final_node_decommission
+                    and _completed_final_node_decommission_is_empty(document, topology)
+                )
+            )
         ),
     }
 
@@ -362,12 +428,96 @@ def _explicit_empty_topology_nodes(document: Mapping[str, Any]) -> list[str] | N
     return []
 
 
+def _verified_first_birth_empty_topology(
+    document: Mapping[str, Any], *, network: str, private_state: Any,
+) -> bool:
+    """Accept an existing, state-bound first-birth receipt without a legacy current marker.
+
+    The first-birth writer deliberately emits an empty topology and records the
+    complete read-only Coolify inventory, but does not emit the old rectification
+    `current_topology_marked_by_evidence` field. This applies *only* to that
+    specific receipt; ordinary/nonempty topologies retain their existing gate.
+    """
+    if not (
+        network == "testnet"
+        and document.get("kind") == "main_computer.mother.live_topology_empty_rectification_evidence.v1"
+        and document.get("mode") == "verified-first-birth-clean-start"
+    ):
+        return False
+
+    summary = document.get("summary")
+    current = document.get("current_topology")
+    final = document.get("final_topology")
+    authority = document.get("authority")
+    policy = document.get("policy")
+    binding = document.get("mother_binding")
+    try:
+        state_network = yaml.safe_load(private_state.document_bytes)["networks"][network]
+        chain_id = state_network["chain_id"]
+        state_binding = private_state.binding
+        binding_valid = (
+            isinstance(binding, Mapping)
+            and binding.get("generation") == state_binding.generation
+            and binding.get("content_sha256") == state_binding.content_hash.digest
+            and binding.get("manifest_sha256") == state_binding.recovery_manifest_hash.digest
+        )
+    except (KeyError, TypeError, AttributeError, yaml.YAMLError) as exc:
+        raise MotherPreflightParanoiaError(
+            "verified first-birth evidence cannot be checked against Mother state"
+        ) from exc
+
+    valid = (
+        binding_valid
+        and isinstance(chain_id, int) and not isinstance(chain_id, bool)
+        and document.get("network") == network
+        and document.get("chain_id") == chain_id
+        and document.get("genesis_sha256") is None
+        and document.get("fresh_genesis_required") is True
+        and isinstance(summary, Mapping)
+        and summary.get("complete") is True
+        and summary.get("clean") is True
+        and summary.get("empty_topology_marked_by_evidence") is True
+        and summary.get("fresh_genesis_required") is True
+        and summary.get("final_nodes") == []
+        and summary.get("final_validator_count") == 0
+        and summary.get("final_validator_set") == []
+        and isinstance(summary.get("inventory_controller_count"), int)
+        and summary["inventory_controller_count"] >= 1
+        and summary.get("inventory_probe_count") == 5 * summary["inventory_controller_count"]
+        and isinstance(authority, Mapping)
+        and authority.get("empty_topology_marked_by_evidence") is True
+        and authority.get("live_mutation_performed") is False
+        and isinstance(policy, Mapping)
+        and policy.get("allowed_http_methods") == ["GET"]
+        and policy.get("network_access_performed") is True
+        and policy.get("live_mutation_performed") is False
+        and isinstance(current, Mapping)
+        and isinstance(final, Mapping)
+        and current == final
+        and final.get("source") == "mother-clean-start-live-inventory"
+        and final.get("chain_id") == chain_id
+        and final.get("genesis_sha256") is None
+        and final.get("fresh_genesis_required") is True
+        and final.get("nodes") == []
+        and final.get("services") == {}
+        and final.get("validator_set") == []
+        and final.get("validator_count") == 0
+    )
+    if not valid:
+        raise MotherPreflightParanoiaError(
+            "verified first-birth empty topology does not match current Mother identity "
+            "or complete clean-start Coolify inventory evidence"
+        )
+    return True
+
+
 def _load_acknowledged_empty_topology_for_add_node(
     runtime_state_root: str | Path,
     *,
     network: str,
     topology_evidence: str | Path | None,
     acknowledged_sha256: str | None,
+    private_state: Any,
 ) -> dict[str, Any] | None:
     if topology_evidence is None:
         return None
@@ -407,7 +557,10 @@ def _load_acknowledged_empty_topology_for_add_node(
     ):
         return None
 
-    nodes = _explicit_empty_topology_nodes(document)
+    first_birth = _verified_first_birth_empty_topology(
+        document, network=network, private_state=private_state,
+    )
+    nodes = [] if first_birth else _explicit_empty_topology_nodes(document)
     if nodes is None:
         return None
 
@@ -690,6 +843,7 @@ def run_preflight_paranoia(
                 network=network_name,
                 topology_evidence=selected_topology_evidence,
                 acknowledged_sha256=acknowledged_topology_evidence_sha256,
+                allow_completed_final_node_decommission=(operation_name == "add-node"),
             )
         if topology is None and operation_name == "add-node":
             topology = _load_acknowledged_empty_topology_for_add_node(
@@ -697,6 +851,7 @@ def run_preflight_paranoia(
                 network=network_name,
                 topology_evidence=selected_topology_evidence,
                 acknowledged_sha256=acknowledged_topology_evidence_sha256,
+                private_state=private_state,
             )
         if topology is None:
             topology = _load_topology(

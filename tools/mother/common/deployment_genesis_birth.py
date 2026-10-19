@@ -178,6 +178,7 @@ def _ensure_coolify_health_model(
     *,
     node: str,
     optional_excluded_services: Iterable[str] = (),
+    requires_fdb: bool = True,
 ) -> str:
     """Make the generated Compose status model match Coolify aggregation.
 
@@ -232,7 +233,7 @@ def _ensure_coolify_health_model(
         lines.insert(preferred_index + 1, line)
 
     def ensure_fdb_healthcheck() -> None:
-        result = bounds(_FDB_SERVICE)
+        result = bounds(_FDB_SERVICE, required=requires_fdb)
         if result is None:
             return
         start, end = result
@@ -714,11 +715,12 @@ def _proof_script(
     genesis_sha256: str,
     validator_address: str,
     cleanup_project_uuid: str | None = None,
+    requires_hub: bool = True,
 ) -> str:
     expected_validator = validator_address.lower()
     cleanup_value = cleanup_project_uuid if cleanup_project_uuid is not None else ""
     cleanup_required = cleanup_project_uuid is not None
-    return "\n".join([
+    lines = [
         "import hashlib, json, os, time, urllib.request",
         f"RPC = 'http://{node}:8545'",
         f"HUB = 'http://{_HUB_SERVICE}:{_HUB_PORT}'",
@@ -813,7 +815,31 @@ def _proof_script(
         "        write_json_atomic(LAST_ERROR, {'ok': False, 'type': type(exc).__name__, 'error': str(exc), 'observed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})",
         "    time.sleep(6)",
         "",
-    ])
+    ]
+    if not requires_hub:
+        # The same chain proof applies to either profile.  Hub observations are
+        # included only when the release actually deploys a Hub component.
+        hub_start = lines.index("    health = hub('/api/hub/v1/health')")
+        hub_end = next(i for i, line in enumerate(lines) if line.startswith("    proof = {") )
+        del lines[hub_start:hub_end]
+        hub_helper_start = lines.index("def hub(path):")
+        del lines[hub_helper_start:hub_helper_start + 2]
+        lines.remove(f"HUB = 'http://{_HUB_SERVICE}:{_HUB_PORT}'")
+        for index, line in enumerate(lines):
+            if line.startswith("    proof = {"):
+                lines[index] = (
+                    "    proof = {'chain_id':chain_id,'genesis_block_present':True,"
+                    "'genesis_sha256':genesis_digest,'first_block_number':first,"
+                    "'second_block_number':second,'block_advance':second-first,"
+                    "'validator_set':[EXPECTED_VALIDATOR],'hub_health':False,"
+                    "'host_cleanup':host_cleanup,'host_cleanup_project_uuid':EXPECTED_HOST_CLEANUP_PROJECT or None,"
+                    "'host_cleanup_proven':(host_cleanup is not None or not HOST_CLEANUP_REQUIRED),"
+                    "'health_marker_contract':'proof-json-valid-and-fresh-healthy-marker',"
+                    "'health_marker_path':HEALTHY,'last_error_path':LAST_ERROR,"
+                    "'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
+                )
+                break
+    return "\n".join(lines)
 
 
 def _superseded_host_cleanup_script(*, node: str, project_uuid: str) -> str:
@@ -899,9 +925,11 @@ def _internal_proof_compose(
     genesis_sha256: str,
     validator_address: str,
     superseded_service_uuid: str | None = None,
+    requires_hub: bool = True,
 ) -> str:
     host_mapping = '      - "127.0.0.1:8545:8545/tcp"\n'
-    allowlist = f"      - --host-allowlist=localhost,127.0.0.1,{node},{_HUB_SERVICE},mother-genesis-proof-guardian\n"
+    allowed_names = f"{node},{_HUB_SERVICE}" if requires_hub else node
+    allowlist = f"      - --host-allowlist=localhost,127.0.0.1,{allowed_names},mother-genesis-proof-guardian\n"
     marker = "\nvolumes:\n"
     if original.count(host_mapping) != 1 or original.count(allowlist) != 1 or original.count(marker) != 1:
         raise MotherDeploymentGenesisBirthError(
@@ -968,6 +996,7 @@ def _internal_proof_compose(
         genesis_sha256=genesis_sha256,
         validator_address=validator_address,
         cleanup_project_uuid=superseded_service_uuid,
+        requires_hub=requires_hub,
     )
     indented_script = "\n".join("        " + line for line in script.splitlines())
     guardian = "\n".join([
@@ -978,8 +1007,7 @@ def _internal_proof_compose(
         "    depends_on:",
         f"      {node}:",
         "        condition: service_started",
-        f"      {_HUB_SERVICE}:",
-        "        condition: service_healthy",
+        *([f"      {_HUB_SERVICE}:", "        condition: service_healthy"] if requires_hub else []),
         "    command:",
         "      - python",
         "      - -u",
@@ -1009,7 +1037,7 @@ def _internal_proof_compose(
         required_services=(
             "mother-genesis-init",
             node,
-            "mother-super-node-fdb",
+            *(("mother-super-node-fdb",) if requires_hub else ()),
             "mother-genesis-proof-guardian",
         ),
         optional_services=(_HOST_CLEANUP_SERVICE,),
@@ -1018,6 +1046,7 @@ def _internal_proof_compose(
         updated,
         node=node,
         optional_excluded_services=(_HOST_CLEANUP_SERVICE,),
+        requires_fdb=requires_hub,
     )
     forbidden = ("ports:", "expose:", "traefik.", "domains:", "fqdn:")
     guardian_section = updated.split("  mother-genesis-proof-guardian:", 1)[1].split("\nvolumes:\n", 1)[0]

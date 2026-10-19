@@ -41,6 +41,10 @@ from tools.mother.common.private_state import read_private_state
 from tools.mother.common.coolify_state import list_coolify_controllers
 from tools.mother.common.deployment_validator_rpc_canary_funding import _shared_rpc_route_url
 from tools.mother_build_reseal_input import network_document, validator_for_node
+from tools.mother.common.deployment_node_remove_prep import (
+    MotherDeploymentNodeRemovePrepError,
+    _normalize_live_current_topology_baseline,
+)
 from tools.mother_preflight_paranoia import _discover_current_topology_evidence
 from tools.mother_detect_topology_v2 import ENDPOINTS, query_live_coolify_inventory
 
@@ -200,6 +204,110 @@ def _rpc(
 
 
 
+def _network_rpc_route_url(network_doc: Mapping[str, Any], network: str) -> str | None:
+    """Resolve only this network's published RPC route; never borrow mainnet's fallback."""
+    if network == "mainnet":
+        # Preserve mainnet's established implicit shared route verbatim.
+        return _shared_rpc_route_url(network_doc)
+    route = network_doc.get("rpc_route")
+    if route is None or route == {}:
+        return None
+    if not isinstance(route, Mapping):
+        raise ValidatorSetParanoiaError("network rpc_route must be a mapping")
+    host = next((route.get(key) for key in ("host", "hostname", "public_host") if route.get(key)), None)
+    if not isinstance(host, str) or re.fullmatch(r"[a-z0-9.-]+", host) is None:
+        raise ValidatorSetParanoiaError("published network rpc_route has no valid host")
+    return f"https://{host}"
+
+
+def _sole_unpublished_node_preflight(
+    *, private_state: Any, network: str, network_doc: Mapping[str, Any],
+    topology_doc: Mapping[str, Any], topology_nodes: list[str],
+    expected: list[str], topology_path: Path, topology_sha256: str,
+    auto_selected: bool, timeout: float, max_response_bytes: int,
+    overall_timeout: float,
+) -> dict[str, Any]:
+    """Prove the bounded no-vote, sole-node decommission from Mother + live Coolify.
+
+    This is NOT a QBFT RPC observation.  It may be used only where Mother has
+    explicitly never published a network RPC route.  Multi-validator removal
+    always requires an independent live validator-set observation.
+    """
+    if network == "mainnet":
+        raise ValidatorSetParanoiaError("mainnet requires live QBFT RPC preflight")
+    if topology_doc.get("kind") != "main_computer.mother.live_current_topology_evidence.v1":
+        raise ValidatorSetParanoiaError("sole-node preflight requires finalized live-current-topology evidence")
+    if topology_doc.get("network") != network:
+        raise ValidatorSetParanoiaError("sole-node preflight evidence network differs from selected network")
+    if len(topology_nodes) != 1 or len(expected) != 1:
+        raise ValidatorSetParanoiaError(
+            "unpublished network RPC route: multi-node validator-set verification requires a reachable RPC authority"
+        )
+    summary, policy = topology_doc.get("summary"), topology_doc.get("policy")
+    if not isinstance(summary, Mapping) or not isinstance(policy, Mapping):
+        raise ValidatorSetParanoiaError("sole-node preflight requires complete finalized-topology summary and policy")
+    try:
+        normalized, accepted_services = _normalize_live_current_topology_baseline(
+            topology_doc, summary, policy,
+        )
+    except MotherDeploymentNodeRemovePrepError as exc:
+        raise ValidatorSetParanoiaError(f"sole-node finalized-topology contract rejected evidence: {exc}") from exc
+    if _normalize_validator_set(normalized["validator_set"], "sealed validator set") != expected or normalized["nodes"] != topology_nodes:
+        raise ValidatorSetParanoiaError("sole-node sealed topology disagrees with acknowledged topology")
+    topology = _topology_body(topology_doc)
+    node = topology_nodes[0]
+    service = accepted_services.get(node)
+    if not isinstance(service, Mapping) or not str(service.get("service_uuid") or "").strip():
+        raise ValidatorSetParanoiaError("sole-node topology lacks an exact deployed Coolify service UUID")
+    controller = str(service.get("controller_id") or "")
+    controllers = [c for c in list_coolify_controllers(private_state) if c.network == network and c.enabled]
+    if not controller or controller not in {c.controller_id for c in controllers}:
+        raise ValidatorSetParanoiaError("sole-node service controller is not an enabled controller for this network")
+    if topology.get("chain_id") != network_doc.get("chain_id"):
+        raise ValidatorSetParanoiaError("sole-node topology chain ID does not match verified Mother network")
+    if SHA256_RE.fullmatch(str(topology.get("genesis_sha256") or "")) is None:
+        raise ValidatorSetParanoiaError("sole-node topology lacks its finalized genesis hash")
+    binding = topology_doc.get("mother_binding")
+    current_binding = private_state.binding
+    if not isinstance(binding, Mapping) or (
+        binding.get("generation") != current_binding.generation
+        or binding.get("content_sha256") != current_binding.content_hash.digest
+        or binding.get("manifest_sha256") != current_binding.recovery_manifest_hash.digest
+    ):
+        raise ValidatorSetParanoiaError("sole-node topology is not bound to the current verified Mother generation")
+    validator_map = _validator_node_map(network_doc, network=network)
+    if validator_map.get(expected[0]) != node:
+        raise ValidatorSetParanoiaError("sole-node validator identity does not map to the topology node in Mother")
+    live_nodes = _live_primary_nodes(
+        private_state, network=network, timeout=timeout,
+        max_response_bytes=max_response_bytes, overall_timeout=overall_timeout,
+    )
+    if live_nodes != [node]:
+        raise ValidatorSetParanoiaError(
+            f"sole-node decommission refused: live Coolify primary nodes {live_nodes!r} != {[node]!r}"
+        )
+    return {
+        "kind": KIND, "schema_version": 1, "status": "pass", "read_only": True,
+        "network": network, "chain_id": topology["chain_id"],
+        "topology_evidence": {"path": str(topology_path), "sha256": topology_sha256,
+                              "nodes": topology_nodes, "auto_selected": auto_selected},
+        "expected_validator_set": expected, "live_validator_set": None,
+        "live_primary_nodes": live_nodes, "validator_set_matches": None,
+        "rpc_observation_performed": False,
+        "preflight_mode": "unpublished-route-sole-node-decommission",
+        "single_node_decommission": True,
+        "sole_service_uuid": service["service_uuid"], "sole_controller_id": controller,
+        "summary": {
+            "clean": True, "expected_validator_count": 1,
+            "live_validator_count": None,
+            "rpc_observation_performed": False,
+            "unpublished_route": True,
+            "single_node_decommission": True,
+            "live_mutation_performed": False, "evidence_mutation_performed": False,
+        },
+    }
+
+
 def _controller_local_rpc_candidates(private_state: Any, *, network: str, route_url: str) -> list[dict[str, str]]:
     """Return direct per-controller Traefik RPC routes, bypassing public DNS/load balancing."""
     parsed_route = urllib.parse.urlsplit(str(route_url or ""))
@@ -235,10 +343,15 @@ def _observe_live_chain(
     max_response_bytes: int,
 ) -> dict[str, Any]:
     """Observe live QBFT without making the public aggregate route a single point of failure."""
-    public_url = _shared_rpc_route_url(network_doc)
+    public_url = _network_rpc_route_url(network_doc, network)
+    if not public_url and not explicit_rpc_url:
+        raise ValidatorSetParanoiaError(
+            "network has no published RPC route; live QBFT comparison requires --rpc-url"
+        )
     if explicit_rpc_url:
         candidates = [{"url": explicit_rpc_url, "source": "explicit", "host_header": ""}]
     else:
+        assert public_url is not None
         candidates = _controller_local_rpc_candidates(private_state, network=network, route_url=public_url)
 
     successes: list[dict[str, Any]] = []
@@ -268,7 +381,7 @@ def _observe_live_chain(
             failures.append({**candidate, "error": str(exc)})
 
     # If no controller-local route answered, retain the public aggregate route as a final fallback.
-    if not successes and not explicit_rpc_url:
+    if not successes and not explicit_rpc_url and public_url:
         try:
             chain_raw = _rpc(public_url, "eth_chainId", [], timeout=timeout, max_response_bytes=max_response_bytes)
             chain_id = int(str(chain_raw), 16)
@@ -575,6 +688,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(expected_chain_id, int) or expected_chain_id <= 0:
         raise ValidatorSetParanoiaError("Mother private state does not contain a valid chain_id")
 
+    # An unpublished chain-only network has no trusted shared RPC endpoint to
+    # query from the operator machine.  Decommissioning its *only* validator
+    # requires no surviving-voter transaction.  Prove exactly that contract
+    # using current Mother-bound evidence and a complete, live Coolify inventory.
+    # Never apply this exception to mainnet or a multi-node network.
+    if args.rpc_url is None and _network_rpc_route_url(network_doc, args.network) is None:
+        return _sole_unpublished_node_preflight(
+            private_state=private_state, network=args.network,
+            network_doc=network_doc, topology_doc=_document,
+            topology_nodes=topology_nodes, expected=expected,
+            topology_path=topology_path, topology_sha256=topology_sha256,
+            auto_selected=auto_selected, timeout=args.timeout,
+            max_response_bytes=args.max_response_bytes,
+            overall_timeout=args.overall_timeout,
+        )
+
     chain_observation = _observe_live_chain(
         private_state,
         network=args.network,
@@ -708,7 +837,7 @@ def build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     parser.add_argument("--runtime-state-root", default=str(Path("runtime") / "state"))
-    parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     parser.add_argument("--topology-evidence", help="optional; defaults to latest passed, clean, complete current topology evidence on disk")
     parser.add_argument("--acknowledge-topology-evidence-sha256", help="optional; computed automatically when omitted")
     parser.add_argument(

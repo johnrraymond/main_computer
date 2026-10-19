@@ -128,3 +128,41 @@ def rollback_application_promotion(transaction: str, *, app_id: str, repo_root: 
         "result": payload,
     }
     return AppPromotionResult(raw.valid, raw.status, report, tuple(raw.diagnostics), raw.output_directory)
+
+
+def dispatch_portable_package_promotion(*, app_id: str, repo_root: Path,
+                                        operation: str, transaction: str | None = None) -> AppPromotionResult:
+    """Canonical promotion dispatch for certified standalone *release slots*.
+
+    Deliberately distinct from the legacy DSL source-authority transaction.
+    No profile substitution is permitted for Code Editor and no host route is
+    redirected by this operation.
+    """
+    from main_computer.mcel_portable_promotion import (
+        PortablePromotionRefused, promote, rollback, validate_active,
+    )
+    try:
+        if operation == "check":
+            result = validate_active(repo_root, app_id)
+        elif operation == "rehearse":
+            result = promote(repo_root, app_id, execute=False)
+        elif operation == "execute":
+            result = promote(repo_root, app_id, execute=True)
+        elif operation == "rollback":
+            if not transaction:
+                raise PortablePromotionRefused("rollback-transaction-required")
+            result = rollback(repo_root, app_id, transaction)
+        else:
+            raise PortablePromotionRefused("unsupported-portable-promotion-operation")
+    except (PortablePromotionRefused, OSError, ValueError, RuntimeError) as exc:
+        result = {"status": "refused", "valid": False, "reasons": [str(exc)]}
+    diagnostics = tuple({"code": "MCEL_PORTABLE_PROMOTION_REFUSED", "summary": reason}
+                        for reason in result.get("reasons", []))
+    report = {"schema": REPORT_SCHEMA, "version": REPORT_VERSION,
+              "appId": app_id, "status": result.get("status", "refused"),
+              "valid": result.get("valid") is True,
+              "genericPipeline": True, "operation": "portable-" + operation,
+              "portableReleaseSlot": True, "productionHostRouteChanged": False,
+              "sourceAuthorityChanged": False,
+              "result": result}
+    return AppPromotionResult(bool(result.get("valid")), report["status"], report, diagnostics)

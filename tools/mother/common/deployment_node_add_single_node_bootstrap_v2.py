@@ -1195,6 +1195,27 @@ def _compose_commitment(compose: str, *, label: str) -> dict[str, Any]:
     }
 
 
+def _first_node_service_profile(private_state: PrivateStateReadResult, network: str) -> str:
+    """Resolve the profile from the selected verified Mother network.
+
+    Existing mainnet stays integrated by default; new testnet reserves a
+    chain-only initial validator unless its network document opts into an
+    explicitly named profile.  The profile is committed in the release.
+    """
+    networks = _private_state_document(private_state).get("networks", {})
+    selected = networks.get(network) if isinstance(networks, Mapping) else None
+    if not isinstance(selected, Mapping):
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_NETWORK_INVALID", "selected network is missing")
+    deployment = selected.get("deployment", {})
+    deployment = deployment if isinstance(deployment, Mapping) else {}
+    profile = deployment.get("first_node_service_profile")
+    if profile is None:
+        profile = "integrated" if network == "mainnet" else "chain-only"
+    if profile not in {"integrated", "chain-only"}:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_PROFILE_INVALID", "unsupported first-node service profile")
+    return profile
+
+
 def build_node_add_single_node_bootstrap_release(
     paths: PrivateStatePaths,
     private_state: PrivateStateReadResult,
@@ -1267,6 +1288,12 @@ def build_node_add_single_node_bootstrap_release(
                 "MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_GENESIS_VALIDATOR_MISMATCH",
                 "current topology genesis does not contain only the target validator; use adopt-fresh-empty-topology for a fresh reset",
             )
+    service_profile = _first_node_service_profile(private_state, network)
+    requires_hub = service_profile == "integrated"
+    # The integrated generator still embeds mainnet Hub contracts.  A new
+    # network cannot opt into that profile until those contracts are scoped.
+    if network != "mainnet" and requires_hub:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_PROFILE_INVALID", "integrated Hub/FDB profile is mainnet-bound")
     repository = _hub_git_repository(hub_git_repository, "hub_git_repository")
     original = _first_genesis_compose(
         node=node,
@@ -1275,6 +1302,8 @@ def build_node_add_single_node_bootstrap_release(
         hub_git_repository=repository,
         hub_git_ref=hub_git_ref,
         p2p_port=target_p2p_port,
+        service_profile=service_profile,
+        network=network,
     )
     proof_compose = _internal_proof_compose(
         original,
@@ -1283,8 +1312,10 @@ def build_node_add_single_node_bootstrap_release(
         genesis_sha256=genesis_sha,
         validator_address=target_validator,
         superseded_service_uuid=None,
+        requires_hub=requires_hub,
     )
-    proof_compose = _bootstrap_v2_proof_compose(proof_compose)
+    if requires_hub:
+        proof_compose = _bootstrap_v2_proof_compose(proof_compose)
     proof_bytes = proof_compose.encode("utf-8")
     body = {"name": node, "docker_compose_raw": base64.b64encode(proof_bytes).decode("ascii")}
     body_sha = hashlib.sha256(canonical_json(body)).hexdigest()
@@ -1314,6 +1345,7 @@ def build_node_add_single_node_bootstrap_release(
         "topology_diff": dict(identity_evidence["topology_diff"]),
         "bootstrap_plan": {
             "kind": "operator-directed-single-node-bootstrap",
+            "service_profile": service_profile,
             "single_node_bootstrap_required": True,
             "replica_sync_required": False,
             "validator_admission_required": False,
@@ -1330,7 +1362,7 @@ def build_node_add_single_node_bootstrap_release(
             "validator_set": [target_validator],
             "target_validator_route": dict(target_validator_route),
             "hub": {
-                "serves_hub": True,
+                "serves_hub": requires_hub,
                 "git_repository": repository,
                 "git_ref": hub_git_ref,
                 "internal_only": True,
@@ -1341,7 +1373,7 @@ def build_node_add_single_node_bootstrap_release(
                 "host_rpc_mapping_present": "8545:8545" in proof_compose,
                 "host_p2p_mapping_present": f"{target_p2p_port}:{target_p2p_port}" in proof_compose,
                 "validator_route": dict(target_validator_route),
-                "hub_service_present": "mother-super-node-hub:" in proof_compose,
+                "hub_service_present": requires_hub and "mother-super-node-hub:" in proof_compose,
                 "hub_public_endpoint_present": False,
                 "guardian_service_present": "mother-genesis-proof-guardian:" in proof_compose,
             },
@@ -1361,8 +1393,7 @@ def build_node_add_single_node_bootstrap_release(
                 "guardian proves chain ID",
                 "guardian proves sole QBFT validator is the target validator",
                 "guardian proves block height advances",
-                "guardian proves Hub health",
-                "guardian proves Hub uses the co-located chain RPC",
+                *(("guardian proves Hub health", "guardian proves Hub uses the co-located chain RPC") if requires_hub else ()),
             ],
         },
         "authority": {
@@ -1395,8 +1426,8 @@ def build_node_add_single_node_bootstrap_release(
             "validator_vote_authorized": False,
             "routing_or_topology_publication_authorized": False,
             "public_http_endpoint_created": False,
-            "hub_internal_only": True,
-            "hub_local_rpc_required": True,
+            "hub_internal_only": requires_hub,
+            "hub_local_rpc_required": requires_hub,
             "manual_ssh_required": False,
         },
         "summary": {
@@ -1415,7 +1446,7 @@ def build_node_add_single_node_bootstrap_release(
             "old_baseline_topology_used_as_live": False,
             "coolify_c_required": False,
             "serves_chain": True,
-            "serves_hub": True,
+            "serves_hub": requires_hub,
             "routing_or_topology_publication_authorized": False,
             "public_endpoint_created": False,
             "next_phase": f"add-node-single-node-bootstrap-{network}",
@@ -1490,14 +1521,16 @@ def verify_node_add_single_node_bootstrap_release(
     summary = release.get("summary")
     if not isinstance(plan, Mapping) or not isinstance(target, Mapping) or not isinstance(summary, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "single-node bootstrap release body is incomplete")
+    requires_hub = _first_node_service_profile(private_state, _identifier(release.get("network"), "network")) == "integrated"
     if (
-        plan.get("single_node_bootstrap_required") is not True
+        plan.get("service_profile", "integrated") != ("integrated" if requires_hub else "chain-only")
+        or plan.get("single_node_bootstrap_required") is not True
         or plan.get("replica_sync_required") is not False
         or plan.get("validator_admission_required") is not False
         or plan.get("old_baseline_topology_used_as_live") is not False
         or plan.get("coolify_c_required") is not False
         or summary.get("serves_chain") is not True
-        or summary.get("serves_hub") is not True
+        or summary.get("serves_hub") is not requires_hub
     ):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "release does not prove the operator-directed single-node path")
     expected_cleanup_boundary = _cleanup_boundary_config(
@@ -1543,7 +1576,7 @@ def verify_node_add_single_node_bootstrap_release(
         "old_baseline_topology_used_as_live": False,
         "coolify_c_required": False,
         "serves_chain": True,
-        "serves_hub": True,
+        "serves_hub": requires_hub,
         "public_endpoint_created": False,
         "identity_routing": routing,
         "next_phase": summary["next_phase"],
@@ -1617,6 +1650,7 @@ def execute_node_add_single_node_bootstrap_release(
     claim_path = _claim_release(paths, release, operation=operation)
 
     network = _identifier(release["network"], "network")
+    requires_hub = release["bootstrap_plan"].get("service_profile", "integrated") == "integrated"
     target = release["target"]
     node = _identifier(target["node"], "target node")
     controller_id = _identifier(target["controller_id"], "target controller")
@@ -2005,7 +2039,7 @@ def execute_node_add_single_node_bootstrap_release(
         "single_node_bootstrap_performed": len(receipts) > 0,
         "single_node_bootstrap_proven": complete,
         "serves_chain": complete,
-        "serves_hub": complete,
+        "serves_hub": complete and requires_hub,
         "replica_sync_performed": False,
         "validator_admission_performed": False,
         "validator_vote_performed": False,
@@ -2027,8 +2061,8 @@ def execute_node_add_single_node_bootstrap_release(
             "validator_vote_performed": False,
             "routing_or_topology_published": False,
             "public_endpoint_created": False,
-            "hub_internal_only": True,
-            "hub_local_rpc_required": True,
+            "hub_internal_only": requires_hub,
+            "hub_local_rpc_required": requires_hub,
             "manual_ssh_required": False,
         },
         "authority": {
@@ -2055,7 +2089,7 @@ def execute_node_add_single_node_bootstrap_release(
             "single_node_bootstrap_performed": len(receipts) > 0,
             "single_node_bootstrap_proven": complete,
             "serves_chain": complete,
-            "serves_hub": complete,
+            "serves_hub": complete and requires_hub,
             "replica_sync_performed": False,
             "validator_admission_performed": False,
             "validator_vote_performed": False,
@@ -2160,6 +2194,7 @@ def adopt_node_add_single_node_bootstrap_live_proof(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "release body is incomplete")
     fresh_genesis_required = plan.get("fresh_genesis_required") is True
     network = _identifier(release["network"], "network")
+    requires_hub = release["bootstrap_plan"].get("service_profile", "integrated") == "integrated"
     node = _identifier(target["node"], "target node")
     controller_id = _identifier(target["controller_id"], "target controller")
     service_uuid = _identifier(target["created_service_uuid"], "created service UUID")
@@ -2261,7 +2296,7 @@ def adopt_node_add_single_node_bootstrap_live_proof(
         "read_only_adoption_performed": True,
         "adoption_live_mutation_performed": False,
         "serves_chain": True,
-        "serves_hub": True,
+        "serves_hub": requires_hub,
         "replica_sync_performed": False,
         "validator_admission_performed": False,
         "validator_vote_performed": False,
@@ -2283,8 +2318,8 @@ def adopt_node_add_single_node_bootstrap_live_proof(
             "validator_vote_performed": False,
             "routing_or_topology_published": False,
             "public_endpoint_created": False,
-            "hub_internal_only": True,
-            "hub_local_rpc_required": True,
+            "hub_internal_only": requires_hub,
+            "hub_local_rpc_required": requires_hub,
             "manual_ssh_required": False,
         },
         "authority": {
@@ -2312,7 +2347,7 @@ def adopt_node_add_single_node_bootstrap_live_proof(
             "read_only_adoption_performed": True,
             "adoption_live_mutation_performed": False,
             "serves_chain": True,
-            "serves_hub": True,
+            "serves_hub": requires_hub,
             "replica_sync_performed": False,
             "validator_admission_performed": False,
             "validator_vote_performed": False,
@@ -2376,6 +2411,7 @@ def verify_node_add_single_node_bootstrap_evidence(
         now=now,
         enforce_freshness=False,
     )
+    requires_hub = release_verified["serves_hub"]
     cleanup_boundary_clean = (
         document.get("read_only_adoption_performed") is True
         or document.get("summary", {}).get("cleanup_boundary_checker_proven") is True
@@ -2386,7 +2422,7 @@ def verify_node_add_single_node_bootstrap_evidence(
         and document.get("single_node_bootstrap_performed") is True
         and document.get("single_node_bootstrap_proven") is True
         and document.get("serves_chain") is True
-        and document.get("serves_hub") is True
+        and document.get("serves_hub") is requires_hub
         and document.get("replica_sync_performed") is False
         and document.get("validator_admission_performed") is False
         and document.get("validator_vote_performed") is False
@@ -2417,7 +2453,7 @@ def verify_node_add_single_node_bootstrap_evidence(
         "single_node_bootstrap_performed": True,
         "single_node_bootstrap_proven": True,
         "serves_chain": True,
-        "serves_hub": True,
+        "serves_hub": requires_hub,
         "replica_sync_performed": False,
         "validator_admission_performed": False,
         "validator_vote_performed": False,
@@ -2478,6 +2514,7 @@ def build_node_add_single_node_chain_and_hub_proof_evidence(
     if file_sha != acknowledged:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_ACK_MISMATCH", "bootstrap evidence file SHA does not match")
     network = _identifier(document["network"], "network")
+    requires_hub = verified["serves_hub"]
     target = document.get("target")
     prepared = document.get("prepared_post_add_topology")
     current = document.get("current_topology")
@@ -2520,7 +2557,7 @@ def build_node_add_single_node_chain_and_hub_proof_evidence(
                 "readiness_source": "deployment-node-add-single-node-bootstrap-proof",
                 "last_observed_at": document.get("completed_at"),
                 "serves_chain": True,
-                "serves_hub": True,
+                "serves_hub": requires_hub,
                 "public_endpoint_created": False,
                 "validator_route": dict(target_validator_route),
                 "vpn_ip": target_validator_route.get("vpn_ip"),
@@ -2570,13 +2607,13 @@ def build_node_add_single_node_chain_and_hub_proof_evidence(
             "bootstrap_evidence_sha256": acknowledged,
             "single_node_bootstrap_proven": True,
             "serves_chain": True,
-            "serves_hub": True,
+            "serves_hub": requires_hub,
             "chain_id": chain_id,
             "genesis_sha256": genesis_sha,
             "validator_set": [validator],
             "compose_semantic_sha256": compose_commitment.get("semantic_sha256"),
-            "hub_internal_only": True,
-            "hub_local_rpc_required": True,
+            "hub_internal_only": requires_hub,
+            "hub_local_rpc_required": requires_hub,
             "coolify_c_required": False,
             "replica_sync_required": False,
             "validator_admission_required": False,
@@ -2628,7 +2665,7 @@ def build_node_add_single_node_chain_and_hub_proof_evidence(
             "final_validator_set": [validator],
             "single_node_bootstrap_proven": True,
             "serves_chain": True,
-            "serves_hub": True,
+            "serves_hub": requires_hub,
             "coolify_c_required": False,
             "replica_sync_required": False,
             "replica_sync_performed": False,
@@ -2646,7 +2683,7 @@ def build_node_add_single_node_chain_and_hub_proof_evidence(
         "next_phase": f"add-node-single-node-finalized-{network}",
         "single_node_bootstrap_proven": True,
         "serves_chain": True,
-        "serves_hub": True,
+        "serves_hub": requires_hub,
         "replica_sync_performed": False,
         "validator_admission_performed": False,
         "validator_vote_performed": False,
@@ -2743,6 +2780,7 @@ def verify_node_add_single_node_chain_and_hub_proof_evidence(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_STALE", "single-node chain+Hub proof evidence is outside the freshness window")
     source = document.get("source_single_node_bootstrap_evidence")
     summary = document.get("summary")
+    requires_hub = _first_node_service_profile(private_state, _identifier(document.get("network"), "network")) == "integrated"
     proof = document.get("chain_and_hub_proof")
     final_topology = document.get("final_topology")
     authority = document.get("authority")
@@ -2773,7 +2811,7 @@ def verify_node_add_single_node_chain_and_hub_proof_evidence(
         summary.get("complete") is True,
         summary.get("single_node_bootstrap_proven") is True,
         summary.get("serves_chain") is True,
-        summary.get("serves_hub") is True,
+        summary.get("serves_hub") is requires_hub,
         summary.get("coolify_c_required") is False,
         summary.get("replica_sync_required") is False,
         summary.get("replica_sync_performed") is False,
@@ -2788,7 +2826,7 @@ def verify_node_add_single_node_chain_and_hub_proof_evidence(
         summary.get("current_topology_marked_by_evidence") is True,
         proof.get("single_node_bootstrap_proven") is True,
         proof.get("serves_chain") is True,
-        proof.get("serves_hub") is True,
+        proof.get("serves_hub") is requires_hub,
         proof.get("coolify_c_required") is False,
         proof.get("replica_sync_required") is False,
         proof.get("validator_admission_required") is False,
@@ -2817,7 +2855,7 @@ def verify_node_add_single_node_chain_and_hub_proof_evidence(
         "final_validator_set": list(summary["final_validator_set"]),
         "single_node_bootstrap_proven": True,
         "serves_chain": True,
-        "serves_hub": True,
+        "serves_hub": requires_hub,
         "coolify_c_required": False,
         "replica_sync_required": False,
         "validator_admission_required": False,

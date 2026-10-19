@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse, json, sys
 from pathlib import Path
 if __package__ in {None, ""}: sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from main_computer.mcel_app_promote import AppPromotionError, execute_application_promotion, inspect_application_authority, rehearse_application_promotion, rollback_application_promotion
+from main_computer.mcel_app_promote import AppPromotionError, execute_application_promotion, inspect_application_authority, rehearse_application_promotion, rollback_application_promotion, dispatch_portable_package_promotion
 from main_computer.mcel_application_packages import repository_root
 
 def main(argv=None):
@@ -15,10 +15,28 @@ def main(argv=None):
     g.add_argument("--rehearse", action="store_true")
     g.add_argument("--execute", action="store_true")
     g.add_argument("--rollback", metavar="TRANSACTION")
+    p.add_argument("--portable", action="store_true", help="Use source-bound portable package-release promotion, not legacy DSL authority promotion.")
     p.add_argument("--repo-root", type=Path, default=repository_root())
     p.add_argument("--headed", action="store_true")
     p.add_argument("--json", action="store_true")
     a=p.parse_args(argv)
+    if a.portable:
+        operation = "check" if a.check else "rehearse" if a.rehearse else "execute" if a.execute else "rollback"
+        r=dispatch_portable_package_promotion(app_id=a.app, repo_root=a.repo_root,
+                                               operation=operation, transaction=a.rollback)
+        result=r.to_dict()
+        if a.json:
+            print(json.dumps(result,indent=2,sort_keys=True))
+        else:
+            print("mcel-app-promote-wave9")
+            print(f"app: {a.app}")
+            print(f"status: {r.status}")
+            print(f"valid: {str(r.valid).lower()}")
+            print("scope: portable-release-slot (host route unchanged)")
+            transaction=(result.get("result") or {}).get("transactionId")
+            if transaction:print(f"transaction: {transaction}")
+            for issue in r.diagnostics:print(f"  {issue.get('code')}: {issue.get('summary')}")
+        return 0 if r.valid else 2
     try:
         if a.check: r=inspect_application_authority(app_id=a.app,repo_root=a.repo_root)
         elif a.rehearse: r=rehearse_application_promotion(app_id=a.app,repo_root=a.repo_root,headed=a.headed)

@@ -146,37 +146,43 @@ they cannot satisfy the repository release gate.
 Explicit evidence paths and their corresponding `--latest-*` options are
 mutually exclusive.
 
-FLOG reports carry a repository fingerprint representing source state in a
-`repositoryProvenance` object using:
+FLOG and acceptance reports carry a versioned **MCEL authority-source**
+repository fingerprint using:
 
 ```text
-mcel-repository-provenance-v2
+mcel-repository-provenance-v3
 sha256-source-path-content-v2
 ```
 
-The fingerprint represents source authority rather than the entire working
-tree.
+The prior `v2` selector hashed every Git-tracked and non-ignored untracked
+file in the monorepo. This caused unrelated Mother and NanoJev changes to
+invalidate Calculator and Code Editor proofs. In `v3`, both Git and snapshot
+modes apply the same conservative MCEL authority-source selector:
 
-When Git metadata and Git are available, the selection method is
-`git-tracked-and-unignored`: tracked files plus non-ignored untracked files are
-hashed in deterministic path order. This captures local source edits and new
-source files while respecting repository ignore rules.
+- the shared `main_computer/` host and verifier implementation;
+- generated app sources under `mcel_apps/` and the local platform host;
+- versioned `runtime/websites/` sources and the Code Editor browser fixture;
+- MCEL, FLOG, and Code Editor tools and regression tests, reviewed-patch code,
+  MCEL specifications, and relevant root configurations.
 
-Snapshot exports do not contain `.git`. In that mode the selection method is
-`snapshot-source-roots`. The fallback hashes deterministic source roots,
-including application code, tests, MCEL documents, contracts, deployment
-configuration, tools, game projects, and selected versioned website sources.
+Unrelated root Mother mutation code, `tools/mother/`, Mother-only tests, and
+NanoJev documentation are **not** certified application source and do not
+invalidate an MCEL certificate. The strict package generator still binds
+all generated asset bytes, host projection fingerprints, semantic fingerprints,
+and the full declared intent set independently. An MCEL authority-source edit
+or newly introduced matching file changes the v3 source fingerprint.
 
-Both modes explicitly exclude mutable or generated state such as runtime
-reports, databases, sessions, browser profiles, logs, caches, patch reports,
-generated build trees, and temporary diagnostic output. Changing those files
-after FLOG runs must not invalidate evidence. Changing included source files
-must change the fingerprint.
+The `scope` field is `git-tracked-and-unignored-mcel-authority-v3` or
+`snapshot-mcel-authority-v3`; `selectionMethod` remains
+`git-tracked-and-unignored` or `snapshot-source-roots`. Snapshot fallback
+records candidate source roots scanned (filtered by the same authority selector)
+as `sourceRoots`.
 
-The provenance object records both `scope` and `selectionMethod`, plus
-`sourceRoots` for snapshot fallback mode. Version-1 provenance is intentionally
-unsupported after this correction; regenerate FLOG and acceptance evidence
-after applying Patch 27a.
+Mutable and generated runtime reports, caches, profiles, and temporary output
+remain excluded. Earlier v2 attestations are **not** silently grandfathered
+in: the verifier refuses an unsupported source schema. Regenerate runtime,
+acceptance, and live provider evidence **once** after installing this change.
+Keep all genuine MCEL authority sources stable while certifying.
 
 Evidence binding is reported as:
 
@@ -396,3 +402,55 @@ python main_computer/mcel_truth_audit.py \
 
 The JSON and Markdown reports should be retained as CI artifacts so a failed
 gate remains explainable.
+
+## Patch 19: source-bound portable package promotion
+
+The canonical 19-intent evidence is produced by the *real live* standalone
+Chromium/Ollama/Mathics proof, not by a model stub or a copied pass verdict.
+The audit separately evaluates that evidence before granting **portable package
+promotion eligibility** for `calculator` and `code-editor`. It does not silently
+upgrade either application's declared maturity, rewrite a package manifest, or
+switch its production presentation or capability authority.
+
+From the repository root, after installing Patch 19, run:
+
+```powershell
+python -m pytest tests/test_mcel_portable_repository_certification.py -q
+python tools/mcel_portable_intent_probe.py `
+  --authorize-external `
+  --model gemma4:26b-a4b-it-q4_K_M `
+  --external-timeout-s 90 `
+  --output .\runtime\state\mcel\port-proof-live-v4.json `
+  --json > ..\archive\live-probe-v4.json
+python tools/mcel_portable_certify.py `
+  --proof .\runtime\state\mcel\port-proof-live-v4.json `
+  --json
+python main_computer/mcel_truth_audit.py --require-portable-certification --check
+```
+
+The certifier writes the canonical UTF-8 evidence at
+`runtime/reports/mcel-portable/mcel-portable-certification.json`.
+`--release-gate` also requires this independently verified portable certificate,
+in addition to its existing canonical runtime, acceptance, freshness, and
+repository matching policies. It is not sufficient for a proof to say
+`passed=true`: the verifier regenerates the exact standalone packages, checks
+all asset digests, presentation manifests, current repository provenance,
+receipt hashes, bounded semantic fixtures, negative authorization checks and
+byte-accurate filesystem effects. The verifier re-runs on every truth audit.
+
+The proof and certificate are **local, hash-bound evidence**, not remotely signed
+attestations. Source provenance and file hashes detect changes against the current
+checkout; they do not authenticate an adversary with permission to rewrite both
+source and evidence. A new source change invalidates the old proof. The older
+`live-probe-v3.json` passes the earlier bounded fixture but **does not** contain
+Patch 19 source bindings, so it cannot be imported as a promotable certificate;
+run the v4 probe after applying the patch. The verifier intentionally restricts
+certification to the recorded bounded semantic fixtures; general host behavioral
+parity, provider authorization in production, and arbitrary user expressions
+remain outside this particular certificate.
+
+The audit reports `portableCertification` and per-app `portablePromotion`,
+with `sourceAuthorityModified=false`. If a normal truth-gate policy already
+blocks an app, its portable promotion remains blocked even if its independent
+package proof passes. Missing or refused evidence becomes a blocking
+`audit-portable-certification-not-proven` finding when required.
