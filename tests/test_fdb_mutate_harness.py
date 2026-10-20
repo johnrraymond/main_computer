@@ -24,6 +24,7 @@ def _args(
     service: str | None = None,
     execute: bool = False,
     allow_full_deletion: bool = False,
+    project_uuid: str = "",
 ) -> argparse.Namespace:
     if service is None and operation != "inspect":
         service = "mainnetc-fdb3" if operation == "add-service" else "mainnet-fdb2"
@@ -33,6 +34,7 @@ def _args(
         service=service,
         repo_root=tmp_path,
         allow_full_deletion=allow_full_deletion,
+        project_uuid=project_uuid,
         execute_mutations=execute,
         yes_i_know_this_mutates_fdb=execute,
     )
@@ -78,6 +80,49 @@ def test_remove_harness_passes_only_logical_service_identity_to_prep(tmp_path: P
     assert "--host" not in command
     assert "--address" not in command
     assert "--port" not in command
+
+
+@pytest.mark.parametrize("network,service", [
+    ("mainnet", "mainneta-fdb1"),
+    ("testnet", "testnetb-fdb1"),
+])
+def test_explicit_project_uuid_is_forwarded_to_remove_prep(
+    tmp_path: Path, network: str, service: str,
+) -> None:
+    args = _args(
+        tmp_path, "remove-service", service=service,
+        allow_full_deletion=True, project_uuid="vf1n3kzj0l46ls0fizmjpijj",
+    )
+    args.network = network
+    harness = Harness(args)
+    assert harness.prep_cmd()[-5:] == [
+        "--service", service, "--allow-full-deletion",
+        "--project-uuid", "vf1n3kzj0l46ls0fizmjpijj",
+    ]
+
+
+def test_project_uuid_is_remove_only(tmp_path: Path) -> None:
+    with pytest.raises(MODULE.HarnessError, match="applies only to remove-service"):
+        Harness(_args(tmp_path, "add-service", project_uuid="vf1n3kzj0l46ls0fizmjpijj"))
+
+
+def test_project_uuid_unblocks_existing_unfinished_remove_prep(tmp_path: Path) -> None:
+    first_args = _args(
+        tmp_path, "remove-service", service="testnetb-fdb1", allow_full_deletion=True,
+    )
+    first_args.network = "testnet"
+    first = Harness(first_args)
+    first.state["last_completed_step"] = "pre-inspect"
+    first._write_state()
+    resumed_args = _args(
+        tmp_path, "remove-service", service="testnetb-fdb1",
+        allow_full_deletion=True, project_uuid="vf1n3kzj0l46ls0fizmjpijj",
+    )
+    resumed_args.network = "testnet"
+    resumed = Harness(resumed_args)
+    assert resumed._resumed_existing_run is True
+    assert resumed.run_dir == first.run_dir
+    assert resumed.prep_cmd()[-2:] == ["--project-uuid", "vf1n3kzj0l46ls0fizmjpijj"]
 
 
 def test_full_deletion_flag_is_forwarded_only_to_remove_prep(tmp_path: Path) -> None:
@@ -318,6 +363,7 @@ def test_harness_rejects_missing_cluster_id_change_when_coordinators_changed(tmp
     harness.state.update(
         {
             "starting_generation": 3,
+            "target_generation": 4,
             "starting_cluster": {"description": "main_computer_mainnet", "cluster_id": "same123"},
             "target_coordinators": ["10.116.0.3:4551"],
             "coordinators_changed": True,
@@ -493,3 +539,224 @@ def test_add_harness_accepts_rebirth_with_preserved_historical_cluster_id(tmp_pa
     )
     assert harness.state["final_cluster"]["cluster_id"] == "old123"
     assert harness.state["final_coordinators"] == ["10.116.0.3:4550"]
+
+# Regression: a prior accepted removal can advance the topology between an
+# old harness pre-inspect and a newly prepared add-service rebirth.  The frozen
+# low-level operation (generation 2 -> 3) is authoritative, not the old
+# pre-inspect snapshot (generation 1).
+def _make_committed_rebirth(tmp_path: Path, network: str, *, committed: bool = True):
+    from tools.fdb_control.common.models import (
+        AcceptedClusterState, ClusterIdentity, CoordinatorEndpoint, FdbContext, ServicePlacement,
+    )
+    from tools.fdb_control.common.state import (
+        ADD_SERVICE_OP_SCHEMA, accepted_state_to_wire, publish_accepted_state,
+        write_operation, update_operation,
+    )
+
+    service_id = "testnetb-fdb1" if network == "testnet" else "mainneta-fdb1"
+    host_id = "coolify-b" if network == "testnet" else "coolify-a"
+    endpoint = "10.124.0.3" if network == "testnet" else "10.116.0.3"
+    cluster = ClusterIdentity(f"main_computer_{network}", "18b4bd9aedc84312")
+    prestate = AcceptedClusterState(
+        network, 2, cluster, (), (), "single", "ssd", False,
+    )
+    placement = ServicePlacement(service_id, host_id, endpoint, 4550, "machine-b", "zone-b")
+    coordinator = CoordinatorEndpoint(service_id, host_id, endpoint, 4550)
+    accepted = AcceptedClusterState(
+        network, 3, cluster, (placement,), (coordinator,), "single", "ssd", False,
+    )
+    op_id = f"fdb-add-{network}-rebirthproof"
+    ctx = FdbContext.from_repo(tmp_path)
+    write_operation(ctx, {
+        "schema": ADD_SERVICE_OP_SCHEMA, "operation_id": op_id,
+        "network": network, "kind": "add-service",
+        "stage": "prepared",
+        "target": {
+            "accepted_prestate": accepted_state_to_wire(prestate),
+            "request": {"network": network, "service": {
+                "service_id": service_id, "host_id": host_id, "address": endpoint,
+                "port": 4550, "machine_id": "machine-b", "zone_id": "zone-b",
+            }},
+        },
+    })
+    if committed:
+        publish_accepted_state(ctx, accepted)
+        update_operation(
+            ctx, network, op_id, stage="finalized", accepted_generation=3,
+            verification={"verified": True, "reason": "fdb-add-service-proof-satisfied"},
+        )
+    else:
+        publish_accepted_state(ctx, prestate)
+    args = _args(tmp_path, "add-service", service=service_id, execute=True)
+    args.network = network
+    harness = Harness(args)
+    harness.state.update({
+        "operation_id": op_id,
+        "starting_generation": 1,  # stale pre-inspect, before remove-service
+        "starting_status": "accepted",
+        "starting_cluster": {"description": cluster.description, "cluster_id": "old-cache"},
+        "starting_coordinators": ["stale:4550"],
+        "target_generation": 3,
+        "target_coordinators": [f"{endpoint}:4550"],
+        "coordinators_changed": True,
+        "rebirth": True,
+        "resolved_host": host_id,
+        "resolved_endpoint": f"{endpoint}:4550",
+        "last_completed_step": "operation-inspect",
+    })
+    harness._write_state()
+    return harness, ctx, accepted
+
+
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_resumed_finalized_rebirth_reconciles_generation_without_new_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, network: str,
+) -> None:
+    from tools.fdb_control.common.state import accepted_state_to_wire, read_accepted_state, require_operation
+
+    first, ctx, accepted = _make_committed_rebirth(tmp_path, network)
+    args = _args(tmp_path, "add-service", service=first.service, execute=True)
+    args.network = network
+    resumed = Harness(args)
+    assert resumed._resumed_existing_run
+    assert resumed.run_dir == first.run_dir
+
+    def final_inspect_only(step, _argv):
+        assert step == "final-inspect", "a finalized operation must never redeploy or re-finalize"
+        state = read_accepted_state(ctx, network)
+        assert state == accepted
+        wire = accepted_state_to_wire(state)
+        return {
+            "status": "accepted", "accepted_generation": state.generation,
+            "cluster": wire["cluster"],
+            "coordinators": [f"{entry.address}:{entry.port}" for entry in state.coordinators],
+            "services": [
+                {"service_id": entry.service_id, "host_id": entry.host_id,
+                 "endpoint": entry.endpoint} for entry in state.services
+            ],
+            "cluster_verification": {"verified": True},
+        }
+
+    monkeypatch.setattr(resumed, "_run_step", final_inspect_only)
+    assert resumed.run() == 0
+    assert resumed.state["starting_generation"] == 2
+    assert resumed.state["starting_status"] == "accepted-empty"
+    assert resumed.state["last_completed_step"] == "final-inspect"
+    assert read_accepted_state(ctx, network) == accepted
+    assert require_operation(ctx, network, resumed.state["operation_id"])["stage"] == "finalized"
+    evidence = json.loads((resumed.run_dir / "04-finalize.recovery.json").read_text())
+    assert evidence["accepted_generation"] == 3
+    assert evidence["operation_id"] == resumed.state["operation_id"]
+
+
+@pytest.mark.parametrize("mutation", ["generation", "service", "proof", "wrong-network"])
+def test_finalized_recovery_fails_closed_for_inconsistent_authority(tmp_path: Path, mutation: str) -> None:
+    from tools.fdb_control.common.models import AcceptedClusterState, FdbContext
+    from tools.fdb_control.common.state import (
+        accepted_path, accepted_state_to_wire, read_accepted_state,
+        require_operation, update_operation,
+    )
+
+    first, ctx, accepted = _make_committed_rebirth(tmp_path, "testnet")
+    op_id = first.state["operation_id"]
+    if mutation == "generation":
+        state = accepted_state_to_wire(accepted)
+        state["generation"] = 4
+        accepted_path(ctx, "testnet").write_text(json.dumps(state))
+    elif mutation == "service":
+        state = accepted_state_to_wire(accepted)
+        state["services"][0]["address"] = "10.124.0.99"
+        accepted_path(ctx, "testnet").write_text(json.dumps(state))
+    elif mutation == "proof":
+        update_operation(ctx, "testnet", op_id, verification={"verified": False})
+    elif mutation == "wrong-network":
+        from tools.fdb_control.common.state import operation_path
+        op_path = operation_path(ctx, "testnet", op_id)
+        op = json.loads(op_path.read_text())
+        op["network"] = "mainnet"
+        op_path.write_text(json.dumps(op))
+
+    resumed_args = _args(tmp_path, "add-service", service="testnetb-fdb1", execute=True)
+    resumed_args.network = "testnet"
+    resumed = Harness(resumed_args)
+    with pytest.raises(MODULE.HarnessError):
+        resumed.run()
+    assert resumed.state["last_completed_step"] == "operation-inspect"
+    assert not (resumed.run_dir / "04-finalize.recovery.json").exists()
+
+
+def test_prepared_generation_rejects_tampered_target(tmp_path: Path) -> None:
+    first, _, _ = _make_committed_rebirth(tmp_path, "testnet", committed=False)
+    first.state["target_generation"] = 4
+    with pytest.raises(MODULE.HarnessError, match="target generation mismatch"):
+        first._bind_prepared_generation()
+    assert first.state["starting_generation"] == 1
+
+
+def test_resumed_finalized_full_removal_checks_accepted_empty_without_repeating_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.fdb_control.common.models import (
+        AcceptedClusterState, ClusterIdentity, CoordinatorEndpoint, FdbContext, ServicePlacement,
+    )
+    from tools.fdb_control.common.state import (
+        REMOVE_SERVICE_OP_SCHEMA, accepted_state_to_wire, publish_accepted_state,
+        read_accepted_state, write_operation, update_operation,
+    )
+
+    ctx = FdbContext.from_repo(tmp_path)
+    cluster = ClusterIdentity("main_computer_testnet", "old_cluster_id")
+    placement = ServicePlacement("testnetb-fdb1", "coolify-b", "10.124.0.3", 4550, "machine-b", "zone-b")
+    coordinator = CoordinatorEndpoint("testnetb-fdb1", "coolify-b", "10.124.0.3", 4550)
+    prestate = AcceptedClusterState("testnet", 4, cluster, (placement,), (coordinator,), "single", "ssd")
+    empty = AcceptedClusterState("testnet", 5, cluster, (), (), "single", "ssd")
+    op_id = "fdb-remove-testnet-finalcopy"
+    write_operation(ctx, {
+        "schema": REMOVE_SERVICE_OP_SCHEMA, "operation_id": op_id, "network": "testnet",
+        "kind": "remove-service", "stage": "prepared",
+        "target": {
+            "accepted_prestate": accepted_state_to_wire(prestate),
+            "request": {"network": "testnet", "service_id": "testnetb-fdb1", "allow_full_deletion": True},
+        },
+    })
+    publish_accepted_state(ctx, empty)
+    update_operation(ctx, "testnet", op_id, stage="finalized", accepted_generation=5,
+                     verification={"verified": True, "reason": "fdb-full-deletion-proof-satisfied"})
+    args = _args(tmp_path, "remove-service", service="testnetb-fdb1", execute=True, allow_full_deletion=True)
+    args.network = "testnet"
+    first = Harness(args)
+    first.state.update({
+        "operation_id": op_id, "starting_generation": 3, "starting_status": "accepted",
+        "starting_cluster": {"description": cluster.description, "cluster_id": cluster.cluster_id},
+        "target_generation": 5, "full_deletion": True,
+        "target_coordinators": [], "coordinators_changed": True,
+        "resolved_host": "coolify-b", "resolved_endpoint": "10.124.0.3:4550",
+        "last_completed_step": "operation-inspect",
+    })
+    first._write_state()
+    resumed = Harness(args)
+
+    def read_only_final(step, _argv):
+        assert step == "final-inspect"
+        assert read_accepted_state(ctx, "testnet") == empty
+        return {
+            "status": "accepted-empty", "accepted_generation": 5,
+            "cluster": {"description": cluster.description, "cluster_id": cluster.cluster_id},
+            "services": [], "coordinators": [],
+            "empty_topology_verification": {"verified": True, "reason": "accepted-empty-topology"},
+        }
+
+    monkeypatch.setattr(resumed, "_run_step", read_only_final)
+    assert resumed.run() == 0
+    assert resumed.state["starting_generation"] == 4
+    assert resumed.state["last_completed_step"] == "final-inspect"
+    assert read_accepted_state(ctx, "testnet") == empty
+
+
+def test_prepared_not_finalized_fails_if_accepted_state_has_changed(tmp_path: Path) -> None:
+    from tools.fdb_control.common.state import accepted_path
+    first, ctx, _ = _make_committed_rebirth(tmp_path, "testnet", committed=False)
+    accepted_path(ctx, "testnet").unlink()
+    with pytest.raises(MODULE.HarnessError, match="accepted FDB topology changed"):
+        first._bind_prepared_generation()
+    assert first.state["starting_generation"] == 1

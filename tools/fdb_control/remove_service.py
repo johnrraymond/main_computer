@@ -20,9 +20,9 @@ from .common.coolify import (
     resolve_context,
     service_health_status,
     update_service,
-    wait_for_missing,
     wait_for_running,
 )
+from .common.docker_destruction import verify_service_destruction
 from .common.coordinator_runtime import apply_coordinator_overlay
 from .common.coordinators import coordinator_set_changed, derive_topology_coordinators
 from .common.errors import FdbControlError
@@ -41,7 +41,7 @@ from .common.models import (
     RemoveServicePlan,
     RemoveServiceRequest,
 )
-from .common.privates import load_private_infrastructure, public_binding_ref, resolve_host_binding
+from .common.privates import infer_missing_deployment_coordinates, load_private_infrastructure, public_binding_ref, resolve_host_binding
 from .common.service_descriptors import (
     coordinator_guardian_service_name,
     remove_helper_subservice_name,
@@ -166,6 +166,12 @@ def prep(
 
     private_doc = load_private_infrastructure(ctx)
     binding = resolve_host_binding(private_doc, plan.network, plan.removed_service.host_id, base_dir=ctx.private_state_path.parent)
+    project_uuid, server_uuid = infer_missing_deployment_coordinates(
+        private_doc, plan.network, plan.removed_service.host_id,
+        project_uuid=deployment.project_uuid, project_name=deployment.project_name,
+        server_uuid=deployment.server_uuid, server_name=deployment.server_name,
+    )
+    deployment = replace(deployment, project_uuid=project_uuid, server_uuid=server_uuid)
     client = client_factory(binding)
     environment_name = deployment.environment_name.strip() or f"{request.network}-fdb"
     context = resolve_context(
@@ -192,6 +198,21 @@ def prep(
             module_id="FDB-OFM-APP-006",
             retry_class="inspect-first",
         )
+    # The accepted host supplies deployment coordinates, but do not silently
+    # delete a same-named service when Coolify explicitly reports a different
+    # project or server owner.
+    for field, expected in (("project_uuid", context.project_uuid), ("server_uuid", context.server_uuid)):
+        observed = str(target_detail.get(field) or "").strip() if isinstance(target_detail, Mapping) else ""
+        if observed and observed != expected:
+            raise FdbControlError(
+                code="FDB_REMOVE_SERVICE_DEPLOYMENT_OWNER_MISMATCH",
+                message=(
+                    f"Coolify service {target_service_name!r} reports {field}={observed!r}, "
+                    f"but accepted controller {plan.removed_service.host_id!r} resolves {expected!r}"
+                ),
+                module_id="FDB-OFM-APP-006",
+                retry_class="inspect-first",
+            )
     target_status = service_health_status(target_detail)
     if not target_status.startswith("running"):
         raise FdbControlError(
@@ -367,13 +388,13 @@ def do(
         update_operation(ctx, network, operation_id, stage="removing", deployment_result=deployment_result)
         if get_service(client, frozen_target_uuid) is not None:
             delete_service(client, frozen_target_uuid)
-        wait_for_missing(client, frozen_target_uuid, timeout_s=300.0, poll_s=5.0)
+        verify_service_destruction(client, private_doc, plan.network, plan.removed_service.host_id, frozen_target_uuid, timeout_s=300.0, poll_s=5.0)
 
         guardian_name = coordinator_guardian_service_name(network)
         guardian_uuid, _ = find_service(client, guardian_name)
         if guardian_uuid:
             delete_service(client, guardian_uuid)
-            wait_for_missing(client, guardian_uuid, timeout_s=300.0, poll_s=5.0)
+            verify_service_destruction(client, private_doc, plan.network, plan.removed_service.host_id, guardian_uuid, timeout_s=300.0, poll_s=5.0)
             deployment_result["guardian_service_uuid"] = guardian_uuid
             deployment_result["guardian_service_name"] = guardian_name
 
@@ -457,7 +478,7 @@ def do(
     # completed do we remove the exact frozen Coolify service UUID.
     if get_service(client, frozen_target_uuid) is not None:
         delete_service(client, frozen_target_uuid)
-    wait_for_missing(client, frozen_target_uuid, timeout_s=300.0, poll_s=5.0)
+    verify_service_destruction(client, private_doc, plan.network, plan.removed_service.host_id, frozen_target_uuid, timeout_s=300.0, poll_s=5.0)
     update_operation(ctx, network, operation_id, stage="removing", deployment_result=deployment_result)
 
     _wait_for_helper_marker(
@@ -555,8 +576,6 @@ def finalize(
         storage_engine=plan.storage_engine,
         retired=False,
     )
-    accepted_file = advance_accepted_state(ctx, accepted_prestate, accepted_target)
-
     # The ordinary helper is operational scaffolding, not an FDB member.  A
     # full deletion has no helper because there is no surviving FDB process to
     # evacuate into or verify through.
@@ -564,8 +583,14 @@ def finalize(
     binding = resolve_host_binding(private_doc, plan.network, plan.removed_service.host_id, base_dir=ctx.private_state_path.parent)
     client = client_factory(binding)
     if verification.helper_service_uuid:
-        delete_service(client, verification.helper_service_uuid)
-        wait_for_missing(client, verification.helper_service_uuid, timeout_s=300.0, poll_s=5.0)
+        if get_service(client, verification.helper_service_uuid) is not None:
+            delete_service(client, verification.helper_service_uuid)
+        verify_service_destruction(client, private_doc, plan.network, plan.removed_service.host_id, verification.helper_service_uuid, timeout_s=300.0, poll_s=5.0)
+
+    # An asynchronous helper deletion must finish before accepted authority
+    # advances. On timeout, a retry can complete cleanup without a split
+    # accepted-generation / unfinished-operation state.
+    accepted_file = advance_accepted_state(ctx, accepted_prestate, accepted_target)
 
     update_operation(
         ctx,

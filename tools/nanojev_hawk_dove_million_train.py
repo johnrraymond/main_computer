@@ -29,6 +29,8 @@ TIER_GATE_TRAINER_SHA256='20312401b2120af35bacc5577a5bdb121089da157d4e43b9ed2bb8
 MASK_DIAGNOSTICS_TRAINER_SHA256='38ec9659730ad25a7ad5a3d9da55311bbbecd32965d9a929da41ef7231d06294'
 GATE_POLICY_SCHEMA='nanojev.hawk-dove.million-counts.tier-gates.v1'
 MASK_POLICY_SCHEMA='nanojev.hawk-dove.million-counts.mask-weights.v1'
+# Pre-upgrade trainer bytes, permitted as optimizer lineage ancestor.
+ADAPTIVE_BASE_TRAINER_SHA256='fb8c5dd6a0acd8c1b28abfb5ecdfdfe02473905c2c1ed9ec6f7645af2b8e7a29'
 
 
 def sha(path:Path)->str:
@@ -67,7 +69,7 @@ def lineage_compatible(saved:dict,expected:dict)->bool:
     """
     if not isinstance(saved,dict) or set(saved)!=set(expected):return False
     if saved.get('trainer_sha256') not in (LEGACY_TRAINER_SHA256,TIER_GATE_TRAINER_SHA256,
-                                            MASK_DIAGNOSTICS_TRAINER_SHA256,expected['trainer_sha256']):
+                                            MASK_DIAGNOSTICS_TRAINER_SHA256,ADAPTIVE_BASE_TRAINER_SHA256,expected['trainer_sha256']):
         return False
     for name,value in expected.items():
         if name not in ('trainer_sha256','gate_fraction') and saved[name]!=value:
@@ -389,7 +391,7 @@ def probe(model,db,limit:int,seed:int,gates:dict[str,float],split:str='dev'):
             'split':split,'z_loss_weight':0,'no_logits_labels':True}
 
 
-def choose_rows(db:Path,focus:str,step:int,seed:int,views:int,mask_weights_by_tier=None):
+def choose_rows(db:Path,focus:str,step:int,seed:int,views:int,mask_weights_by_tier=None,adaptive_sampler=None):
     pool=hd.read_rows(db,'train',focus)
     previous=hd.TIERS[:hd.TIERS.index(focus)]
     rng=random.Random(f'hd-train/{seed}/{step}')
@@ -398,7 +400,9 @@ def choose_rows(db:Path,focus:str,step:int,seed:int,views:int,mask_weights_by_ti
         tier=focus if i<max(1,views-1) or not previous else rng.choice(previous)
         candidates=pool if tier==focus else hd.read_rows(db,'train',tier)
         weights=(mask_weights_by_tier or {}).get(tier,{}) if tier==focus else {}
-        if not weights or all(float(v)==1 for v in weights.values()):
+        if tier==focus and adaptive_sampler is not None:
+            chosen.append(adaptive_sampler.choose(tier,rng,candidates))
+        elif not weights or all(float(v)==1 for v in weights.values()):
             # Identical to the original sampler when weights are unset/all 1.
             chosen.append(candidates[rng.randrange(len(candidates))])
         else:
@@ -481,6 +485,10 @@ def run(args):
         raise FileNotFoundError('NO_LOCAL_HAWK_DOVE_MILLION_CHECKPOINT_TO_PROBE')
     policy_file,policy=resolve_gate_policy(destination,ident,args)
     mask_file,mask_policy=resolve_mask_policy(destination,ident,args.mask_weight,args.reset_mask_weights)
+    from tools.nanojev_hawk_dove_prompt_balance import PromptBalance
+    has_adaptive_checkpoint = ck is not None and 'prompt_balance' in ck
+    adaptive = (PromptBalance(info['sha256'], ck['prompt_balance'] if has_adaptive_checkpoint else None)
+                if args.mode=='train' and (args.adaptive_prompts or has_adaptive_checkpoint) else None)
     gates={tier:policy['gate_percent_by_tier'][tier]/100. for tier in hd.TIERS}
     if args.mode=='diagnose':
         # rt.load_model loads historical parent head weights only to replace
@@ -541,12 +549,20 @@ def run(args):
     if step>=args.steps:raise ValueError('TRAIN_STEPS_MUST_EXCEED_CURRENT_LOCAL_STEP')
     for target in range(step+1,args.steps+1):
         decoder.train();optimizer.zero_grad(set_to_none=True)
-        examples=choose_rows(args.teacher,focus,target,args.seed,args.views,mask_policy['weights_by_tier'])
+        examples=choose_rows(args.teacher,focus,target,args.seed,args.views,
+                             mask_policy['weights_by_tier'],adaptive)
         loss_total=0.0
         for row in examples:
             if not rt.token_eligible(model,row['prompt']):
                 raise ValueError('TRAIN_PROMPT_EXCEEDS_PARENT_TOKEN_WINDOW:'+row['tier'])
             output,_=ex.forward(model,[row['prompt']])
+            if adaptive is not None and row['tier']==focus:
+                # Train-split numerical error from the ALREADY computed forward.
+                with torch.no_grad():
+                    point=model['v3'].compose_logits(output['sign'].detach(),
+                        output['exponent'].detach(),output['fraction'].detach(),10_000_000)
+                    px,py=point.detach().float().cpu().tolist()[0]
+                adaptive.observe(row,px,py)
             truth=torch.tensor([[float(row['x']),float(row['y'])]],device=args.device,dtype=torch.float32)
             loss,_=model['v3'].objective(output,truth,model['base'],'attention')
             if not torch.isfinite(loss):raise FloatingPointError('NONFINITE_XY_LOSS')
@@ -555,6 +571,8 @@ def run(args):
         torch.nn.utils.clip_grad_norm_(decoder.parameters(),1.)
         optimizer.step()
         if target%args.chunk_steps==0 or target==args.steps:
+            trained_tier=focus
+            balance_summary=adaptive.commit(trained_tier,target) if adaptive is not None else None
             report=probe(model,args.teacher,args.probe_per_tier,args.seed,gates)
             failing=report['first_failing']
             if failing==focus:streak=0
@@ -569,15 +587,18 @@ def run(args):
                    'game_operator_head':gamehead.state_dict(),
                    'optimizer':optimizer.state_dict(),'rng_cpu':torch.get_rng_state()}
             if args.device=='cuda':state['rng_cuda']=torch.cuda.get_rng_state_all()
+            if adaptive is not None:state['prompt_balance']=adaptive.snapshot()
             temp=destination/'latest.tmp.pt';torch.save(state,temp);temp.replace(checkfile)
             report.update({'event':'hawk_dove_million_xy_probe','step':target,'focus':focus,
+                           'prompt_balance':balance_summary,
                            'last_loss':loss_total,'streak':streak})
             jwrite(destination/f'probe-step-{target:06d}.json',report)
             print(json.dumps({'event':'hawk_dove_million_xy_probe','step':target,
                               'first_failing':failing,'focus':focus,
                               'joint_5pct':report['scores'][focus]['joint_5pct'],
                               'gate_percent':policy['gate_percent_by_tier'][focus],
-                              'loss':loss_total,'checkpoint':str(checkfile)}),flush=True)
+                              'loss':loss_total,'checkpoint':str(checkfile),
+                              'prompt_balance':balance_summary}),flush=True)
             if failing is None and streak>=2:break
     return {'status':'CHECKPOINT_SAVED','step':target,'checkpoint':str(checkfile),
             'first_failing':report['first_failing'],'focus':focus,'Z_loss_weight':0,
@@ -601,6 +622,8 @@ def make_parser():
                    help='Override one tier independently; repeat, e.g. --tier-gate T00=90 --tier-gate T01=75')
     p.add_argument('--mask-weight',action='append',default=[],metavar='TIER:MASK=WEIGHT',
                    help='Optional focused-tier train sampler weighting, e.g. T00:3=4; persisted in a sidecar')
+    p.add_argument('--adaptive-prompts',action='store_true',
+                   help='Enable train-split, per-prompt hard-example sampling; persists in latest.pt')
     p.add_argument('--reset-mask-weights',action='store_true',
                    help='Reset all persisted mask sampling weights to 1 before applying overrides')
     p.add_argument('--diagnose-tier',choices=hd.TIERS,default='T00',

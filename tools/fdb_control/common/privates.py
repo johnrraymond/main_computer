@@ -192,6 +192,33 @@ def resolve_controller_coordinates(
         "project_name_hint": _known_text(raw.get("project_name_hint")),
     }
 
+def infer_missing_deployment_coordinates(
+    private_doc: Mapping[str, Any],
+    network: str,
+    host_id: str,
+    *,
+    project_uuid: str = "",
+    project_name: str = "",
+    server_uuid: str = "",
+    server_name: str = "",
+) -> tuple[str, str]:
+    """Complete omitted Coolify coordinates from the accepted service's host.
+
+    Explicit project/server selections retain their existing behavior.  A
+    logical FDB command must never guess among unrelated Coolify projects.
+    """
+
+    missing_project = not (project_uuid.strip() or project_name.strip())
+    missing_server = not (server_uuid.strip() or server_name.strip())
+    if not (missing_project or missing_server):
+        return project_uuid, server_uuid
+    coordinates = resolve_controller_coordinates(private_doc, network, host_id)
+    return (
+        coordinates["project_uuid"] if missing_project else project_uuid,
+        coordinates["server_uuid"] if missing_server else server_uuid,
+    )
+
+
 def public_binding_ref(binding: HostBinding) -> dict[str, str]:
     return {
         "host_id": binding.host_id,

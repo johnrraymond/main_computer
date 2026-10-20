@@ -29,8 +29,8 @@ from tools.mother.common.deployment_topology_rectification import (
 )
 
 
-def _latest_add_baseline(runtime_state_root: Path) -> Path | None:
-    args = argparse.Namespace(operation="add-node", runtime_state_root=str(runtime_state_root))
+def _latest_add_baseline(runtime_state_root: Path, *, network: str = "mainnet") -> Path | None:
+    args = argparse.Namespace(operation="add-node", runtime_state_root=str(runtime_state_root), network=network)
     _reason, patterns = harness.auto_baseline_patterns(args)
     return harness.select_auto_baseline_file(args, patterns)
 
@@ -48,10 +48,10 @@ def forward_evidence(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Forward the currently auto-selected live seal; never modify its source."""
-    if network != "mainnet":
-        raise ValueError("this script is limited to the harness's mainnet live-topology baseline")
+    if network not in ("mainnet", "testnet"):
+        raise ValueError(f"unsupported network: {network}")
     runtime_state_root = Path(runtime_state_root).resolve()
-    source = _latest_add_baseline(runtime_state_root)
+    source = _latest_add_baseline(runtime_state_root, network=network)
     if source is None:
         raise ValueError("no add-node baseline exists; nothing to forward")
     expected_dir = (runtime_state_root / "mother" / "evidence" /
@@ -60,7 +60,7 @@ def forward_evidence(
         raise ValueError(f"auto-selected baseline is not a live-current-topology seal: {source}")
 
     document, _raw, source_sha = _canonical_file(source)
-    if not harness._successful_live_current_topology_baseline(source):
+    if not harness._successful_live_current_topology_baseline(source, network=network):
         raise ValueError("auto-selected live-topology evidence is not a successful baseline")
     if document.get("network") != network:
         raise ValueError("source topology evidence network does not match the requested network")
@@ -118,7 +118,7 @@ def forward_evidence(
         stream.flush()
         os.fsync(stream.fileno())
 
-    selected = _latest_add_baseline(runtime_state_root)
+    selected = _latest_add_baseline(runtime_state_root, network=network)
     if selected is None or selected.resolve() != destination.resolve():
         raise RuntimeError(f"new evidence written but harness auto-selection did not choose it: {selected}")
     check, _bytes, file_sha = _canonical_file(destination)
@@ -141,7 +141,7 @@ def forward_evidence(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-state-root", default="runtime/state")
-    parser.add_argument("--network", default="mainnet", choices=["mainnet"])
+    parser.add_argument("--network", default="mainnet", choices=["mainnet", "testnet"])
     args = parser.parse_args()
     try:
         result = forward_evidence(Path(args.runtime_state_root), network=args.network)

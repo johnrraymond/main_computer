@@ -136,6 +136,7 @@ def compile_dsl_application(
             [node, str(NODE_RUNTIME)],
             input=json.dumps(runtime_request, sort_keys=True),
             text=True,
+            encoding="utf-8",
             capture_output=True,
             cwd=REPOSITORY_ROOT,
             timeout=max(2.0, timeout_ms / 1_000 + 2.0),

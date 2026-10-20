@@ -196,7 +196,7 @@ def resolve_network_rpc_route(private_state: PrivateStateReadResult, network: st
 
 
 def route_contract_from_document(document: Mapping[str, Any], network: str) -> dict[str, Any] | None:
-    """One route policy for both networks; mainnet retains its legacy implicit route."""
+    """Both networks publish implicit RPC routes unless explicitly disabled."""
     networks = document.get("networks")
     selected = networks.get(network) if isinstance(networks, Mapping) else None
     expected_ids = {"mainnet": 42424240, "testnet": 42424241}
@@ -207,10 +207,9 @@ def route_contract_from_document(document: Mapping[str, Any], network: str) -> d
         )
     route = selected.get("rpc_route")
     if route is None or route == {}:
-        if network != "mainnet":
-            return None
-        # Historical mainnet route was implicit. Do not change its hostname.
-        host = _shared_rpc_route_host(selected)
+        # Match mainnet's historical implicit route for every Mother network.
+        # Preserve mainnet's exact host derivation and writer contract.
+        host = _shared_rpc_route_host(selected, network=network)
         implicit = True
     else:
         if not isinstance(route, Mapping):
@@ -254,16 +253,7 @@ def resolve_network_rpc_node_controller(
     if not (isinstance(controller_id, str) and re.fullmatch(r"coolify-[a-z][a-z0-9-]*", controller_id)):
         raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", f"unsafe {network} RPC backend/controller {node!r}")
     if not (isinstance(wire, Mapping) and wire.get("enabled", True) is True):
-        # For an unpublished route, planning is a read-only no-op. Mother can
-        # verify its exact registered target without requiring Coolify metadata
-        # that only the live writer needs. A published route never uses this.
-        deployment = selected.get("deployment")
-        targets = deployment.get("targets") if isinstance(deployment, Mapping) else None
-        target = targets.get(node) if isinstance(targets, Mapping) else None
-        reference = target.get("controller_ref") if isinstance(target, Mapping) else None
-        if not (resolve_network_rpc_route(private_state, network) is None
-                and reference == f"networks.{network}.coolify.controllers.{controller_id}"):
-            raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", f"unverified {network} RPC backend/controller {node!r}")
+        raise _error("MOTHER_DEPLOY_VALIDATOR_RPC_ROUTE_UNRESOLVED", f"unverified {network} RPC backend/controller {node!r}")
     return controller_id
 
 
@@ -294,10 +284,10 @@ def _target_controller_id(mainnet: Mapping[str, Any], node: str) -> str:
 
 
 
-def _shared_rpc_route_host(mainnet: Mapping[str, Any]) -> str:
+def _shared_rpc_route_host(mainnet: Mapping[str, Any], *, network: str = "mainnet") -> str:
     """Return the Mother-owned aggregate validator-RPC hostname.
 
-    Mother owns the post-All-Father route.  All Father's per-node route names are
+    Mainnet retains the original default. All Father's per-node route names are
     reference-only and must not be synthesized for live Mother canary funding.
     """
     rpc = mainnet.get("rpc_route") if isinstance(mainnet.get("rpc_route"), Mapping) else None
@@ -309,7 +299,7 @@ def _shared_rpc_route_host(mainnet: Mapping[str, Any]) -> str:
     domain = allfather.get("public_domain") if isinstance(allfather, Mapping) else None
     if not isinstance(domain, str) or not re.fullmatch(r"[a-z0-9.-]+", domain):
         domain = _SHARED_RPC_ROUTE_DOMAIN
-    return f"mainnet-rpc.{domain}"
+    return f"{network}-rpc.{domain}"
 
 
 def _shared_rpc_route_url(mainnet: Mapping[str, Any]) -> str:

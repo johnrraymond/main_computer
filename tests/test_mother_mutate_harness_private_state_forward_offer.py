@@ -81,7 +81,7 @@ def test_unrelated_failures_do_not_offer_forward(tmp_path, monkeypatch, capsys, 
     assert "mother_forward_topology_evidence_binding.py" not in output
 
 
-def test_non_mainnet_fails_closed_without_unsupported_command(tmp_path, monkeypatch, capsys):
+def test_testnet_offers_same_binding_forward_command(tmp_path, monkeypatch, capsys):
     harness = _harness(tmp_path, network="testnet")
     monkeypatch.setattr(
         mod.subprocess, "run",
@@ -91,5 +91,10 @@ def test_non_mainnet_fails_closed_without_unsupported_command(tmp_path, monkeypa
         harness.run("detect-topology", ["fake", "detect"])
     assert error.value.code == 2
     output = capsys.readouterr().out
-    assert "evidence-forwarding script supports mainnet only" in output
-    assert "mother_forward_topology_evidence_binding.py" not in output
+    assert mod.quote_command([
+        sys.executable,
+        str(harness.repo_root / "tools" / "mother_forward_topology_evidence_binding.py"),
+        "--network", "testnet", "--runtime-state-root", harness.args.runtime_state_root,
+    ]) in output
+    assert "without any explicit --baseline-evidence" in output
+    assert "No live mutation was performed" in output

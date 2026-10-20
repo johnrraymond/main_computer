@@ -4,7 +4,9 @@ Status: high-level design baseline for the FoundationDB control surface. This do
 
 **Current deployment boundary:** FDB Control (`fdb_mutate_harness.py`,
 `tools/fdb_control/`) alone owns FDB deployment, membership, and coordinators.
-Mother's chain-only testnet birth does not deploy FDB. Do not copy a mainnet
+Mother's chain-only testnet birth does not deploy FDB when explicitly
+selected. The integrated first-node default includes a legacy embedded FDB
+service, which is not accepted FDB Control membership. Do not copy a mainnet
 namespace, address, or cluster identity into testnet without explicit validated
 network-scoped configuration. See [network operations](mother-network-operations.md).
 

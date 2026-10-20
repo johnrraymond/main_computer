@@ -34,6 +34,13 @@ from tools.fdb_control.live_inspect import verify_remove_service
 from tools.fdb_control.remove_service import build_remove_service_plan, do, finalize, prep
 
 
+@pytest.fixture(autouse=True)
+def _fast_coolify_deletion_poll(monkeypatch):
+    # Production confirms consecutive Coolify API polls; tests need not sleep 5s.
+    from tools.fdb_control.common import coolify
+    monkeypatch.setattr(coolify.time, "sleep", lambda _: None)
+
+
 class FakeCoolifyClient:
     def __init__(
         self,
@@ -114,7 +121,7 @@ class FakeCoolifyClient:
                     self.events.append("update-guardian-proof")
             return self._ok(method, path, item)
         if method == "POST" and (path.startswith("/api/v1/deploy?") or "/start" in path or "/restart" in path or "/deploy" in path):
-            uuid = None
+            uuid = str(payload.get("uuid") or "") if path == "/api/v1/deploy" and isinstance(payload, dict) else None
             if path.startswith("/api/v1/deploy?"):
                 match = re.search(r"uuid=([^&]+)", path)
                 uuid = match.group(1) if match else None
@@ -155,6 +162,9 @@ class FakeCoolifyClient:
             return self._ok(method, path, {"logs": ""})
         return CoolifyResponse(False, 404, method, path, {"error": "not found"})
 
+    def docker_project_containers(self, service_uuid: str) -> tuple[str, ...]:
+        return ()
+
     @staticmethod
     def _ok(method: str, path: str, body) -> CoolifyResponse:
         return CoolifyResponse(True, 200, method, path, body)
@@ -191,6 +201,15 @@ networks:
           vpn_ip: 10.116.0.2
           project_uuid: project-c
           server_uuid: server-c
+  testnet:
+    coolify:
+      controllers:
+        coolify-b:
+          url: http://coolify-b.invalid:8000
+          api_token: test-token-b
+          vpn_ip: 10.124.0.3
+          project_uuid: testnet-project-b
+          server_uuid: testnet-server-b
 """.lstrip(),
         encoding="utf-8",
     )
@@ -605,3 +624,85 @@ def test_remove_final_service_round_trip_deletes_without_fake_drain_and_accepts_
         "verified": True,
         "reason": "accepted-empty-topology",
     }
+
+
+def test_remove_infers_project_and_server_from_accepted_host_without_cli_flags(tmp_path: Path) -> None:
+    """The operator command supplies only network/service, even with many Coolify projects."""
+    from tools.fdb_control.common.state import require_operation
+
+    ctx = _ctx(tmp_path)
+    accepted = _accepted()
+    publish_accepted_state(ctx, accepted)
+    marker = cluster_state_proof_marker(plan_from_accepted(accepted))
+    client = FakeCoolifyClient(marker)
+    prepared = prep(
+        ctx,
+        RemoveServiceRequest("mainnet", "mainnet-fdb2"),
+        RemoveServiceDeployment(),
+        client_factory=FakeFactory(client),
+    )
+    assert prepared.status == "prepared"
+    record = require_operation(ctx, "mainnet", str(prepared.details["operation_id"]))
+    assert record["target"]["deployment"]["project_uuid"] == "project-a"
+    assert record["target"]["deployment"]["server_uuid"] == "server-a"
+    assert record["target"]["coolify_context"]["project_uuid"] == "project-a"
+    assert record["target"]["coolify_context"]["server_uuid"] == "server-a"
+
+
+def test_remove_testnet_infers_only_testnet_controller_coordinates(tmp_path: Path) -> None:
+    from tools.fdb_control.common.state import require_operation
+
+    ctx = _ctx(tmp_path)
+    target = ServicePlacement(
+        service_id="testnetb-fdb1", host_id="coolify-b", address="10.124.0.3",
+        port=4550, machine_id="coolify-b", zone_id="coolify-b",
+    )
+    accepted = AcceptedClusterState(
+        network="testnet", generation=1,
+        cluster=ClusterIdentity("main_computer_testnet", "18b4bd9aedc84312"),
+        services=(target,),
+        coordinators=(CoordinatorEndpoint(
+            service_id=target.service_id, host_id=target.host_id,
+            address=target.address, port=target.port,
+        ),),
+        redundancy_mode="single", storage_engine="ssd", retired=False,
+    )
+    publish_accepted_state(ctx, accepted)
+    from tools.fdb_control.common.models import BirthPlan
+    from tools.fdb_control.common.cluster_file import render_cluster_file
+    birth_plan = BirthPlan(
+        network=accepted.network, cluster=accepted.cluster,
+        services=accepted.services, coordinators=accepted.coordinators,
+        redundancy_mode=accepted.redundancy_mode, storage_engine=accepted.storage_engine,
+        cluster_file_contents=render_cluster_file(accepted.cluster, accepted.coordinators),
+    )
+    marker = birth_proof_marker(birth_plan, target)
+    client = FakeCoolifyClient(marker, single_service=True)
+    client.services["svc-1"]["name"] = "main-computer-testnetb-fdb1"
+    prepared = prep(
+        ctx,
+        RemoveServiceRequest("testnet", "testnetb-fdb1", allow_full_deletion=True),
+        RemoveServiceDeployment(),
+        client_factory=FakeFactory(client),
+    )
+    assert prepared.status == "prepared"
+    record = require_operation(ctx, "testnet", str(prepared.details["operation_id"]))
+    assert record["target"]["deployment"]["project_uuid"] == "testnet-project-b"
+    assert record["target"]["deployment"]["server_uuid"] == "testnet-server-b"
+    assert record["target"]["coolify_context"]["project_uuid"] == "testnet-project-b"
+    assert record["target"]["coolify_context"]["server_uuid"] == "testnet-server-b"
+
+
+def test_remove_rejects_live_service_owned_by_other_project(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    accepted = _accepted()
+    publish_accepted_state(ctx, accepted)
+    client = FakeCoolifyClient(cluster_state_proof_marker(plan_from_accepted(accepted)))
+    client.services["svc-2"]["project_uuid"] = "some-other-project"
+    with pytest.raises(FdbControlError) as error:
+        prep(
+            ctx, RemoveServiceRequest("mainnet", "mainnet-fdb2"),
+            RemoveServiceDeployment(), client_factory=FakeFactory(client),
+        )
+    assert error.value.code == "FDB_REMOVE_SERVICE_DEPLOYMENT_OWNER_MISMATCH"
+    assert not client.deleted

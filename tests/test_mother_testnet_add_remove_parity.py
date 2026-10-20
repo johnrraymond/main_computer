@@ -1,7 +1,7 @@
 """Network-scope regression gates for Mother node lifecycle parity.
 
-A testnet command may enter the same staged interface as mainnet, but must
-never inherit a hardcoded mainnet controller or bundled genesis deployment.
+Testnet and mainnet now use the same integrated bootstrap default, but testnet
+must never inherit mainnet chain, Hub, namespace, or controller identity.
 """
 
 from pathlib import Path
@@ -68,7 +68,7 @@ def test_initial_bootstrap_uses_shared_profile_compiler() -> None:
         "testnet": {"chain_id": 42424241},
     }}).encode())
     assert _first_node_service_profile(source, "mainnet") == "integrated"
-    assert _first_node_service_profile(source, "testnet") == "chain-only"
+    assert _first_node_service_profile(source, "testnet") == "integrated"
     common = dict(
         node="mainneta-super1", chain_id=42424240,
         genesis={"config": {"chainId": 42424240}, "extraData": "0x1234"},
@@ -80,26 +80,50 @@ def test_initial_bootstrap_uses_shared_profile_compiler() -> None:
         "05089ea4c5d6f6f8514955888a850c510391dff0fd0030b6fc8786c0fa3485af"
     )
     assert unchanged_mainnet == _first_genesis_compose(**common, service_profile="integrated")
-    testnet = _first_genesis_compose(
-        **{**common, "node": "testnetb-super1", "chain_id": 42424241},
-        service_profile="chain-only", network="testnet",
-    )
+
+    testnet_args = {**common, "node": "testnetb-super1", "chain_id": 42424241}
+    integrated = _first_genesis_compose(**testnet_args, service_profile="integrated", network="testnet")
+    assert "mother-super-node-fdb:" in integrated
+    assert "mother-super-node-hub:" in integrated
+    assert 'MAIN_COMPUTER_HUB_NETWORK: "testnet"' in integrated
+    assert 'MAIN_COMPUTER_HUB_FDB_NAMESPACE: "main-computer-testnet-testnetb-super1"' in integrated
+    assert 'MAIN_COMPUTER_HUB_CONTRACTS_PATH: "/app/main_computer/config/testnet_contracts.json"' in integrated
+    assert "main-computer-mainnet" not in integrated
+    assert "mainnet_contracts.json" not in integrated
+    assert "--network-id=42424241" in integrated
+    assert "name: mc-qbft-testnet-network" not in integrated  # mirrors integrated mainnet Compose
+    topology = yaml.safe_load(integrated)["services"]["mother-super-node-hub"]["command"]
+    import base64, json, re
+    topology_text = re.search(r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > .*hub-topology.json", topology[-1])
+    assert topology_text is not None
+    embedded = json.loads(base64.b64decode(topology_text.group(1)))
+    assert embedded["network"]["network_key"] == "testnet"
+    assert embedded["network"]["chain_id"] == "42424241"
+    assert embedded["cluster_id"] == "main-computer-testnet-hubs"
+    assert embedded["storage"]["namespace"] == "main-computer-testnet-testnetb-super1"
+
     proof = _internal_proof_compose(
-        testnet, node="testnetb-super1", chain_id=42424241,
+        integrated, node="testnetb-super1", chain_id=42424241,
         genesis_sha256="a" * 64, validator_address="0x" + "1" * 40,
-        requires_hub=False,
+        requires_hub=True, network="testnet",
     )
-    assert "mother-genesis-init:" in proof
-    assert "testnetb-super1:" in proof
     assert "mother-genesis-proof-guardian:" in proof
-    assert "mother-super-node-hub:" not in proof
-    assert "mother-super-node-fdb:" not in proof
-    assert "main-computer-mainnet" not in proof
-    assert "'hub_health':False" in proof
-    assert "--network-id=42424241" in proof
-    assert "name: mc-qbft-testnet-network" in proof
-    assert "external: true" in proof
-    assert '127.0.0.1:8545:8545' not in proof
+    assert "mother-super-node-hub:" in proof
+    assert "mother-super-node-fdb:" in proof
+    assert "health.get('network_key') != 'testnet'" in proof
+    assert "'hub_network_key':'testnet'" in proof
+    assert "'hub_network_key':'mainnet'" not in proof
+
+    # Historical explicit chain-only releases remain representable and verifiable.
+    source.document_bytes = yaml.safe_dump({"networks": {
+        "testnet": {"chain_id": 42424241, "deployment": {"first_node_service_profile": "chain-only"}},
+    }}).encode()
+    assert _first_node_service_profile(source, "testnet") == "chain-only"
+    legacy = _first_genesis_compose(**testnet_args, service_profile="chain-only", network="testnet")
+    assert "mother-super-node-hub:" not in legacy
+    assert "mother-super-node-fdb:" not in legacy
+    assert "name: mc-qbft-testnet-network" in legacy
+    assert "external: true" in legacy
 
 
 def test_remove_routing_strategy_uses_verified_network_state() -> None:
@@ -112,7 +136,7 @@ def test_remove_routing_strategy_uses_verified_network_state() -> None:
                              "testnet": {"chain_id": 42424241}}}
     state = SimpleNamespace(document_bytes=yaml.safe_dump(document).encode())
     assert _rpc_route_operation(state, "mainnet") == "rewire-shared"
-    assert _rpc_route_operation(state, "testnet") == "already-unpublished"
+    assert _rpc_route_operation(state, "testnet") == "rewire-shared"
     document["networks"]["testnet"]["rpc_route"] = {"hostname": "testnet-rpc.example.org"}
     state.document_bytes = yaml.safe_dump(document).encode()
     assert _rpc_route_operation(state, "testnet") == "rewire-shared"  # Unified writer supports published routes.

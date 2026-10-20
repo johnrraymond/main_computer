@@ -53,12 +53,10 @@ def route_plan(private_state: Any, *, network: str, node: str, controller_id: st
             f"node {node!r} belongs to {actual_controller!r}, not {controller_id!r}"
         )
     if contract is None:
-        return {
-            "network": network, "controller_id": controller_id, "node": node,
-            "mode": "verified-unpublished-route", "host": None, "url": None,
-            "backend_url": f"http://{node}:8545",
-            "expected_chain_id": 42424240 if network == "mainnet" else 42424241,
-        }
+        raise RpcRouteEnsureError(
+            f"{network} RPC route is explicitly unpublished; "
+            "add-node requires a verified public RPC route"
+        )
     return {
         "network": network, "controller_id": controller_id, "node": node,
         "host": contract["host"], "url": f"https://{contract['host']}",
@@ -80,12 +78,6 @@ def ensure_route(
     **kwargs: Any,
 ) -> dict[str, Any]:
     plan = route_plan(private_state, network=network, node=node, controller_id=controller_id)
-    if plan.get("mode") == "verified-unpublished-route":
-        return {
-            "status": "pass", "clean": True, "ensured": False,
-            "mode": "verified-unpublished-route", "route": plan,
-            "proof": {"published_route_absent_in_verified_mother_state": True},
-        }
     if not execute:
         return {"status": "pass", "clean": True, "ensured": False, "mode": "plan-only", "route": plan}
     result = execute_shared_rpc_route_rewire(

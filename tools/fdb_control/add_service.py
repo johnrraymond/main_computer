@@ -30,7 +30,7 @@ from .common.models import (
     OperationCommandResult,
     ServicePlacement,
 )
-from .common.privates import load_private_infrastructure, public_binding_ref, resolve_host_binding
+from .common.privates import infer_missing_deployment_coordinates, load_private_infrastructure, public_binding_ref, resolve_host_binding
 from .common.service_placement import infer_service_placement
 from .common.service_descriptors import render_add_service_descriptor, render_birth_service_descriptor
 from .common.state import (
@@ -176,6 +176,12 @@ def prep(
 
     private_doc = load_private_infrastructure(ctx)
     binding = resolve_host_binding(private_doc, plan.network, plan.added_service.host_id, base_dir=ctx.private_state_path.parent)
+    project_uuid, server_uuid = infer_missing_deployment_coordinates(
+        private_doc, plan.network, plan.added_service.host_id,
+        project_uuid=deployment.project_uuid, project_name=deployment.project_name,
+        server_uuid=deployment.server_uuid, server_name=deployment.server_name,
+    )
+    deployment = replace(deployment, project_uuid=project_uuid, server_uuid=server_uuid)
     client = client_factory(binding)
     environment_name = deployment.environment_name.strip() or f"{request.network}-fdb"
     context = resolve_context(
@@ -312,7 +318,7 @@ def do(
             description=descriptor.description,
             compose_b64=descriptor.compose_b64,
         )
-    deploy_service(client, service_uuid, force=deployment.force_deploy)
+    deploy_service(client, service_uuid, force=(action == "created" or deployment.force_deploy))
     deployment_result = {
         "service_uuid": service_uuid,
         "service_name": descriptor.service_name,
@@ -320,7 +326,11 @@ def do(
         "coolify_context": _context_to_wire(context),
     }
     update_operation(ctx, network, operation_id, stage="deploying", deployment_result=deployment_result)
-    wait_for_running(client, service_uuid, timeout_s=300.0, poll_s=5.0)
+    wait_for_running(
+        client, service_uuid, timeout_s=300.0, poll_s=5.0,
+        required_subservices=(plan.added_service.service_id, f"{plan.added_service.service_id}-observer"),
+        retry_unmaterialized_after_s=60.0,
+    )
 
     # Membership must be proved against the pre-mutation coordinator set before
     # coordinator authority is allowed to move.

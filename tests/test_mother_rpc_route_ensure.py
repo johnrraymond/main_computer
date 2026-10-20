@@ -59,7 +59,7 @@ def test_execute_requires_verified_route_and_ephemeral_helper_cleanup(monkeypatc
 
 
 def test_route_step_runs_after_both_successful_add_paths_before_cleanup() -> None:
-    assert harness.SINGLE_NODE_STEPS.index("ensure-rpc-route") == harness.SINGLE_NODE_STEPS.index("verify-single-node-proof") + 1
+    assert harness.SINGLE_NODE_STEPS.index("ensure-rpc-route") == harness.SINGLE_NODE_STEPS.index("publish-officer-addresses") + 1
     assert harness.REPLICA_ADMISSION_STEPS.index("ensure-rpc-route") == harness.REPLICA_ADMISSION_STEPS.index("finalize-post-admission-topology") + 1
     assert harness.SINGLE_NODE_STEPS.index("ensure-rpc-route") < harness.SINGLE_NODE_STEPS.index(harness.POST_WORK_CLEANUP_STEP)
     assert "ensure-rpc-route" in harness.MUTATION_STEPS

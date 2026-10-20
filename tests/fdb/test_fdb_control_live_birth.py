@@ -21,6 +21,12 @@ from tools.fdb_control.delete_birth_service import delete_unaccepted_birth
 from tools.fdb_control.live_inspect import verify_birth
 
 
+@pytest.fixture(autouse=True)
+def _fast_coolify_deletion_poll(monkeypatch):
+    from tools.fdb_control.common import coolify
+    monkeypatch.setattr(coolify.time, "sleep", lambda _: None)
+
+
 class FakeCoolifyClient:
     def __init__(self, *, detail_reads_before_running: int = 0) -> None:
         self.services: dict[str, dict[str, object]] = {}
@@ -43,7 +49,7 @@ class FakeCoolifyClient:
             item = self.services["svc-1"]
             item["name"] = payload.get("name", item["name"])
             return self._ok(method, path, item)
-        if (method == "POST" and path.startswith("/api/v1/deploy?")) or (
+        if (method == "POST" and path.startswith("/api/v1/deploy")) or (
             method == "POST" and path in {
                 "/api/v1/services/svc-1/start",
                 "/api/v1/services/svc-1/restart",
@@ -65,10 +71,18 @@ class FakeCoolifyClient:
             self.detail_reads += 1
             if self.deployed and self.detail_reads > self.detail_reads_before_running:
                 item["status"] = "running"
+            if item["status"] == "running":
+                item["applications"] = [
+                    {"name": "mainnet-fdb1", "status": "running"},
+                    {"name": "mainnet-fdb1-observer", "status": "running"},
+                ]
             return self._ok(method, path, item)
         if method == "GET" and path.startswith("/api/v1/services/svc-1/logs?"):
             return self._ok(method, path, {"logs": self.logs})
         return CoolifyResponse(False, 404, method, path, {"error": "not found"})
+
+    def docker_project_containers(self, service_uuid: str) -> tuple[str, ...]:
+        return ()
 
     @staticmethod
     def _ok(method: str, path: str, body) -> CoolifyResponse:

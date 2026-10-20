@@ -103,19 +103,21 @@ coordinators, and the FDB consumer contract. Hub Control
 and placement and consumes verified Chain/FDB contracts. Dependency rectifiers
 update existing Hubs without assuming ownership of their dependencies.
 
-A network MAY be born with **chain services only**. In particular, the approved
-testnet target `testnetb-super1` is one Besu QBFT validator **and** JSON-RPC
-endpoint on Coolify B (chain ID `42424241`). FoundationDB and Hub deployments
-are separate, later operations. This design does not claim that an executable
-chain-only testnet release already exists; activation requires an implemented,
-verified Mother-owned release and explicit authorization.
+A network MAY be born with **chain services only**, using an explicitly
+selected `chain-only` first-node profile. For new first-node bootstrap releases,
+**mainnet and testnet both default to `integrated`**: Mother installs the Besu
+validator together with the legacy embedded FDB and Hub services, on the
+network selected in the verified Mother document. The testnet target
+`testnetb-super1` uses Coolify B and chain ID `42424241`; it must not inherit
+mainnet's Hub topology, FDB namespace, or contract-registry path.
 
-An **integrated super-node** is an optional legacy mainnet deployment profile,
-not the only legal network-node topology. The integrated operation contracts,
-health tables, and stage descriptions below apply to that profile when it is
-explicitly selected. They MUST NOT be used to infer Hub or FDB installation as
-a prerequisite for new chain birth. Physical co-location MUST NOT transfer
-lifecycle authority from FDB Control or Hub Control to Mother.
+`integrated` is a legacy embedded-service profile, not the same as the
+independently managed FDB and Hub resources operated by their dedicated
+harnesses. Selecting it adds embedded services; it does not enroll them into
+accepted FDB or Hub membership. Previously released `chain-only` deployments
+keep their committed profile during evidence verification. Changing this default
+does not retrofit an already-running Besu service. Physical co-location MUST
+NOT transfer lifecycle authority from FDB Control or Hub Control to Mother.
 
 An RPC canary is a client identity used to test a routed RPC surface, not an
 additional deployable validator or non-validator service. Network-scoped routes

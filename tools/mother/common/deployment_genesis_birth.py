@@ -716,7 +716,9 @@ def _proof_script(
     validator_address: str,
     cleanup_project_uuid: str | None = None,
     requires_hub: bool = True,
+    network: str = "mainnet",
 ) -> str:
+    network = _identifier(network, "network")
     expected_validator = validator_address.lower()
     cleanup_value = cleanup_project_uuid if cleanup_project_uuid is not None else ""
     cleanup_required = cleanup_project_uuid is not None
@@ -792,7 +794,7 @@ def _proof_script(
         "    if second <= first:",
         "        raise RuntimeError('block height did not advance')",
         "    health = hub('/api/hub/v1/health')",
-        "    if health.get('ok') is not True or health.get('service') != 'main-computer-hub' or health.get('network_key') != 'mainnet':",
+        f"    if health.get('ok') is not True or health.get('service') != 'main-computer-hub' or health.get('network_key') != {network!r}:",
         "        raise RuntimeError('hub health mismatch')",
         "    status = hub('/api/hub/v1/status')",
         "    network = status.get('network') if isinstance(status, dict) else None",
@@ -800,7 +802,7 @@ def _proof_script(
         "        raise RuntimeError('hub status network missing')",
         "    if network.get('chain_id') != EXPECTED_CHAIN_ID or network.get('chain_rpc_url') != RPC:",
         "        raise RuntimeError('hub local RPC binding mismatch')",
-        "    proof = {'chain_id':chain_id,'genesis_block_present':True,'genesis_sha256':genesis_digest,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'validator_set':[EXPECTED_VALIDATOR],'hub_health':True,'hub_service':'main-computer-hub','hub_network_key':'mainnet','hub_chain_rpc_url':RPC,'hub_chain_id':EXPECTED_CHAIN_ID,'host_cleanup':host_cleanup,'host_cleanup_project_uuid':EXPECTED_HOST_CLEANUP_PROJECT or None,'host_cleanup_proven':(host_cleanup is not None or not HOST_CLEANUP_REQUIRED),'health_marker_contract':'proof-json-valid-and-fresh-healthy-marker','health_marker_path':HEALTHY,'last_error_path':LAST_ERROR,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
+        "    proof = {'chain_id':chain_id,'genesis_block_present':True,'genesis_sha256':genesis_digest,'first_block_number':first,'second_block_number':second,'block_advance':second-first,'validator_set':[EXPECTED_VALIDATOR],'hub_health':True,'hub_service':'main-computer-hub','hub_network_key':" + repr(network) + ",'hub_chain_rpc_url':RPC,'hub_chain_id':EXPECTED_CHAIN_ID,'host_cleanup':host_cleanup,'host_cleanup_project_uuid':EXPECTED_HOST_CLEANUP_PROJECT or None,'host_cleanup_proven':(host_cleanup is not None or not HOST_CLEANUP_REQUIRED),'health_marker_contract':'proof-json-valid-and-fresh-healthy-marker','health_marker_path':HEALTHY,'last_error_path':LAST_ERROR,'proved_at':time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         "    proof_sha256 = hashlib.sha256(json.dumps(proof, sort_keys=True, separators=(',', ':')).encode()).hexdigest()",
         "    write_json_atomic(PROOF, proof)",
         "    write_json_atomic(HEALTHY, {'ok': True, 'proof_sha256': proof_sha256, 'proved_at': proof['proved_at'], 'refreshed_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})",
@@ -926,6 +928,7 @@ def _internal_proof_compose(
     validator_address: str,
     superseded_service_uuid: str | None = None,
     requires_hub: bool = True,
+    network: str = "mainnet",
 ) -> str:
     host_mapping = '      - "127.0.0.1:8545:8545/tcp"\n'
     allowed_names = f"{node},{_HUB_SERVICE}" if requires_hub else node
@@ -997,6 +1000,7 @@ def _internal_proof_compose(
         validator_address=validator_address,
         cleanup_project_uuid=superseded_service_uuid,
         requires_hub=requires_hub,
+        network=network,
     )
     indented_script = "\n".join("        " + line for line in script.splitlines())
     guardian = "\n".join([

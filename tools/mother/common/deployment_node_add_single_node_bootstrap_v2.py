@@ -1198,9 +1198,9 @@ def _compose_commitment(compose: str, *, label: str) -> dict[str, Any]:
 def _first_node_service_profile(private_state: PrivateStateReadResult, network: str) -> str:
     """Resolve the profile from the selected verified Mother network.
 
-    Existing mainnet stays integrated by default; new testnet reserves a
-    chain-only initial validator unless its network document opts into an
-    explicitly named profile.  The profile is committed in the release.
+    Both networks default to the existing integrated first-node profile.
+    Explicit profile selection remains supported for historical releases and
+    operator-directed chain-only deployments. The profile is release-bound.
     """
     networks = _private_state_document(private_state).get("networks", {})
     selected = networks.get(network) if isinstance(networks, Mapping) else None
@@ -1210,7 +1210,7 @@ def _first_node_service_profile(private_state: PrivateStateReadResult, network: 
     deployment = deployment if isinstance(deployment, Mapping) else {}
     profile = deployment.get("first_node_service_profile")
     if profile is None:
-        profile = "integrated" if network == "mainnet" else "chain-only"
+        profile = "integrated"
     if profile not in {"integrated", "chain-only"}:
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_PROFILE_INVALID", "unsupported first-node service profile")
     return profile
@@ -1290,10 +1290,6 @@ def build_node_add_single_node_bootstrap_release(
             )
     service_profile = _first_node_service_profile(private_state, network)
     requires_hub = service_profile == "integrated"
-    # The integrated generator still embeds mainnet Hub contracts.  A new
-    # network cannot opt into that profile until those contracts are scoped.
-    if network != "mainnet" and requires_hub:
-        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_PROFILE_INVALID", "integrated Hub/FDB profile is mainnet-bound")
     repository = _hub_git_repository(hub_git_repository, "hub_git_repository")
     original = _first_genesis_compose(
         node=node,
@@ -1313,6 +1309,7 @@ def build_node_add_single_node_bootstrap_release(
         validator_address=target_validator,
         superseded_service_uuid=None,
         requires_hub=requires_hub,
+        network=network,
     )
     if requires_hub:
         proof_compose = _bootstrap_v2_proof_compose(proof_compose)
@@ -1521,10 +1518,14 @@ def verify_node_add_single_node_bootstrap_release(
     summary = release.get("summary")
     if not isinstance(plan, Mapping) or not isinstance(target, Mapping) or not isinstance(summary, Mapping):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "single-node bootstrap release body is incomplete")
-    requires_hub = _first_node_service_profile(private_state, _identifier(release.get("network"), "network")) == "integrated"
+    # The released profile, not a possibly changed current default, is
+    # authoritative when verifying historical chain-only or integrated proof.
+    service_profile = plan.get("service_profile")
+    if service_profile not in {"integrated", "chain-only"}:
+        raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_BOOTSTRAP_RELEASE_INVALID", "released service profile is invalid")
+    requires_hub = service_profile == "integrated"
     if (
-        plan.get("service_profile", "integrated") != ("integrated" if requires_hub else "chain-only")
-        or plan.get("single_node_bootstrap_required") is not True
+        plan.get("single_node_bootstrap_required") is not True
         or plan.get("replica_sync_required") is not False
         or plan.get("validator_admission_required") is not False
         or plan.get("old_baseline_topology_used_as_live") is not False
@@ -2780,7 +2781,6 @@ def verify_node_add_single_node_chain_and_hub_proof_evidence(
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_STALE", "single-node chain+Hub proof evidence is outside the freshness window")
     source = document.get("source_single_node_bootstrap_evidence")
     summary = document.get("summary")
-    requires_hub = _first_node_service_profile(private_state, _identifier(document.get("network"), "network")) == "integrated"
     proof = document.get("chain_and_hub_proof")
     final_topology = document.get("final_topology")
     authority = document.get("authority")
@@ -2804,6 +2804,7 @@ def verify_node_add_single_node_chain_and_hub_proof_evidence(
     )
     if source_verified["evidence_sha256"] != _sha256(source.get("sha256"), "source bootstrap evidence sha256"):
         raise _fail("MOTHER_DEPLOY_NODE_ADD_SINGLE_NODE_CHAIN_AND_HUB_PROOF_INVALID", "source bootstrap evidence SHA does not match")
+    requires_hub = source_verified["serves_hub"]
     clean = all([
         document.get("status") == "pass",
         document.get("failure") is None,

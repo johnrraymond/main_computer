@@ -568,38 +568,38 @@
       const proofDock = dom.root.querySelector("#code-studio-bottom-panel");
       if (proofDock) {
         if (defaultMode) {
-          proofDock.dataset.expanded = "false";
-          proofDock.dataset.mcelResolvedPlacement = "hidden";
-          proofDock.setAttribute("aria-hidden", "true");
+          if (proofDock.dataset.expanded !== "false") proofDock.dataset.expanded = "false";
+          if (proofDock.dataset.mcelResolvedPlacement !== "hidden") proofDock.dataset.mcelResolvedPlacement = "hidden";
+          if (proofDock.getAttribute("aria-hidden") !== "true") proofDock.setAttribute("aria-hidden", "true");
         } else {
-          proofDock.setAttribute("aria-hidden", "false");
+          if (proofDock.getAttribute("aria-hidden") !== "false") proofDock.setAttribute("aria-hidden", "false");
         }
       }
       const proofDockToggle = dom.root.querySelector("#code-studio-toggle-assistant");
       if (proofDockToggle && defaultMode) {
-        proofDockToggle.setAttribute("aria-expanded", "false");
-        proofDockToggle.textContent = "Open proof dock";
+        if (proofDockToggle.getAttribute("aria-expanded") !== "false") proofDockToggle.setAttribute("aria-expanded", "false");
+        if (proofDockToggle.textContent !== "Open proof dock") proofDockToggle.textContent = "Open proof dock";
       }
     }
 
     function enforceLegacyFidelityResizeStability() {
       if (!dom.root || !isLegacyFidelitySurface()) return;
-      dom.root.dataset.codeEditorResizeStability = "locked";
+      if (dom.root.dataset.codeEditorResizeStability !== "locked") dom.root.dataset.codeEditorResizeStability = "locked";
       if (dom.root.dataset.codeEditorMode !== "mcel") {
-        dom.root.dataset.codeEditorMode = "legacy-fidelity";
+        if (dom.root.dataset.codeEditorMode !== "legacy-fidelity") dom.root.dataset.codeEditorMode = "legacy-fidelity";
       }
       const shell = dom.root.querySelector(".code-studio-shell");
       if (shell) {
-        shell.dataset.codeEditorRuntimeSurfaceMode = "legacy-fidelity";
-        shell.dataset.codeEditorResizeStability = "locked";
+        if (shell.dataset.codeEditorRuntimeSurfaceMode !== "legacy-fidelity") shell.dataset.codeEditorRuntimeSurfaceMode = "legacy-fidelity";
+        if (shell.dataset.codeEditorResizeStability !== "locked") shell.dataset.codeEditorResizeStability = "locked";
       }
       const body = dom.root.querySelector(".code-studio-body");
       if (body) {
-        body.dataset.codeEditorResizeStability = "locked";
+        if (body.dataset.codeEditorResizeStability !== "locked") body.dataset.codeEditorResizeStability = "locked";
       }
       const editor = dom.root.querySelector(".code-studio-editor-group");
       if (editor) {
-        editor.dataset.codeEditorResizeStability = "locked";
+        if (editor.dataset.codeEditorResizeStability !== "locked") editor.dataset.codeEditorResizeStability = "locked";
       }
       enforceLegacyFidelityDefaultDiagnostics();
     }

@@ -380,6 +380,14 @@
       ? diagnostics.map((item) => `<li>${escapeText(item.code)} — ${escapeText(item.finding)}</li>`).join("")
       : "<li>No blocking preview diagnostics.</li>";
 
+    // A status refresh must not recreate an unchanged sandboxed iframe.
+    // Reassigning innerHTML reloads srcdoc and repeatedly triggers blocked-script
+    // browser errors when preview markup contains scripts.
+    const previewKey = JSON.stringify([status, summary, renderedText, issueText]);
+    if (panel.__mcelPreviewContentKey === previewKey &&
+        panel.querySelector("iframe.code-editor-mcel-preview-popover__frame")) {
+      return panel;
+    }
     panel.setAttribute("data-mcel-preview-state", status);
     panel.innerHTML = [
       '<div class="code-editor-mcel-preview-popover__header">',
@@ -392,6 +400,7 @@
       issueText,
       '</ul>'
     ].join("");
+    panel.__mcelPreviewContentKey = previewKey;
     return panel;
   }
 

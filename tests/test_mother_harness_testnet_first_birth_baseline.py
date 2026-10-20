@@ -174,16 +174,20 @@ def test_failed_prior_bootstrap_blocks_automatic_first_birth(tmp_path, monkeypat
         harness.initialize_verified_first_birth_baseline(_args(tmp_path))
 
 
-def test_chain_only_testnet_skips_officer_manifest_publication(tmp_path, capsys):
+def test_integrated_testnet_publishes_officer_manifest_like_mainnet(tmp_path):
     args = _args(tmp_path)
     h = object.__new__(harness.Harness)
     h.args = args
+    h.repo_root = ROOT
     baseline = tmp_path / "baseline.json"
     baseline.write_text('{"fresh_genesis_required":true}')
-    h.state = {"baseline_evidence": str(baseline)}
-    h.repo_root = ROOT
+    h.state = {"baseline_evidence": str(baseline), "single_node_proof_verified": True}
+    calls = []
+    h.run = lambda step, argv: calls.append((step, argv)) or {"status": "pass"}
     h.step_publish_officer_addresses()
-    assert "skipped (testnet chain-only release)" in capsys.readouterr().out
+    assert calls and calls[0][0] == "publish-officer-addresses"
+    assert "testnet" in calls[0][1]
+
 
 
 def test_mainnet_officer_publication_path_not_skipped(tmp_path, monkeypatch):

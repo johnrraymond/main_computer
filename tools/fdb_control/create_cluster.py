@@ -215,7 +215,7 @@ def do(
             description=descriptor.description,
             compose_b64=descriptor.compose_b64,
         )
-    deploy_service(client, service_uuid, force=deployment.force_deploy)
+    deploy_service(client, service_uuid, force=(action == "created" or deployment.force_deploy))
     deployment_result = {
         "service_uuid": service_uuid,
         "service_name": descriptor.service_name,
@@ -234,7 +234,11 @@ def do(
     # deployment exists until Coolify reports that the service has actually
     # materialized into a running state. This is deployment proof only; FDB
     # correctness is verified independently through the observer proof.
-    wait_for_running(client, service_uuid, timeout_s=300.0, poll_s=5.0)
+    wait_for_running(
+        client, service_uuid, timeout_s=300.0, poll_s=5.0,
+        required_subservices=(plan.services[0].service_id, f"{plan.services[0].service_id}-observer"),
+        retry_unmaterialized_after_s=60.0,
+    )
 
     update_operation(
         ctx,

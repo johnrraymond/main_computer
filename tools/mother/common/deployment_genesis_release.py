@@ -290,6 +290,7 @@ def _first_genesis_compose(
     p2p_port = int(p2p_port)
     if not 1 <= p2p_port <= 65535:
         raise MotherDeploymentGenesisReleaseError("MOTHER_DEPLOY_GENESIS_RELEASE_INVALID", "p2p_port must be a valid TCP/UDP port")
+    network = _identifier(network, "network")
     genesis_bytes = canonical_json(dict(genesis))
     encoded = base64.b64encode(genesis_bytes).decode("ascii")
     git_context = f"{hub_git_repository}#{hub_git_ref}"
@@ -298,9 +299,9 @@ def _first_genesis_compose(
     hub_rpc = f"http://{node}:8545"
     stable_hub_topology = {
         "kind": "main_computer.stable_hub_topology.v1",
-        "cluster_id": "main-computer-mainnet-hubs",
-        "network": {"network_key": "mainnet", "chain_id": str(chain_id), "chain_rpc_url": hub_rpc},
-        "storage": {"backend": "foundationdb", "cluster_file": f"{hub_root}/fdb.cluster", "namespace": f"main-computer-mainnet-{node}", "api_version": 740},
+        "cluster_id": f"main-computer-{network}-hubs",
+        "network": {"network_key": network, "chain_id": str(chain_id), "chain_rpc_url": hub_rpc},
+        "storage": {"backend": "foundationdb", "cluster_file": f"{hub_root}/fdb.cluster", "namespace": f"main-computer-{network}-{node}", "api_version": 740},
         "entry_urls": [f"http://{_HUB_SERVICE}:{_HUB_PORT}"],
         "hubs": [{"hub_id": _HUB_SERVICE, "hub_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}", "public_url": f"http://{_HUB_SERVICE}:{_HUB_PORT}", "roles": ["entry", "execution"]}],
     }
@@ -431,16 +432,16 @@ def _first_genesis_compose(
             "    environment:",
             f'      HUB_HEALTH_PORT: "{_HUB_PORT}"',
             f'      PORT: "{_HUB_PORT}"',
-            '      MAIN_COMPUTER_HUB_NETWORK: "mainnet"',
+            f'      MAIN_COMPUTER_HUB_NETWORK: "{network}"',
             f'      MAIN_COMPUTER_HUB_ROOT: "{hub_root}"',
-            f'      MAIN_COMPUTER_HUB_FDB_NAMESPACE: "main-computer-mainnet-{node}"',
+            f'      MAIN_COMPUTER_HUB_FDB_NAMESPACE: "main-computer-{network}-{node}"',
             f'      FDB_CLUSTER_FILE_CONTENTS: "{fdb_cluster}"',
             f'      MAIN_COMPUTER_HUB_CHAIN_ID: "{chain_id}"',
             f'      MAIN_COMPUTER_HUB_CHAIN_RPC_URL: "{hub_rpc}"',
             '      MAIN_COMPUTER_HUB_CONTROL_HUB_ID: "mother-super-node-hub"',
             f'      MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH: "{hub_root}/hub-topology.json"',
             '      MAIN_COMPUTER_STABLE_HUB_DEV_ACCOUNT_CREDITS: "0"',
-            '      MAIN_COMPUTER_HUB_CONTRACTS_PATH: "/app/main_computer/config/mainnet_contracts.json"',
+            f'      MAIN_COMPUTER_HUB_CONTRACTS_PATH: "/app/main_computer/config/{network}_contracts.json"',
             '      MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER: "true"',
             "    command:",
             "      - sh",

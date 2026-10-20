@@ -463,193 +463,30 @@
       return await onlyofficeState.loadingApi;
     }
 
-    const onlyofficeViewportFixState = {
-      frame: null,
-      placeholder: null,
-      container: null,
-      root: null,
-      resizeObserver: null,
-      timers: [],
-    };
+    // Keep the Document Server iframe inside the node owned by DocsAPI.
+    // Reparenting a live iframe can reload its browsing context, losing editor state.
+    const onlyofficeViewportFixState = {observer: null, timers: []};
 
-    const onlyofficeContainedStageId = "onlyoffice-contained-editor-stage";
-
-    function onlyofficeEditorFrameRect(element) {
-      const box = element.getBoundingClientRect();
-      return {
-        x: Math.round(box.x),
-        y: Math.round(box.y),
-        width: Math.round(box.width),
-        height: Math.round(box.height),
-        area: Math.round(box.width * box.height),
-      };
-    }
-
-    function onlyofficeScoreEditorFrame(iframe) {
-      const box = onlyofficeEditorFrameRect(iframe);
-      const source = String(iframe.getAttribute("src") || iframe.src || "");
-      const joined = [
-        source,
-        iframe.id,
-        iframe.name,
-        iframe.className,
-        iframe.parentElement?.id,
-        iframe.parentElement?.className,
-      ].join(" ");
-
-      let score = box.area;
-      if (/18085|onlyoffice|web-apps|documenteditor|spreadsheet/i.test(joined)) score += 1000000;
-      if (onlyofficeEditorHost && onlyofficeEditorHost.contains(iframe)) score += 500000;
-      if (box.width > 150 && box.height > 80) score += 100000;
-      if (/about:blank/i.test(source)) score -= 50000;
-      if (box.area === 0) score -= 1000000;
-      return score;
-    }
-
-    function onlyofficeFindEditorFrame() {
-      return [...document.querySelectorAll("iframe")]
-        .map((iframe) => ({iframe, score: onlyofficeScoreEditorFrame(iframe)}))
-        .sort((left, right) => right.score - left.score)
-        .find((item) => item.score > 0)?.iframe || null;
-    }
-
-    function onlyofficePickContainedStageRoot() {
-      return (
-        document.querySelector(".canvas-wrap") ||
-        document.querySelector(".panel.stage") ||
-        onlyofficeApp ||
-        document.body
-      );
-    }
-
-    function onlyofficeCreateContainedStage(root) {
-      document.getElementById(onlyofficeContainedStageId)?.remove();
-
-      const container = document.createElement("div");
-      container.id = onlyofficeContainedStageId;
-      container.className = "onlyoffice-contained-editor-stage";
-      container.setAttribute("aria-label", "Contained ONLYOFFICE workbook editor");
-      root.appendChild(container);
-      return container;
-    }
-
-    function onlyofficeDispatchEditorResize() {
-      window.dispatchEvent(new Event("resize"));
-    }
-
-    function onlyofficeSetContainedStatus() {
-      if (!onlyofficeStatus || !onlyofficeViewportFixState.frame || !onlyofficeViewportFixState.container) {
-        return;
+    function onlyofficeResetEditorViewportFix() {
+      for (const timer of onlyofficeViewportFixState.timers.splice(0)) {
+        window.clearTimeout(timer);
       }
-
-      const frameBox = onlyofficeEditorFrameRect(onlyofficeViewportFixState.frame);
-      const containerBox = onlyofficeEditorFrameRect(onlyofficeViewportFixState.container);
-      if (frameBox.area > 0 && containerBox.area > 0) {
-        onlyofficeSetStatus(`ONLYOFFICE editor contained ${frameBox.width}×${frameBox.height}`);
-      }
-    }
-
-    function onlyofficeQueueContainedResize() {
-      onlyofficeDispatchEditorResize();
-      onlyofficeViewportFixState.timers.push(window.setTimeout(() => {
-        onlyofficeDispatchEditorResize();
-        onlyofficeSetContainedStatus();
-      }, 350));
-    }
-
-    function onlyofficeResetEditorViewportFix({cancelTimers = true} = {}) {
-      if (cancelTimers) {
-        for (const timer of onlyofficeViewportFixState.timers.splice(0)) {
-          window.clearTimeout(timer);
-        }
-      }
-
-      try {
-        onlyofficeViewportFixState.resizeObserver?.disconnect();
-      } catch {}
-
-      const frame = onlyofficeViewportFixState.frame;
-      const placeholder = onlyofficeViewportFixState.placeholder;
-      if (frame && placeholder?.parentNode) {
-        placeholder.parentNode.insertBefore(frame, placeholder);
-      }
-
-      frame?.classList.remove("onlyoffice-contained-editor-frame");
-      placeholder?.remove();
-      onlyofficeViewportFixState.container?.remove();
-      onlyofficeViewportFixState.root?.classList.remove("onlyoffice-contained-stage-root");
-      onlyofficeApp?.classList.remove("onlyoffice-contained-editor-active");
-      document.documentElement.classList.remove("onlyoffice-contained-editor-page");
-      document.body.classList.remove("onlyoffice-contained-editor-page");
-
-      onlyofficeViewportFixState.frame = null;
-      onlyofficeViewportFixState.placeholder = null;
-      onlyofficeViewportFixState.container = null;
-      onlyofficeViewportFixState.root = null;
-      onlyofficeViewportFixState.resizeObserver = null;
-      onlyofficeDispatchEditorResize();
-    }
-
-    function onlyofficeApplyEditorViewportFix() {
-      const iframe = onlyofficeFindEditorFrame();
-      if (!iframe || onlyofficeEditorFrameRect(iframe).area <= 0) {
-        return false;
-      }
-
-      onlyofficeResetEditorViewportFix({cancelTimers: false});
-
-      const root = onlyofficePickContainedStageRoot();
-      if (!root) return false;
-
-      const placeholder = document.createComment("onlyoffice-contained-editor-placeholder");
-      iframe.parentNode?.insertBefore(placeholder, iframe);
-
-      const container = onlyofficeCreateContainedStage(root);
-      container.appendChild(iframe);
-
-      root.classList.add("onlyoffice-contained-stage-root");
-      onlyofficeApp?.classList.add("onlyoffice-contained-editor-active");
-      document.documentElement.classList.add("onlyoffice-contained-editor-page");
-      document.body.classList.add("onlyoffice-contained-editor-page");
-      iframe.classList.add("onlyoffice-contained-editor-frame");
-
-      onlyofficeViewportFixState.frame = iframe;
-      onlyofficeViewportFixState.placeholder = placeholder;
-      onlyofficeViewportFixState.container = container;
-      onlyofficeViewportFixState.root = root;
-
-      if (typeof ResizeObserver !== "undefined") {
-        onlyofficeViewportFixState.resizeObserver = new ResizeObserver(() => {
-          onlyofficeQueueContainedResize();
-        });
-        onlyofficeViewportFixState.resizeObserver.observe(root);
-        onlyofficeViewportFixState.resizeObserver.observe(container);
-      }
-
-      onlyofficeQueueContainedResize();
-      return true;
+      onlyofficeViewportFixState.observer?.disconnect();
+      onlyofficeViewportFixState.observer = null;
+      onlyofficeEditorHost?.classList.remove("onlyoffice-editor-mounted");
     }
 
     function onlyofficeScheduleEditorViewportFix() {
       onlyofficeResetEditorViewportFix();
-
-      let attempts = 0;
-      const attemptFit = () => {
-        if (document.body.dataset.activeApp && document.body.dataset.activeApp !== "onlyoffice") {
-          return;
-        }
-
-        attempts += 1;
-        if (onlyofficeApplyEditorViewportFix()) {
-          return;
-        }
-
-        if (attempts < 40) {
-          onlyofficeViewportFixState.timers.push(window.setTimeout(attemptFit, 250));
-        }
-      };
-
-      onlyofficeViewportFixState.timers.push(window.setTimeout(attemptFit, 0));
+      if (!onlyofficeEditorHost) return;
+      onlyofficeEditorHost.classList.add("onlyoffice-editor-mounted");
+      const notify = () => window.dispatchEvent(new Event("resize"));
+      if (typeof ResizeObserver !== "undefined") {
+        onlyofficeViewportFixState.observer = new ResizeObserver(notify);
+        onlyofficeViewportFixState.observer.observe(onlyofficeEditorHost);
+      }
+      onlyofficeViewportFixState.timers.push(window.setTimeout(notify, 0));
+      onlyofficeViewportFixState.timers.push(window.setTimeout(notify, 350));
     }
 
     window.onlyofficeScheduleEditorViewportFix = onlyofficeScheduleEditorViewportFix;
@@ -669,13 +506,19 @@
         onlyofficeState.editor.destroyEditor();
       }
       onlyofficeState.advancedConnector = null;
-      if (onlyofficeEditorHost) {
-        onlyofficeEditorHost.textContent = "";
+      // DocsAPI replaces its mount node with an iframe. Keep the MCEL-owned
+      // editor host intact by giving DocsAPI a disposable child mount node.
+      if (!onlyofficeEditorHost) {
+        throw new Error("ONLYOFFICE editor host is missing");
       }
+      onlyofficeEditorHost.textContent = "";
+      const editorMount = document.createElement("div");
+      editorMount.id = "onlyoffice-editor-mount";
+      onlyofficeEditorHost.appendChild(editorMount);
       onlyofficeState.selectedPath = cleanPath;
       if (onlyofficeCurrentPath) onlyofficeCurrentPath.textContent = data.display_path || cleanPath;
       onlyofficeRenderFiles();
-      onlyofficeState.editor = new DocsAPI.DocEditor("onlyoffice-editor-host", data.config);
+      onlyofficeState.editor = new DocsAPI.DocEditor("onlyoffice-editor-mount", data.config);
       onlyofficeSetStatus("ONLYOFFICE editor open");
       onlyofficeScheduleEditorViewportFix();
       await refreshOnlyOfficeStatus();

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -208,6 +209,7 @@ class Harness:
             "dependency_rectification_required": [],
             "preexisting_dependency_drift": [],
             "last_completed_step": None,
+            "fdb_bootstrap": None,
         }
         self._write_state()
 
@@ -272,7 +274,189 @@ class Harness:
             str(self.repo_root),
         ]
 
-    def _check_topology_before_prep(self) -> None:
+    def fdb_inspect_cmd(self) -> list[str]:
+        """Read the independently verified FDB dependency before first-Hub prep."""
+        return [
+            sys.executable, "-m", "tools.fdb_control", "--repo-root",
+            str(self.repo_root), "--json", "inspect", self.network,
+        ]
+
+    def fdb_bootstrap_cmd(self, operation: str, service: str) -> list[str]:
+        command = [
+            sys.executable, str(self.repo_root / "fdb_mutate_harness.py"),
+            operation, "--network", self.network, "--service", service,
+            "--repo-root", str(self.repo_root),
+        ]
+        if self._mutation_authorized():
+            command.extend(("--execute-mutations", "--yes-i-know-this-mutates-fdb"))
+        return command
+
+    def _first_fdb_service(self) -> str:
+        """Place initial FDB with the first Hub, using network-scoped naming."""
+        pattern = re.fullmatch(re.escape(self.network) + r"([a-z])-hub([1-9][0-9]*)", self.hub)
+        if pattern is None:
+            raise HarnessError(
+                f"cannot infer first FDB placement from Hub {self.hub!r}; "
+                "expected <network><placement>-hub<N>"
+            )
+        return f"{self.network}{pattern.group(1)}-fdb1"
+
+    def _inspect_fdb_dependency(self) -> dict[str, Any]:
+        """No accepted state or unverified state is ever treated as ready."""
+        if self.run_dir is None:
+            raise HarnessError("FDB dependency inspection has no Hub harness run directory")
+        argv = self.fdb_inspect_cmd()
+        prefix = self.run_dir / "00-fdb-dependency-inspect"
+        prefix.with_suffix(".command.txt").write_text(quote_command(argv) + "\n", encoding="utf-8")
+        proc = subprocess.run(argv, cwd=self.repo_root, text=True, capture_output=True, check=False)
+        prefix.with_suffix(".stdout.txt").write_text(proc.stdout, encoding="utf-8")
+        prefix.with_suffix(".stderr.txt").write_text(proc.stderr, encoding="utf-8")
+        try:
+            payload = json.loads(proc.stdout)
+        except (ValueError, TypeError) as exc:
+            raise HarnessError(
+                f"FDB inspection returned invalid JSON (exit={proc.returncode}); see {prefix}.stdout.txt"
+            ) from exc
+        if proc.returncode != 0 or not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise HarnessError(f"FDB dependency inspection failed: {payload.get('error') if isinstance(payload, dict) else payload}")
+        result = payload.get("result")
+        if not isinstance(result, dict) or result.get("network") != self.network:
+            raise HarnessError("FDB dependency inspection did not verify the requested network")
+        prefix.with_suffix(".json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return result
+
+    @staticmethod
+    def _fdb_is_verified(result: dict[str, Any]) -> bool:
+        if result.get("status") != "accepted":
+            return False
+        services = result.get("services")
+        coordinators = result.get("coordinators")
+        if not isinstance(services, list) or not services or not isinstance(coordinators, list) or not coordinators:
+            return False
+        for name in ("cluster_verification", "birth_verification"):
+            check = result.get(name)
+            if isinstance(check, dict) and check.get("verified") is True:
+                return True
+        return False
+
+    def _run_fdb_bootstrap(self, operation: str, service: str) -> None:
+        """Delegate the entire birth/rebirth transaction to the FDB operator harness.
+
+        That harness owns its frozen cluster identity, retries, evidence, and
+        accepted-state commit. The Hub harness never fabricates FDB authority.
+        """
+        if self.run_dir is None:
+            raise HarnessError("FDB bootstrap has no Hub harness run directory")
+        argv = self.fdb_bootstrap_cmd(operation, service)
+        prefix = self.run_dir / "00-fdb-dependency-bootstrap"
+        prefix.with_suffix(".command.txt").write_text(quote_command(argv) + "\n", encoding="utf-8")
+        print(f"\n=== FDB dependency: {operation} {service} ===", flush=True)
+        # Stream sub-harness output: FoundationDB proof can require a bounded wait.
+        with prefix.with_suffix(".output.txt").open("w", encoding="utf-8") as log:
+            proc = subprocess.Popen(
+                argv, cwd=self.repo_root, text=True, errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+            )
+            if proc.stdout is None:
+                raise HarnessError("could not read FDB bootstrap output")
+            for line in proc.stdout:
+                log.write(line)
+                log.flush()
+                print(line, end="", flush=True)
+            code = proc.wait()
+        if code != 0:
+            raise HarnessError(
+                f"FDB {operation} failed (exit={code}); see {prefix}.output.txt. "
+                "The FDB birth state has been preserved for safe resumption; "
+                "Hub deployment has not started."
+            )
+
+    def _assert_first_hub_fdb_bootstrap(self) -> None:
+        """Never recreate FDB automatically underneath an established Hub fleet."""
+        from collections.abc import Mapping
+        from tools.hub_control.common.models import HubContext
+        from tools.hub_control.common.state import read_accepted
+        from tools.hub_control.common.privates import load_private, network_doc
+
+        ctx = HubContext.from_repo(self.repo_root)
+        try:
+            accepted = read_accepted(ctx, self.network)
+            private = network_doc(load_private(ctx), self.network)
+        except Exception as exc:
+            raise HarnessError(f"cannot verify first-Hub authority before FDB birth: {exc}") from exc
+        if accepted is not None and accepted.get("hubs"):
+            raise HarnessError(
+                "automatic FDB birth refused: accepted Hub topology already contains Hubs; "
+                "restore the previously accepted FDB dependency"
+            )
+        desired = private.get("hubs", {})
+        if not isinstance(desired, Mapping):
+            raise HarnessError("Mother Hub membership is not a mapping; refusing automatic FDB birth")
+        active = [name for name, item in desired.items()
+                  if isinstance(item, Mapping) and item.get("status") == "active"]
+        if active:
+            raise HarnessError(
+                f"automatic FDB birth refused: Mother already has active Hub members {sorted(active)}; "
+                "restore the previously accepted FDB dependency"
+            )
+
+    def _ensure_fdb_dependency(self) -> bool:
+        """Create FDB automatically only for an initial Hub and proven empty FDB.
+
+        Return False for a nonmutating preview: do not pretend Hub prep passed
+        while its mandatory FDB dependency is still unborn.
+        """
+        if self.operation != "add-hub":
+            return True
+        print("\n=== initial Hub dependencies: FoundationDB ===", flush=True)
+        result = self._inspect_fdb_dependency()
+        status = result.get("status")
+        print(f"FDB status: {status}")
+        if self._fdb_is_verified(result):
+            print(f"FDB accepted generation: {result.get('accepted_generation')} (verified)")
+            return True
+        if status not in {"unborn", "accepted-empty"}:
+            raise HarnessError(
+                "Hub bootstrap requires independently verified live FoundationDB; "
+                f"FDB status={status!r} and proof not verified. Existing accepted FDB "
+                "must be repaired without altering its membership."
+            )
+        if status == "unborn" and result.get("accepted") is not None:
+            raise HarnessError("FDB inspect reported contradictory unborn accepted state")
+        if status == "accepted-empty":
+            proof = result.get("empty_topology_verification")
+            if not isinstance(proof, dict) or proof.get("verified") is not True:
+                raise HarnessError("FDB accepted-empty topology lacks independent verification")
+        self._assert_first_hub_fdb_bootstrap()
+        service = self._first_fdb_service()
+        operation = "create-cluster" if status == "unborn" else "add-service"
+        self.state["fdb_bootstrap"] = {"operation": operation, "service": service, "status": "required"}
+        self._write_state()
+        print(f"FDB bootstrap plan: {operation} {service}")
+        if not self._mutation_authorized():
+            print("\nStopping before live mutation; the first Hub also requires FDB bootstrap.")
+            print("Rerun the same Hub command with mutation authorization:")
+            print(
+                f"python .\\hub_mutate_harness.py add-hub --network {self.network} "
+                f"--hub {self.hub} --execute-mutations --yes-i-know-this-mutates-hub"
+            )
+            return False
+        self._run_fdb_bootstrap(operation, service)
+        after = self._inspect_fdb_dependency()
+        if not self._fdb_is_verified(after):
+            raise HarnessError(
+                "FDB bootstrap returned success but the accepted FDB cluster is not independently verified; "
+                "Hub deployment refused"
+            )
+        self.state["fdb_bootstrap"] = {
+            "operation": operation, "service": service, "status": "verified",
+            "generation": after.get("accepted_generation"),
+        }
+        self._write_state()
+        print(f"FDB bootstrap accepted and verified (generation {after.get('accepted_generation')}).")
+        return True
+
+    def _check_topology_before_prep(self, *, _fdb_rechecked: bool = False) -> bool | None:
         """Diagnose drift before accepted-state pre-inspect can obscure its cause.
 
         This is intentionally read-only and not a persisted lifecycle step:
@@ -316,6 +500,27 @@ class Harness:
         print(f"Hub topology: {status}")
         if status == "PASS":
             return
+        # First-Hub bootstrap is the only recoverable UNKNOWN here: the
+        # Hub topology checker cannot load an FDB contract before FDB birth.
+        # Other UNKNOWN causes (e.g. Coolify inventory failure) stay blocked.
+        if status == "UNKNOWN" and self.operation == "add-hub":
+            errors = report.get("errors")
+            if isinstance(errors, list) and any(
+                isinstance(item, dict)
+                and item.get("code") == "HUB_MOTHER_STATE_UNVERIFIED"
+                and any(marker in str(item.get("message") or "") for marker in (
+                    "HUB_FDB_UNBORN", "no accepted FDB state exists",
+                    "HUB_FDB_UNAVAILABLE", "accepted FDB topology is empty",
+                ))
+                for item in errors
+            ):
+                if _fdb_rechecked:
+                    raise HarnessError("Hub topology still reports unavailable FDB after completed bootstrap; refusing retry loop")
+                if not self._ensure_fdb_dependency():
+                    return False
+                # Re-evaluate Hub state and Coolify inventory after FDB birth;
+                # no prior UNKNOWN projection is accepted or auto-sealed.
+                return self._check_topology_before_prep(_fdb_rechecked=True)
         if status == "DRIFT" and report.get("errors") == []:
             projection = report.get("accepted_projection")
             projection = projection if isinstance(projection, dict) else {}
@@ -420,7 +625,8 @@ class Harness:
             # accepted-projection pre-inspect, whose stale runtime checks would
             # otherwise abort before we can show the operator the seal command.
             if step == "pre-inspect":
-                self._check_topology_before_prep()
+                if self._check_topology_before_prep() is False:
+                    return 0
             if step in MUTATING_STEPS and not self._mutation_authorized():
                 if not self._prepared_boundary_printed:
                     self._print_prepared_boundary()

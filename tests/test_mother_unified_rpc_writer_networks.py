@@ -44,16 +44,42 @@ def test_explicit_route_uses_exact_network_contract_for_ensure_and_remove(networ
         cli.route_plan(private, network=network, node=node, controller_id="coolify-unrelated")
 
 
-def test_testnet_unpublished_route_is_a_true_noop_not_mainnet_fallback(monkeypatch):
-    private = mother("testnet", published=False)
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_implicit_route_uses_same_writer_and_network_specific_host(network, monkeypatch):
+    private = mother(network, published=False)
+    node = "mainneta-super1" if network == "mainnet" else "testnetb-super1"
+    controller = "coolify-a" if network == "mainnet" else "coolify-b"
+    contract = writer.resolve_network_rpc_route(private, network)
+    assert contract["host"] == f"{network}-rpc.greatlibrary.io"
+    assert contract["implicit"] is True
+    assert remove._rpc_route_operation(private, network) == "rewire-shared"
+    seen = []
+    def stub(_private, **kwargs):
+        seen.append(kwargs)
+        return {"status": "pass", "proof": {"healthy": True}, "cleanup": {"deleted": True}}
+    monkeypatch.setattr(cli, "execute_shared_rpc_route_rewire", stub)
+    result = cli.ensure_route(private, network=network, node=node, controller_id=controller, execute=True)
+    assert result["ensured"] is True
+    assert result["route"]["host"] == contract["host"]
+    assert seen[0]["controller_id"] == controller
+    assert seen[0]["target_node"] == node
+    if network == "testnet":
+        assert seen[0]["network"] == "testnet"
+    else:
+        assert "network" not in seen[0]  # Preserve legacy mainnet executor arguments.
+
+
+def test_explicit_unpublished_is_not_silent_add_node_success(monkeypatch):
+    private = mother("testnet")
+    document = json.loads(private.canonical_object_bytes)
+    document["networks"]["testnet"]["rpc_route"] = {"published": False}
+    private.canonical_object_bytes = json.dumps(document).encode()
+    private.document_bytes = private.canonical_object_bytes
     assert writer.resolve_network_rpc_route(private, "testnet") is None
     assert remove._rpc_route_operation(private, "testnet") == "already-unpublished"
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("unpublished route must not use a writer")
-    monkeypatch.setattr(cli, "execute_shared_rpc_route_rewire", forbidden)
-    result = cli.ensure_route(private, network="testnet", node="testnetb-super1", controller_id="coolify-b", execute=True)
-    assert result["mode"] == "verified-unpublished-route"
-    assert result["ensured"] is False
+    monkeypatch.setattr(cli, "execute_shared_rpc_route_rewire", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("no write")))
+    with pytest.raises(cli.RpcRouteEnsureError, match="explicitly unpublished"):
+        cli.ensure_route(private, network="testnet", node="testnetb-super1", controller_id="coolify-b", execute=True)
 
 
 def test_mainnet_legacy_implicit_route_retains_existing_host_and_writer_bytes():

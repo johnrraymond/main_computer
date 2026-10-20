@@ -20,20 +20,20 @@ OLD = {"generation": 7, "content_sha256": "a" * 64, "manifest_sha256": "b" * 64}
 CURRENT = {"generation": 15, "content_sha256": "c" * 64, "manifest_sha256": "d" * 64}
 
 
-def _source(root: Path, *, broken_digest: bool = False):
-    path = root / "mother/evidence/deployment-live-current-topology/20261008T225508Z-mainnet-live-current-topology-example.json"
+def _source(root: Path, *, network: str = "mainnet", broken_digest: bool = False):
+    path = root / f"mother/evidence/deployment-live-current-topology/20261008T225508Z-{network}-live-current-topology-example.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     document = {
         "kind": forwarder.harness.LIVE_CURRENT_TOPOLOGY_EVIDENCE_KIND,
         "schema_version": 1,
         "completed_at": "2026-10-08T22:55:08Z",
         "status": "pass",
-        "network": "mainnet",
-        "next_phase": "topology-baseline-ready-mainnet",
+        "network": network,
+        "next_phase": f"topology-baseline-ready-{network}",
         "mother_binding": dict(OLD),
         "summary": {"clean": True, "complete": True, "live_topology_sealed": True},
         "final_topology": {
-            "nodes": ["mainneta-super1"],
+            "nodes": ["mainneta-super1" if network == "mainnet" else "testnetb-super1"],
             "validator_set": ["0x" + "1" * 40],
             "genesis_sha256": "e" * 64,
         },
@@ -51,9 +51,10 @@ def _now():
     return datetime(2026, 10, 10, 18, 45, tzinfo=timezone.utc)
 
 
-def test_forward_is_minimal_canonical_and_auto_selected(tmp_path):
-    source, old, original = _source(tmp_path)
-    result = forwarder.forward_evidence(tmp_path, binding=CURRENT, now=_now())
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_forward_is_minimal_canonical_and_auto_selected(tmp_path, network):
+    source, old, original = _source(tmp_path, network=network)
+    result = forwarder.forward_evidence(tmp_path, network=network, binding=CURRENT, now=_now())
     assert result["action"] == "forwarded"
     assert result["auto_baseline_selected"] is True
     assert result["live_topology_reverified"] is False
@@ -70,11 +71,31 @@ def test_forward_is_minimal_canonical_and_auto_selected(tmp_path):
     assert {key for key in old if old[key] != new[key]} == {
         "mother_binding", "completed_at", "live_current_topology_sha256"
     }
-    assert forwarder._latest_add_baseline(tmp_path) == destination
+    assert forwarder._latest_add_baseline(tmp_path, network=network) == destination
     # A second run should not produce another redundant evidence file.
-    same = forwarder.forward_evidence(tmp_path, binding=CURRENT, now=_now())
+    same = forwarder.forward_evidence(tmp_path, network=network, binding=CURRENT, now=_now())
     assert same["action"] == "unchanged"
     assert len(list(destination.parent.glob("*.json"))) == 2
+
+
+
+def test_testnet_forward_does_not_select_or_change_mainnet(tmp_path):
+    mainnet_source, _document, mainnet_original = _source(tmp_path, network="mainnet")
+    with pytest.raises(ValueError, match="no add-node baseline"):
+        forwarder.forward_evidence(tmp_path, network="testnet", binding=CURRENT, now=_now())
+    testnet_source, _document, testnet_original = _source(tmp_path, network="testnet")
+    result = forwarder.forward_evidence(tmp_path, network="testnet", binding=CURRENT, now=_now())
+    assert result["action"] == "forwarded"
+    assert mainnet_source.read_bytes() == mainnet_original
+    assert testnet_source.read_bytes() == testnet_original
+    assert forwarder._latest_add_baseline(tmp_path, network="mainnet") == mainnet_source
+    assert forwarder._latest_add_baseline(tmp_path, network="testnet") == Path(result["evidence_path"])
+
+
+def test_forward_rejects_unrecognized_network(tmp_path):
+    _source(tmp_path)
+    with pytest.raises(ValueError, match="unsupported network"):
+        forwarder.forward_evidence(tmp_path, network="another", binding=CURRENT, now=_now())
 
 
 def test_forward_rejects_tampered_source(tmp_path):

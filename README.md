@@ -1,27 +1,44 @@
-# NanoJev selective cumulative-magnitude guard v3
+# NanoJev numerical-adapter launcher fix v1.2
 
-This is an **additive** branch. Merge the contents of `main_computer_test/` into the repository root; no v1/v2 file is replaced. No existing checkpoint is overwritten.
+## Confirmed cause
+`tools/nanojev_altreg_independent_math_qwen_precision_v2.py` imports
+`nanojev_numerate_spine_cassette_smoke` and `nanojev_register_stability_v3_generate`
+as bare sibling modules. `python -m tools.nanojev_hawk_dove_numeric_adapter_train`
+does not automatically place `tools/` on `sys.path`. The earlier v1.1 fix
+attempted to initialize this in the adapter, but the repeated traceback shows
+this did not resolve the actual launch.
 
-## Why v3
+## Scope
+Only `tools/resume-nanojev-hawk-dove-cached.ps1` changes. Its `Invoke-NanoJev`
+helper adds `tools/` to `PYTHONPATH` for the child process, in a `try/finally`
+that restores the previous environment. The fix works with either the original
+v1 adapter or the v1.1 adapter. No changes to math head, cached trainer,
+checkpoint, step, gates or provenance hashes.
 
-V2's near-zero initial correction did not constrain later drift. V3 applies `base * exp(acceptance * delta)` with sigmoid acceptance initialized at about 0.00091. The acceptance gate is explicitly supervised by whether the **proposed** correction reduces operand error relative to the unchanged source prediction. Correction residuals are trained against a clipped log ratio to gold operands for matching-sign, nonzero cases. A preservation penalty protects already-accurate source predictions.
-
-**Promotion:** `best.pt` is written only when the corrected joint X/Y 5%-pass rate is strictly greater than source-decoder joint X/Y rate on the same validation batch. `latest.pt` is always saved for resumability; a missing `best.pt` means **not promoted**. The source checkpoint is read-only and the inherited registers are frozen by default. The existing operation and result losses remain active.
-
-## Commands (Windows PowerShell, repository root)
-
+## Install (from C:\Users\subsi\main_computer)
 ```powershell
-$py = 'C:\Users\subsi\NanoJev\.venv\Scripts\python.exe'
-& $py .\tools\nanojev_register_cumulative_magnitude_selective_guard_v3.py --self-test
-& $py -m pytest -q .\tests\test_nanojev_register_cumulative_magnitude_selective_guard_v3.py
-& $py .\tools\nanojev_register_cumulative_magnitude_selective_guard_v3.py `
-  --source-checkpoint 'C:\Users\subsi\NanoJev\runs\register_online_hierarchy_buffered_v1\best.pt' `
-  --results-root 'C:\Users\subsi\NanoJev\runs\register_cumulative_magnitude_selective_v3' `
-  --device cuda --steps 3000
+Expand-Archive .\nanojev_hawk_dove_numeric_adapter_launcher_fix_v12.zip .\_numeric_adapter_launcher_fix -Force
+Copy-Item .\_numeric_adapter_launcher_fix\main_computer_test\tools\resume-nanojev-hawk-dove-cached.ps1 .\tools\resume-nanojev-hawk-dove-cached.ps1 -Force
 ```
 
-To resume use identical flags and `--resume`; `--steps` may be increased only if the inherited config permits it. Run `--eval-only --resume` against a completed v3 checkpoint for evaluation.
+## Preflight the real bare sibling import
+```powershell
+$py = 'C:\Users\subsi\NanoJev\.venv\Scripts\python.exe'
+$env:PYTHONPATH = "$(Resolve-Path .\tools)$([System.IO.Path]::PathSeparator)$env:PYTHONPATH"
+& $py -c 'from tools import nanojev_altreg_independent_math_qwen_precision_v2 as base; print("OP_IDS",len(base.OP_IDS))'
+```
+Expected: `OP_IDS 20`. This preflight changes the current shell's Python path;
+the patched PowerShell runner independently manages the environment for child processes.
 
-## Guard boundaries
+## Retry
+```powershell
+& .\tools\resume-nanojev-hawk-dove-cached.ps1 -Stage Upgrade -NumericAdapter -Python $py
+```
 
-The acceptance gate is learned, not a mathematical guarantee of non-regression for every sample. The strict promotion criterion protects the promoted *checkpoint*, not `latest.pt`. The new v3 code has not been tested on the user's remote CUDA checkpoint.
+## Tests
+```powershell
+& $py -m unittest discover -s tests -p test_nanojev_numeric_adapter_launcher_import_fix.py -v
+```
+
+The test uses a synthetic checkpoint only. It verifies the original unpatched
+adapter can migrate via a child process when `tools/` is supplied on `PYTHONPATH`.

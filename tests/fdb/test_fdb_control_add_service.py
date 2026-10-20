@@ -49,6 +49,8 @@ class FakeCoolifyClient:
 
     def request(self, method: str, path: str, payload=None) -> CoolifyResponse:
         method = method.upper()
+        if method == "GET" and path == "/api/v1/projects/project-a/environments":
+            return self._ok(method, path, [{"uuid": "environment-1", "name": "mainnet-fdb"}])
         if method == "GET" and path == "/api/v1/services":
             return self._ok(method, path, list(self.services.values()))
         if method == "POST" and path == "/api/v1/services":
@@ -64,7 +66,7 @@ class FakeCoolifyClient:
             item["name"] = payload.get("name", item["name"])
             return self._ok(method, path, item)
         if method == "POST" and (
-            path.startswith("/api/v1/deploy?")
+            path.startswith("/api/v1/deploy")
             or path in {
                 "/api/v1/services/svc-2/start",
                 "/api/v1/services/svc-2/restart",
@@ -79,6 +81,12 @@ class FakeCoolifyClient:
             item = self.services.get(uuid)
             if item is None:
                 return CoolifyResponse(False, 404, method, path, {"error": "not found"})
+            if uuid == "svc-2" and str(item.get("status") or "").startswith("running"):
+                sid = str(item["name"]).removeprefix("main-computer-")
+                item["applications"] = [
+                    {"name": sid, "status": "running"},
+                    {"name": f"{sid}-observer", "status": "running"},
+                ]
             return self._ok(method, path, item)
         if method == "GET" and "/logs?" in path:
             uuid = path.split("/api/v1/services/", 1)[1].split("/", 1)[0]
@@ -113,6 +121,8 @@ networks:
           url: http://coolify-a.invalid:8000
           api_token: test-token
           vpn_ip: 10.116.0.3
+          project_uuid: project-a
+          server_uuid: server-a
 """.lstrip(),
         encoding="utf-8",
     )
@@ -423,3 +433,18 @@ def test_inferred_add_service_prepares_rebirth_from_accepted_empty(tmp_path: Pat
     assert prepared.details["host_id"] == "coolify-a"
     assert prepared.details["endpoint"] == "10.116.0.3:4550"
     assert prepared.details["target_coordinators"] == ["10.116.0.3:4550"]
+
+
+def test_inferred_add_service_fills_omitted_project_and_server(tmp_path: Path) -> None:
+    from tools.fdb_control.common.state import require_operation
+
+    ctx = _ctx(tmp_path)
+    publish_accepted_state(ctx, _accepted_empty())
+    client = FakeCoolifyClient()
+    result = prep_inferred(
+        ctx, "mainnet", "mainneta-fdb1", client_factory=FakeFactory(client),
+    )
+    assert result.status == "prepared"
+    record = require_operation(ctx, "mainnet", str(result.details["operation_id"]))
+    assert record["target"]["deployment"]["project_uuid"] == "project-a"
+    assert record["target"]["deployment"]["server_uuid"] == "server-a"

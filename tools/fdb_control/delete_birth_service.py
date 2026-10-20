@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .common.coolify import CoolifyClient, delete_service, find_service, wait_for_missing
+from .common.coolify import CoolifyClient, delete_service, find_service
+from .common.docker_destruction import verify_service_destruction
 from .common.errors import FdbControlError
 from .common.models import FdbContext
 from .common.privates import load_private_infrastructure, resolve_host_binding
@@ -92,7 +93,7 @@ def delete_unaccepted_birth(
         }
 
     delete_service(client, service_uuid)
-    wait_for_missing(client, service_uuid, timeout_s=timeout_s, poll_s=5.0)
+    verify_service_destruction(client, private_doc, plan.network, service.host_id, service_uuid, timeout_s=timeout_s, poll_s=5.0)
     update_operation(
         ctx,
         network,

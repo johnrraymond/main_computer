@@ -1646,17 +1646,14 @@ class Harness:
                 print("\nMOTHER_MUTATE_HARNESS_PRIVATE_STATE_BINDING_FORWARD_AVAILABLE:")
                 print("The topology evidence has an obsolete Mother private-state binding.")
                 print("To copy the latest auto-selected evidence forward without resealing its topology, run:")
-                if self.args.network == "mainnet":
-                    print(quote_command([
-                        sys.executable,
-                        str(self.repo_root / "tools" / "mother_forward_topology_evidence_binding.py"),
-                        "--network", self.args.network,
-                        "--runtime-state-root", self.args.runtime_state_root,
-                    ]))
-                    print("Then rerun the harness without any explicit --baseline-evidence or --baseline-evidence-sha256.")
-                    print("Live topology validation and any necessary reseal remain separate steps.")
-                else:
-                    print("The existing evidence-forwarding script supports mainnet only; no command is offered for this network.")
+                print(quote_command([
+                    sys.executable,
+                    str(self.repo_root / "tools" / "mother_forward_topology_evidence_binding.py"),
+                    "--network", self.args.network,
+                    "--runtime-state-root", self.args.runtime_state_root,
+                ]))
+                print("Then rerun the harness without any explicit --baseline-evidence or --baseline-evidence-sha256.")
+                print("Live topology validation and any necessary reseal remain separate steps.")
             raise SystemExit(proc.returncode)
 
         if obj is None:
@@ -2355,12 +2352,6 @@ class Harness:
         if self.args.network not in {"mainnet", "testnet"}:
             print("\n=== publish-officer-addresses: skipped (not testnet/mainnet) ===")
             return
-        # The initial testnet release is chain-only: no contract deployment
-        # manifest exists yet.  Officer publication belongs to the later
-        # contract deployment lifecycle, not Besu's first-block proof.
-        if self.args.network == "testnet":
-            print("\n=== publish-officer-addresses: skipped (testnet chain-only release) ===")
-            return
         # --start-at=publish-officer-addresses is a supported recovery path.
         # Do not infer prior verification merely from the presence of an artifact.
         if not self.state.get("single_node_proof_verified"):
@@ -2714,16 +2705,7 @@ class Harness:
             "--poll-interval-seconds", str(self.args.poll_interval_seconds),
             "--execute",
         ])
-        unpublished_testnet_route = (
-            self.args.network == "testnet"
-            and obj.get("status") == "pass"
-            and obj.get("clean") is True
-            and obj.get("ensured") is False
-            and obj.get("mode") == "verified-unpublished-route"
-            and (obj.get("route") or {}).get("network") == "testnet"
-            and (obj.get("proof") or {}).get("published_route_absent_in_verified_mother_state") is True
-        )
-        if obj.get("ensured") is not True and not unpublished_testnet_route:
+        if obj.get("status") != "pass" or obj.get("clean") is not True or obj.get("ensured") is not True:
             raise SystemExit("MOTHER_MUTATE_HARNESS_RPC_ROUTE_NOT_ENSURED")
         self.state["rpc_route_ensure"] = obj
 

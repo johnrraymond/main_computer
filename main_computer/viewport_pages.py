@@ -29,6 +29,32 @@ _PAGE_FILES = {
 def _expand_includes(text: str, base_dir: Path, seen: tuple[Path, ...] = ()) -> str:
     def replace(match: re.Match[str]) -> str:
         include_name = match.group(1).strip()
+        if include_name == "applications/apps/code-editor.html":
+            from main_computer.mcel_code_editor_host_projection import project
+
+            return project(_REPOSITORY_ROOT)
+        if include_name == "applications/apps/code-editor.html":
+            from main_computer.mcel_code_editor_host_projection import project
+
+            return project(_REPOSITORY_ROOT)
+        if include_name == "applications/apps/code-editor.html":
+            from main_computer.mcel_code_editor_host_projection import project
+
+            return project(_REPOSITORY_ROOT)
+        if include_name == "applications/apps/code-editor.html":
+            from main_computer.mcel_code_editor_host_projection import project
+
+            return project(_REPOSITORY_ROOT)
+        if include_name == "applications/apps/calculator.html":
+            from main_computer.mcel_calculator_host_projection import project
+
+            return project(_REPOSITORY_ROOT)
+        if include_name == "applications/apps/onlyoffice.html":
+            # Generate the host from its declared layout. The checked-in HTML is
+            # a snapshot, never the live presentation authority.
+            from main_computer.mcel_onlyoffice_host_projection import project
+
+            return project(_REPOSITORY_ROOT)
         if include_name == "applications/scripts/mcel-application-package-catalog.js":
             from main_computer.mcel_application_virtual_assets import read_virtual_mcel_browser_asset
 

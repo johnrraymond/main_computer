@@ -18,7 +18,8 @@
     "file-explorer": "default",
     "git-tools": "default",
     "website-builder": "default",
-    "mcel-lab": "default"
+    "mcel-lab": "default",
+    onlyoffice: "default"
   });
 
   const COMMON_OVERLAY_SELECTORS = Object.freeze([
@@ -137,6 +138,30 @@
         {id: "document-editor.region.navigation", selector: "#document-library", label: "Pretty Docs navigation", role: "document-library-navigation"},
         {id: "document-editor.region.companion", selector: "#document-ai-pane", label: "Document AI companion", role: "document-ai-companion"},
         {id: "document-editor.region.advanced", selector: "#document-plugin-rail", label: "Document plugin rail", role: "document-plugin-rail"}
+      ],
+      forbiddenRegions: [],
+      lifecycleAssertions: []
+    },
+    onlyoffice: {
+      contractId: "onlyoffice.contract.default.app-health",
+      appId: "onlyoffice",
+      mode: "default",
+      intent: "Verify that the workbook library and embedded ONLYOFFICE editor occupy usable application surfaces.",
+      derivedFromBlockTypes: ["mcel-runtime-check"],
+      primarySurface: {
+        id: "onlyoffice.surface.editor",
+        label: "ONLYOFFICE embedded workbook editor",
+        hostSelector: "#onlyoffice-editor-host",
+        editorSelector: "#onlyoffice-editor-host iframe",
+        minWidth: 360,
+        minHeight: 240
+      },
+      requiredRegions: [
+        {id: "onlyoffice.region.root", selector: "#onlyoffice-app", label: "ONLYOFFICE app root"},
+        {id: "onlyoffice.region.library", selector: ".onlyoffice-library", label: "Workbook library"},
+        {id: "onlyoffice.region.workspace", selector: ".onlyoffice-workspace", label: "Workbook workspace"},
+        {id: "onlyoffice.region.toolbar", selector: ".onlyoffice-toolbar", label: "Workbook controls"},
+        {id: "onlyoffice.region.editor-host", selector: "#onlyoffice-editor-host", label: "Editor host"}
       ],
       forbiddenRegions: [],
       lifecycleAssertions: []

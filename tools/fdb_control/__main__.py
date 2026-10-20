@@ -86,9 +86,17 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("network")
         p.add_argument("--operation-id", required=True)
 
+    diagnostic = sub.add_parser("diagnose-observer")
+    diagnostic.add_argument("network")
+    diagnostic.add_argument("--service", required=True)
+
     inspect = sub.add_parser("inspect")
     inspect.add_argument("network")
     inspect.add_argument("--operation-id", default="")
+    inspect.add_argument(
+        "--wait-timeout-seconds", type=float, default=0.0,
+        help="Bounded wait for operation-specific FDB proof (default: immediate)",
+    )
     return parser
 
 
@@ -133,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
+    if args.command == "diagnose-observer":
+        from .observer_diagnostics import diagnose_observer
+        return diagnose_observer(ctx, args.network, args.service)
     if args.command == "create-cluster" and args.stage == "prep":
         host, address = args.host, args.address
         description = args.cluster_description
@@ -217,8 +228,17 @@ def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "remove-service" and args.stage == "finalize":
         return _result_dict(remove_finalize(ctx, args.network, args.operation_id))
     if args.command == "inspect":
+        import math
+
+        wait_timeout = float(getattr(args, "wait_timeout_seconds", 0.0))
+        if not math.isfinite(wait_timeout) or wait_timeout < 0 or wait_timeout > 300:
+            raise ValueError("inspection proof wait must be between 0 and 300 seconds")
+        if wait_timeout and not args.operation_id:
+            raise ValueError("proof wait requires --operation-id")
         if args.operation_id:
             op = require_operation(ctx, args.network, args.operation_id)
+            if wait_timeout and op.get("kind") not in {"create-cluster", "add-service"}:
+                raise ValueError("proof wait only supports create-cluster and add-service operations")
             deployment = op.get("deployment_result") if isinstance(op.get("deployment_result"), dict) else {}
             target = op.get("target") if isinstance(op.get("target"), dict) else {}
             if op.get("kind") == "create-cluster":
@@ -228,6 +248,7 @@ def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
                     plan,
                     service_name=str(deployment.get("service_name") or target.get("service_name") or ""),
                     service_uuid=str(deployment.get("service_uuid") or "") or None,
+                    wait_timeout_s=wait_timeout,
                 )
                 return {
                     "network": args.network,
@@ -242,6 +263,7 @@ def _dispatch(ctx: FdbContext, args: argparse.Namespace) -> dict[str, Any]:
                     plan,
                     service_name=str(deployment.get("service_name") or target.get("service_name") or ""),
                     service_uuid=str(deployment.get("service_uuid") or "") or None,
+                    wait_timeout_s=wait_timeout,
                 )
                 return {
                     "network": args.network,

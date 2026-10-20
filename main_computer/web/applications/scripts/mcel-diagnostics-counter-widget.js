@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "mcel-diagnostics-counter-widget-v4";
+  const VERSION = "mcel-diagnostics-counter-widget-v5";
   const STARTUP_ERROR_WARNING_MS = 5000;
   const REFRESH_INTERVAL_MS = 30000;
   const DIAGNOSTIC_EVENT_ENDPOINT = "/api/mcel/diagnostics/events";
@@ -35,6 +35,15 @@
         "#document-app .document-head-actions",
         "#document-app .document-head",
         "#document-app .document-shell"
+      ]
+    },
+    onlyoffice: {
+      root: "#onlyoffice-app",
+      placeholder: "#onlyoffice-diagnostics-counter",
+      id: "onlyoffice-diagnostics-counter",
+      anchors: [
+        "#onlyoffice-app .onlyoffice-head",
+        "#onlyoffice-app .onlyoffice-shell"
       ]
     },
     "file-explorer": {
@@ -79,6 +88,141 @@
       ]
     }
   });
+
+  // Generic temporal-instability monitor: preserve every confirmed offender, not
+  // just the busiest subtree. Measurement clones and redundant mode writes are
+  // observed, never modified or suppressed by this module.
+  const STRUCTURAL_WINDOW_MS = 10000;
+  const STRUCTURAL_MIN_CYCLES = 12;
+  const STRUCTURAL_MIN_NODES = 8;
+  const REDUNDANT_ATTRIBUTE_MIN_WRITES = 12;
+  const structuralEvents = new Map();
+  const redundantAttributeEvents = new Map();
+  const retainedRuntimeFindings = new Map();
+  let structuralObserver = null;
+  let structuralLastPublished = false;
+
+  function structuralIdentity(node) {
+    if (!node || node.nodeType !== 1) return null;
+    if (node.closest?.(".mcel-diagnostics-counter")) return null;
+    // Preview clones use ordinary app component identities, and are ephemeral.
+    // Identify the logical clone itself, including when it is nested in an
+    // inserted/removed wrapper. Do not depend on Code Editor selectors.
+    const preview = node.matches?.("[data-mcel-layout-preview]") ? node :
+      node.querySelector?.("[data-mcel-layout-preview]");
+    if (preview) {
+      const identity = preview.getAttribute("data-mc-component-id") ||
+        preview.getAttribute("data-mc-layout-root") || preview.id || preview.tagName.toLowerCase();
+      return `layout-preview:${identity}`;
+    }
+    const descendants = node.querySelectorAll?.("*").length || 0;
+    if (descendants < STRUCTURAL_MIN_NODES && node.tagName !== "IFRAME") return null;
+    const component = node.getAttribute("data-mc-component-id") || node.id ||
+      (typeof node.className === "string" ? node.className.trim().split(/\s+/).slice(0, 2).join(".") : "");
+    return component ? `${node.tagName.toLowerCase()}:${component}` : null;
+  }
+
+  function recordTemporalEvent(map, key, operation, now) {
+    let events = map.get(key);
+    if (!events) {
+      events = [];
+      map.set(key, events);
+    }
+    events.push({operation, at: now});
+    while (events.length && now - events[0].at > STRUCTURAL_WINDOW_MS) events.shift();
+  }
+
+  function attributeOwner(node) {
+    const owner = node.closest?.("[data-mc-component-id]") || node;
+    const identity = owner.getAttribute?.("data-mc-component-id") || owner.id ||
+      (typeof owner.className === "string" ? owner.className.trim().split(/\s+/).slice(0, 2).join(".") : "") || owner.tagName?.toLowerCase();
+    return identity || "unknown";
+  }
+
+  function rememberRuntimeFindings(now = Date.now()) {
+    for (const [key, events] of structuralEvents) {
+      while (events.length && now - events[0].at > STRUCTURAL_WINDOW_MS) events.shift();
+      if (!events.length) { structuralEvents.delete(key); continue; }
+      const added = events.filter((event) => event.operation === "added").length;
+      const removed = events.length - added;
+      const cycles = Math.min(added, removed);
+      if (cycles < STRUCTURAL_MIN_CYCLES) continue;
+      const issueKey = `runtime-structural-churn:${key}`;
+      const previous = retainedRuntimeFindings.get(issueKey);
+      if (!previous || cycles > previous.cycles) retainedRuntimeFindings.set(issueKey, {
+        code: "runtime-structural-churn", key, added, removed, cycles,
+        observedAt: new Date(now).toISOString(), windowMs: STRUCTURAL_WINDOW_MS
+      });
+    }
+    for (const [key, events] of redundantAttributeEvents) {
+      while (events.length && now - events[0].at > STRUCTURAL_WINDOW_MS) events.shift();
+      if (!events.length) { redundantAttributeEvents.delete(key); continue; }
+      if (events.length < REDUNDANT_ATTRIBUTE_MIN_WRITES) continue;
+      const issueKey = `runtime-redundant-attribute-writes:${key}`;
+      const previous = retainedRuntimeFindings.get(issueKey);
+      if (!previous || events.length > previous.writes) retainedRuntimeFindings.set(issueKey, {
+        code: "runtime-redundant-attribute-writes", key, writes: events.length,
+        observedAt: new Date(now).toISOString(), windowMs: STRUCTURAL_WINDOW_MS
+      });
+    }
+    return [...retainedRuntimeFindings.values()];
+  }
+
+  function runtimeInstabilityFindings() {
+    return rememberRuntimeFindings().map((evidence) => ({
+      severity: "error",
+      code: evidence.code,
+      finding: evidence.code === "runtime-structural-churn"
+        ? `Repeated replacement of ${evidence.key}: ${evidence.added} additions and ${evidence.removed} removals (${evidence.cycles} cycles) in ${evidence.windowMs / 1000}s, observed ${evidence.observedAt}. Finding retained until page reload.`
+        : `Redundant attribute writes on ${evidence.key}: ${evidence.writes} unchanged-value mutations in ${evidence.windowMs / 1000}s, observed ${evidence.observedAt}. Finding retained until page reload.`,
+      recommendedNextProbe: evidence.code === "runtime-structural-churn"
+        ? "Inspect repeated mount/refresh scheduling for the affected component."
+        : "Inspect repeated writes and mutation observers for the affected attribute."
+    }));
+  }
+
+  function startStructuralMonitor(doc) {
+    if (structuralObserver || typeof MutationObserver === "undefined" || !doc?.documentElement) return;
+    structuralObserver = new MutationObserver((records) => {
+      const now = Date.now();
+      for (const record of records) {
+        if (record.type === "attributes") {
+          const node = record.target;
+          if (node.closest?.(".mcel-diagnostics-counter")) continue;
+          // Mode changes can legitimately trigger work; only repeated writes of
+          // the already-current value count. Keep both modes generic to any app.
+          const attr = record.attributeName;
+          if (attr && /(?:^|-)mode$/.test(attr) && record.oldValue === node.getAttribute(attr)) {
+            recordTemporalEvent(redundantAttributeEvents,
+              `${attributeOwner(node)}:${attr}`, "unchanged", now);
+          }
+          continue;
+        }
+        if (record.type !== "childList") continue;
+        for (const node of record.addedNodes) {
+          const key = structuralIdentity(node);
+          if (key) recordTemporalEvent(structuralEvents, key, "added", now);
+        }
+        for (const node of record.removedNodes) {
+          const key = structuralIdentity(node);
+          if (key) recordTemporalEvent(structuralEvents, key, "removed", now);
+        }
+      }
+    });
+    structuralObserver.observe(doc.documentElement, {
+      subtree: true, childList: true, attributes: true, attributeOldValue: true
+    });
+    window.setInterval(() => {
+      const active = rememberRuntimeFindings().length > 0;
+      if (!active && !structuralLastPublished) return;
+      structuralLastPublished = active;
+      for (const appId of Object.keys(APP_WIDGETS)) {
+        if (!isAppVisible(doc, appId)) continue;
+        const widget = doc.querySelector(appConfig(appId).placeholder);
+        if (widget) update(widget, {appId});
+      }
+    }, 1000);
+  }
 
   function getDocument() {
     try {
@@ -328,6 +472,12 @@
 
   function issueKey(finding) {
     const issue = compactIssue(finding);
+    // Live counters evolve. Keep one history entry per offending component,
+    // rather than creating a new historical issue whenever its count rises.
+    if (issue.code === "runtime-structural-churn" || issue.code === "runtime-redundant-attribute-writes") {
+      const component = issue.finding.match(/^(?:Repeated replacement of |Redundant attribute writes on )([^:]+(?::[^:]+)*?): \d+/)?.[1];
+      if (component) return `${issue.code}\u001f${component}`;
+    }
     return [
       issue.code,
       issue.finding,
@@ -484,7 +634,8 @@
       "layoutCollisions",
       "overlays",
       "forbiddenRegions",
-      "appSurfaceConformance"
+      "appSurfaceConformance",
+      "runtimeStructuralChurn"
     ]) {
       if (Object.prototype.hasOwnProperty.call(measurements, key)) {
         result[key] = measurements[key];
@@ -752,6 +903,18 @@
       report = attachConformanceFallback(report);
     }
 
+    // E/W/G includes all confirmed runtime offenders, not only the largest.
+    const instability = runtimeInstabilityFindings();
+    if (instability.length) {
+      report.findings = [...(Array.isArray(report.findings) ? report.findings : []), ...instability];
+      report.measurements = {...(report.measurements || {}), runtimeInstability: {
+        windowMs: STRUCTURAL_WINDOW_MS,
+        thresholdCycles: STRUCTURAL_MIN_CYCLES,
+        thresholdRedundantWrites: REDUNDANT_ATTRIBUTE_MIN_WRITES,
+        evidence: rememberRuntimeFindings().map((item) => ({...item}))
+      }};
+    }
+
     const history = widget.__mcelDiagnosticsIssueHistory || createIssueHistory(report?.timestamp || new Date().toISOString());
     const counts = summarizeReport(report, history);
     updateIssueHistory(history, report, report?.timestamp || new Date().toISOString());
@@ -859,6 +1022,9 @@
       issueHistoryCounts,
       isStartupWindow,
       normalizeIssueSeverity,
+      recordTemporalEvent,
+      rememberRuntimeFindings,
+      runtimeInstabilityFindings,
       normalizedVerdict,
       STARTUP_ERROR_WARNING_MS,
       DIAGNOSTIC_EVENT_ENDPOINT,
@@ -873,6 +1039,7 @@
   } catch {}
 
   function boot() {
+    startStructuralMonitor(getDocument());
     mountAll();
   }
 

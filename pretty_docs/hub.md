@@ -4,9 +4,11 @@ Status: architecture baseline; first-Hub `unborn -> 1` lifecycle slice implement
 
 **Current deployment boundary:** Hub Control (`hub_mutate_harness.py`,
 `tools/hub_control/`) alone owns Hub birth, topology, placement, and death.
-Mother may deploy a chain-only testnet before any Hub exists. Hub birth depends
-on verified network-matching Chain and FDB consumer contracts and is not a side
-effect of Besu genesis. See [network operations](mother-network-operations.md).
+Mother may deploy a chain-only testnet under an explicit profile, or an
+integrated first-node stack by default. The legacy embedded Hub in the
+integrated stack is not accepted Hub Control membership. Hub birth depends on
+verified network-matching Chain and FDB consumer contracts and is not an
+automatic consequence of Besu genesis. See [network operations](mother-network-operations.md).
 
 
 ## Purpose
@@ -30,7 +32,7 @@ accepted Hub topology
 = Hub runtime projection
 ```
 
-A change to one source does not transfer ownership of another source. FDB changes do not authorize Hub membership mutation. Chain changes do not authorize Hub membership mutation. Hub lifecycle changes do not authorize FDB or chain mutation.
+A change to one source does not transfer ownership of another source. FDB changes do not authorize Hub membership mutation. Chain changes do not authorize Hub membership mutation. Hub Control never writes FDB accepted membership directly: on the first `add-hub`, the authorized operator harness can delegate missing FDB birth to the independently verified FDB harness, whose own transaction and proof rules remain authoritative. Hub admission is still blocked until FDB is accepted and verified.
 
 ## Authority model
 
@@ -89,6 +91,33 @@ N -> N-1   ordinary remove-hub
 ```
 
 `0 -> 1` requires no special rebirth command. `add-hub` is the operator intent; the harness determines whether the transition is a rebirth.
+
+### One-command first-Hub bootstrap
+
+For an unborn network with a functioning Mother chain, the operator uses the same Hub command whether or not FoundationDB already exists:
+
+```powershell
+python .\hub_mutate_harness.py add-hub --network testnet --hub testnetb-hub1
+python .\hub_mutate_harness.py add-hub --network testnet --hub testnetb-hub1 --execute-mutations --yes-i-know-this-mutates-hub
+```
+
+The first invocation is a nonmutating dependency plan. The authorized invocation
+checks the Hub topology; only a missing/empty FDB dependency permits automatic
+`create-cluster`/first `add-service` via the existing `fdb_mutate_harness.py`.
+The FDB service name is derived from the Hub placement (`testnetb-fdb1` for
+`testnetb-hub1`) and remains within the same network. FDB Control retains the
+cluster ID, accepted state, proof, and restart authority. The Hub harness then
+rechecks live Hub topology and runs its usual prepare/do/proof/finalize steps.
+
+Unrelated Hub topology UNKNOWN/DRIFT is never auto-sealed. Automatic FDB birth
+is forbidden when accepted Hub membership or Mother's active Hub membership is
+nonempty. A previously accepted but unverified FDB cluster is never overwritten. If an unaccepted FDB birth's
+Coolify service was manually deleted, its frozen birth transaction is safely
+reused only after verified service absence; persistent database storage is not
+deleted. A service-level `running` label without both running FDB containers is
+not a successful deployment, and a bounded one-time forced dispatch may recover
+a completely unmaterialized FDB deployment. Every Hub step remains contingent
+on independently verified FDB acceptance.
 
 `1 -> 0` is intentionally destructive and requires a separate acknowledgement in addition to ordinary mutation authorization.
 

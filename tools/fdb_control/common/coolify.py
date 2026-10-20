@@ -185,19 +185,28 @@ def update_service(client: CoolifyClient, service_uuid: str, *, service_name: st
 
 
 def deploy_service(client: CoolifyClient, service_uuid: str, *, force: bool = False) -> None:
+    """Request an actual Coolify deployment, using Mother's proven POST body.
+
+    API success is only dispatch acknowledgment; wait_for_running must still
+    observe both real FDB subservices before the operation is deemed deployed.
+    """
     quoted = urllib.parse.quote(service_uuid)
     query = urllib.parse.urlencode({"uuid": service_uuid, "force": "true" if force else "false"})
-    paths = [
-        ("POST", f"/api/v1/deploy?{query}"),
-        ("POST", f"/api/v1/services/{quoted}/start"),
-        ("POST", f"/api/v1/services/{quoted}/restart"),
-        ("POST", f"/api/v1/services/{quoted}/deploy"),
+    attempts = [
+        ("POST", "/api/v1/deploy", {"uuid": service_uuid, "force": bool(force)}),
+        ("POST", f"/api/v1/deploy?{query}", None),
+        ("POST", f"/api/v1/services/{quoted}/start", None),
+        ("POST", f"/api/v1/services/{quoted}/restart", None),
+        ("POST", f"/api/v1/services/{quoted}/deploy", None),
     ]
-    for method, path in paths:
-        response = client.request(method, path)
+    for method, path, payload in attempts:
+        response = client.request(method, path, payload)
         if response.ok:
             return
-    raise _coolify_error("FDB_COOLIFY_DEPLOY_FAILED", "Coolify service deploy failed on all known endpoints", effect="live-deployment", retry="inspect-first")
+    raise _coolify_error(
+        "FDB_COOLIFY_DEPLOY_FAILED", "Coolify service deploy failed on all known endpoints",
+        effect="live-deployment", retry="inspect-first",
+    )
 
 
 def delete_service(client: CoolifyClient, service_uuid: str) -> None:
@@ -253,25 +262,60 @@ def service_health_status(payload: Mapping[str, Any] | None) -> str:
     return candidates[0] if candidates else "unknown"
 
 
-def wait_for_running(client: CoolifyClient, service_uuid: str, *, timeout_s: float = 300.0, poll_s: float = 5.0) -> Mapping[str, Any]:
-    """Wait for Coolify to materialize the service into a running state.
+def wait_for_running(
+    client: CoolifyClient,
+    service_uuid: str,
+    *,
+    timeout_s: float = 300.0,
+    poll_s: float = 5.0,
+    required_subservices: tuple[str, ...] = (),
+    retry_unmaterialized_after_s: float | None = None,
+) -> Mapping[str, Any]:
+    """Wait for real subservice materialization, not aggregate Coolify status.
 
-    This is deliberately not an FDB health proof. Coolify service start is
-    asynchronous, and its aggregate service payload is only used here to prove
-    that the deployment has materialized far enough to be running. FDB truth is
-    established separately by the observer proof consumed by live inspection.
+    When explicit subservice names are provided, all must be observed running.
+    An aggregate ``running`` with exited children (or none) never qualifies.
+    A single forced redeploy may recover a *completely absent/exited* stack,
+    never one with partially running children.
     """
-
-    deadline = time.monotonic() + max(0.0, timeout_s)
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout_s)
+    forced_retry = False
+    last_status = "unknown"
     while True:
         detail = get_service(client, service_uuid)
         status = service_health_status(detail)
-        if status.startswith("running"):
-            return detail or {}
+        if not required_subservices:
+            if status.startswith("running"):
+                return detail or {}
+            last_status = status
+        else:
+            apps = detail.get("applications") if isinstance(detail, Mapping) else None
+            entries = {str(item.get("name") or ""): str(item.get("status") or "").lower()
+                       for item in apps if isinstance(item, Mapping) and item.get("name")} if isinstance(apps, list) else {}
+            missing = [name for name in required_subservices if not entries.get(name, "").startswith("running")]
+            if not missing and status.startswith("running"):
+                return detail or {}
+            children_status = ", ".join(f"{name}: {entries.get(name, 'missing')}" for name in required_subservices)
+            last_status = f"aggregate={status}; subservices={children_status}"
+            # The original FDB incident had both child containers exited while
+            # the parent reported running. Re-request dispatch only if none of
+            # the required children are materializing or already running.
+            if (
+                not forced_retry
+                and retry_unmaterialized_after_s is not None
+                and time.monotonic() - started >= retry_unmaterialized_after_s
+                and not any(entries.get(name, "").startswith("running") for name in required_subservices)
+                and all(entries.get(name, "missing") in {"missing", "exited", "stopped", "created"}
+                        for name in required_subservices)
+            ):
+                deploy_service(client, service_uuid, force=True)
+                forced_retry = True
         if time.monotonic() >= deadline:
             raise _coolify_error(
                 "FDB_BIRTH_MATERIALIZE_TIMEOUT",
-                f"Coolify service {service_uuid} did not become running before timeout; last status={status}",
+                f"Coolify service {service_uuid} did not materialize before timeout; last status={last_status}; "
+                f"forced_redeploy_attempted={forced_retry}",
                 retry="inspect-first",
             )
         time.sleep(max(0.1, poll_s))
@@ -310,6 +354,49 @@ def get_service_logs(
         return str(value or "")
     return str(body or "")
 
+
+
+def wait_for_destruction(
+    client: CoolifyClient,
+    service_uuid: str,
+    *,
+    timeout_s: float = 300.0,
+    poll_s: float = 5.0,
+    settled_polls: int = 2,
+) -> None:
+    """Wait until the Coolify control plane consistently no longer sees this UUID.
+
+    A successful DELETE only queues cleanup in Coolify 4.x. Require both the
+    service-detail endpoint (404) and the service listing to omit the frozen
+    UUID, on consecutive polls. This is *Coolify disappearance*, not proof
+    that Docker has released every network resource; no SSH/Docker access is
+    performed or implied by this operation.
+    """
+    if settled_polls < 1:
+        raise ValueError("settled_polls must be positive")
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    consecutive = 0
+    last = "not yet inspected"
+    while True:
+        detail_missing = get_service(client, service_uuid) is None
+        listed = _list_items(client, "/api/v1/services", "services")
+        listing_missing = all(_item_uuid(item) != service_uuid for item in listed)
+        if detail_missing and listing_missing:
+            consecutive += 1
+            if consecutive >= settled_polls:
+                return
+        else:
+            consecutive = 0
+        last = (f"detail_missing={detail_missing}; list_missing={listing_missing}; "
+                f"settled={consecutive}/{settled_polls}")
+        if time.monotonic() >= deadline:
+            raise _coolify_error(
+                "FDB_COOLIFY_SERVICE_DESTRUCTION_TIMEOUT",
+                f"Coolify service {service_uuid} still visible or unconfirmed after {timeout_s:.0f}s; {last}",
+                effect="live-deployment",
+                retry="inspect-first",
+            )
+        time.sleep(max(0.1, poll_s))
 
 
 def wait_for_missing(client: CoolifyClient, service_uuid: str, *, timeout_s: float = 300.0, poll_s: float = 5.0) -> None:
