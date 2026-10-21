@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Production Stable Hub launcher for Hub Control's accepted topology projection.
 
-Hub Control supplies frozen FDB and topology inputs through the environment.
-Materialize them before starting the Hub even when Coolify runs Dockerfile CMD
-instead of its configured start_command.  Never select an implicit Hub identity.
+The Hub Control bootstrap writes the FDB cluster and topology files before
+this entrypoint starts.  The concrete Hub identity must be explicit: never
+choose a Hub based on an unspecified port or a development topology.
 """
 from __future__ import annotations
 
@@ -17,52 +17,61 @@ from pathlib import Path
 from main_computer.stable_hub import main as stable_hub_main
 
 
-def _write_if_changed(path: Path, contents: bytes) -> None:
-    """Publish startup material atomically, preserving it on repeat launches."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_file() and path.read_bytes() == contents:
+def _install_authoritative_bridge_signer() -> None:
+    """Materialize the verified Coolify signer into the private Hub runtime.
+
+    This is a startup-only projection of the Hub mutation harness's secret
+    environment value, never an independent mutation of Mother or Coolify.
+    Public health may not accept a writes-enabled Hub lacking its signer.
+    """
+    enabled = os.environ.get("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES", "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
         return
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    encoded = os.environ.get("MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64", "").strip()
+    path_text = os.environ.get("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", "").strip()
+    runtime_dir = os.environ.get("MAIN_COMPUTER_HUB_CONTROL_RUNTIME_DIR", "").strip()
+    network = os.environ.get("MAIN_COMPUTER_HUB_CONTROL_NETWORK", "").strip()
+    chain_id = os.environ.get("MAIN_COMPUTER_HUB_CONTROL_CHAIN_ID", "").strip()
+    if not all((encoded, path_text, runtime_dir, network, chain_id)):
+        raise RuntimeError("Hub bridge writes require a verified signer bundle, private destination, network and chain")
+    root = Path(runtime_dir).resolve()
+    path = Path(path_text).resolve()
+    if not path.is_relative_to(root) or path == root:
+        raise RuntimeError("Hub signer destination must be inside the Hub private runtime")
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(contents)
+        raw = base64.b64decode(encoded, validate=True)
+        bundle = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise RuntimeError("Invalid authoritative Hub signer bundle") from exc
+    if not isinstance(bundle, dict) or bundle.get("schema") != "main-computer.bridge-signer.v1":
+        raise RuntimeError("Invalid authoritative Hub signer schema")
+    if str(bundle.get("network") or "") != network or str(bundle.get("chain_id") or "") != chain_id:
+        raise RuntimeError("Authoritative Hub signer network or chain mismatch")
+    if not isinstance(bundle.get("bridge_controller"), dict):
+        raise RuntimeError("Authoritative Hub bridge-controller wallet is missing")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix=".bridge-signer-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(raw)
+        os.chmod(temporary, 0o600)
+        # Verify this exact file (and its key) before adopting it into the
+        # persistent runtime. The contract registry is the escrow authority.
+        from main_computer.config import MainComputerConfig
+        from main_computer.hub_credit_bridge_completion import load_bridge_deployment, load_hub_admin_private_key
+        from eth_account import Account
+        deployment = load_bridge_deployment(
+            MainComputerConfig.from_env(), deployment_manifest_path=Path(temporary)
+        )
+        key = load_hub_admin_private_key(deployment)
+        if str(Account.from_key(key).address).lower() != deployment.bridge_controller_address.lower():
+            raise RuntimeError("Hub signer private key does not match the authorized bridge controller")
+        if str(deployment.chain_id) != chain_id:
+            raise RuntimeError("Hub signer deployment chain does not match accepted topology")
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-
-
-def _materialize_hub_control_artifacts(topology: Path) -> None:
-    """Make Hub Control's frozen environment projection usable with Docker CMD.
-
-    Coolify can ignore an application's start_command and run the Dockerfile
-    CMD directly.  The launcher must therefore perform the same projection.
-    """
-    encoded = os.environ.get("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64", "").strip()
-    short_encoded = os.environ.get("MCT", "").strip()
-    if encoded and short_encoded and encoded != short_encoded:
-        raise ValueError("Hub Control topology environment aliases disagree")
-    encoded = encoded or short_encoded
-    if not encoded:
-        return  # Local launches may supply an already-materialized topology.
-
-    cluster = os.environ.get("MAIN_COMPUTER_HUB_CONTROL_FDB_CLUSTER_CONTENTS", "").strip()
-    short_cluster = os.environ.get("MCF", "").strip()
-    if cluster and short_cluster and cluster != short_cluster:
-        raise ValueError("Hub Control FDB environment aliases disagree")
-    cluster = cluster or short_cluster
-    cluster_path = (
-        os.environ.get("MAIN_COMPUTER_HUB_CONTROL_CLUSTER_FILE", "").strip()
-        or os.environ.get("MAIN_COMPUTER_HUB_FDB_CLUSTER_FILE", "").strip()
-    )
-    if not cluster or not cluster_path:
-        raise ValueError("Hub Control FDB bootstrap configuration is incomplete")
-    decoded = base64.b64decode(encoded, validate=True)
-    if not isinstance(json.loads(decoded), dict):
-        raise ValueError("Hub Control topology is not a JSON object")
-
-    _write_if_changed(Path(cluster_path), (cluster + "\n").encode("utf-8"))
-    _write_if_changed(topology, decoded)
 
 
 def main() -> int:
@@ -71,11 +80,6 @@ def main() -> int:
     port = os.environ.get("MAIN_COMPUTER_HUB_PORT", os.environ.get("PORT", "8790")).strip()
     if not topology or not hub_id:
         print("Stable Hub requires Hub Control topology path and concrete Hub ID", file=sys.stderr)
-        return 2
-    try:
-        _materialize_hub_control_artifacts(Path(topology))
-    except (OSError, ValueError, UnicodeError) as exc:
-        print(f"Stable Hub bootstrap failed: {exc}", file=sys.stderr)
         return 2
     if not Path(topology).is_file():
         print(f"Stable Hub topology not found: {topology}", file=sys.stderr)
@@ -86,6 +90,12 @@ def main() -> int:
             raise ValueError("port outside TCP range")
     except ValueError:
         print(f"Stable Hub port is invalid: {port}", file=sys.stderr)
+        return 2
+    try:
+        _install_authoritative_bridge_signer()
+    except Exception as exc:
+        # Never reveal private signer bundle contents or user-controlled paths.
+        print(f"Stable Hub signer startup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     return stable_hub_main([
         "--topology", topology, "--hub-id", hub_id,
