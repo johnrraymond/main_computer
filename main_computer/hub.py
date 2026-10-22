@@ -622,6 +622,13 @@ class HubUpstream:
         return asdict(self)
 
 
+def _hub_worker_is_pull_mode(capabilities: dict[str, Any] | None) -> bool:
+    caps = capabilities if isinstance(capabilities, dict) else {}
+    execution = caps.get("execution") if isinstance(caps.get("execution"), dict) else {}
+    mode = str(execution.get("mode") or caps.get("execution_mode") or "").strip().lower()
+    return mode == "worker_pull_v0"
+
+
 class HubRegistry:
     """JSON-backed worker registry used by the hub server.
 
@@ -689,15 +696,17 @@ class HubRegistry:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
         clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_node_id
         clean_endpoint = str(endpoint or "").strip().rstrip("/")
-        if not clean_endpoint:
-            raise ValueError("Worker endpoint is required.")
-        _require_allowed_transport(
-            clean_endpoint,
-            role="Worker",
-            allow_insecure_dev_network=self.allow_insecure_dev_network,
-        )
-        now = _utc_now()
         clean_capabilities = dict(capabilities or {})
+        # Outbound worker-pull uses an authenticated Hub socket, not an HTTP callback.
+        if not clean_endpoint and not _hub_worker_is_pull_mode(clean_capabilities):
+            raise ValueError("Worker endpoint is required for non-pull execution.")
+        if clean_endpoint:
+            _require_allowed_transport(
+                clean_endpoint,
+                role="Worker",
+                allow_insecure_dev_network=self.allow_insecure_dev_network,
+            )
+        now = _utc_now()
         credit_price_wei, credit_price, _credit_price_display, pricing_payload = _hub_normalized_pricing_payload(
             clean_capabilities,
             {"credits_per_request": credits_per_request},
@@ -1136,7 +1145,8 @@ class HubRegistry:
             endpoint = str(item.get("endpoint", "")).strip().rstrip("/")
             node_id = _clean_node_id(str(item.get("node_id", "")), default="")
             worker_instance_id = _clean_node_id(str(item.get("worker_instance_id") or node_id), default=node_id)
-            if not node_id or not endpoint:
+            capabilities = dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {}
+            if not node_id or (not endpoint and not _hub_worker_is_pull_mode(capabilities)):
                 continue
             models = self._normalize_models(model=str(item.get("model", "") or ""), models=item.get("models") if isinstance(item.get("models"), list) else None)
             primary_model = models[0] if models else str(item.get("model", "") or "")

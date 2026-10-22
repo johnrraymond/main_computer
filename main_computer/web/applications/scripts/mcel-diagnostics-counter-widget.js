@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "mcel-diagnostics-counter-widget-v5";
+  const VERSION = "mcel-diagnostics-counter-widget-v8";
   const STARTUP_ERROR_WARNING_MS = 5000;
   const REFRESH_INTERVAL_MS = 30000;
   const DIAGNOSTIC_EVENT_ENDPOINT = "/api/mcel/diagnostics/events";
@@ -94,13 +94,16 @@
   // observed, never modified or suppressed by this module.
   const STRUCTURAL_WINDOW_MS = 10000;
   const STRUCTURAL_MIN_CYCLES = 12;
+  const STRUCTURAL_CAVEAT_CYCLES = Math.floor(STRUCTURAL_MIN_CYCLES / 2);
   const STRUCTURAL_MIN_NODES = 8;
   const REDUNDANT_ATTRIBUTE_MIN_WRITES = 12;
+  const REDUNDANT_ATTRIBUTE_CAVEAT_WRITES = Math.floor(REDUNDANT_ATTRIBUTE_MIN_WRITES / 2);
   const structuralEvents = new Map();
   const redundantAttributeEvents = new Map();
   const retainedRuntimeFindings = new Map();
+  let evidenceGeneration = 0;
   let structuralObserver = null;
-  let structuralLastPublished = false;
+  let structuralRefreshScheduled = false;
 
   function structuralIdentity(node) {
     if (!node || node.nodeType !== 1) return null;
@@ -122,6 +125,51 @@
     return component ? `${node.tagName.toLowerCase()}:${component}` : null;
   }
 
+  // Activity Dock is a bounded live feed: new event IDs entering as old IDs
+  // leave are not structural replacement. Scope this exception to its cards.
+  function activityEventIdentity(node, parent) {
+    if (parent?.id !== "machine-activity-events" || node?.nodeType !== 1 ||
+        !node.matches?.("article.machine-activity-event")) return null;
+    const id = node.__activityEventId;
+    return id == null || String(id) === "" ? null : String(id);
+  }
+
+  // A MutationObserver delivery covers a synchronous Dock reconciliation.
+  // Cancel moves of the same DOM node; only a different node with the SAME
+  // logical event ID is an unnecessary replacement. Missing IDs continue
+  // through the generic structural detector.
+  function recordActivityCardReplacements(mutations, now) {
+    const byNode = new Map();
+    for (const {node, id, operation} of mutations) {
+      let counts = byNode.get(node);
+      if (!counts) {
+        counts = {id, added: 0, removed: 0};
+        byNode.set(node, counts);
+      }
+      counts[operation] += 1;
+    }
+    const byId = new Map();
+    for (const {id, added, removed} of byNode.values()) {
+      const remainingAdded = Math.max(0, added - removed);
+      const remainingRemoved = Math.max(0, removed - added);
+      if (!remainingAdded && !remainingRemoved) continue;
+      let counts = byId.get(id);
+      if (!counts) {
+        counts = {added: 0, removed: 0};
+        byId.set(id, counts);
+      }
+      counts.added += remainingAdded;
+      counts.removed += remainingRemoved;
+    }
+    for (const {added, removed} of byId.values()) {
+      const replacements = Math.min(added, removed);
+      for (let index = 0; index < replacements; index++) {
+        recordTemporalEvent(structuralEvents, "article:machine-activity-event", "added", now);
+        recordTemporalEvent(structuralEvents, "article:machine-activity-event", "removed", now);
+      }
+    }
+  }
+
   function recordTemporalEvent(map, key, operation, now) {
     let events = map.get(key);
     if (!events) {
@@ -139,52 +187,98 @@
     return identity || "unknown";
   }
 
+  // Evidence is classified at observation time. A caveat (half the existing
+  // churn threshold) does not imply failure. Crossing the original threshold
+  // produces a NEW warning, not a rewrite of the earlier green observation.
+  // A failure still requires separate functional-failure evidence.
   function rememberRuntimeFindings(now = Date.now()) {
+    const previouslyActive = new Set([...retainedRuntimeFindings.entries()]
+      .filter(([, evidence]) => evidence.active).map(([key]) => key));
+    for (const evidence of retainedRuntimeFindings.values()) evidence.active = false;
+
+    function observe(code, key, severity, values, lastActivityAt) {
+      const mapKey = `${code}:${key}:${severity}`;
+      let evidence = retainedRuntimeFindings.get(mapKey);
+      if (!evidence || !previouslyActive.has(mapKey) ||
+          now - evidence.lastActivityAt > STRUCTURAL_WINDOW_MS) {
+        evidence = {
+          code, key, severity, ...values,
+          observedAt: new Date(now).toISOString(),
+          observationId: `${mapKey}:${now}`, windowMs: STRUCTURAL_WINDOW_MS
+        };
+        retainedRuntimeFindings.set(mapKey, evidence);
+        evidenceGeneration += 1;
+      }
+      evidence.active = true;
+      evidence.lastActivityAt = lastActivityAt;
+    }
+
     for (const [key, events] of structuralEvents) {
       while (events.length && now - events[0].at > STRUCTURAL_WINDOW_MS) events.shift();
       if (!events.length) { structuralEvents.delete(key); continue; }
       const added = events.filter((event) => event.operation === "added").length;
       const removed = events.length - added;
       const cycles = Math.min(added, removed);
-      if (cycles < STRUCTURAL_MIN_CYCLES) continue;
-      const issueKey = `runtime-structural-churn:${key}`;
-      const previous = retainedRuntimeFindings.get(issueKey);
-      if (!previous || cycles > previous.cycles) retainedRuntimeFindings.set(issueKey, {
-        code: "runtime-structural-churn", key, added, removed, cycles,
-        observedAt: new Date(now).toISOString(), windowMs: STRUCTURAL_WINDOW_MS
-      });
+      const lastActivityAt = events[events.length - 1].at;
+      if (cycles >= STRUCTURAL_CAVEAT_CYCLES) {
+        observe("runtime-structural-churn", key, "good", {added, removed, cycles}, lastActivityAt);
+      }
+      if (cycles >= STRUCTURAL_MIN_CYCLES) {
+        observe("runtime-structural-churn", key, "warning", {added, removed, cycles}, lastActivityAt);
+      }
     }
     for (const [key, events] of redundantAttributeEvents) {
       while (events.length && now - events[0].at > STRUCTURAL_WINDOW_MS) events.shift();
       if (!events.length) { redundantAttributeEvents.delete(key); continue; }
-      if (events.length < REDUNDANT_ATTRIBUTE_MIN_WRITES) continue;
-      const issueKey = `runtime-redundant-attribute-writes:${key}`;
-      const previous = retainedRuntimeFindings.get(issueKey);
-      if (!previous || events.length > previous.writes) retainedRuntimeFindings.set(issueKey, {
-        code: "runtime-redundant-attribute-writes", key, writes: events.length,
-        observedAt: new Date(now).toISOString(), windowMs: STRUCTURAL_WINDOW_MS
-      });
+      const lastActivityAt = events[events.length - 1].at;
+      if (events.length >= REDUNDANT_ATTRIBUTE_CAVEAT_WRITES) {
+        observe("runtime-redundant-attribute-writes", key, "good", {writes: events.length}, lastActivityAt);
+      }
+      if (events.length >= REDUNDANT_ATTRIBUTE_MIN_WRITES) {
+        observe("runtime-redundant-attribute-writes", key, "warning", {writes: events.length}, lastActivityAt);
+      }
     }
-    return [...retainedRuntimeFindings.values()];
+    return [...retainedRuntimeFindings.values()].filter((evidence) => evidence.active);
   }
 
   function runtimeInstabilityFindings() {
     return rememberRuntimeFindings().map((evidence) => ({
-      severity: "error",
+      severity: evidence.severity,
+      issueId: `${evidence.code}:${evidence.key}`,
+      observationId: evidence.observationId,
+      observedAt: evidence.observedAt,
       code: evidence.code,
       finding: evidence.code === "runtime-structural-churn"
-        ? `Repeated replacement of ${evidence.key}: ${evidence.added} additions and ${evidence.removed} removals (${evidence.cycles} cycles) in ${evidence.windowMs / 1000}s, observed ${evidence.observedAt}. Finding retained until page reload.`
-        : `Redundant attribute writes on ${evidence.key}: ${evidence.writes} unchanged-value mutations in ${evidence.windowMs / 1000}s, observed ${evidence.observedAt}. Finding retained until page reload.`,
+        ? `Repeated replacement of ${evidence.key}: ${evidence.added} additions and ${evidence.removed} removals (${evidence.cycles} cycles) in ${evidence.windowMs / 1000}s, observed ${evidence.observedAt}.`
+        : `Redundant attribute writes on ${evidence.key}: ${evidence.writes} unchanged-value mutations in ${evidence.windowMs / 1000}s, observed ${evidence.observedAt}.`,
       recommendedNextProbe: evidence.code === "runtime-structural-churn"
         ? "Inspect repeated mount/refresh scheduling for the affected component."
         : "Inspect repeated writes and mutation observers for the affected attribute."
     }));
   }
 
+  // Mutations are evidence collection, not a reason to rerun all app diagnoses.
+  // Publish only when new caveat/warning evidence is established; regular widget
+  // refreshes cover non-DOM changes and resolve inactive observations.
+  function scheduleStructuralFindingRefresh(doc) {
+    if (structuralRefreshScheduled) return;
+    structuralRefreshScheduled = true;
+    window.setTimeout(() => {
+      structuralRefreshScheduled = false;
+      for (const appId of Object.keys(APP_WIDGETS)) {
+        if (!isAppVisible(doc, appId)) continue;
+        const widget = doc.querySelector(appConfig(appId).placeholder);
+        if (widget) update(widget, {appId});
+      }
+    }, 0);
+  }
+
   function startStructuralMonitor(doc) {
     if (structuralObserver || typeof MutationObserver === "undefined" || !doc?.documentElement) return;
     structuralObserver = new MutationObserver((records) => {
       const now = Date.now();
+      const priorEvidenceGeneration = evidenceGeneration;
+      const activityCardMutations = [];
       for (const record of records) {
         if (record.type === "attributes") {
           const node = record.target;
@@ -200,28 +294,33 @@
         }
         if (record.type !== "childList") continue;
         for (const node of record.addedNodes) {
+          const id = activityEventIdentity(node, record.target);
+          if (id !== null) {
+            activityCardMutations.push({node, id, operation: "added"});
+            continue;
+          }
           const key = structuralIdentity(node);
           if (key) recordTemporalEvent(structuralEvents, key, "added", now);
         }
         for (const node of record.removedNodes) {
+          const id = activityEventIdentity(node, record.target);
+          if (id !== null) {
+            activityCardMutations.push({node, id, operation: "removed"});
+            continue;
+          }
           const key = structuralIdentity(node);
           if (key) recordTemporalEvent(structuralEvents, key, "removed", now);
         }
+      }
+      recordActivityCardReplacements(activityCardMutations, now);
+      rememberRuntimeFindings(now);
+      if (evidenceGeneration > priorEvidenceGeneration) {
+        scheduleStructuralFindingRefresh(doc);
       }
     });
     structuralObserver.observe(doc.documentElement, {
       subtree: true, childList: true, attributes: true, attributeOldValue: true
     });
-    window.setInterval(() => {
-      const active = rememberRuntimeFindings().length > 0;
-      if (!active && !structuralLastPublished) return;
-      structuralLastPublished = active;
-      for (const appId of Object.keys(APP_WIDGETS)) {
-        if (!isAppVisible(doc, appId)) continue;
-        const widget = doc.querySelector(appConfig(appId).placeholder);
-        if (widget) update(widget, {appId});
-      }
-    }, 1000);
   }
 
   function getDocument() {
@@ -322,12 +421,11 @@
     return current >= started && current - started <= STARTUP_ERROR_WARNING_MS;
   }
 
-  function normalizeIssueSeverity(severity, options = {}) {
+  function normalizeIssueSeverity(severity) {
     const value = String(severity || "").toLowerCase();
-    if (value === "critical" || value === "error") {
-      return options.startupWindow ? "warning" : "error";
-    }
+    if (value === "critical" || value === "error") return "error";
     if (value === "warning") return "warning";
+    if (value === "good" || value === "caveat") return "good";
     return "";
   }
 
@@ -335,7 +433,7 @@
     const findings = Array.isArray(report?.findings) ? report.findings : [];
     return findings.reduce(
       (counts, finding) => {
-        const severity = normalizeIssueSeverity(finding?.severity, options);
+        const severity = normalizeIssueSeverity(finding?.severity);
         if (severity === "error") counts.errors += 1;
         else if (severity === "warning") counts.warnings += 1;
         return counts;
@@ -435,11 +533,28 @@
     return ok;
   }
 
+  // The E/W counter is a session ledger, not a gauge of only active defects.
+  // Each distinct issue contributes once to each observed severity. Repeated
+  // episodes remain in history without inflating the compact counter.
+  function observedIssueCounts(history) {
+    const errors = new Set();
+    const warnings = new Set();
+    for (const entry of history?.entries || []) {
+      const severity = entry.normalizedSeverity || normalizeIssueSeverity(entry.severity);
+      const identity = entry.issueId || entry.key || entry.observationId;
+      if (!identity) continue;
+      if (severity === "error") errors.add(identity);
+      if (severity === "warning") warnings.add(identity);
+    }
+    return {errors: errors.size, warnings: warnings.size};
+  }
+
   function summarizeReport(report, history) {
-    const counts = issueCounts(report, {startupWindow: isStartupWindow(history, report?.timestamp || new Date().toISOString())});
+    const active = issueCounts(report);
+    const observed = observedIssueCounts(history);
     return {
-      errors: counts.errors,
-      warnings: counts.warnings,
+      errors: Math.max(active.errors, observed.errors),
+      warnings: Math.max(active.warnings, observed.warnings),
       ok: derivedOkCount(report)
     };
   }
@@ -447,19 +562,21 @@
   function normalizedVerdict(report, counts) {
     if (!report || typeof report !== "object") return "unknown";
     const safeCounts = counts || {errors: 0, warnings: 0};
-    if (Number(safeCounts.errors || 0) > 0) return "fail";
+    if (Number(safeCounts.errors || 0) > 0 || String(report.verdict || "").toLowerCase() === "fail") return "fail";
     if (String(report.verdict || "").toLowerCase() === "unknown") return "unknown";
     return "pass";
   }
 
-  function compactIssue(finding, options = {}) {
-    const normalizedSeverity = normalizeIssueSeverity(finding?.severity, options);
-    const originalNormalizedSeverity = normalizeIssueSeverity(finding?.severity, {startupWindow: false});
+  function compactIssue(finding) {
+    const severity = normalizeIssueSeverity(finding?.severity);
     return {
       severity: finding?.severity || "",
-      normalizedSeverity,
-      originalNormalizedSeverity,
-      countedAsStartupWarning: Boolean(options.startupWindow && originalNormalizedSeverity === "error" && normalizedSeverity === "warning"),
+      normalizedSeverity: severity,
+      originalNormalizedSeverity: severity,
+      countedAsStartupWarning: false, // Legacy copied-report field; no clock-based downgrade.
+      issueId: issueKey(finding),
+      observationId: finding?.observationId || "",
+      observedAt: finding?.observedAt || "",
       code: finding?.code || "",
       finding: finding?.finding || "",
       recommendedNextProbe: finding?.recommendedNextProbe || ""
@@ -471,21 +588,22 @@
   }
 
   function issueKey(finding) {
-    const issue = compactIssue(finding);
-    // Live counters evolve. Keep one history entry per offending component,
-    // rather than creating a new historical issue whenever its count rises.
-    if (issue.code === "runtime-structural-churn" || issue.code === "runtime-redundant-attribute-writes") {
-      const component = issue.finding.match(/^(?:Repeated replacement of |Redundant attribute writes on )([^:]+(?::[^:]+)*?): \d+/)?.[1];
-      if (component) return `${issue.code}\u001f${component}`;
+    if (finding?.issueId) return String(finding.issueId);
+    const code = finding?.code || "";
+    if (code === "runtime-structural-churn" || code === "runtime-redundant-attribute-writes") {
+      const component = String(finding?.finding || "").match(/^(?:Repeated replacement of |Redundant attribute writes on )(.+?): \d+/)?.[1];
+      if (component) return `${code}:${component}`;
     }
-    return [
-      issue.code,
-      issue.finding,
-      issue.recommendedNextProbe
-    ].join("\u001f");
+    return [code, finding?.finding || "", finding?.recommendedNextProbe || ""].join("\u001f");
   }
 
-  function createIssueHistory(now = new Date().toISOString()) {
+  function pageStartTimestamp() {
+    const origin = typeof performance !== "undefined" && Number.isFinite(performance.timeOrigin)
+      ? performance.timeOrigin : Date.now();
+    return new Date(origin).toISOString();
+  }
+
+  function createIssueHistory(now = pageStartTimestamp()) {
     return {
       schema: "mcel-diagnostics-counter-history-v3",
       pageStartedAt: now,
@@ -495,116 +613,120 @@
     };
   }
 
-  function findHistoryEntry(history, key) {
-    return (history.entries || []).find((entry) => entry.key === key) || null;
+  function findingObservationTime(finding, now) {
+    return timestampMs(finding?.observedAt) !== null ? finding.observedAt : now;
   }
 
+  function lifecyclePhase(history, observedAt) {
+    const origin = timestampMs(history?.pageStartedAt);
+    const event = timestampMs(observedAt);
+    return origin !== null && event !== null &&
+      event >= origin && event - origin <= STARTUP_ERROR_WARNING_MS ? "startup" : "runtime";
+  }
+
+  // Each stage is a separate record. We may update whether a stage is still
+  // active; we never rewrite its original severity, observation or evidence.
   function updateIssueHistory(history, report, now = new Date().toISOString()) {
     const findings = Array.isArray(report?.findings) ? report.findings : [];
-    const startupWindow = isStartupWindow(history, now);
-    const activeKeys = new Set();
-
+    const activeStageKeys = new Set();
     for (const finding of findings) {
       if (!shouldRememberIssue(finding)) continue;
-      const key = issueKey(finding);
-      activeKeys.add(key);
-      const originalNormalizedSeverity = normalizeIssueSeverity(finding?.severity, {startupWindow: false});
-      const normalizedSeverity = normalizeIssueSeverity(finding?.severity, {startupWindow});
-      const countedAsStartupWarning = originalNormalizedSeverity === "error" && normalizedSeverity === "warning";
-      let entry = findHistoryEntry(history, key);
-
+      const issueId = issueKey(finding);
+      const severity = normalizeIssueSeverity(finding.severity);
+      const observedAt = findingObservationTime(finding, now);
+      const observationId = String(finding.observationId || "");
+      const key = `${issueId}\u001f${severity}`;
+      const matching = history.entries.filter((entry) => entry.key === key);
+      const active = matching.find((entry) => entry.currentlyActive);
+      // An explicit new observation ID opens a new episode even if the prior
+      // episode was never absent from an intermediate periodic report.
+      let entry = active && (!observationId || active.observationId === observationId)
+        ? active : null;
       if (!entry) {
         entry = {
-          key,
+          key, issueId, observationId,
           ...compactIssue(finding),
-          normalizedSeverity,
-          originalNormalizedSeverity,
-          countedAsStartupWarning,
-          lifecyclePhase: startupWindow ? "startup" : "runtime",
-          firstSeen: now,
-          lastSeen: now,
+          stage: severity,
+          lifecyclePhase: lifecyclePhase(history, observedAt),
+          firstSeen: observedAt, lastSeen: observedAt,
           firstReportTimestamp: report?.timestamp || now,
           lastReportTimestamp: report?.timestamp || now,
-          seenCount: 0,
-          currentlyActive: true,
-          clearedAt: ""
+          seenCount: 1,
+          currentlyActive: true, clearedAt: ""
         };
         history.entries.push(entry);
+      } else {
+        // A repeated report is not a new observation and must not cause a
+        // severity change, new stage or synthetic historical event.
+        entry.lastReportTimestamp = report?.timestamp || now;
       }
-
-      entry.severity = finding?.severity || entry.severity;
-      entry.normalizedSeverity = normalizedSeverity;
-      entry.originalNormalizedSeverity = originalNormalizedSeverity;
-      entry.countedAsStartupWarning = Boolean(entry.countedAsStartupWarning || countedAsStartupWarning);
-      entry.lifecyclePhase = entry.lifecyclePhase === "runtime" ? "runtime" : startupWindow ? "startup" : "runtime";
-      entry.lastSeen = now;
-      entry.lastReportTimestamp = report?.timestamp || now;
-      entry.seenCount += 1;
-      entry.currentlyActive = true;
-      entry.clearedAt = "";
+      activeStageKeys.add(entry);
     }
-
     for (const entry of history.entries) {
-      if (!activeKeys.has(entry.key) && entry.currentlyActive) {
+      if (!activeStageKeys.has(entry) && entry.currentlyActive) {
         entry.currentlyActive = false;
         entry.clearedAt = now;
       }
     }
-
     history.lastUpdatedAt = now;
     return history;
   }
 
   function issueHistoryCounts(history) {
-    return (history?.entries || []).reduce(
-      (counts, entry) => {
-        const severity = entry.normalizedSeverity || normalizeIssueSeverity(entry.severity);
-        if (severity === "error") {
-          counts.errorsSeen += 1;
-          if (entry.currentlyActive) counts.activeErrors += 1;
-          else counts.resolvedErrors += 1;
-        } else if (severity === "warning") {
-          counts.warningsSeen += 1;
-          if (entry.currentlyActive) counts.activeWarnings += 1;
-          else counts.resolvedWarnings += 1;
-        }
-        return counts;
-      },
-      {
-        errorsSeen: 0,
-        warningsSeen: 0,
-        activeErrors: 0,
-        activeWarnings: 0,
-        resolvedErrors: 0,
-        resolvedWarnings: 0
+    return (history?.entries || []).reduce((counts, entry) => {
+      const severity = entry.normalizedSeverity;
+      if (severity === "error") {
+        counts.errorsSeen += 1;
+        if (entry.currentlyActive) counts.activeErrors += 1;
+        else counts.resolvedErrors += 1;
+      } else if (severity === "warning") {
+        counts.warningsSeen += 1;
+        if (entry.currentlyActive) counts.activeWarnings += 1;
+        else counts.resolvedWarnings += 1;
+      } else if (severity === "good") {
+        counts.greenCaveatsSeen += 1;
+        if (entry.currentlyActive) counts.activeGreenCaveats += 1;
+        else counts.resolvedGreenCaveats += 1;
       }
-    );
+      return counts;
+    }, {
+      errorsSeen: 0, warningsSeen: 0, activeErrors: 0, activeWarnings: 0,
+      resolvedErrors: 0, resolvedWarnings: 0,
+      greenCaveatsSeen: 0, activeGreenCaveats: 0, resolvedGreenCaveats: 0
+    });
   }
 
   function compactIssueHistory(history) {
     const safeHistory = history || createIssueHistory();
+    const issues = (safeHistory.entries || []).map((entry) => ({
+      severity: entry.severity || "",
+      normalizedSeverity: entry.normalizedSeverity || normalizeIssueSeverity(entry.severity),
+      originalNormalizedSeverity: entry.originalNormalizedSeverity || normalizeIssueSeverity(entry.severity),
+      countedAsStartupWarning: false,
+      stage: entry.stage || entry.normalizedSeverity,
+      issueId: entry.issueId || "",
+      observationId: entry.observationId || "",
+      observedAt: entry.firstSeen || "",
+      lifecyclePhase: entry.lifecyclePhase || "",
+      code: entry.code || "",
+      finding: entry.finding || "",
+      recommendedNextProbe: entry.recommendedNextProbe || "",
+      firstSeen: entry.firstSeen || "", lastSeen: entry.lastSeen || "",
+      firstReportTimestamp: entry.firstReportTimestamp || "",
+      lastReportTimestamp: entry.lastReportTimestamp || "",
+      seenCount: Number(entry.seenCount || 0),
+      currentlyActive: Boolean(entry.currentlyActive),
+      clearedAt: entry.clearedAt || ""
+    }));
     return {
       schema: safeHistory.schema || "mcel-diagnostics-counter-history-v3",
       pageStartedAt: safeHistory.pageStartedAt || "",
       lastUpdatedAt: safeHistory.lastUpdatedAt || "",
       counts: issueHistoryCounts(safeHistory),
-      issues: (safeHistory.entries || []).map((entry) => ({
-        severity: entry.severity || "",
-        normalizedSeverity: entry.normalizedSeverity || normalizeIssueSeverity(entry.severity),
-        originalNormalizedSeverity: entry.originalNormalizedSeverity || normalizeIssueSeverity(entry.severity, {startupWindow: false}),
-        countedAsStartupWarning: Boolean(entry.countedAsStartupWarning),
-        lifecyclePhase: entry.lifecyclePhase || "",
-        code: entry.code || "",
-        finding: entry.finding || "",
-        recommendedNextProbe: entry.recommendedNextProbe || "",
-        firstSeen: entry.firstSeen || "",
-        lastSeen: entry.lastSeen || "",
-        firstReportTimestamp: entry.firstReportTimestamp || "",
-        lastReportTimestamp: entry.lastReportTimestamp || "",
-        seenCount: Number(entry.seenCount || 0),
-        currentlyActive: Boolean(entry.currentlyActive),
-        clearedAt: entry.clearedAt || ""
-      }))
+      issues,
+      greenCaveats: issues.filter((issue) => issue.normalizedSeverity === "good"),
+      warnings: issues.filter((issue) => issue.normalizedSeverity === "warning"),
+      errors: issues.filter((issue) => issue.normalizedSeverity === "error")
     };
   }
 
@@ -645,11 +767,17 @@
   }
 
   function compactPayload(report, counts, history) {
-    const safeCounts = counts || {errors: 0, warnings: 0, ok: 0};
-    const startupWindow = isStartupWindow(history, report?.timestamp || new Date().toISOString());
-    const currentIssues = (Array.isArray(report?.findings) ? report.findings : [])
-      .filter((finding) => normalizeIssueSeverity(finding?.severity, {startupWindow}))
-      .map((finding) => compactIssue(finding, {startupWindow}));
+    const safeCounts = counts || summarizeReport(report, history);
+    // Keep the present-state assessment separate from session-latched E/W.
+    const activeCounts = issueCounts(report);
+    const currentCounts = {...activeCounts, ok: safeCounts.ok};
+    const currentFindings = Array.isArray(report?.findings) ? report.findings : [];
+    const currentIssues = currentFindings
+      .filter((finding) => ["warning", "error"].includes(normalizeIssueSeverity(finding?.severity)))
+      .map(compactIssue);
+    const currentGreenCaveats = currentFindings
+      .filter((finding) => normalizeIssueSeverity(finding?.severity) === "good")
+      .map(compactIssue);
     return {
       schema: "mcel-diagnostics-counter-copy-v4",
       widgetVersion: VERSION,
@@ -657,12 +785,13 @@
       contractId: report?.contractId || "",
       route: report?.route || (typeof location !== "undefined" ? location.href : ""),
       timestamp: report?.timestamp || new Date().toISOString(),
-      verdict: normalizedVerdict(report, safeCounts),
+      verdict: normalizedVerdict(report, currentCounts),
       rawVerdict: report?.verdict || "unknown",
       counts: safeCounts,
       current: {
-        counts: safeCounts,
-        issues: currentIssues
+        counts: currentCounts,
+        issues: currentIssues,
+        greenCaveats: currentGreenCaveats
       },
       history: compactIssueHistory(history),
       buckets: compactBuckets(report, history),
@@ -683,7 +812,7 @@
     el.dataset.state = counts.errors > 0 ? "error" : counts.warnings > 0 ? "warning" : "ok";
     el.setAttribute(
       "aria-label",
-      `MCEL diagnostics: ${counts.errors} errors, ${counts.warnings} warnings, ${counts.ok} passing checks. Click to copy current and historical issues.`
+      `MCEL diagnostics this session: ${counts.errors} observed error issues, ${counts.warnings} observed warning issues, ${counts.ok} currently passing checks. Click to copy current and historical issues.`
     );
     el.innerHTML = [
       '<span class="mcel-diagnostics-counter__bracket">[</span>',
@@ -801,7 +930,11 @@
       .sort()
       .join("|");
     const counts = payload?.counts || {};
+    const stageSignature = (payload?.history?.issues || [])
+      .map((issue) => `${issue.issueId}:${issue.stage}:${issue.observationId || issue.firstSeen}:${issue.currentlyActive}`)
+      .sort().join("|");
     return [
+      stageSignature,
       payload?.appId || "",
       payload?.contractId || "",
       payload?.verdict || "",
@@ -817,9 +950,9 @@
     const lastSignature = widget.__mcelDiagnosticsLastEventSignature || "";
     const lastEventAt = Number(widget.__mcelDiagnosticsLastEventAt || 0);
     if (signature !== lastSignature) return true;
-    const counts = payload.counts || {};
-    const activeIssueCount = Number(counts.errors || 0) + Number(counts.warnings || 0);
-    return activeIssueCount > 0 && nowMs - lastEventAt >= DIAGNOSTIC_EVENT_HEARTBEAT_MS;
+    // An unchanged retained issue must not emit a fresh diagnostic event merely
+    // because the report or a heartbeat timer ran again.
+    return false;
   }
 
   function emitDiagnosticEvent(payload) {
@@ -863,7 +996,7 @@
   }
 
   function inactiveStatus(widget) {
-    const counts = {errors: 0, warnings: 0, ok: 0};
+    const counts = summarizeReport(null, widget.__mcelDiagnosticsIssueHistory);
     render(widget, counts);
     widget.__mcelDiagnosticsCounts = counts;
     widget.__mcelDiagnosticsInactive = true;
@@ -904,7 +1037,8 @@
     }
 
     // E/W/G includes all confirmed runtime offenders, not only the largest.
-    const instability = runtimeInstabilityFindings();
+    const instability = runtimeInstabilityFindings().filter((finding) =>
+      normalizeIssueSeverity(finding.severity) !== "good" || report.verdict === "pass");
     if (instability.length) {
       report.findings = [...(Array.isArray(report.findings) ? report.findings : []), ...instability];
       report.measurements = {...(report.measurements || {}), runtimeInstability: {
@@ -915,11 +1049,12 @@
       }};
     }
 
-    const history = widget.__mcelDiagnosticsIssueHistory || createIssueHistory(report?.timestamp || new Date().toISOString());
-    const counts = summarizeReport(report, history);
+    const history = widget.__mcelDiagnosticsIssueHistory || createIssueHistory();
     updateIssueHistory(history, report, report?.timestamp || new Date().toISOString());
+    const counts = summarizeReport(report, history);
     render(widget, counts);
     widget.__mcelDiagnosticsReport = report;
+    widget.__mcelDiagnosticsLastUpdatedAt = Date.now();
     widget.__mcelDiagnosticsCounts = counts;
     widget.__mcelDiagnosticsIssueHistory = history;
     widget.__mcelDiagnosticsInactive = false;
@@ -964,6 +1099,9 @@
     update(widget, {appId});
 
     widget.__mcelDiagnosticsInterval = window.setInterval(() => {
+      // The event-triggered structural refresh can happen just before this tick.
+      // Skip that duplicate while retaining the periodic non-DOM safety check.
+      if (Date.now() - (widget.__mcelDiagnosticsLastUpdatedAt || 0) < 1000) return;
       update(widget, {appId});
     }, intervalMs);
 
@@ -1007,6 +1145,7 @@
     getStatus,
     _private: Object.freeze({
       summarizeReport,
+      observedIssueCounts,
       derivedOkCount,
       compactPayload,
       compactMeasurements,

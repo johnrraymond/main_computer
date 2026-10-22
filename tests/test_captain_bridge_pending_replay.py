@@ -7,13 +7,18 @@ import pytest
 
 from main_computer.config import MainComputerConfig
 from main_computer.captain_cli import CaptainCliError, run_captain
-from test_captain_cli import _stub_verified_mother
+from test_captain_cli import _stub_verified_mother, _write_mainnet_contract_registry
 
 
 def test_captain_reuses_submitted_deposit_when_hub_completion_fails(tmp_path, monkeypatch):
     _stub_verified_mother(monkeypatch)
     monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
     escrow = "0x" + "22" * 20
+    _write_mainnet_contract_registry(tmp_path, escrow)
+    monkeypatch.setattr("main_computer.captain_cli._get_hub_json", lambda *_a, **_k: {
+        "ok": True, "deployment": {"chain_id": 42424240, "contract_address": escrow,
+                                  "bridge_controller_address": "0x" + "33" * 20},
+    })
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps({

@@ -73,8 +73,23 @@ def decode_component_rows(output, predictions, truths, patterns, weights, case_i
     fractions = output['fraction'].detach().cpu()
     if sign_logits.shape != (n,2,3) or exponent_logits.ndim != 3 or exponent_logits.shape[:2] != (n,2) or fractions.shape != (n,2):
         raise ValueError('V3_COMPONENT_LOGIT_SHAPE_DRIFT')
-    s_truth, e_truth, m_truth, nonzero = v3.target_parts(torch.tensor(truths,dtype=torch.float32),
-                                                  exponent_logits.shape[-1]-1,'cpu')
+    # SQLite teacher rows expose x/y as decimal strings. The native development
+    # scorer converts them with float() before numerical comparison; do the same
+    # here, before tensor construction, to preserve exact scorer input semantics.
+    numeric_truths = []
+    for pair in truths:
+        if isinstance(pair, (str, bytes)) or not hasattr(pair, '__len__') or len(pair) != 2:
+            raise ValueError('V3_COMPONENT_BAD_NUMERIC_TARGET')
+        try:
+            values = (float(pair[0]), float(pair[1]))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError('V3_COMPONENT_BAD_NUMERIC_TARGET') from exc
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError('V3_COMPONENT_BAD_NUMERIC_TARGET')
+        numeric_truths.append(values)
+    s_truth, e_truth, m_truth, nonzero = v3.target_parts(
+        torch.tensor(numeric_truths, dtype=torch.float32),
+        exponent_logits.shape[-1]-1, 'cpu')
     ps = sign_logits.argmax(-1)
     pe = exponent_logits.argmax(-1)
     results = []
@@ -84,7 +99,7 @@ def decode_component_rows(output, predictions, truths, patterns, weights, case_i
         for slot,label in enumerate(('x','y')):
             if patterns[i][slot] == '1':
                 continue  # The revealed value is never an evaluated answer.
-            true = float(truths[i][slot]); pred = float(predictions[i][slot]);
+            true = numeric_truths[i][slot]; pred = float(predictions[i][slot]);
             if not math.isfinite(pred):
                 raise ValueError('V3_COMPONENT_NONFINITE_DECODE')
             s = int(s_truth[i,slot]); e = int(e_truth[i,slot]); m = float(m_truth[i,slot])

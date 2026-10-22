@@ -2025,12 +2025,14 @@ const clearReport = {{
   findings: []
 }};
 widget._private.updateIssueHistory(history, clearReport, "second");
-const clearCounts = widget._private.summarizeReport(clearReport);
+const clearCounts = widget._private.summarizeReport(clearReport, history);
 const payload = widget._private.compactPayload(clearReport, clearCounts, history);
 console.log(JSON.stringify({{
   counts,
   clearCounts,
   payloadCounts: payload.counts,
+  payloadCurrentCounts: payload.current.counts,
+  payloadVerdict: payload.verdict,
   schema: payload.schema,
   bucketKeys: Object.keys(payload.buckets).sort(),
   issueCodes: payload.issues.map((issue) => issue.code),
@@ -2061,10 +2063,13 @@ console.log(JSON.stringify({{
         self.assertEqual(payload["counts"]["errors"], 1)
         self.assertEqual(payload["counts"]["warnings"], 1)
         self.assertGreaterEqual(payload["counts"]["ok"], 8)
-        self.assertEqual(payload["clearCounts"]["errors"], 0)
-        self.assertEqual(payload["clearCounts"]["warnings"], 0)
-        self.assertEqual(payload["payloadCounts"]["errors"], 0)
-        self.assertEqual(payload["payloadCounts"]["warnings"], 0)
+        self.assertEqual(payload["clearCounts"]["errors"], 1)
+        self.assertEqual(payload["clearCounts"]["warnings"], 1)
+        self.assertEqual(payload["payloadCounts"]["errors"], 1)
+        self.assertEqual(payload["payloadCounts"]["warnings"], 1)
+        self.assertEqual(payload["payloadCurrentCounts"]["errors"], 0)
+        self.assertEqual(payload["payloadCurrentCounts"]["warnings"], 0)
+        self.assertEqual(payload["payloadVerdict"], "pass")
         self.assertEqual(payload["schema"], "mcel-diagnostics-counter-copy-v4")
         self.assertIn("activeOverlayIssues", payload["bucketKeys"])
         self.assertIn("resolvedStartupWarnings", payload["bucketKeys"])
@@ -2077,6 +2082,9 @@ console.log(JSON.stringify({{
             "activeWarnings": 0,
             "resolvedErrors": 1,
             "resolvedWarnings": 1,
+            "greenCaveatsSeen": 0,
+            "activeGreenCaveats": 0,
+            "resolvedGreenCaveats": 0,
         })
         self.assertEqual(
             [
@@ -2097,7 +2105,7 @@ console.log(JSON.stringify({{
         )
         self.assertEqual(payload["formatted"], ["00", "07", "99"])
 
-    def test_mcel_diagnostics_counter_counts_startup_errors_as_warnings(self) -> None:
+    def test_mcel_diagnostics_counter_keeps_real_startup_errors_as_errors(self) -> None:
         node = shutil.which("node")
         if not node:
             self.skipTest("node is not available")
@@ -2150,26 +2158,29 @@ console.log(JSON.stringify({{
             text=True,
         )
         payload = json.loads(completed.stdout)
-        self.assertEqual(payload["startupCounts"]["errors"], 0)
-        self.assertEqual(payload["startupCounts"]["warnings"], 1)
-        self.assertEqual(payload["startupVerdict"], "pass")
+        self.assertEqual(payload["startupCounts"]["errors"], 1)
+        self.assertEqual(payload["startupCounts"]["warnings"], 0)
+        self.assertEqual(payload["startupVerdict"], "fail")
         self.assertEqual(payload["startupRawVerdict"], "fail")
-        self.assertEqual(payload["startupIssue"]["normalizedSeverity"], "warning")
-        self.assertTrue(payload["startupIssue"]["countedAsStartupWarning"])
-        self.assertEqual(payload["clearCounts"]["errors"], 0)
+        self.assertEqual(payload["startupIssue"]["normalizedSeverity"], "error")
+        self.assertFalse(payload["startupIssue"]["countedAsStartupWarning"])
+        self.assertEqual(payload["clearCounts"]["errors"], 1)
         self.assertEqual(payload["clearCounts"]["warnings"], 0)
         self.assertEqual(payload["historyCounts"], {
-            "errorsSeen": 0,
-            "warningsSeen": 1,
+            "errorsSeen": 1,
+            "warningsSeen": 0,
             "activeErrors": 0,
             "activeWarnings": 0,
-            "resolvedErrors": 0,
-            "resolvedWarnings": 1,
+            "resolvedErrors": 1,
+            "resolvedWarnings": 0,
+            "greenCaveatsSeen": 0,
+            "activeGreenCaveats": 0,
+            "resolvedGreenCaveats": 0,
         })
         self.assertEqual(payload["historyIssue"]["code"], "primary-editor-missing")
-        self.assertEqual(payload["historyIssue"]["normalizedSeverity"], "warning")
+        self.assertEqual(payload["historyIssue"]["normalizedSeverity"], "error")
         self.assertEqual(payload["historyIssue"]["originalNormalizedSeverity"], "error")
-        self.assertTrue(payload["historyIssue"]["countedAsStartupWarning"])
+        self.assertFalse(payload["historyIssue"]["countedAsStartupWarning"])
         self.assertEqual(payload["historyIssue"]["lifecyclePhase"], "startup")
         self.assertFalse(payload["historyIssue"]["currentlyActive"])
         self.assertEqual(payload["historyIssue"]["clearedAt"], "2026-07-18T20:39:22.000Z")

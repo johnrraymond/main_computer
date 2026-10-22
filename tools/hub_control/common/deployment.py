@@ -523,7 +523,7 @@ def deployment_target(
         "hub_bind_port": int(profile.hub_bind_port),
         "network_display_name": profile.display_name,
         "network_kind": profile.kind,
-        "bridge_signer_required": profile.kind == "mainnet",
+        "bridge_signer_required": network in {"mainnet", "testnet"},
         "bridge_signer_remote_path": f"{placement.runtime_dir.rstrip('/')}/private/bridge-signer/bridge-signer-bundle.json",
         "topology": topology,
         "fdb_contract": fdb_contract.payload,
@@ -975,12 +975,132 @@ def _ensure_storage(client: Any, target: Mapping[str, Any], application_uuid: st
     for item in items:
         if str(item.get("mount_path") or item.get("mountPath") or "") == mount:
             return
-    payload = {"type": "persistent", "name": name, "mount_path": mount, "host_path": mount}
+    payload = {"type": "persistent", "name": name, "mount_path": mount}
     response = client.request("POST", path, payload)
     tried.append({"operation": "create-storage", "status": response.status})
     if not response.ok:
         raise HubControlError("HUB_COOLIFY_STORAGE_FAILED", f"persistent Hub storage create failed: HTTP {response.status}: {response.body}")
 
+
+
+def _sync_application_envs_bulk(
+    client: Any,
+    *,
+    application_uuid: str,
+    values: Mapping[str, str],
+    tried: list[dict[str, Any]],
+) -> None:
+    """Sync and verify Hub envs; clear optional empty paths instead of storing them.
+
+    Never print or retain response values: some fields contain administrator keys.
+    Deployment must not be triggered without a complete verified readback.
+    """
+    base = f"/api/v1/applications/{urllib.parse.quote(application_uuid)}/envs"
+    requested = dict(values)
+    if not requested or any(not key or not isinstance(value, str) for key, value in requested.items()):
+        raise HubControlError("HUB_COOLIFY_ENVS_INVALID", "Hub runtime environment is incomplete")
+
+    # An absent deployment path is the correct configuration when there is no
+    # bridge signer. Coolify can retain an older nonempty value when a bulk
+    # update requests ""; remove that app-scoped entry explicitly instead.
+    absent_keys = {
+        key for key in ("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH",)
+        if requested.get(key) == ""
+    }
+    wanted = {key: value for key, value in requested.items() if key not in absent_keys}
+    payload = {"data": [
+        {"key": key, "value": value, "is_literal": True, "is_multiline": False,
+         "is_preview": False, "is_runtime": True, "is_buildtime": False}
+        for key, value in wanted.items()
+    ]}
+
+    def wait(response: Any, attempt: int) -> None:
+        server_delay = getattr(response, "retry_after_s", None)
+        delay = min(120.0, max(0.0, float(server_delay))) if server_delay is not None else min(60.0, 20.0 * attempt)
+        _progress(f"deployment: Coolify env rate limited; waiting {delay:g}s before retry {attempt + 1}/3")
+        time.sleep(delay)
+
+    if wanted:
+        for attempt in range(1, 4):
+            response = client.request("PATCH", base + "/bulk", payload)
+            tried.append({"operation": "bulk-application-envs", "status": response.status,
+                          "attempt": attempt, "count": len(wanted)})
+            if response.status == 429:
+                if attempt == 3:
+                    raise HubControlError("HUB_COOLIFY_ENVS_RATE_LIMITED", "Coolify env bulk update remained rate limited after 3 attempts; deployment not triggered")
+                wait(response, attempt)
+                continue
+            if not response.ok:
+                raise HubControlError("HUB_COOLIFY_ENVS_BULK_FAILED", f"Coolify env bulk update failed: HTTP {response.status}; deployment not triggered")
+            break
+
+    deleted_uuids: set[str] = set()
+    for attempt in range(1, 4):
+        response = client.request("GET", base)
+        if response.status == 429:
+            tried.append({"operation": "verify-application-envs", "status": 429, "attempt": attempt})
+            if attempt < 3:
+                wait(response, attempt)
+                continue
+            raise HubControlError("HUB_COOLIFY_ENVS_RATE_LIMITED", "Coolify env verification rate limited; deployment not triggered")
+        if not response.ok:
+            raise HubControlError("HUB_COOLIFY_ENVS_VERIFY_FAILED", f"Coolify env verification failed: HTTP {response.status}; deployment not triggered")
+        items = legacy.body_items(response.body, "envs", "environment_variables", "variables")
+        seen: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            key = str(item.get("key") or "")
+            if (key in wanted or key in absent_keys) and item.get("is_preview") is not True:
+                seen.setdefault(key, []).append(item)
+        mismatched: dict[str, str] = {}
+        for key, expected in wanted.items():
+            rows = seen.get(key, [])
+            if not rows:
+                mismatched[key] = "missing"
+            elif len(rows) != 1:
+                mismatched[key] = "duplicate"
+            else:
+                item = rows[0]
+                if expected not in (item.get("real_value"), item.get("value")):
+                    mismatched[key] = "hidden" if item.get("is_shown_once") is True else "different"
+        for key in absent_keys:
+            rows = seen.get(key, [])
+            if not rows:
+                continue
+            if len(rows) != 1:
+                mismatched[key] = "duplicate"
+                continue
+            env_uuid = str(rows[0].get("uuid") or "").strip()
+            if not env_uuid:
+                mismatched[key] = "missing-uuid"
+                continue
+            if env_uuid not in deleted_uuids:
+                path = f"{base}/{urllib.parse.quote(env_uuid, safe='')}"
+                for delete_attempt in range(1, 4):
+                    deleted = client.request("DELETE", path)
+                    tried.append({"operation": "remove-optional-application-env", "status": deleted.status,
+                                  "attempt": delete_attempt, "key": key})
+                    if deleted.status == 429:
+                        if delete_attempt == 3:
+                            raise HubControlError("HUB_COOLIFY_ENVS_RATE_LIMITED", f"Coolify optional env deletion rate limited ({key}); deployment not triggered")
+                        wait(deleted, delete_attempt)
+                        continue
+                    if not deleted.ok and deleted.status != 404:
+                        raise HubControlError("HUB_COOLIFY_ENVS_VERIFY_FAILED", f"Coolify optional env deletion failed: {key} HTTP {deleted.status}; deployment not triggered")
+                    deleted_uuids.add(env_uuid)
+                    break
+            mismatched[key] = "pending-deletion"
+        tried.append({"operation": "verify-application-envs", "status": response.status,
+                      "attempt": attempt, "verified_count": len(requested) - len(mismatched),
+                      "expected_count": len(requested)})
+        if not mismatched:
+            _progress(f"deployment: bulk environment sync verified keys={len(requested)}")
+            return
+        # Environment keys are not secret; never include environment values.
+        detail = ", ".join(f"{key}={reason}" for key, reason in sorted(mismatched.items()))
+        if attempt < 3:
+            _progress(f"deployment: environment readback unresolved ({detail}); retrying verification")
+            time.sleep(2.0 * attempt)
+    raise HubControlError("HUB_COOLIFY_ENVS_VERIFY_FAILED", f"Coolify environment readback unresolved ({detail}); deployment not triggered")
 
 
 def _deployment_uuid_from_trigger(payload: object) -> str:
@@ -1108,7 +1228,7 @@ def _bridge_signer_required(target: Mapping[str, Any]) -> bool:
     explicit = target.get("bridge_signer_required")
     if explicit is not None:
         return bool(explicit)
-    return str(target.get("network_kind") or "").strip().lower() == "mainnet"
+    return str(target.get("network") or target.get("network_kind") or "").strip().lower() in {"mainnet", "testnet"}
 
 
 def _render_contract_deployer_command(target: Mapping[str, Any]) -> str:
@@ -1485,10 +1605,8 @@ def apply_deployment(
         # replaces any legacy signer persisted at the same private path.
         if bridge_signer is not None:
             env_values[BRIDGE_SIGNER_ENV] = str(bridge_signer["bundle_b64"])
-        _progress(f"deployment: synchronize {len(env_values)} environment variables")
-        for index, (key, value) in enumerate(env_values.items(), start=1):
-            _progress(f"deployment: env {index}/{len(env_values)} key={key}")
-            legacy.sync_application_env_var(client, application_uuid=app_uuid, key=key, value=value, tried=tried)
+        _progress(f"deployment: synchronize {len(env_values)} environment variables in bulk")
+        _sync_application_envs_bulk(client, application_uuid=app_uuid, values=env_values, tried=tried)
         _progress(f"deployment: trigger forced deploy application={app_uuid}")
         deploy_trigger = legacy.trigger_deploy(client, application_uuid=app_uuid, force=True, tried=tried)
         deployment_uuid = _deployment_uuid_from_trigger(deploy_trigger)
@@ -1547,15 +1665,16 @@ def _get_json(url: str, *, timeout_s: float) -> dict[str, Any]:
 
 
 def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, request_timeout_s: float) -> dict[str, Any]:
-    """Verify Stable Hub identity and adopted FDB/chain topology, not exp-Hub APIs.
+    """Verify Stable Hub topology and, when required, its funding-signing readiness.
 
-    Stable Hub's bridge-funding API is NOT implemented here. Never report
-    bridge signer or wallet-funding capability as verified because the stable
-    identity does not contain such a proof.
+    The GET completion endpoint is read-only.  It only proves that the stable
+    runtime loaded the private signer bundle; Hub Control separately verifies
+    the signer against the live escrow before deployment.
     """
     base = str(target["public_url"]).rstrip("/")
     deadline = time.monotonic() + max(0.0, wait_timeout_s)
     attempt = 0
+    signer_required = _bridge_signer_required(target)
     last_checks: dict[str, bool] = {}
     errors: dict[str, str] = {}
     _progress(f"stable runtime verification: begin hub={target.get('hub_id')} url={base}")
@@ -1563,11 +1682,14 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
         attempt += 1
         responses: dict[str, dict[str, Any]] = {}
         errors = {}
-        for label, path in (
+        endpoints = [
             ("health", "/health"),
             ("identity", "/api/hub/v1/hub-identity"),
             ("topology", "/api/hub/v1/topology"),
-        ):
+        ]
+        if signer_required:
+            endpoints.append(("completion", "/api/hub/v1/credits/wallet-funding/completion"))
+        for label, path in endpoints:
             try:
                 responses[label] = _get_json(base + path, timeout_s=request_timeout_s)
             except Exception as exc:
@@ -1575,6 +1697,8 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
         identity = responses.get("identity", {})
         health = responses.get("health", {})
         topo = responses.get("topology", {})
+        completion = responses.get("completion", {})
+        deployment = completion.get("deployment") if isinstance(completion.get("deployment"), Mapping) else {}
         network = identity.get("network") if isinstance(identity.get("network"), Mapping) else {}
         storage = identity.get("storage") if isinstance(identity.get("storage"), Mapping) else {}
         fdb = target["fdb_contract"]
@@ -1589,18 +1713,32 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
             "chain_id": str(network.get("chain_id") or "") == str(chain["chain_id"]),
             "chain_rpc": str(network.get("chain_rpc_url") or "").rstrip("/") == str(chain["rpc_url"]).rstrip("/"),
         }
+        if signer_required:
+            expected_escrow = str((chain.get("contracts") or {}).get("hub_credit_bridge_escrow") or "").lower()
+            expected_controller = str(target.get("hub_admin_address") or "").lower()
+            checks.update({
+                "bridge_deployment_loaded": completion.get("ok") is True,
+                "bridge_chain_id": str(deployment.get("chain_id") or "") == str(chain["chain_id"]),
+                "bridge_contract": bool(expected_escrow) and str(deployment.get("contract_address") or "").lower() == expected_escrow,
+                "bridge_controller": bool(expected_controller) and str(deployment.get("bridge_controller_address") or "").lower() == expected_controller,
+                "bridge_private_manifest": str(deployment.get("deployment_manifest_path") or "") == _bridge_signer_remote_path(target),
+            })
         last_checks = checks
         if all(checks.values()):
-            _progress(f"stable runtime verification: verified attempt={attempt}; bridge funding not verified")
+            if signer_required:
+                _progress(f"stable runtime verification: verified attempt={attempt}; bridge deployment loaded")
+            else:
+                _progress(f"stable runtime verification: verified attempt={attempt}; bridge funding not required")
             return {
                 "verified": True,
-                "reason": "stable-hub-routing-and-topology-verified-bridge-funding-unavailable",
+                "reason": ("stable-hub-routing-topology-and-bridge-deployment-verified" if signer_required
+                           else "stable-hub-routing-and-topology-verified-bridge-funding-unavailable"),
                 "hub_running": True,
                 "fdb_adoption_verified": True,
                 "chain_adoption_verified": True,
-                "bridge_signer_verified": False,
-                "hub_admin_verified": False,
-                "wallet_funding_supported": False,
+                "bridge_signer_verified": signer_required,
+                "hub_admin_verified": signer_required,
+                "wallet_funding_supported": signer_required,
                 "checks": checks,
                 "health": health,
                 "identity": identity,
@@ -1618,6 +1756,7 @@ def _observe_stable_hub(target: Mapping[str, Any], *, wait_timeout_s: float, req
                 "wallet_funding_supported": False,
                 "checks": last_checks,
                 "endpoint_errors": errors,
+                "completion_error": str(completion.get("error") or "") if signer_required else "",
             }
         if attempt == 1 or attempt % 6 == 0:
             _progress(f"stable runtime verification: attempt={attempt} missing={','.join(k for k,v in checks.items() if not v)} errors={errors}")

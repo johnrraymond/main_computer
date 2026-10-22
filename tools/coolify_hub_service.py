@@ -10,6 +10,7 @@ updating the Coolify application.
 from __future__ import annotations
 
 import argparse
+import email.utils
 import base64
 import hashlib
 import json
@@ -90,6 +91,7 @@ class CoolifyResponse:
     method: str
     path: str
     body: Any
+    retry_after_s: float | None = None
 
 
 class CoolifyClient:
@@ -139,12 +141,26 @@ class CoolifyClient:
                     )
             except urllib.error.HTTPError as exc:
                 raw = exc.read().decode("utf-8", errors="replace")
+                retry_after_s = None
+                if int(exc.code) == 429:
+                    retry_after = str(exc.headers.get("Retry-After") or "").strip() if exc.headers else ""
+                    if retry_after:
+                        try:
+                            retry_after_s = max(0.0, float(retry_after))
+                        except ValueError:
+                            try:
+                                from datetime import datetime, timezone
+                                retry_date = email.utils.parsedate_to_datetime(retry_after)
+                                retry_after_s = max(0.0, (retry_date - datetime.now(timezone.utc)).total_seconds())
+                            except (TypeError, ValueError, OverflowError):
+                                pass
                 return CoolifyResponse(
                     ok=False,
                     status=int(exc.code),
                     method=method.upper(),
                     path=api_path,
                     body=parse_response_body(raw),
+                    retry_after_s=retry_after_s,
                 )
             except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
                 last_error = exc

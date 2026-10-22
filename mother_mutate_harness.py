@@ -74,6 +74,7 @@ SINGLE_NODE_STEPS = [
     "verify-bootstrap-evidence",
     "finalize-single-node-proof",
     "verify-single-node-proof",
+    "publish-genesis-contracts",
     "publish-officer-addresses",
     "ensure-rpc-route",
     POST_WORK_CLEANUP_STEP,
@@ -282,6 +283,8 @@ def is_clean_or_pass(step: str, obj: dict[str, Any]) -> bool:
             and bool(pick(obj, "transaction_artifact.path"))
             and bool(pick(obj, "transaction_artifact.sha256", sha_key))
         )
+    if step == "publish-genesis-contracts":
+        return obj.get("status") in {"published", "skipped-existing-genesis"}
     if step == "publish-officer-addresses":
         return (
             obj.get("status") in {"PASS", "UPDATED"}
@@ -321,6 +324,10 @@ def print_step_stop_guidance(step: str, obj: dict[str, Any] | None) -> None:
         print("Do not retry the mutation blindly. Diagnose/rollback first.")
     else:
         print("No live mutation was performed by this step. Fix the input/tooling issue, then rerun from the last valid artifact.")
+
+
+class AutoBaselineBindingChanged(Exception):
+    """Only the auto-selected remove-node baseline may be forwarded by the harness."""
 
 
 PRIVATE_STATE_CHANGED_ERROR = "MOTHER_DEPLOY_TOPOLOGY_RECTIFICATION_PRIVATE_STATE_CHANGED:"
@@ -1240,6 +1247,7 @@ def resolve_baseline_arguments(args: argparse.Namespace) -> None:
     """
 
     baseline = getattr(args, "baseline_evidence", None)
+    args.baseline_auto_selected = baseline is None
     baseline_sha = getattr(args, "baseline_evidence_sha256", None)
 
     if baseline_sha and not baseline:
@@ -1332,6 +1340,7 @@ class Harness:
             "single_node_proof_evidence_sha256": args.single_node_proof_evidence_sha256,
             "single_node_proof_verified": False,
             "officer_address_publication": None,
+            "genesis_contract_publication": None,
             "replica_sync_release": args.replica_sync_release,
             "replica_sync_release_sha256": args.replica_sync_release_sha256,
             "replica_sync_evidence": args.replica_sync_evidence,
@@ -1630,6 +1639,15 @@ class Harness:
                 raise SystemExit(f"{step}: could not parse JSON output: {exc}") from exc
 
         if proc.returncode != 0:
+            if (
+                step == "detect-topology"
+                and self.args.operation == "remove-node"
+                and getattr(self.args, "baseline_auto_selected", False)
+                and self.mutations_allowed()
+                and not self.state.get("baseline_binding_forward_attempted")
+                and is_private_state_binding_error(step, proc.stdout, proc.stderr)
+            ):
+                raise AutoBaselineBindingChanged()
             if allow_failure and obj is not None:
                 return obj
             print(f"\n{step} failed with exit code {proc.returncode}.")
@@ -1673,22 +1691,77 @@ class Harness:
             raise SystemExit(2)
         return obj
 
+    def _forward_auto_baseline_binding(self) -> None:
+        """Rebind the selected live seal; never reseal topology or touch Coolify."""
+        from tools.mother_forward_topology_evidence_binding import forward_evidence
+
+        self.state["baseline_binding_forward_attempted"] = True
+        # Keep the first detector failure as durable evidence before the retry.
+        prefix = f"{STEP_ORDER.index('detect-topology'):02d}-detect-topology"
+        for suffix in ("stdout.txt", "stderr.txt"):
+            previous = self.run_dir / f"{prefix}.{suffix}"
+            if previous.exists():
+                previous.rename(self.run_dir / f"{prefix}.stale-binding.{suffix}")
+
+        source = require("selected baseline", self.state["baseline_evidence"])
+        source_sha = require("selected baseline SHA-256", self.state["baseline_evidence_sha256"])
+        try:
+            result = forward_evidence(
+                Path(self.args.runtime_state_root),
+                network=self.args.network,
+                operation="remove-node",
+                source_path=Path(source),
+                source_sha256=source_sha,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise SystemExit(
+                "MOTHER_MUTATE_HARNESS_PRIVATE_STATE_FORWARD_FAILED: "
+                f"{type(exc).__name__} (no topology or Coolify mutation attempted)"
+            ) from exc
+        if result.get("action") != "forwarded":
+            raise SystemExit("MOTHER_MUTATE_HARNESS_PRIVATE_STATE_FORWARD_UNCHANGED: stale detector result cannot be reconciled")
+
+        path = Path(require("forwarded evidence", result.get("evidence_path")))
+        digest = require("forwarded evidence SHA-256", result.get("evidence_sha256"))
+        if canonical_sha256_file(path) != digest:
+            raise SystemExit("MOTHER_MUTATE_HARNESS_PRIVATE_STATE_FORWARD_INVALID: forwarded evidence SHA-256 mismatch")
+        reason, patterns = auto_baseline_patterns(self.args)
+        if select_auto_baseline_file(self.args, patterns) != path:
+            raise SystemExit("MOTHER_MUTATE_HARNESS_PRIVATE_STATE_FORWARD_INVALID: forwarded seal is not the selected remove-node baseline")
+
+        self.state["baseline_binding_forward"] = result
+        self.state["baseline_evidence"] = str(path)
+        self.state["baseline_evidence_sha256"] = digest
+        self.args.baseline_evidence = str(path)
+        self.args.baseline_evidence_sha256 = digest
+        print("MOTHER_MUTATE_HARNESS_PRIVATE_STATE_BINDING_FORWARDED: topology unchanged; retrying live verification once")
+        print(f"baseline_evidence={path}")
+        print(f"baseline_evidence_sha256={digest}")
+
     def step_detect_topology(self) -> None:
         self.state["verified_empty_add_topology"] = False
         if self.args.skip_staleness_detection:
             return
         require("--baseline-evidence", self.state["baseline_evidence"])
         require("--baseline-evidence-sha256", self.state["baseline_evidence_sha256"])
-        obj = self.run("detect-topology", self.cmd(
-            "detect-mother-topology-staleness",
-            "--network", self.args.network,
-            "--runtime-state-root", self.args.runtime_state_root,
-            "--topology-evidence", self.state["baseline_evidence"],
-            "--acknowledge-topology-evidence-sha256", self.state["baseline_evidence_sha256"],
-            "--max-age-seconds", str(self.args.baseline_max_age_seconds),
-            "--timeout", str(self.args.timeout),
-            "--max-response-bytes", str(self.args.max_response_bytes),
-        ))
+        def detect() -> dict[str, Any]:
+            return self.run("detect-topology", self.cmd(
+                "detect-mother-topology-staleness",
+                "--network", self.args.network,
+                "--runtime-state-root", self.args.runtime_state_root,
+                "--topology-evidence", self.state["baseline_evidence"],
+                "--acknowledge-topology-evidence-sha256", self.state["baseline_evidence_sha256"],
+                "--max-age-seconds", str(self.args.baseline_max_age_seconds),
+                "--timeout", str(self.args.timeout),
+                "--max-response-bytes", str(self.args.max_response_bytes),
+            ))
+
+        try:
+            obj = detect()
+        except AutoBaselineBindingChanged:
+            self._forward_auto_baseline_binding()
+            # This is a fresh full Coolify topology check, not a substituted seal.
+            obj = detect()
         if pick(obj, "summary.rectification_required") is True:
             print("\nMOTHER_MUTATE_HARNESS_STALE_TOPOLOGY: Mother topology evidence is out of date against live Coolify.")
             print("Run this read-only fresh-reset command if you deleted every previous super node and want a new first-validator genesis, then rerun the harness using the new evidence path/SHA:")
@@ -2337,6 +2410,32 @@ class Harness:
         ))
         self.state["single_node_proof_verified"] = True
 
+    def step_publish_genesis_contracts(self) -> None:
+        """Publish fresh-genesis contracts only after the read-only final proof.
+
+        --start-at retries the exact publication without recreating a node.
+        """
+        if not self.state.get("single_node_proof_verified"):
+            self.step_verify_single_node_proof()
+        result = self.run("publish-genesis-contracts", self.cmd(
+            "publish-add-node-single-node-genesis-contracts",
+            "--network", self.args.network,
+            "--runtime-state-root", self.args.runtime_state_root,
+            "--evidence", require("single_node_proof_evidence", self.state["single_node_proof_evidence"]),
+            "--max-age-seconds", str(self.args.evidence_max_age_seconds),
+            "--bootstrap-max-age-seconds", str(self.args.evidence_max_age_seconds),
+            "--release-max-age-seconds", str(self.args.release_lineage_max_age_seconds),
+            "--identity-max-age-seconds", str(self.args.evidence_max_age_seconds),
+            "--identity-release-max-age-seconds", str(self.args.release_lineage_max_age_seconds),
+            "--add-do-max-age-seconds", str(self.args.evidence_max_age_seconds),
+            "--add-do-release-max-age-seconds", str(self.args.release_lineage_max_age_seconds),
+            "--transaction-max-age-seconds", str(self.args.transaction_max_age_seconds),
+            "--baseline-max-age-seconds", str(self.args.baseline_max_age_seconds),
+        ))
+        if result.get("status") not in {"published", "skipped-existing-genesis"}:
+            raise SystemExit("MOTHER_GENESIS_CONTRACT_PUBLICATION_FAILED: no verified publication")
+        self.state["genesis_contract_publication"] = result
+
     def step_publish_officer_addresses(self) -> None:
         """Project Mother O0-O3 into latest.json only after proven fresh genesis.
 
@@ -2960,6 +3059,7 @@ class Harness:
             "verify-bootstrap-evidence": self.step_verify_bootstrap_evidence,
             "finalize-single-node-proof": self.step_finalize_single_node_proof,
             "verify-single-node-proof": self.step_verify_single_node_proof,
+            "publish-genesis-contracts": self.step_publish_genesis_contracts,
             "publish-officer-addresses": self.step_publish_officer_addresses,
             "release-replica-sync": self.step_release_replica_sync,
             "verify-replica-sync-release": self.step_verify_replica_sync_release,
@@ -3215,6 +3315,9 @@ def _native_mint_cleanup_entry(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "rpc-browser-compat-v2":
+        from tools.mother_rpc_browser_compat_v2 import main as v2_main
+        raise SystemExit(v2_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "native-mint" and "--cleanup" in sys.argv[2:]:
         raise SystemExit(_native_mint_cleanup_entry(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] in {

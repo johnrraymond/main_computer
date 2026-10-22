@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -60,3 +62,63 @@ def test_production_stable_hub_never_seeds_development_credit() -> None:
         account = ledger._ensure_account({}, account_id="acct_new", wallet_address="")
         assert account["available_credit_wei"] == "0"
         assert account["metadata"]["source"] == "stable_hub_production_zero"
+
+
+def test_stable_launcher_materializes_frozen_topology_and_fdb(monkeypatch, tmp_path: Path) -> None:
+    entry = _launcher()
+    topology = tmp_path / "hub" / "hub-topology.json"
+    cluster = tmp_path / "hub" / "fdb.cluster"
+    encoded = base64.b64encode(json.dumps({"hubs": [{"hub_id": "testnetb-hub1"}]}).encode()).decode()
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH", str(topology))
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_HUB_ID", "testnetb-hub1")
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_PORT", "8785")
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64", encoded)
+    monkeypatch.setenv("MCT", encoded)
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_FDB_CLUSTER_CONTENTS", "test:test@10.124.0.3:4550")
+    monkeypatch.setenv("MCF", "test:test@10.124.0.3:4550")
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_CLUSTER_FILE", str(cluster))
+    seen = []
+    monkeypatch.setattr(entry, "stable_hub_main", lambda argv: seen.append(argv) or 0)
+
+    assert entry.main() == 0
+    assert json.loads(topology.read_text()) == {"hubs": [{"hub_id": "testnetb-hub1"}]}
+    assert cluster.read_text() == "test:test@10.124.0.3:4550\n"
+    assert seen[0][-2:] == ["--bind-port", "8785"]
+    mtime = (topology.stat().st_mtime_ns, cluster.stat().st_mtime_ns)
+    assert entry.main() == 0
+    assert (topology.stat().st_mtime_ns, cluster.stat().st_mtime_ns) == mtime
+
+
+def test_stable_launcher_refreshes_stale_volume_projection(monkeypatch, tmp_path: Path) -> None:
+    entry = _launcher()
+    topology = tmp_path / "hub-topology.json"
+    topology.write_text('{"old": true}')
+    cluster = tmp_path / "fdb.cluster"
+    cluster.write_text("obsolete\n")
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH", str(topology))
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_HUB_ID", "testnetb-hub1")
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64", base64.b64encode(b'{"fresh": true}').decode())
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_FDB_CLUSTER_CONTENTS", "current:current@10.124.0.3:4550")
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_CLUSTER_FILE", str(cluster))
+    monkeypatch.setattr(entry, "stable_hub_main", lambda _: 0)
+    assert entry.main() == 0
+    assert json.loads(topology.read_text()) == {"fresh": True}
+    assert cluster.read_text() == "current:current@10.124.0.3:4550\n"
+
+
+def test_stable_launcher_rejects_invalid_or_disagreeing_topology(monkeypatch, tmp_path: Path) -> None:
+    entry = _launcher()
+    topology = tmp_path / "hub-topology.json"
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_PATH", str(topology))
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_HUB_ID", "testnetb-hub1")
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_FDB_CLUSTER_CONTENTS", "one:one@10.124.0.3:4550")
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_CLUSTER_FILE", str(tmp_path / "fdb.cluster"))
+    called = []
+    monkeypatch.setattr(entry, "stable_hub_main", lambda _: called.append(True) or 0)
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64", "!bad-base64!")
+    assert entry.main() == 2
+    assert not topology.exists()
+    monkeypatch.setenv("MAIN_COMPUTER_HUB_CONTROL_TOPOLOGY_B64", base64.b64encode(b"{}").decode())
+    monkeypatch.setenv("MCT", base64.b64encode(b'{"different":true}').decode())
+    assert entry.main() == 2
+    assert not called

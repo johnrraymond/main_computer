@@ -238,7 +238,11 @@ class Harness:
             if self.operation == "add-hub" and bool(payload.get("force_git", True)) != self.force_git:
                 continue
             if payload.get("last_completed_step") == "final-inspect":
-                continue
+                # Older add-hub runs could report completion while their own
+                # final inspection recorded unresolved dependency drift.
+                # Resume only those runs; all verified runs remain completed.
+                if self.operation != "add-hub" or not payload.get("dependency_rectification_required"):
+                    continue
             try:
                 stamp = state_path.stat().st_mtime_ns
             except OSError:
@@ -261,18 +265,18 @@ class Harness:
         ]
 
     def inspect_cmd(self) -> list[str]:
-        return self.control_cmd("inspect", self.network)
+        argv = self.control_cmd("inspect", self.network)
+        if self.operation == "remove-hub":
+            argv.append("--membership-only")
+        return argv
 
     def topology_check_cmd(self) -> list[str]:
         """Read-only topology gate used on entry to the Hub prep boundary."""
-        return [
-            sys.executable,
-            str(self.repo_root / "tools" / "hub_topology_check.py"),
-            "--network",
-            self.network,
-            "--repo-root",
-            str(self.repo_root),
-        ]
+        argv = [sys.executable, str(self.repo_root / "tools" / "hub_topology_check.py")]
+        if self.operation == "remove-hub":
+            # Removal verifies membership and Coolify placement, not live FDB.
+            argv.append("--membership-only")
+        return [*argv, "--network", self.network, "--repo-root", str(self.repo_root)]
 
     def fdb_inspect_cmd(self) -> list[str]:
         """Read the independently verified FDB dependency before first-Hub prep."""
@@ -637,9 +641,124 @@ class Harness:
             self.state["last_completed_step"] = step
             self._write_state()
 
+        if self.operation == "add-hub" and not self._finish_add_hub_dependencies():
+            return 0
         self._print_final_verification()
         print("HUB_MUTATE_HARNESS_COMPLETE")
         return 0
+
+    def _reconciliation_inspect(self, phase: str) -> dict[str, Any]:
+        """Read current accepted authority without rewriting the frozen membership proof."""
+        if self.run_dir is None:
+            raise HarnessError("dependency reconciliation has no harness run directory")
+        argv = self.inspect_cmd()
+        prefix = self.run_dir / f"06-dependency-{phase}"
+        prefix.with_suffix(".command.txt").write_text(quote_command(argv) + "\n", encoding="utf-8")
+        proc = _run_with_live_stderr(argv, cwd=self.repo_root)
+        prefix.with_suffix(".stdout.txt").write_text(proc.stdout, encoding="utf-8")
+        prefix.with_suffix(".stderr.txt").write_text(proc.stderr, encoding="utf-8")
+        payload = _parse_payload(proc, label=f"dependency-{phase}")
+        result = payload.get("result")
+        if not isinstance(result, dict) or result.get("network") != self.network:
+            raise HarnessError("dependency inspection returned a different network or invalid result")
+        prefix.with_suffix(".json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return result
+
+    def _verify_reconciled_add_hub(self, result: dict[str, Any]) -> int:
+        """Verify current references after membership proof; never replay frozen checks."""
+        self._require_accepted_verified(result, label="post-rectification")
+        generation = result.get("accepted_generation")
+        if (not isinstance(generation, int) or isinstance(generation, bool)
+                or generation < int(self._required_state("target_generation"))):
+            raise HarnessError("post-rectification accepted generation is missing or regressed")
+        hubs = result.get("hubs")
+        if not isinstance(hubs, list):
+            raise HarnessError("post-rectification inspection omitted accepted Hubs")
+        if self.state.get("target_hub_count") is not None and len(hubs) != self.state["target_hub_count"]:
+            raise HarnessError("post-rectification Hub membership count changed")
+        frozen_ids = self.state.get("membership_hub_ids")
+        if frozen_ids is not None and sorted(str(h.get("hub_id") or "") for h in hubs if isinstance(h, dict)) != frozen_ids:
+            raise HarnessError("post-rectification changed accepted Hub membership identities")
+        matches = [h for h in hubs if isinstance(h, dict) and h.get("hub_id") == self.hub]
+        if len(matches) != 1:
+            raise HarnessError("post-rectification did not preserve the added Hub identity")
+        member = matches[0]
+        for key, frozen in (("host_id", self.state.get("resolved_host")),
+                            ("controller_id", self.state.get("resolved_controller"))):
+            if frozen and member.get(key) != frozen:
+                raise HarnessError(f"post-rectification changed the added Hub {key}")
+        for dependency in ("chain", "fdb"):
+            current = _mapping(result.get(f"{dependency}_contract"), f"current {dependency} contract")
+            for hub in hubs:
+                accepted = _mapping(hub.get(f"{dependency}_contract"), f"accepted {dependency} contract")
+                for key in ("generation", "sha256"):
+                    valid = (isinstance(current.get(key), int) and not isinstance(current.get(key), bool)
+                             and current[key] >= 0) if key == "generation" else bool(current.get(key))
+                    if not valid or accepted.get(key) != current.get(key):
+                        raise HarnessError(f"post-rectification {dependency} {key} is not current")
+        return generation
+
+    def _finish_add_hub_dependencies(self) -> bool:
+        """Finish drift-only adoption inside the authorized, resumable add-hub run."""
+        print("\n=== dependency reconciliation ===", flush=True)
+        current = self._reconciliation_inspect("before")
+        # A previous rectifier may have advanced accepted state just before the
+        # process died. Verify that commit first; never redeploy it a second time.
+        if (current.get("status") == "accepted" and
+                isinstance(current.get("topology_verification"), dict) and
+                current["topology_verification"].get("verified") is True):
+            generation = self._verify_reconciled_add_hub(current)
+        else:
+            drift = self._dependency_drift_only(current)
+            if not drift:
+                raise HarnessError("Hub is not fully verified and the failure is not dependency-only drift")
+            # Do not use a past add-hub receipt to authorize rectification
+            # after some other operation has advanced Hub membership authority.
+            if current.get("accepted_generation") != int(self._required_state("target_generation")):
+                raise HarnessError("accepted Hub generation changed since add-hub finalization; refusing rectification")
+            hubs = current.get("hubs")
+            if not isinstance(hubs, list) or (self.state.get("target_hub_count") is not None
+                    and len(hubs) != self.state["target_hub_count"]):
+                raise HarnessError("accepted Hub membership changed before dependency rectification")
+            frozen_ids = self.state.get("membership_hub_ids")
+            if frozen_ids is not None and sorted(str(h.get("hub_id") or "") for h in hubs if isinstance(h, dict)) != frozen_ids:
+                raise HarnessError("accepted Hub identities changed before dependency rectification")
+            matches = [h for h in hubs if isinstance(h, dict) and h.get("hub_id") == self.hub]
+            if len(matches) != 1:
+                raise HarnessError("accepted added Hub is missing before dependency rectification")
+            for key, frozen in (("host_id", self.state.get("resolved_host")),
+                                ("controller_id", self.state.get("resolved_controller"))):
+                if frozen and matches[0].get(key) != frozen:
+                    raise HarnessError(f"accepted added Hub {key} changed before dependency rectification")
+            if not self._mutation_authorized():
+                print("Dependency rectification requires the existing add-hub mutation authorization; "
+                      "rerun the same add-hub command with --execute-mutations "
+                      "--yes-i-know-this-mutates-hub")
+                return False
+            self.state["dependency_rectification_required"] = drift
+            self.state["dependency_reconciliation"] = {"status": "in-progress", "from_generation":
+                current.get("accepted_generation")}
+            self._write_state()
+            from tools.hub_control.common.errors import HubControlError
+            from tools.hub_control.common.models import HubContext
+            from tools.hub_control.rectify_dependencies import rectify_network
+            print("Rectifying accepted Hub dependencies through the existing Hub Control rectifier", flush=True)
+            try:
+                outcome = rectify_network(HubContext.from_repo(self.repo_root), self.network,
+                                          execute=True, confirmed=True, force_git=self.force_git)
+            except HubControlError as exc:
+                raise HarnessError(f"{exc.code}: {exc.message}") from exc
+            if outcome.get("status") not in {"rectified", "already-current"} or outcome.get("network") != self.network:
+                raise HarnessError(f"dependency rectifier did not finish: {outcome.get('status')!r}")
+            current = self._reconciliation_inspect("after")
+            generation = self._verify_reconciled_add_hub(current)
+        self.state.setdefault("membership_target_generation", self.state.get("target_generation"))
+        self.state["target_generation"] = generation
+        self.state["dependency_rectification_required"] = []
+        self.state["dependency_reconciliation"] = {"status": "verified", "accepted_generation": generation}
+        self._write_state()
+        print(f"Dependencies verified at accepted Hub generation {generation}")
+        return True
 
     def _run_redeploy(self) -> int:
         """In-place rollout: authorize assigned bridge controllers, then rebuild.
@@ -1128,6 +1247,8 @@ class Harness:
             hubs = result.get("hubs")
             if not isinstance(hubs, list):
                 raise HarnessError("final inspect did not expose accepted hubs")
+            if self.operation == "add-hub":
+                self.state["membership_hub_ids"] = sorted(str(h.get("hub_id") or "") for h in hubs if isinstance(h, dict))
             matches = [item for item in hubs if isinstance(item, dict) and item.get("hub_id") == self.hub]
             if self.operation == "add-hub":
                 if len(matches) != 1:
@@ -1187,8 +1308,8 @@ class Harness:
 
         Hub membership operations freeze dependency contracts at prep. If FDB or Chain
         authority advances after that freeze, the accepted Hub may immediately become
-        stale without invalidating the already-proven membership mutation. Such drift is
-        owned by the dependency rectifiers, not add/remove-Hub.
+        stale without invalidating the already-proven membership mutation. The add-hub
+        harness must reconcile this exact drift before reporting completion.
         """
         hubs = result.get("hubs")
         if not isinstance(hubs, list):

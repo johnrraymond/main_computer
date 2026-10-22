@@ -238,7 +238,8 @@ def _build_captain_engage_options_parser() -> argparse.ArgumentParser:
         prog="main-computer captain smoke john luc picard engage computer",
         description="Register the local AI as a priced ring-3 worker-pull worker for captain smoke requests.",
     )
-    parser.add_argument("--hub-url", default="", help="Hub base URL. Defaults to the captain smoke mainnet hub when available.")
+    parser.add_argument("--network", choices=_COMMAND_NETWORKS, default="", help="Network for worker-pull Hub routing (default: mainnet).")
+    parser.add_argument("--hub-url", default="", help="Hub base URL. Defaults to the selected network Hub.")
     parser.add_argument("--model", default="", help="Model id to advertise. Defaults to the configured local model.")
     parser.add_argument("--public-endpoint", default="", help="Optional public worker endpoint to advertise. Worker-pull mode does not require inbound access.")
     parser.add_argument("--ring", type=int, default=3, help="Worker ring to advertise. Defaults to 3.")
@@ -257,15 +258,17 @@ def _build_captain_engage_options_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _captain_smoke_hub_url(config: MainComputerConfig, explicit_hub_url: str = "") -> str:
+def _captain_smoke_hub_url(config: MainComputerConfig, explicit_hub_url: str = "", *, network: str = "mainnet") -> str:
     if str(explicit_hub_url or "").strip():
         return str(explicit_hub_url).strip().rstrip("/")
     try:
-        profile = load_hub_network_registry().get("mainnet")
+        profile = load_hub_network_registry().get(_command_network(override=network))
     except (HubNetworkConfigError, FileNotFoundError):
         profile = None
     if profile is not None and str(profile.hub_url or "").strip():
         return str(profile.hub_url).strip().rstrip("/")
+    if network == "testnet":
+        raise RuntimeError("Testnet Hub profile is unavailable; refusing mainnet Hub fallback.")
     return str(config.hub_url).strip().rstrip("/")
 
 
@@ -322,10 +325,12 @@ def _run_captain_engage_computer(args: argparse.Namespace, option_tokens: list[s
     if worker_config.provider == "hub":
         raise RuntimeError("captain smoke engage computer cannot use provider=hub because that would recurse back into the hub.")
 
-    hub_url = _captain_smoke_hub_url(worker_config, engage_options.hub_url or getattr(args, "hub_url", "") or "")
+    network = _command_network(args, engage_options.network)
+    hub_url = _captain_smoke_hub_url(worker_config, engage_options.hub_url or getattr(args, "hub_url", "") or "", network=network)
     worker_config = replace(
         worker_config,
         hub_url=hub_url,
+        hub_network=network,
         model=str(engage_options.model or worker_config.model).strip() or worker_config.model,
     )
     worker = MainComputer.build(worker_config)
@@ -363,17 +368,24 @@ def _run_captain_engage_computer(args: argparse.Namespace, option_tokens: list[s
 
 _DATA_DEFAULT_OFFICER_SELECTOR = "o3"
 _DATA_AGENT_MAINNET_NETWORK = "mainnet"
+_COMMAND_NETWORKS = ("mainnet", "testnet")
+
+
+def _command_network(args: argparse.Namespace | None = None, override: str = "") -> str:
+    """Select an explicitly chosen Captain/Data network, defaulting to mainnet."""
+    network = str(override or getattr(args, "network", "") or "mainnet").strip().lower()
+    if network not in _COMMAND_NETWORKS:
+        raise ValueError(f"Unsupported Captain/Data network {network!r}; choose mainnet or testnet.")
+    return network
 _DATA_AGENT_CLIENT_NODE_ID = "main-computer-data-agent-cli"
 _DATA_ENGAGE_COMPUTER_PHRASE = ("engage", "computer")
 
 
-def _data_mainnet_hub_url(explicit_hub_url: str = "", args: argparse.Namespace | None = None) -> str:
-    """Resolve Data's agent Hub URL from explicit input, CLI config, network profile, or env.
-
-    Data agent commands should not require operators to restate the mainnet Hub URL.
-    The override order intentionally mirrors Captain smoke defaults.
-    """
-
+def _data_network_hub_url(
+    explicit_hub_url: str = "", args: argparse.Namespace | None = None, *, network: str = ""
+) -> str:
+    """Resolve the selected network Hub; never fall back across networks."""
+    network = _command_network(args, network)
     explicit = str(explicit_hub_url or "").strip()
     if explicit:
         return explicit.rstrip("/")
@@ -381,19 +393,24 @@ def _data_mainnet_hub_url(explicit_hub_url: str = "", args: argparse.Namespace |
     if arg_hub_url:
         return arg_hub_url.rstrip("/")
     try:
+        profile = load_hub_network_registry().get(network)
+    except (HubNetworkConfigError, FileNotFoundError, KeyError) as exc:
+        if network == "testnet":
+            raise RuntimeError(f"Cannot resolve testnet Hub network registry: {exc}") from exc
+        profile = None
+    if profile is not None and str(profile.hub_url or "").strip():
+        return str(profile.hub_url).strip().rstrip("/")
+    if network == "mainnet":
+        # Preserve the existing mainnet-only fallback for installations without
+        # a network registry. Never use this fallback for testnet.
         config = _config_from_args(args) if args is not None else MainComputerConfig.from_env()
-        config_hub_url = str(getattr(config, "hub_url", "") or "").strip()
-    except Exception:
-        config_hub_url = ""
-    try:
-        profile = load_hub_network_registry().get(_DATA_AGENT_MAINNET_NETWORK)
-        if profile is not None and str(profile.hub_url).strip():
-            return str(profile.hub_url).strip().rstrip("/")
-    except (HubNetworkConfigError, FileNotFoundError, KeyError):
-        pass
-    if config_hub_url:
-        return config_hub_url.rstrip("/")
-    return "https://mainnet-hub.greatlibrary.io"
+        return str(config.hub_url or "").strip().rstrip("/") or "https://mainnet-hub.greatlibrary.io"
+    raise RuntimeError(f"No Hub URL configured for {network}; refusing cross-network fallback.")
+
+
+def _data_mainnet_hub_url(explicit_hub_url: str = "", args: argparse.Namespace | None = None) -> str:
+    """Backward-compatible mainnet URL helper."""
+    return _data_network_hub_url(explicit_hub_url, args, network="mainnet")
 
 
 def _data_agent_model(args: argparse.Namespace | None = None, explicit_model: str = "") -> str:
@@ -428,25 +445,33 @@ def _data_repo_root(args: argparse.Namespace | None = None) -> Path:
     return Path.cwd()
 
 
-def _data_o3_wallet_address(args: argparse.Namespace | None = None, explicit_wallet_address: str = "") -> str:
+def _data_o3_wallet_address(
+    args: argparse.Namespace | None = None, explicit_wallet_address: str = "", *, network: str = ""
+) -> str:
     """Resolve Data/O3's wallet address from explicit input, env, or deployment state.
 
     Hub credit accounting is wallet/account based. Data's command identity is O3,
     so Data agent requests should spend O3's Hub account rather than the CLI node id.
     """
 
+    network = _command_network(args, network)
     explicit = str(explicit_wallet_address or "").strip()
     if explicit:
         return explicit
-    for env_name in ("MAIN_COMPUTER_DATA_O3_WALLET_ADDRESS", "MAIN_COMPUTER_O3_WALLET_ADDRESS"):
+    env_names = (
+        ("MAIN_COMPUTER_DATA_O3_WALLET_ADDRESS", "MAIN_COMPUTER_O3_WALLET_ADDRESS")
+        if network == "mainnet" else
+        ("MAIN_COMPUTER_TESTNET_DATA_O3_WALLET_ADDRESS", "MAIN_COMPUTER_TESTNET_O3_WALLET_ADDRESS")
+    )
+    for env_name in env_names:
         value = str(os.environ.get(env_name, "") or "").strip()
         if value:
             return value
 
     repo_root = _data_repo_root(args)
     candidates = [
-        repo_root / "runtime" / "deployments" / _DATA_AGENT_MAINNET_NETWORK / "latest.json",
-        Path("runtime") / "deployments" / _DATA_AGENT_MAINNET_NETWORK / "latest.json",
+        repo_root / "runtime" / "deployments" / network / "latest.json",
+        Path("runtime") / "deployments" / network / "latest.json",
     ]
     for path in candidates:
         try:
@@ -476,16 +501,19 @@ def _data_o3_hub_account_id(
     explicit_account_id: str = "",
     *,
     explicit_wallet_address: str = "",
+    network: str = "",
 ) -> str:
-    """Resolve the Hub account id that Data/O3 should spend from."""
+    """Resolve the selected network Hub account id that Data/O3 should spend from."""
 
     explicit = str(explicit_account_id or "").strip()
     if explicit:
         return explicit
-    env_account = str(os.environ.get("MAIN_COMPUTER_DATA_O3_HUB_ACCOUNT_ID", "") or "").strip()
+    network = _command_network(args, network)
+    env_key = "MAIN_COMPUTER_DATA_O3_HUB_ACCOUNT_ID" if network == "mainnet" else "MAIN_COMPUTER_TESTNET_DATA_O3_HUB_ACCOUNT_ID"
+    env_account = str(os.environ.get(env_key, "") or "").strip()
     if env_account:
         return env_account
-    wallet_address = _data_o3_wallet_address(args, explicit_wallet_address=explicit_wallet_address)
+    wallet_address = _data_o3_wallet_address(args, explicit_wallet_address=explicit_wallet_address, network=network)
     if not wallet_address:
         return ""
     return wallet_account_id(wallet_address)
@@ -602,6 +630,7 @@ def _data_god_mode_bridge_prefund(
         _fetch_hub_credit_balance,
         _is_missing_bridge_completion_metadata_error,
         _post_hub_json,
+        _require_hub_bridge_completion_ready,
         build_bridge_wallet_funding_import_payload,
         build_captain_options_parser,
         build_captain_runtime,
@@ -610,13 +639,15 @@ def _data_god_mode_bridge_prefund(
     )
     from main_computer.credit_units import credit_wei_to_decimal_text
 
-    hub_url = _data_smoke_arg_value(smoke_argv, "--ai-hub-url") or _data_mainnet_hub_url(args=args)
+    network = _command_network(args, options.network)
+    hub_url = _data_smoke_arg_value(smoke_argv, "--ai-hub-url") or _data_network_hub_url(args=args, network=network)
     model = _data_smoke_arg_value(smoke_argv, "--ai-model") or _data_agent_model(args)
     client_node_id = _data_smoke_arg_value(smoke_argv, "--ai-hub-client-node-id") or _DATA_AGENT_CLIENT_NODE_ID
     account_id = _data_smoke_arg_value(smoke_argv, "--ai-hub-account-id")
     wallet_address = _data_o3_wallet_address(
         args,
         explicit_wallet_address=str(getattr(options, "ai_hub_wallet_address", "") or "").strip(),
+        network=network,
     )
     selector = wallet_address or _DATA_DEFAULT_OFFICER_SELECTOR
 
@@ -632,7 +663,7 @@ def _data_god_mode_bridge_prefund(
             "--officer",
             selector,
             "--network",
-            _DATA_AGENT_MAINNET_NETWORK,
+            network,
             "--hub-url",
             hub_url,
             "--client-node-id",
@@ -688,6 +719,12 @@ def _data_god_mode_bridge_prefund(
         f"main-computer data god-mode bridge:{runtime.wallet.address}:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}:{time.time_ns()}"
     )
     timeout_s = float(getattr(options, "ai_timeout_seconds", 300.0) or 300.0)
+    _require_hub_bridge_completion_ready(
+        runtime.config.hub_url, chain_id=runtime.chain_id,
+        contract_address=runtime.bridge_escrow_address,
+        controller_address=runtime.bridge_controller_address,
+        timeout_s=timeout_s,
+    )
     deposit = send_captain_bridge_deposit(
         runtime,
         deposit_credit_wei=bridge_credit_wei,
@@ -792,8 +829,9 @@ def _build_data_engage_options_parser() -> argparse.ArgumentParser:
             "The Hub URL and model are inferred from the mainnet profile and local config unless overridden."
         ),
     )
-    parser.add_argument("--agent", action="store_true", help="Engage the mainnet Hub worker-pull lane for Data/O3.")
-    parser.add_argument("--hub-url", default="", help="Hub base URL override. Defaults to the inferred mainnet Hub.")
+    parser.add_argument("--agent", action="store_true", help="Engage the selected network Hub worker-pull lane for Data/O3.")
+    parser.add_argument("--network", choices=_COMMAND_NETWORKS, default="", help="Network for Data/O3 worker-pull (default: mainnet).")
+    parser.add_argument("--hub-url", default="", help="Hub base URL override. Defaults to the selected network Hub.")
     parser.add_argument("--model", default="", help="Model override. Defaults to the configured local model.")
     parser.add_argument("--public-endpoint", default="", help="Optional public worker endpoint to advertise. Worker-pull mode does not require inbound access.")
     parser.add_argument(
@@ -833,11 +871,13 @@ def _run_data_engage_computer(args: argparse.Namespace, option_tokens: list[str]
         print("ERROR: data engage computer --agent cannot use provider=hub because that would recurse back into the hub.")
         return 2
 
-    hub_url = _data_mainnet_hub_url(engage_options.hub_url, args)
+    network = _command_network(args, engage_options.network)
+    hub_url = _data_network_hub_url(engage_options.hub_url, args, network=network)
     model = _data_agent_model(args, engage_options.model) or worker_config.model
     worker_config = replace(
         worker_config,
         hub_url=hub_url,
+        hub_network=network,
         model=model,
     )
     worker = MainComputer.build(worker_config)
@@ -893,15 +933,16 @@ def _build_data_god_mode_options_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt_tail", nargs="*", help="Prompt tokens when the prompt is written after --god-mode/options.")
     parser.add_argument("--prompt", default="", help="Prompt override. Otherwise free text before --god-mode/options is used.")
     parser.add_argument("--god-mode", action="store_true", help="Required for the full Byzantine reference command-runner pathway.")
+    parser.add_argument("--network", choices=_COMMAND_NETWORKS, default="", help="Use mainnet (default) or testnet Hub, O3 wallet, and bridge.")
     parser.add_argument(
         "--agent",
         action="store_true",
-        help="Force Data god-mode through the mainnet Hub worker pool instead of a local model.",
+        help="Force Data god-mode through the selected network Hub worker pool instead of a local model.",
     )
     parser.add_argument("--ai-provider", "--provider", dest="ai_provider", default="", help="AI provider for the smoke path.")
     parser.add_argument("--ai-model", "--model", dest="ai_model", default="", help="AI model for the smoke path.")
     parser.add_argument("--ai-command", default="", help="Command provider adapter command.")
-    parser.add_argument("--hub-url", "--ai-hub-url", dest="ai_hub_url", default="", help="Hub URL for --agent. Defaults to the mainnet hub profile.")
+    parser.add_argument("--hub-url", "--ai-hub-url", dest="ai_hub_url", default="", help="Hub URL for --agent. Defaults to the selected network Hub profile.")
     parser.add_argument("--hub-client-node-id", "--ai-hub-client-node-id", dest="ai_hub_client_node_id", default="", help="Hub client node id for --agent.")
     parser.add_argument("--hub-account-id", "--ai-hub-account-id", dest="ai_hub_account_id", default="", help="Hub account id for --agent. Defaults to Data/O3's wallet account.")
     parser.add_argument("--hub-wallet-address", "--ai-hub-wallet-address", dest="ai_hub_wallet_address", default="", help="Wallet address used to derive the Hub account id for --agent. Defaults to Data/O3.")
@@ -966,6 +1007,7 @@ def _data_god_mode_smoke_argv(args: argparse.Namespace, data_args: list[str]) ->
     if not prompt:
         parser.error("main-computer data --god-mode requires a prompt.")
 
+    network = _command_network(args, data_options.network)
     agent_mode = bool(data_options.agent or _data_args_enable_agent(data_args))
     provider = str(data_options.ai_provider or getattr(args, "provider", "") or "ollama").strip()
     if agent_mode:
@@ -977,17 +1019,18 @@ def _data_god_mode_smoke_argv(args: argparse.Namespace, data_args: list[str]) ->
     hub_wallet_address = str(getattr(data_options, "ai_hub_wallet_address", "") or "").strip()
     if agent_mode:
         model = _data_agent_model(args, model)
-        hub_url = _data_mainnet_hub_url(hub_url, args)
+        hub_url = _data_network_hub_url(hub_url, args, network=network)
         hub_client_node_id = hub_client_node_id or str(getattr(args, "hub_client_node_id", "") or "").strip() or _DATA_AGENT_CLIENT_NODE_ID
         hub_account_id = _data_o3_hub_account_id(
             args,
             hub_account_id,
             explicit_wallet_address=hub_wallet_address,
+            network=network,
         )
         if not hub_account_id:
             parser.error(
                 "Data --agent could not resolve O3's Hub account. "
-                "Set MAIN_COMPUTER_DATA_O3_WALLET_ADDRESS or pass --hub-wallet-address."
+                f"Provide the {network} deployment O3 address or pass --hub-wallet-address."
             )
     count = max(0, int(data_options.count or 0))
     worker_count = max(count, int(data_options.worker_count or 0))
@@ -1054,6 +1097,8 @@ def _data_prefix_option_tokens(args: argparse.Namespace) -> list[str]:
         tokens.append("--god-mode")
     if bool(getattr(args, "data_agent", False)):
         tokens.append("--agent")
+    if getattr(args, "network", None):
+        tokens.extend(["--network", _command_network(args)])
     for attr, option in (
         ("data_ai_provider", "--ai-provider"),
         ("data_ai_model", "--ai-model"),
@@ -1360,6 +1405,8 @@ def cmd_data(args: argparse.Namespace) -> int:
 
 def cmd_captain(args: argparse.Namespace) -> int:
     captain_args = list(getattr(args, "captain_args", []) or [])
+    if getattr(args, "network", None):
+        captain_args.extend(["--network", _command_network(args)])
     free_tokens, option_tokens = _split_captain_free_and_option_tokens(captain_args)
     if free_tokens == _CAPTAIN_ENGAGE_COMPUTER_PHRASE:
         return _run_captain_engage_computer(args, option_tokens)
@@ -1605,6 +1652,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Connect as the Captain/officer backend wallet and run the ring-3 make-it-so smoke flow.",
     )
     add_common_options(captain)
+    captain.add_argument("--network", choices=_COMMAND_NETWORKS, default="", help="Use mainnet (default) or testnet for Captain commands.")
     captain.add_argument(
         "captain_args",
         nargs=argparse.REMAINDER,
@@ -1620,12 +1668,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     add_common_options(data)
+    data.add_argument("--network", choices=_COMMAND_NETWORKS, default="", help="Use mainnet (default) or testnet for Data commands.")
     data.add_argument("--god-mode", dest="data_god_mode", action="store_true", help="Run the full Byzantine reference god-mode pathway.")
-    data.add_argument("--agent", dest="data_agent", action="store_true", help="Force Data through the inferred mainnet Hub worker pool.")
+    data.add_argument("--agent", dest="data_agent", action="store_true", help="Force Data through the selected network Hub worker pool.")
     data.add_argument("--ai-provider", dest="data_ai_provider", default="", help="AI provider for --god-mode.")
     data.add_argument("--ai-model", dest="data_ai_model", default="", help="AI model for --god-mode.")
     data.add_argument("--ai-command", dest="data_ai_command", default="", help="Command provider adapter command for --god-mode.")
-    data.add_argument("--ai-hub-url", dest="data_ai_hub_url", default="", help="Hub URL for --agent. Defaults to the mainnet hub profile.")
+    data.add_argument("--ai-hub-url", dest="data_ai_hub_url", default="", help="Hub URL for --agent. Defaults to the selected network Hub profile.")
     data.add_argument("--ai-hub-client-node-id", dest="data_ai_hub_client_node_id", default="", help="Hub client node id for --agent.")
     data.add_argument("--ai-hub-account-id", dest="data_ai_hub_account_id", default="", help="Hub account id for --agent. Defaults to Data/O3's wallet account.")
     data.add_argument("--ai-hub-wallet-address", dest="data_ai_hub_wallet_address", default="", help="Wallet address used to derive the Hub account id for --agent. Defaults to Data/O3.")

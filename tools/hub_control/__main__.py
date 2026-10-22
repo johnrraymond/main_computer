@@ -34,6 +34,8 @@ def _parser() -> argparse.ArgumentParser:
     inspect = sub.add_parser("inspect")
     inspect.add_argument("network")
     inspect.add_argument("--operation-id", default="")
+    inspect.add_argument("--membership-only", action="store_true",
+                         help="read-only Coolify and Hub membership verification for removal")
 
     for kind in ("add-hub", "remove-hub"):
         op = sub.add_parser(kind)
@@ -64,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "inspect":
             operation_id = str(args.operation_id or "")
             if operation_id:
+                if args.membership_only:
+                    raise HubControlError("HUB_INVALID_INSPECT_SCOPE",
+                                          "--membership-only cannot inspect an operation proof")
                 operation = require_operation(ctx, args.network, operation_id)
                 if operation.get("kind") == "add-hub":
                     result = add_inspect_operation(ctx, args.network, operation_id)
@@ -72,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     raise HubControlError("HUB_OPERATION_KIND_MISMATCH", f"unsupported Hub operation kind: {operation.get('kind')!r}")
             else:
-                result = inspect_network(ctx, args.network)
+                result = inspect_network(ctx, args.network, membership_only=bool(args.membership_only))
         elif args.command == "add-hub":
             if args.stage == "prep":
                 result = add_prep(ctx, args.network, args.hub)

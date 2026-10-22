@@ -1127,13 +1127,17 @@
     }
 
     async function requestMultiSessionKeySignature({requestContext = {}, origin = ""} = {}) {
+      // Worker selects the Hub network.  Signing must NEVER switch it to the
+      // standalone Wallet application's default Dev network.
+      const requestedChainId = walletNormalizeChainIdHex(requestContext.chain_id || requestContext.chainId);
+      if (!/^0x[1-9a-f][0-9a-f]*$/.test(requestedChainId)) {
+        throw new Error("Multi-session key signing requires an explicit valid Worker chain_id.");
+      }
+
       const provider = walletBrowserProvider();
       const signer = await provider.getSigner();
       const walletAddress = await signer.getAddress();
-      await walletEnsureExpectedChain();
-
-      const chainId = await walletNetworkChainId(provider);
-      const normalizedChainId = walletNormalizeChainIdHex(chainId);
+      const normalizedChainId = walletNormalizeChainIdHex(await walletNetworkChainId(provider));
       const expectedWallet = String(requestContext.wallet_address || requestContext.walletAddress || "").trim();
 
       if (!walletValidAddress(walletAddress)) {
@@ -1142,17 +1146,25 @@
       if (expectedWallet && expectedWallet.toLowerCase() !== walletAddress.toLowerCase()) {
         throw new Error(`Connected wallet ${walletShortAddress(walletAddress)} does not match Worker request ${walletShortAddress(expectedWallet)}.`);
       }
-      if (!walletChainMatchesExpected(normalizedChainId)) {
-        throw new Error(`Wallet is on ${normalizedChainId || "unknown chain"}; expected ${WALLET_DEV_CHAIN_ID_HEX}.`);
+      if (normalizedChainId !== requestedChainId) {
+        throw new Error(`Wallet is on ${normalizedChainId || "unknown chain"}; Worker requires ${requestedChainId}. Reconnect the selected Worker network before requesting a multi-session key.`);
       }
 
       const message = walletBuildMultiSessionKeyMessage({
         walletAddress,
-        chainId: normalizedChainId,
+        chainId: requestedChainId,
         origin
       });
       const messageText = JSON.stringify(message);
       const signature = await signer.signMessage(messageText);
+
+      // A chain/account change while the signature dialog is open invalidates
+      // this request.  Never hand a stale network authorization to the Hub.
+      const confirmedChainId = walletNormalizeChainIdHex(await walletNetworkChainId(provider));
+      const confirmedWallet = await signer.getAddress();
+      if (confirmedChainId !== requestedChainId || confirmedWallet.toLowerCase() !== walletAddress.toLowerCase()) {
+        throw new Error("Wallet account or Worker network changed during multi-session key signing; reconnect and retry.");
+      }
 
       return {
         kind: "main_computer_multisession_key_request",

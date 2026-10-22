@@ -178,6 +178,7 @@ from tools.mother.common.deployment_node_add_single_node_bootstrap_v2 import (
     build_node_add_single_node_bootstrap_release,
     execute_node_add_single_node_bootstrap_release,
     finalize_node_add_single_node_chain_and_hub_proof,
+    publish_node_add_single_node_genesis_contracts,
     verify_node_add_single_node_bootstrap_evidence,
     verify_node_add_single_node_bootstrap_release,
     verify_node_add_single_node_chain_and_hub_proof_evidence,
@@ -883,6 +884,23 @@ def _parser() -> argparse.ArgumentParser:
     verify_node_add_single_node_bootstrap_release_parser.add_argument("--add-do-release-max-age-seconds", type=int, default=86400)
     verify_node_add_single_node_bootstrap_release_parser.add_argument("--transaction-max-age-seconds", type=int, default=86400)
     verify_node_add_single_node_bootstrap_release_parser.add_argument("--baseline-max-age-seconds", type=int, default=86400)
+
+    publish_node_add_genesis = subparsers.add_parser(
+        "publish-add-node-single-node-genesis-contracts",
+        help="publish the exact genesis contracts after verified first-node proof",
+        allow_abbrev=False,
+    )
+    publish_node_add_genesis.add_argument("--network", required=True, choices=["mainnet", "testnet"])
+    publish_node_add_genesis.add_argument("--runtime-state-root", default=str(DEFAULT_RUNTIME_STATE_ROOT))
+    publish_node_add_genesis.add_argument("--operation-id")
+    publish_node_add_genesis.add_argument("--evidence", required=True)
+    for age_option in (
+        "max-age-seconds", "bootstrap-max-age-seconds", "release-max-age-seconds",
+        "identity-max-age-seconds", "identity-release-max-age-seconds",
+        "add-do-max-age-seconds", "add-do-release-max-age-seconds",
+        "transaction-max-age-seconds", "baseline-max-age-seconds",
+    ):
+        publish_node_add_genesis.add_argument("--" + age_option, type=int, default=86400)
 
     verify_node_add_single_node_bootstrap_evidence_parser = subparsers.add_parser(
         "verify-add-node-single-node-bootstrap-evidence",
@@ -5940,6 +5958,24 @@ def _cmd_add_node_single_node_bootstrap(args: argparse.Namespace, private_state)
     return 0
 
 
+def _cmd_publish_node_add_single_node_genesis_contracts(args: argparse.Namespace, private_state) -> int:
+    result = publish_node_add_single_node_genesis_contracts(
+        _paths(args), private_state, Path(args.evidence),
+        network=args.network,
+        max_age_seconds=args.max_age_seconds,
+        bootstrap_max_age_seconds=args.bootstrap_max_age_seconds,
+        release_max_age_seconds=args.release_max_age_seconds,
+        identity_max_age_seconds=args.identity_max_age_seconds,
+        identity_release_max_age_seconds=args.identity_release_max_age_seconds,
+        add_do_max_age_seconds=args.add_do_max_age_seconds,
+        add_do_release_max_age_seconds=args.add_do_release_max_age_seconds,
+        transaction_max_age_seconds=args.transaction_max_age_seconds,
+        baseline_max_age_seconds=args.baseline_max_age_seconds,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_verify_node_add_single_node_bootstrap_evidence(args: argparse.Namespace, private_state) -> int:
     result = verify_node_add_single_node_bootstrap_evidence(
         _paths(args),
@@ -6651,6 +6687,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_release_node_add_single_node_bootstrap(args, private_state)
         if args.command == "verify-add-node-single-node-bootstrap-release":
             return _cmd_verify_node_add_single_node_bootstrap_release(args, private_state)
+        if args.command == "publish-add-node-single-node-genesis-contracts":
+            return _cmd_publish_node_add_single_node_genesis_contracts(args, private_state)
         if args.command == "verify-add-node-single-node-bootstrap-evidence":
             return _cmd_verify_node_add_single_node_bootstrap_evidence(args, private_state)
         if args.command == "adopt-add-node-single-node-bootstrap-live-proof":

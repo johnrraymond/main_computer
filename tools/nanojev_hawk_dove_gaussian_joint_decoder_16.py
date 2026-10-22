@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+"""Train 16 fixed zero-centered Gaussian banks with one unrestricted numerical decoder.
+
+New experiment, distinct from the finished sequential v2 run. The 16 parallel
+banks retain exact one-hot left/right overflow supervision and fixed halved
+supports. A shared decoder sees ALL distributions at once and directly learns
+the numerical answer in signed-asinh space. It does not select, average, or
+replace predictions bank by bank; there are no sequential bank freezes. Upstream feature/Y visibility remains as in v2.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import math
+import random
+from pathlib import Path
+
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+from tools import nanojev_hawk_dove_gaussian_zero_overflow_16 as prior
+from tools import nanojev_hawk_dove_coarse_to_fine_gaussian as fine
+from tools import nanojev_hawk_dove_gaussian_correction_ab as store
+from tools import nanojev_hawk_dove_gaussian_register_fork as fork
+from tools import nanojev_hawk_dove_internal_curriculum_master as master
+
+SCHEMA = 'nanojev.hawk-dove.gaussian-joint-decoder-16.v2'
+STAGES = prior.STAGES
+TIERS = prior.TIERS
+DEFAULT_OUTPUT = Path.home() / 'NanoJev/runs/hawk_dove_gaussian_joint_decoder_16_v2'
+RELATIVE_MAX = prior.RELATIVE_MAX
+LEGACY_JOINT_SCHEMA = 'nanojev.hawk-dove.gaussian-joint-head-16.v1'
+
+
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+class JointNumericalHead(nn.Module):
+    """Unrestricted numerical decoder conditioned on ALL bank distributions.
+
+    Predict a *single* signed-asinh numerical coordinate. The frozen Stage 2
+    estimate is a zero-initialized skip connection, NOT a mixture candidate;
+    no bank ever overwrites another bank's estimate. Unlike convex mixing,
+    the result can lie outside every bank candidate.
+    """
+    def __init__(self, registers: int, *, count: int = 16, hidden: int = 128):
+        super().__init__()
+        dim = count * (registers + 2 + 3) + 1
+        self.network = nn.Sequential(
+            nn.LayerNorm(dim),nn.Linear(dim,hidden),nn.SiLU(),
+            nn.Linear(hidden,hidden),nn.SiLU(),nn.Linear(hidden,1))
+        nn.init.zeros_(self.network[-1].weight)
+        nn.init.zeros_(self.network[-1].bias)
+
+    def forward(self, bank_probs, bank_estimates, radii, base, relative_max):
+        inside = bank_probs[:, :, 1:-1].sum(-1)
+        signed_overflow = bank_probs[:, :, -1] - bank_probs[:, :, 0]
+        normalized_est = bank_estimates / radii.unsqueeze(0)
+        payload = torch.cat((bank_probs,normalized_est.unsqueeze(-1),
+                             inside.unsqueeze(-1),signed_overflow.unsqueeze(-1)),dim=-1)
+        payload = torch.cat((payload.flatten(1),
+                             (base / relative_max).clamp(-4.,4.).unsqueeze(-1)),dim=-1)
+        # Smoothly bound the coordinate *change*, not its candidate value.
+        # +/-32 in asinh space can cross zero and reverse the sign of even a
+        # multi-million-unit baseline. Zero at initialization preserves it.
+        raw = self.network(payload).squeeze(-1)
+        return 32. * torch.tanh(raw / 32.)
+
+
+class JointGaussianSystem(nn.Module):
+    def __init__(self, base_width, stage2, *, relative_max=RELATIVE_MAX, hidden=128):
+        super().__init__()
+        self.cascade = prior.Cascade(base_width,stage2,relative_max=relative_max)
+        self.head = JointNumericalHead(stage2.registers,hidden=hidden)
+        self.relative_max = float(relative_max)
+        self.register_buffer('radii',torch.tensor(
+            [prior.fixed_radius(k,relative_max) for k in STAGES],dtype=torch.float32))
+
+    def forward(self, data):
+        base, _, features = self.cascade.bank_input(data)
+        per_bank = [self.cascade.banks[str(k)](features) for k in STAGES]
+        bank_estimates = torch.stack([entry[0] for entry in per_bank],dim=1)
+        bank_probs = torch.stack([entry[1]['probabilities'] for entry in per_bank],dim=1)
+        encoded_base = torch.asinh(base.float())
+        delta = self.head(bank_probs,bank_estimates,self.radii,base,self.relative_max)
+        encoded_prediction = encoded_base + delta
+        # Stay in the finite numerical regime. This is far beyond the
+        # +/-2-million bank support, so it is NOT a convex-hull constraint.
+        bounded_prediction = encoded_prediction.clamp(-20.,20.)
+        # Exact identity at step zero (including cases where the parent uses
+        # a different floating rounding of sinh(asinh(base))).
+        predicted = base + (torch.sinh(bounded_prediction)-torch.sinh(encoded_base))
+        return predicted,{'base':base,'decoded_coordinate':encoded_prediction,
+                          'decoder_delta':delta,'bank_probs':bank_probs,
+                          'bank_estimates':bank_estimates}
+
+
+def training_objective(system,data,*,small_boost=2.,small_threshold=250000.,
+                       gaussian_weight=1.,head_weight=1.,numeric_weight=1.):
+    y=data['target'].float()
+    predicted,extra=system(data)
+    # Each bank independently learns a Gaussian inside and exactly one-hot
+    # left/right overflow outside. No head-selection oracle is introduced.
+    bank_losses=[]
+    class_accuracy=[]
+    for i,k in enumerate(STAGES):
+        bank=system.cascade.banks[str(k)]
+        desired=bank.supervised_distribution(y)
+        ce=-(desired * extra['bank_probs'][:,i,:].clamp_min(1e-12).log()).sum(-1)
+        inside=y.abs()<=bank.radius
+        if bool(inside.any()) and bool((~inside).any()):
+            bank_loss=.5*(ce[inside].mean()+ce[~inside].mean())
+        else:
+            bank_loss=ce.mean()
+        bank_losses.append(bank_loss)
+        class_accuracy.append((extra['bank_probs'][:,i,:].argmax(-1)==desired.argmax(-1)).float().mean())
+    gaussian=torch.stack(bank_losses).mean()
+
+    weight=torch.where(y.abs()<small_threshold,small_boost,1.)
+    weight=weight/weight.sum()
+    target_coordinate=torch.asinh(y)
+    # Primary direct decoding objective: stable on positive, negative, tiny,
+    # and large numerical targets. This is NOT supervised bank selection.
+    encoded_error=extra['decoded_coordinate']-target_coordinate
+    decoder=(F.smooth_l1_loss(encoded_error,torch.zeros_like(encoded_error),
+                              beta=.25,reduction='none')*weight).sum()
+    # Numerical relative error supplies the 5%-accuracy task pressure without
+    # letting huge outliers dominate the backward pass.
+    relative_error=(predicted-y).abs()/y.abs().clamp_min(1.)
+    numeric=(torch.log1p(relative_error)*weight).sum()
+    total=gaussian_weight*gaussian+head_weight*decoder+numeric_weight*numeric
+    return total,{'gaussian_loss':gaussian.detach(),
+                  'decoder_loss':decoder.detach(),'numeric_loss':numeric.detach(),
+                  'bank_class_accuracy':torch.stack(class_accuracy).mean().detach(),
+                  'decoder_delta_abs':extra['decoder_delta'].abs().mean().detach()}
+
+
+class MagnitudeBalancedSampler:
+    """Half ordinary tier-balanced draws, half draws across present magnitude bands."""
+    def __init__(self,train,relative_max):
+        self.train=train
+        self.groups={}
+        self.all_pairs=[(t,i) for t in TIERS for i in range(len(train[t]['target']))]
+        for t,i in self.all_pairs:
+            y=abs(float(train[t]['target'][i]))
+            # Group 0: outside widest bank; group N: inside exactly N banks.
+            group=sum(y<=relative_max/(2**j) for j in range(len(STAGES)))
+            self.groups.setdefault(group,[]).append((t,i))
+        self.present=tuple(sorted(self.groups))
+        if not self.present:raise ValueError('JOINT_EMPTY_TRAIN_SPLIT')
+
+    def draw(self,seed,step,views):
+        if views<2:raise ValueError('JOINT_INVALID_VIEWS')
+        rng=random.Random(f'joint/{seed}/{step}/{views}')
+        selected=[]
+        # Tier-balanced ordinary draws retain exposure to genuine frequency.
+        for j in range(views//2):
+            tier=TIERS[(step*(views//2)+j)%len(TIERS)]
+            selected.append((tier,rng.randrange(len(self.train[tier]['target']))))
+        # Rotate through *every populated* magnitude band, including rare
+        # small-X interiors. Sampling repeats real examples, never relabels.
+        for j in range(views-len(selected)):
+            group=self.present[(step*(views-len(selected))+j)%len(self.present)]
+            selected.append(rng.choice(self.groups[group]))
+        rng.shuffle(selected)
+        return {k:torch.stack([self.train[t][k][i] for t,i in selected],dim=0)
+                for k in ('features','coarse','target')}
+
+
+def metrics(truth,pred,threshold):
+    small=truth.abs()<threshold
+    correct=(pred-truth).abs()/truth.abs().clamp_min(1.) <= .05
+    return {'correct':int(correct.sum()),'cases':int(truth.numel()),
+            'accuracy_5pct':float(correct.float().mean()),
+            'small_n':int(small.sum()),'small_correct':int(correct[small].sum()),
+            'small_accuracy_5pct':float(correct[small].float().mean()) if bool(small.any()) else None,
+            'small_mae':float((pred[small]-truth[small]).abs().mean()) if bool(small.any()) else None}
+
+
+@torch.no_grad()
+def probe(system,dev,gate_percent,small_threshold,step):
+    system.eval()
+    by_tier={};base_by_tier={}
+    count=0;improved=0;regressed=0;outside_hull=0;delta_abs_sum=0.
+    inside_correct=torch.zeros(16,dtype=torch.int64)
+    inside_total=torch.zeros(16,dtype=torch.int64)
+    for tier in TIERS:
+        data=dev[tier];pred,detail=system(data)
+        y=data['target'];by_tier[tier]=metrics(y,pred,small_threshold)
+        base_by_tier[tier]=metrics(y,detail['base'],small_threshold)
+        before=((detail['base']-y).abs()/y.abs().clamp_min(1.))<=.05
+        after=((pred-y).abs()/y.abs().clamp_min(1.))<=.05
+        improved+=int((after & ~before).sum());regressed+=int((before & ~after).sum())
+        bounds=torch.cat((detail['base'][:,None],detail['bank_estimates']),dim=1)
+        outside_hull+=int(((pred<bounds.min(-1).values-1e-4)|
+                           (pred>bounds.max(-1).values+1e-4)).sum())
+        count+=len(y);delta_abs_sum+=float(detail['decoder_delta'].abs().sum())
+        eligible=(y.abs()[:,None]<=system.radii[None,:])
+        guessed=(detail['bank_probs'].argmax(-1)!=0)&(detail['bank_probs'].argmax(-1)!=detail['bank_probs'].shape[-1]-1)
+        inside_correct+=(eligible==guessed).long().sum(0).cpu()
+        inside_total+=torch.full_like(inside_total,len(y))
+    def aggregate(tiers):
+        n=sum(s['cases'] for s in tiers.values());c=sum(s['correct'] for s in tiers.values())
+        small_n=sum(s['small_n'] for s in tiers.values())
+        small_c=sum(s['small_correct'] for s in tiers.values())
+        fails=[t for t,s in tiers.items() if s['accuracy_5pct']+1e-10<gate_percent/100.]
+        return {'accuracy_5pct':c/n,'correct':c,'cases':n,'small_accuracy_5pct':small_c/small_n,
+                'small_correct':small_c,'small_n':small_n,
+                'small_mae':sum(s['small_mae']*s['small_n'] for s in tiers.values())/small_n,
+                'all_nine_pass':not fails,'failing_tiers':fails,'per_tier':tiers}
+    return {'schema':SCHEMA+'.probe.v1','step':step,'joint':aggregate(by_tier),
+            'frozen_stage2':aggregate(base_by_tier),
+            'improved_vs_base_cases':improved,'regressed_vs_base_cases':regressed,
+            'decoded_outside_candidate_hull_fraction':outside_hull/count,
+            'mean_abs_decoder_delta':delta_abs_sum/count,
+            'bank_interior_class_accuracy':(inside_correct/inside_total.clamp_min(1)).tolist(),
+            'gate_percent':gate_percent,'small_threshold':small_threshold}
+
+
+def rank(report,kind):
+    j=report['joint']
+    if kind=='small':return (j['small_accuracy_5pct'],j['accuracy_5pct'])
+    if kind=='macro':return (j['accuracy_5pct'],j['small_accuracy_5pct'])
+    if kind=='all_nine':return (min(j['per_tier'][t]['accuracy_5pct'] for t in TIERS),j['accuracy_5pct'])
+    raise ValueError('JOINT_UNKNOWN_RANK')
+
+
+def validate(args):
+    floats=(args.relative_max,args.small_boost,args.small_threshold,args.lr,
+            args.gaussian_weight,args.head_weight,args.numeric_weight)
+    if (args.additional_steps<0 or args.max_steps<1 or args.chunk_steps<1 or args.views<9 or
+        args.hidden<8 or args.train_per_tier<8 or args.dev_per_tier<8 or
+        args.test_per_tier<8 or args.relative_max<=0 or args.small_boost<=0 or
+        args.small_threshold<=0 or args.lr<=0 or
+        not all(math.isfinite(x) for x in floats) or
+        min(args.gaussian_weight,args.head_weight,args.numeric_weight)<0 or
+        args.gaussian_weight+args.head_weight+args.numeric_weight<=0 or
+        not 0<args.gate_percent<=100):
+        raise ValueError('JOINT_INVALID_ARGUMENTS')
+    output=args.output.expanduser().resolve()
+    protected=[args.refinement_checkpoint.parent,args.refinement_checkpoint.parent.parent,
+               args.source,args.teacher]
+    if args.bank_init_checkpoint is not None:
+        protected += [args.bank_init_checkpoint.parent]
+    fine.fault.verify_no_overlap(output,protected)
+    return output
+
+
+def verify_bank_init(args,stage2_sha,original_sha,donor_sha):
+    if args.bank_init_checkpoint is None:return None,None
+    raw=master.checked_file(args.bank_init_checkpoint)
+    ck=master.load_state(raw)
+    ident=ck.get('identity',{})
+    if (ck.get('schema') not in (prior.SCHEMA,LEGACY_JOINT_SCHEMA) or
+        ident.get('stage2_sha256')!=stage2_sha or
+        ident.get('original_parent_sha256')!=original_sha or
+        ident.get('donor_sha256')!=donor_sha or
+        ident.get('source_sha256')!=fork.fingerprint(args.source) or
+        ident.get('teacher_sha256')!=fork.fingerprint(args.teacher) or
+        ident.get('bank_count')!=16 or
+        float(ident.get('relative_max',-1))!=args.relative_max or
+        not isinstance(ck.get('bank_states'),dict) or
+        set(ck['bank_states'])!={str(k) for k in STAGES}):
+        raise ValueError('JOINT_BANK_INIT_IDENTITY_MISMATCH')
+    return ck,sha(raw)
+
+
+def identity(args,first,original,donor,first_meta,bank_sha,bank_schema=None):
+    return {'schema':SCHEMA,'stage2_sha256':sha(first),
+            'original_parent_sha256':sha(original),'donor_sha256':sha(donor),
+            'source_sha256':first_meta['source_sha256'],
+            'teacher_sha256':first_meta['teacher_sha256'],
+            'stage2_step':int(first_meta['step']),
+            'original_bridge_arm':first_meta['parent_arm'],
+            'refinement_checkpoint_path':str(args.refinement_checkpoint.expanduser().resolve()),
+            'bank_init_sha256':bank_sha,'bank_init_schema':bank_schema,
+            'bank_init_path':str(args.bank_init_checkpoint.expanduser().resolve()) if args.bank_init_checkpoint else None,
+            'relative_max':args.relative_max,'bank_count':16,
+            'geometry':'fixed_zero_centered_halving_with_exact_overflow_buckets',
+            'head':'direct_joint_signed_asinh_decoder_from_all_16_bank_distributions',
+            'training':'joint bank cross_entropy plus direct encoded/relative numerical objectives',
+            'sampler':'half_original_tier_half_present_log_magnitude_bands',
+            'max_steps':args.max_steps,'chunk_steps':args.chunk_steps,
+            'views':args.views,'hidden':args.hidden,
+            'train_per_tier':args.train_per_tier,'dev_per_tier':args.dev_per_tier,
+            'test_per_tier':args.test_per_tier,'seed':args.seed,
+            'small_threshold':args.small_threshold,'small_boost':args.small_boost,
+            'lr':args.lr,'gaussian_weight':args.gaussian_weight,
+            'head_weight':args.head_weight,'numeric_weight':args.numeric_weight,
+            'gate_percent':args.gate_percent,
+            'benchmark_visibility':'upstream 011 exposes Y; no target values in forward inference'}
+
+
+def save_state(system,opt,ident,step,args):
+    return {'schema':SCHEMA,'identity':ident,'step':step,
+            'bank_states':{str(k):system.cascade.banks[str(k)].state_dict() for k in STAGES},
+            'head_state':system.head.state_dict(),'optimizer':opt.state_dict(),
+            'rng_cpu':torch.get_rng_state(),
+            'rng_cuda':torch.cuda.get_rng_state_all() if args.device=='cuda' else None}
+
+
+def save_best(out,state,report):
+    result=[]
+    for metric in ('small','macro','all_nine'):
+        if metric=='all_nine' and not report['joint']['all_nine_pass']:continue
+        dest=out/'best_checkpoints'/f'best_{metric}.pt';meta=dest.with_suffix('.json')
+        current=rank(report,metric)
+        if dest.exists()!=meta.exists():raise ValueError('JOINT_PARTIAL_BEST')
+        if meta.exists():
+            old=json.loads(meta.read_text(encoding='utf8'))
+            if (old['checkpoint_sha256']!=sha(master.checked_file(dest)) or
+                old['stage2_sha256']!=state['identity']['stage2_sha256'] or
+                old['bank_init_sha256']!=state['identity']['bank_init_sha256']):
+                raise ValueError('JOINT_BEST_INTEGRITY_DRIFT')
+            if current<=tuple(old['rank']):continue
+        buf=io.BytesIO();torch.save(state,buf);raw=buf.getvalue()
+        store.atomic_bytes(dest,raw)
+        store.atom_json(meta,{'schema':SCHEMA+'.best.v1','metric':metric,
+                             'step':state['step'],'rank':current,
+                             'stage2_sha256':state['identity']['stage2_sha256'],
+                             'bank_init_sha256':state['identity']['bank_init_sha256'],
+                             'checkpoint_sha256':sha(raw)})
+        result.append({'metric':metric,'step':state['step'],
+                       'macro':report['joint']['accuracy_5pct'],
+                       'small':report['joint']['small_accuracy_5pct']})
+    return result
+
+
+def construct_system(feature_width,first,device,args):
+    first_ck=master.load_state(first)
+    cfg=first_ck['identity']
+    stage2=fine.LocalRefiner(feature_width,kind='gaussian',registers=int(cfg['registers']),
+             sigma_bins=float(cfg['sigma_bins']),floor=float(cfg['floor']),
+             fraction=float(cfg['fraction']),temperature=float(cfg['temperature'])).to(device)
+    stage2.load_state_dict(first_ck['heads']['gaussian'],strict=True)
+    system=JointGaussianSystem(feature_width,stage2,relative_max=args.relative_max,
+                               hidden=args.hidden).to(device)
+    return system
+
+
+def run(args):
+    out=validate(args)
+    names=('stage2_snapshot.pt','parent_snapshot.pt','donor_snapshot.pt','config.json','latest.pt')
+    exist=[(out/name).exists() for name in names]
+    if any(exist) and not all(exist):raise ValueError('JOINT_PARTIAL_RUN_STATE')
+    resume=all(exist)
+    if resume:
+        first,original,donor=[master.checked_file(out/name) for name in names[:3]]
+        first_id=master.load_state(first)['identity']
+        first_meta={**first_id,'step':master.load_state(first)['step']}
+        live_first,live_original,live_donor,_=prior.check_parent(args)
+        if (sha(live_first)!=sha(first) or sha(live_original)!=sha(original) or
+            sha(live_donor)!=sha(donor)):
+            raise ValueError('JOINT_SOURCE_SNAPSHOT_DRIFT')
+        initial,bank_sha=verify_bank_init(args,sha(first),sha(original),sha(donor))
+        ident=identity(args,first,original,donor,first_meta,bank_sha,initial['schema'] if initial else None)
+        previous=json.loads((out/'config.json').read_text(encoding='utf8'))
+        if ident!=previous:raise ValueError('JOINT_RESUME_IDENTITY_DRIFT')
+        saved=master.load_state(master.checked_file(out/'latest.pt'))
+        if saved.get('schema')!=SCHEMA or saved.get('identity')!=ident:
+            raise ValueError('JOINT_BAD_RESUME_STATE')
+        start=int(saved['step'])
+    else:
+        first,original,donor,metadata=prior.check_parent(args)
+        first_id=master.load_state(first)['identity']
+        first_meta={**first_id,'step':master.load_state(first)['step']}
+        initial,bank_sha=verify_bank_init(args,sha(first),sha(original),sha(donor))
+        ident=identity(args,first,original,donor,first_meta,bank_sha,initial['schema'] if initial else None)
+        saved=None;start=0
+    if not args.test_only and start+args.additional_steps>args.max_steps:
+        raise ValueError(f'JOINT_BUDGET_EXCEEDED:start={start},requested={args.additional_steps},max={args.max_steps}')
+    fork.emit('joint_prepare',step=start,max_steps=args.max_steps,bank_count=16,
+              stage2_sha256=ident['stage2_sha256'],bank_init_sha256=ident['bank_init_sha256'],
+              test_split_accessed=args.test_only)
+    model=fork.ex.load_current(args.source,args.device,args.dtype,args.allow_model_download,args.seed)
+    orig_ck=master.load_state(original);donor_ck=master.load_state(donor)
+    original_args=argparse.Namespace(arm=ident['original_bridge_arm'])
+    decoder,bridge=fine.init_frozen(original_args,orig_ck,donor_ck,model)
+    cache=fork.cached.FrozenCaptureCache(out/'frozen-capture-cache-v1',{
+        'schema':SCHEMA+'.capture','source_sha256':ident['source_sha256'],
+        'teacher_sha256':ident['teacher_sha256'],
+        'max_prompt_tokens':model['config']['max_prompt_tokens']},args.cache_memory_mb)
+    if args.test_only:
+        if saved is None:raise ValueError('JOINT_TEST_NEEDS_RUN')
+        path=out/'best_checkpoints'/f'best_{args.best_metric}.pt'
+        raw=master.checked_file(path);metadata=json.loads(path.with_suffix('.json').read_text())
+        if metadata['checkpoint_sha256']!=sha(raw) or metadata['metric']!=args.best_metric:
+            raise ValueError('JOINT_TEST_BAD_BEST')
+        chosen=master.load_state(raw)
+        if chosen['identity']!=ident:raise ValueError('JOINT_TEST_IDENTITY_DRIFT')
+        test,_=prior.load_features(args,model,decoder,bridge,cache,'test')
+        system=construct_system(test[TIERS[0]]['features'].shape[-1],first,model['device'],args)
+        for k in STAGES:system.cascade.banks[str(k)].load_state_dict(chosen['bank_states'][str(k)])
+        system.head.load_state_dict(chosen['head_state'])
+        result=probe(system,test,args.gate_percent,args.small_threshold,chosen['step'])
+        result['schema']=SCHEMA+'.untouched-test.v1'
+        result['best_metric']=args.best_metric
+        result['checkpoint_sha256']=sha(raw)
+        store.atom_json(out/f'test-{args.best_metric}-step-{chosen["step"]:07d}.json',result)
+        fork.emit('joint_test_finished',step=chosen['step'],metric=args.best_metric,
+                  accuracy=result['joint']['accuracy_5pct'],small=result['joint']['small_accuracy_5pct'])
+        return result
+    train,tr_meta=prior.load_features(args,model,decoder,bridge,cache,'train')
+    dev,dev_meta=prior.load_features(args,model,decoder,bridge,cache,'dev')
+    if {str(row['instance']) for t in TIERS for row in tr_meta[t]} & \
+       {str(row['instance']) for t in TIERS for row in dev_meta[t]}:
+        raise ValueError('JOINT_TRAIN_DEV_INSTANCE_LEAKAGE')
+    sampler=MagnitudeBalancedSampler(train,args.relative_max)
+    fork.emit('joint_support',magnitude_band_counts={str(g):len(v) for g,v in sampler.groups.items()},
+              total=len(sampler.all_pairs))
+    width=train[TIERS[0]]['features'].shape[-1]
+    system=construct_system(width,first,model['device'],args)
+    trainable=list(system.head.parameters())
+    for k in STAGES:trainable += list(system.cascade.banks[str(k)].parameters())
+    opt=torch.optim.AdamW(trainable,lr=args.lr)
+    if saved is not None:
+        for k in STAGES:system.cascade.banks[str(k)].load_state_dict(saved['bank_states'][str(k)])
+        system.head.load_state_dict(saved['head_state'])
+        opt.load_state_dict(saved['optimizer'])
+        torch.set_rng_state(saved['rng_cpu'])
+        if args.device=='cuda' and saved.get('rng_cuda') is not None:
+            torch.cuda.set_rng_state_all(saved['rng_cuda'])
+    elif initial is not None:
+        for k in STAGES:system.cascade.banks[str(k)].load_state_dict(initial['bank_states'][str(k)])
+    if saved is None:
+        out.mkdir(parents=True,exist_ok=True)
+        store.atomic_bytes(out/'stage2_snapshot.pt',first)
+        store.atomic_bytes(out/'parent_snapshot.pt',original)
+        store.atomic_bytes(out/'donor_snapshot.pt',donor)
+        store.atom_json(out/'config.json',ident)
+    def save(step,loss_detail=None):
+        state=save_state(system,opt,ident,step,args)
+        store.atom_torch(out/'latest.pt',state)
+        result=probe(system,dev,args.gate_percent,args.small_threshold,step)
+        if loss_detail is not None:result['last_train_losses']={k:float(v) for k,v in loss_detail.items()}
+        store.atom_json(out/f'probe-step-{step:07d}.json',result)
+        for row in save_best(out,state,result):fork.emit('joint_best_saved',**row)
+        fork.emit('joint_probe',step=step,accuracy=result['joint']['accuracy_5pct'],
+                  small=result['joint']['small_accuracy_5pct'],
+                  base_accuracy=result['frozen_stage2']['accuracy_5pct'],
+                  base_small=result['frozen_stage2']['small_accuracy_5pct'],
+                  improved_vs_base_cases=result['improved_vs_base_cases'],
+                  regressed_vs_base_cases=result['regressed_vs_base_cases'],
+                  decoded_outside_candidate_hull_fraction=result['decoded_outside_candidate_hull_fraction'],
+                  losses=result.get('last_train_losses'))
+        return result
+    if saved is None:save(0)
+    for step in range(start+1,start+args.additional_steps+1):
+        system.train();system.cascade.stage2.eval()
+        batch=sampler.draw(args.seed,step,args.views)
+        opt.zero_grad(set_to_none=True)
+        loss,components=training_objective(system,batch,small_boost=args.small_boost,
+                small_threshold=args.small_threshold,gaussian_weight=args.gaussian_weight,
+                head_weight=args.head_weight,numeric_weight=args.numeric_weight)
+        if not bool(torch.isfinite(loss)):raise FloatingPointError('JOINT_NONFINITE_LOSS')
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(trainable,1.)
+        opt.step()
+        if step%args.chunk_steps==0 or step==start+args.additional_steps:
+            save(step,{'loss':loss.detach(),**components})
+    for name,key in [('stage2_snapshot.pt','stage2_sha256'),
+                     ('parent_snapshot.pt','original_parent_sha256'),
+                     ('donor_snapshot.pt','donor_sha256')]:
+        if sha(master.checked_file(out/name))!=ident[key]:
+            raise ValueError('JOINT_FROZEN_SNAPSHOT_DRIFT')
+    fork.emit('joint_finished',step=start+args.additional_steps,
+              latest=str(out/'latest.pt'),test_split_read=False)
+
+
+def parser():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--refinement-checkpoint',type=Path,default=prior.DEFAULT_PARENT)
+    p.add_argument('--bank-init-checkpoint',type=Path,default=None,
+                   help='Optional old overflow-v2 or joint-head-v1 latest.pt: import only the 16 banks (read-only)')
+    p.add_argument('--source',type=Path,default=fork.science.DEFAULT_SOURCE)
+    p.add_argument('--teacher',type=Path,default=fork.science.DEFAULT_TEACHER)
+    p.add_argument('--output',type=Path,default=DEFAULT_OUTPUT)
+    p.add_argument('--device',choices=('cpu','cuda'),default='cuda')
+    p.add_argument('--dtype',choices=('float16','bfloat16','float32'),default='float16')
+    p.add_argument('--allow-model-download',action='store_true')
+    p.add_argument('--additional-steps',type=int,default=300)
+    p.add_argument('--max-steps',type=int,default=48000)
+    p.add_argument('--chunk-steps',type=int,default=300)
+    p.add_argument('--relative-max',type=float,default=RELATIVE_MAX)
+    p.add_argument('--views',type=int,default=32)
+    p.add_argument('--hidden',type=int,default=128)
+    p.add_argument('--train-per-tier',type=int,default=256)
+    p.add_argument('--dev-per-tier',type=int,default=48)
+    p.add_argument('--test-per-tier',type=int,default=48)
+    p.add_argument('--batch-size',type=int,default=8)
+    p.add_argument('--gate-percent',type=float,default=40.)
+    p.add_argument('--small-threshold',type=float,default=250000.)
+    p.add_argument('--small-boost',type=float,default=2.)
+    p.add_argument('--lr',type=float,default=.001)
+    p.add_argument('--gaussian-weight',type=float,default=1.)
+    p.add_argument('--head-weight',type=float,default=1.,
+                   help='Weight of signed-asinh direct numerical decoder loss')
+    p.add_argument('--numeric-weight',type=float,default=1.,
+                   help='Weight of log(1 + absolute-relative-error) numerical loss')
+    p.add_argument('--seed',type=int,default=20261018)
+    p.add_argument('--cache-memory-mb',type=int,default=1024)
+    p.add_argument('--test-only',action='store_true')
+    p.add_argument('--best-metric',choices=('small','macro','all_nine'),default='small')
+    return p
+
+
+def main(argv=None):run(parser().parse_args(argv))
+
+if __name__=='__main__':main()

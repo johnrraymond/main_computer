@@ -34,6 +34,56 @@ def _response(status: int, body: Any, *, path: str = "/api/v1/deployments/dep-1"
 
 
 
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_create_hub_storage_uses_coolify_persistent_volume_schema(network: str) -> None:
+    client = SequenceClient([_response(200, []), _response(201, {"uuid": "volume-id"})])
+    target = {
+        "network": network,
+        "application_name": f"main-computer-{network}-hub1",
+        "runtime_dir": f"/data/main-computer/hub/{network}-hub1",
+    }
+    tried: list[dict[str, Any]] = []
+
+    deployment._ensure_storage(client, target, "existing-hub-uuid", tried)
+
+    assert client.calls == [
+        ("GET", "/api/v1/applications/existing-hub-uuid/storages", None),
+        (
+            "POST",
+            "/api/v1/applications/existing-hub-uuid/storages",
+            {
+                "type": "persistent",
+                "name": f"main-computer-{network}-hub1-data",
+                "mount_path": target["runtime_dir"],
+            },
+        ),
+    ]
+    assert tried == [{"operation": "create-storage", "status": 201}]
+
+
+def test_hub_storage_retry_reuses_existing_volume() -> None:
+    target = {"application_name": "main-computer-testnetb-hub1", "runtime_dir": "/data/main-computer/hub/testnetb-hub1"}
+    client = SequenceClient([_response(200, [{"uuid": "saved-volume", "mount_path": target["runtime_dir"]}])])
+    tried: list[dict[str, Any]] = []
+
+    deployment._ensure_storage(client, target, "wxpystvphksftagzfmxgoctm", tried)
+
+    assert client.calls == [("GET", "/api/v1/applications/wxpystvphksftagzfmxgoctm/storages", None)]
+    assert tried == []
+
+
+def test_hub_storage_creation_failure_still_fails_closed() -> None:
+    target = {"application_name": "main-computer-testnetb-hub1", "runtime_dir": "/data/main-computer/hub/testnetb-hub1"}
+    client = SequenceClient([_response(200, []), _response(422, {"message": "Validation failed."})])
+    tried: list[dict[str, Any]] = []
+
+    with pytest.raises(HubControlError) as exc_info:
+        deployment._ensure_storage(client, target, "existing-hub-uuid", tried)
+
+    assert exc_info.value.code == "HUB_COOLIFY_STORAGE_FAILED"
+    assert tried == [{"operation": "create-storage", "status": 422}]
+
+
 def test_application_payload_bootstraps_frozen_projection_before_launcher() -> None:
     target = {
         "application_name": "mainneta-hub1",
@@ -324,6 +374,7 @@ def test_apply_deployment_refuses_frozen_application_in_chain_environment() -> N
         "application_name": "mainneta-hub1",
         "network": "mainnet",
         "environment_name": "mainnet-hubs",
+        "bridge_signer_required": False,  # isolate the Coolify-placement guard
         "coolify": {
             "url": "https://coolify.example.invalid",
             "api_token": "token",
@@ -928,11 +979,10 @@ def test_apply_deployment_syncs_assigned_bridge_signer_to_existing_coolify_app(
     monkeypatch.setattr(deployment.legacy, "find_application", lambda *_args, **_kwargs: ("existing-hub", {"uuid": "existing-hub"}))
     monkeypatch.setattr(deployment, "_ensure_storage", lambda *_args, **_kwargs: None)
 
-    def sync(_client: object, *, application_uuid: str, key: str, value: str, tried: list) -> dict:
+    def sync(_client: object, *, application_uuid: str, values: dict, tried: list) -> None:
         assert application_uuid == "existing-hub"
-        synced[key] = value
-        events.append(("sync", key))
-        return {"ok": True}
+        synced.update(values)
+        events.extend(("sync", key) for key in values)
 
     def trigger(_client: object, *, application_uuid: str, force: bool, tried: list) -> dict:
         assert application_uuid == "existing-hub" and force
@@ -940,7 +990,7 @@ def test_apply_deployment_syncs_assigned_bridge_signer_to_existing_coolify_app(
         events.append(("deploy", application_uuid))
         return {"deployment_uuid": "deployment-2"}
 
-    monkeypatch.setattr(deployment.legacy, "sync_application_env_var", sync)
+    monkeypatch.setattr(deployment, "_sync_application_envs_bulk", sync)
     monkeypatch.setattr(deployment.legacy, "trigger_deploy", trigger)
     monkeypatch.setattr(deployment, "_wait_for_coolify_deployment", lambda *_args, **_kwargs: {
         "status": "finished", "waited": True,
@@ -1029,3 +1079,272 @@ def test_stable_runtime_observer_rejects_exp_service(monkeypatch: pytest.MonkeyP
     status = deployment.observe_hub(target, wait_timeout_s=0)
     assert status["verified"] is False
     assert status["checks"]["stable_identity"] is False
+
+
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_bulk_application_env_sync_is_one_write_then_exact_readback(network: str) -> None:
+    values = {"MCT": "encoded-topology", "MCF": "cluster-file", "PRIVATE_BUNDLE": "secret-value"}
+    path = "/api/v1/applications/hub-1/envs"
+    client = SequenceClient([
+        _response(201, [{"key": key} for key in values], path=path + "/bulk"),
+        _response(200, [{"key": key, "value": value, "is_preview": False} for key, value in values.items()], path=path),
+    ])
+    tried: list[dict[str, Any]] = []
+    deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values=values, tried=tried)
+    assert [call[:2] for call in client.calls] == [
+        ("PATCH", path + "/bulk"), ("GET", path),
+    ]
+    posted = client.calls[0][2]
+    assert set(posted) == {"data"}
+    assert {e["key"]: e["value"] for e in posted["data"]} == values
+    assert all(e["is_literal"] and e["is_runtime"] and not e["is_buildtime"] for e in posted["data"])
+    assert "secret-value" not in repr(tried)
+    assert tried[-1]["verified_count"] == 3
+
+
+def test_bulk_sync_retries_coolify_rate_limit_using_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    path = "/api/v1/applications/hub-1/envs"
+    client = SequenceClient([
+        legacy.CoolifyResponse(False, 429, "PATCH", path + "/bulk", {"message": "Too Many Attempts."}, retry_after_s=7.0),
+        _response(201, {}, path=path + "/bulk"),
+        _response(200, [{"key": "MCT", "real_value": "token"}], path=path),
+    ])
+    slept: list[float] = []
+    monkeypatch.setattr(deployment.time, "sleep", slept.append)
+    deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values={"MCT": "token"}, tried=[])
+    assert slept == [7.0]
+    assert [call[0] for call in client.calls] == ["PATCH", "PATCH", "GET"]
+
+
+def test_bulk_sync_429_exhaustion_fails_without_any_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    path = "/api/v1/applications/hub-1/envs/bulk"
+    client = SequenceClient([_response(429, {"message": "Too Many Attempts."}) for _ in range(3)])
+    monkeypatch.setattr(deployment.time, "sleep", lambda _n: None)
+    with pytest.raises(HubControlError, match="rate limited") as exc:
+        deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values={"KEY": "secret"}, tried=[])
+    assert exc.value.code == "HUB_COOLIFY_ENVS_RATE_LIMITED"
+    assert len(client.calls) == 3 and all(call[1] == path for call in client.calls)
+
+
+@pytest.mark.parametrize("bad_items", [
+    [{"key": "MCT", "value": "old"}],
+    [{"key": "OTHER", "value": "token"}],
+    [{"key": "MCT", "value": "token"}, {"key": "MCT", "value": "token"}],
+    [{"key": "MCT", "value": "token", "is_preview": True}],
+])
+def test_bulk_sync_never_accepts_incomplete_or_ambiguous_readback(
+    bad_items: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SequenceClient([_response(201, {})] + [_response(200, bad_items) for _ in range(3)])
+    monkeypatch.setattr(deployment.time, "sleep", lambda _n: None)
+    with pytest.raises(HubControlError) as exc:
+        deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values={"MCT": "token"}, tried=[])
+    assert exc.value.code == "HUB_COOLIFY_ENVS_VERIFY_FAILED"
+    assert [x[0] for x in client.calls] == ["PATCH", "GET", "GET", "GET"]
+
+
+def test_bulk_sync_rejects_unsupported_endpoint_without_per_key_fallback() -> None:
+    client = SequenceClient([_response(404, {"message": "Not found"})])
+    with pytest.raises(HubControlError) as exc:
+        deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values={"MCT": "token"}, tried=[])
+    assert exc.value.code == "HUB_COOLIFY_ENVS_BULK_FAILED"
+    assert len(client.calls) == 1
+
+
+def test_bulk_sync_readback_429_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = SequenceClient([_response(201, {})] + [_response(429, {}) for _ in range(3)])
+    slept: list[float] = []
+    monkeypatch.setattr(deployment.time, "sleep", slept.append)
+    with pytest.raises(HubControlError) as exc:
+        deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values={"MCT": "token"}, tried=[])
+    assert exc.value.code == "HUB_COOLIFY_ENVS_RATE_LIMITED"
+    assert slept == [20.0, 40.0]
+    assert len(client.calls) == 4
+
+
+def test_coolify_client_captures_retry_after_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    from urllib.error import HTTPError
+
+    def reject(_request: object, *, timeout: float) -> None:
+        raise HTTPError(
+            "https://coolify.example.invalid/api/v1/applications/app/envs/bulk", 429,
+            "Too Many Attempts", {"Retry-After": "17"}, io.BytesIO(b'{"message":"Too Many Attempts."}'),
+        )
+
+    monkeypatch.setattr(legacy.urllib.request, "urlopen", reject)
+    client = legacy.CoolifyClient("https://coolify.example.invalid", "private-token")
+    response = client.request("PATCH", "/api/v1/applications/app/envs/bulk", {"data": []})
+    assert response.status == 429
+    assert response.retry_after_s == 17.0
+
+
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_bulk_sync_absent_optional_path_is_omitted_and_verified(network: str) -> None:
+    del network  # The same Hub deployment path serves both networks.
+    values = {"MCT": "encoded-topology", "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH": ""}
+    client = SequenceClient([
+        _response(201, {}),
+        _response(200, [{"key": "MCT", "value": "encoded-topology"}]),
+    ])
+    tried: list[dict[str, Any]] = []
+    deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values=values, tried=tried)
+    assert [call[0] for call in client.calls] == ["PATCH", "GET"]
+    assert [env["key"] for env in client.calls[0][2]["data"]] == ["MCT"]
+    assert tried[-1]["verified_count"] == 2
+
+
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_bulk_sync_deletes_stale_optional_path_then_verifies_absence(network: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    del network
+    monkeypatch.setattr(deployment.time, "sleep", lambda _s: None)
+    values = {"MCT": "encoded-topology", "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH": ""}
+    existing = [{"key": "MCT", "value": "encoded-topology"},
+                {"key": "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", "uuid": "old-env-uuid",
+                 "value": "/stale/bridge/path"}]
+    client = SequenceClient([
+        _response(201, {}), _response(200, existing), _response(200, {"message": "Environment variable deleted."}),
+        _response(200, [{"key": "MCT", "value": "encoded-topology"}]),
+    ])
+    deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values=values, tried=[])
+    assert [call[:2] for call in client.calls] == [
+        ("PATCH", "/api/v1/applications/hub-1/envs/bulk"),
+        ("GET", "/api/v1/applications/hub-1/envs"),
+        ("DELETE", "/api/v1/applications/hub-1/envs/old-env-uuid"),
+        ("GET", "/api/v1/applications/hub-1/envs"),
+    ]
+
+
+def test_bulk_sync_never_accepts_stale_optional_path_without_verified_deletion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(deployment.time, "sleep", lambda _s: None)
+    row = [{"key": "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", "uuid": "env-id", "value": "old"}]
+    client = SequenceClient([
+        _response(200, row), _response(200, {"message": "deleted"}),
+        _response(200, row), _response(200, row),
+    ])
+    with pytest.raises(HubControlError, match="pending-deletion") as exc:
+        deployment._sync_application_envs_bulk(
+            client, application_uuid="hub-1", values={"MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH": ""}, tried=[],
+        )
+    assert exc.value.code == "HUB_COOLIFY_ENVS_VERIFY_FAILED"
+    assert [c[0] for c in client.calls] == ["GET", "DELETE", "GET", "GET"]
+
+
+def test_bulk_sync_rejects_unknown_optional_env_identity_without_deleting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(deployment.time, "sleep", lambda _s: None)
+    item = {"key": "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", "value": None, "is_shown_once": True}
+    client = SequenceClient([_response(200, [item])] * 3)
+    with pytest.raises(HubControlError, match="missing-uuid"):
+        deployment._sync_application_envs_bulk(
+            client, application_uuid="hub-1", values={"MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH": ""}, tried=[],
+        )
+    assert [c[0] for c in client.calls] == ["GET", "GET", "GET"]
+
+
+def test_bulk_sync_fails_closed_when_optional_env_delete_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(deployment.time, "sleep", lambda _s: None)
+    client = SequenceClient([
+        _response(200, [{"key": "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", "uuid": "old-env-uuid", "value": "old"}]),
+        _response(403, {"message": "Forbidden"}),
+    ])
+    with pytest.raises(HubControlError, match="deletion failed") as exc:
+        deployment._sync_application_envs_bulk(
+            client, application_uuid="hub-1", values={"MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH": ""}, tried=[],
+        )
+    assert exc.value.code == "HUB_COOLIFY_ENVS_VERIFY_FAILED"
+
+
+def test_bulk_sync_rejects_ambiguous_optional_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(deployment.time, "sleep", lambda _s: None)
+    same_key = "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH"
+    client = SequenceClient([_response(200, [{"key": same_key, "uuid": "x"}, {"key": same_key, "uuid": "y"}])] * 3)
+    with pytest.raises(HubControlError, match="duplicate"):
+        deployment._sync_application_envs_bulk(client, application_uuid="hub-1", values={same_key: ""}, tried=[])
+    assert all(call[0] == "GET" for call in client.calls)
+
+
+def test_bulk_sync_nonempty_deployment_path_still_requires_readback(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = SequenceClient([_response(201, {})] + [_response(200, []) for _ in range(3)])
+    monkeypatch.setattr(deployment.time, "sleep", lambda _n: None)
+    with pytest.raises(HubControlError) as exc:
+        deployment._sync_application_envs_bulk(
+            client, application_uuid="hub-1",
+            values={"MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH": "/app/private/secret.json"}, tried=[],
+        )
+    assert exc.value.code == "HUB_COOLIFY_ENVS_VERIFY_FAILED"
+    assert "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH=missing" in str(exc.value)
+    assert "/app/private/secret.json" not in str(exc.value)
+
+
+def test_bulk_sync_failure_identifies_mismatch_without_leaking_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = SequenceClient([_response(201, {})] + [_response(200, [{"key": "MCT", "value": "stale"}]) for _ in range(3)])
+    monkeypatch.setattr(deployment.time, "sleep", lambda _n: None)
+    with pytest.raises(HubControlError) as exc:
+        deployment._sync_application_envs_bulk(
+            client, application_uuid="hub-1", values={"MCT": "private-secret-topology"}, tried=[],
+        )
+    assert exc.value.code == "HUB_COOLIFY_ENVS_VERIFY_FAILED"
+    assert "MCT=different" in str(exc.value)
+    assert "private-secret-topology" not in str(exc.value)
+    assert "stale" not in str(exc.value)
+
+
+
+
+def test_stable_runtime_testnet_requires_matching_bridge_completion_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = {**_observer_target(), "hub_runtime": "stable", "network": "testnet",
+              "bridge_signer_required": True, "runtime_dir": "/data/main-computer/hub/testnetb-hub1",
+              "hub_admin_address": "0x" + "a" * 40}
+    target["chain_contract"] = {
+        "chain_id": 42424241,
+        "rpc_url": "https://testnet-rpc.example.invalid",
+        "contracts": {"hub_credit_bridge_escrow": "0x" + "b" * 40},
+    }
+    target["fdb_contract"]["namespace"] = "testnet"
+    target["hub_id"] = "testnetb-hub1"
+    status = {
+        "ok": True,
+        "deployment": {
+            "chain_id": 42424241,
+            "contract_address": "0x" + "b" * 40,
+            "bridge_controller_address": "0x" + "a" * 40,
+            "deployment_manifest_path": target["runtime_dir"] + "/private/bridge-signer/bridge-signer-bundle.json",
+        },
+    }
+    def get(url: str, *, timeout_s: float) -> dict[str, Any]:
+        if url.endswith("/health"):
+            return {"ok": True, "service": "main_computer.stable_hub"}
+        if url.endswith("/hub-identity"):
+            return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"],
+                    "network": {"chain_id": 42424241, "chain_rpc_url": target["chain_contract"]["rpc_url"]},
+                    "storage": {"backend": "foundationdb", "cluster_file": target["cluster_file_path"],
+                                "namespace": "testnet"}}
+        if url.endswith("/topology"):
+            return {"service": "main_computer.stable_hub", "hub_id": target["hub_id"]}
+        if url.endswith("/credits/wallet-funding/completion"):
+            return status
+        raise AssertionError(url)
+
+    monkeypatch.setattr(deployment, "_get_json", get)
+    observed = deployment.observe_hub(target, wait_timeout_s=0)
+    assert observed["verified"] is True
+    assert observed["bridge_signer_verified"] is True
+    assert observed["wallet_funding_supported"] is True
+    status["ok"] = False
+    status["error"] = "missing signer"
+    observed = deployment.observe_hub(target, wait_timeout_s=0)
+    assert observed["verified"] is False
+    assert observed["checks"]["bridge_deployment_loaded"] is False
+    status["ok"] = True
+    status["deployment"]["chain_id"] = 42424240
+    observed = deployment.observe_hub(target, wait_timeout_s=0)
+    assert observed["verified"] is False
+    assert observed["checks"]["bridge_chain_id"] is False
+
+
+def test_signing_policy_covers_testnet_and_mainnet() -> None:
+    from tools.hub_control.common.deployment import _bridge_signer_required
+    assert _bridge_signer_required({"network": "testnet"})
+    assert _bridge_signer_required({"network": "mainnet"})
+    assert not _bridge_signer_required({"network": "dev"})
+    assert not _bridge_signer_required({"network": "test"})

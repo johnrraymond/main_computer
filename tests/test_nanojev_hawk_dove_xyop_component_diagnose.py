@@ -40,6 +40,41 @@ class ComponentsTests(unittest.TestCase):
         self.assertAlmostEqual(diag.summarize(rows)['within_5pct'],1.)
         self.assertEqual(rows[0]['case_id'],'a/T05/03')
 
+    def test_sqlite_text_targets_decode_as_numeric_values(self):
+        # Teacher DB read_rows returns decimal *strings*, not Python floats.
+        targets=[('200000.0', '-300000.0'), ('-400000.0', '225000.0')]
+        expected=[(float(x), float(y)) for x,y in targets]
+        out=logits(expected)
+        pred=v3.compose_logits(out['sign'],out['exponent'],out['fraction'],10_000_000).tolist()
+        rows=diag.decode_component_rows(out,pred,targets,['011','011'],
+                                        [1.,1.],['a/T05/01','b/T05/01'],[1,1],10_000_000)
+        self.assertEqual([r['true'] for r in rows],[200000.,-400000.])
+        self.assertTrue(all(r['within_5pct'] for r in rows))
+        self.assertTrue(all(r['sign_correct'] for r in rows))
+        self.assertAlmostEqual(diag.summarize(rows)['within_5pct'],1.)
+
+    def test_malformed_teacher_numeric_targets_fail_closed(self):
+        out=logits([(200000.,300000.)])
+        pred=v3.compose_logits(out['sign'],out['exponent'],out['fraction'],10_000_000).tolist()
+        for targets in [[('bad','300000')],[('NaN','300000')],[('200000',)]]:
+            with self.subTest(targets=targets), self.assertRaisesRegex(ValueError,'BAD_NUMERIC_TARGET'):
+                diag.decode_component_rows(out,pred,targets,['011'],[1.],['a'],[0],10_000_000)
+
+    def test_full_tier_trace_accepts_string_teacher_rows(self):
+        row={'case_id':'dev/T02/00','tier':'T02','mask':0,'prompt':'THE PROMPT',
+             'x':'-200000.0','y':'300000.0','full_count':0,'z':'DOVE'}
+        out=logits([(-200000.,300000.)])
+        def mocked_advancement(active_model, rows):
+            got=science.predict(active_model,[rows[0]['prompt']])[0]
+            self.assertAlmostEqual(got[0],float(row['x']),delta=.1)
+            return {'joint_5pct':1.,'x_5pct':1.,'y_5pct':None}
+        with mock.patch.object(ex,'forward',return_value=(out,None)), \
+             mock.patch.object(science,'eval_tier',side_effect=mocked_advancement), \
+             mock.patch.object(rt,'token_eligible',return_value=True):
+            report=diag.diagnose_tier({'v3':v3},[row],xyop.parse_mixes(['*:*=011:1']),7,10_000_000)
+        self.assertEqual(report['hidden']['x']['n'],1)
+        self.assertEqual(report['hidden']['x']['within_5pct'],1.)
+
     def test_wrong_exponent_is_identified_and_oracle_rescues(self):
         target=[(-200000.,300000.)]
         out=logits(target)

@@ -923,13 +923,24 @@
             "mcel.contract.generated-runtime-is-discardable.v1"
           ],
           () => {
+            const sourceRoot = parseSource(contract.defaultSource);
+            const sourceNodes = sourceElements(sourceRoot);
             const compiled = compileSource(contract.defaultSource, {reason: "contract-test"});
             const root = makeRuntimeRoot(compiled.runtimeHtml);
-            const first = root.querySelector(`[${attributes.type}]`);
+            const runtimeNodes = sourceElements(root);
+            // Test the declared source-to-runtime contract, not a hard-coded
+            // kind on the first fixture element (which may legitimately change).
+            const sourceTraits = [attributes.type, attributes.kind, attributes.flow,
+              attributes.rank, attributes.state, attributes.density];
+            const traitsPreserved = sourceNodes.length === runtimeNodes.length &&
+              sourceNodes.every((sourceNode, index) => sourceTraits.every((trait) =>
+                sourceNode.getAttribute(trait) === runtimeNodes[index].getAttribute(trait)));
+            const railsGenerated = runtimeNodes.every((node) =>
+              Boolean(node.querySelector(`:scope > [${attributes.generated}="true"][${attributes.part}="rail"]`)));
             return {
-              passed: Boolean(first?.querySelector(`[${attributes.generated}="true"][${attributes.part}="rail"]`)) &&
-                first.getAttribute(attributes.kind) === "signal",
-              details: `${compiled.sourceCount} source element(s) compiled`
+              passed: compiled.sourceCount === sourceNodes.length && sourceNodes.length > 0 &&
+                traitsPreserved && railsGenerated,
+              details: `${compiled.sourceCount} source element(s); traitsPreserved=${traitsPreserved}; railsGenerated=${railsGenerated}`
             };
           }
         );

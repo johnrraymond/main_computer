@@ -262,6 +262,7 @@ function declareCodeEditor(app) {
   app.layout.tree({
     schema: "mcel.layout-tree.v1",
     root: {id: "editor-shell", selector: ".code-studio-shell", role: "group", maxColumns: 1,
+      auxiliarySelectors: ['[data-code-editor-layout-splitter="proof"]'],
       variants: [
         {tracks:["minmax(0, 1fr)"],areas:["title", "workbench", "proof", "footer"]},
         {tracks:["minmax(0, 1fr)"],areas:["title", "workbench", "footer"]}
@@ -269,6 +270,10 @@ function declareCodeEditor(app) {
       children: [
         {id: "title", selector: ".code-studio-titlebar", role: "region", verifyControls: false},
         {id: "workbench", selector: ".code-studio-body", role: "group", maxColumns: 4,
+          auxiliarySelectors: [
+            '[data-code-editor-layout-splitter="explorer"]',
+            '[data-code-editor-layout-splitter="inspector"]'
+          ],
           variants: [
             {tracks:["44px","260px","minmax(0, 1fr)","320px"],
               areas:["rail sidebar editor inspector"]},

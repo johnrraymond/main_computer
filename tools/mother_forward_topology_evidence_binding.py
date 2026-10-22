@@ -4,7 +4,7 @@
 This is NOT a topology seal. Only mother_binding, completed_at (the harness's
 baseline recency key), and the evidence's own digest are updated. All topology,
 service, validator, chain/genesis, and prior observation fields are preserved.
-The existing add-node detector decides what, if anything, needs rectification.
+The existing topology detector decides what, if anything, needs rectification.
 """
 
 from __future__ import annotations
@@ -29,10 +29,16 @@ from tools.mother.common.deployment_topology_rectification import (
 )
 
 
-def _latest_add_baseline(runtime_state_root: Path, *, network: str = "mainnet") -> Path | None:
-    args = argparse.Namespace(operation="add-node", runtime_state_root=str(runtime_state_root), network=network)
+def _latest_operation_baseline(
+    runtime_state_root: Path, *, network: str, operation: str
+) -> Path | None:
+    args = argparse.Namespace(operation=operation, runtime_state_root=str(runtime_state_root), network=network)
     _reason, patterns = harness.auto_baseline_patterns(args)
     return harness.select_auto_baseline_file(args, patterns)
+
+
+def _latest_add_baseline(runtime_state_root: Path, *, network: str = "mainnet") -> Path | None:
+    return _latest_operation_baseline(runtime_state_root, network=network, operation="add-node")
 
 
 def _binding(runtime_state_root: Path, network: str) -> dict[str, Any]:
@@ -46,20 +52,32 @@ def forward_evidence(
     network: str = "mainnet",
     binding: dict[str, Any] | None = None,
     now: datetime | None = None,
+    operation: str = "add-node",
+    source_path: Path | None = None,
+    source_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Forward the currently auto-selected live seal; never modify its source."""
+    """Forward the selected live seal; never modify its source or topology."""
     if network not in ("mainnet", "testnet"):
         raise ValueError(f"unsupported network: {network}")
+    if operation not in ("add-node", "remove-node"):
+        raise ValueError(f"unsupported operation: {operation}")
+    if (source_path is None) != (source_sha256 is None):
+        raise ValueError("source path and SHA-256 must be supplied together")
     runtime_state_root = Path(runtime_state_root).resolve()
-    source = _latest_add_baseline(runtime_state_root, network=network)
-    if source is None:
-        raise ValueError("no add-node baseline exists; nothing to forward")
+    selected = _latest_operation_baseline(runtime_state_root, network=network, operation=operation)
+    if selected is None:
+        raise ValueError(f"no {operation} baseline exists; nothing to forward")
+    source = Path(source_path).resolve() if source_path is not None else selected
+    if source != selected.resolve():
+        raise ValueError("supplied source is not the currently selected baseline")
     expected_dir = (runtime_state_root / "mother" / "evidence" /
                     harness.LIVE_CURRENT_TOPOLOGY_EVIDENCE_DIRECTORY).resolve()
     if source.parent.resolve() != expected_dir:
         raise ValueError(f"auto-selected baseline is not a live-current-topology seal: {source}")
 
     document, _raw, source_sha = _canonical_file(source)
+    if source_sha256 is not None and source_sha != source_sha256:
+        raise ValueError("selected source SHA-256 mismatch")
     if not harness._successful_live_current_topology_baseline(source, network=network):
         raise ValueError("auto-selected live-topology evidence is not a successful baseline")
     if document.get("network") != network:
@@ -118,7 +136,7 @@ def forward_evidence(
         stream.flush()
         os.fsync(stream.fileno())
 
-    selected = _latest_add_baseline(runtime_state_root, network=network)
+    selected = _latest_operation_baseline(runtime_state_root, network=network, operation=operation)
     if selected is None or selected.resolve() != destination.resolve():
         raise RuntimeError(f"new evidence written but harness auto-selection did not choose it: {selected}")
     check, _bytes, file_sha = _canonical_file(destination)

@@ -441,10 +441,24 @@ def test_bridge_wallet_funding_import_payload_uses_deposit_receipt() -> None:
     assert payload["metadata"]["completion_fallback"] is True
 
 
+def _write_mainnet_contract_registry(root: Path, escrow: str, *, reserve: str = "0x" + "1" * 40) -> None:
+    path = root / "main_computer" / "config" / "mainnet_contracts.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "hub_credit_bridge_escrow": escrow,
+        "xlag-bridge-reserve": reserve,
+    }), encoding="utf-8")
+
+
 def test_bare_captain_prompt_uses_mainnet_hub_request_path(tmp_path, monkeypatch) -> None:
     _stub_verified_mother(monkeypatch)
     monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
     escrow = "0x2222222222222222222222222222222222222222"
+    _write_mainnet_contract_registry(tmp_path, escrow)
+    monkeypatch.setattr("main_computer.captain_cli._get_hub_json", lambda *_a, **_k: {
+        "ok": True, "deployment": {"chain_id": 42424240, "contract_address": escrow,
+                                  "bridge_controller_address": "0x" + "3" * 40},
+    })
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(
@@ -522,6 +536,11 @@ def test_captain_smoke_falls_back_to_wallet_funding_import_when_hub_lacks_bridge
     _stub_verified_mother(monkeypatch)
     monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
     escrow = "0x2222222222222222222222222222222222222222"
+    _write_mainnet_contract_registry(tmp_path, escrow)
+    monkeypatch.setattr("main_computer.captain_cli._get_hub_json", lambda *_a, **_k: {
+        "ok": True, "deployment": {"chain_id": 42424240, "contract_address": escrow,
+                                  "bridge_controller_address": "0x" + "3" * 40},
+    })
     deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(
@@ -715,3 +734,41 @@ def test_mainnet_real_verified_mother_private_state(tmp_path) -> None:
     paths.identity_file.write_bytes(original + b"\n# unsigned mutation\n")
     with pytest.raises(CaptainCliError, match="Cannot verify Mother private state"):
         resolve_captain_wallet("captain", deployment={}, deployment_path=deployment_path)
+
+
+def test_mainnet_spends_existing_hub_credit_without_bridge_stipend_or_chain(tmp_path, monkeypatch) -> None:
+    """A funded Captain account may submit without performing any funding mutation."""
+    _stub_verified_mother(monkeypatch)
+    monkeypatch.setattr("main_computer.hub_cli_live_session.hub_uses_live_sessions", lambda *_a, **_k: False)
+    escrow = "0x" + "2" * 40
+    reserve = "0x" + "1" * 40
+    _write_mainnet_contract_registry(tmp_path, escrow, reserve=reserve)
+    deployment_path = tmp_path / "runtime" / "deployments" / "mainnet" / "latest.json"
+    deployment_path.parent.mkdir(parents=True)
+    deployment_path.write_text(json.dumps({
+        "chain": {"chain_id": 42424240, "rpc_url": "https://rpc.example"},
+        "contracts": {"hub_credit_bridge_escrow": {"address": escrow},
+                       "xlag-bridge-reserve": {"address": reserve}},
+    }), encoding="utf-8")
+    calls = []
+
+    def post(_hub_url, path, _payload, *, timeout_s):
+        calls.append(path)
+        if path == "/api/hub/v1/requests/quote":
+            return {"ok": True, "quote_id": "quote-1"}
+        if path == "/api/hub/v1/requests":
+            return {"ok": True, "request_id": "request-1"}
+        raise AssertionError(f"unexpected funding or mutation path: {path}")
+
+    monkeypatch.setattr("main_computer.captain_cli._post_hub_json", post)
+    monkeypatch.setattr("main_computer.captain_cli._poll_hub_request",
+                        lambda *a, **kw: {"status": "accepted"})
+    monkeypatch.setattr("main_computer.captain_cli.send_captain_bridge_deposit",
+                        lambda *a, **kw: pytest.fail("must not deposit"))
+    monkeypatch.setattr("main_computer.captain_cli.send_captain_smoke_transaction",
+                        lambda *a, **kw: pytest.fail("must not perform chain smoke"))
+    assert run_captain([
+        "Make", "it", "so", "--network", "mainnet", "--no-bridge",
+        "--no-stipend", "--no-chain", "--poll-seconds", "0",
+    ], config=MainComputerConfig(workspace=tmp_path), cwd=tmp_path) == 0
+    assert calls == ["/api/hub/v1/requests/quote", "/api/hub/v1/requests"]

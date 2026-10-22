@@ -4049,6 +4049,20 @@ class ViewportEnergyRoutesMixin:
                 hub_url = str(profile.get("hub_url") or "")
                 if check_hub:
                     status = self._fetch_hub_status(hub_url)
+                    if status.get("reachable"):
+                        identity = status.get("status") if isinstance(status.get("status"), dict) else {}
+                        actual = identity.get("network") if isinstance(identity.get("network"), dict) else {}
+                        reported_network = str(actual.get("network_key") or "").strip().lower()
+                        reported_chain = str(actual.get("chain_id") or "").strip()
+                        expected_chain = str(profile.get("chain_id") or "").strip()
+                        if status.get("protocol") == "legacy-hub-status":
+                            if selected in {"mainnet", "testnet"}:
+                                status = {"reachable": False, "error": "Mainnet/testnet require a verified Stable Hub identity."}
+                        elif status.get("protocol") == "stable-hub-identity-v1":
+                            if reported_network != selected:
+                                status = {"reachable": False, "error": f"Hub network mismatch: selected {selected}, Hub reports {reported_network}."}
+                            elif not expected_chain or reported_chain != expected_chain:
+                                status = {"reachable": False, "error": f"Hub chain ID mismatch: expected {expected_chain}, Hub reports {reported_chain}."}
                     session["hub_status"] = status
                     session["connected_hub_url"] = hub_url
                     if status.get("reachable"):
@@ -5540,8 +5554,8 @@ class ViewportEnergyRoutesMixin:
         capabilities["target_output_tokens"] = target_output_tokens
 
         payload = {
-            "node_id": str(worker_payload.get("node_id") or "").strip(),
-            "endpoint": self._clean_hub_url(str(worker_payload.get("endpoint") or "")),
+            "node_id": str(worker_payload.get("node_id") or getattr(getattr(getattr(self, "server", None), "config", None), "hub_worker_node_id", "main-computer-worker") or "main-computer-worker").strip(),
+            "endpoint": self._clean_hub_url(str(worker_payload.get("endpoint") or ""), allow_empty=True),
             "model": model,
             "models": models,
             "credits_per_token": credits_per_token,
@@ -5559,7 +5573,9 @@ class ViewportEnergyRoutesMixin:
             "capabilities": capabilities,
         }
         if not payload["node_id"]:
-            raise ValueError("worker node_id is required.")
+            raise ValueError("Configured backend worker node identity is missing.")
+        if execution_mode != "worker_pull_v0" and not payload["endpoint"]:
+            raise ValueError("Callback execution requires a valid Worker endpoint.")
         return payload
 
     def _handle_worker_offer_register(self) -> None:
@@ -5663,20 +5679,51 @@ class ViewportEnergyRoutesMixin:
         return headers
 
     def _fetch_hub_status(self, hub_url: str) -> dict[str, Any]:
-        request = Request(
-            self._clean_hub_url(hub_url) + "/api/hub/status",
-            headers=self._hub_json_request_headers(),
-        )
-        try:
+        """Read-only Hub reachability check; verify Stable Hub identity for Worker networks.
+
+        Current deployed Hubs expose /api/hub/v1/hub-identity, not the older
+        /api/hub/status endpoint. Never interpret an arbitrary HTTP 200 as
+        verified identity or silently accept a different network/chain.
+        """
+        base = self._clean_hub_url(hub_url)
+        def fetch(path: str) -> dict[str, Any]:
+            request = Request(base + path, headers=self._hub_json_request_headers())
             with urlopen(request, timeout=2.0) as response:
-                data = json.loads(response.read().decode("utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("Hub returned a non-object response.")
-            return {"reachable": True, "status": data}
+                result = json.loads(response.read().decode("utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("Hub returned a non-object identity response.")
+            return result
+
+        try:
+            data = fetch("/api/hub/v1/hub-identity")
+            if data.get("ok") is not True or data.get("service") != "main_computer.stable_hub":
+                raise ValueError("Hub identity is not a verified Stable Hub identity.")
+            if not str(data.get("hub_id") or "").strip():
+                raise ValueError("Stable Hub identity has no hub_id.")
+            identity_network = data.get("network")
+            if not isinstance(identity_network, dict):
+                raise ValueError("Stable Hub identity has no network contract.")
+            actual_network = str(identity_network.get("network_key") or "").strip().lower()
+            actual_chain = str(identity_network.get("chain_id") or "").strip()
+            if not actual_network or not actual_chain:
+                raise ValueError("Stable Hub identity is missing network or chain ID.")
+            return {"reachable": True, "status": data, "protocol": "stable-hub-identity-v1"}
         except HTTPError as exc:
+            # Older local test/dev Hubs expose the legacy status endpoint.
+            # A production Hub must not silently downgrade its identity check.
+            if exc.code == 404:
+                try:
+                    data = fetch("/api/hub/status")
+                    return {"reachable": True, "status": data, "protocol": "legacy-hub-status"}
+                except HTTPError as legacy_exc:
+                    body = legacy_exc.read().decode("utf-8", errors="replace").strip()
+                    return {"reachable": False, "http_status": legacy_exc.code,
+                            "error": f"Hub returned HTTP {legacy_exc.code}: {body or legacy_exc.reason}"}
+                except Exception as legacy_exc:
+                    return {"reachable": False, "error": str(legacy_exc)}
             body = exc.read().decode("utf-8", errors="replace").strip()
-            detail = body or exc.reason or "Forbidden"
-            return {"reachable": False, "http_status": exc.code, "error": f"Hub returned HTTP {exc.code}: {detail}"}
+            return {"reachable": False, "http_status": exc.code,
+                    "error": f"Hub returned HTTP {exc.code}: {body or exc.reason}"}
         except Exception as exc:
             return {"reachable": False, "error": str(exc)}
 

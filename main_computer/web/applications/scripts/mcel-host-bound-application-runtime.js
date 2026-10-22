@@ -289,7 +289,9 @@ var McelHostBoundApplicationRuntime = (() => {
       }
       try {
         if (active) { engine.unmountCanonicalLayoutTree(host); active = false; }
-        const result = engine.mountCanonicalLayoutTree(host, tree);
+        // This binding owns the host resize observer. Do not also arm the
+        // canonical engine's standalone observer for the same host.
+        const result = engine.mountCanonicalLayoutTree(host, tree, {observeResize:false});
         if (result?.status !== "pass") {
           publish("refused", String(result?.reason || "no-conformant-layout"));
           throw new Error(`MCEL ${appId} canonical layout refused: ${result?.reason || "no-conformant-layout"}`);

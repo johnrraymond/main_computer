@@ -143,9 +143,38 @@
       const type = supported.includes("long-animation-frame") ? "long-animation-frame" : supported.includes("longtask") ? "longtask" : null;
       if (!type) throw new Error("Long animation frames and long tasks are unavailable in this browser");
       const threshold = Math.max(50, Number(ctx.config.thresholdMs) || 200);
+      const finite = value => typeof value === "number" && Number.isFinite(value) ? value : null;
+      const compactScript = script => ({
+        sourceURL:String(script.sourceURL || "").slice(0, 600),
+        sourceFunctionName:String(script.sourceFunctionName || "").slice(0, 160),
+        sourceCharPosition:finite(script.sourceCharPosition),
+        invoker:String(script.invoker || "").slice(0, 160),
+        invokerType:String(script.invokerType || "").slice(0, 80),
+        executionStart:finite(script.executionStart),
+        duration:finite(script.duration),
+        forcedStyleAndLayoutDuration:finite(script.forcedStyleAndLayoutDuration),
+        pauseDuration:finite(script.pauseDuration)
+      });
       const observer = new PerformanceObserver(list => {
         for (const entry of list.getEntries()) {
-          if (entry.duration >= threshold) ctx.emit(type,"warning",`${entry.duration.toFixed(1)}ms`,{durationMs:entry.duration,startTime:entry.startTime});
+          if (entry.duration < threshold) continue;
+          // Long Animation Frames supply attribution when the browser can expose it.
+          // Preserve the native facts; lack of attribution must not imply no script ran.
+          const scripts = entry.scripts ? Array.from(entry.scripts).slice(0, 24).map(compactScript) : [];
+          const sources = [...new Set(scripts.map(script => script.sourceURL).filter(Boolean))].slice(0, 12);
+          ctx.emit(type,"warning",`${entry.duration.toFixed(1)}ms`,{
+            durationMs:entry.duration,
+            startTime:entry.startTime,
+            entryType:type,
+            renderStart:finite(entry.renderStart),
+            styleAndLayoutStart:finite(entry.styleAndLayoutStart),
+            blockingDuration:finite(entry.blockingDuration),
+            firstUIEventTimestamp:finite(entry.firstUIEventTimestamp),
+            scripts,
+            scriptCount:entry.scripts ? entry.scripts.length : null,
+            attributionTruncated:!!(entry.scripts && entry.scripts.length > scripts.length),
+            sources
+          });
         }
       });
       observer.observe({type,buffered:true});

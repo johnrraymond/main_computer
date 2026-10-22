@@ -1486,7 +1486,7 @@ def _executable_layout_tree_errors(tree: Any) -> list[str]:
             errors.append("layoutTree nodes must be records")
             return
         role = node.get("role")
-        allowed = {"id", "selector", "role", "children", "maxColumns", "minTargetWidth", "gap", "atomicText", "variants", "verifyControls", "requireVisible"}
+        allowed = {"id", "selector", "role", "children", "maxColumns", "minTargetWidth", "gap", "atomicText", "variants", "verifyControls", "requireVisible", "auxiliarySelectors"}
         if set(node) - allowed:
             errors.append("layoutTree node has unsupported properties")
         ident, selector = node.get("id"), node.get("selector")
@@ -1513,6 +1513,13 @@ def _executable_layout_tree_errors(tree: Any) -> list[str]:
             errors.append("layoutTree requireVisible must be boolean")
         if "verifyControls" in node and not isinstance(node["verifyControls"], bool):
             errors.append("layoutTree verifyControls must be boolean")
+        if "auxiliarySelectors" in node:
+            selectors = node["auxiliarySelectors"]
+            if (role != "group" or not isinstance(selectors, list)
+                or not 1 <= len(selectors) <= 8
+                or any(not isinstance(selector, str) or not selector.strip() for selector in selectors)
+                or len(set(selectors)) != len(selectors)):
+                errors.append("layoutTree auxiliarySelectors require a group with 1..8 distinct selectors")
         variants = node.get("variants", [])
         if "variants" in node:
             if role != "group" or not isinstance(variants, list) or not 1 <= len(variants) <= 8:

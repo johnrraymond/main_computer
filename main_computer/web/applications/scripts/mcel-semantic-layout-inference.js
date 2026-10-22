@@ -571,7 +571,7 @@
     const seen = new Set(); let count = 0;
     function validate(node, depth) {
       if (!node || typeof node !== "object" || Array.isArray(node) || depth > 10 || ++count > 64) fail("invalid layout tree depth/size");
-      if (Object.keys(node).some(key => !["id","selector","role","children","maxColumns","minTargetWidth","gap","atomicText","variants","verifyControls","requireVisible"].includes(key)))
+      if (Object.keys(node).some(key => !["id","selector","role","children","maxColumns","minTargetWidth","gap","atomicText","variants","verifyControls","requireVisible","auxiliarySelectors"].includes(key)))
         fail("unknown canonical layout property");
       if (typeof node.id !== "string" || !node.id || seen.has(node.id)) fail("duplicate or absent layout node id");
       seen.add(node.id);
@@ -583,6 +583,14 @@
       if (node.atomicText !== undefined && typeof node.atomicText !== "boolean") fail("invalid layout atomicText");
       if (node.requireVisible !== undefined && typeof node.requireVisible !== "boolean") fail("invalid layout requireVisible");
       if (node.verifyControls !== undefined && typeof node.verifyControls !== "boolean") fail("invalid layout verifyControls");
+      if (node.auxiliarySelectors !== undefined) {
+        const selectors = node.auxiliarySelectors;
+        if (node.role !== "group" || !Array.isArray(selectors) ||
+            selectors.length < 1 || selectors.length > 8 ||
+            selectors.some(selector => typeof selector !== "string" || !selector.trim()) ||
+            new Set(selectors).size !== selectors.length)
+          fail("invalid layout auxiliarySelectors");
+      }
       if (node.variants !== undefined) {
         if (node.role !== "group" || !Array.isArray(node.variants) || node.variants.length < 1 || node.variants.length > 8) fail("invalid layout variants");
         const childIds=new Set((node.children||[]).map(c=>c.id));
@@ -619,6 +627,21 @@
       if (nodes.some(entry => entry.el === element)) fail(`layout selector alias: ${definition.id}`);
       if (definition.role === "control-grid" && (![...element.children].length ||
           ![...element.children].every(eligibleControl))) fail(`control-grid requires direct actionable controls: ${definition.id}`);
+      if (definition.auxiliarySelectors) {
+        const declaredChildren = (definition.children || []).map(child => {
+          try { return [...element.children].find(node => node.matches(child.selector)); }
+          catch (_) { fail(`invalid layout selector: ${child.id}`); }
+        });
+        const auxiliaries = new Set();
+        for (const selector of definition.auxiliarySelectors) {
+          let matched;
+          try { matched = [...element.children].filter(node => node.matches(selector)); }
+          catch (_) { fail(`invalid auxiliary selector: ${definition.id}`); }
+          if (matched.length > 1 || (matched.length && (declaredChildren.includes(matched[0]) || auxiliaries.has(matched[0]))))
+            fail(`layout auxiliary structure does not match declaration: ${definition.id}`);
+          if (matched.length) auxiliaries.add(matched[0]);
+        }
+      }
       nodes.push({def: definition, el: element});
       for (const child of definition.children || []) walk(child, element);
     }
@@ -699,11 +722,19 @@
             failures.push({id:def.id,code:"layout-variant-visibility-mismatch",child:child.id});
         }
         for (const child of el.children) {
-          if (treeElementVisible(child) && !def.children.some(c=>child.matches(c.selector)))
+          if (!treeElementVisible(child) || def.children.some(c=>child.matches(c.selector))) continue;
+          const auxiliary = (def.auxiliarySelectors || []).some(selector => child.matches(selector));
+          if (!auxiliary) {
             failures.push({id:def.id,code:"undeclared-visible-layout-region"});
+            continue;
+          }
+          const controlStyle = child.ownerDocument.defaultView.getComputedStyle(child);
+          if (!["absolute", "fixed"].includes(controlStyle.position))
+            failures.push({id:def.id,code:"auxiliary-control-in-layout-flow"});
         }
       }
-      const children=def.role === "control-grid" ? [...el.children] : (def.role === "group" ? [...el.children] : []);
+      const children=def.role === "control-grid" ? [...el.children] : (def.role === "group" ?
+        [...el.children].filter(child => !(def.auxiliarySelectors || []).some(selector => child.matches(selector))) : []);
       if (choice.columns && gridTrackCount(style.gridTemplateColumns)!==choice.columns)
         failures.push({id:def.id,code:"computed-css-track-conflict"});
       if (el.scrollWidth > el.clientWidth + 1 && !["auto","scroll"].includes(style.overflowX))
@@ -745,9 +776,34 @@
     return {failures,records,quality:{height:entries[0].el.getBoundingClientRect().height,
       emptyCells,gridRows}};
   }
-  function previewCanonicalTree(host, tree, choices) {
+  function prepareCanonicalTreePreview(host, tree) {
     if (!host.parentElement) fail("layout host must be attached");
     const preview=host.cloneNode(true);
+    // Layout candidates must never attach cloned browsing contexts. Keep the
+    // iframe's host-visible box, but do not instantiate an active document.
+    for (const frame of preview.querySelectorAll("iframe")) {
+      const placeholder=frame.ownerDocument.createElement("div");
+      for (const attr of ["id","class","style"]) {
+        if (frame.hasAttribute(attr)) placeholder.setAttribute(attr,frame.getAttribute(attr));
+      }
+      placeholder.setAttribute("data-mcel-inert-frame","true");
+      // An iframe is a replaced inline element (default 300x150). A div is
+      // not: give the inert substitute equivalent default box dimensions.
+      placeholder.style.setProperty("display","inline-block");
+      placeholder.style.setProperty("vertical-align","baseline");
+      const width=frame.getAttribute("width");
+      const height=frame.getAttribute("height");
+      placeholder.style.setProperty("width",width && /^\d+(?:\.\d+)?(?:px|%)?$/i.test(width.trim())
+        ? (/^\d+(?:\.\d+)?$/.test(width.trim()) ? `${width.trim()}px` : width.trim()) : "300px");
+      placeholder.style.setProperty("height",height && /^\d+(?:\.\d+)?(?:px|%)?$/i.test(height.trim())
+        ? (/^\d+(?:\.\d+)?$/.test(height.trim()) ? `${height.trim()}px` : height.trim()) : "150px");
+      // Inline iframe sizing takes precedence over HTML width/height attrs.
+      for (const prop of ["width","height","display","vertical-align"]) {
+        const authored=frame.style.getPropertyValue(prop);
+        if (authored) placeholder.style.setProperty(prop,authored,frame.style.getPropertyPriority(prop));
+      }
+      frame.replaceWith(placeholder);
+    }
     // Preserve ID selectors inside the isolated clone; host-local resolution
     // never queries through document.getElementById().
     preview.setAttribute("inert",""); preview.setAttribute("aria-hidden","true");
@@ -761,26 +817,49 @@
     host.parentElement.appendChild(preview);
     try {
       const entries=resolveLayoutNodes(preview,tree);
-      setCanonicalTreeStyles(entries,choices);
-      const evidence=canonicalTreeEvidence(entries,choices);
-      // An observed structural fit is not a conformant candidate when the
-      // independent browser detector finds a split atomic label elsewhere in
-      // the governed application surface. Reject before quality ranking.
-      if (!evidence.failures.length) {
-        const detector=global.McelSelfDiagnosis?._private?.detectAtomicControlLabelSplits;
-        if (typeof detector === "function") {
-          try {
-            const findings=detector(preview,{});
-            evidence.independent="pass";
-            if (findings.length) {
-              evidence.independent="fail";
-              evidence.failures.push(...findings.map(f=>({id:f.controlId||"surface",code:"independent-atomic-text-split",label:f.label})));
-            }
-          } catch (_) { evidence.independent="unavailable"; }
-        } else evidence.independent="unavailable";
-      }
-      return evidence;
-    } finally {preview.remove();}
+      // Only candidate-owned styles are reset between measurements; these are
+      // the nodes setCanonicalTreeStyles can write (including direct controls).
+      const nodes=new Set(entries.flatMap(entry=>[entry.el,...entry.el.children]));
+      const originalStyles=[...nodes].map(el=>({el,css:el.getAttribute("style")}));
+      return {preview,entries,originalStyles};
+    } catch (error) {
+      preview.remove();
+      throw error;
+    }
+  }
+  function measureCanonicalTreePreview(context, choices) {
+    // Each candidate must start from the identical authored clone. This also
+    // clears grid areas and atomic-label styling left by previous variants.
+    for (const {el,css} of context.originalStyles) {
+      if (css === null) el.removeAttribute("style");
+      else el.setAttribute("style",css);
+    }
+    const {preview,entries}=context;
+    setCanonicalTreeStyles(entries,choices);
+    const evidence=canonicalTreeEvidence(entries,choices);
+    // Keep the independent atomic-label gate for every candidate, not merely
+    // for the selected candidate.
+    if (!evidence.failures.length) {
+      const detector=global.McelSelfDiagnosis?._private?.detectAtomicControlLabelSplits;
+      if (typeof detector === "function") {
+        try {
+          const findings=detector(preview,{});
+          evidence.independent="pass";
+          if (findings.length) {
+            evidence.independent="fail";
+            evidence.failures.push(...findings.map(f=>({id:f.controlId||"surface",code:"independent-atomic-text-split",label:f.label})));
+          }
+        } catch (_) { evidence.independent="unavailable"; }
+      } else evidence.independent="unavailable";
+    }
+    return evidence;
+  }
+  function previewCanonicalTree(host, tree, choices) {
+    // A fresh preview still independently verifies the winner before the real
+    // application DOM is modified by applyCanonicalLayoutTree.
+    const context=prepareCanonicalTreePreview(host,tree);
+    try {return measureCanonicalTreePreview(context,choices);}
+    finally {context.preview.remove();}
   }
   function evaluateCanonicalLayoutTree(host, source, options={}) {
     const tree=canonicalLayoutTree(source);
@@ -797,18 +876,21 @@
       inlineGridPriority:entry.el.style.getPropertyPriority("grid-template-columns")
     }));
     const candidates=[];
-    function search(choices,index) {
-      if (index===optionsByEntry.length) {
-        const evidence=previewCanonicalTree(host,tree,choices);
-        candidates.push({choices:choices.map(choice=>({...choice})),accepted:!evidence.failures.length,evidence});
-        return;
+    const context=prepareCanonicalTreePreview(host,tree);
+    try {
+      function search(choices,index) {
+        if (index===optionsByEntry.length) {
+          const evidence=measureCanonicalTreePreview(context,choices);
+          candidates.push({choices:choices.map(choice=>({...choice})),accepted:!evidence.failures.length,evidence});
+          return;
+        }
+        for (const choice of optionsByEntry[index]) {
+          if (candidates.length >= maxCandidates) return;
+          search([...choices,choice],index+1);
+        }
       }
-      for (const choice of optionsByEntry[index]) {
-        if (candidates.length >= maxCandidates) return;
-        search([...choices,choice],index+1);
-      }
-    }
-    search([],0);
+      search([],0);
+    } finally { context.preview.remove(); }
     const acceptable=candidates.filter(candidate=>candidate.accepted);
     acceptable.sort((a,b)=>a.evidence.quality.height-b.evidence.quality.height ||
       a.evidence.quality.emptyCells-b.evidence.quality.emptyCells ||
@@ -904,7 +986,7 @@
     const initial=run();
     if (initial.status !== "pass") return {status:"refused",reason:initial.reason || "unsatisfied",initial};
     let lastWidth=host.getBoundingClientRect().width;
-    const observer=typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+    const observer=options.observeResize !== false && typeof ResizeObserver === "function" ? new ResizeObserver(() => {
       const width=host.getBoundingClientRect().width;
       if (Math.abs(width-lastWidth) < 1) return;
       lastWidth=width;
@@ -912,7 +994,7 @@
     }) : null;
     observer?.observe(host);
     treeObservers.set(host,{observer});
-    return {status:"pass",initial,observation:observer?"active":"unavailable"};
+    return {status:"pass",initial,observation:observer?"active":(options.observeResize === false ? "external" : "unavailable")};
   }
   function unmountCanonicalLayoutTree(host) {
     treeObservers.get(host)?.observer?.disconnect();

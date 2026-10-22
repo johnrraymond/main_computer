@@ -12,6 +12,7 @@ from .common.fdb_contract import load_current_fdb_contract
 from .common.models import HubContext
 from .common.state import read_accepted
 from .common.privates import load_private, controller_coordinates
+from .common.errors import HubControlError
 
 
 def _accepted_hub_runtime(ctx: HubContext, network: str, hub: Mapping[str, Any]) -> str:
@@ -41,7 +42,47 @@ def _accepted_hub_runtime(ctx: HubContext, network: str, hub: Mapping[str, Any])
     return hub_runtime_from_application(detail)
 
 
-def inspect_network(ctx: HubContext, network: str, *, observer=observe_hub, runtime_resolver=_accepted_hub_runtime) -> dict[str, Any]:
+def inspect_network(ctx: HubContext, network: str, *, observer=observe_hub,
+                    runtime_resolver=_accepted_hub_runtime,
+                    membership_only: bool = False) -> dict[str, Any]:
+    if membership_only:
+        # Recheck the entire configured Coolify estate, not just the target,
+        # without relying on a now-removed FDB cluster or running Hub runtime.
+        from tools.hub_topology_check import observe_topology
+
+        accepted_before = read_accepted(ctx, network)
+        proof = observe_topology(ctx, network, membership_only=True)
+        accepted = read_accepted(ctx, network)
+        if (accepted is None or accepted != accepted_before or proof.get("status") != "PASS"
+                or proof.get("verification_scope") != "coolify-membership-only"
+                or proof.get("errors") != []):
+            raise HubControlError("HUB_REMOVE_MEMBERSHIP_UNVERIFIED",
+                                  f"Coolify/accepted membership not verified for removal: "
+                                  f"{proof.get('status')}: {proof.get('errors')}")
+        projection = proof.get("accepted_projection")
+        if not isinstance(projection, Mapping):
+            raise HubControlError("HUB_REMOVE_MEMBERSHIP_UNVERIFIED",
+                                  "Hub topology proof lacks an accepted projection")
+        hubs = list(accepted["hubs"])
+        ids = sorted(str(item.get("hub_id")) for item in hubs if isinstance(item, Mapping))
+        if (projection.get("status") != "current"
+                or projection.get("generation") != accepted["generation"]
+                or ids != projection.get("hub_ids")
+                or len(ids) != len(hubs)):
+            raise HubControlError("HUB_REMOVE_MEMBERSHIP_UNVERIFIED",
+                                  "accepted membership changed or differs from verified Coolify inventory")
+        if not hubs:
+            return {"network": network, "status": "accepted-empty",
+                    "accepted_generation": accepted["generation"], "hubs": [],
+                    "empty_topology_verification": {
+                        "verified": True, "reason": "coolify-membership-verified-no-hubs"}}
+        return {"network": network, "status": "accepted",
+                "accepted_generation": accepted["generation"],
+                "hubs": [{**dict(item), "status": "runtime-not-checked",
+                          "verification": {"verified": False, "reason": "runtime-not-checked-for-removal"}}
+                         for item in hubs],
+                "topology_verification": {
+                    "verified": True, "reason": "coolify-membership-verified-runtime-not-checked"}}
     accepted = read_accepted(ctx, network)
     if accepted is None:
         return {

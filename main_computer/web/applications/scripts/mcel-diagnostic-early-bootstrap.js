@@ -14,11 +14,30 @@
   }
   window.addEventListener("error", event => {
     if (event instanceof ErrorEvent) {
-      push("uncaught-error","error",event.message,{source:event.filename,line:event.lineno,column:event.colno});
+      push("uncaught-error","error",event.message,{
+        source:event.filename || "",line:event.lineno,column:event.colno,
+        stack:String(event.error?.stack || "").slice(0,4000),
+        errorName:String(event.error?.name || "").slice(0,120)
+      });
     } else {
       const target = event.target;
-      push("resource-error","warning",target?.tagName || "Resource load failed",
-        {source:target?.currentSrc || target?.src || target?.href || ""});
+      const source = String(target?.currentSrc || target?.src || target?.href || "").slice(0,1200);
+      const timing = source && typeof performance !== "undefined"
+        ? performance.getEntriesByName(source,"resource").slice(-1)[0] : null;
+      push("resource-error","warning",target?.tagName || "Resource load failed",{
+        source,
+        resourceTag:String(target?.tagName || "").slice(0,32),
+        resourceType:String(target?.type || "").slice(0,120),
+        crossorigin:String(target?.crossOrigin || "").slice(0,80),
+        integrity:String(target?.integrity || "").slice(0,200),
+        timing:timing ? {
+          duration:timing.duration,
+          responseStatus:typeof timing.responseStatus === "number" ? timing.responseStatus : null,
+          transferSize:timing.transferSize,
+          decodedBodySize:timing.decodedBodySize,
+          initiatorType:timing.initiatorType
+        } : null
+      });
     }
   }, true);
   window.addEventListener("unhandledrejection", event => {

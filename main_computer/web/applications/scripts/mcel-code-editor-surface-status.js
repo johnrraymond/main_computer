@@ -5,6 +5,7 @@
   const DEFAULT_APP_ID = "code-editor";
   const STATUS_SELECTOR = "#code-editor-mcel-surface-status";
   const REFRESH_INTERVAL_MS = 30000;
+  const ROUTE_ATTRIBUTE = "data-active-app";
 
   function getGlobal() {
     return typeof window !== "undefined" ? window : globalThis;
@@ -220,10 +221,30 @@
     return null;
   }
 
+  function inactiveApplication(doc, appId) {
+    const selected = String(doc?.body?.dataset?.activeApp || "");
+    return Boolean(selected && selected !== appId);
+  }
+
+  function inactiveSummary() {
+    return {
+      ...summarizePathway(null),
+      title: "MCEL Surface: PENDING · Code Editor is not the active application."
+    };
+  }
+
   function refresh(appId = DEFAULT_APP_ID, options = {}) {
     const doc = options.document || getDocument();
     const el = options.element || doc?.querySelector?.(STATUS_SELECTOR) || null;
     if (!el) return null;
+    // The desktop route deliberately hides Code Editor. Measuring its zero-sized
+    // layout there is not a failed Code Editor surface diagnosis.
+    if (inactiveApplication(doc, appId)) {
+      const summary = inactiveSummary();
+      el.__mcelSurfaceStatusReport = null;
+      el.__mcelSurfaceStatusSummary = summary;
+      return renderStatus(el, summary);
+    }
     const report = options.report || diagnose(appId);
     const summary = options.summary || summarizeReport(report);
     el.__mcelSurfaceStatusReport = report || null;
@@ -239,6 +260,36 @@
     refresh(appId, {document: doc, element: el});
 
     const global = getGlobal();
+    // Route activation sets data-active-app before it unhides the app. The
+    // attribute observer runs after the route handler, and its animation-frame
+    // callback measures the new visible layout without waiting 30 seconds.
+    if (el.__mcelSurfaceStatusRouteObserver) {
+      el.__mcelSurfaceStatusRouteObserver.disconnect();
+    }
+    el.__mcelSurfaceStatusRouteGeneration = (el.__mcelSurfaceStatusRouteGeneration || 0) + 1;
+    const Observer = global.MutationObserver;
+    if (!options.noObserver && typeof Observer === "function" && doc?.body) {
+      const observer = new Observer(() => {
+        const generation = ++el.__mcelSurfaceStatusRouteGeneration;
+        if (inactiveApplication(doc, appId)) {
+          refresh(appId, {document: doc, element: el});
+          return;
+        }
+        const run = () => {
+          if (generation !== el.__mcelSurfaceStatusRouteGeneration) return;
+          refresh(appId, {document: doc, element: el});
+        };
+        if (typeof global.requestAnimationFrame === "function") {
+          global.requestAnimationFrame(run);
+        } else if (typeof global.setTimeout === "function") {
+          global.setTimeout(run, 0);
+        } else {
+          run();
+        }
+      });
+      observer.observe(doc.body, {attributes: true, attributeFilter: [ROUTE_ATTRIBUTE]});
+      el.__mcelSurfaceStatusRouteObserver = observer;
+    }
     if (!options.noInterval && typeof global.setInterval === "function") {
       if (el.__mcelSurfaceStatusInterval && typeof global.clearInterval === "function") {
         global.clearInterval(el.__mcelSurfaceStatusInterval);

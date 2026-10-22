@@ -33,6 +33,7 @@ from .deployment_genesis_birth import (
     _internal_proof_compose,
     _match_service_compose,
     _service_item,
+    publish_verified_genesis_contracts,
 )
 from .deployment_genesis import MotherDeploymentGenesisError, _document as _private_state_document, _genesis_policy
 from .deployment_genesis_release import DEFAULT_HUB_GIT_REF, DEFAULT_HUB_GIT_REPOSITORY, _first_genesis_compose
@@ -2468,6 +2469,107 @@ def verify_node_add_single_node_bootstrap_evidence(
         "release_expired": release_verified.get("release_expired"),
         "next_phase": document["next_phase"],
     }
+
+
+
+def _verified_bootstrap_genesis_contracts(genesis: Mapping[str, Any]) -> dict[str, str]:
+    """Derive contract addresses from the exact genesis allocation, not a registry."""
+    from tools.genesis_native_reserve import DEFAULT_RESERVE_ADDRESS
+    from tools.genesis_hub_credit_escrow import DEFAULT_HUB_CREDIT_ESCROW_ADDRESS
+
+    alloc = genesis.get("alloc")
+    if not isinstance(alloc, Mapping):
+        raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "genesis allocation is missing")
+    normalized = {str(key).removeprefix("0x").lower(): entry for key, entry in alloc.items()}
+    contracts: dict[str, str] = {}
+    for key, address in (
+        ("xlag-bridge-reserve", DEFAULT_RESERVE_ADDRESS),
+        ("hub_credit_bridge_escrow", DEFAULT_HUB_CREDIT_ESCROW_ADDRESS),
+    ):
+        entry = normalized.get(address[2:].lower())
+        if entry is None:
+            continue
+        code = entry.get("code") if isinstance(entry, Mapping) else None
+        if not isinstance(code, str) or not re.fullmatch(r"0x(?:[0-9a-fA-F]{2})+", code):
+            raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", f"{key} genesis allocation has no valid runtime bytecode")
+        contracts[key] = address
+    if not contracts:
+        raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "verified genesis contains no known contract allocations")
+    return contracts
+
+
+def publish_node_add_single_node_genesis_contracts(
+    paths: PrivateStatePaths,
+    private_state: PrivateStateReadResult,
+    final_proof_path: Path,
+    *,
+    network: str,
+    max_age_seconds: int = 86400,
+    bootstrap_max_age_seconds: int = 86400,
+    release_max_age_seconds: int = 86400,
+    identity_max_age_seconds: int = 86400,
+    identity_release_max_age_seconds: int = 86400,
+    add_do_max_age_seconds: int = 86400,
+    add_do_release_max_age_seconds: int = 86400,
+    transaction_max_age_seconds: int = 86400,
+    baseline_max_age_seconds: int = 86400,
+) -> dict[str, Any]:
+    """Finish a proven fresh-genesis bootstrap by publishing its contract map.
+
+    Retrying this step does not re-deploy or mutate the blockchain. Historical
+    existing-genesis bootstrap always leaves the registry byte-for-byte alone.
+    """
+    verified = verify_node_add_single_node_chain_and_hub_proof_evidence(
+        paths, private_state, final_proof_path,
+        max_age_seconds=max_age_seconds,
+        bootstrap_max_age_seconds=bootstrap_max_age_seconds,
+        release_max_age_seconds=release_max_age_seconds,
+        identity_max_age_seconds=identity_max_age_seconds,
+        identity_release_max_age_seconds=identity_release_max_age_seconds,
+        add_do_max_age_seconds=add_do_max_age_seconds,
+        add_do_release_max_age_seconds=add_do_release_max_age_seconds,
+        transaction_max_age_seconds=transaction_max_age_seconds,
+        baseline_max_age_seconds=baseline_max_age_seconds,
+    )
+    proof, _raw, _sha = _canonical_file(Path(verified["evidence_path"]))
+    proven_network = _identifier(proof.get("network"), "network")
+    if proven_network != network:
+        raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_MISMATCH", "requested network differs from proven bootstrap")
+    source_ref = proof["source_single_node_bootstrap_evidence"]
+    source_path = _resolve_under(paths, source_ref["locator"], _EVIDENCE_DIRECTORY,
+                                 label="proven bootstrap evidence")
+    bootstrap, _raw, _sha = _canonical_file(source_path)
+    plan = bootstrap.get("bootstrap_plan")
+    if not isinstance(plan, Mapping) or bootstrap.get("network") != network:
+        raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "proven bootstrap network/plan mismatch")
+    if plan.get("fresh_genesis_required") is not True:
+        if plan.get("old_genesis_reused") is not True:
+            raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "genesis lineage is ambiguous")
+        return {"status": "skipped-existing-genesis", "network": network}
+    if plan.get("old_genesis_reused") is not False:
+        raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "fresh genesis lineage is inconsistent")
+    target = bootstrap.get("target")
+    if not isinstance(target, Mapping):
+        raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "bootstrap target is missing")
+    validator = _address(target.get("validator_address"), "bootstrap validator")
+    genesis, _source = _fresh_target_genesis(private_state, network=network, target_validator=validator)
+    digest = hashlib.sha256(canonical_json(genesis)).hexdigest()
+    if (
+        digest != plan.get("genesis_sha256")
+        or digest != proof.get("chain_and_hub_proof", {}).get("genesis_sha256")
+        or genesis.get("config", {}).get("chainId") != plan.get("chain_id")
+    ):
+        raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_MISMATCH", "regenerated genesis differs from verified live bootstrap")
+    contracts = _verified_bootstrap_genesis_contracts(genesis)
+    if plan.get("service_profile") == "integrated" and "hub_credit_bridge_escrow" not in contracts:
+        raise _fail("MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "integrated genesis lacks Hub escrow runtime")
+    return publish_verified_genesis_contracts(
+        network=network,
+        genesis_sha256=digest,
+        proven_genesis_sha256=proof["chain_and_hub_proof"]["genesis_sha256"],
+        contracts=contracts,
+        repo_root=paths.root.resolve().parents[2],
+    )
 
 
 def build_node_add_single_node_chain_and_hub_proof_evidence(

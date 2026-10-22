@@ -411,7 +411,10 @@
     element.dataset.mcelPreviewStatusState = model.state;
     element.setAttribute("title", model.title);
     element.setAttribute("aria-label", model.title);
-    element.hidden = !model.visible;
+    const shouldBeHidden = !model.visible;
+    if (element.hidden !== shouldBeHidden) {
+      element.hidden = shouldBeHidden;
+    }
     element.innerHTML = [
       '<span class="code-editor-mcel-preview-status__label">MCEL Preview</span>',
       `<span class="code-editor-mcel-preview-status__value">${escapeText(model.value)}</span>`

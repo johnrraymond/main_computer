@@ -3420,6 +3420,15 @@ body:not([data-active-app="code-editor"]) .code-editor-app#code-editor-app {
   overflow: hidden !important;
 }
 
+/* Resize handles are auxiliary out-of-flow controls, including before the
+   canonical layout has passed its initial verification. */
+#code-editor-app .code-editor-layout-splitter {
+  position: absolute;
+}
+#code-editor-app:not([data-mcel-layout-live="true"]) .code-editor-layout-splitter {
+  display: none;
+}
+
 #code-editor-app[data-mcel-layout-live="true"] .code-editor-layout-splitter {
   position: absolute;
   z-index: 150;

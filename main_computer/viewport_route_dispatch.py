@@ -1775,8 +1775,9 @@ def _handle_control_panel_system_sanity_stream(self) -> None:
 
 
 def dispatch_get(self) -> None:
-    self.server.signal("http-request", method="GET", path=self.path)
     route_path = urlsplit(self.path).path
+    if route_path != "/api/activity/snapshot":
+        self.server.signal("http-request", method="GET", path=self.path)
     if route_path == HARD_HALT_PATH:
         self.server.signal("api-hard-halt-method-rejected", method="GET")
         _send_hard_halt_method_not_allowed(self)

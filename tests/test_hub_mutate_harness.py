@@ -1624,7 +1624,7 @@ def test_redeploy_signer_and_vpn_routes_sync_from_mother_before_build(
     captured = []
     monkeypatch.setattr(deployment, "_build_bridge_signer_for_deployment", lambda target: (
         captured.append(("build", target["_hub_admin_wallet"]["address"])) or {
-            "bundle_b64": "encoded-value", "bundle_sha256": "hash",
+            "bundle_b64": "encoded-value", "bundle_sha256": "hash", "remote_path": "/data/hub/private/bridge-signer/bridge-signer-bundle.json",
         }
     ))
     monkeypatch.setattr(deployment, "_verify_live_bridge_signer_contract", lambda *args: captured.append(("verified",)))
@@ -1647,6 +1647,9 @@ def test_redeploy_signer_and_vpn_routes_sync_from_mother_before_build(
         ("verified",),
         ("sync", "MAIN_COMPUTER_HUB_PRIVATE_HTTPS_ROUTES", json.dumps(routes, sort_keys=True)),
         ("sync", "MAIN_COMPUTER_HUB_REQUIRE_PRIVATE_HTTPS_ROUTES", "true"),
+        ("sync", "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", "/data/hub/private/bridge-signer/bridge-signer-bundle.json"),
+        ("sync", "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", "false"),
+        ("sync", "MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES", "true"),
         ("sync", "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64", "encoded-value"),
     ]
     with pytest.raises(redeploy.RedeployError, match="disagrees with Mother"):
@@ -1713,3 +1716,234 @@ def test_redeploy_refuses_unverified_bridge_authorization_before_coolify(
               "hub_admin_address": address, "application_uuid": "app-a"}
     with pytest.raises(redeploy.RedeployError, match="authorization not verified"):
         redeploy.synchronize_bridge_signer(HubContext.from_repo(tmp_path), target)
+
+# Regression: B1 was finalized at Chain generation 24, then Mother's
+# administrator assignment advanced Chain authority to generation 25.
+# add-hub must finish its own dependency adoption rather than report success.
+def _reconciliation_result(*, hub: str, network: str, current: bool, generation: int) -> dict:
+    chain = {"generation": 25, "sha256": "chain25"}
+    fdb = {"generation": 9, "sha256": "fdb9"}
+    member = {
+        "hub_id": hub, "host_id": "coolify-b", "controller_id": "coolify-b",
+        "chain_contract": dict(chain) if current else {"generation": 24, "sha256": "chain24"},
+        "fdb_contract": fdb,
+        "verification": ({"verified": True} if current else {
+            "verified": False, "reason": "hub-dependency-contract-stale",
+            "fdb_adoption_verified": True, "chain_adoption_verified": False,
+        }),
+    }
+    return {
+        "network": network, "status": "accepted", "accepted_generation": generation,
+        "chain_contract": chain, "fdb_contract": fdb, "hubs": [member],
+        "topology_verification": {"verified": current},
+    }
+
+
+def _legacy_drift_run(tmp_path: Path, *, network: str = "testnet", execute: bool = True):
+    args = _args(tmp_path, "add-hub", hub="testnetb-hub1", execute=execute)
+    args.network = network
+    first = Harness(args)
+    first.state.update({
+        "last_completed_step": "final-inspect", "target_generation": 1,
+        "target_hub_count": 1, "resolved_host": "coolify-b", "resolved_controller": "coolify-b",
+        "chain_contract": {"generation": 24, "sha256": "chain24"},
+        "fdb_contract": {"generation": 9, "sha256": "fdb9"},
+        "dependency_rectification_required": [{"hub_id": "testnetb-hub1", "dependency": "chain"}],
+    })
+    first._write_state()
+    return first, args
+
+
+def test_add_hub_resumes_legacy_final_inspect_and_rectifies_without_readding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    old, args = _legacy_drift_run(tmp_path)
+    harness = Harness(args)
+    assert harness._resumed_existing_run and harness.run_dir == old.run_dir
+    calls = []
+    monkeypatch.setattr(harness, "_run_step", lambda *_: pytest.fail("must not rerun membership"))
+    monkeypatch.setattr(harness, "_reconciliation_inspect", lambda phase: (
+        _reconciliation_result(hub=harness.hub, network=harness.network,
+                               current=phase == "after", generation=2 if phase == "after" else 1)))
+
+    def rectify(ctx, network, *, execute, confirmed, force_git):
+        calls.append((ctx.repo_root, network, execute, confirmed, force_git))
+        return {"status": "rectified", "network": network, "accepted_generation": 2}
+
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", rectify)
+    assert harness.run() == 0
+    assert calls == [(tmp_path.resolve(), "testnet", True, True, True)]
+    assert harness.state["target_generation"] == 2
+    assert harness.state["membership_target_generation"] == 1
+    assert harness.state["dependency_rectification_required"] == []
+    assert "HUB_MUTATE_HARNESS_COMPLETE" in capsys.readouterr().out
+    # Once verified, a subsequent add-hub must not reopen a completed membership operation.
+    assert Harness(args).run_dir != old.run_dir
+
+
+def test_add_hub_recovers_rectifier_commit_without_repeating_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    old, args = _legacy_drift_run(tmp_path)
+    resumed = Harness(args)
+    monkeypatch.setattr(resumed, "_run_step", lambda *_: pytest.fail("no membership replay"))
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", lambda _: _reconciliation_result(
+        hub=resumed.hub, network=resumed.network, current=True, generation=2))
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", lambda *_a, **_kw: pytest.fail("no redeployment"))
+    assert resumed.run() == 0
+    assert resumed.state["target_generation"] == 2
+
+
+def test_add_hub_drift_without_authorization_does_not_mutate_or_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    old, args = _legacy_drift_run(tmp_path, execute=False)
+    resumed = Harness(args)
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", lambda _: _reconciliation_result(
+        hub=resumed.hub, network=resumed.network, current=False, generation=1))
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", lambda *_a, **_kw: pytest.fail("mutation not authorized"))
+    assert resumed.run() == 0
+    assert resumed.state["dependency_rectification_required"]
+    assert "HUB_MUTATE_HARNESS_COMPLETE" not in capsys.readouterr().out
+
+
+def test_add_hub_rejects_non_dependency_health_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    _, args = _legacy_drift_run(tmp_path)
+    resumed = Harness(args)
+    unhealthy = _reconciliation_result(hub=resumed.hub, network=resumed.network,
+                                      current=True, generation=1)
+    unhealthy["topology_verification"] = {"verified": False}
+    unhealthy["hubs"][0]["verification"] = {"verified": False, "reason": "hub-runtime-unverified"}
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", lambda _: unhealthy)
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", lambda *_a, **_kw: pytest.fail("not drift"))
+    with pytest.raises(HarnessError, match="not dependency-only drift"):
+        resumed.run()
+
+
+def test_add_hub_rectifier_failure_remains_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    from tools.hub_control.common.errors import HubControlError
+    old, args = _legacy_drift_run(tmp_path)
+    resumed = Harness(args)
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", lambda _: _reconciliation_result(
+        hub=resumed.hub, network=resumed.network, current=False, generation=1))
+    def fail(*_a, **_kw):
+        raise HubControlError("HUB_RECTIFY_APPLICATION_MISSING", "existing application missing")
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", fail)
+    with pytest.raises(HarnessError, match="HUB_RECTIFY_APPLICATION_MISSING"):
+        resumed.run()
+    assert resumed.state["last_completed_step"] == "final-inspect"
+    assert resumed.state["dependency_reconciliation"]["status"] == "in-progress"
+    assert Harness(args).run_dir == old.run_dir
+    assert "HUB_MUTATE_HARNESS_COMPLETE" not in capsys.readouterr().out
+
+
+def test_add_hub_rejects_mismatched_dependency_after_rectification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    _, args = _legacy_drift_run(tmp_path)
+    resumed = Harness(args)
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", lambda phase: (
+        _reconciliation_result(hub=resumed.hub, network=resumed.network,
+                               current=phase == "after", generation=2 if phase == "after" else 1)))
+    # The post-inspect claims healthy, but does not show adoption of current SHA.
+    true_inspect = resumed._reconciliation_inspect
+    def tampered(phase):
+        result = true_inspect(phase)
+        if phase == "after":
+            result["hubs"][0]["chain_contract"]["sha256"] = "wrong"
+        return result
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", tampered)
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", lambda _ctx, network, **_kw:
+                        {"network": network, "status": "rectified"})
+    with pytest.raises(HarnessError, match="chain sha256 is not current"):
+        resumed.run()
+    assert resumed.state["dependency_rectification_required"]
+
+
+@pytest.mark.parametrize("network", ["mainnet", "testnet"])
+def test_reconciled_add_hub_is_network_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, network: str,
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    _, args = _legacy_drift_run(tmp_path, network=network)
+    resumed = Harness(args)
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", lambda phase: _reconciliation_result(
+        hub=resumed.hub, network=network, current=phase == "after", generation=2 if phase == "after" else 1))
+    seen = []
+    def rectify(_ctx, n, **kwargs):
+        seen.append(n)
+        return {"status": "rectified", "network": n}
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", rectify)
+    assert resumed.run() == 0
+    assert seen == [network]
+
+
+def test_add_hub_refuses_rectification_if_other_mutation_advanced_accepted_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    _, args = _legacy_drift_run(tmp_path)
+    resumed = Harness(args)
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", lambda _: _reconciliation_result(
+        hub=resumed.hub, network=resumed.network, current=False, generation=3))
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", lambda *_a, **_kw: pytest.fail("stale authority"))
+    with pytest.raises(HarnessError, match="generation changed since add-hub finalization"):
+        resumed.run()
+
+
+def test_add_hub_refuses_rectification_if_original_hub_placement_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    _, args = _legacy_drift_run(tmp_path)
+    resumed = Harness(args)
+    moved = _reconciliation_result(hub=resumed.hub, network=resumed.network, current=False, generation=1)
+    moved["hubs"][0]["host_id"] = "coolify-c"
+    monkeypatch.setattr(resumed, "_reconciliation_inspect", lambda _: moved)
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", lambda *_a, **_kw: pytest.fail("placement changed"))
+    with pytest.raises(HarnessError, match="host_id changed"):
+        resumed.run()
+
+
+def test_fresh_add_hub_with_current_dependencies_completes_without_rectifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tools.hub_control import rectify_dependencies
+    args = _args(tmp_path, "add-hub", hub="testnetb-hub1", execute=True)
+    args.network = "testnet"
+    harness = Harness(args)
+    current = _reconciliation_result(hub=harness.hub, network="testnet", current=True, generation=1)
+    seen = []
+    stages = {
+        "pre-inspect": {"status": "unborn", "accepted_generation": 0, "hubs": [],
+                        "unborn_topology_verification": {"verified": True}},
+        "prep": {"status": "prepared", "details": {
+            "operation_id": "hub-add-testnet-1", "target_generation": 1,
+            "accepted_generation": 0, "hub_id": "testnetb-hub1", "target_hub_count": 1,
+            "controller_id": "coolify-b", "host_id": "coolify-b", "rebirth": True,
+            "fdb_contract": {"generation": 9, "sha256": "fdb9"},
+            "chain_contract": {"generation": 25, "sha256": "chain25"}}},
+        "do": {"status": "deployed"},
+        "operation-inspect": {"hub_add_verification": {"verified": True}},
+        "finalize": {"status": "finalized", "details": {"verified": True, "accepted_generation": 1}},
+        "final-inspect": current,
+    }
+    monkeypatch.setattr(harness, "_check_topology_before_prep", lambda: None)
+    monkeypatch.setattr(harness, "_run_step", lambda stage, cmd: (seen.append(stage), stages[stage])[1])
+    monkeypatch.setattr(harness, "_reconciliation_inspect", lambda _: current)
+    monkeypatch.setattr(rectify_dependencies, "rectify_network", lambda *_a, **_kw: pytest.fail("no drift"))
+    assert harness.run() == 0
+    assert seen == list(MODULE.STEPS)
+    assert harness.state["target_generation"] == 1
+    assert harness.state["dependency_rectification_required"] == []
+    assert "HUB_MUTATE_HARNESS_COMPLETE" in capsys.readouterr().out

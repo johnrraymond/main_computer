@@ -27,6 +27,9 @@
       return `${drive}...\\${parts[parts.length - 1]}`;
     }
 
+    // Only history rendering is cached; live status, archives, and controls still refresh.
+    let aiderRenderedHistorySignature = null;
+
     function renderAiderContext(data) {
       aiderContextState = data && typeof data === "object" ? data : {active: {entries: []}, archives: [], activities: []};
       const active = aiderContextState.active ? aiderContextState.active : {entries: [], files: []};
@@ -49,30 +52,50 @@
         active.origin_archive_id ? `seeded from ${active.origin_archive_id}` : "",
         active.updated_at ? `updated ${formatAiderContextTimestamp(active.updated_at)}` : ""
       ].filter(Boolean).join(" | ");
-      aiderHistoryList.innerHTML = "";
-      if (!entries.length) {
-        aiderHistoryList.innerHTML = '<div class="aider-history-empty">No Aider web-context history yet.</div>';
-      } else {
-        entries.slice().reverse().forEach((entry) => {
-          const card = document.createElement("article");
-          card.className = "aider-history-entry";
-          card.dataset.mcGeneratedItem = "true";
-          card.dataset.mcItemKind = "aider-history-entry";
-          card.dataset.mcItemKey = entry.id || entry.timestamp || aiderHistoryTitle(entry);
-          card.dataset.mcComponentOwner = "code-editor.aider.history-list";
-          card.dataset.mcFeatureId = "code-editor.feature.aider-context";
-          card.innerHTML = [
-            "<header>",
-            `<span>${escapeHtml(aiderHistoryTitle(entry))}</span>`,
-            `<span>${escapeHtml(formatAiderContextTimestamp(entry.timestamp))}</span>`,
-            "</header>",
-            aiderHistorySummary(entry) ? `<div class="aider-result">${escapeHtml(aiderHistorySummary(entry))}</div>` : "",
-            aiderHistoryPrompt(entry) ? `<details class="aider-console" open><summary>Prompt</summary><pre>${escapeHtml(aiderHistoryPrompt(entry))}</pre></details>` : "",
-            aiderHistoryResult(entry) ? `<details class="aider-console" open><summary>Latest result</summary><pre>${escapeHtml(aiderHistoryResult(entry))}</pre></details>` : "",
-            `<p>${escapeHtml(aiderHistoryDetail(entry))}</p>`
-          ].join("");
-          aiderHistoryList.append(card);
-        });
+      // Capture exactly the values rendered into history cards, plus thread identity.
+      // Activity/status changes must not destroy unchanged <details> state or card nodes.
+      const historyRows = entries.slice().reverse().map((entry) => ({
+        key: entry.id || entry.timestamp || aiderHistoryTitle(entry),
+        title: aiderHistoryTitle(entry),
+        timestamp: formatAiderContextTimestamp(entry.timestamp),
+        summary: aiderHistorySummary(entry),
+        prompt: aiderHistoryPrompt(entry),
+        result: aiderHistoryResult(entry),
+        detail: aiderHistoryDetail(entry)
+      }));
+      const historySignature = JSON.stringify([
+        active.id || "",
+        active.archive_id || "",
+        active.origin_archive_id || "",
+        historyRows
+      ]);
+      if (historySignature !== aiderRenderedHistorySignature) {
+        aiderHistoryList.innerHTML = "";
+        if (!historyRows.length) {
+          aiderHistoryList.innerHTML = '<div class="aider-history-empty">No Aider web-context history yet.</div>';
+        } else {
+          historyRows.forEach((row) => {
+            const card = document.createElement("article");
+            card.className = "aider-history-entry";
+            card.dataset.mcGeneratedItem = "true";
+            card.dataset.mcItemKind = "aider-history-entry";
+            card.dataset.mcItemKey = row.key;
+            card.dataset.mcComponentOwner = "code-editor.aider.history-list";
+            card.dataset.mcFeatureId = "code-editor.feature.aider-context";
+            card.innerHTML = [
+              "<header>",
+              `<span>${escapeHtml(row.title)}</span>`,
+              `<span>${escapeHtml(row.timestamp)}</span>`,
+              "</header>",
+              row.summary ? `<div class="aider-result">${escapeHtml(row.summary)}</div>` : "",
+              row.prompt ? `<details class="aider-console" open><summary>Prompt</summary><pre>${escapeHtml(row.prompt)}</pre></details>` : "",
+              row.result ? `<details class="aider-console" open><summary>Latest result</summary><pre>${escapeHtml(row.result)}</pre></details>` : "",
+              `<p>${escapeHtml(row.detail)}</p>`
+            ].join("");
+            aiderHistoryList.append(card);
+          });
+        }
+        aiderRenderedHistorySignature = historySignature;
       }
       const selectedArchive = aiderArchiveList.value;
       aiderArchiveList.innerHTML = "";

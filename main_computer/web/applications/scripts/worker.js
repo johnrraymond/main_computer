@@ -4493,7 +4493,11 @@
       if (action !== "finish" && !workerWalletValidAddress(walletAddress)) {
         throw new Error("Connect the matching wallet or load an active saved worker multi-session key before using Work now.");
       }
-      const payload = buildWorkerNetworkRegistrationPayload({walletAddress, activeMultisessionKey});
+      // Stopping Work now must not depend on a complete offer form or active key.
+      // The server independently validates local-client authority for finish.
+      const payload = action === "finish"
+        ? {network: workerNetworkKey(workerNetworkSession.selected_network)}
+        : buildWorkerNetworkRegistrationPayload({walletAddress, activeMultisessionKey});
       payload.action = action;
       if (durationSeconds) {
         payload.duration_seconds = Number(durationSeconds);
@@ -5038,11 +5042,9 @@
       if (!settings.registrationHubUrl) {
         throw new Error("Select a worker connection before registering an offer.");
       }
-      if (!settings.nodeId) {
-        throw new Error("Worker node id is required.");
-      }
-      if (!settings.endpoint) {
-        throw new Error("Worker callback endpoint is required.");
+      // Worker-pull has no inbound callback. The backend owns its node identity.
+      if (settings.executionMode !== "worker_pull_v0" && !settings.endpoint) {
+        throw new Error("Callback worker endpoint is required.");
       }
       if (!models.length) {
         throw new Error("At least one model is required.");
@@ -5075,8 +5077,8 @@
         ai_idle_required: settings.sellerAvailabilityMode === WORKER_SELLER_AVAILABILITY_AI_IDLE
       };
       const worker = {
-        node_id: settings.nodeId,
-        endpoint: settings.endpoint,
+        // For worker_pull_v0, omit both hidden/deleted form fields entirely.
+        ...(settings.executionMode === "worker_pull_v0" ? {} : {endpoint: settings.endpoint}),
         model: models[0],
         models,
         credits_per_token: creditsPerToken,
@@ -5175,11 +5177,12 @@
       }
       saveWorkerSettings();
       if (workerRegisterOffer) workerRegisterOffer.disabled = true;
-      workerSetRegistrationStatus(`Registering ${payload.worker.node_id} with ${payload.hub_url}...`);
+      workerSetRegistrationStatus(`Registering worker with ${payload.hub_url}...`);
       try {
         const data = await workerPostJson("/api/applications/worker/register-offer", payload);
         const offerId = data.offer?.offer_id || data.worker?.offer?.offer_id || data.registration?.worker?.offer?.offer_id || "offer registered";
-        workerSetRegistrationStatus(`Registered worker seller offer ${offerId}.`, "ok");
+        const registeredId = data.worker?.node_id || data.registration?.worker?.node_id || "worker";
+        workerSetRegistrationStatus(`Registered ${registeredId}: seller offer ${offerId}.`, "ok");
         try {
           localStorage.setItem(
             workerSettingsStorageKey,

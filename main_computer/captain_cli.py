@@ -14,6 +14,7 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from main_computer.config import DEFAULT_HUB_NETWORK, MainComputerConfig
+from main_computer.contract_config import ContractConfigError, get_contract_address, load_contract_config
 from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to_decimal_text
 from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.hub_plex_service import PHASE9_EXECUTION_MODE, PHASE9_PRICING_MODE
@@ -146,7 +147,7 @@ def build_captain_options_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default="", help="Hub model id. Defaults to MainComputerConfig/from env.")
     parser.add_argument("--hub-url", default="", help="Hub base URL. Defaults to the selected network hub; captain defaults to mainnet.")
     parser.add_argument("--client-node-id", default="main-computer-captain-cli", help="Hub client node id.")
-    parser.add_argument("--network", default="", help="Deployment network key. Captain prompts default to mainnet unless explicitly overridden.")
+    parser.add_argument("--network", choices=("mainnet", "testnet"), default="", help="Deployment network key (mainnet default; select testnet explicitly).")
     parser.add_argument("--state", type=Path, default=None, help="Deployment state JSON. Defaults to runtime/deployments/<network>/latest.json.")
     parser.add_argument("--rpc-url", default="", help="Override chain RPC URL for the smoke transaction.")
     parser.add_argument("--chain-id", type=int, default=0, help="Override expected chain id for display/payload.")
@@ -315,6 +316,12 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             pending_path = _captain_pending_bridge_path(runtime, smoke_id=smoke_id, cwd=repo_cwd)
             pending_deposit = _read_captain_pending_bridge(
                 pending_path, runtime=runtime, amount_wei=bridge_credit_wei
+            )
+            _require_hub_bridge_completion_ready(
+                runtime.config.hub_url, chain_id=runtime.chain_id,
+                contract_address=runtime.bridge_escrow_address,
+                controller_address=runtime.bridge_controller_address,
+                timeout_s=options.timeout_s,
             )
             if pending_deposit is None:
                 pending_deposit = send_captain_bridge_deposit(
@@ -527,6 +534,9 @@ def _apply_captain_network_defaults(options: argparse.Namespace, *, base_config:
     except (HubNetworkConfigError, FileNotFoundError):
         profile = None
 
+    if profile is None and network == "testnet":
+        raise CaptainCliError("Testnet network profile is unavailable; refusing fallback to mainnet configuration.")
+
     if profile is not None:
         if not str(getattr(options, "hub_url", "") or "").strip():
             options.hub_url = profile.hub_url
@@ -608,6 +618,24 @@ def build_captain_runtime(
     xlag_address = str(options.xlag_address or _contract_address(deployment, "xlag-bridge-reserve", "XLagBridgeReserve") or config.xlag_contract_address or "").strip()
     bridge_escrow_address = str(_contract_address(deployment, "hub_credit_bridge_escrow", "HubCreditBridgeEscrow") or "").strip()
     bridge_controller_address = _bridge_controller_address(deployment)
+    if network in {"mainnet", "testnet"}:
+        # Mother publishes each network's current contract registry. Historical
+        # deployment manifests are not payment authority: their escrow can be
+        # retired, and their hub_admin identifies a different (older) Hub.
+        try:
+            loaded = load_contract_config(network, repo_root=cwd, required=True)
+        except ContractConfigError as exc:
+            raise CaptainCliError(f"Cannot verify current {network} contracts: {exc}") from exc
+        assert loaded is not None
+        contract_path, contract_registry = loaded
+        bridge_escrow_address = get_contract_address(contract_registry, "hub_credit_bridge_escrow")
+        xlag_address = str(options.xlag_address or get_contract_address(contract_registry, "xlag-bridge-reserve") or "").strip()
+        if not _ADDRESS_RE.fullmatch(bridge_escrow_address):
+            raise CaptainCliError(f"Current {network} contract registry lacks a valid bridge escrow: {contract_path}")
+        # The current Hub owns its bridge signer. Validate the signer's address,
+        # network and escrow with its read-only readiness endpoint before
+        # depositing; never compare against a historic manifest hub_admin.
+        bridge_controller_address = ""
     if not rpc_url:
         raise CaptainCliError(f"Deployment is missing a chain RPC URL: {deployment_path}")
     if not _ADDRESS_RE.fullmatch(xlag_address):
@@ -617,6 +645,7 @@ def build_captain_runtime(
     runtime_config = replace(
         config,
         hub_url=hub_url,
+        hub_network=network,
         chain_rpc_url=rpc_url,
         chain_id=chain_id,
         xlag_contract_address=xlag_address,
@@ -1651,6 +1680,33 @@ def _get_hub_json(hub_url: str, path: str, *, timeout_s: float) -> dict[str, Any
     if not isinstance(data, dict):
         raise CaptainCliError("Hub returned a non-object JSON response.")
     return data
+
+
+def _require_hub_bridge_completion_ready(
+    hub_url: str, *, chain_id: int, contract_address: str,
+    controller_address: str, timeout_s: float,
+) -> None:
+    """Read-only Hub preflight before broadcasting any wallet-funding deposit."""
+    status = _get_hub_json(
+        hub_url, "/api/hub/v1/credits/wallet-funding/completion", timeout_s=timeout_s,
+    )
+    if status.get("ok") is not True:
+        error = str(status.get("error") or "missing or invalid bridge signer")
+        raise CaptainCliError(
+            f"Hub bridge completion is unavailable ({error}); refusing to send an on-chain deposit."
+        )
+    deployment = status.get("deployment")
+    if not isinstance(deployment, dict):
+        raise CaptainCliError("Hub bridge completion did not identify its deployment; refusing on-chain deposit.")
+    if str(deployment.get("chain_id") or "") != str(chain_id):
+        raise CaptainCliError("Hub bridge completion chain differs from the selected wallet network; refusing deposit.")
+    if str(deployment.get("contract_address") or "").lower() != str(contract_address or "").lower():
+        raise CaptainCliError("Hub bridge completion escrow differs from selected wallet contract; refusing deposit.")
+    hub_controller = str(deployment.get("bridge_controller_address") or "").strip()
+    if not controller_address and not _ADDRESS_RE.fullmatch(hub_controller):
+        raise CaptainCliError("Hub bridge completion has no valid controller; refusing deposit.")
+    if controller_address and hub_controller.lower() != str(controller_address).lower():
+        raise CaptainCliError("Hub bridge completion controller differs from the selected bridge controller; refusing deposit.")
 
 
 def _fetch_hub_credit_balance(hub_url: str, *, wallet_address: str, timeout_s: float) -> dict[str, Any]:

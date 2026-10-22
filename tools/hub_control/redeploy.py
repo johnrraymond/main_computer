@@ -135,7 +135,7 @@ def resolve_existing_hub(ctx: HubContext, network: str, member: Mapping[str, Any
         "hub_admin_address": str(member.get("hub_admin_address") or ""),
         "fdb_contract": load_current_fdb_contract(ctx, network).payload,
         "chain_contract": load_current_chain_contract(ctx, network).payload,
-        "bridge_signer_required": network == "mainnet",
+        "bridge_signer_required": network in {"mainnet", "testnet"},
     }
     found = inspect_deployment(target)
     uuid = str(found.get("application_uuid") or "").strip()
@@ -406,10 +406,18 @@ def synchronize_bridge_signer(ctx: HubContext, target: Mapping[str, Any]) -> Non
             key="MAIN_COMPUTER_HUB_REQUIRE_PRIVATE_HTTPS_ROUTES",
             value="true" if routes else "false", tried=[],
         )
-        legacy.sync_application_env_var(
-            client, application_uuid=uuid,
-            key=BRIDGE_SIGNER_ENV, value=str(signer["bundle_b64"]), tried=[],
-        )
+        # This accepted application may have been born without signing enabled.
+        # Synchronize the file destination and write policy with the signer,
+        # not just the secret B64 value; the launcher requires all three.
+        for key, value in (
+            ("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", str(signer["remote_path"])),
+            ("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", "false"),
+            ("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES", "true"),
+            (BRIDGE_SIGNER_ENV, str(signer["bundle_b64"])),
+        ):
+            legacy.sync_application_env_var(
+                client, application_uuid=uuid, key=key, value=value, tried=[],
+            )
     except Exception as exc:
         raise RedeployError(
             f"Coolify signer sync failed for {hub_id}: {type(exc).__name__}; no build requested"

@@ -128,8 +128,15 @@ def observe_topology(
     *,
     client_factory=coolify.CoolifyClient,
     hub_observer=observe_hub,
+    membership_only: bool = False,
 ) -> dict[str, Any]:
-    """Perform fresh, read-only, fail-closed observation of the live Hub membership."""
+    """Observe Hub membership. Removal may verify Coolify without live FDB.
+
+    ``membership_only`` is for deleting an existing Hub after its runtime
+    dependencies have gone away. It verifies Mother membership, accepted Hub
+    projection, and complete Coolify application inventories/placements, but
+    makes no claim that any Hub's FDB/Chain-backed endpoints are healthy.
+    """
     unknown: list[dict[str, str]] = []
     observed: list[dict[str, Any]] = []
     inventories: list[dict[str, Any]] = []
@@ -186,8 +193,11 @@ def observe_topology(
         controllers = coolify_config.get("controllers") if isinstance(coolify_config, Mapping) else None
         if not isinstance(controllers, Mapping) or not controllers:
             raise ValueError("no Coolify controllers configured in Mother private state")
-        fdb = load_current_fdb_contract(ctx, network)
-        chain = load_current_chain_contract(ctx, network)
+        # A missing FDB service must not prevent removal of an existing Hub.
+        # Membership-only mode still checks every controller and the accepted
+        # Hub receipt; it simply cannot claim runtime dependency health.
+        fdb = None if membership_only else load_current_fdb_contract(ctx, network)
+        chain = None if membership_only else load_current_chain_contract(ctx, network)
         profile = load_hub_network_registry(ctx.repo_root / "main_computer" / "config" / "hub_networks.json").get(network)
     except Exception as exc:
         return {"schema": SCHEMA, "network": network, "status": "UNKNOWN",
@@ -225,11 +235,12 @@ def observe_topology(
                 unknown.append(_error("HUB_COOLIFY_APP_DETAIL_UNAVAILABLE", f"{controller_id}: {app_name}: {type(exc).__name__}: {exc}"))
                 continue
             detail = detail_response.body
-            try:
-                hub_runtime = hub_runtime_from_application(detail)
-            except ValueError as exc:
-                unknown.append(_error("HUB_COOLIFY_RUNTIME_UNVERIFIED", f"{controller_id}: {hub_id}: {exc}"))
-                continue
+            if not membership_only:
+                try:
+                    hub_runtime = hub_runtime_from_application(detail)
+                except ValueError as exc:
+                    unknown.append(_error("HUB_COOLIFY_RUNTIME_UNVERIFIED", f"{controller_id}: {hub_id}: {exc}"))
+                    continue
             actual_name = str(detail.get("name") or "").strip()
             environment_name = _application_environment(detail) or _application_environment(item)
             project_uuid = _application_project(detail) or _application_project(item)
@@ -238,6 +249,9 @@ def observe_topology(
                 continue
             if not environment_name:
                 unknown.append(_error("HUB_COOLIFY_ENVIRONMENT_UNVERIFIED", f"{controller_id}: application {uuid} does not disclose its environment"))
+                continue
+            if membership_only and not project_uuid:
+                unknown.append(_error("HUB_COOLIFY_PROJECT_UNVERIFIED", f"{controller_id}: application {uuid} does not disclose its project"))
                 continue
             # Determine direct identity URL, never use shared network ingress.
             state_entry = hub_records.get(hub_id, {})
@@ -252,22 +266,24 @@ def observe_topology(
                 if not active_wallet:
                     raise ValueError("live Hub has no matching wallet or historical association")
                 admin = str(active_wallet.get("address") or "")
-                target = {"network": network, "hub_id": hub_id, "public_url": url,
-                          "hub_runtime": hub_runtime,
-                          "runtime_dir": rt_dir, "cluster_file_path": f"{rt_dir}/fdb.cluster",
-                          "fdb_contract": fdb.payload, "chain_contract": chain.payload,
-                          "bridge_signer_required": profile.kind == "mainnet",
-                          "hub_admin_address": admin}
-                result = hub_observer(target, wait_timeout_s=0.0)
-                if result.get("verified") is not True:
-                    reason = str(result.get("reason") or "live endpoints failed")
-                    raise ValueError(reason)
+                if not membership_only:
+                    target = {"network": network, "hub_id": hub_id, "public_url": url,
+                              "hub_runtime": hub_runtime,
+                              "runtime_dir": rt_dir, "cluster_file_path": f"{rt_dir}/fdb.cluster",
+                              "fdb_contract": fdb.payload, "chain_contract": chain.payload,
+                              "bridge_signer_required": profile.kind == "mainnet",
+                              "hub_admin_address": admin}
+                    result = hub_observer(target, wait_timeout_s=0.0)
+                    if result.get("verified") is not True:
+                        reason = str(result.get("reason") or "live endpoints failed")
+                        raise ValueError(reason)
             except Exception as exc:
                 unknown.append(_error("HUB_LIVE_IDENTITY_UNVERIFIED", f"{controller_id}: {hub_id}: {type(exc).__name__}: {exc}"))
                 continue
             observed.append({"hub_id": hub_id, "controller_id": controller_id, "host_id": controller_id,
                              "public_url": url.rstrip("/"), "application_uuid": uuid,
-                             "environment_name": environment_name, "runtime_verified": True})
+                             "environment_name": environment_name, "runtime_verified": not membership_only,
+                             **({"coolify_identity_verified": True} if membership_only else {})})
 
     if len(inventories) != len(controllers):
         unknown.append(_error("HUB_COOLIFY_INVENTORY_INCOMPLETE", "not every configured controller returned a complete application inventory"))
@@ -280,7 +296,8 @@ def observe_topology(
         if actual and hub.get("status") == "active" and (
             (hub.get("controller_id") and hub["controller_id"] != actual["controller_id"]) or
             (hub.get("host_id") and hub["host_id"] != actual["host_id"]) or
-            (hub.get("public_url") and str(hub["public_url"]).rstrip("/") != actual["public_url"])):
+            (hub.get("public_url") and str(hub["public_url"]).rstrip("/") != actual["public_url"]) or
+            (membership_only and hub.get("application_uuid") and hub["application_uuid"] != actual["application_uuid"])):
             unknown.append(_error("HUB_PLACEMENT_IDENTITY_MISMATCH", f"{hub_id}: live placement disagrees with Mother state"))
     # All inventories were read and all discovered live identities verified.
     # Do not infer an absent Hub merely from a failed HTTP health check.
@@ -312,6 +329,21 @@ def observe_topology(
                         for hub_id in ids) or len(set(ids)) != len(ids)):
                     raise ValueError("accepted Hub receipt contains malformed or duplicate Hub IDs")
                 projection["hub_ids"] = sorted(ids)
+                if membership_only:
+                    # For destructive removal the accepted receipt must also
+                    # agree with the live Coolify placement, not only its IDs.
+                    for entry in raw:
+                        if not isinstance(entry, Mapping):
+                            continue
+                        hub_id = entry.get("hub_id")
+                        actual = by_id.get(hub_id)
+                        if actual is None:
+                            continue  # absence becomes DRIFT below
+                        for field in ("controller_id", "host_id", "public_url", "application_uuid"):
+                            expected = entry.get(field)
+                            if expected and str(expected).rstrip("/") != str(actual.get(field) or "").rstrip("/"):
+                                unknown.append(_error("HUB_ACCEPTED_PLACEMENT_MISMATCH",
+                                                      f"{hub_id}: accepted {field} disagrees with Coolify"))
                 projection["stale_hubs"] = sorted(set(ids) - set(observed_ids))
                 projection["unprojected_hubs"] = sorted(set(observed_ids) - set(ids))
                 projection["status"] = ("stale" if projection["stale_hubs"] or
@@ -329,7 +361,8 @@ def observe_topology(
             "admin_location_drift": location_drift,
             "observed_hubs": sorted(observed, key=lambda x: x["hub_id"]),
             "missing_hubs": missing, "extra_hubs": extra, "inventories": inventories,
-            "accepted_projection": projection, "errors": unknown}
+            "accepted_projection": projection, "errors": unknown,
+            **({"verification_scope": "coolify-membership-only"} if membership_only else {})}
     if status == "DRIFT":
         report["seal_command"] = (
             f"python .\\tools\\hub_topology_seal.py --network {network} --apply-state"
@@ -341,9 +374,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--network", default="mainnet")
     parser.add_argument("--repo-root", type=Path, default=ROOT)
+    parser.add_argument("--membership-only", action="store_true",
+                        help="check accepted Hub and Coolify membership for removal without runtime dependencies")
     args = parser.parse_args(argv)
     try:
-        report = observe_topology(HubContext.from_repo(args.repo_root), args.network)
+        report = observe_topology(HubContext.from_repo(args.repo_root), args.network,
+                                  membership_only=args.membership_only)
     except Exception as exc:
         report = {"schema": SCHEMA, "network": args.network, "status": "UNKNOWN",
                   "errors": [_error("HUB_TOPOLOGY_CHECK_FAILED", f"{type(exc).__name__}: {exc}")]}

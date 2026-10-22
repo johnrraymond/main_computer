@@ -2814,12 +2814,52 @@ def execute_genesis_birth_release(
             raise MotherDeploymentGenesisBirthError(
                 "MOTHER_GENESIS_CONTRACT_PUBLICATION_MISMATCH", "genesis hash changed before contract publication"
             )
-        repo_root = paths.root.resolve().parents[2]
-        write_contract_config(
-            {"network": inspected["network"], "contracts": verified_chain["genesis_contracts"]},
-            repo_root=repo_root,
+        publish_verified_genesis_contracts(
+            network=inspected["network"],
+            genesis_sha256=verified_chain["genesis_sha256"],
+            proven_genesis_sha256=inspected["genesis_sha256"],
+            contracts=verified_chain["genesis_contracts"],
+            repo_root=paths.root.resolve().parents[2],
         )
     return evidence
+
+
+
+def publish_verified_genesis_contracts(
+    *, network: str, genesis_sha256: str, proven_genesis_sha256: str,
+    contracts: Mapping[str, str], repo_root: Path,
+) -> dict[str, Any]:
+    """Publish the contracts of ONE proven genesis, replacing old-chain addresses.
+
+    Both Mother's genesis-birth and its first-node bootstrap use this boundary.
+    It never merges unrelated historical deployments into a new genesis.
+    """
+    if genesis_sha256 != proven_genesis_sha256 or not re.fullmatch(r"[0-9a-f]{64}", genesis_sha256):
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_GENESIS_CONTRACT_PUBLICATION_MISMATCH", "verified genesis identity does not match publication",
+        )
+    if network not in {"mainnet", "testnet"} or not contracts:
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "network or genesis contract allocation is invalid",
+        )
+    from main_computer.contract_config import load_contract_config, contract_address_map
+
+    expected = dict(sorted(contracts.items()))
+    for key, address in expected.items():
+        if key not in {"xlag-bridge-reserve", "hub_credit_bridge_escrow"} or not re.fullmatch(r"0x[0-9a-fA-F]{40}", address):
+            raise MotherDeploymentGenesisBirthError(
+                "MOTHER_GENESIS_CONTRACT_PUBLICATION_INVALID", "genesis contract name or address is invalid",
+            )
+    output = write_contract_config(
+        {"network": network, "contracts": expected}, repo_root=repo_root,
+    )
+    readback = load_contract_config(network, repo_root=repo_root, required=True)
+    if readback is None or contract_address_map(readback[1]) != expected:
+        raise MotherDeploymentGenesisBirthError(
+            "MOTHER_GENESIS_CONTRACT_PUBLICATION_READBACK_FAILED", "saved genesis registry differs from its verified allocations",
+        )
+    return {"status": "published", "network": network, "genesis_sha256": genesis_sha256,
+            "contracts": expected, "registry_path": str(output)}
 
 
 def verify_genesis_birth_evidence(

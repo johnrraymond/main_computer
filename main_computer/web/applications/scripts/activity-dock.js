@@ -756,12 +756,51 @@
         }
       }
 
+      function eventDisplay(event) {
+        const message = event.message || event.status || "";
+        const detail = historyTextForEvent(event);
+        return {
+          severity: event.severity || "info",
+          timeModel: event.time_model || "",
+          runId: event.data?.run_id || "",
+          title: event.title || event.kind || "Activity",
+          source: event.source,
+          kind: event.kind,
+          timestamp: new Date(event.ts).toLocaleTimeString(),
+          message,
+          detail: detail && detail !== message ? detail : "",
+          tags: (event.tags || []).slice(0, 8)
+        };
+      }
+
+      function updateEventCard(article, event, display = eventDisplay(event)) {
+        const signature = JSON.stringify(display);
+        if (article.__activityDisplaySignature === signature) return article;
+        article.dataset.severity = display.severity;
+        article.dataset.timeModel = display.timeModel;
+        if (display.runId) article.dataset.runId = display.runId;
+        else delete article.dataset.runId;
+        article.querySelector(".machine-activity-event-title span").textContent = display.title;
+        article.querySelector(".machine-activity-event-title small").textContent = display.severity;
+        const runId = display.runId ? ` | ${display.runId}` : "";
+        article.querySelector(".machine-activity-event-meta").textContent = `${display.source} | ${display.kind} | ${display.timeModel}${runId} | ${display.timestamp}`;
+        article.querySelector(".machine-activity-event-message").textContent = display.message;
+        article.querySelector(".machine-activity-event-detail").textContent = display.detail;
+        const tags = article.querySelector(".machine-activity-tags");
+        tags.replaceChildren();
+        display.tags.forEach((tag) => {
+          const pill = document.createElement("span");
+          pill.className = "machine-activity-tag";
+          pill.textContent = tag;
+          tags.appendChild(pill);
+        });
+        article.__activityDisplaySignature = signature;
+        return article;
+      }
+
       function renderEvent(event) {
         const article = document.createElement("article");
         article.className = "machine-activity-event";
-        article.dataset.severity = event.severity || "info";
-        article.dataset.timeModel = event.time_model || "";
-        if (event.data && event.data.run_id) article.dataset.runId = event.data.run_id;
         article.innerHTML = `
           <div class="machine-activity-event-title">
             <span></span>
@@ -772,21 +811,7 @@
           <div class="machine-activity-event-detail"></div>
           <div class="machine-activity-tags"></div>
         `;
-        article.querySelector(".machine-activity-event-title span").textContent = event.title || event.kind || "Activity";
-        article.querySelector(".machine-activity-event-title small").textContent = event.severity || "info";
-        const runId = event.data?.run_id ? ` | ${event.data.run_id}` : "";
-        article.querySelector(".machine-activity-event-meta").textContent = `${event.source} | ${event.kind} | ${event.time_model}${runId} | ${new Date(event.ts).toLocaleTimeString()}`;
-        article.querySelector(".machine-activity-event-message").textContent = event.message || event.status || "";
-        const detail = historyTextForEvent(event);
-        article.querySelector(".machine-activity-event-detail").textContent = detail && detail !== (event.message || event.status || "") ? detail : "";
-        const tags = article.querySelector(".machine-activity-tags");
-        (event.tags || []).slice(0, 8).forEach((tag) => {
-          const pill = document.createElement("span");
-          pill.className = "machine-activity-tag";
-          pill.textContent = tag;
-          tags.appendChild(pill);
-        });
-        return article;
+        return updateEventCard(article, event);
       }
 
       function generateMetaModel() {
@@ -856,15 +881,62 @@
         const list = dom.events();
         if (!list) return;
         const filtered = allEvents().filter((event) => eventMatchesFilter(event)).slice(0, 80);
-        list.replaceChildren();
-        if (!filtered.length) {
-          const empty = document.createElement("article");
-          empty.className = "machine-activity-event";
-          empty.dataset.severity = "info";
-          empty.textContent = "No activity records match this filter yet.";
-          list.appendChild(empty);
-        } else {
-          filtered.forEach((event) => list.appendChild(renderEvent(event)));
+        // Reconcile by normalized event ID; do not discard unchanged event cards.
+        const existing = new Map();
+        [...list.children].forEach((card) => {
+          if (card.__activityEventId != null) existing.set(card.__activityEventId, card);
+        });
+        const desired = filtered.map((event) => {
+          const id = String(event.id);
+          const card = existing.get(id) || renderEvent(event);
+          card.__activityEventId = id;
+          if (existing.has(id)) updateEventCard(card, event);
+          return card;
+        });
+        if (!desired.length) {
+          const empty = [...list.children].find((card) => card.__activityEmpty);
+          if (empty) desired.push(empty);
+          else {
+            const card = document.createElement("article");
+            card.className = "machine-activity-event";
+            card.dataset.severity = "info";
+            card.textContent = "No activity records match this filter yet.";
+            card.__activityEmpty = true;
+            desired.push(card);
+          }
+        }
+        // Remove obsolete cards first, without disturbing retained card identities.
+        const wanted = new Set(desired);
+        [...list.children].forEach((card) => {
+          if (!wanted.has(card)) card.remove();
+        });
+
+        // Keep the longest already-ordered subsequence of existing cards in place.
+        // Otherwise a single card changing position can move every intervening card.
+        const oldPositions = new Map([...list.children].map((card, index) => [card, index]));
+        const positions = desired.map((card) => oldPositions.has(card) ? oldPositions.get(card) : -1);
+        const lengths = new Array(desired.length).fill(0);
+        const next = new Array(desired.length).fill(-1);
+        let bestStart = -1;
+        for (let index = desired.length - 1; index >= 0; index--) {
+          if (positions[index] < 0) continue;
+          lengths[index] = 1;
+          for (let later = index + 1; later < desired.length; later++) {
+            if (positions[later] > positions[index] && lengths[later] + 1 > lengths[index]) {
+              lengths[index] = lengths[later] + 1;
+              next[index] = later;
+            }
+          }
+          if (bestStart < 0 || lengths[index] > lengths[bestStart]) bestStart = index;
+        }
+        const stationary = new Set();
+        for (let index = bestStart; index >= 0; index = next[index]) stationary.add(desired[index]);
+
+        // Place only new or out-of-order cards, working backward from the next card.
+        for (let index = desired.length - 1; index >= 0; index--) {
+          if (!stationary.has(desired[index])) {
+            list.insertBefore(desired[index], desired[index + 1] || null);
+          }
         }
         const filterState = dom.filterState();
         if (filterState) {
