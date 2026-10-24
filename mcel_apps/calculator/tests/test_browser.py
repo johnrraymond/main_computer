@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from main_computer.mcel_calculator_host_projection import project as project_calculator_host
+
 from pathlib import Path
 
 
@@ -20,7 +22,7 @@ def test_calculator_core_and_capability_bridge_load_before_runtime_in_viewport_s
 
 
 def test_calculator_host_document_and_runtime_facade_remain_stable() -> None:
-    html = (REPO / "main_computer/web/applications/apps/calculator.html").read_text(encoding="utf-8")
+    html = project_calculator_host(REPO)
     runtime = (REPO / "main_computer/web/applications/scripts/calculator.js").read_text(encoding="utf-8")
     assert 'id="calculator-app"' in html
     assert "window.MainComputerCalculatorRuntime" in runtime

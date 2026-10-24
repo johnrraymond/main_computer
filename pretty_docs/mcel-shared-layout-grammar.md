@@ -1,5 +1,12 @@
 # MCEL Shared Layout Grammar
 
+## Product constraint on the grammar
+
+The shared grammar must make responsive, legible layout **easy by default**, while leaving sound uncommon compositions expressible. Its semantic regions and relationships should derive containment, fill/shrink, scrolling, and placement mechanics wherever they are generic, rather than teaching authors layout-engine internals or requiring per-app CSS fixes. See `pretty_docs/mcel-authoring-principles.md` for the four design priorities.
+
+This document describes a structural grammar; it does not claim to select a universally attractive theme or prove visual polish. Reject contradictory hard constraints with actionable diagnostics, preserve meaningful author preferences, and test multiple valid layout directions rather than assuming a single preferred shape. Automatic layout behavior must not quietly erase product intent.
+
+
 Contract:
 
 ```text

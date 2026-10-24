@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -323,6 +324,35 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                 controller_address=runtime.bridge_controller_address,
                 timeout_s=options.timeout_s,
             )
+            # Replay a saved transaction only while the Hub and chain still
+            # recognize it. The local JSON is a recovery hint, not credit truth.
+            completion = None
+            if pending_deposit is not None:
+                try:
+                    completion = _complete_captain_bridge_deposit(
+                        runtime, pending_deposit, timeout_s=options.timeout_s, bridge_metadata=bridge,
+                    )
+                except CaptainCliError as exc:
+                    if not _is_unknown_bridge_deposit_error(exc, pending_deposit["deposit_id"]):
+                        raise
+                    # HTTP 400 from the Hub is not by itself permission to pay
+                    # again. Independently establish that the old transaction and
+                    # deposit are absent from the selected live chain.
+                    _require_absent_pending_bridge_on_chain(
+                        runtime, pending_deposit, timeout_s=options.timeout_s,
+                    )
+                    warning = _log_captain_accounting_drift(
+                        pending_path, runtime=runtime, deposit=pending_deposit,
+                    )
+                    bridge.setdefault("accounting_warnings", []).append(warning)
+                    try:
+                        pending_path.unlink()
+                    except OSError as unlink_error:
+                        raise CaptainCliError(
+                            f"Stale bridge hint could not be retired: {pending_path}; "
+                            "refusing a second deposit."
+                        ) from unlink_error
+                    pending_deposit = None
             if pending_deposit is None:
                 pending_deposit = send_captain_bridge_deposit(
                     runtime,
@@ -336,38 +366,11 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                     "amount_credit_wei": str(bridge_credit_wei),
                 }
                 _save_captain_pending_bridge(pending_path, pending_deposit)
+                completion = _complete_captain_bridge_deposit(
+                    runtime, pending_deposit, timeout_s=options.timeout_s, bridge_metadata=bridge,
+                )
             bridge["deposit"] = pending_deposit
-            completion_payload = {
-                "deposit_id": bridge["deposit"]["deposit_id"],
-                "wallet_address": runtime.wallet.address,
-                "tx_hash": bridge["deposit"]["transaction_hash"],
-                "contract_address": runtime.bridge_escrow_address,
-                "chain_id": runtime.chain_id,
-            }
-            try:
-                bridge["completion"] = _post_hub_json(
-                    runtime.config.hub_url,
-                    "/api/hub/v1/credits/wallet-funding/complete",
-                    completion_payload,
-                    timeout_s=options.timeout_s,
-                )
-            except CaptainCliError as exc:
-                if not _is_missing_bridge_completion_metadata_error(exc):
-                    raise
-                import_payload = build_bridge_wallet_funding_import_payload(runtime, bridge["deposit"])
-                bridge["completion_fallback"] = {
-                    "ok": True,
-                    "reason": "hub completion endpoint is missing bridge deployment metadata",
-                    "failed_endpoint": "/api/hub/v1/credits/wallet-funding/complete",
-                    "fallback_endpoint": "/api/hub/v1/credits/wallet-funding/import",
-                    "error": str(exc),
-                }
-                bridge["completion"] = _post_hub_json(
-                    runtime.config.hub_url,
-                    "/api/hub/v1/credits/wallet-funding/import",
-                    import_payload,
-                    timeout_s=options.timeout_s,
-                )
+            bridge["completion"] = completion
             # The Hub has confirmed the deposit's idempotent FDB credit.
             # A retry after a lost HTTP response replays the same ID and is
             # then safe to clear, rather than broadcasting another payment.
@@ -952,6 +955,118 @@ def _is_missing_bridge_completion_metadata_error(exc: BaseException) -> bool:
             or "metadata" in text
         )
     )
+
+def _complete_captain_bridge_deposit(
+    runtime: CaptainRuntime, deposit: dict[str, Any], *, timeout_s: float,
+    bridge_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "deposit_id": deposit["deposit_id"],
+        "wallet_address": runtime.wallet.address,
+        "tx_hash": deposit["transaction_hash"],
+        "contract_address": runtime.bridge_escrow_address,
+        "chain_id": runtime.chain_id,
+    }
+    try:
+        return _post_hub_json(
+            runtime.config.hub_url, "/api/hub/v1/credits/wallet-funding/complete",
+            payload, timeout_s=timeout_s,
+        )
+    except CaptainCliError as exc:
+        if not _is_missing_bridge_completion_metadata_error(exc):
+            raise
+        if bridge_metadata is not None:
+            bridge_metadata["completion_fallback"] = {
+                "ok": True,
+                "reason": "hub completion endpoint is missing bridge deployment metadata",
+                "failed_endpoint": "/api/hub/v1/credits/wallet-funding/complete",
+                "fallback_endpoint": "/api/hub/v1/credits/wallet-funding/import",
+                "error": str(exc),
+            }
+        # Preserve the existing legacy Hub fallback without relaxing the
+        # current-chain funding proof required by Stable Hub.
+        return _post_hub_json(
+            runtime.config.hub_url, "/api/hub/v1/credits/wallet-funding/import",
+            build_bridge_wallet_funding_import_payload(runtime, deposit),
+            timeout_s=timeout_s,
+        )
+
+
+def _is_unknown_bridge_deposit_error(exc: BaseException, deposit_id: str) -> bool:
+    """Only the exact Hub HTTP 400 for this ID can initiate drift recovery."""
+    message = str(exc)
+    marker = " with HTTP 400: "
+    if marker not in message or "/wallet-funding/complete" not in message.split(marker, 1)[0]:
+        return False
+    try:
+        response = json.loads(message.split(marker, 1)[1])
+    except json.JSONDecodeError:
+        return False
+    return (isinstance(response, dict) and response.get("ok") is False
+            and response.get("error") == f"Unknown bridge deposit: {deposit_id}")
+
+
+def _require_absent_pending_bridge_on_chain(
+    runtime: CaptainRuntime, deposit: dict[str, Any], *, timeout_s: float,
+) -> None:
+    """Fail closed unless the live chain disproves the cached funding claim.
+
+    An absent escrow mapping alone is not enough: an old transaction could
+    still be pending or its result unknown. Check code, receipt and mempool.
+    """
+    from main_computer.hub_credit_bridge_completion import _DEPOSIT_RECORD_SELECTOR, _split_words
+
+    rpc = JsonRpcClient(runtime.rpc_url, timeout_s=timeout_s)
+    tx_hash = deposit["transaction_hash"]
+    try:
+        if rpc.chain_id() != runtime.chain_id:
+            raise ValueError("current RPC chain id differs from selected network")
+        code = rpc.rpc("eth_getCode", [runtime.bridge_escrow_address, "latest"])
+        if not isinstance(code, str) or len(code) <= 2 or not code.startswith("0x"):
+            raise ValueError("current escrow contract is missing")
+        record_data = "0x" + _DEPOSIT_RECORD_SELECTOR + deposit["deposit_id"][2:]
+        words = _split_words(rpc.eth_call(to=runtime.bridge_escrow_address, data=record_data), min_words=5)
+        if any(int(word, 16) for word in words[:5]):
+            raise ValueError("escrow still has nonempty deposit state")
+        if rpc.transaction_receipt(tx_hash) is not None:
+            raise ValueError("funding transaction has a receipt on the current chain")
+        if rpc.rpc("eth_getTransactionByHash", [tx_hash]) is not None:
+            raise ValueError("funding transaction is known to the current chain or pending pool")
+    except Exception as exc:
+        raise CaptainCliError(
+            f"Hub rejected cached deposit {deposit['deposit_id']}, but current-chain absence "
+            f"could not be established ({exc}); refusing another payment."
+        ) from exc
+
+
+def _log_captain_accounting_drift(
+    pending_path: Path, *, runtime: CaptainRuntime, deposit: dict[str, Any],
+) -> dict[str, str]:
+    """Warn durably when a local history hint contradicts Hub + chain truth."""
+    event = {
+        "event": "LOCAL_ACCOUNTING_DRIFT",
+        "network": runtime.network,
+        "chain_id": str(runtime.chain_id),
+        "escrow": runtime.bridge_escrow_address,
+        "deposit_id": deposit["deposit_id"],
+        "transaction_hash": deposit["transaction_hash"],
+        "local": "pending",
+        "hub": "unknown",
+        "chain": "deposit_and_transaction_absent",
+        "action": "retire_stale_local_record_and_fund_fresh",
+    }
+    line = json.dumps(event, sort_keys=True)
+    logging.getLogger(__name__).warning("%s", line)
+    try:
+        log_path = pending_path.parent / "accounting-drift.jsonl"
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError as exc:
+        # Diagnostic logging cannot restore financial authority to a local
+        # record. Keep the warning visible even if the log volume is read-only.
+        logging.getLogger(__name__).warning("Accounting drift log append failed: %s", exc)
+    return event
+
 
 def _captain_pending_bridge_path(runtime: CaptainRuntime, *, smoke_id: str, cwd: Path) -> Path:
     identity = (

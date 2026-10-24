@@ -887,3 +887,23 @@ def test_unfiltered_runtime_scope_remains_canonical(flog):
         evidence_scope=scope,
         overwrite_canonical=False,
     ) == flog.DEFAULT_OUTPUT_DIR
+
+
+def test_binding_source_attestation_refuses_missing_and_mismatched_browser_source(flog, tmp_path):
+    scripts = tmp_path / 'main_computer/web/applications/scripts'
+    scripts.mkdir(parents=True)
+    (scripts / flog.BINDING_REGISTRY_SOURCE).write_text('const registry = 1;', encoding='utf8')
+    (scripts / flog.BINDING_ADAPTER_SOURCES['file-explorer']).write_text('const adapter = 2;', encoding='utf8')
+
+    class Page:
+        def __init__(self, matched): self.matched = matched
+        def evaluate(self, script, sources):
+            return {name: self.matched for name in sources}
+
+    assert flog.attest_browser_adapter_source(Page(True), 'file-explorer', tmp_path)['status'] == 'exact'
+    result = flog.attest_browser_adapter_source(Page(False), 'file-explorer', tmp_path)
+    assert result['status'] == 'blocked'
+    assert result['reason'] == 'served-binding-source-mismatch'
+    assert len(result['missingSources']) == 2
+    (scripts / flog.BINDING_REGISTRY_SOURCE).unlink()
+    assert flog.attest_browser_adapter_source(Page(True), 'file-explorer', tmp_path)['status'] == 'blocked'

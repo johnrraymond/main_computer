@@ -1,4 +1,4 @@
-"""V2 opt-in only: no changes to ordinary Mother routing or mutations."""
+"""Canonical Mother RPC browser policy, guarded updates, and route preservation."""
 from __future__ import annotations
 
 import ast
@@ -242,8 +242,9 @@ def test_generated_v2_helper_shell_is_syntactically_valid(target):
     assert shell.index("trap 'cp") < shell.index("mv '")
     assert shell.rindex("trap - EXIT") > shell.index("route_out=")
     assert shell.index("route_out=") < shell.index("cors_out=") < shell.index("trap - EXIT")
-    assert shell.count("cors_out=$(wget -S") == len(v2.ORIGINS)
-    assert shell.count("grep -iqF") == len(v2.ORIGINS)
+    origins = v2.permitted_origins(v2.canonical_test_extension_id(target["network"]))
+    assert shell.count("cors_out=$(wget -S") == len(origins)
+    assert shell.count("grep -iqF") == len(origins)
     outcome = subprocess.run([_require_working_bash(), "-n"], input=shell, text=True, capture_output=True)
     assert outcome.returncode == 0, outcome.stderr
 
@@ -323,10 +324,145 @@ def test_generated_post_probe_contains_all_chain_and_cors_assertions(target):
     shell = eval(compile(ast.Expression(statement.value), "<v2>", "eval"), context)
     probe = shell[shell.index("cors_out="):shell.index("trap - EXIT")]
     expected_chain = hex(target["expected_chain_id"])
-    assert probe.count("cors_out=$(wget -S -T 8 -O-") == len(v2.ORIGINS)
-    assert probe.count("grep -iqF") == len(v2.ORIGINS)
-    assert probe.count("grep -q") == len(v2.ORIGINS)
-    for origin in v2.ORIGINS:
+    origins = v2.permitted_origins(v2.canonical_test_extension_id(target["network"]))
+    assert probe.count("cors_out=$(wget -S -T 8 -O-") == len(origins)
+    assert probe.count("grep -iqF") == len(origins)
+    assert probe.count("grep -q") == len(origins)
+    for origin in origins:
         assert f"Origin: {origin}" in probe
         assert f"Access-Control-Allow-Origin: {origin}" in probe
-    assert probe.count(expected_chain) == len(v2.ORIGINS)
+    assert probe.count(expected_chain) == len(origins)
+
+# Exact Origin expansion for the disposable unpacked MetaMask test extension.
+# Never replace the canonical production origin or widen to a wildcard.
+TEST_ID = v2.TESTNET_METAMASK_ID
+
+
+def test_testnet_unpacked_extension_origin_is_single_exact_router(target):
+    dynamic = yaml.safe_load(v2.render_v2(target, test_extension_id=TEST_ID))['http']
+    extra = f'chrome-extension://{TEST_ID}'
+    assert len(dynamic['routers']) == 10
+    assert len(dynamic['middlewares']) == 4
+    for name, router in dynamic['routers'].items():
+        if name.endswith('-metamask-test'):
+            assert router['rule'] == f"Host(`{target['route_host']}`) && Header(`Origin`, `{extra}`)"
+            assert dynamic['middlewares'][router['middlewares'][0]]['headers']['accessControlAllowOriginList'] == [extra]
+    assert 'chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn' in v2.render_v2(target, test_extension_id=TEST_ID)
+    assert '*' not in v2.permitted_origins(TEST_ID)
+
+
+def test_origin_addition_writer_accepts_only_known_previous_route_bytes(target):
+    if target["network"] != "testnet":
+        pytest.skip("disposable extension origin is testnet-only")
+    helper = v2.build_v2_writer_script(target, test_extension_id=TEST_ID)
+    current = base64.b64encode(v2.render_v2(target).encode()).decode()
+    new = base64.b64encode(v2.render_v2(target, test_extension_id=TEST_ID).encode()).decode()
+    assert current in helper and new in helper
+    assert helper.count("cmp -s") >= 4
+    assert f'Origin: chrome-extension://{TEST_ID}' in helper
+    assert 'exit 65' in helper
+    revert = v2.build_v2_writer_script(target, test_extension_id=TEST_ID, rollback=True)
+    assert current in revert and new in revert and 'exit 65' in revert
+
+
+@pytest.mark.parametrize('invalid', ['', 'nkbihfbeogaeaoehlefnkodbefgpgknn/', 'a'*31, 'a'*33, 'A'*32, 'https://a'*8, '../other', 'nkbihfbeogaeaoehlefnkodbefgpgknn'])
+def test_test_extension_id_must_be_exact_chrome_id(invalid):
+    with pytest.raises(v2.RpcBrowserCompatV2Error):
+        v2.permitted_origins(invalid)
+
+
+def test_test_extension_origin_is_refused_for_mainnet_before_private_state():
+    with pytest.raises(SystemExit) as result:
+        v2.main(['--network', 'mainnet', '--node', 'mainneta-super1',
+                 '--host', 'coolify-a', '--test-extension-id', TEST_ID])
+    assert result.value.code == 2
+
+
+def _generated_route_yaml(target):
+    """Read the exact policy embedded in the ordinary Mother writer."""
+    tree = ast.parse(writer._route_writer_script(target))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(k, ast.Name) and k.id == "DYNAMIC_CONFIG_B64" for k in node.targets
+        ):
+            return base64.b64decode(ast.literal_eval(node.value)).decode("utf-8")
+    raise AssertionError("normal Mother writer has no embedded route config")
+
+
+def test_canonical_normal_writer_reuses_exact_authorized_policy(target):
+    dynamic_text = _generated_route_yaml(target)
+    canonical = v2.render_canonical_v2(target)
+    assert dynamic_text == canonical
+    origins = v2.permitted_origins(v2.canonical_test_extension_id(target["network"]))
+    http = yaml.safe_load(dynamic_text)["http"]
+    assert len(http["routers"]) == 2 + 2 * len(origins)
+    assert len(http["middlewares"]) == len(origins)
+    for origin in origins:
+        matched = [router for router in http["routers"].values()
+                   if router["rule"].endswith(f"Header(`Origin`, `{origin}`)")]
+        assert len(matched) == 2
+        for router in matched:
+            headers = http["middlewares"][router["middlewares"][0]]["headers"]
+            assert headers["customResponseHeaders"]["Access-Control-Allow-Origin"] == origin
+            assert headers["accessControlAllowOriginList"] == [origin]
+    assert all('*' not in str(origin) for origin in origins)
+    assert (f"chrome-extension://{TEST_ID}" in dynamic_text) == (target["network"] == "testnet")
+
+
+def test_deployed_testnet_policy_fingerprint_is_reproduced():
+    # Fingerprint reported by Mother's successful 4-origin public RPC mutation.
+    target = {"network": "testnet", "controller_id": "coolify-b",
+              "route_host": "testnet-rpc.greatlibrary.io",
+              "target_url": "http://testnetb-super1:8545"}
+    digest = hashlib.sha256(v2.render_canonical_v2(target).encode()).hexdigest()
+    assert digest == "1101ada180dd3f647ba8c928511fd4c43ef37ba7236a48d4507c7339758d2120"
+
+
+def test_testnet_route_rewrite_keeps_existing_four_origins(target):
+    if target["network"] != "testnet":
+        pytest.skip("testnet lifecycle invariant")
+    deployed = v2.render_v2(target, test_extension_id=TEST_ID)
+    assert _generated_route_yaml(target) == deployed
+    # A second ordinary rewrite must still generate exactly the installed route.
+    assert _generated_route_yaml(target) == deployed
+    # The guarded maintenance writer must accept both canonical 4-origin and
+    # older 3-origin policies without accepting arbitrary route contents.
+    helper = v2.build_v2_writer_script(target)
+    canonical_b64 = base64.b64encode(deployed.encode()).decode("ascii")
+    previous_b64 = base64.b64encode(v2.render_v2(target).encode()).decode("ascii")
+    assert f"DYNAMIC_CONFIG_B64 = {canonical_b64!r}" in helper
+    assert previous_b64 in helper
+    assert "exit 65" in helper
+
+
+def test_guarded_writer_and_normal_writer_have_identical_target_policy(target):
+    helper = v2.build_v2_writer_script(target)
+    encoded = base64.b64encode(_generated_route_yaml(target).encode()).decode("ascii")
+    assert f"DYNAMIC_CONFIG_B64 = {encoded!r}" in helper
+    assert "exit 65" in helper and "cmp -s" in helper
+
+
+@pytest.mark.parametrize("network", ["", "TESTNET", "bad-network"])
+def test_canonical_policy_rejects_unknown_network(network):
+    with pytest.raises(v2.RpcBrowserCompatV2Error, match="unsupported RPC network"):
+        v2.canonical_test_extension_id(network)
+
+
+def test_explicit_different_test_extension_id_refused_before_mutation(target):
+    if target["network"] != "testnet":
+        pytest.skip("testnet override invariant")
+    other_id = "abcdefghijklmnopabcdefghijklmnop"
+    with pytest.raises(v2.RpcBrowserCompatV2Error, match="canonical network policy"):
+        v2.build_v2_writer_script(target, test_extension_id=other_id)
+    with pytest.raises(SystemExit) as rejected:
+        v2.main(["--network", "testnet", "--node", "testnetb-super1",
+                 "--host", "coolify-b", "--test-extension-id", other_id])
+    assert rejected.value.code == 2
+
+
+def test_normal_writer_mainnet_cannot_receive_testnet_origin(target):
+    if target["network"] != "mainnet":
+        pytest.skip("mainnet isolation invariant")
+    assert f"chrome-extension://{TEST_ID}" not in _generated_route_yaml(target)
+    with pytest.raises(v2.RpcBrowserCompatV2Error, match="canonical network policy"):
+        v2.build_v2_writer_script(target, test_extension_id=TEST_ID)

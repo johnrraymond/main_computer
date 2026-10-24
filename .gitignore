@@ -270,3 +270,14 @@ deploy/scheduler-lab/output
 # Local private project state files.
 runtime/state/*.private.yaml
 
+
+# Git bloat defense. Keep these AFTER runtime/websites source exceptions above,
+# so broad !runtime/websites/<site>/** patterns cannot re-include dependencies.
+**/node_modules/
+**/.venv/
+**/__pycache__/
+tools/worker_browser_acceptance/.cache-synpress/
+tools/worker_browser_acceptance/.cache/
+tools/worker_browser_acceptance/test-results/
+tools/worker_browser_acceptance/playwright-report/
+tools/worker_browser_acceptance/blob-report/

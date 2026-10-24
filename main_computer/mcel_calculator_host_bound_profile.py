@@ -149,7 +149,7 @@ BROWSER_OBSERVATION_SCRIPT = r"""async ({operationPrefix}) => {
   function domSnapshot() {
     const text = (selector) => document.querySelector(selector)?.textContent?.trim() || "";
     const value = (selector) => document.querySelector(selector)?.value || "";
-    const mode = root?.classList?.contains("graphing-active") ? "graphing" : "basic";
+    const mode = document.querySelector(".calculator-shell")?.classList?.contains("graphing-active") ? "graphing" : "basic";
     return {
       mode,
       expression: value("#calculator-display"),
@@ -224,7 +224,31 @@ BROWSER_OBSERVATION_SCRIPT = r"""async ({operationPrefix}) => {
     const binding = generatedBindings[intentName] || {};
     const networkRequestCount = generatedRequests.length;
     requestCounts[intentName] = networkRequestCount;
+    // Independent browser/receipt effects, not just a callable generated method.
+    // Capability responses are mocked only at the network boundary; the host
+    // runtime must still update real DOM state and return matching receipts.
+    const result = generatedResult && typeof generatedResult === "object" ? generatedResult : {};
+    const resultOk = result.ok === true;
+    const semanticEffects = {
+      switchMode: generatedSnapshot.mode === "graphing" && result.mode === "graphing",
+      enterToken: generatedSnapshot.expression === "7" && result.expression === "7",
+      clearExpression: generatedSnapshot.expression === "0" && result.expression === "0",
+      evaluateExpression: generatedSnapshot.result === "14" && result.value === 14,
+      drawGraph: generatedSnapshot.graphExpression === "x^2" && Number(result.finiteCount) > 0 &&
+        generatedSnapshot.graphStatus.includes("graphed x^2"),
+      resetGraph: result.range?.xMin === -10 && result.range?.xMax === 10 &&
+        generatedSnapshot.graphStatus.includes("graphed"),
+      askModelForExpression: !!result.expression && !!generatedSnapshot.expression &&
+        String(result.evaluation?.result || "") === generatedSnapshot.result,
+      askModelForGraphExpression: result.expression === "x^2" && generatedSnapshot.graphExpression === "x^2" &&
+        Number(result.graph?.finiteCount) > 0,
+      askModelForMathicsExpression: result.expression === "Integrate[x, x]" &&
+        generatedSnapshot.mathicsExpression === result.expression,
+      evaluateMathics: result.output === "x^2 / 2" && generatedSnapshot.mathicsOutput === result.output,
+      askResultQuestion: !!result.answer && generatedSnapshot.qaAnswer === result.answer
+    };
     const parityChecks = {
+      semanticEffectObserved: resultOk && semanticEffects[intentName] === true,
       noGeneratedError: generatedError === null,
       runtimeMethod: typeof runtime?.[binding.runtimeMethod] === "function",
       declaredBinding: binding.runtimeMethod === intentName,
@@ -304,6 +328,11 @@ def build_calculator_projection_profile() -> HostBoundProjectionProfile:
     )
 
 
+def _canonical_calculator_host_markup(repo_root: Path) -> str:
+    from main_computer.mcel_calculator_host_projection import project
+    return project(repo_root)
+
+
 def build_calculator_browser_observation_profile() -> HostBoundBrowserObservationProfile:
     return HostBoundBrowserObservationProfile(
         app_id=APP_ID,
@@ -314,6 +343,7 @@ def build_calculator_browser_observation_profile() -> HostBoundBrowserObservatio
         root_selector=ROOT_SELECTOR,
         runtime_facade=RUNTIME_FACADE,
         host_html_path=HOST_HTML_PATH,
+        host_markup_projector=_canonical_calculator_host_markup,
         css_path=CSS_PATH,
         script_paths=SCRIPT_PATHS,
         module_exports=MODULE_EXPORTS,

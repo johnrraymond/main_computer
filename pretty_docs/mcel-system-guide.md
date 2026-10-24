@@ -1,5 +1,14 @@
 # MCEL System Guide
 
+## Mission and design priorities
+
+**MCEL exists to help people and AIs author good-looking, correctly functioning web applications with minimal effort and maximum valid flexibility, without requiring expertise in MCEL internals.** Its parts should know their own responsibilities and composition rules so authors cannot accidentally assemble structurally unworkable patterns where MCEL can establish the conflict.
+
+The four guiding principles are **minimal authoring effort; attractive defaults; maximum flexibility within sound practices; and correctness through composition**. These are the criteria for designing new features and judging generalization—not four additional currently verified engine guarantees. Read `pretty_docs/mcel-authoring-principles.md` first for author/library responsibility, compositional examples, priority rules, and how to evaluate progress.
+
+The engine, compiler, runtime, adapter, evidence, and repair subsystems described below exist to serve that authoring experience. Reverse engineering and migration are secondary tools, not the primary product objective.
+
+
 MCEL is the Main Computer semantic interface layer. It lets a page describe product intent in clean source HTML and then lets the runtime generate, prove, repair, and serialize the working interface without pushing runtime machinery back into the source.
 
 Use this guide when you need to understand whether MCEL is the right layer for a feature, how to verify that it is working, or how to extend it without weakening the proof model.

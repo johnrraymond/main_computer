@@ -1,5 +1,12 @@
 # Canonical MCEL app authoring
 
+## Why this example exists
+
+Calculator is a **working host-bound implementation reference**, not the complexity target for everyday MCEL users. The intended developer experience is a much smaller semantic description yielding an attractive, functioning, flexible composition with few framework-specific decisions. Measure every necessary declaration in the example against the four principles in `pretty_docs/mcel-authoring-principles.md`.
+
+New app features should not require copying Calculator's bespoke presentation glue simply because its proof is green. Prefer public reusable rules; when the library cannot infer a relationship safely, require only its missing semantic decision. Keep explicit layout/surface declarations and effect authority where required by today's compiler, and mark recurring boilerplate as a framework deficiency—not as the desired authoring level.
+
+
 Calculator is the canonical real MCEL app in this repository.
 
 Use `mcel_apps/calculator/application.js` to understand the stable host-bound

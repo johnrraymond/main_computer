@@ -842,6 +842,8 @@ def _semantic_diagnostics(candidate: Mapping[str, Any], app_id: str) -> list[Com
     diagnostics.extend(_reference_diagnostics(candidate, app_id, nodes))
     diagnostics.extend(_expression_diagnostics(candidate, app_id))
     diagnostics.extend(_write_set_diagnostics(candidate, app_id, nodes))
+    diagnostics.extend(_view_transition_diagnostics(candidate, app_id, nodes))
+    diagnostics.extend(_tab_group_diagnostics(candidate, app_id, nodes))
     return diagnostics
 
 
@@ -1031,6 +1033,133 @@ def _write_set_diagnostics(
                 ))
     return diagnostics
 
+
+
+def _view_transition_diagnostics(
+    candidate: Mapping[str, Any], app_id: str, nodes: Mapping[str, Mapping[str, Any]],
+) -> list[CompilerDiagnostic]:
+    """Constrained renderer-local assignment, never canonical/effect authority."""
+    result: list[CompilerDiagnostic] = []
+    for intent in candidate.get("intents", []):
+        if not isinstance(intent, Mapping) or "viewTransition" not in intent:
+            continue
+        name = str(intent.get("id") or "intent")
+        transition = intent.get("viewTransition")
+        declared = [item.get("ref") for item in intent.get("viewWrites", []) if isinstance(item, Mapping)]
+        inputs = [item for item in intent.get("input", []) if isinstance(item, Mapping)]
+        target = transition.get("target", {}).get("ref") if isinstance(transition, Mapping) and isinstance(transition.get("target"), Mapping) else None
+        value = transition.get("value") if isinstance(transition, Mapping) else None
+        input_id = value.get("input", {}).get("ref") if isinstance(value, Mapping) and isinstance(value.get("input"), Mapping) else None
+        state = nodes.get(target) if isinstance(target, str) else None
+        input_node = next((item for item in inputs if item.get("id") == input_id), None)
+        state_schema = state.get("schema", {}) if isinstance(state, Mapping) else {}
+        input_schema = input_node.get("schema", {}) if isinstance(input_node, Mapping) else {}
+        if not isinstance(state_schema, Mapping): state_schema = {}
+        if not isinstance(input_schema, Mapping): input_schema = {}
+        enum = input_schema.get("enum")
+        valid_enum = (isinstance(enum, list) and bool(enum) and
+                      all(isinstance(item, str) and item for item in enum) and len(set(enum)) == len(enum))
+        valid = all((
+            isinstance(transition, Mapping) and transition.get("kind") == "transition.assign",
+            isinstance(value, Mapping) and value.get("kind") == "input.read",
+            transition.get("invalidInput") == "refuse" if isinstance(transition, Mapping) else False,
+            len(declared) == 1 and target == declared[0],
+            isinstance(state, Mapping) and state.get("kind") == "state" and state.get("authority") == "renderer-local",
+            isinstance(input_node, Mapping) and input_node.get("kind") == "intent-input",
+            valid_enum, input_schema.get("kind") == "string", state_schema.get("kind") == "string",
+            state_schema.get("enum") == enum,
+            isinstance(state, Mapping) and state.get("initial") in enum if valid_enum else False,
+            intent.get("operationKind") == "interaction", intent.get("risk") == "local-state",
+            intent.get("lane") == "local-view-state",
+            not intent.get("writes"), not intent.get("effectRefs"),
+        ))
+        if not valid:
+            result.append(_diagnostic(
+                code="MCEL_IR_VIEW_TRANSITION_INVALID", rule_version="mcel.view-state-transition.v1",
+                stage="compile", repair_stage="intent", app_id=app_id, semantic_path=name,
+                summary="A renderer-local transition requires a typed, bounded input and matching state authority.",
+                problem="The view transition must assign exactly one declared renderer-local state from an enumerated string input, refuse unknown values, and own no canonical writes or effects.",
+                source=_node_source(intent), observed={"target": target, "input": input_id, "declared": declared},
+                expected={"stateAuthority": "renderer-local", "operationKind": "interaction", "invalidInput": "refuse"},
+            ))
+    return result
+
+
+def _tab_group_diagnostics(
+    candidate: Mapping[str, Any], app_id: str, nodes: Mapping[str, Mapping[str, Any]],
+) -> list[CompilerDiagnostic]:
+    """Generic one-to-one tab/panel composition law over semantic declarations."""
+    result: list[CompilerDiagnostic] = []
+    intents = [item for item in candidate.get("intents", []) if isinstance(item, Mapping)]
+    for surface in candidate.get("surfaces", []):
+        if not isinstance(surface, Mapping):
+            continue
+        semantic = surface.get("semanticSurface")
+        if not isinstance(semantic, Mapping) or "tabGroup" not in semantic:
+            continue
+        group = semantic.get("tabGroup")
+        tabs = group.get("tabs") if isinstance(group, Mapping) else None
+        regions = semantic.get("regions")
+        controls = semantic.get("controls")
+        problems: list[str] = []
+        if not isinstance(group, Mapping) or not isinstance(tabs, list) or not tabs:
+            problems.append("nonempty-tab-group-required")
+        else:
+            entries = [x for x in tabs if isinstance(x, Mapping)]
+            if len(entries) != len(tabs): problems.append("tab-record-invalid")
+            for key in ("id", "tab", "panel"):
+                values = [x.get(key) for x in entries]
+                if any(not isinstance(v, str) or not v for v in values): problems.append(f"invalid-{key}")
+                if len(set(str(v) for v in values)) != len(values): problems.append(f"duplicate-{key}")
+            ids = {x.get("id") for x in entries}
+            if group.get("defaultTabId") not in ids: problems.append("default-tab-not-member")
+            if group.get("role") != "single-selection-view-state": problems.append("selection-role-invalid")
+            if group.get("inactivePanelPolicy") != "hidden-but-model-preserved": problems.append("inactive-panel-policy-invalid")
+            state_name = group.get("state")
+            state = next((item for item in candidate.get("states", []) if isinstance(item, Mapping)
+                          and item.get("sourceName") == state_name), None)
+            if state is None or state.get("authority") != "renderer-local" or state.get("initial") != group.get("defaultTabId"):
+                problems.append("selected-state-invalid")
+            if isinstance(state, Mapping) and state.get("schema", {}).get("enum") != [x.get("id") for x in entries]:
+                problems.append("selected-state-options-mismatch")
+            controls = controls if isinstance(controls, list) else []
+            regions = regions if isinstance(regions, list) else []
+            for tab in entries:
+                control = [c for c in controls if isinstance(c, Mapping) and c.get("selector") == tab.get("tab")]
+                region = [r for r in regions if isinstance(r, Mapping) and r.get("selector") == tab.get("panel")]
+                if len(control) != 1 or control[0].get("role") != "select-tab" or control[0].get("controls") != tab.get("panel"):
+                    problems.append(f"control-panel-link-invalid:{tab.get('id')}")
+                if len(region) != 1 or region[0].get("controlledBy") != tab.get("tab"):
+                    problems.append(f"region-owner-invalid:{tab.get('id')}")
+            selected_controls = [c for c in controls if isinstance(c, Mapping) and c.get("role") == "select-tab"]
+            if len(selected_controls) != len(entries) or len({c.get("selector") for c in selected_controls}) != len(entries):
+                problems.append("controls-not-bijective")
+            controlling = {c.get("intent") for c in selected_controls}
+            if len(controlling) != 1:
+                problems.append("multiple-selection-intents")
+            else:
+                selection_intent = next((intent for intent in intents if intent.get("sourceName") in controlling), None)
+                if (selection_intent is None or not isinstance(state, Mapping) or
+                        selection_intent.get("viewTransition", {}).get("target", {}).get("ref") != state.get("id") or
+                        len(selection_intent.get("input", [])) != 1 or
+                        selection_intent["input"][0].get("schema", {}).get("enum") != [x.get("id") for x in entries]):
+                    problems.append("selection-transition-not-bound")
+            a11y = group.get("a11y")
+            if (not isinstance(a11y, Mapping) or a11y.get("tabList") != "tablist" or
+                    a11y.get("tab") != "tab" or a11y.get("panel") != "tabpanel" or
+                    a11y.get("keyboard") != "standard-tabs"):
+                problems.append("tab-accessibility-contract-invalid")
+        if problems:
+            result.append(_diagnostic(
+                code="MCEL_IR_TAB_GROUP_COMPOSITION_INVALID", rule_version="mcel.tab-panel-composition.v1",
+                stage="compile", repair_stage="layout", app_id=app_id,
+                semantic_path=str(surface.get("id") or "surface") + ".semanticSurface.tabGroup",
+                summary="A tab group requires one-to-one tab/panel ownership and a typed selection transition.",
+                problem="; ".join(sorted(set(problems))), source=_node_source(surface),
+                observed={"problems": sorted(set(problems))},
+                expected={"tabs": "unique", "panels": "uniquely-owned", "selection": "typed-renderer-local"},
+            ))
+    return result
 
 def _collect_write_targets(expression: Any) -> set[str]:
     targets: set[str] = set()

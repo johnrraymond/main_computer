@@ -1,98 +1,66 @@
-# Mother RPC browser compatibility — opt-in V2.1 experiment
+# Mother RPC browser compatibility — canonical route policy
 
-The V2.1 correction preserves the original `rpc-browser-compat-v2` command and upgrades only the separate V2 implementation, tests, and this document. Apply the V2.1 changeset **on top of the existing V2 patch**. It does not modify the harness dispatch or any normal Mother operations.
+Mother's normal RPC route writer and the explicit `rpc-browser-compat-v2` maintenance command now use **one canonical origin policy**. No second registry, file, background reconciler, Cloudflare mutation, or deployment mechanism is involved.
 
-This update makes **zero modifications to the existing shared route generator, the harness dispatch, or normal Mother deployment logic**. The original V2 patch already installed a three-line command dispatch in `mother_mutate_harness.py`; that dispatch remains unchanged. V2 functionality resides entirely in `tools/mother_rpc_browser_compat_v2.py`.
+## Canonical origins
 
-## V2.1 POST response correction
+| Network | Authorized browser origins |
+| --- | --- |
+| Mainnet | `http://127.0.0.1:8765`, `http://localhost:8765`, production MetaMask `chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn` |
+| Testnet | Those same three origins, plus the disposable MetaMask `chrome-extension://dnamoknnfmliijgdpmkcjmgihhhidcgj` |
 
-The original V2 passed OPTIONS but a normal POST omitted the `Access-Control-Allow-Origin` response header: Traefik checked a request after another middleware removed its `Origin`. V2.1 preserves Mother's two original Host routers and adds exact-Origin routers for the two local Worker origins and the MetaMask extension origin. Each exact-Origin router uses a **single** headers middleware that handles OPTIONS, strips `Origin` before forwarding POST to Besu, and sets `Access-Control-Allow-Origin` to the already matched origin explicitly on the POST response. Unknown origins get no CORS permission; no wildcard is used. This requires Traefik v3 `Header` routing support; if the route fails to load the writer must fail closed.
+`TESTNET_METAMASK_ID` is a source-controlled authorization for this **specific** unpacked test extension. An unexpected ID is not automatically trusted. If the harness' installed extension ID changes, investigate why before updating the canonical constant and redeploying via the official Mother mutation harness. Mainnet never receives the fourth origin.
 
-The V2 writer accepts only byte-exact original Mother, deployed V2, or V2.1 files. It performs three live Origin-bearing POST checks against the locally routed Traefik hostname and verifies both the CORS response header and blockchain chain ID **before** removing its backup/rollback trap. If any check fails, the writer exits unsuccessfully and its trap restores the byte-exact route that existed immediately before the attempt. This deliberately does not assert full external Cloudflare browser behavior until separately tested.
+The standard `_route_writer_script()` uses `render_canonical_v2()`; the explicit compatibility command resolves the same policy for previews and guarded writes. An ordinary testnet RPC route rewrite therefore emits the four-origin route, rather than silently removing the previously approved extension. Existing per-Origin Traefik routing, the public backend, and origin-free fallback routers remain unchanged. Unmatched origins are never granted wildcard CORS.
 
+The testnet route produced by the canonical renderer for `coolify-b` / `testnetb-super1` matches the previously verified deployed route fingerprint:
 
-## Read-only preview (no infrastructure changes)
+`1101ada180dd3f647ba8c928511fd4c43ef37ba7236a48d4507c7339758d2120`
 
-From `C:\Users\subsi\main_computer`:
+That fingerprint covers the *rendered route content*, not the state of a remote host. Source/tests do not mutate infrastructure.
 
-```powershell
-python .\mother_mutate_harness.py rpc-browser-compat-v2 --network testnet --node testnetb-super1 --host coolify-b
+## Preview and guarded maintenance
+
+Normal Mother operations already use the canonical renderer. The dedicated maintenance command remains explicit and retains its byte-exact input guard, rollback trap, local `eth_chainId` check, and per-origin POST/CORS assertions. The ordinary writer's existing health check is **chain-ID verification only**; this change does not add a new live CORS check to that path.
+
+Read-only preview:
+
+```text
+python mother_mutate_harness.py rpc-browser-compat-v2 --network testnet --node testnetb-super1 --host coolify-b
 ```
 
-The command validates authoritative private state and prints the route, selected backend, permitted origins, and V2 policy fingerprint. Preview does **not** probe the live Traefik file and cannot prove the route will qualify for an upgrade. No implicit mainnet fallback.
+Optional `--test-extension-id dnamoknnfmliijgdpmkcjmgihhhidcgj` is accepted on testnet, but must equal the canonical ID; other test IDs are refused before private-state access or mutation. No test-extension ID is accepted on mainnet. A preview reports planned route bytes and origins; it is not proof of the live proxy state.
 
-## Explicit opt-in testnet mutation
+Explicit maintenance write, **only** when intended and authorized:
 
-After inspecting preview and confirming the public RPC route is currently served by the named node/host:
-
-```powershell
-python .\mother_mutate_harness.py rpc-browser-compat-v2 --network testnet --node testnetb-super1 --host coolify-b --execute-mutations --yes-i-know-this-mutates-target-host
+```text
+python mother_mutate_harness.py rpc-browser-compat-v2 --network testnet --node testnetb-super1 --host coolify-b --execute-mutations --yes-i-know-this-mutates-target-host
 ```
 
-This calls Mother's existing authorized, ephemeral Coolify route writer. The V2 helper will **refuse** to change a missing, custom, unexpectedly formatted, or differently routed Traefik file, while accepting the byte-exact previous V2 deployment. A mainnet legacy route file must be absent, rather than being deleted. The helper saves a copy of the original route and restores it on local verification failure. The existing writer still checks RPC backend and routed chain IDs and performs ephemeral helper cleanup.
+Explicit emergency rollback to the byte-exact original legacy route:
 
-## Explicit rollback if V2 fails public browser verification
-
-```powershell
-python .\mother_mutate_harness.py rpc-browser-compat-v2 --network testnet --node testnetb-super1 --host coolify-b --rollback --execute-mutations --yes-i-know-this-mutates-target-host
+```text
+python mother_mutate_harness.py rpc-browser-compat-v2 --network testnet --node testnetb-super1 --host coolify-b --rollback --execute-mutations --yes-i-know-this-mutates-target-host
 ```
 
-Rollback uses the **same** exact-content guard and the existing authorized Coolify writer; it restores Mother's byte-exact legacy route, and refuses any unknown/retargeted route. Rollback cannot undo independently changed Cloudflare policies (V2 never modifies those).
+Rollback intentionally removes browser compatibility; the next ordinary Mother rewrite returns to canonical policy. It is not a durable policy change. Neither normal rendering nor the explicit command uses SSH, direct Coolify edits, or manual proxy-file mutation.
 
-An explicit successful mutation changes the selected *live public RPC route*; it is not risk-free just because installation is additive. A subsequent ordinary Mother route rewrite could restore the legacy route because the production generator remains deliberately unchanged. Do not integrate V2 automatically until it is accepted.
+## External verification
 
-## Verify read-only after opt-in mutation
+The dedicated mutation's local verification does not prove external Cloudflare behavior. Check public-origin requests independently, with both OPTIONS and POST. For example:
 
-```powershell
-curl.exe -i -X OPTIONS "https://testnet-rpc.greatlibrary.io/" -A "Mozilla/5.0" -H "Origin: chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn" -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: content-type"
+```text
+python tools/worker_browser_acceptance/rpc_origin_preflight.py --extension-id dnamoknnfmliijgdpmkcjmgihhhidcgj
 ```
 
-Expect a 200/204 with `Access-Control-Allow-Origin` and `POST, OPTIONS`. Then test the actual Origin-bearing POST (not only the OPTIONS preflight):
+The browser-style extension-origin POST should return HTTP 200, an exact CORS origin, and a valid testnet chain proof. Python's default HTTP transport can independently receive Cloudflare 1010; that does not establish a failing Traefik route. Full acceptance still requires the real disposable MetaMask/Worker connection.
 
-```powershell
-curl.exe -i -X POST "https://testnet-rpc.greatlibrary.io/" -H "Origin: http://127.0.0.1:8765" -H "Content-Type: application/json" --data-raw '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+## Regression tests
+
+```text
+python -m pytest -q tests/test_mother_rpc_browser_compat_v2.py tests/test_mother_rpc_route_ensure.py tests/test_mother_testnet_rpc_route_completion.py tests/test_mother_unified_rpc_writer_networks.py tests/test_mother_rpc_canonical_v2_yagni.py
 ```
 
-The POST must include `Access-Control-Allow-Origin: http://127.0.0.1:8765` and a JSON-RPC `result`. Finally test from the Worker page using browser `fetch()` and test `eth_blockNumber` in MetaMask. A Cloudflare Browser Integrity Check rule may still block MetaMask; V2 does not attempt to manage Cloudflare. There is no guarantee that a verified local Traefik route implies public browser connectivity.
+The tests verify the canonical four-origin testnet/three-origin mainnet split, the exact deployed-policy fingerprint, repeatable ordinary route renders, compatibility between the normal writer and guarded maintenance writer, rejection of conflicting IDs, and preservation of exact per-origin CORS headers. No live mutation occurs during tests.
 
-The Worker page and its wallet validation are unchanged. There is no SSH, Cloudflare API integration, contract mutation, or Besu restart.
-
-## Local tests
-
-```powershell
-python -m pytest -q tests/test_mother_rpc_browser_compat_v2.py tests/test_mother_rpc_route_ensure.py tests/test_mother_testnet_rpc_route_completion.py tests/test_mother_unified_rpc_writer_networks.py
-```
-
-### Windows / WSL test-runner behavior
-
-The generated ephemeral Coolify writer runs under a Linux shell. The local V2
-regression suite also includes Bash syntax and simulated POST-verification tests.
-On Windows, `bash.exe` may point to WSL even when `/bin/bash` does not exist in
-the configured distribution. Previously this caused four apparent test failures,
-and misleading passes in four expected-rejection test cases.
-
-The test suite now validates that Bash can **actually execute** a sentinel
-command before attempting shell-only tests. It prefers Git for Windows Bash
-when installed. When no operational Bash is found, the eight shell-execution
-cases are **reported as skipped, never passed**, while portable route-policy,
-CORS-response, per-origin and chain-ID assertions continue to run.
-
-On a Linux host with Bash, all eight shell-execution cases run, including
-both successful and deliberately failing simulated POST checks. A local skip
-is not proof that the shell is valid; the Coolify writer must still pass its
-live route/chain/CORS checks during an explicitly authorized deployment.
-
-This adjustment changes only tests and documentation. **No V2 routing,
-mutation, default Mother operation, or installed proxy configuration changes.**
-
-## Scope
-
-Only these files are in the patch:
-
-- `tools/mother_rpc_browser_compat_v2.py` (updated V2-only implementation)
-- `tests/test_mother_rpc_browser_compat_v2.py` (V2 POST and upgrade-guard regression tests)
-- `pretty_docs/MOTHER_RPC_BROWSER_COMPAT_V2.md` (this file)
-
-The previously installed three-line dispatch in `mother_mutate_harness.py` stays unchanged.
-
-Do not apply the earlier `main_computer_mother_rpc_browser_compat_20261021.diff` alongside this V2-only patch. That earlier changeset modifies the legacy generator and is deliberately superseded here.
+The generated helper shell checks require a working Bash interpreter. On Windows, tests that cannot execute Bash are explicitly skipped; a WSL launcher without an installed distribution is not treated as successful execution.

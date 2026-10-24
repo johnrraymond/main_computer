@@ -1,0 +1,16 @@
+{
+  "name": "main-computer-worker-wallet-acceptance",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Opt-in real Chromium/MetaMask Worker acceptance",
+  "scripts": {
+    "wallet:cache": "node native_acceptance.mjs",
+    "test": "node native_acceptance.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "ethers": "^5.8.0",
+    "@synthetixio/synpress": "^4.0.0",
+    "typescript": "^5.8.0"
+  }
+}

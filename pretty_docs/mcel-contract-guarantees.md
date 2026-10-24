@@ -1,5 +1,12 @@
 # MCEL Contract Guarantees
 
+## Guiding goals versus executable guarantees
+
+MCEL's principal development objective is **easy creation of attractive, functioning, flexible applications whose components compose correctly**. Its four design priorities—minimal authoring effort, attractive defaults, maximum valid flexibility, and correctness through composition—are established in `pretty_docs/mcel-authoring-principles.md`.
+
+These are **requirements for future design and evidence**, not additional executable guarantees in this file. The six contract guarantees below are narrower and should stay narrow. In particular, passing serialization or repair tests does not demonstrate good visual design, novice usability, or that every combination of widgets is legal.
+
+
 MCEL should not be trusted because a module says it owns a "law". In MCEL, a law is only an implementation module. A useful guarantee exists only when it has an explicit contract entry, a bounded scope, stated preconditions, stated non-guarantees, a fail-closed behavior, and executable evidence.
 
 The contract manifest lives in:

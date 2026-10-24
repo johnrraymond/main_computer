@@ -1522,6 +1522,34 @@
       );
     }
 
+    // MetaMask can report a transient HTTP 403 (-32080) immediately after a newly
+    // approved network is added and selected. This is NOT a general 403 bypass:
+    // callers retry only after an observed network update, for a bounded interval,
+    // and still require a real block-number proof before connecting.
+    function workerWalletIsFreshNetworkRpcRejection(error) {
+      const code = workerErrorCode(error);
+      const message = workerWalletErrorMessage(error).toLowerCase();
+      const hasHttp403 = /["']?httpstatus["']?\s*:\s*403\b/i.test(message)
+        || /\bhttp\s*(?:status\s*)?403\b/i.test(message)
+        || (message.includes("rpc endpoint returned http client error") && message.includes("403"));
+      if (code === "4001" || code === "4100" || code === "4902") return false;
+      if (hasHttp403) return true;
+      const visited = new Set();
+      const pending = [error];
+      while (pending.length) {
+        const current = pending.pop();
+        if (!current || typeof current !== "object" || visited.has(current)) continue;
+        visited.add(current);
+        if (Number(current.httpStatus) === 403 && (code === "-32080" || message.includes("rpc"))) {
+          return true;
+        }
+        for (const key of ["data", "error", "info", "cause"]) {
+          if (current[key] && typeof current[key] === "object") pending.push(current[key]);
+        }
+      }
+      return false;
+    }
+
     function workerWalletRpcBackoffMessage(reason = "") {
       const detail = String(reason || "").trim();
       const chainName = workerSelectedWalletChainName();
@@ -1644,9 +1672,29 @@
 
       try {
         const blockNumber = await workerBrowserProviderSend(browserProvider, "eth_blockNumber", [], "wallet RPC block proof");
+        if (typeof blockNumber !== "string" || !/^0x[0-9a-f]+$/i.test(blockNumber)) {
+          return {
+            ok: false,
+            chainId,
+            reason: "MetaMask returned an invalid block number for the selected Worker network."
+          };
+        }
+        // A chainChanged event can race the first post-switch block read.
+        // Never count a block from another chain as proof of the selected one.
+        const finalChainId = workerNormalizeChainIdHex(
+          await workerBrowserProviderSend(browserProvider, "eth_chainId", [], "wallet RPC final chain proof")
+        );
+        if (finalChainId !== expectedChainId) {
+          return {
+            ok: false,
+            chainId: finalChainId,
+            wrongChain: true,
+            reason: `Wallet chain changed during RPC proof: expected ${expectedChainId}, got ${finalChainId || "unknown"}.`
+          };
+        }
         return {
           ok: true,
-          chainId,
+          chainId: finalChainId,
           blockNumber
         };
       } catch (error) {
@@ -1663,15 +1711,18 @@
     async function workerProveInjectedProviderRpcWithBackoff(browserProvider, options = {}) {
       const opts = options && typeof options === "object" ? options : {};
       const reason = String(opts.reason || "rpc-proof");
-      const timeoutMs = Number.isFinite(opts.timeoutMs) ? Number(opts.timeoutMs) : WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS;
-      const pollMs = Number.isFinite(opts.pollMs) ? Number(opts.pollMs) : WORKER_METAMASK_RPC_BACKOFF_POLL_MS;
+      const timeoutMs = Number.isFinite(opts.timeoutMs) ? Math.max(0, Number(opts.timeoutMs)) : WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS;
+      const pollMs = Number.isFinite(opts.pollMs) ? Math.max(1, Number(opts.pollMs)) : WORKER_METAMASK_RPC_BACKOFF_POLL_MS;
       const startedAt = Date.now();
       let attempts = 0;
       let lastProof = null;
+      let activeBrowserProvider = browserProvider;
 
-      while (Date.now() - startedAt <= timeoutMs) {
+      // Called only following a network-update operation. Do not retry arbitrary
+      // HTTP rejections during normal wallet use or retry user refusals.
+      while (true) {
         attempts += 1;
-        const proof = await workerProveInjectedProviderRpc(browserProvider);
+        const proof = await workerProveInjectedProviderRpc(activeBrowserProvider);
         if (proof.ok) {
           if (attempts > 1) {
             workerWalletRecordEvent("connect.wallet.rpcProof.backoffCleared", {
@@ -1682,40 +1733,46 @@
               blockNumber: proof.blockNumber
             });
           }
-          return {...proof, attempts};
+          return {...proof, attempts, browserProvider: activeBrowserProvider};
         }
 
         lastProof = proof;
-        if (!proof.rpcUnavailable || !workerWalletIsRpcEndpointBackoff(proof.error || proof.reason)) {
-          return {...proof, attempts};
-        }
-
+        const freshNetwork403 = proof.rpcUnavailable && workerWalletIsFreshNetworkRpcRejection(proof.error);
+        const retryable = proof.rpcUnavailable && (
+          freshNetwork403 || workerWalletIsRpcEndpointBackoff(proof.error || proof.reason)
+        );
         const elapsedMs = Date.now() - startedAt;
+        if (!retryable || elapsedMs >= timeoutMs) break;
+
         workerWalletRecordEvent("connect.wallet.rpcProof.backoffWait", {
           reason,
           attempts,
           elapsedMs,
           timeoutMs,
           pollMs,
-          message: workerWalletErrorMessage(proof.error || proof.reason)
+          failureKind: freshNetwork403 ? "fresh-network-http-403" : "provider-backoff"
         });
         if (workerSaveStatus) {
-          workerSaveStatus.textContent = workerWalletRpcBackoffMessage(
-            `Attempt ${attempts}; retrying in ${Math.round(pollMs / 1000)}s.`
-          );
+          workerSaveStatus.textContent = freshNetwork403
+            ? `MetaMask is initializing ${workerSelectedWalletChainName()} RPC after the network update. Verifying again before connecting.`
+            : workerWalletRpcBackoffMessage(`Attempt ${attempts}; retrying in ${Math.round(pollMs / 1000)}s.`);
         }
-        await workerSleep(pollMs);
+        await workerSleep(Math.min(pollMs, timeoutMs - elapsedMs));
+        // Do not trust ethers' cached network state after wallet_addEthereumChain.
+        if (opts.ethers && opts.injectedProvider) {
+          activeBrowserProvider = workerRebuildWalletBrowserProvider(opts.ethers, opts.injectedProvider);
+        }
       }
 
-      const lastReason = lastProof?.reason || "MetaMask RPC backoff did not clear.";
+      const expired = Date.now() - startedAt >= timeoutMs;
       return {
+        ...lastProof,
         ok: false,
-        chainId: lastProof?.chainId || "",
-        rpcUnavailable: true,
-        backoffExpired: true,
         attempts,
-        reason: `MetaMask RPC backoff did not clear after ${Math.round(timeoutMs / 1000)}s: ${lastReason}`,
-        error: lastProof?.error || null
+        backoffExpired: Boolean(lastProof?.rpcUnavailable && expired),
+        reason: lastProof?.rpcUnavailable && expired
+          ? `MetaMask RPC proof failed after ${attempts} attempts following network update: ${lastProof.reason}`
+          : lastProof?.reason || "MetaMask RPC proof failed after network update."
       };
     }
 
@@ -2075,7 +2132,11 @@
 
       if (opts.probeRpc) {
         const proof = needsUpdate
-          ? await workerProveInjectedProviderRpcWithBackoff(activeBrowserProvider, {reason})
+          ? await workerProveInjectedProviderRpcWithBackoff(activeBrowserProvider, {
+            reason,
+            injectedProvider,
+            ethers
+          })
           : await workerProveInjectedProviderRpc(activeBrowserProvider);
         if (!proof.ok) {
           throw new Error(
@@ -2084,6 +2145,7 @@
               : proof.reason
           );
         }
+        activeBrowserProvider = proof.browserProvider || activeBrowserProvider;
         workerWalletRecordEvent("connect.wallet.rpcProof.done", {
           reason,
           chainId: proof.chainId,

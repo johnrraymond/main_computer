@@ -1,10 +1,28 @@
 # MCEL AI Authoring and Migration Benchmark
 
+## Product-level qualification addendum: greenfield web-app authoring
+
+The benchmark's current creation/migration/repair corpus measures semantic equivalence and authoring economy. MCEL's larger product promise also requires **polished defaults, maximum valid design flexibility, and correctness by composition**, as defined in `pretty_docs/mcel-authoring-principles.md`. This addendum defines the missing trial class; it does not claim a runner or passing result exists.
+
+For **new-app** tasks, supplement the existing hard gates with a predeclared, blinded-to-implementation authoring packet: the intended functionality, content, brand/design direction, responsive constraints, valid variants, invalid-composition traps, and observable success conditions. Give each treatment equivalent requirements and permissible customization. Preserve existing semantic, authority, effect, and independent proof rules.
+
+Measure all four axes separately:
+
+| Axis | Required observations | False shortcut to reject |
+| --- | --- | --- |
+| Minimal work | Author decisions, handwritten source, CSS/JS glue, repairs, undocumented framework expertise, elapsed authoring steps | Fewer DSL tokens but more post-render manual fixes |
+| Attractive defaults | Uncorrected first render, visual hierarchy, spacing, legibility, focus and responsive containment on varied viewports/content; independent human design review plus objective checks | A green screenshot geometry test presented as aesthetic excellence |
+| Flexibility | Two or more contrasting valid layouts/styles or workflows through the **same public contracts**, plus sound overrides | One app template or app-specific patch presented as generality |
+| Correct composition | Real behavior, accessible interaction, effect accounting, compiler/refusal diagnostics for invalid variants, and valid unconventional variants accepted | Render-only success, silent fallback, or hardcoded negative cases |
+
+Compare against an appropriate conventional authoring path **after** equivalent correctness gates pass. Report failures and unknown aesthetic judgments explicitly; do not aggregate them into an unsupported single green score. Fix the task corpus, judgment rubrics, and thresholds before trials. The existing AI migration/economy qualifications later in this document retain their own scopes; they do not substitute for the new authoring-experience trial.
+
+
 ## Status
 
-This document specifies the benchmark that must be implemented and passed before the proposed MCEL DSL may be presented as easier or safer for AI application development.
+This document specifies the benchmark that must be executed and passed before the MCEL DSL may be presented as easier or safer for AI application development. The original benchmark plan predates later **bounded** DSL/compiler and host-bound implementation work; see `pretty_docs/mcel-status-and-roadmap.md` for current implementation.
 
-It does not implement the DSL, compiler, importers, impact planner, evidence-renewal engine, or benchmark runner.
+This document is a benchmark **specification**, not a benchmark runner or an executed proof of authoring advantage. Existing compilers and independent application proofs do not substitute for the comparative authoring and visual-quality trials.
 
 The benchmark compares complete authoring cycles. It does not reward attractive syntax in isolation.
 

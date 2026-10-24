@@ -1,5 +1,12 @@
 # MCEL App Surface Conformance Baseline
 
+## Connection to the main authoring promise
+
+These conformance layers protect the **correctness through composition** and **usable default appearance** aspects of the authoring mission in `pretty_docs/mcel-authoring-principles.md`. They are necessary but not sufficient: no clipping or overlap does **not** by itself establish pleasing spacing, visual hierarchy, coherent interaction design, or minimal author effort. Conformance should identify broken shared layout/interaction laws rather than encourage application-specific patching.
+
+Record both failure cases (clipped text, competing scroll ownership, inaccessible focus, missing control relationships) and valid unconventional layouts that must still pass. A new surface should require no unsupported private layout/runtime mechanism to meet the standard.
+
+
 Patch 18 turns the File Explorer pilot lesson into a reusable MCEL app-surface
 baseline. A surface can be semantically valid and still be bad at runtime if the
 important text is clipped, hidden, overlapped, or if the diagnostic probe itself

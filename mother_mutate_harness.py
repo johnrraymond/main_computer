@@ -3034,6 +3034,32 @@ class Harness:
             "clean": pick(obj, "summary.clean"),
         }
 
+    def emit_hub_redeploy_reminder(self) -> None:
+        """Non-blocking add-node epilogue, printed after the final summary."""
+        if (
+            self.args.operation != "add-node"
+            or self.state.get("pristine_cleanup_result", {}).get("status") != "pass"
+        ):
+            return
+
+        # Advisory only: Hub mutation belongs to the separate Hub harness.
+        try:
+            from tools.hub_control.common.models import HubContext
+            from tools.hub_control.common.state import read_accepted
+
+            accepted = read_accepted(HubContext.from_repo(self.repo_root), self.args.network)
+            if accepted and accepted["hubs"]:
+                print("\n=== Hub redeploy reminder (manual; not executed) ===")
+                print(f"Accepted Hubs exist on {self.args.network}. Run:")
+                print(quote_command([
+                    "python", "hub_mutate_harness.py", "redeploy-hubs",
+                    "--network", self.args.network,
+                    "--execute-mutations", "--yes-i-know-this-mutates-hub",
+                ]))
+        except Exception as exc:
+            # A reminder must never invalidate a completed Mother operation.
+            print(f"Hub redeploy reminder unavailable: {exc}", file=sys.stderr)
+
     def methods(self) -> dict[str, Any]:
         return {
             "detect-topology": self.step_detect_topology,
@@ -3162,6 +3188,7 @@ class Harness:
         print("\n=== harness complete ===")
         print(json.dumps({k: v for k, v in self.state.items() if v not in (None, "")}, indent=2, sort_keys=True))
         print(f"logs={self.run_dir}")
+        self.emit_hub_redeploy_reminder()
 
 
 def build_parser() -> argparse.ArgumentParser:

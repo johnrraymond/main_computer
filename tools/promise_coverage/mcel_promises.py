@@ -11,6 +11,8 @@ import argparse
 import hashlib
 from datetime import datetime, timezone
 import json
+import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -119,8 +121,76 @@ def canonical_acceptance_failures(repo: Path, audit: Mapping[str, Any] | None) -
     return result
 
 
+def canonical_runtime_binding_diagnostics(repo: Path, audit: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Describe FLOG browser binding witnesses without promoting their verdicts."""
+    path = Path('runtime/reports/flog/mcel-runtime/mcel-runtime-flog-report.json')
+    report = read_object(repo / path)
+    result: dict[str, Any] = {'path': path.as_posix(), 'status': 'unavailable', 'applications': []}
+    if not report or not audit:
+        return result
+    current = (audit.get('repositoryProvenance') or {}).get('fingerprint')
+    observed = (report.get('repositoryProvenance') or {}).get('fingerprint')
+    scope = report.get('evidenceScope') or {}
+    if not current or observed != current or scope.get('canonical') is not True:
+        result['status'] = 'refused-noncanonical-or-source-mismatched'
+        return result
+    result['status'] = 'admitted'
+    for app_id in ('file-explorer', 'git-tools', 'mcel-lab', 'website-builder'):
+        trials = [trial for trial in report.get('trials') or []
+                  if isinstance(trial, dict) and trial.get('app') == app_id]
+        witnesses = [trial.get('semanticBinding') for trial in trials
+                     if isinstance(trial.get('semanticBinding'), dict)
+                     and trial['semanticBinding'].get('appId') == app_id]
+        entry: dict[str, Any] = {'appId': app_id, 'status': 'witness-absent'}
+        if len(trials) == 1:
+            trial = trials[0]
+            probe = trial.get('semanticBindingProbe') or {}
+            binding_source = trial.get('semanticBindingSource') or {}
+            if not isinstance(probe, dict):
+                probe = {}
+            if not isinstance(binding_source, dict):
+                binding_source = {}
+            entry['browserProbe'] = probe
+            entry['servedSource'] = binding_source
+            if binding_source.get('status') == 'blocked':
+                entry['status'] = 'served-source-unbound'
+            elif not probe.get('registryPresent'):
+                entry['status'] = 'browser-registry-unavailable'
+            elif not probe.get('registeredAdapterPresent'):
+                entry['status'] = 'browser-adapter-unregistered'
+            elif not probe.get('coverageAvailable'):
+                entry['status'] = 'browser-binding-coverage-unavailable'
+            elif not witnesses:
+                entry['status'] = 'browser-binding-witness-missing'
+        if len(trials) == 1 and len(witnesses) == 1:
+            witness = witnesses[0]
+            coverage = witness.get('runtimeBindingCoverage') or {}
+            bindings = coverage.get('entries') or []
+            if not isinstance(bindings, list):
+                bindings = []
+            entry = {
+                'appId': app_id,
+                'status': ('served-source-unbound' if entry.get('servedSource', {}).get('status') != 'exact'
+                           else ('bound' if witness.get('runtimeBindingAuditReady') is True and
+                                 witness.get('operationalSemanticRuntimeReady') is True else 'unproven')),
+                'browserProbe': entry.get('browserProbe', {}),
+                'servedSource': entry.get('servedSource', {}),
+                'adapterId': witness.get('adapterId'),
+                'executableIntentCount': witness.get('executableIntentCount'),
+                'runtimeBindingAuditReady': witness.get('runtimeBindingAuditReady') is True,
+                'unbound': [
+                    {'intentId': binding.get('intentId'), 'bindingSource': binding.get('bindingSource')}
+                    for binding in bindings if isinstance(binding, dict) and
+                    (binding.get('runtimeBound') is not True or binding.get('status') == 'unbound')
+                ],
+                'coveragePresent': bool(coverage),
+            }
+        result['applications'].append(entry)
+    return result
+
+
 def check_browser_source_binding(repo: Path, page_html: str) -> dict[str, Any]:
-    """The locally fingerprinted engine must literally be the engine served by the host.
+    """Require the browser-served engine text to contain exact local engine source.
 
     Applications HTML inlines mcel-engine.js through viewport_pages._expand_includes.
     The page is assembled when viewport_pages is imported, so a server restart is
@@ -142,6 +212,14 @@ def check_browser_source_binding(repo: Path, page_html: str) -> dict[str, Any]:
             'localEngineSha256':source_hash}
 
 
+def browser_loaded_engine_source(page: Any) -> str:
+    """Read the source loaded by Chromium, not the evictable HTTP response body."""
+    return page.evaluate("""() => Array.from(document.scripts)
+      .map(script => script.textContent || '')
+      .find(source => source.includes('function runContractTests()')) || ''
+    """)
+
+
 def capture_engine_probe(repo: Path, base_url: str, timeout: float) -> dict[str, Any]:
     """Invoke the *existing* browser engine contract test authority, not pytest text assertions."""
     try:
@@ -150,7 +228,14 @@ def capture_engine_probe(repo: Path, base_url: str, timeout: float) -> dict[str,
         return {'status':'blocked','reason':f'Playwright not installed: {exc}'}
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            chromium = (os.environ.get('MCEL_CHROMIUM_EXECUTABLE')
+                        or os.environ.get('CHROMIUM_EXECUTABLE')
+                        or shutil.which('chromium') or shutil.which('chromium-browser'))
+            options: dict[str, Any] = {'headless': True}
+            if chromium:
+                options.update(executable_path=chromium,
+                               args=['--no-sandbox', '--disable-dev-shm-usage'])
+            browser = pw.chromium.launch(**options)
             try:
                 page = browser.new_page()
                 response = page.goto(base_url.rstrip('/') + '/applications/mcel-lab',
@@ -158,7 +243,12 @@ def capture_engine_probe(repo: Path, base_url: str, timeout: float) -> dict[str,
                 if response is None or response.status != 200:
                     return {'status':'blocked', 'reason':'live-applications-route-unavailable',
                             'httpStatus':response.status if response else None}
-                binding = check_browser_source_binding(repo, response.text())
+                # The server inlines this script into the Applications HTML.
+                # Reading response.text() can fail for large pages when Chromium
+                # evicts the body from its DevTools Network inspector cache.
+                # Inspect the script in the *actual loaded document* instead.
+                served_engine = browser_loaded_engine_source(page)
+                binding = check_browser_source_binding(repo, served_engine)
                 if binding['status'] != 'pass':
                     return binding
                 page.wait_for_function('typeof window.McelLabEngine !== "undefined"',
@@ -409,13 +499,35 @@ def markdown(report: Mapping[str, Any]) -> str:
         lines.append('')
     elif accept.get('status') == 'refused-noncanonical-or-source-mismatched':
         lines += ['', '- Canonical acceptance report refused for diagnostics: source binding or scope mismatch.', '']
+    binding = report.get('runtimeBindingDiagnostics') or {}
+    if binding.get('status') == 'admitted':
+        lines += ['', '## Browser runtime-binding diagnostics', '']
+        for app in binding.get('applications') or []:
+            lines.append(f"- `{app['appId']}`: `{app['status']}`; binding audit={app.get('runtimeBindingAuditReady', False)}")
+            source = app.get('servedSource') or {}
+            if source.get('status') == 'blocked':
+                lines.append(f"  - Browser source: `{source.get('reason')}`; missing: {', '.join(source.get('missingSources') or []) or 'not determined'}")
+            probe = app.get('browserProbe') or {}
+            if probe:
+                lines.append(f"  - Registry present={probe.get('registryPresent')}; adapter registered={probe.get('registeredAdapterPresent')}; exported={probe.get('exportedAdapterPresent')}; callable audit={probe.get('exportedAdapterCoverageCallable')}")
+                if probe.get('readinessError') or probe.get('coverageError'):
+                    lines.append(f"  - Registry error: {probe.get('readinessError') or probe.get('coverageError')}")
+                if probe.get('unboundIntentIds'):
+                    lines.append(f"  - Unbound intent IDs: {', '.join(map(str, probe['unboundIntentIds']))}")
+            for missing in app.get('unbound') or []:
+                lines.append(f"  - Unbound intent `{missing.get('intentId')}`: `{missing.get('bindingSource')}`")
+        lines.append('')
+    elif binding.get('status') == 'refused-noncanonical-or-source-mismatched':
+        lines += ['', '- Runtime-binding diagnostics refused: canonical source binding is invalid.', '']
     stages = report.get('stages') or {}
     if stages:
         lines += ['## Existing authority execution', '']
         for name, stage in stages.items():
             lines.append(f"- `{name}`: `{stage.get('status', 'unknown')}`" +
                          (f" (exit {stage['exitCode']})" if 'exitCode' in stage else '')+
-                         (f"; reason: `{stage['reason']}`" if stage.get('reason') else ''))
+                         (f"; reason: `{stage['reason']}`" if stage.get('reason') else '')+
+                         (f"; proof scope: `{stage['proofScope']}`; not full semantic-runtime proof by itself; canonical truth gate decides final certification"
+                          if stage.get('proofScope') else ''))
         lines.append('')
     lines += ['## Authority boundary', '',
               'The repository audit alone owns application verdicts. This report cannot promote, certify, or replace its gates.',
@@ -427,7 +539,7 @@ def markdown(report: Mapping[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo-root',type=Path,default=Path(__file__).resolve().parents[2])
-    parser.add_argument('--run-canonical',action='store_true',help='Opt in: execute existing browser FLOG, acceptance and engine contract authorities before reporting.')
+    parser.add_argument('--run-canonical',action='store_true',help='Run browser FLOG, canonical acceptance, two scoped host-bound proofs and engine contracts before reporting.')
     parser.add_argument('--base-url', default='http://127.0.0.1:8765')
     parser.add_argument('--timeout-seconds',type=float,default=900)
     parser.add_argument('--max-evidence-age-hours',type=float,default=168)
@@ -451,6 +563,22 @@ def main(argv: list[str] | None = None) -> int:
                                                         '--base-url',args.base_url],args.timeout_seconds)
         run_stages['canonical-acceptance'] = execute(repo,[sys.executable,
             'main_computer/mcel_acceptance_runner.py','--check'],args.timeout_seconds)
+        # Calculator and Code Editor declare host-bound runtime projections.
+        # They redirect away from mcel-package-host.html, so the generic
+        # package-host observation runner cannot prove them. Use their existing
+        # fresh IR/browser Phase One authority, whose report deliberately says
+        # fullSemanticRuntimeProven=false. Never substitute it for app truth.
+        for app_id in ('calculator', 'code-editor'):
+            key = 'host-bound-proof-' + app_id
+            if source_binding_blocked:
+                stage = {'status':'blocked','reason':'served-engine-source-mismatch'}
+            else:
+                stage = execute(repo,[sys.executable,
+                    'tools/mcel_phase1_host_bound_prove.py','--app',app_id,
+                    '--check','--semantic-witness'],args.timeout_seconds)
+            stage['proofScope'] = 'host-bound-ir-native-authoritative'
+            stage['fullSemanticRuntimeProven'] = False  # The separate truth gate makes the final verdict.
+            run_stages[key] = stage
         if source_binding_blocked:
             run_stages['release-gate'] = {'status':'blocked','reason':'served-engine-source-mismatch'}
         else:
@@ -465,6 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         report['status'] = 'blocked'
         report['reason'] = 'Cannot bind live browser evidence to this repository: server is serving an older or different mcel-engine.js.'
     report['acceptanceDiagnostics'] = canonical_acceptance_failures(repo,audit)
+    report['runtimeBindingDiagnostics'] = canonical_runtime_binding_diagnostics(repo,audit)
     report['stages'] = {'readOnlyAudit':audit_stage,**run_stages}
     if args.output:
         path = args.output if args.output.is_absolute() else repo / args.output

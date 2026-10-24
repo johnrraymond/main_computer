@@ -172,6 +172,7 @@ function Test-RepoPathAllowed {
   }
 
   $blockedDirectoryNames = @(
+    "node_modules",
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
@@ -389,6 +390,7 @@ function Assert-CleanExportStage {
   )
 
   $badDirectoryNames = @(
+    "node_modules",
     "chat_console_shared_variables",
     "spreadsheets"
   )

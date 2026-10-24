@@ -33,6 +33,31 @@ class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self,*args):pass
 
 
+def source_drift_diagnostics(start: dict, end: dict, *, max_paths: int = 40) -> dict:
+    """Explain, never waive, changed source provenance between proof boundaries.
+
+    Report relative paths only, not private contents or file hashes. The
+    canonical source-bound refusal remains mandatory even for one changed file.
+    """
+    old = start.get('fileDigests', {})
+    new = end.get('fileDigests', {})
+    added = sorted(new.keys() - old.keys())
+    removed = sorted(old.keys() - new.keys())
+    modified = sorted(p for p in old.keys() & new.keys() if old[p] != new[p])
+    return {
+        'status': 'source-modified-during-proof',
+        'previousFingerprint': start.get('fingerprint'),
+        'currentFingerprint': end.get('fingerprint'),
+        'provenanceMetadataChanged': any(start.get(k) != end.get(k)
+            for k in ('schema', 'algorithm', 'scope', 'selectionMethod', 'sourceRoots')),
+        'fileChanges': {
+            kind: {'count': len(paths), 'paths': paths[:max_paths],
+                   'additionalPathsOmitted': max(0, len(paths) - max_paths)}
+            for kind, paths in (('added', added), ('removed', removed), ('modified', modified))
+        },
+    }
+
+
 def seed_reference_file(workspace: Path) -> Path:
     """Seed byte-for-byte browser proof input, including on Windows.
 
@@ -45,7 +70,8 @@ def seed_reference_file(workspace: Path) -> Path:
 
 
 def run(repo_root:Path, *, authority: PortableCalculatorExternalAuthority | None = None) -> dict:
-    start_provenance=build_repository_provenance(repo_root)
+    start_with_digests=build_repository_provenance(repo_root, include_file_digests=True)
+    start_provenance={k:v for k,v in start_with_digests.items() if k!='fileDigests'}
     evidence={"schema":"mcel.portable-intent-execution.v1","scope":"independent-package-domain-operations",
               "liveProviderProofRequested":bool(authority),
               "passed":False,"fullSemanticRuntimeProven":False,"applications":[],"missingExternalProviderProof":[]}
@@ -241,9 +267,12 @@ def run(repo_root:Path, *, authority: PortableCalculatorExternalAuthority | None
     result=finalize_evidence(evidence, certified_runtime=type(authority) is PortableCalculatorExternalAuthority)
     # A repository modified while the browser was running cannot yield a
     # source-bound passing report; refuse even when all fixtures succeeded.
-    if build_repository_provenance(repo_root) != start_provenance:
+    end_with_digests=build_repository_provenance(repo_root, include_file_digests=True)
+    end_provenance={k:v for k,v in end_with_digests.items() if k!='fileDigests'}
+    if end_provenance != start_provenance:
         result.update(status='refused',passed=False,fullSemanticRuntimeProven=False,
-                      externalProviderProven=False,reason='repository-changed-during-proof')
+                      externalProviderProven=False,reason='repository-changed-during-proof',
+                      repositoryDrift=source_drift_diagnostics(start_with_digests, end_with_digests))
     return result
 
 
@@ -353,8 +382,22 @@ def main():
     text=json.dumps(result,indent=2,sort_keys=True)
     if args.output:
         args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(text+'\n',encoding='utf-8')
-    if args.json:print(text)
-    else:print(result['status'],result.get('reason',result.get('error','')))
+    if args.json:
+        print(text)
+    else:
+        print(result['status'],result.get('reason',result.get('error','')))
+        if result.get('reason') == 'repository-changed-during-proof':
+            drift = result.get('repositoryDrift') or {}
+            for kind, detail in (drift.get('fileChanges') or {}).items():
+                if detail.get('count'):
+                    print(f"  {kind}: {detail['count']} source path(s)")
+                    for path in detail.get('paths', [])[:10]:
+                        print(f"    {path}")
+                    omitted = max(0, detail['count'] - min(10, len(detail.get('paths', []))))
+                    if omitted:
+                        print(f"    ... and {omitted} more; see the saved proof JSON")
+            if drift.get('provenanceMetadataChanged'):
+                print('  provenance selection metadata changed during execution')
     return 0 if (result.get('passed') if args.authorize_external else result.get('portableLocalAndWorkspacePassed')) is True else 4
 
 

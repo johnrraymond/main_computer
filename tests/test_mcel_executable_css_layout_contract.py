@@ -5,6 +5,8 @@ for producing and proving a runtime layout, never for editing source CSS.
 """
 from __future__ import annotations
 
+from main_computer.mcel_calculator_host_projection import project as project_calculator_host
+
 import os
 from pathlib import Path
 import shutil
@@ -36,7 +38,7 @@ def _browser():
 
 def test_real_calculator_css_is_input_not_silently_rewritten():
     css = APP_CSS.read_text(encoding="utf-8")
-    html = APP_HTML.read_text(encoding="utf-8")
+    html = project_calculator_host(ROOT)
     assert "repeat(3, minmax(0, 1fr))" in css
     assert "overflow-wrap: anywhere" in css
     assert 'data-mcel-layout-role="adaptive-control-grid"' in html
@@ -48,7 +50,7 @@ def test_browser_proves_candidate_selection_and_diagnostic_closure_on_real_calcu
     for browser in _browser():
         page = browser.new_page(viewport={"width": 1465, "height": 882})
         page.set_content("<style>" + APP_CSS.read_text(encoding="utf-8") + "</style>" +
-                         APP_HTML.read_text(encoding="utf-8"))
+                         project_calculator_host(ROOT))
         page.add_script_tag(path=str(PLANNER))
         page.add_script_tag(path=str(SCRIPTS / "mcel-self-diagnosis.js"))
         result = page.evaluate("""() => {
@@ -161,7 +163,7 @@ def test_workspace_plan_recursively_executes_nested_grid_without_calculator_bran
     for browser in _browser():
         page = browser.new_page(viewport={"width": 1465, "height": 882})
         page.set_content("<style>" + APP_CSS.read_text(encoding="utf-8") + "</style>" +
-                         APP_HTML.read_text(encoding="utf-8"))
+                         project_calculator_host(ROOT))
         page.add_script_tag(path=str(PLANNER))
         page.add_script_tag(path=str(SCRIPTS / "mcel-self-diagnosis.js"))
         proof = page.evaluate("""({surface,grammar}) => {

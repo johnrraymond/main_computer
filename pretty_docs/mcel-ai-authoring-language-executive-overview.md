@@ -1,6 +1,13 @@
 # MCEL AI Authoring Language
 ## Executive Overview by Example
 
+## Main product promise
+
+The DSL is a means to an authoring experience, not an end in itself. MCEL should let a human or AI author good-looking, functioning web applications with **minimal work and maximal sound flexibility**, without knowing MCEL's internal implementation. Every primitive should bring coherent presentation and behavior rules into a composition, with usable defaults and early diagnostics for genuinely invalid combinations. See `pretty_docs/mcel-authoring-principles.md`.
+
+The examples below show repeated declarations MCEL should derive. They are only the **effort** portion of the objective: correctness of composition, quality of the initial appearance, and freedom to choose valid designs are equally required. Shorter syntax with more corrective CSS, ad hoc glue, or hidden framework knowledge is not progress.
+
+
 This document explains why MCEL needs a higher-level AI authoring language. It uses code examples rather than abstract promises.
 
 The governing rule is:

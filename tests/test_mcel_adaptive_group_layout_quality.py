@@ -1,6 +1,8 @@
 """Executable MCEL group planning: nested grid and sibling must be judged together."""
 from __future__ import annotations
 
+from main_computer.mcel_calculator_host_projection import project as project_calculator_host
+
 import os
 from pathlib import Path
 import shutil
@@ -30,11 +32,11 @@ def _browser():
 
 
 def test_real_calculator_group_recovers_dense_layout_without_css_source_edits():
-    assert 'data-mcel-layout-role="adaptive-control-group"' in HTML.read_text(encoding="utf-8")
+    assert 'data-mcel-layout-role="adaptive-control-group"' in project_calculator_host(ROOT)
     assert 'grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr)' in CSS.read_text(encoding="utf-8")
     for browser in _browser():
         page = browser.new_page(viewport={'width':1465,'height':882})
-        page.set_content('<style>' + CSS.read_text(encoding="utf-8") + '</style>' + HTML.read_text(encoding="utf-8"))
+        page.set_content('<style>' + CSS.read_text(encoding="utf-8") + '</style>' + project_calculator_host(ROOT))
         page.add_script_tag(path=str(PLANNER))
         page.add_script_tag(path=str(SCRIPTS / 'mcel-self-diagnosis.js'))
         result = page.evaluate('''() => {
@@ -130,7 +132,7 @@ def test_planner_remains_generic_and_has_no_source_repair_authority():
 def test_group_responsive_candidates_reflow_and_recover_without_editing_source():
     for browser in _browser():
         page=browser.new_page()
-        page.set_content('<style>' + CSS.read_text(encoding="utf-8") + '</style>' + HTML.read_text(encoding="utf-8"))
+        page.set_content('<style>' + CSS.read_text(encoding="utf-8") + '</style>' + project_calculator_host(ROOT))
         page.add_script_tag(path=str(PLANNER))
         result=page.evaluate('''() => {
           const root=document.querySelector('#calculator-app');root.style.display='grid';root.style.width='1150px';

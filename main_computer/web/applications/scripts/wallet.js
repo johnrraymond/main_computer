@@ -1108,6 +1108,17 @@
       return `0x${Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
     }
 
+    function walletNewMultiSessionUserSlug() {
+      // Stable Hub requires an independently generated, signed user_slug.
+      // Use 256 bits of browser CSPRNG entropy; never fall back to Math.random.
+      if (typeof window.crypto?.getRandomValues !== "function") {
+        throw new Error("Secure browser randomness is required for multi-session key issuance.");
+      }
+      const bytes = new Uint8Array(32);
+      window.crypto.getRandomValues(bytes);
+      return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+
     function walletBuildMultiSessionKeyMessage({walletAddress = "", chainId = "", origin = ""} = {}) {
       const now = walletNowIso();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -1117,6 +1128,7 @@
       return {
         purpose: "request_multi_session_key",
         request_id: `msk_req_${requestEntropy}`,
+        user_slug: walletNewMultiSessionUserSlug(),
         wallet_address: walletAddress,
         chain_id: walletNormalizeChainIdHex(chainId),
         origin: String(origin || window.location?.origin || "main-computer-worker"),

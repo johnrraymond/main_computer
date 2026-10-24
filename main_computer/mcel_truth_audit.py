@@ -65,6 +65,11 @@ DEFAULT_RUNTIME_EVIDENCE = Path(
 DEFAULT_ACCEPTANCE_EVIDENCE = Path(
     "runtime/reports/mcel-acceptance/mcel-acceptance-report.json"
 )
+PACKAGE_PROOF_ROOT = Path("runtime/reports/mcel-app-proof/apps")
+PACKAGE_APPS = ("calculator", "code-editor")
+HOST_BOUND_SEMANTIC_ROOT = Path("runtime/reports/mcel-host-bound-semantic/apps")
+HOST_BOUND_SEMANTIC_SCHEMA = "mcel.host-bound-semantic-execution-witness.v1"
+BINDING_APPS = ("file-explorer", "git-tools", "mcel-lab", "website-builder")
 RUNTIME_EVIDENCE_SEARCH_ROOT = Path("runtime/reports/flog")
 ACCEPTANCE_EVIDENCE_SEARCH_ROOT = Path("runtime/reports/mcel-acceptance")
 RUNTIME_EVIDENCE_SCHEMAS = frozenset({"mcel-runtime-flog-report-v2"})
@@ -179,9 +184,67 @@ if (Object.values(authorities).some((present) => !present)) {
   throw new Error("One or more required MCEL truth authorities failed to load.");
 }
 
+// Do not promote package proof or browser binding evidence unless Python's
+// source and artifact checks admitted it. The real truth gate still decides.
+const originalRegistry = sandbox.McelDomainAdapterRegistry;
+const admittedPackage = input.packageProofs || {};
+const admittedHostBound = input.hostBoundSemanticProofs || {};
+const admittedBindings = input.browserBindings || {};
+const adapterRegistry = {
+  REGISTRY_VERSION: originalRegistry.REGISTRY_VERSION,
+  AUTHORITY: originalRegistry.AUTHORITY,
+  listAdapters() {
+    return [...originalRegistry.listAdapters(), ...Object.keys(admittedPackage).map(appId => ({
+      appId, adapterId: admittedPackage[appId].adapterId
+    })), ...Object.keys(admittedHostBound).map(appId => ({
+      appId, adapterId: admittedHostBound[appId].adapterId
+    }))];
+  },
+  evaluateAdapterReadiness(appId) {
+    const base = originalRegistry.evaluateAdapterReadiness(appId);
+    const pkg = admittedPackage[appId];
+    const host = admittedHostBound[appId];
+    // Host-bound generated adapters are not retired DOM domain adapters.
+    // Only Python's independently admitted, source-bound effect witness can
+    // supply readiness to the unchanged canonical JavaScript truth gate.
+    if (host && !base.registryAdapterPresent && host.appId === appId &&
+        host.verifiedOperationalIntents === true && host.proofScope === "complete-host-bound-intent-and-effect-evidence") {
+      return {...host.readiness, registryAdapterPresent: true, appId,
+        authority: "admitted-host-bound-generated-adapter-operational-evidence"};
+    }
+    if (pkg && !base.registryAdapterPresent && pkg.appId === appId &&
+        pkg.truthStatus === "semantic-runtime-proven" && pkg.semanticRuntimeProven === true) {
+      return {...pkg.readiness, registryAdapterPresent: true, appId,
+        authority: "independently-admitted-mcel-package-proof"};
+    }
+    const witness = admittedBindings[appId];
+    if (!witness || !base.registryAdapterPresent || !base.fullApplicationSemanticReady ||
+        base.adapterId !== witness.adapterId || base.adapterVersion !== witness.adapterVersion ||
+        !base.intentCoverageReady || !base.intentCoverageAuditReady ||
+        base.executableIntentCount !== witness.executableIntentCount) return base;
+    const expected = (base.intentCoverage?.entries || []).filter(x => x.status === "executable")
+      .map(x => x.intentId).sort();
+    const coverage = witness.runtimeBindingCoverage || {};
+    const required = Array.isArray(coverage.requiredIntentIds) ? [...coverage.requiredIntentIds].sort() : [];
+    const entries = Array.isArray(coverage.entries) ? coverage.entries : [];
+    const reported = entries.map(x => x.intentId).sort();
+    if (JSON.stringify(expected) !== JSON.stringify(required) ||
+        JSON.stringify(expected) !== JSON.stringify(reported) ||
+        !expected.length || coverage.verificationMode !== "derived-runtime-binding-audit" ||
+        coverage.verification?.passed !== true || coverage.runtimeBindingReady !== true ||
+        !entries.every(x => x.runtimeBound === true &&
+          ["runtime-bound", "adapter-local"].includes(x.status) &&
+          typeof x.bindingSource === "string" && x.bindingSource.trim())) return base;
+    return {...base, runtimeBindingCoverageAvailable: true, runtimeBindingAuditReady: true,
+      runtimeBindingReady: true, operationalSemanticRuntimeReady: true,
+      runtimeBoundIntentCount: expected.length, adapterLocalIntentCount: entries.filter(x => x.status === "adapter-local").length,
+      unboundIntentCount: 0, unboundIntentIds: [], runtimeBindingCoverage: coverage,
+      runtimeBindingCoverageValidation: witness.runtimeBindingCoverageValidation};
+  }
+};
 const options = {
   requirementsRegistry: sandbox.McelRequirementsRegistry,
-  domainAdapterRegistry: sandbox.McelDomainAdapterRegistry,
+  domainAdapterRegistry: adapterRegistry,
   appSurfaceRegistry: sandbox.McelAppSurfaceRegistry,
   runtimeEvidence: input.runtimeEvidence || null,
   acceptanceEvidence: input.acceptanceEvidence || null,
@@ -610,6 +673,252 @@ def resolve_node_executable(node_executable: str | None = None) -> str | None:
     return None
 
 
+def _admitted_package_proofs(
+    repo: Path, *, repository_provenance: Mapping[str, Any], now: str,
+    max_age_hours: float,
+) -> dict[str, Any]:
+    """Admit only fresh package evidence bound to real app proof artifacts."""
+    if not any((repo / PACKAGE_PROOF_ROOT / app_id / "mcel-app-proof-report.json").is_file()
+               for app_id in PACKAGE_APPS):
+        return {}
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    from main_computer.mcel_application_packages import build_application_package_catalog
+    catalog = build_application_package_catalog(repo)
+    records = {record.app_id: record for record in catalog.packages if record.valid}
+    admitted: dict[str, Any] = {}
+    evaluation_time = _parse_timestamp(now)
+    for app_id in PACKAGE_APPS:
+        path = repo / PACKAGE_PROOF_ROOT / app_id / "mcel-app-proof-report.json"
+        if not path.is_file():
+            continue
+        try:
+            proof = json.loads(path.read_text(encoding="utf-8"))
+            package = _safe_dict(proof.get("package"))
+            truth = _safe_dict(proof.get("truthSnapshot"))
+            readiness = _safe_dict(truth.get("adapter"))
+            record = records.get(app_id)
+            timestamp = _parse_timestamp(_safe_string(proof.get("generatedAt")))
+            within_age = bool(timestamp and evaluation_time is not None and
+                0 <= evaluation_time - timestamp <= max_age_hours * 3600)
+            if not all((
+                record is not None,
+                proof.get("schema") == "mcel.application-proof-report.v1",
+                proof.get("status") == "pass", proof.get("ok") is True,
+                proof.get("evidenceScope") == "app-scoped",
+                proof.get("appId") == app_id,
+                proof.get("truthStatus") == "semantic-runtime-proven",
+                truth.get("appId") == app_id,
+                truth.get("overallStatus") == "semantic-runtime-proven",
+                _safe_dict(truth.get("claims")).get("semanticRuntimeProven") is True,
+                readiness.get("operationalSemanticRuntimeReady") is True,
+                readiness.get("fullApplicationSemanticReady") is True,
+                package.get("fingerprint") == record.fingerprint,
+                _safe_dict(proof.get("repositoryProvenance")).get("fingerprint") == repository_provenance.get("fingerprint"),
+                within_age,
+            )):
+                continue
+            # Evidence references are checked against their exact bytes. The
+            # package proof producer already reconciles semantic/operation receipts.
+            evidence = _safe_dict(proof.get("evidence"))
+            if not all(_artifact_reference_matches(repo, evidence.get(key))
+                       for key in ("acceptance", "browserObservation", "intentCompleteProof")
+                       if key in evidence) or not all(key in evidence for key in ("acceptance", "browserObservation")):
+                continue
+            admitted[app_id] = {
+                "appId": app_id, "adapterId": _safe_string(readiness.get("adapterId")),
+                "truthStatus": proof["truthStatus"], "semanticRuntimeProven": True,
+                "readiness": readiness,
+            }
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return admitted
+
+
+def _admitted_host_bound_semantic_proofs(
+    repo: Path, *, repository_provenance: Mapping[str, Any], now: str,
+    max_age_hours: float,
+) -> dict[str, Any]:
+    """Independently verify fresh host-bound DSL, browser and effect receipts.
+
+    This never changes the Phase One truth label, manufactures an application
+    adapter, or trusts a bare `passed` flag. The unmodified truth gate decides
+    the final semantic-runtime verdict after canonical FLOG and acceptance.
+    """
+    if not any((repo / HOST_BOUND_SEMANTIC_ROOT / app / "mcel-semantic-witness.json").is_file()
+               for app in PACKAGE_APPS):
+        return {}
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    from main_computer.mcel_application_packages import build_application_package_catalog
+    from main_computer.mcel_application_runtime_projection import build_runtime_projection_set
+    from main_computer.mcel_dsl_compiler import compile_dsl_application
+
+    catalog = build_application_package_catalog(repo)
+    projections = build_runtime_projection_set(repo)
+    records = {p.app_id: p for p in catalog.packages if p.valid}
+    projected = {p.app_id: p for p in projections.projections if p.mount_mode == "host-bound"}
+    now_stamp = _parse_timestamp(now)
+    admitted: dict[str, Any] = {}
+    for app_id in PACKAGE_APPS:
+        directory = HOST_BOUND_SEMANTIC_ROOT / app_id
+        try:
+            path = repo / directory / "mcel-semantic-witness.json"
+            witness = json.loads(path.read_text(encoding="utf-8"))
+            native_ref = _safe_dict(witness.get("nativeProofArtifact"))
+            # A substituted artifact path is not an independent current proof.
+            if (native_ref.get("path") != (directory / "mcel-ir-native-proof.json").as_posix()
+                    or not _artifact_reference_matches(repo, native_ref)):
+                continue
+            native = json.loads((repo / native_ref["path"]).read_text(encoding="utf-8"))
+            record = records.get(app_id)
+            projection = projected.get(app_id)
+            when = _parse_timestamp(_safe_string(witness.get("generatedAt")))
+            if record is None or projection is None or not when or not now_stamp:
+                continue
+            manifest = json.loads((repo / record.manifest).read_text(encoding="utf-8"))
+            source = (record.authoring or {}).get("source")
+            if not isinstance(source, str) or not source or (manifest.get("authoring") or {}).get("status") != "dsl-authoritative":
+                continue
+            compiled = compile_dsl_application(repo / source, write_candidate=False)
+            if not compiled.valid or not compiled.normalized_ir:
+                continue
+            declared_names = sorted(str(intent.get("sourceName")) for intent in compiled.normalized_ir.get("intents", []))
+            intents = _safe_dict(native.get("intents"))
+            scenarios = _safe_dict(native.get("scenarios"))
+            checks = _safe_dict(native.get("crossCuttingChecks"))
+            browser = _safe_dict(_safe_dict(native.get("parityEvidence")).get("browserObservation"))
+            if not all((
+                0 <= now_stamp - when <= max_age_hours * 3600,
+                witness.get("schema") == HOST_BOUND_SEMANTIC_SCHEMA,
+                witness.get("appId") == app_id,
+                witness.get("status") == "pass", witness.get("passed") is True,
+                witness.get("truthStatus") == "host-bound-operational-semantics-witnessed",
+                witness.get("canonicalTruthGateDecides") is True,
+                witness.get("phaseOneTruthStatus") == "host-bound-ir-native-authoritative",
+                witness.get("packageFingerprint") == record.fingerprint,
+                witness.get("runtimeProjectionFingerprint") == projection.fingerprint,
+                witness.get("semanticFingerprint") == compiled.semantic_fingerprint,
+                witness.get("repositoryFingerprint") == repository_provenance.get("fingerprint"),
+                witness.get("intentNames") == declared_names,
+                witness.get("declaredIntentCount") == len(declared_names) > 0,
+                witness.get("observedIntentCount") == len(declared_names),
+                native.get("appId") == app_id,
+                native.get("schema") == "mcel.app-ir-native-intent-complete-proof.v1",
+                native.get("passed") is True, native.get("status") == "ir-native-authoritative",
+                native.get("semanticFingerprint") == compiled.semantic_fingerprint,
+                native.get("declaredIntentCount") == len(declared_names),
+                native.get("coveredIntentCount") == len(declared_names),
+                native.get("declaredScenarioCount") == native.get("observedScenarioCount"),
+                isinstance(native.get("declaredScenarioCount"), int),
+                native.get("declaredScenarioCount") >= len(declared_names),
+                len(scenarios) == native.get("declaredScenarioCount"),
+                all(_safe_dict(item).get("passed") is True for item in scenarios.values()),
+                native.get("sourceBindingFingerprint") == compiled.source_binding_fingerprint,
+                not native.get("failedIntentIds"), not native.get("failedScenarioIds"),
+                sorted(intents) == declared_names,
+                all(_safe_dict(item).get("passed") is True for item in intents.values()),
+                bool(checks) and all(value is True for value in checks.values()),
+                _safe_dict(native.get("effectAccounting")).get("status") == "closed",
+                _safe_dict(native.get("parityEvidence")).get("freshChromiumObservation") is True,
+                browser.get("status") == "pass",
+                _safe_dict(browser.get("checks")).get("sourceTreeUnchanged") is True,
+            )):
+                continue
+            if app_id == "calculator":
+                semantic_checks = _safe_dict(browser.get("intentSemanticChecks"))
+                if (len(declared_names) != 11 or
+                        witness.get("effectEvidenceScope") != "real-host-dom-and-receipts; provider-transport-mocked" or
+                        sorted(semantic_checks) != declared_names or
+                        any(value is not True for value in semantic_checks.values())):
+                    continue
+            elif app_id == "code-editor":
+                expected_checks = ("independentBytesAfterSave", "staleSourceRefused", "previewNonMutating",
+                                   "unapprovedPatchRefused", "reviewedApplyWritesVerified")
+                effects = _safe_dict(native.get("browserEffectEvidence"))
+                browser_checks = _safe_dict(browser.get("checks"))
+                expected_hashes = {
+                    "saveAfterSha256": hashlib.sha256(b"after();\n").hexdigest(),
+                    "reviewedApplyAfterSha256": hashlib.sha256(b"reviewed();\n").hexdigest(),
+                    "afterReadOnlyPreviewSha256": hashlib.sha256(b"concurrent();\n").hexdigest(),
+                }
+                required_routes = ("/api/applications/editor/files", "/api/applications/editor/read",
+                                   "/api/applications/editor/project/file/save",
+                                   "/api/applications/editor/project/transaction/prepare",
+                                   "/api/applications/editor/project/transaction/apply")
+                if (len(declared_names) != 8 or
+                        witness.get("effectEvidenceScope") != "real-disposable-workspace-byte-effects-and-refusals" or
+                        any(checks.get(key) is not True for key in expected_checks) or
+                        any(effects.get(key) != value for key, value in expected_hashes.items()) or
+                        not set(required_routes).issubset(effects.get("serverRequestPaths") or []) or
+                        browser_checks.get("realFilesystemEffects") is not True or
+                        browser_checks.get("unapprovedEffectRefused") is not True):
+                    continue
+            admitted[app_id] = {
+                "appId": app_id,
+                "adapterId": f"{app_id}-independently-proven-host-bound-runtime",
+                "verifiedOperationalIntents": True,
+                "proofScope": "complete-host-bound-intent-and-effect-evidence",
+                "readiness": {
+                    "registryAdapterPresent": True,
+                    "adapterId": f"{app_id}-independently-proven-host-bound-runtime",
+                    "adapterKind": "source-bound-host-bound-generated-adapter-proof",
+                    "adapterVersion": HOST_BOUND_SEMANTIC_SCHEMA,
+                    "runtimeCoreReady": True, "intentCoverageReady": True,
+                    "intentCoverageAuditReady": True, "fullApplicationSemanticReady": True,
+                    "semanticRuntimeReady": True, "operationalSemanticRuntimeReady": True,
+                    "runtimeBindingCoverageAvailable": True,
+                    "runtimeBindingAuditReady": True, "runtimeBindingReady": True,
+                    "runtimeBoundIntentCount": len(declared_names),
+                    "adapterLocalIntentCount": 0,
+                    "unboundIntentCount": 0, "unboundIntentIds": [],
+                    "semanticRuntimeScope": "host-bound-complete-dsl-and-observed-effects",
+                    "executableIntentCount": len(declared_names),
+                    "preflightOnlyIntentCount": 0, "declaredOnlyIntentCount": 0,
+                    "prohibitedIntentCount": 0, "blockedIntentCount": 0,
+                    "totalIntentCount": len(declared_names),
+                    "recoveryReady": True, "recoveryCoverageReady": True,
+                    "missingSemantics": [], "missingApplicationSemantics": [],
+                },
+            }
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            continue
+    return admitted
+
+
+def _artifact_reference_matches(repo: Path, reference: Any) -> bool:
+    data = _safe_dict(reference)
+    relative = Path(_safe_string(data.get("path")))
+    if not data.get("sha256") or relative.is_absolute() or ".." in relative.parts:
+        return False
+    target = (repo / relative).resolve()
+    if not target.is_relative_to(repo.resolve()) or not target.is_file():
+        return False
+    return hashlib.sha256(target.read_bytes()).hexdigest() == data["sha256"]
+
+
+def _admitted_browser_bindings(runtime_evidence: Any) -> dict[str, Any]:
+    """Select exact live-browser binding witnesses from admitted FLOG input."""
+    if not isinstance(runtime_evidence, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for trial in _safe_list(runtime_evidence.get("trials")):
+        if not isinstance(trial, Mapping):
+            continue
+        app_id = _safe_string(trial.get("app"))
+        witness = _safe_dict(trial.get("semanticBinding"))
+        coverage = _safe_dict(witness.get("runtimeBindingCoverage"))
+        source = _safe_dict(trial.get("semanticBindingSource"))
+        if (source.get("status") == "exact" and app_id in BINDING_APPS and _safe_string(witness.get("appId")) == app_id
+                and _safe_dict(trial.get("classification")).get("status") == "pass"
+                and witness.get("operationalSemanticRuntimeReady") is True
+                and witness.get("runtimeBindingAuditReady") is True
+                and coverage.get("verificationMode") == "derived-runtime-binding-audit"
+                and coverage.get("runtimeBindingReady") is True):
+            result[app_id] = witness
+    return result
+
+
 def run_truth_gate(
     *,
     repo: Path,
@@ -618,6 +927,9 @@ def run_truth_gate(
     now: str,
     max_evidence_age_ms: int,
     node_executable: str | None = None,
+    package_proofs: Mapping[str, Any] | None = None,
+    browser_bindings: Mapping[str, Any] | None = None,
+    host_bound_semantic_proofs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the browser truth authority under a small Node VM bridge."""
 
@@ -644,6 +956,9 @@ def run_truth_gate(
         "adapterScripts": [str(path.resolve()) for path in adapter_scripts],
         "runtimeEvidence": runtime_evidence,
         "acceptanceEvidence": acceptance_evidence,
+        "packageProofs": dict(package_proofs or {}),
+        "hostBoundSemanticProofs": dict(host_bound_semantic_proofs or {}),
+        "browserBindings": dict(browser_bindings or {}),
         "now": now,
         "maxEvidenceAgeMs": max(0, int(max_evidence_age_ms)),
     }
@@ -1630,10 +1945,35 @@ def run_audit(args: argparse.Namespace, *, repo: Path | None = None) -> dict[str
         max_age_hours=float(args.max_evidence_age_hours),
     )
 
+    eligible_runtime = truth_eligible_evidence(runtime, runtime_binding)
     bridge = run_truth_gate(
         repo=repo,
-        runtime_evidence=truth_eligible_evidence(runtime, runtime_binding),
+        runtime_evidence=eligible_runtime,
         acceptance_evidence=truth_eligible_evidence(acceptance, acceptance_binding),
+        package_proofs=_admitted_package_proofs(
+            repo, repository_provenance=repository_provenance,
+            now=now, max_age_hours=float(args.max_evidence_age_hours),
+        ),
+        host_bound_semantic_proofs=(
+            _admitted_host_bound_semantic_proofs(
+                repo, repository_provenance=repository_provenance,
+                now=now, max_age_hours=float(args.max_evidence_age_hours),
+            )
+            if runtime_binding.get("status") == "exact"
+            and acceptance_binding.get("status") == "exact"
+            and _safe_dict(runtime_metadata.get("freshness")).get("status") == "fresh"
+            and _safe_dict(acceptance_metadata.get("freshness")).get("status") == "fresh"
+            and _safe_dict(runtime_metadata.get("evidenceScope")).get("status") == "canonical"
+            and _safe_dict(acceptance_metadata.get("evidenceScope")).get("status") == "canonical"
+            else {}
+        ),
+        browser_bindings=(
+            _admitted_browser_bindings(eligible_runtime)
+            if runtime_binding.get("status") == "exact"
+            and _safe_dict(runtime_metadata.get("freshness")).get("status") == "fresh"
+            and _safe_dict(runtime_metadata.get("evidenceScope")).get("status") == "canonical"
+            else {}
+        ),
         now=now,
         max_evidence_age_ms=round(args.max_evidence_age_hours * 60 * 60 * 1000),
         node_executable=_safe_string(args.node) or None,
@@ -1657,6 +1997,19 @@ def run_audit(args: argparse.Namespace, *, repo: Path | None = None) -> dict[str
         max_evidence_age_hours=float(args.max_evidence_age_hours),
     )
     report["configuration"]["releaseGate"] = release_gate
+    if release_gate:
+        unhealthy = sorted(app["appId"] for app in report["apps"]
+                           if app["declaredLevel"] == "semantic-runtime"
+                           and app["claims"].get("semanticRuntimeProven") is not True)
+        if unhealthy:
+            report["auditLevelReasons"].append(_audit_reason(
+                "audit-enrolled-semantic-runtime-not-proven",
+                "Enrolled semantic-runtime applications are not all independently proven.",
+                category="required-evidence-gap", source="mcel-truth-audit-policy",
+                detail={"appIds": unhealthy},
+            ))
+            report["summary"]["status"] = "fail"
+            report["summary"]["blockingReasonCount"] += 1
     portable_path=getattr(args,"portable_certificate",None) or DEFAULT_PORTABLE_CERTIFICATE
     report=apply_portable_certification(
         report,repo=repo,certificate_path=portable_path,

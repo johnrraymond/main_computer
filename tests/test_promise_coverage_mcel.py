@@ -4,8 +4,12 @@ from datetime import datetime, timezone, timedelta
 import json
 from pathlib import Path
 import re
+import os
+import shutil
 
-from tools.promise_coverage.mcel_promises import coverage, admitted_probe, PROBE_SCHEMA, manifest_digest, check_browser_source_binding, canonical_acceptance_failures
+import pytest
+
+from tools.promise_coverage.mcel_promises import coverage, admitted_probe, PROBE_SCHEMA, manifest_digest, check_browser_source_binding, browser_loaded_engine_source, canonical_acceptance_failures, canonical_runtime_binding_diagnostics, markdown
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = json.loads((ROOT/'contracts/mcel_promise_evidence.v1.json').read_text(encoding='utf-8'))
@@ -174,3 +178,81 @@ def test_acceptance_diagnostics_are_source_bound_and_show_failing_selectors(tmp_
     evidence['repositoryProvenance']['fingerprint']='wrong'
     path.write_text(json.dumps(evidence),encoding='utf8')
     assert canonical_acceptance_failures(tmp_path,audit())['status']=='refused-noncanonical-or-source-mismatched'
+
+
+def test_browser_source_binding_uses_executed_page_scripts_without_network_body():
+    sync = pytest.importorskip('playwright.sync_api')
+    engine = (ROOT/'main_computer/web/applications/scripts/mcel-engine.js').read_text(encoding='utf8')
+    with sync.sync_playwright() as playwright:
+        chromium = (os.environ.get('MCEL_CHROMIUM_EXECUTABLE')
+                    or os.environ.get('CHROMIUM_EXECUTABLE')
+                    or shutil.which('chromium') or shutil.which('chromium-browser'))
+        options = {'headless': True}
+        if chromium:
+            options.update(executable_path=chromium,
+                           args=['--no-sandbox', '--disable-dev-shm-usage'])
+        browser = playwright.chromium.launch(**options)
+        try:
+            page = browser.new_page()
+            # Script text is present in the parsed page even if DevTools has
+            # evicted the HTTP response body. Do not evaluate an incomplete
+            # standalone engine that lacks the surrounding MCEL contract.
+            page.set_content('<script type="text/plain">' + engine + '</script>')
+            observed = browser_loaded_engine_source(page)
+            assert engine in observed
+            assert check_browser_source_binding(ROOT,observed)['status']=='pass'
+            page.set_content('<script type="text/plain">' +
+                             engine.replace('traitsPreserved=', 'oldDetails=', 1) + '</script>')
+            stale = browser_loaded_engine_source(page)
+            assert check_browser_source_binding(ROOT,stale)['reason']=='served-engine-source-mismatch'
+        finally:
+            browser.close()
+
+
+def test_runtime_binding_diagnostics_source_bound_and_identifies_missing_intents(tmp_path):
+    path=tmp_path/'runtime/reports/flog/mcel-runtime/mcel-runtime-flog-report.json'
+    path.parent.mkdir(parents=True)
+    runtime={'repositoryProvenance':{'fingerprint':'abc123'},
+             'evidenceScope':{'canonical':True}, 'trials':[
+                 {'app':'file-explorer', 'semanticBinding':{'appId':'file-explorer',
+                     'adapterId':'file-explorer-adapter','runtimeBindingAuditReady':False,
+                     'operationalSemanticRuntimeReady':False,
+                     'runtimeBindingCoverage':{'entries':[{'intentId':'listRoots',
+                         'status':'unbound','runtimeBound':False,'bindingSource':'missing:roots'}]}}}]}
+    path.write_text(json.dumps(runtime),encoding='utf8')
+    report=canonical_runtime_binding_diagnostics(tmp_path,audit())
+    assert report['status']=='admitted'
+    assert report['applications'][0]['unbound']==[{'intentId':'listRoots','bindingSource':'missing:roots'}]
+    assert report['applications'][1]['status']=='witness-absent'
+    runtime['trials'][0]['semanticBindingSource'] = {'status': 'blocked', 'reason': 'served-binding-source-mismatch', 'missingSources': ['file-explorer-semantic-adapter.js']}
+    runtime['trials'][0]['semanticBindingProbe'] = {'registryPresent': True, 'registeredAdapterPresent': True, 'exportedAdapterPresent': True}
+    path.write_text(json.dumps(runtime),encoding='utf8')
+    mismatched = canonical_runtime_binding_diagnostics(tmp_path,audit())
+    assert mismatched['applications'][0]['status'] == 'served-source-unbound'
+    assert 'file-explorer-semantic-adapter.js' in markdown({'status':'failed','generatedAt':'2026-10-22','counts':{},'promises':[],'runtimeBindingDiagnostics':mismatched})
+    runtime['trials'][0]['semanticBinding'] = None
+    runtime['trials'][0]['semanticBindingSource'] = {'status': 'exact'}
+    runtime['trials'][0]['semanticBindingProbe'] = {'registryPresent': False, 'registeredAdapterPresent': False}
+    path.write_text(json.dumps(runtime),encoding='utf8')
+    missing_registry = canonical_runtime_binding_diagnostics(tmp_path,audit())
+    assert missing_registry['applications'][0]['status'] == 'browser-registry-unavailable'
+    runtime['trials'][0]['semanticBinding'] = {'appId':'file-explorer','runtimeBindingAuditReady':False,'runtimeBindingCoverage':{'entries':[{'intentId':'listRoots','runtimeBound':False,'status':'unbound','bindingSource':'missing:roots'}]}}
+    text=markdown({'status':'failed','generatedAt':'2026-10-22','counts':{},'promises':[],
+                   'runtimeBindingDiagnostics':report})
+    assert 'Unbound intent `listRoots`' in text
+    runtime['repositoryProvenance']['fingerprint']='wrong'
+    path.write_text(json.dumps(runtime),encoding='utf8')
+    assert canonical_runtime_binding_diagnostics(tmp_path,audit())['status']=='refused-noncanonical-or-source-mismatched'
+
+
+def test_host_bound_proof_stage_is_never_presented_as_full_semantic_runtime():
+    from tools.promise_coverage import mcel_promises
+    source=(ROOT/'tools/promise_coverage/mcel_promises.py').read_text(encoding='utf8')
+    assert 'tools/mcel_phase1_host_bound_prove.py' in source
+    assert "'main_computer/mcel_app_prove.py','--app'" not in source
+    assert "stage['fullSemanticRuntimeProven'] = False" in source
+    stage={'status':'pass','exitCode':0,'proofScope':'host-bound-ir-native-authoritative',
+           'fullSemanticRuntimeProven':False}
+    text=markdown({'status':'failed','generatedAt':'2026-10-22','counts':{},'promises':[],
+                   'stages':{'host-bound-proof-calculator':stage}})
+    assert 'not full semantic-runtime proof' in text

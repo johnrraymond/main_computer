@@ -135,7 +135,7 @@ def test_code_editor_static_semantic_surface_is_declared_in_dsl_package() -> Non
 
     assert semantic["id"] == "code-editor.semantic-surface.legacy-fidelity"
     assert semantic["surfaceId"] == "code-editor.surface.monaco-selected-file-editor"
-    assert semantic["presentationAuthority"] == "existing-host-html"
+    assert semantic["presentationAuthority"] == "mcel-compiled-host-markup"
     assert semantic["runtimeFacade"] == "MainComputerCodeEditorRuntime"
 
     region_ids = [region["id"] for region in semantic["regions"]]

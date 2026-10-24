@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from main_computer.mcel_calculator_host_projection import project as project_calculator_host
+
 import re
 from pathlib import Path
 
@@ -120,7 +122,7 @@ def test_calculator_basic_evaluate_and_graph_are_local_only() -> None:
 def test_calculator_model_and_mathics_actions_have_non_mutating_boundaries() -> None:
     source = CALCULATOR_JS.read_text(encoding="utf-8")
     capabilities = CAPABILITIES_JS.read_text(encoding="utf-8")
-    html = CALCULATOR_HTML.read_text(encoding="utf-8")
+    html = project_calculator_host(ROOT)
     routes = CALCULATOR_ROUTES.read_text(encoding="utf-8")
 
     ask_model = _javascript_function(source, "askCalculatorModel")

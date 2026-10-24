@@ -2990,6 +2990,115 @@
       return Boolean(sharedAspectModel && hasGenericZones);
     }
 
+    // Phase 2: a narrow semantic entry point to the Lab's *existing* UI
+    // operations. This API does not create mock evidence or bypass the shell's
+    // existing read-only mounting, hit-testing, and contract checks.
+    function mcelLabSemanticRefusal(code, message) {
+      return {ok: false, code, message};
+    }
+
+    function mcelLabSemanticBlueprint(appId) {
+      const id = String(appId || "").trim();
+      const blueprint = id && window.McelAppBlueprintsCore?.inspectableBlueprintFor?.(id);
+      return blueprint?.appId === id ? blueprint : null;
+    }
+
+    window.McelLabSemanticRuntime = Object.freeze({
+      selectAppBlueprint(payload = {}) {
+        const blueprint = mcelLabSemanticBlueprint(payload.appId || payload.blueprint?.appId);
+        if (!blueprint) return mcelLabSemanticRefusal("blueprint-not-found", "The requested blueprint is not registered.");
+        mcelBlueprintShellSelectApp(blueprint.appId, {mount: false});
+        const shell = mcelBlueprintShellState();
+        const selected = document.getElementById("mcel-blueprint-app-select");
+        if (shell.appId !== blueprint.appId || selected?.value !== blueprint.appId) {
+          return mcelLabSemanticRefusal("blueprint-not-selected", "The Lab did not select the requested blueprint.");
+        }
+        return {ok: true, appId: blueprint.appId, aspectId: shell.aspectId, selectedInUi: true};
+      },
+      inspectAspect(payload = {}) {
+        const appId = payload.appId || payload.blueprint?.appId || mcelBlueprintShellState().appId;
+        const blueprint = mcelLabSemanticBlueprint(appId);
+        const aspectId = String(payload.aspectId || payload.aspect?.id || "").trim();
+        if (!blueprint) return mcelLabSemanticRefusal("blueprint-not-found", "The requested blueprint is not registered.");
+        const aspects = blueprint.aspects?.length
+          ? blueprint.aspects.map((item) => item.id)
+          : (window.McelAppBlueprintsCore?.genericAspectIds?.() || []);
+        if (!aspectId || !aspects.includes(aspectId)) {
+          return mcelLabSemanticRefusal("aspect-not-found", "The requested aspect is not in the blueprint.");
+        }
+        renderMcelBlueprintShell({appId: blueprint.appId, aspectId});
+        const shell = mcelBlueprintShellState();
+        const selected = document.getElementById("mcel-blueprint-aspect-select");
+        if (shell.appId !== blueprint.appId || shell.aspectId !== aspectId || selected?.value !== aspectId) {
+          return mcelLabSemanticRefusal("aspect-not-inspected", "The Lab did not display the requested aspect.");
+        }
+        return {ok: true, appId: blueprint.appId, aspectId, inspectedInUi: true};
+      },
+      mountAppPreview(payload = {}) {
+        const blueprint = mcelLabSemanticBlueprint(payload.appId || payload.blueprint?.appId);
+        if (!blueprint) return mcelLabSemanticRefusal("blueprint-not-found", "The requested blueprint is not registered.");
+        mcelBlueprintShellSelectApp(blueprint.appId, {mount: false});
+        const report = mcelBlueprintShellMountSelectedApp();
+        const workSurface = document.getElementById("mcel-blueprint-work-surface");
+        const preview = workSurface?.querySelector(".mcel-lab-mounted-preview-frame [data-mcel-preview-clone]");
+        if (!report || report.appId !== blueprint.appId || !preview ||
+            preview.getAttribute("data-mcel-mounted-app") !== blueprint.appId ||
+            workSurface?.dataset.mcelMountState !== "mounted" ||
+            report.sourceMutationAllowed !== false) {
+          return mcelLabSemanticRefusal("preview-not-mounted", "No actual contained, inert preview was mounted.");
+        }
+        return {
+          ok: true, appId: blueprint.appId, route: report.route,
+          rootSelector: blueprint.rootSelector, contained: true,
+          sourceMutationAllowed: false, evidenceCaptured: true
+        };
+      },
+      inspectRenderedElement(payload = {}) {
+        const shell = mcelBlueprintShellState();
+        const blueprint = mcelLabSemanticBlueprint(payload.appId || shell.appId);
+        if (!blueprint || shell.appId !== blueprint.appId) {
+          return mcelLabSemanticRefusal("blueprint-not-selected", "Select the inspected blueprint first.");
+        }
+        // A semantic call cannot fabricate a hit-test. A user must have
+        // activated point inspection and selected a real rendered node.
+        const record = mcelBlueprintShellSelectedElementFor(blueprint);
+        const preview = document.querySelector(".mcel-lab-mounted-preview-frame [data-mcel-preview-clone]");
+        const report = mcelBlueprintShellReportFor(blueprint);
+        if (!shell.inspectionMode || !preview || !record || !report ||
+            !record.selector || (payload.selector && payload.selector !== record.selector) ||
+            record.selectedAppId !== blueprint.appId ||
+            !record.selectedAt || record.selectedAt < report.capturedAt) {
+          return mcelLabSemanticRefusal("element-not-observed", "No matching element has been selected through the live inspector.");
+        }
+        const selected = mcelBlueprintShellRenderSelectedElement(blueprint);
+        if (selected !== true ||
+            document.getElementById("mcel-blueprint-selected-element")?.dataset.mcelSelectionRender !== "complete") {
+          return mcelLabSemanticRefusal("inspector-not-rendered", "The selected element was not rendered in the inspector.");
+        }
+        return {ok: true, appId: blueprint.appId, elementRecord: record, observedInUi: true};
+      },
+      validateBlueprintContract(payload = {}) {
+        const blueprint = mcelLabSemanticBlueprint(payload.appId || mcelBlueprintShellState().appId);
+        if (!blueprint) return mcelLabSemanticRefusal("blueprint-not-found", "The requested blueprint is not registered.");
+        if (mcelBlueprintShellState().appId !== blueprint.appId) {
+          return mcelLabSemanticRefusal("blueprint-not-selected", "Select the blueprint before validation.");
+        }
+        // This is the Lab's existing, bounded generic-aspect/layout-zone
+        // check, not a claim of complete application correctness.
+        const passed = validateMcelBlueprintShell();
+        const status = document.getElementById("mcel-blueprint-validity-status")?.textContent || "";
+        if (passed !== true || !status.startsWith(`Blueprint valid: ${blueprint.appId}`)) {
+          return mcelLabSemanticRefusal("blueprint-contract-invalid", "The Lab did not establish its generic blueprint contract.");
+        }
+        return {
+          ok: true, appId: blueprint.appId,
+          aspectId: mcelBlueprintShellState().aspectId,
+          validationScope: "generic-aspects-and-layout-zones",
+          findings: [], observedInUi: true
+        };
+      }
+    });
+
     function bindMcelBlueprintShellActionControls() {
       const validateButton = document.getElementById("mcel-blueprint-validate-action");
       const mountButton = document.getElementById("mcel-blueprint-mount-action");

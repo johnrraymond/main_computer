@@ -1,5 +1,12 @@
 # MCEL Requirements Language
 
+## Author-facing requirements beyond machine truth
+
+The language exists to help people describe an app without knowing MCEL's internals. Alongside exact semantic and effect obligations, product requirements should capture the **intended first-render experience** (hierarchy, important content, density, responsive needs), **allowed design freedoms**, and **composition invariants** (what each part provides/requires/refuses). These are priorities in `pretty_docs/mcel-authoring-principles.md`.
+
+Do not invent parser-supported `mcel-*` fields for these concerns unless the registry schema has been extended and tested. Until then, write the intent in ordinary requirements prose and bind its concrete testable constraints to existing supported blocks. Avoid turning aesthetic preferences into arbitrary hard errors; test accessible and safe invariant violations separately from legitimate customization.
+
+
 This document defines the documentation-first grammar used by MCEL app requirements
 documents. It is intentionally readable Markdown with machine-readable fenced blocks.
 The goal is to let humans write product requirements first, then let MCEL tools parse

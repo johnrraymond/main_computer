@@ -1,0 +1,886 @@
+{
+  "application": {
+    "appId": "task-manager-notebook",
+    "authoringStatus": "dsl-authoritative",
+    "id": "app:task-manager-notebook",
+    "kind": "application",
+    "semanticVersion": "1",
+    "source": {
+      "end": {
+        "column": 1,
+        "line": 124
+      },
+      "file": "mcel_experiments/task-manager-notebook/application.js",
+      "frontend": "mcel.dsl.v1",
+      "kind": "dsl-source-binding",
+      "start": {
+        "column": 1,
+        "line": 1
+      }
+    },
+    "targetTruthStatus": "semantic-runtime-proven",
+    "title": "MCEL Acid Tab Witness"
+  },
+  "capabilities": [],
+  "derivations": [],
+  "effects": [],
+  "fingerprints": {
+    "semantic": "sha256:1e6f9a73a8d863520333e1efa7282c6bd061daad495db111fb4b7a0bfd6b550b",
+    "semanticAlgorithm": "sha256-mcel-application-ir-semantics-v1",
+    "sourceBinding": "sha256:e6509bac5211131e93340138159d1001ed653746f94e5b0094de37f7922596c1",
+    "sourceBindingAlgorithm": "sha256-mcel-application-ir-source-binding-v1"
+  },
+  "intents": [
+    {
+      "cancellable": false,
+      "effectRefs": [],
+      "executionBinding": "task-manager-notebook-runtime.select-tab",
+      "id": "intent:task-manager-notebook.select-tab",
+      "input": [
+        {
+          "id": "input:task-manager-notebook.select-tab.selectedTabId",
+          "kind": "intent-input",
+          "schema": {
+            "enum": [
+              "server-processes",
+              "all-processes",
+              "connections",
+              "hardware"
+            ],
+            "kind": "string"
+          },
+          "source": {
+            "end": {
+              "column": 1,
+              "line": 124
+            },
+            "file": "mcel_experiments/task-manager-notebook/application.js",
+            "frontend": "mcel.dsl.v1",
+            "kind": "dsl-source-binding",
+            "start": {
+              "column": 1,
+              "line": 1
+            }
+          },
+          "sourceName": "selectedTabId"
+        }
+      ],
+      "invariants": [
+        {
+          "ref": "invariant:task-manager-notebook.single-selected-tab"
+        },
+        {
+          "ref": "invariant:task-manager-notebook.tab-selection-has-no-operational-effects"
+        }
+      ],
+      "kind": "intent",
+      "label": "Select one data view without operational effects",
+      "lane": "local-view-state",
+      "operationKind": "interaction",
+      "outcomes": [
+        "completed",
+        "failed",
+        "refused"
+      ],
+      "reads": [
+        {
+          "ref": "state:task-manager-notebook.active-tab-id"
+        },
+        {
+          "ref": "state:task-manager-notebook.data-status"
+        },
+        {
+          "ref": "state:task-manager-notebook.notebook-data"
+        }
+      ],
+      "refusals": [],
+      "risk": "local-state",
+      "runtimeMethod": "selectTab",
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "selectTab",
+      "viewTransition": {
+        "invalidInput": "refuse",
+        "kind": "transition.assign",
+        "target": {
+          "ref": "state:task-manager-notebook.active-tab-id"
+        },
+        "value": {
+          "input": {
+            "ref": "input:task-manager-notebook.select-tab.selectedTabId"
+          },
+          "kind": "input.read"
+        }
+      },
+      "viewWrites": [
+        {
+          "ref": "state:task-manager-notebook.active-tab-id"
+        }
+      ],
+      "writes": []
+    }
+  ],
+  "layouts": [
+    {
+      "id": "layout:task-manager-notebook.workspace",
+      "kind": "layout",
+      "layoutGrammar": {
+        "constraints": [
+          {
+            "id": "notebook-min-size",
+            "minHeight": 0,
+            "minWidth": 0,
+            "selector": ".task-notebook"
+          }
+        ],
+        "id": "task-manager.notebook.layout.v1",
+        "regions": [
+          {
+            "children": [
+              "tab-list",
+              "panel-group"
+            ],
+            "id": "notebook",
+            "layout": "stack",
+            "selector": ".task-notebook"
+          },
+          {
+            "id": "tab-list",
+            "layout": "wrap",
+            "overflow": "available-width",
+            "selector": "#task-notebook-tabs"
+          },
+          {
+            "id": "panel-group",
+            "layout": "fill",
+            "overflow": "contained-scroll",
+            "selector": ".task-tab-panels"
+          }
+        ],
+        "rootSelector": ".task-notebook"
+      },
+      "orderedChildren": [
+        {
+          "ref": "surface-node:task-manager-notebook.select-tab"
+        }
+      ],
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "surface": {
+        "ref": "surface:task-manager-notebook.workspace"
+      },
+      "zones": [
+        "notebook",
+        "tab-list",
+        "panel-group"
+      ]
+    }
+  ],
+  "migration": {
+    "knownGaps": [],
+    "sourceFamily": "official-vanilla-javascript-dsl",
+    "state": "dsl-authoritative"
+  },
+  "models": [],
+  "normalization": {
+    "canonicalJson": "utf8-json-sorted-keys-no-insignificant-whitespace",
+    "normalizer": "mcel-application-ir-normalizer-v1",
+    "objectKeyOrder": "lexicographic",
+    "schema": "mcel.application-ir-normalization.v1",
+    "semanticSequences": "preserved",
+    "undefinedValues": "rejected",
+    "unorderedSemanticCollections": "stable-id"
+  },
+  "proof": {
+    "invariants": [
+      {
+        "description": "Exactly one selected tab, matching accessible state and visible panel. Inactive panels keep their data.",
+        "examples": [
+          "Changing to Connections hides Processes without clearing its data.",
+          "A missing or duplicate controlled panel must be refused."
+        ],
+        "id": "invariant:task-manager-notebook.single-selected-tab",
+        "kind": "invariant",
+        "label": "One tab owns one visible panel",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        },
+        "sourceName": "singleSelectedTab"
+      },
+      {
+        "description": "Changing tabs and synchronizing a route cannot kill a PID, restart a server, schedule work, or run an AI action.",
+        "examples": [
+          "Selecting CPU + GPU changes the view only.",
+          "Selecting a tab must never invoke operational endpoints."
+        ],
+        "id": "invariant:task-manager-notebook.tab-selection-has-no-operational-effects",
+        "kind": "invariant",
+        "label": "Selection is only view state",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        },
+        "sourceName": "tabSelectionHasNoOperationalEffects"
+      }
+    ],
+    "requiredAuthorities": [
+      "visible-surface",
+      "operation-receipt"
+    ],
+    "targetTruthStatus": "semantic-runtime-proven"
+  },
+  "provenance": {
+    "compiler": {
+      "id": "mcel.dsl.compiler",
+      "version": "mcel-dsl-builder-wave2b"
+    },
+    "frontend": {
+      "id": "mcel.dsl.v1",
+      "sourceFiles": [
+        {
+          "path": "mcel_experiments/task-manager-notebook/application.js",
+          "sha256": "sha256:759a716d17e8dadd4cb265fccd7647cb0d3177dc2184259340c293dca30d1002"
+        }
+      ],
+      "version": "1"
+    },
+    "nativeIrConstruction": {
+      "kind": "application-ir-construction",
+      "status": "native"
+    },
+    "nodeBindings": [
+      {
+        "id": "binding:app:task-manager-notebook",
+        "semanticId": "app:task-manager-notebook",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:input:task-manager-notebook.select-tab.selectedTabId",
+        "semanticId": "input:task-manager-notebook.select-tab.selectedTabId",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:intent:task-manager-notebook.select-tab",
+        "semanticId": "intent:task-manager-notebook.select-tab",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:invariant:task-manager-notebook.single-selected-tab",
+        "semanticId": "invariant:task-manager-notebook.single-selected-tab",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:invariant:task-manager-notebook.tab-selection-has-no-operational-effects",
+        "semanticId": "invariant:task-manager-notebook.tab-selection-has-no-operational-effects",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:layout:task-manager-notebook.workspace",
+        "semanticId": "layout:task-manager-notebook.workspace",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:scenario:task-manager-notebook.reject-unknown-tab",
+        "semanticId": "scenario:task-manager-notebook.reject-unknown-tab",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:scenario:task-manager-notebook.select-connections-is-local",
+        "semanticId": "scenario:task-manager-notebook.select-connections-is-local",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:scenario:task-manager-notebook.select-tab",
+        "semanticId": "scenario:task-manager-notebook.select-tab",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:state:task-manager-notebook.active-tab-id",
+        "semanticId": "state:task-manager-notebook.active-tab-id",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:state:task-manager-notebook.data-status",
+        "semanticId": "state:task-manager-notebook.data-status",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:state:task-manager-notebook.notebook-data",
+        "semanticId": "state:task-manager-notebook.notebook-data",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:surface-node:task-manager-notebook.select-tab",
+        "semanticId": "surface-node:task-manager-notebook.select-tab",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      },
+      {
+        "id": "binding:surface:task-manager-notebook.workspace",
+        "semanticId": "surface:task-manager-notebook.workspace",
+        "source": {
+          "end": {
+            "column": 1,
+            "line": 124
+          },
+          "file": "mcel_experiments/task-manager-notebook/application.js",
+          "frontend": "mcel.dsl.v1",
+          "kind": "dsl-source-binding",
+          "start": {
+            "column": 1,
+            "line": 1
+          }
+        }
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "expect": {
+        "activeTabIdUnchanged": true,
+        "operationalEffects": 0,
+        "refused": true
+      },
+      "given": {
+        "selectedTabId": "not-a-tab"
+      },
+      "id": "scenario:task-manager-notebook.reject-unknown-tab",
+      "intent": {
+        "ref": "intent:task-manager-notebook.select-tab"
+      },
+      "kind": "scenario",
+      "label": "reject-unknown-tab",
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "rejectUnknownTab",
+      "steps": []
+    },
+    {
+      "expect": {
+        "activeTabId": "connections",
+        "operationalEffects": 0,
+        "visiblePanel": "connections"
+      },
+      "given": {
+        "activeTabId": "server-processes",
+        "selectedTabId": "connections"
+      },
+      "id": "scenario:task-manager-notebook.select-connections-is-local",
+      "intent": {
+        "ref": "intent:task-manager-notebook.select-tab"
+      },
+      "kind": "scenario",
+      "label": "select-connections-is-local",
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "selectConnectionsIsLocal",
+      "steps": []
+    },
+    {
+      "id": "scenario:task-manager-notebook.select-tab",
+      "intent": {
+        "ref": "intent:task-manager-notebook.select-tab"
+      },
+      "kind": "scenario",
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "steps": [
+        {
+          "authority": "operation-receipt",
+          "expected": "completed",
+          "kind": "claim.receipt-disposition"
+        }
+      ]
+    }
+  ],
+  "schema": "mcel.application-ir.v1",
+  "states": [
+    {
+      "authority": "renderer-local",
+      "id": "state:task-manager-notebook.active-tab-id",
+      "initial": "server-processes",
+      "kind": "state",
+      "schema": {
+        "enum": [
+          "server-processes",
+          "all-processes",
+          "connections",
+          "hardware"
+        ],
+        "kind": "string"
+      },
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "activeTabId"
+    },
+    {
+      "authority": "derived",
+      "id": "state:task-manager-notebook.data-status",
+      "initial": "not-requested",
+      "kind": "state",
+      "schema": {
+        "kind": "string"
+      },
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "dataStatus"
+    },
+    {
+      "authority": "derived",
+      "id": "state:task-manager-notebook.notebook-data",
+      "initial": {
+        "all_processes": [],
+        "connections": [],
+        "hardware": {},
+        "processes": []
+      },
+      "kind": "state",
+      "schema": {
+        "kind": "record"
+      },
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "notebookData"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "surface:task-manager-notebook.workspace",
+      "kind": "surface",
+      "nodes": [
+        {
+          "id": "surface-node:task-manager-notebook.select-tab",
+          "intent": {
+            "ref": "intent:task-manager-notebook.select-tab"
+          },
+          "kind": "surface-node",
+          "label": "Select one data view without operational effects",
+          "nodeKind": "control",
+          "source": {
+            "end": {
+              "column": 1,
+              "line": 124
+            },
+            "file": "mcel_experiments/task-manager-notebook/application.js",
+            "frontend": "mcel.dsl.v1",
+            "kind": "dsl-source-binding",
+            "start": {
+              "column": 1,
+              "line": 1
+            }
+          },
+          "sourceName": "selectTab"
+        }
+      ],
+      "presentationAuthority": "existing-host-html",
+      "root": "#task-manager-app",
+      "route": "/applications/task-manager",
+      "semanticSurface": {
+        "controls": [
+          {
+            "controls": "#task-panel-processes",
+            "id": "select-server-processes",
+            "intent": "selectTab",
+            "role": "select-tab",
+            "selector": "#task-tab-processes",
+            "selects": "server-processes"
+          },
+          {
+            "controls": "#task-panel-all-processes",
+            "id": "select-all-processes",
+            "intent": "selectTab",
+            "role": "select-tab",
+            "selector": "#task-tab-all-processes",
+            "selects": "all-processes"
+          },
+          {
+            "controls": "#task-panel-connections",
+            "id": "select-connections",
+            "intent": "selectTab",
+            "role": "select-tab",
+            "selector": "#task-tab-connections",
+            "selects": "connections"
+          },
+          {
+            "controls": "#task-panel-hardware",
+            "id": "select-hardware",
+            "intent": "selectTab",
+            "role": "select-tab",
+            "selector": "#task-tab-hardware",
+            "selects": "hardware"
+          }
+        ],
+        "forbiddenDefaultRegions": [],
+        "id": "task-manager.notebook.semantic-surface.v1",
+        "presentationAuthority": "existing-host-html",
+        "regions": [
+          {
+            "id": "notebook",
+            "primary": true,
+            "role": "tabbed-workspace",
+            "selector": ".task-notebook"
+          },
+          {
+            "id": "tab-list",
+            "role": "single-selection-tablist",
+            "selector": "#task-notebook-tabs"
+          },
+          {
+            "id": "panel-group",
+            "role": "associated-panel-set",
+            "selector": ".task-tab-panels"
+          },
+          {
+            "controlledBy": "#task-tab-processes",
+            "dataSource": "processes",
+            "id": "panel-server-processes",
+            "readOnly": true,
+            "role": "notebook-data-panel",
+            "selector": "#task-panel-processes"
+          },
+          {
+            "controlledBy": "#task-tab-all-processes",
+            "dataSource": "all_processes",
+            "id": "panel-all-processes",
+            "readOnly": true,
+            "role": "notebook-data-panel",
+            "selector": "#task-panel-all-processes"
+          },
+          {
+            "controlledBy": "#task-tab-connections",
+            "dataSource": "connections",
+            "id": "panel-connections",
+            "readOnly": true,
+            "role": "notebook-data-panel",
+            "selector": "#task-panel-connections"
+          },
+          {
+            "controlledBy": "#task-tab-hardware",
+            "dataSource": "hardware",
+            "id": "panel-hardware",
+            "readOnly": true,
+            "role": "notebook-data-panel",
+            "selector": "#task-panel-hardware"
+          }
+        ],
+        "surfaceId": "task-manager.notebook",
+        "tabGroup": {
+          "a11y": {
+            "keyboard": "standard-tabs",
+            "panel": "tabpanel",
+            "tab": "tab",
+            "tabList": "tablist"
+          },
+          "defaultTabId": "server-processes",
+          "id": "task-manager.data-notebook",
+          "inactivePanelPolicy": "hidden-but-model-preserved",
+          "role": "single-selection-view-state",
+          "routeSync": "view-state-only",
+          "state": "activeTabId",
+          "tabs": [
+            {
+              "id": "server-processes",
+              "label": "Server Processes",
+              "panel": "#task-panel-processes",
+              "tab": "#task-tab-processes"
+            },
+            {
+              "id": "all-processes",
+              "label": "All Processes",
+              "panel": "#task-panel-all-processes",
+              "tab": "#task-tab-all-processes"
+            },
+            {
+              "id": "connections",
+              "label": "Connections",
+              "panel": "#task-panel-connections",
+              "tab": "#task-tab-connections"
+            },
+            {
+              "id": "hardware",
+              "label": "CPU + GPU",
+              "panel": "#task-panel-hardware",
+              "tab": "#task-tab-hardware"
+            }
+          ]
+        }
+      },
+      "source": {
+        "end": {
+          "column": 1,
+          "line": 124
+        },
+        "file": "mcel_experiments/task-manager-notebook/application.js",
+        "frontend": "mcel.dsl.v1",
+        "kind": "dsl-source-binding",
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      },
+      "sourceName": "TaskManagerNotebookSurface"
+    }
+  ]
+}

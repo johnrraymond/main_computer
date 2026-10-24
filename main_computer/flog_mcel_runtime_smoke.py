@@ -33,6 +33,7 @@ absent, required app-surface conformance layers pass, and verdict/counts agree. 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -60,6 +61,53 @@ DEFAULT_TIMEOUT_MS = 15000
 DEFAULT_VIEWPORT = {"width": 1920, "height": 1200}
 
 APP_SURFACE_REGISTRY_JS = Path("main_computer/web/applications/scripts/mcel-app-surface-registry.js")
+
+# The real browser must serve the same adapter authority whose source hash is
+# recorded in the FLOG report.  Otherwise runtime binding observations are not
+# source-bound proof.  No page or registry mutation is performed.
+BINDING_ADAPTER_SOURCES = {
+    "file-explorer": "file-explorer-semantic-adapter.js",
+    "git-tools": "git-tools-semantic-adapter.js",
+    "mcel-lab": "mcel-lab-semantic-adapter.js",
+    "website-builder": "website-builder-semantic-adapter.js",
+}
+BINDING_REGISTRY_SOURCE = "mcel-domain-adapter-registry.js"
+
+
+def attest_browser_adapter_source(page: Any, app_id: str, repo: Path | None = None) -> dict[str, Any]:
+    """Check exact served inline adapter/registry text; never infer from Git alone."""
+    name = BINDING_ADAPTER_SOURCES.get(app_id)
+    if not name:
+        return {"status": "not-applicable"}
+    repo = repo or Path(__file__).resolve().parents[1]
+    scripts_dir = repo / "main_computer/web/applications/scripts"
+    sources = {}
+    try:
+        for filename in (BINDING_REGISTRY_SOURCE, name):
+            data = (scripts_dir / filename).read_text(encoding="utf-8")
+            if not data:
+                raise ValueError(f"Empty binding authority source: {filename}")
+            sources[filename] = data
+    except (OSError, UnicodeError, ValueError) as exc:
+        return {"status": "blocked", "reason": "local-adapter-source-unreadable", "detail": str(exc)}
+    # Reading script text from the DOM avoids Playwright's response-body cache
+    # and verifies the actual running page, including host-side inline expansion.
+    try:
+        served = page.evaluate("""sources => {
+          const scripts = Array.from(document.scripts).map(s => s.textContent || "");
+          return Object.fromEntries(Object.entries(sources).map(([name, source]) =>
+            [name, scripts.some(text => text.includes(source))]));
+        }""", sources)
+    except Exception as exc:
+        return {"status": "blocked", "reason": "browser-binding-source-read-failed", "detail": str(exc)}
+    hashes = {name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+              for name, text in sources.items()}
+    if not isinstance(served, dict) or not all(served.get(name) is True for name in sources):
+        missing = sorted(name for name in sources if not isinstance(served, dict) or served.get(name) is not True)
+        return {"status": "blocked", "reason": "served-binding-source-mismatch",
+                "missingSources": missing, "localSourceSha256": hashes}
+    return {"status": "exact", "reason": "served-registry-and-adapter-source-exact",
+            "localSourceSha256": hashes}
 
 BASELINE_LAYER_IDS = (
     "semantic-surface",
@@ -1224,7 +1272,53 @@ def run_browser_scenarios(
                             appTruthError = "McelAppTruthGate is unavailable";
                           }
 
+                          // Runtime-binding evidence is observed in the actual browser,
+                          // never fabricated by the repository's headless Node bridge.
+                          let semanticBinding = null;
+                          let readiness = null;
+                          let readinessError = "";
+                          const registry = window.McelDomainAdapterRegistry || null;
+                          const exported = {
+                            "file-explorer": window.FileExplorerSemanticAdapter,
+                            "git-tools": window.GitToolsSemanticAdapter,
+                            "mcel-lab": window.McelLabSemanticAdapter,
+                            "website-builder": window.WebsiteBuilderSemanticAdapter
+                          }[appId] || null;
+                          try {
+                            readiness = registry?.evaluateAdapterReadiness?.(appId) || null;
+                          } catch (error) {
+                            readinessError = String(error?.message || error);
+                          }
+                          const semanticBindingProbe = {
+                            appId,
+                            registryPresent: Boolean(registry && typeof registry.evaluateAdapterReadiness === "function"),
+                            registryVersion: String(registry?.REGISTRY_VERSION || ""),
+                            registeredAdapterPresent: readiness?.registryAdapterPresent === true,
+                            exportedAdapterPresent: Boolean(exported),
+                            exportedAdapterCoverageCallable: typeof exported?.getRuntimeBindingCoverage === "function",
+                            adapterId: String(readiness?.adapterId || ""),
+                            readinessError,
+                            coverageAvailable: readiness?.runtimeBindingCoverageAvailable === true,
+                            coverageError: readiness?.runtimeBindingCoverageError || null,
+                            runtimeBindingAuditReady: readiness?.runtimeBindingAuditReady === true,
+                            unboundIntentIds: readiness?.unboundIntentIds || []
+                          };
+                          if (readiness?.registryAdapterPresent === true) {
+                            semanticBinding = {
+                              appId,
+                              adapterId: readiness.adapterId,
+                              adapterVersion: readiness.adapterVersion,
+                              intentCoverageReady: readiness.intentCoverageReady === true,
+                              executableIntentCount: readiness.executableIntentCount,
+                              operationalSemanticRuntimeReady: readiness.operationalSemanticRuntimeReady === true,
+                              runtimeBindingAuditReady: readiness.runtimeBindingAuditReady === true,
+                              runtimeBindingCoverage: readiness.runtimeBindingCoverage,
+                              runtimeBindingCoverageValidation: readiness.runtimeBindingCoverageValidation
+                            };
+                          }
                           return JSON.parse(JSON.stringify({
+                            semanticBinding,
+                            semanticBindingProbe,
                             diagnosis: raw || {},
                             widgetPayload: payload || null,
                             widgetStatusAvailable: Boolean(status),
@@ -1243,6 +1337,9 @@ def run_browser_scenarios(
                     raw_diagnosis = result.get("diagnosis") if isinstance(result, dict) and isinstance(result.get("diagnosis"), dict) else {}
                     widget_payload = result.get("widgetPayload") if isinstance(result, dict) and isinstance(result.get("widgetPayload"), dict) else {}
 
+                    trial["semanticBinding"] = result.get("semanticBinding") if isinstance(result.get("semanticBinding"), dict) else None
+                    trial["semanticBindingProbe"] = result.get("semanticBindingProbe") if isinstance(result.get("semanticBindingProbe"), dict) else None
+                    trial["semanticBindingSource"] = attest_browser_adapter_source(page, scenario.app)
                     trial["diagnosis"] = compact_diagnosis(raw_diagnosis)
                     trial["widgetPayload"] = compact_widget_payload(widget_payload) if widget_payload else {}
                     trial["widgetStatusAvailable"] = bool(result.get("widgetStatusAvailable")) if isinstance(result, dict) else False

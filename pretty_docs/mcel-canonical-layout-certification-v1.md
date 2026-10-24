@@ -1,5 +1,12 @@
 # MCEL Patch 15 — Canonical whole-workspace layout certificate
 
+## Why layout certification exists
+
+One of MCEL's principal authoring responsibilities is to produce **good-looking, adaptable layouts by default** without forcing authors to understand layout internals or repair each application with custom CSS. This certifier is a bounded structural geometry authority toward that goal, not an aesthetic rating. Apply `pretty_docs/mcel-authoring-principles.md`: assess initial hierarchy and polish, varied content, valid alternative presentations, and invalid composition refusals in addition to geometric correctness. Its fixed Calculator/Code Editor matrix does **not** yet prove arbitrary layout generalization or freedom from application-specific authoring glue.
+
+A design that intentionally differs from the default remains valid if it preserves the applicable hard constraints. A visually awkward default may meet this certificate and still require a reusable MCEL-library improvement.
+
+
 ## Contract
 
 The independent certifier is `python tools/mcel_layout_certify.py --json`.

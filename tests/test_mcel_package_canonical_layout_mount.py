@@ -5,6 +5,8 @@ opted into canonical structural layout authority in this migration.
 """
 from __future__ import annotations
 
+from main_computer.mcel_calculator_host_projection import project as project_calculator_host
+
 import json
 import os
 import shutil
@@ -66,7 +68,8 @@ def _browser():
 
 def _page(browser, app_id):
     page = browser.new_page(viewport={'width': 1465, 'height': 882})
-    html = (BROWSER / f'apps/{app_id}.html').read_text(encoding='utf8')
+    html = (project_calculator_host(ROOT) if app_id == 'calculator'
+            else (BROWSER / f'apps/{app_id}.html').read_text(encoding='utf8'))
     css = (BROWSER / f'styles/{app_id}.css').read_text(encoding='utf8')
     page.set_content('<style>' + css + '</style>' + html)
     page.add_script_tag(path=str(DIAGNOSTICS))

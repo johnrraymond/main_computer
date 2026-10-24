@@ -1,5 +1,12 @@
 # MCEL Promise Verification Harness (additive v1)
 
+## Why these promises are being developed
+
+MCEL's primary goal is **not** application reverse engineering or producing a green harness. It is to help authors build good-looking, working web applications with little framework-specific work and broad design freedom because the parts themselves enforce sound composition. The four governing principles—minimal authoring effort, attractive defaults, maximum sound flexibility, correctness through composition—are in `pretty_docs/mcel-authoring-principles.md`.
+
+This harness is a **measurement authority**, not the product. A passing bounded source/serialization/effect test is useful infrastructure, not proof that ordinary authors can achieve a polished web app without learning MCEL internals. The six still-unverified broader platform claims should direct work toward missing library capabilities, not toward weakening acceptance criteria. Unseen-app reconstruction is an optional migration use case rather than a primary authoring prerequisite. Existing manifest IDs and source-bound claim scopes remain unchanged.
+
+
 The question is not whether MCEL has named laws, registered requirements, or passing structural tests. The question is whether each user-facing MCEL promise has independent, current, source-bound proof for the **exact bounded behavior** claimed.
 
 The two current authorities remain distinct. `McelAppTruthGate` owns application truth; `McelLabEngine.runContractTests()` owns bounded engine contract outcomes. `buildAdoptionCase()` is structural planning evidence, not a measurement of replacement advantage. The harness only projects existing evidence against a versioned manifest. It cannot certify an application or alter adoption/production gates.

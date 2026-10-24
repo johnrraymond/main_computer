@@ -219,3 +219,30 @@ def test_portable_verdict_refuses_incomplete_or_misclassified_proof(tamper):
     assert evidence['status']=='refused'
     assert evidence['portableLocalAndWorkspacePassed'] is False
     assert evidence['passed'] is False and evidence['fullSemanticRuntimeProven'] is False
+
+
+def test_source_drift_diagnostics_are_bounded_and_never_hide_changes(tmp_path):
+    from tools.mcel_portable_intent_probe import source_drift_diagnostics
+    from main_computer.mcel_evidence_provenance import build_repository_provenance
+    first = tmp_path / 'main_computer' / 'old.py'
+    first.parent.mkdir(parents=True)
+    first.write_text('original\n', encoding='utf-8')
+    removed = tmp_path / 'tests' / 'test_mcel_removed.py'
+    removed.parent.mkdir()
+    removed.write_text('pass\n', encoding='utf-8')
+    before = build_repository_provenance(tmp_path, include_file_digests=True)
+    first.write_text('edited\n', encoding='utf-8')
+    removed.unlink()
+    (first.parent / 'new.py').write_text('new\n', encoding='utf-8')
+    after = build_repository_provenance(tmp_path, include_file_digests=True)
+    drift = source_drift_diagnostics(before, after)
+    assert drift['status'] == 'source-modified-during-proof'
+    assert drift['previousFingerprint'] != drift['currentFingerprint']
+    assert drift['fileChanges']['modified']['paths'] == ['main_computer/old.py']
+    assert drift['fileChanges']['removed']['paths'] == ['tests/test_mcel_removed.py']
+    assert drift['fileChanges']['added']['paths'] == ['main_computer/new.py']
+    assert drift['provenanceMetadataChanged'] is False
+    shortened = source_drift_diagnostics(before, after, max_paths=0)
+    assert shortened['fileChanges']['modified']['count'] == 1
+    assert shortened['fileChanges']['modified']['paths'] == []
+    assert shortened['fileChanges']['modified']['additionalPathsOmitted'] == 1

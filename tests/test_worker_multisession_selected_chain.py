@@ -47,7 +47,13 @@ class BrowserProvider {
   async send() { mutationCount++; throw new Error('Forbidden network mutation'); }
 }
 const window = {
-  crypto: {randomUUID: () => 'deterministic-msk-id'},
+  crypto: {
+    randomUUID: () => 'deterministic-msk-id',
+    getRandomValues: settings.disableSecureRandom ? undefined : (bytes => {
+      for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 17 + 73) % 256;
+      return bytes;
+    })
+  },
   location: {origin: 'http://127.0.0.1:8765'},
   ethereum: {request: async () => { mutationCount++; throw new Error('Forbidden chain switch'); }},
   ethers: {BrowserProvider},
@@ -99,6 +105,10 @@ def test_signs_exact_selected_chain_without_switching(chain: str) -> None:
     assert result["result"]["chain_id"] == chain
     assert result["result"]["message"]["chain_id"] == chain
     assert result["signedMessage"]["chain_id"] == chain
+    slug = result["signedMessage"]["user_slug"]
+    assert len(slug) == 64
+    assert all(character in "0123456789abcdef" for character in slug)
+    assert result["result"]["message"]["user_slug"] == slug
     assert result["result"]["message"]["wallet_address"] == ADDRESS
 
 
@@ -143,3 +153,42 @@ def test_worker_passes_selected_connected_chain_to_signer() -> None:
     assert "chain_id: workerNormalizeChainIdHex(wallet.chainId)" in source
     assert source.count("walletLibrary.requestMultiSessionKeySignature({") == 2
     assert source.count("requestContext,\n          origin:") == 2
+
+
+def test_signed_worker_message_satisfies_stable_hub_user_slug_contract() -> None:
+    """Exercise the actual JS message builder through the Stable Hub issue path."""
+    from types import SimpleNamespace
+
+    from main_computer.multisession_key_signing import build_personal_sign_blob, private_key_to_address
+    from main_computer.stable_hub_msk import InMemoryStableMultiSessionKeyStore, StableHubMultiSessionKeyService
+
+    browser_result = _probe()
+    assert browser_result["error"] is None
+    private_key = "0x" + "11" * 32
+    address = private_key_to_address(private_key)
+    message = dict(browser_result["signedMessage"])
+    message["wallet_address"] = address
+    signed_request = build_personal_sign_blob(
+        message=message,
+        private_key=private_key,
+        wallet_address=address,
+        chain_id="42424241",
+    )
+    service = StableHubMultiSessionKeyService(
+        topology=SimpleNamespace(network={"chain_id": 42424241}, cluster_id="test-cluster"),
+        hub_id="testnet-hub1",
+        store=InMemoryStableMultiSessionKeyStore(),
+    )
+    issued = service.request_key({"signed_request": signed_request})
+    assert issued["ok"] is True
+    assert issued["key"]["status"] == "active"
+    assert issued["key"]["user_slug"] == message["user_slug"]
+    assert issued["key"]["chain_id"] == "42424241"
+
+
+def test_browser_signer_refuses_missing_secure_randomness() -> None:
+    """The protocol never substitutes a predictable slug for secure entropy."""
+    result = _probe(disableSecureRandom=True)
+    assert "Secure browser randomness is required" in result["error"]
+    assert result["result"] is None
+    assert result["signCount"] == 0

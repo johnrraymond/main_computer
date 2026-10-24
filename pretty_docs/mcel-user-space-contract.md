@@ -1,5 +1,12 @@
 # MCEL User-Space Contract
 
+## The author-facing promise and the current contract are different things
+
+MCEL's **product objective** is to let an author express an application with very little framework-specific work, get an attractive and correctly functioning interface by default, vary the design freely within sound constraints, and compose parts that understand and enforce their relationships. The four development priorities are defined in `pretty_docs/mcel-authoring-principles.md`.
+
+The seven user-space clauses listed below remain the **current bounded guarantees**. They make the authoring objective possible but do not, by themselves, prove low author effort, aesthetic quality, flexible composition, or automatic prevention of every bad pattern. When MCEL does not know enough to derive a safe binding or design decision, it must ask for the missing semantic decision or refuse the composition; it must not silently guess product meaning. Valid unconventional designs must remain possible.
+
+
 MCEL needs a user-facing contract that is as easy to plan around as a framework contract. React can be explained to a builder as a small set of durable rules: components render from props and state, effects run after render, keys control identity, and callers must not mutate state directly. MCEL needs the same kind of planning surface.
 
 This page is that surface. It does not describe internal "laws" as magic. A law module is implementation detail. A MCEL user should plan around the contract below.

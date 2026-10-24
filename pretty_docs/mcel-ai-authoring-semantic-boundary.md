@@ -1,6 +1,15 @@
 # MCEL AI Authoring Language
 ## Semantic Authoring Boundary
 
+## Authoring principles that constrain the compiler design
+
+The compiler boundary exists to fulfill `pretty_docs/mcel-authoring-principles.md`'s four priorities: reduce authored effort, produce attractive default interfaces, permit the widest valid design space, and make composition correct by construction wherever the declared semantics suffice.
+
+The distinction is not “hide everything” versus “expose everything.” **Infer mechanical behavior; provide presentational defaults; ask for meaningful product decisions; refuse provably unsound combinations.** A special visual design that satisfies the hard interaction, accessibility, authority, and containment rules must remain expressible. The compiler should report the specific violated rule when refusing an invalid composition, not demand that users learn an internal renderer or silently accept a broken combination.
+
+A valid semantic DSL with no usable design defaults still falls short of the product promise. These four principles are development goals, **not evidence that the existing DSL already implements every contract**.
+
+
 This document defines what the official MCEL AI-authoring language must require an author to say, what the compiler may generate, and what the compiler must reject. `pretty_docs/mcel-ai-application-authoring-cycle.md` applies this boundary stage by stage, and `pretty_docs/mcel-ai-authoring-pattern-catalog.md` demonstrates it through recurring code-level tasks.
 
 It is a design specification, not an implemented API. Code examples show the intended authoring level and may change when the canonical IR is specified.

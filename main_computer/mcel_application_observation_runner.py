@@ -154,6 +154,15 @@ def _run_browser(*, repo: Path, app_id: str, repository_fingerprint: str, headed
             url = f"{server.base_url}/mcel-package-host.html?app={app_id}" + ("&observation=1" if scenario_linked else "")
             try:
                 page.goto(url, wait_until="networkidle")
+                # Host-bound projections intentionally redirect away from the
+                # package host. That page cannot expose the package-host API;
+                # do not misreport the predictable redirect as a 30s timeout.
+                if urlparse(page.url).path != "/mcel-package-host.html":
+                    raise ObservationRunnerError(
+                        f"Application {app_id!r} left the generic package host for {page.url}. "
+                        "Use tools/mcel_phase1_host_bound_prove.py for host-bound proof. "
+                        "That proof is not full package-host semantic-runtime proof."
+                    )
                 page.wait_for_function(
                     "window.McelApplicationPackageHost && "
                     "(window.McelApplicationPackageHost.ready === true || window.McelApplicationPackageHost.error)",

@@ -268,7 +268,8 @@
         payload.approved === true ||
         (Array.isArray(payload.reviewedFindingIds) && payload.reviewedFindingIds.length > 0) ||
         (Array.isArray(payload.annotationIds) && payload.annotationIds.length > 0) ||
-        (Array.isArray(currentState.validation?.findings) && currentState.validation.findings.length > 0) ||
+        (Array.isArray(currentState.validation?.findings) &&
+          currentState.validation.findings.some((item) => item?.reviewed === true)) ||
         (Array.isArray(currentState.annotations) && currentState.annotations.some((item) => item.reviewed === true));
     }
 
@@ -476,7 +477,17 @@
 
     async function executeWithRuntime(definition, payload = {}, options = {}) {
       if (!definition || !definition.runtimeMethod || !hasRuntimeMethod(definition.runtimeMethod)) {
-        return {ok: true, localFallback: true};
+        // Only the two verified draft operations may use the adapter-local
+        // fallback. Shell selection, mounted DOM, point inspection and
+        // blueprint validation are real UI effects, never bookkeeping.
+        if (definition && LOCAL_DRAFT_INTENTS.has(definition.id)) {
+          return {ok: true, localFallback: true};
+        }
+        return {
+          ok: false,
+          code: "runtime-binding-unavailable",
+          message: `No verified MCEL Lab UI binding for ${definition?.id || "unknown"}.`
+        };
       }
       return ADAPTER_TOOLKIT.dispatchAction(runtimeBindings, definition.id, payload, {
         ...options,
@@ -732,7 +743,58 @@
       };
     }
 
-    function getIntentCoverage() {
+    // The adapter can produce two bounded, ephemeral artifacts without an
+    // external UI/runtime: a *draft* annotation and a reviewable repair-context
+    // packet. Neither applies a patch, persists annotations to app JSON, or
+    // operates a live preview. Independent tests exercise both state transitions,
+    // their receipts, and their prohibited/invalid inputs.
+    //
+    // Do NOT classify the other five as adapter-local. In particular, the
+    // executeWithRuntime() fallback only updates local bookkeeping for mount,
+    // rendered-element inspection and validation; that is not proof those
+    // operations were actually carried out in the Lab UI.
+    const LOCAL_DRAFT_INTENTS = Object.freeze(new Set([
+      "annotateRefactorCandidate",
+      "exportRepairContext"
+    ]));
+
+    function getRuntimeBindingCoverage() {
+      bindRuntimeFromGlobal();
+      const requiredIntentIds = getIntentCoverage().entries
+        .filter((entry) => entry.status === "executable")
+        .map((entry) => entry.intentId);
+      const entries = requiredIntentIds.map((intentId) => {
+        const definition = INTENT_DEFINITIONS.find((entry) => entry.id === intentId);
+        const hasExternalRuntime = typeof executeIntent === "function" &&
+          hasRuntimeMethod(definition?.runtimeMethod);
+        const localDraft = !hasExternalRuntime && LOCAL_DRAFT_INTENTS.has(intentId) &&
+          typeof preflightIntent === "function" &&
+          typeof applyLocalStateSuccess === "function" &&
+          typeof buildReceipt === "function";
+        const status = hasExternalRuntime ? "runtime-bound" :
+          (localDraft ? "adapter-local" : "unbound");
+        return {
+          intentId,
+          status,
+          runtimeBound: status !== "unbound",
+          bindingSource: localDraft
+            ? `mcel-lab-adapter-local-draft.${intentId}`
+            : (definition?.executionBinding || `missing:${intentId}`)
+        };
+      });
+      const runtimeBindingReady = entries.length > 0 &&
+        entries.every((entry) => entry.runtimeBound);
+      return {
+        schema: "mcel.runtime-binding-coverage.v1",
+        verificationMode: "derived-runtime-binding-audit",
+        requiredIntentIds,
+        entries,
+        runtimeBindingReady,
+        verification: {passed: runtimeBindingReady}
+      };
+    }
+
+        function getIntentCoverage() {
       const entries = INTENT_DEFINITIONS.map((intent) => ({
         intentId: intent.id,
         label: intent.label,
@@ -811,7 +873,8 @@
       classifyFailure,
       buildRecoveryOptions,
       getRecoveryCoverage,
-      getIntentCoverage
+      getIntentCoverage,
+      getRuntimeBindingCoverage
     });
 
     global.McelLabSemanticAdapter = api;

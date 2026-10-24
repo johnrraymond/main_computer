@@ -1,5 +1,12 @@
 # MCEL Application Authoring
 
+## The intended authoring experience
+
+The target is a library of self-governing parts, not a requirement to master the HTML/contract/JavaScript internals described in this guide. The author should decide **what** the application does and choose the meaningful parts of its appearance; MCEL should supply attractive defaults and derive ordinary layout, binding, validation, state, and lifecycle mechanics from those decisions. A correct but surprising design choice should be configurable; an impossible or unsafe composition should yield a focused diagnostic. See `pretty_docs/mcel-authoring-principles.md` for the four governing development priorities and explicit measures.
+
+**Today:** The source forms, host-bound presentations, generated projections, and proof boundaries below describe actual supported paths at their documented scope. They do **not** yet establish that an unfamiliar author can reliably produce a polished application with minimal work. Treat missing defaults, manual glue, escape hatches, and framework-specific authoring steps as MCEL library deficiencies to be eliminated where a reusable semantic rule can replace them.
+
+
 MCEL applications are authored through three cooperating surfaces:
 
 ```text
@@ -60,8 +67,8 @@ MCEL currently supports two presentation modes:
 | `package-document` | the app package owns its browser document | generated contracts mount beside authored package `src/` files |
 | `host-bound` | an existing route, HTML/CSS, root selector, and runtime facade remain stable | the generated MCEL adapter mounts onto the existing page |
 
-Counter and Workbench are `package-document` examples. Calculator is the
-reference `host-bound` example: its visible UI remains
+Counter and Workbench are **retired historical `package-document` reference names**, not current live new-app authoring fixtures. Calculator is the
+active `host-bound` reference example: its visible UI remains
 `/applications/calculator` and `#calculator-app`, while the DSL-generated
 adapter is the semantic authority.
 
@@ -101,7 +108,7 @@ Do not call application-local success a global MCEL guarantee. Promote a behavio
 
 A repository-aware developer can build a bounded new MCEL application today by combining the live global `window.MCEL` source/runtime lifecycle with an application-owned contract, resolver, controller, and evidence path patterned after Code Editor or Git Tools.
 
-MCEL now provides a deterministic canonical scaffold generator, a golden package fixture, repository and browser discovery, an SCM-controlled application-operation runtime, generic package mounting with semantic state/control projection, package-local acceptance, operation-linked independent Chromium observation, and app-oriented proof through `McelAppTruthGate`. The installed product-level SDK command remains future work, but the repository-local application path is complete. Do not infer a global guarantee from an application-specific global such as `MainComputerGitToolsLayout`.
+MCEL provides a deterministic repository-local scaffold generator, fixture-neutral package validation, repository and browser discovery, SCM-controlled application operations, generic package mounting, package-local acceptance, independent Chromium observations, and app-oriented proof through `McelAppTruthGate`. Historical Counter/Workbench golden fixtures are retired as live examples; the current real references are Calculator and Code Editor. The installed product-level SDK and low-effort, attractive-default greenfield experience remain **unproven product targets**. Do not infer a global guarantee from an application-specific global such as `MainComputerGitToolsLayout`.
 
 ### Target generated authoring path
 
@@ -134,7 +141,7 @@ Use `pretty_docs/mcel-application-ir-and-compiler-migration.md` for the stable c
 
 Use `pretty_docs/mcel-application-ir-schema-and-normalization.md` for the proposed concrete `mcel.application-ir.v1` node model, deterministic normalization, semantic/source-binding fingerprints, and the Counter and Workbench equivalence slices. Use `pretty_docs/mcel-existing-application-definition-migration-inventory.md` before changing any existing application-definition path; it records which requirements documents, adapters, surface helpers, package contracts, blueprints, and evidence authorities must remain represented during each pass. Use `pretty_docs/mcel-official-vanilla-javascript-dsl.md` for the exact proposed `mcel.dsl.v1` authoring shape: strict CommonJS, `@mcel/app`, explicit stable IDs, one root `defineApp`, optional static app-local modules, constrained expression callbacks, semantic surfaces/layouts, capability lifecycles, and scenario claims. Use `pretty_docs/mcel-compiler-diagnostics-and-repair-protocol.md` for stable semantic error codes, authored-source locations, safe repair classes, candidate-versus-last-proven truth, evidence invalidation, dependency-aware repair order, and authoring-cycle re-entry. Use `pretty_docs/mcel-scaffolder-generated-projection-and-compatibility.md` for exact package paths, file ownership, candidate staging, manifest/generation records, importers, generated projections, dual-authoring comparison, promotion, rollback, and retirement rules. Use `pretty_docs/mcel-ai-application-authoring-cycle.md` for the stage-gated workflow from requirements and legacy inventory through candidate compilation, repair, compatibility, evidence, proof, promotion, and modification. Use `pretty_docs/mcel-ai-authoring-pattern-catalog.md` for complete task-oriented examples that show the independent decisions, official DSL shape, generated mechanics, proof obligations, common diagnostics, and migration impact of recurring application features. Use `pretty_docs/mcel-semantic-change-and-evidence-impact.md` when modifying an existing application; it defines semantic change sets, dependency closure, earliest-stage re-entry, projection invalidation, evidence renewal, and audited evidence reuse. Use `pretty_docs/mcel-ai-authoring-and-migration-benchmark.md` to evaluate whether the current path or proposed DSL actually helps an AI reach correct, migrated, repaired, independently proven behavior with less mechanical work. Use `pretty_docs/mcel-ai-authoring-documentation-completeness-review.md` for the final cross-specification verdict, the remaining deferred questions, and the bounded first implementation scope.
 
-The official DSL syntax, compiler diagnostics/repair protocol, authoring cycle, pattern catalog, semantic-change model, benchmark contract, and final completeness review are now documented but not implemented. `pretty_docs/mcel-ai-authoring-documentation-completeness-review.md` limits the first permissible code wave, after explicit authorization, to the structural IR kernel and canonical diagnostics. It does not authorize full DSL compilation, migration, promotion, evidence reuse, or legacy-compiler retirement.
+The official DSL, diagnostic/repair protocol, authoring cycle, pattern catalog, change-impact model, and benchmark have extensive specifications. **Several bounded DSL, IR, candidate/projection, and host-bound proof implementation waves are now present**, rather than only the structural IR kernel described by the historical completeness review. That review was an early implementation authorization, not a current product-readiness verdict. Current supported authoring paths are in `pretty_docs/mcel-dsl-app-authoring-surface.md` and `pretty_docs/mcel-status-and-roadmap.md`. Comprehensive ergonomic primitives, beautiful defaults, open-ended visual customization, and greenfield ease of use still require work and independent evaluation.
 
 ## 1. Division of responsibility
 

@@ -1285,7 +1285,9 @@ raise SystemExit(0)
 
 
 def _route_writer_script(target: Mapping[str, Any]) -> str:
-    dynamic_config = _render_shared_rpc_traefik_dynamic_config(target)
+    from tools.mother_rpc_browser_compat_v2 import render_canonical_v2
+
+    dynamic_config = render_canonical_v2({**target, "network": target.get("network", "mainnet")})
     dynamic_config_b64 = base64.b64encode(dynamic_config.encode("utf-8")).decode("ascii")
     target_path = f"/traefik/dynamic/{target['dynamic_file']}"
     legacy_file = target.get("legacy_dynamic_file")

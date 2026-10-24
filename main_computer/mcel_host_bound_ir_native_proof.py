@@ -110,6 +110,11 @@ def run_host_bound_ir_native_intent_proof(
             + (": " + ", ".join(failed[:12]) if failed else ".")
         )
 
+    observed_semantics = {
+        str(item.get("intentName")): (item.get("parity") or {}).get("checks", {}).get("semanticEffectObserved") is True
+        for item in (parity.get("browserObservation") or {}).get("intentResults") or []
+        if isinstance(item, Mapping) and item.get("intentName")
+    }
     return {
         "schema": profile.report_schema,
         "version": profile.report_version,
@@ -151,6 +156,7 @@ def run_host_bound_ir_native_intent_proof(
                 "status": (parity.get("browserObservation") or {}).get("status"),
                 "observedIntentCount": (parity.get("browserObservation") or {}).get("observedIntentCount"),
                 "checks": (parity.get("browserObservation") or {}).get("checks"),
+                "intentSemanticChecks": observed_semantics,
             },
         },
         "legacyEvidenceRequired": False,

@@ -19,7 +19,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from main_computer.mcel_application_package_browser_catalog import build_repository_browser_catalog_payload
 from main_computer.mcel_application_virtual_assets import read_virtual_mcel_browser_asset
@@ -67,6 +67,8 @@ class HostBoundBrowserObservationProfile:
     ignored_page_error_fragments: tuple[str, ...] = ("MonacoEnvironment",)
     ignored_console_error_fragments: tuple[str, ...] = ("monaco", "worker")
     host_runtime_script_path: Path = Path("main_computer/web/applications/scripts/mcel-host-bound-application-runtime.js")
+    # Prefer canonical generated host markup over a retired checked-in HTML snapshot.
+    host_markup_projector: Callable[[Path], str] | None = None
 
     @property
     def capability_intents(self) -> frozenset[str]:
@@ -360,7 +362,8 @@ def _run_playwright(
 def _host_bound_observation_html(profile: HostBoundBrowserObservationProfile, repo: Path) -> str:
     """Build a minimal browser page from an app's real host HTML and scripts."""
 
-    body = _repo_text(repo, profile.host_html_path)
+    body = (profile.host_markup_projector(repo) if profile.host_markup_projector
+            else _repo_text(repo, profile.host_html_path))
     css = _repo_text(repo, profile.css_path)
     scripts = "\n".join(
         f"<script>\n{_repo_text(repo, path)}\n</script>"

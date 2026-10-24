@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from main_computer.mcel_calculator_host_projection import project as project_calculator_host
+
 import re
 from pathlib import Path
 
@@ -55,7 +57,7 @@ def _calculator_normalized_ir() -> dict:
 
 
 def test_calculator_static_semantic_surface_is_declared_in_dsl_source() -> None:
-    html = (REPO / "main_computer/web/applications/apps/calculator.html").read_text(encoding="utf-8")
+    html = project_calculator_host(REPO)
     ir = _calculator_normalized_ir()
 
     surface = next(item for item in ir["surfaces"] if item["id"] == "surface:calculator.workspace")
@@ -113,7 +115,7 @@ def test_calculator_static_semantic_surface_is_declared_in_dsl_source() -> None:
 
 
 def test_calculator_static_layout_grammar_is_declared_in_dsl_source() -> None:
-    html = (REPO / "main_computer/web/applications/apps/calculator.html").read_text(encoding="utf-8")
+    html = project_calculator_host(REPO)
     ir = _calculator_normalized_ir()
 
     layout = next(item for item in ir["layouts"] if item["id"] == "layout:calculator.workspace")

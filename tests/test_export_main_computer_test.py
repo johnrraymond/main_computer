@@ -64,6 +64,28 @@ class ExportMainComputerTestTests(unittest.TestCase):
 
 
 
+    def test_export_excludes_nested_node_modules_and_rejects_leaked_dependencies(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+        copy_policy = script.split("function Test-RepoPathAllowed {", 1)[1].split(
+            "function Copy-ExportFile {", 1
+        )[0]
+        stage_policy = script.split("function Assert-CleanExportStage {", 1)[1].split(
+            "function ", 1
+        )[0]
+        blocked_names = copy_policy.split("$blockedDirectoryNames = @(", 1)[1].split(")", 1)[0]
+        bad_names = stage_policy.split("$badDirectoryNames = @(", 1)[1].split(")", 1)[0]
+
+        self.assertIn('"node_modules"', blocked_names)
+        self.assertIn('"node_modules"', bad_names)
+        self.assertIn('if ($blockedDirectoryNames -contains $part)', copy_policy)
+        self.assertIn('if ($badDirectoryNames -contains $part)', stage_policy)
+        self.assertIn('Copy-ExportDirectoryPruned', script)
+        self.assertIn('Assert-CleanExportStage -StageRoot $stageRoot', script)
+        # Preserve test implementation and npm dependency manifests; exclude only installed contents.
+        self.assertNotIn('"package.json"', blocked_names)
+        self.assertNotIn('"package-lock.json"', blocked_names)
+
+
     def test_export_script_includes_versioned_runtime_websites_without_unblocking_all_runtime(self) -> None:
         script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
 

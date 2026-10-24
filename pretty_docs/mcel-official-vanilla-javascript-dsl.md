@@ -1,11 +1,18 @@
 # MCEL Official Vanilla-JavaScript DSL
 ## Syntax and Authoring Rules for `mcel.dsl.v1`
 
+## Product-level design requirement
+
+The official syntax should let authors express a *good application*, not merely valid IR. In addition to exact state/effect semantics it must support polished default visuals, semantic appearance choices, responsive composition, and valid customization without requiring knowledge of renderer internals. The governing four principles are specified in `pretty_docs/mcel-authoring-principles.md`.
+
+When a common control relationship can be derived from stable semantic declarations, generating the binding is preferable to requiring repeated raw selectors or handlers. When product behavior or effect authority is genuinely ambiguous, the DSL must demand the necessary decision. Do not interpret this goal as claiming that today's bounded compiler already implements all such high-level conveniences.
+
+
 ## Status
 
 This document specifies the one official source syntax intended to construct `mcel.application-ir.v1`.
 
-It is the source specification for the official DSL. A bounded Counter-only Wave 2B builder/compiler front end is now implemented in `main_computer/mcel_dsl_runtime.js`, `main_computer/mcel_dsl_compiler.py`, and `tools/mcel_dsl_compile.py`. That implementation constructs candidate IR and checks exact Counter semantic equivalence only. The complete DSL surface, Workbench coverage, app-local modules, generated contract projections, runtime changes, promotion, and retirement of existing application-definition paths remain unimplemented and unauthorized.
+This is the source specification for the official DSL. The initial Counter-only Wave 2B compiler was an early milestone, **not the current complete status**. Subsequent bounded waves added generic DSL/package/projection machinery and host-bound authoring and proof for Calculator and Code Editor, with further Workbench-derived semantic coverage documented later in this specification. Current promoted paths and limitations are in `pretty_docs/mcel-dsl-app-authoring-surface.md`, `pretty_docs/mcel-canonical-app-authoring.md`, and `pretty_docs/mcel-status-and-roadmap.md`. Do not assume that every example in this specification is a stable, ergonomic high-level authoring primitive; those still need qualification against the authoring principles.
 
 The governing companion documents are:
 

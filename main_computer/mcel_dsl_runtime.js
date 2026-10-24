@@ -120,6 +120,13 @@ class SchemaBuilder {
     assert(Number.isInteger(value) && value >= 0, "MCEL_DSL_SCHEMA_MIN_LENGTH_INVALID", "Minimum length must be a nonnegative integer.");
     return new SchemaBuilder({...this.record, minLength: value});
   }
+  oneOf(values) {
+    assert(this.record.kind === "string" && Array.isArray(values) && values.length > 0 &&
+      values.every(value => typeof value === "string" && value.length > 0) &&
+      new Set(values).size === values.length,
+      "MCEL_DSL_ENUM_INVALID", "A string choice requires unique, nonempty values.");
+    return new SchemaBuilder({...this.record, enum: deepClone(values)});
+  }
   toJSON() {
     return deepClone(this.record);
   }
@@ -354,6 +361,21 @@ function createHostBoundApplicationBuilder(metadata) {
       effectRefs: effect ? [{ref: effect.id}] : [],
       outcomes: deepClone(options.outcomes || ["completed", "refused", "failed"]),
     };
+    if (options.viewState) {
+      // A renderer-local transition is deliberately NOT an IR canonical write.
+      // The input and target are separately checked by the shared IR validator.
+      const config = options.viewState;
+      assert(config && typeof config === "object" && typeof config.state === "string" &&
+        typeof config.input === "string" && config.schema,
+        "MCEL_DSL_VIEW_TRANSITION_INVALID", "View-state selection requires state, input, and input schema.");
+      const inputId = appScopedId(metadata, "input", `${name}.${config.input}`);
+      const targetId = appScopedId(metadata, "state", config.state);
+      record.input.push({id: inputId, kind: "intent-input", sourceName: config.input,
+        schema: normalizeSchema(config.schema, `${name}.viewState.schema`)});
+      record.viewWrites = [{ref: targetId}];
+      record.viewTransition = {kind: "transition.assign", target: {ref: targetId},
+        value: {kind: "input.read", input: {ref: inputId}}, invalidInput: "refuse"};
+    }
     intents.push(record);
     surfaceNodes.push({
       id: appScopedId(metadata, "surface-node", name),

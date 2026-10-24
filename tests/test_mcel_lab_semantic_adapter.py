@@ -187,6 +187,15 @@ def test_mcel_lab_adapter_executes_bounded_inspection_and_repair_context_flow() 
                   calls.push(["selectAppBlueprint", payload]);
                   return { ok: true, appId: payload.appId, aspectId: payload.aspectId || "overview" };
                 },
+                inspectAspect(payload) {
+                  calls.push(["inspectAspect", payload]);
+                  return {ok: true, appId: payload.appId, aspectId: payload.aspectId};
+                },
+                inspectRenderedElement(payload) {
+                  calls.push(["inspectRenderedElement", payload]);
+                  return {ok: true, appId: payload.appId,
+                    elementRecord: {appId: payload.appId, selector: payload.selector, visibleText: payload.visibleText}};
+                },
                 mountAppPreview(payload) {
                   calls.push(["mountAppPreview", payload]);
                   return { ok: true, appId: payload.appId, route: "/applications/calculator", rootSelector: "#calculator-app" };
@@ -271,7 +280,9 @@ def test_mcel_lab_adapter_executes_bounded_inspection_and_repair_context_flow() 
     assert result["exported"]["status"] == "pass"
     assert [call[0] for call in result["calls"]] == [
         "selectAppBlueprint",
+        "inspectAspect",
         "mountAppPreview",
+        "inspectRenderedElement",
         "validateBlueprintContract",
         "exportRepairContext",
     ]
@@ -350,3 +361,101 @@ def test_mcel_lab_runtime_visual_fit_probe_stays_at_owned_shell_boundaries() -> 
     assert '".mcel-lab-blueprint-facts"' not in selector_block
     assert '".mcel-lab-blueprint-pills"' not in selector_block
     assert '".mcel-lab-blueprint-navigation > .mcel-lab-shell-card"' not in selector_block
+
+
+def test_mcel_lab_local_binding_audit_is_bounded_to_proven_draft_operations() -> None:
+    """A successful localFallback alone must never certify a UI operation."""
+    result = run_node_json(adapter_prelude("""
+        adapter.setRuntimeBindings({});
+        const coverage = adapter.getRuntimeBindingCoverage();
+        const readiness = registry.evaluateAdapterReadiness("mcel-lab");
+        process.stdout.write(JSON.stringify({coverage, readiness}));
+    """))
+    coverage = result["coverage"]
+    entries = {entry["intentId"]: entry for entry in coverage["entries"]}
+    local = {name for name, entry in entries.items() if entry["status"] == "adapter-local"}
+    assert local == {"annotateRefactorCandidate", "exportRepairContext"}
+    assert all(entries[name]["runtimeBound"] is True for name in local)
+    assert all(entries[name]["bindingSource"].startswith("mcel-lab-adapter-local-draft.") for name in local)
+    assert {name for name, entry in entries.items() if entry["status"] == "unbound"} == {
+        "selectAppBlueprint", "inspectAspect", "mountAppPreview",
+        "inspectRenderedElement", "validateBlueprintContract",
+    }
+    assert coverage["runtimeBindingReady"] is False
+    assert coverage["verification"]["passed"] is False
+    assert result["readiness"]["operationalSemanticRuntimeReady"] is False
+
+
+def test_mcel_lab_draft_and_repair_context_have_observable_local_effects() -> None:
+    result = run_node_json(adapter_prelude("""
+        (async () => {
+          adapter.setRuntimeBindings({});
+          adapter.resetState({
+            selectedAppId: "mcel-lab",
+            selectedAspectId: "repair",
+            selectedElement: {appId: "mcel-lab", selector: "#target", visibleText: "Before"},
+            validation: {status: "reviewed", findings: [{
+              id: "f-1", evidence: {visualIntegrityViolations: [{
+                type: "atomic-control-label-split", selector: "#target", controlId: "c1",
+                label: "Before", repairConcepts: [{kind: "restore-atomic-label"}]
+              }]}
+            }]}
+          });
+          const before = adapter.getState();
+          const blocked = await adapter.executeIntent("exportRepairContext", {});
+          const annotated = await adapter.executeIntent("annotateRefactorCandidate", {
+            appId: "mcel-lab", annotationIntent: "investigate", reviewed: true,
+            rationale: "The label was split"
+          });
+          const exported = await adapter.executeIntent("exportRepairContext", {
+            appId: "mcel-lab", aspectId: "repair", reviewedFindingIds: ["f-1"],
+            annotationIds: [annotated.state.annotations[0].id]
+          });
+          const selfMutation = await adapter.executeIntent("applySelfMutation", {});
+          const hidden = await adapter.executeIntent("exportRepairContext", {
+            reviewedFindingIds: ["f-1"], instruction: "git push"
+          });
+          process.stdout.write(JSON.stringify({before, blocked, annotated, exported,
+            selfMutation, hidden, receipts: adapter.listReceipts()}));
+        })().catch(e => {console.error(e.stack); process.exit(1)});
+    """))
+    assert result["before"]["annotations"] == []
+    assert result["blocked"]["status"] == "blocked"
+    assert result["annotated"]["status"] == "pass"
+    assert result["annotated"]["state"]["annotations"][0]["selector"] == "#target"
+    assert result["annotated"]["state"]["annotations"][0]["draft"] is True
+    assert result["exported"]["status"] == "pass"
+    context = result["exported"]["state"]["repairContext"]
+    assert context["applicationAuthorized"] is False
+    assert context["patchApplicationBoundary"] == "external-new-patch-workflow"
+    assert context["proposedRepairConcepts"][0]["status"] == "proposed-unverified"
+    assert result["selfMutation"]["status"] == "blocked"
+    assert result["hidden"]["status"] == "blocked"
+    assert all(item["mutationAllowed"] is False for item in result["receipts"])
+
+
+def test_mcel_lab_fallback_success_cannot_prove_preview_or_validation() -> None:
+    result = run_node_json(adapter_prelude("""
+        (async () => {
+          adapter.setRuntimeBindings({});
+          adapter.resetState();
+          const mount = await adapter.executeIntent("mountAppPreview", {
+            appId: "mcel-lab", route: "/applications/mcel-lab"
+          });
+          const validate = await adapter.executeIntent("validateBlueprintContract", {
+            appId: "mcel-lab", aspectId: "overview"
+          });
+          const coverage = adapter.getRuntimeBindingCoverage();
+          process.stdout.write(JSON.stringify({mount, validate, coverage}));
+        })().catch(e => {console.error(e.stack); process.exit(1)});
+    """))
+    assert result["mount"]["status"] == "fail"
+    assert result["mount"]["failure"]["code"] == "runtime-binding-unavailable"
+    assert result["validate"]["status"] == "fail"
+    assert result["validate"]["failure"]["code"] == "runtime-binding-unavailable"
+    assert result["mount"]["state"]["mountedPreview"] is None
+    assert result["validate"]["state"]["validation"]["status"] == "not-run"
+    entries = {entry["intentId"]: entry for entry in result["coverage"]["entries"]}
+    assert entries["mountAppPreview"]["status"] == "unbound"
+    assert entries["validateBlueprintContract"]["status"] == "unbound"
+    assert result["coverage"]["runtimeBindingReady"] is False

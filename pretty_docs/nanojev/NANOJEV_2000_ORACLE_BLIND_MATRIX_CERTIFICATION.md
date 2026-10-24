@@ -70,3 +70,56 @@ This subcommand has no oracle reference or database input and rejects noncanonic
 ## Limits
 
 This test does not measure arbitrary payoff matrices outside the declared `[-4,4]` integer range, nor does it establish general language or symbolic execution. `T01B`/`T02B` are new counterfactual tiers. Frozen Gaussian positions and widths are retained, and the relative numerical gate is stringent near zero. It can fail even when density TV is low. There is no checkpoint resume; choose a new output directory for each independent run. Do not adjust training based on TEST failures and then treat those same TEST matrices as untouched holdout data.
+
+## Frozen-checkpoint failure diagnosis (no retraining)
+
+The separate **read-only diagnostic** reconstructs exactly the dataset encoded in the
+existing `best.pt` identity. It verifies all matrix split hashes and refuses identity
+drift. It compares the frozen density's numerical mean against the frozen neural
+center proposal and the exact payoff oracle. This separates errors learned by the
+conditional arithmetic encoder from distortion introduced by Gaussian density
+aggregation. The checkpoint and training files are never modified.
+
+For the stronger **2,000-bank DEV checkpoint**, run:
+
+```powershell
+& $py -m tools.nanojev_hawk_dove_gaussian_population_blind_matrix_diagnose `
+    --checkpoint "C:\Users\subsi\NanoJev\runs\hawk_dove_gaussian_2000_blind_matrix_v1\best.pt" `
+    --splits dev `
+    --device cuda `
+    --output "C:\Users\subsi\NanoJev\runs\hawk_dove_gaussian_2000_blind_matrix_dev_diagnosis_v1"
+```
+
+For the 1,000-bank 1.5M-step checkpoint, substitute its *actual* saved `best.pt`
+path and a different output directory; do not assume a checkpoint filename from
+an abbreviated training transcript.
+
+The newly created output directory contains:
+
+* `diagnosis.json`: per-tier X-only, Y-only and both-fail counts; joint all-mask
+  success rates; comparison of neural-center accuracy to Gaussian-decoded accuracy;
+  cases grouped by minimum `abs(X), abs(Y)` (including exactly zero), opponent-count
+  extremes and proximity to X=0, Y=0 and X=Y roots; hardest payoff matrices;
+  worst individual examples (including a separate nonzero-only selection);
+  counts of near-zero failures and neural-center-to-density failures/rescues;
+  density TV and KL; and sensitivity to 1%, 2%, 5%,
+  10% and 20% error thresholds. Only the 5% rule determines certification.
+* `dev_cases.csv` (or `train_cases.csv`, `test_cases.csv` if requested): one row per
+  presentation with matrix SHA256, four payoff bindings, counts, true X/Y, decoded
+  X/Y, neural center X/Y, errors, allowed 5% error, individual/joint/decision hits,
+  Gaussian-induced shift, zero/near-zero bucket and root proximity. Masked
+  presentations remain individually visible, but summary case rates count each
+  matrix/count/tier once, requiring all masks to pass.
+
+By default only **DEV** is diagnosed. `--splits train,dev` also works. To inspect
+TEST case failures, specify `--splits test --acknowledge-test-exposure` explicitly:
+this does not change weights, but those TEST cases should **no longer be treated as
+fresh unseen holdouts for subsequent model design**. Keep model changes grounded in
+TRAIN/DEV, then evaluate on newly generated withheld matrices.
+
+The diagnostic recalculates the existing certification gate for each split and
+**fails closed** if its independent case-level tally differs. It refuses to
+write into a non-empty report directory, preserving evidence from prior runs.
+The exact-zero rule remains strict: any nonzero prediction fails at an oracle
+zero. Reported neural-center error is a diagnostic alternative, not a change to
+what the certified density model outputs.

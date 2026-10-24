@@ -1,5 +1,12 @@
 # MCEL DSL App Authoring Surface
 
+## Author-first rule
+
+The file structure below is an **implementation contract**, not the desired cognitive burden on an app author. The main promise and four design priorities live in `pretty_docs/mcel-authoring-principles.md`: minimal authoring effort, attractive default appearance, maximal sound flexibility, and correctness through composition. When this guide asks authors to repeat a mechanical relationship, bridge raw selectors, patch CSS for ordinary layout, or learn internal generated-file structure, record the step as an opportunity to improve MCEL; do not normalize it as unavoidable application work.
+
+MCEL may synthesize ordinary control bindings, responsive behavior, and presentation defaults where semantics are unambiguous. Stable product identity, side-effect authorization, meaning-changing design decisions, and genuinely ambiguous policies remain author-owned. Good-practice constraints should diagnose incompatibilities, not ban unusual valid layouts.
+
+
 ## Current contract
 
 This document is the current generic authoring contract for applications written with `mcel.dsl.v1`.

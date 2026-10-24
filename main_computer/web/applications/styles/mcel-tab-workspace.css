@@ -1,0 +1,49 @@
+/* MCEL generic generated tab workspace defaults. No Task Manager selectors. */
+.mcel-tab-workspace {
+  --mcel-ink: #e9f0fb; --mcel-muted: #aabbd3; --mcel-line: #344963;
+  --mcel-accent: #a5c8ff; --mcel-ground: #0e1828; --mcel-surface: #17263b;
+  box-sizing: border-box; background: var(--mcel-ground); color: var(--mcel-ink);
+  font: 400 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: clamp(14px, 3vw, 32px); width: 100%; min-width: 0; min-height: 0;
+  border-radius: 16px; border: 1px solid var(--mcel-line);
+}
+.mcel-tab-workspace *, .mcel-tab-workspace *::before { box-sizing: border-box; }
+.mcel-tab-workspace__header { display: flex; justify-content: space-between; align-items: start;
+  flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+.mcel-tab-workspace__eyebrow { color: var(--mcel-accent); letter-spacing: .1em; font-size: 11px;
+  text-transform: uppercase; font-weight: 700; margin: 0 0 6px; }
+.mcel-tab-workspace__header h1 { font-size: clamp(22px, 3.5vw, 32px); line-height: 1.18; letter-spacing: -.025em; margin: 0 0 8px; }
+.mcel-tab-workspace__subtitle { margin: 0; color: var(--mcel-muted); }
+.mcel-tab-workspace__safety { color: #bee6d1; border: 1px solid #356b59;
+  background: #193d38; border-radius: 999px; font-size: 12px; padding: 6px 12px; }
+.mcel-tab-workspace__tabs { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--mcel-line);
+  margin-bottom: 18px; padding-bottom: 8px; min-width: 0; }
+.mcel-tab-workspace__tab { font: inherit; background: transparent; border: 1px solid transparent;
+  border-radius: 9px; color: var(--mcel-muted); padding: 9px 15px; cursor: pointer;
+  min-height: 40px; transition: color .12s, background .12s, border-color .12s; }
+.mcel-tab-workspace__tab:hover { color: var(--mcel-ink); background: var(--mcel-surface); }
+.mcel-tab-workspace__tab[aria-selected="true"] { background: #233e62; border-color: #486d9a;
+  color: #f5f9ff; font-weight: 650; }
+.mcel-tab-workspace__tab:focus-visible, .mcel-tab-workspace__table-scroll:focus-visible,
+.mcel-tab-workspace__panel:focus-visible { outline: 3px solid var(--mcel-accent); outline-offset: 2px; }
+.mcel-tab-workspace__panels { min-width: 0; min-height: 0; }
+.mcel-tab-workspace__panel { min-width: 0; min-height: 0; padding: 10px 0 0; }
+.mcel-tab-workspace__panel[hidden] { display: none !important; }
+.mcel-tab-workspace__panel h2 { font-size: 16px; margin: 0 0 14px; }
+.mcel-tab-workspace__content { min-width: 0; overflow: hidden; border: 1px solid var(--mcel-line);
+  border-radius: 12px; background: var(--mcel-surface); }
+.mcel-tab-workspace__notice { color: var(--mcel-muted); padding: 26px; margin: 0; text-align: center; }
+.mcel-tab-workspace__table-scroll { max-width: 100%; max-height: min(55vh, 540px); overflow: auto; }
+.mcel-tab-workspace table { width: 100%; border-collapse: collapse; min-width: max-content; font-size: 13px; }
+.mcel-tab-workspace th, .mcel-tab-workspace td { padding: 11px 16px; border-bottom: 1px solid #30445c;
+  text-align: left; max-width: 290px; overflow-wrap: anywhere; }
+.mcel-tab-workspace th { position: sticky; top: 0; background: #223751; z-index: 1;
+  color: #dbe9fa; font-weight: 650; }
+.mcel-tab-workspace tbody tr:hover { background: #22354e; }
+@media (max-width: 480px) {
+  .mcel-tab-workspace { padding: 12px; border-radius: 10px; }
+  .mcel-tab-workspace__tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mcel-tab-workspace__tab { min-width: 0; padding: 8px 5px; font-size: 12px; }
+  .mcel-tab-workspace__safety { font-size: 11px; }
+}
+@media (prefers-reduced-motion: reduce) { .mcel-tab-workspace__tab { transition: none; } }

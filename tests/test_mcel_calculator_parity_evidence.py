@@ -53,6 +53,10 @@ def test_calculator_fresh_browser_observation_exercises_generated_adapter_author
     assert payload["effectAccounting"]["status"] == "closed"
     assert payload["observedIntentCount"] == 11
     assert [item["status"] for item in payload["intentResults"]] == ["pass"] * 11
+    # A callable binding without a real observed DOM/result effect is not a
+    # semantic witness. Every canonical intent must pass this independent check.
+    assert all(item["parity"]["checks"]["semanticEffectObserved"] is True
+               for item in payload["intentResults"])
     assert all(
         item["network"]["requestCount"] == 0
         for item in payload["intentResults"]

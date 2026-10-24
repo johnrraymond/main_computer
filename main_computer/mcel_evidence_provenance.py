@@ -368,8 +368,14 @@ def iter_repository_fingerprint_files(repo: Path) -> Iterable[tuple[PurePosixPat
         yield relative, root.joinpath(*relative.parts)
 
 
-def build_repository_provenance(repo: Path) -> dict[str, Any]:
-    """Build a deterministic fingerprint of source state, not runtime state."""
+def build_repository_provenance(repo: Path, *, include_file_digests: bool = False) -> dict[str, Any]:
+    """Build a deterministic fingerprint of source state, not runtime state.
+
+    When requested, return a transient per-source digest inventory for drift
+    diagnostics. The ordinary public proof envelope stays byte-for-byte
+    compatible: no additional fields, no changed selection rules, and no
+    altered source hashes.
+    """
 
     root = repo.resolve()
     scope, selection_method, relative_paths, source_roots = _select_repository_files(root)
@@ -389,11 +395,14 @@ def build_repository_provenance(repo: Path) -> dict[str, Any]:
     )
     file_count = 0
     total_bytes = 0
+    file_digests: dict[str, str] | None = {} if include_file_digests else None
 
     for relative in relative_paths:
         path = root.joinpath(*relative.parts)
         data = path.read_bytes()
         content_hash = hashlib.sha256(data).hexdigest()
+        if file_digests is not None:
+            file_digests[relative.as_posix()] = content_hash
         aggregate.update(relative.as_posix().encode("utf-8"))
         aggregate.update(b"\0")
         aggregate.update(content_hash.encode("ascii"))
@@ -401,7 +410,7 @@ def build_repository_provenance(repo: Path) -> dict[str, Any]:
         file_count += 1
         total_bytes += len(data)
 
-    return {
+    result = {
         "schema": PROVENANCE_SCHEMA,
         "algorithm": FINGERPRINT_ALGORITHM,
         "fingerprint": aggregate.hexdigest(),
@@ -411,6 +420,9 @@ def build_repository_provenance(repo: Path) -> dict[str, Any]:
         "selectionMethod": selection_method,
         "sourceRoots": source_roots,
     }
+    if file_digests is not None:
+        result["fileDigests"] = file_digests
+    return result
 
 
 def extract_repository_provenance(evidence: Any) -> dict[str, Any] | None:

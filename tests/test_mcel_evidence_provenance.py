@@ -236,3 +236,14 @@ def test_real_git_mcelscope_excludes_mother_but_includes_untracked_mcel(
     new_mcel_test = tmp_path / "tests" / "test_mcel_new.py"
     new_mcel_test.write_text("pass\n", encoding="utf-8")
     assert provenance.build_repository_provenance(tmp_path)["fingerprint"] != start["fingerprint"]
+
+
+def test_optional_source_digest_inventory_preserves_canonical_fingerprint(tmp_path: Path) -> None:
+    source = tmp_path / "main_computer" / "operation.py"
+    source.parent.mkdir()
+    source.write_bytes(b"operation = 1\n")
+    ordinary = provenance.build_repository_provenance(tmp_path)
+    with_digest = provenance.build_repository_provenance(tmp_path, include_file_digests=True)
+    assert {k: v for k, v in with_digest.items() if k != "fileDigests"} == ordinary
+    assert set(with_digest["fileDigests"]) == {"main_computer/operation.py"}
+    assert "fileDigests" not in ordinary

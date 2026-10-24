@@ -11,6 +11,8 @@ surface/truth-gate proof: do not relabel one as the other.
 from __future__ import annotations
 
 import argparse
+import hashlib
+from datetime import datetime, timezone
 import json
 import subprocess
 import sys
@@ -30,6 +32,8 @@ from main_computer.mcel_dsl_compiler import compile_dsl_application  # noqa: E40
 from main_computer.mcel_evidence_provenance import build_repository_provenance  # noqa: E402
 
 SCHEMA = "mcel.phase-one-host-bound-proof.v1"
+SEMANTIC_WITNESS_SCHEMA = "mcel.host-bound-semantic-execution-witness.v1"
+SEMANTIC_WITNESS_ROOT = Path("runtime/reports/mcel-host-bound-semantic/apps")
 TRUTH_SCOPE = "host-bound-ir-native-authoritative"
 
 
@@ -57,7 +61,7 @@ def _load_acceptance(repo: Path, app_id: str) -> dict[str, Any]:
     return report
 
 
-def run_host_bound_proof(*, repo: Path, app_id: str, headed: bool = False) -> dict[str, Any]:
+def run_host_bound_proof(*, repo: Path, app_id: str, headed: bool = False, include_native: bool = False) -> dict[str, Any]:
     repo = repo.resolve()
     catalog = build_application_package_catalog(repo)
     if not catalog.ok or catalog.errors or catalog.invalid_count:
@@ -135,7 +139,7 @@ def run_host_bound_proof(*, repo: Path, app_id: str, headed: bool = False) -> di
         for contract in entries[0].get("contracts") or []
         if contract.get("status") == "not-due" and contract.get("contractId")
     )
-    return {
+    report = {
         "schema": SCHEMA,
         "appId": app_id,
         "status": "pass",
@@ -163,6 +167,92 @@ def run_host_bound_proof(*, repo: Path, app_id: str, headed: bool = False) -> di
             "effects": {"status": "closed"},
         },
     }
+    if include_native:
+        report["irNativeEvidence"] = proof
+    return report
+
+
+def _validate_semantic_execution(app_id: str, proof: Mapping[str, Any]) -> tuple[list[str], str]:
+    """Require observed results beyond method availability before issuing a witness.
+
+    Calculator uses real host DOM/receipt effects with mocked provider transport.
+    Code Editor uses real isolated ViewportServer and independent disk-byte effects.
+    Neither authority claims a live external provider was contacted.
+    """
+    intents = proof.get("intents") or {}
+    checks = proof.get("crossCuttingChecks") or {}
+    observed = (proof.get("parityEvidence") or {}).get("browserObservation") or {}
+    if (not isinstance(intents, dict) or not intents or
+            any(not isinstance(value, dict) or value.get("passed") is not True for value in intents.values()) or
+            not checks or not all(value is True for value in checks.values()) or
+            observed.get("status") != "pass" or observed.get("checks", {}).get("sourceTreeUnchanged") is not True or
+            proof.get("effectAccounting", {}).get("status") != "closed"):
+        raise HostBoundPhaseOneError("Semantic execution witness lacks complete real browser/intent authority.")
+    if app_id == "calculator":
+        semantic = observed.get("intentSemanticChecks") or {}
+        if (set(semantic) != set(intents) or not all(value is True for value in semantic.values()) or
+                len(intents) != 11):
+            raise HostBoundPhaseOneError("Calculator's real DOM/receipt effects are not proven for every intent.")
+        return sorted(intents), "real-host-dom-and-receipts; provider-transport-mocked"
+    if app_id == "code-editor":
+        effect = proof.get("browserEffectEvidence") or {}
+        required_checks = ("independentBytesAfterSave", "staleSourceRefused", "previewNonMutating",
+                           "unapprovedPatchRefused", "reviewedApplyWritesVerified")
+        digest_keys = ("saveAfterSha256", "reviewedApplyAfterSha256", "afterReadOnlyPreviewSha256")
+        required_routes = ("/api/applications/editor/files", "/api/applications/editor/read",
+                           "/api/applications/editor/project/file/save",
+                           "/api/applications/editor/project/transaction/prepare",
+                           "/api/applications/editor/project/transaction/apply")
+        if (len(intents) != 8 or any(checks.get(key) is not True for key in required_checks) or
+                any(not isinstance(effect.get(key), str) or len(effect[key]) != 64 or
+                    any(ch not in "0123456789abcdef" for ch in effect[key]) for key in digest_keys) or
+                not set(required_routes).issubset(set(effect.get("serverRequestPaths") or [])) or
+                observed.get("checks", {}).get("realFilesystemEffects") is not True or
+                observed.get("checks", {}).get("unapprovedEffectRefused") is not True):
+            raise HostBoundPhaseOneError("Code Editor lacks independent real-workspace effect and refusal proof.")
+        return sorted(intents), "real-disposable-workspace-byte-effects-and-refusals"
+    raise HostBoundPhaseOneError("Only the two enrolled host-bound applications may issue semantic witnesses.")
+
+
+def write_semantic_witness(repo: Path, app_id: str, phase_one: Mapping[str, Any]) -> dict[str, Any]:
+    """Write source-bound native evidence; truth gate must independently admit it."""
+    native = phase_one.get("irNativeEvidence") or {}
+    names, effect_scope = _validate_semantic_execution(app_id, native)
+    if (phase_one.get("passed") is not True or
+            phase_one.get("truthStatus") != TRUTH_SCOPE or
+            phase_one.get("pendingAcceptanceContracts") != [] or
+            len(names) != phase_one.get("intentCoverage", {}).get("declaredIntentCount") or
+            phase_one.get("repositoryFingerprint") != build_repository_provenance(repo)["fingerprint"]):
+        raise HostBoundPhaseOneError("Semantic witness cannot be tied to complete, current Phase One evidence.")
+    directory = repo / SEMANTIC_WITNESS_ROOT / app_id
+    directory.mkdir(parents=True, exist_ok=True)
+    native_path = directory / "mcel-ir-native-proof.json"
+    raw = (json.dumps(native, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    native_path.write_bytes(raw)
+    witness = {
+        "schema": SEMANTIC_WITNESS_SCHEMA,
+        "appId": app_id,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "status": "pass", "passed": True,
+        "truthStatus": "host-bound-operational-semantics-witnessed",
+        "canonicalTruthGateDecides": True,
+        "phaseOneTruthStatus": TRUTH_SCOPE,
+        "packageFingerprint": phase_one["packageFingerprint"],
+        "runtimeProjectionFingerprint": phase_one["runtimeProjectionFingerprint"],
+        "semanticFingerprint": phase_one["semanticFingerprint"],
+        "repositoryFingerprint": phase_one["repositoryFingerprint"],
+        "intentNames": names,
+        "declaredIntentCount": len(names),
+        "observedIntentCount": len(names),
+        "effectEvidenceScope": effect_scope,
+        "nativeProofArtifact": {
+            "path": native_path.relative_to(repo).as_posix(),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        },
+    }
+    (directory / "mcel-semantic-witness.json").write_text(
+        json.dumps(witness, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return witness
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -171,16 +261,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--headed", action="store_true")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--semantic-witness", action="store_true", help="Run fresh effect checks and emit separate audit-admissible evidence, without asserting final truth.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    # Delete any previous witness before attempting new execution; a failed
+    # current run must never fall back to an older successful receipt.
+    if args.semantic_witness:
+        old_witness = args.repo_root.resolve() / SEMANTIC_WITNESS_ROOT / args.app / "mcel-semantic-witness.json"
+        old_witness.unlink(missing_ok=True)
     try:
-        report = run_host_bound_proof(repo=args.repo_root, app_id=args.app, headed=args.headed)
+        report = run_host_bound_proof(repo=args.repo_root, app_id=args.app, headed=args.headed,
+                                      include_native=args.semantic_witness)
+        if args.semantic_witness:
+            witness = write_semantic_witness(args.repo_root.resolve(), args.app, report)
+            report.pop("irNativeEvidence", None)
+            report["semanticWitness"] = {"status": "pass", "intentCount": witness["declaredIntentCount"],
+                                          "effectEvidenceScope": witness["effectEvidenceScope"]}
     except (HostBoundPhaseOneError, OSError, ValueError) as exc:
         report = {"schema": SCHEMA, "appId": args.app, "status": "fail", "passed": False, "error": str(exc)}
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(f"MCEL host-bound Phase One proof: {args.app}: {report['status']}")
+        if report.get("semanticWitness"):
+            print(f"  source-bound operational witness: {report['semanticWitness']['status']}; "
+                  f"intents: {report['semanticWitness']['intentCount']}; final truth: canonical audit")
         if report.get("error"):
             print(report["error"])
     return 0 if report["passed"] else 1

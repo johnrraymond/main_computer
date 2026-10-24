@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from main_computer.mcel_calculator_host_projection import project as project_calculator_host
+
 import json
+import re
 import shutil
 import subprocess
 import textwrap
@@ -65,7 +68,7 @@ def test_calculator_legacy_static_surface_module_is_retired_from_the_viewport() 
 
 
 def test_calculator_static_markup_still_extracts_as_valid_surface_and_layout() -> None:
-    html = CALCULATOR_HTML.read_text(encoding="utf-8")
+    html = project_calculator_host(ROOT)
     script = load_surface_stack(
         f"""
         const html = {json.dumps(html)};
@@ -127,7 +130,7 @@ def test_calculator_generated_surface_contract_replaces_static_surface_module() 
 
 
 def test_dynamic_calculator_outputs_remain_content_not_static_layout_nodes() -> None:
-    html = CALCULATOR_HTML.read_text(encoding="utf-8")
+    html = project_calculator_host(ROOT)
     for output_id in [
         "calculator-result",
         "calculator-model-status",
@@ -137,10 +140,14 @@ def test_dynamic_calculator_outputs_remain_content_not_static_layout_nodes() -> 
         "calculator-mathics-output",
         "calculator-chat-notebook",
     ]:
-        tag = html.split(f'id="{output_id}"', 1)[1].split(">", 1)[0]
+        # The canonical host renderer sorts HTML attributes, so inspect the
+        # complete element instead of assuming id appears first.
+        match = re.search(r'<[^>]+\bid="' + re.escape(output_id) + r'"[^>]*>', html)
+        assert match is not None, output_id
+        tag = match.group(0)
         assert "data-mcel-fit-policy=" in tag
         assert "data-mcel-node-id=" not in tag
 
-    assert 'id="calculator-graph-canvas"' in html
-    graph_tag = html.split('id="calculator-graph-canvas"', 1)[1].split(">", 1)[0]
-    assert 'data-mcel-fit-policy="decorative"' in graph_tag
+    graph_tag = re.search(r'<[^>]+\bid="calculator-graph-canvas"[^>]*>', html)
+    assert graph_tag is not None
+    assert 'data-mcel-fit-policy="decorative"' in graph_tag.group(0)

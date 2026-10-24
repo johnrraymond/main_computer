@@ -1,5 +1,14 @@
 # MCEL AI Authoring Documentation Completeness Review
 
+## Current-scope amendment (October 23, 2026)
+
+**The historical “documentation complete” verdict below was about a bounded structural IR-kernel implementation plan. It was not a review of MCEL's primary authoring experience.** Subsequent bounded DSL/compiler and host-bound proof work exists; the opening “not implemented” language in this original review must be read as describing the state **at the time of that review**, not the current repository. For current supported authoring paths, consult `pretty_docs/mcel-dsl-app-authoring-surface.md` and `pretty_docs/mcel-status-and-roadmap.md`.
+
+The governing product requirements are now explicit in `pretty_docs/mcel-authoring-principles.md`: low author effort, good default appearance, maximal valid flexibility, and correct-by-composition parts. The prior documentation review did not establish completeness for those objectives. The unresolved documentation/implementation work includes reusable high-level component composition contracts, good default visual/interaction behavior, sanctioned appearance overrides, diagnostics for incompatible parts, author-effort accounting, and a greenfield authoring evaluation with genuine visual review. Mark these as **open**, not as capabilities supplied by the structural IR kernel.
+
+Do not treat the historical authorization language in this review as current deployment or implementation permission. The latest source, canonical authority, and an explicitly scoped change authorization govern actual code changes.
+
+
 ## Status
 
 This is the final documentation review for the proposed `mcel.application-ir.v1` and `mcel.dsl.v1` authoring program.

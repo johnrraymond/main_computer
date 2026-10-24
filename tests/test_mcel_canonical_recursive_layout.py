@@ -1,6 +1,8 @@
 """Patch 12: one canonical layout tree from the DSL through browser execution."""
 from __future__ import annotations
 
+from main_computer.mcel_calculator_host_projection import project as project_calculator_host
+
 import json
 import os
 from pathlib import Path
@@ -131,7 +133,7 @@ def test_real_calculator_markup_uses_recursive_ir_tree_no_html_contract_read():
          "maxColumns":3,"minTargetWidth":40}
       ]}}
     css=CALC_CSS.read_text(encoding='utf-8')
-    html=CALC_HTML.read_text(encoding='utf-8')
+    html=project_calculator_host(ROOT)
     for browser in _browser():
         page=browser.new_page(viewport={'width':1465,'height':882})
         page.set_content('<style>'+css+'</style>'+html)

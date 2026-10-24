@@ -741,7 +741,27 @@
       };
     }
 
-    function getIntentCoverage() {
+    function getRuntimeBindingCoverage() {
+      const transportReady = typeof transportOverride === "function" ||
+        (typeof global.document?.querySelector === "function" && typeof global.fetch === "function");
+      const local = new Set(["classifyEntry"]);
+      const requiredIntentIds = getIntentCoverage().entries
+        .filter((entry) => entry.status === "executable")
+        .map((entry) => entry.intentId);
+      const entries = requiredIntentIds.map((intentId) => {
+        const definition = CURRENT_INTENT_DEFINITIONS.find((entry) => entry.id === intentId);
+        const localReady = local.has(intentId) && typeof classifyEntry === "function";
+        const bound = localReady || (transportReady && typeof executeIntent === "function" &&
+          typeof requestEndpoint === "function" && Boolean(definition?.executionBinding));
+        return {intentId, status: bound ? (localReady ? "adapter-local" : "runtime-bound") : "unbound",
+          runtimeBound: bound, bindingSource: definition?.executionBinding || `missing:${intentId}`};
+      });
+      const runtimeBindingReady = entries.length > 0 && entries.every((entry) => entry.runtimeBound);
+      return {schema: "mcel.runtime-binding-coverage.v1", verificationMode: "derived-runtime-binding-audit",
+        requiredIntentIds, entries, runtimeBindingReady, verification: {passed: runtimeBindingReady}};
+    }
+
+        function getIntentCoverage() {
       const entries = CURRENT_INTENT_DEFINITIONS.map((definition) => ({
         intentId: definition.id,
         label: definition.label,
@@ -1079,6 +1099,7 @@
       buildRecoveryOptions,
       getRecoveryCoverage,
       getIntentCoverage,
+      getRuntimeBindingCoverage,
       requestEndpoint,
       classifyEntry,
       setTransport,

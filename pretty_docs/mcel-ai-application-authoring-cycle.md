@@ -1,6 +1,13 @@
 # MCEL AI Application Authoring Cycle
 ## A Stage-Gated Path from User Request to Proven and Migratable Application
 
+## Authoring experience comes first
+
+This cycle serves the library's four priorities in `pretty_docs/mcel-authoring-principles.md`: small author effort, good default appearance, broad valid design flexibility, and correct composition. The AI should first use reusable author-facing parts and the smallest required semantic decisions. It should not solve ordinary layout, state wiring, forms, or control interactions by inventing private per-app mechanisms simply because the compiler permits explicit source.
+
+Add an **author-experience check** to candidate work: show the uncorrected default UI under realistic content, test a distinct valid design direction, account for handwritten glue and CSS, and ensure invalid combinations are rejected while sound overrides remain available. Those checks do not replace the safety, effect, compatibility, and truth gates defined later in this document. Most of these convenience/quality checks still require implementation and are not proven by existing authoring-stage pass reports.
+
+
 ## Status
 
 This document specifies the application-authoring cycle an AI follows while MCEL moves from documentation-driven and explicit application definitions toward the official `mcel.dsl.v1` source language.
@@ -324,7 +331,7 @@ The repository-local explicit scaffold is currently created with:
 python tools/mcel_create_app.py <app-id> --title "<Application title>"
 ```
 
-The future DSL scaffold mode is specified but not implemented.
+This was the original target status for a later scaffold mode; subsequent DSL/package authoring implementation has advanced. Consult `pretty_docs/mcel-dsl-app-authoring-surface.md` and the live compiler before assuming a particular scaffold mode is unsupported. The complete author-experience cycle and default visual-quality qualification described here are not thereby proven.
 
 ### Required boundary
 

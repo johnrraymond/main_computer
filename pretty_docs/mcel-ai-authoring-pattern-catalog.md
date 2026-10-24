@@ -1,6 +1,13 @@
 # MCEL AI Authoring Pattern Catalog
 ## Example-First Patterns for `mcel.dsl.v1`, Migration, and Proof
 
+## Pattern quality beyond semantic validity
+
+Every pattern in this catalog is a candidate **library primitive**, not a recipe for making authors memorize its plumbing. Apply the four development priorities in `pretty_docs/mcel-authoring-principles.md`: limit independent author decisions; give its surface a coherent and attractive default; expose sound appearance/interaction variants; and prevent invalid compositions by contract. A pattern is not complete for the product goal simply because it compiles or has an effect receipt.
+
+For future implementation, record each pattern's intended initial appearance, reasonable customization, generated versus authored work, required related components, and negative invalid-composition cases. The code examples remain bounded specifications where their corresponding builders or projections are not yet implemented.
+
+
 ## Status
 
 This catalog gives an AI task-oriented examples for recurring MCEL application decisions. Every pattern connects:
@@ -15,7 +22,7 @@ user request
 -> migration impact
 ```
 
-It is a documentation specification. The examples use the official DSL from `pretty_docs/mcel-official-vanilla-javascript-dsl.md`. A Counter-only Wave 2B compiler now exists, but the broader patterns in this catalog remain target contracts until their builders, importers, projections, and evidence paths are implemented and proven.
+This catalog is an example-first authoring specification. The initial Counter-only Wave 2B compiler has since been extended by further bounded DSL, projection, and host-bound proof work; see `pretty_docs/mcel-status-and-roadmap.md` for current implementation and `pretty_docs/mcel-canonical-app-authoring.md` for active references. **Do not infer** that every pattern below has its own implemented ergonomic builder, polished default appearance, or proven flexible composition. Treat unsupported high-level conveniences as explicit design targets.
 
 Use this catalog with `pretty_docs/mcel-ai-application-authoring-cycle.md`. The cycle says where the AI is. This catalog shows how common decisions are expressed at that stage.
 

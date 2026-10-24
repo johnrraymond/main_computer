@@ -685,7 +685,26 @@
       return "not-registered";
     }
 
-    function getIntentCoverage() {
+    function getRuntimeBindingCoverage() {
+      const requiredIntentIds = getIntentCoverage().entries.filter((entry) => entry.status === "executable")
+        .map((entry) => entry.intentId);
+      const apiBound = typeof global.GitToolsStatusApi?.fetchStatus === "function";
+      const entries = requiredIntentIds.map((intentId) => {
+        const definition = INTENT_DEFINITIONS.find((entry) => entry.id === intentId);
+        const source = intentExecutionBinding(definition, "executable");
+        const local = source.startsWith("git-tools-semantic-adapter.") || source === "mcel-preflight";
+        const bound = typeof executeIntent === "function" && (local ||
+          (intentId === "refreshStatus" && apiBound) ||
+          (intentId === "pushCurrentBranch" && typeof global.GitToolsServerPanel?.pushLocalGitServerRemote === "function"));
+        return {intentId, status: bound ? (local ? "adapter-local" : "runtime-bound") : "unbound",
+          runtimeBound: bound, bindingSource: source || `missing:${intentId}`};
+      });
+      const runtimeBindingReady = entries.length > 0 && entries.every((entry) => entry.runtimeBound);
+      return {schema: "mcel.runtime-binding-coverage.v1", verificationMode: "derived-runtime-binding-audit",
+        requiredIntentIds, entries, runtimeBindingReady, verification: {passed: runtimeBindingReady}};
+    }
+
+        function getIntentCoverage() {
       const entries = INTENT_DEFINITIONS.map((definition) => {
         const status = intentCoverageStatus(definition);
         return {
@@ -3324,6 +3343,7 @@
       listObjects,
       listIntents,
       getIntentCoverage,
+      getRuntimeBindingCoverage,
       preflightIntent,
       executeIntent,
       buildReceipt,
