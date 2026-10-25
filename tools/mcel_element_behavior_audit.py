@@ -31,6 +31,18 @@ CORE_TOOLKIT = {
        for x in ('element.toolkit.foundation-token','element.toolkit.collection-view',
                  'element.toolkit.contract-pattern','element.toolkit.view-resolver')},
 }
+FILE_BASKET = {
+    id_: ('file-basket-consumer-bounded-model-controller', implementation)
+    for id_, implementation in {
+        'element.resource.file-basket-model': (SOURCE / 'mcel-file-basket-model.js').as_posix(),
+        'element.resource.file-boundary': (SOURCE / 'mcel-file-basket-model.js').as_posix(),
+        'element.resource.directory-tree': (SOURCE / 'mcel-file-basket-model.js').as_posix(),
+        'element.resource.tree-selection-model': (SOURCE / 'mcel-file-basket-controller.js').as_posix(),
+        'element.toolkit.selection-controller': (SOURCE / 'mcel-file-basket-controller.js').as_posix(),
+        'element.toolkit.bulk-selector': (SOURCE / 'mcel-file-basket-controller.js').as_posix(),
+    }.items()
+}
+FILE_BASKET_TESTS = ['tests/test_mcel_file_basket_runtime_probe.py']
 CORE_TOOLKIT_TESTS = ['tests/test_mcel_core_toolkit_runtime_probe.py']
 TABBED_TESTS = [
     'tests/test_mcel_notebook_projection.py',
@@ -68,6 +80,10 @@ def audit(repo: Path, definitions: list[dict[str, Any]]) -> dict[str, dict[str, 
             for test in CORE_TOOLKIT_TESTS:
                 if (repo / test).is_file() and test not in references:
                     references.append(test)
+        if id_ in FILE_BASKET:
+            for test in FILE_BASKET_TESTS:
+                if (repo / test).is_file() and test not in references:
+                    references.append(test)
         if id_ in TABBED:
             for test in TABBED_TESTS:
                 if (repo / test).is_file() and test not in references:
@@ -77,6 +93,11 @@ def audit(repo: Path, definitions: list[dict[str, Any]]) -> dict[str, dict[str, 
         candidates = [p for p in TABBED_RUNTIME if (repo / p).is_file()] if id_ in TABBED else []
         if id_ in CORE_TOOLKIT and (repo / CORE_TOOLKIT[id_][1]).is_file():
             candidates.append(CORE_TOOLKIT[id_][1])
+        if id_ in FILE_BASKET:
+            for file in ((SOURCE / 'mcel-file-basket-model.js').as_posix(),
+                         (SOURCE / 'mcel-file-basket-controller.js').as_posix()):
+                if (repo / file).is_file():
+                    candidates.append(file)
         state = definition.get('stateModel') or {}
         interaction = definition.get('interactionModel') or {}
         fixtures = definition.get('proofFixtures') or []
@@ -108,10 +129,13 @@ def audit(repo: Path, definitions: list[dict[str, Any]]) -> dict[str, dict[str, 
             'targetedBehaviorTestCandidates': [x for x in TABBED_TESTS if (repo / x).is_file()]
                 if id_ in TABBED else
                 ([x for x in CORE_TOOLKIT_TESTS if (repo / x).is_file()]
-                 if id_ in CORE_TOOLKIT else []),
+                 if id_ in CORE_TOOLKIT else
+                 [x for x in FILE_BASKET_TESTS if (repo / x).is_file()]
+                 if id_ in FILE_BASKET else []),
             'runtimeImplementationCandidates': candidates,
             'candidateWitness': TABBED.get(id_, [None])[0] if id_ in TABBED else
-                (CORE_TOOLKIT[id_][0] if id_ in CORE_TOOLKIT else None),
+                (CORE_TOOLKIT[id_][0] if id_ in CORE_TOOLKIT else
+                 FILE_BASKET[id_][0] if id_ in FILE_BASKET else None),
             'outstandingContractDimensions': obligations,
             'auditAssessment': 'definition-and-candidates-only',
             'implementationExistence': 'UNKNOWN',

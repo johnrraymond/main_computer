@@ -11,6 +11,7 @@ import argparse
 import json
 import io
 import hashlib
+import importlib.util
 import re
 import tempfile
 import zipfile
@@ -82,6 +83,110 @@ def execute(command: list[str], env: dict[str, str]) -> int:
     if result.returncode:
         print(f'FAIL ({result.returncode}): {command[0]} exited nonzero', file=sys.stderr)
     return result.returncode
+
+
+# Captain signs the *real* testnet bridge transaction. Its signing imports
+# must exist in the exact interpreter handed to the Node work-cycle subprocess.
+# This is a narrowly scoped dependency preflight, not a general pip bootstrap.
+CAPTAIN_SIGNING_MODULES = ('eth_account', 'eth_abi', 'eth_utils')
+CAPTAIN_SIGNING_IMPORT = (
+    'from eth_account import Account; '
+    'from eth_abi import encode; '
+    'from eth_utils import keccak, to_checksum_address'
+)
+
+
+def _captain_signing_imports_ready() -> bool:
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c', CAPTAIN_SIGNING_IMPORT],
+            capture_output=True, text=True, check=False, timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AcceptanceError('Captain signing dependency preflight could not run in the active Python interpreter') from exc
+    return result.returncode == 0
+
+
+# The three imports can all have discoverable module specs and still fail when
+# a transitive dependency is absent or a symbol/version is incompatible.
+# Never interpret find_spec() as proof that Python can import the package.
+CAPTAIN_SIGNING_IMPORT_CHECKS = (
+    ('eth_account', 'from eth_account import Account'),
+    ('eth_abi', 'from eth_abi import encode'),
+    ('eth_utils', 'from eth_utils import keccak, to_checksum_address'),
+)
+
+
+def _captain_signing_failure_detail() -> str:
+    """Find the failing import using Captain's interpreter; never print a traceback.
+
+    Only the final exception class/message is returned, bounded to a single
+    line. Private keys, env variables, and Python process state are not read.
+    """
+    for label, statement in CAPTAIN_SIGNING_IMPORT_CHECKS:
+        try:
+            result = subprocess.run(
+                [sys.executable, '-c', statement],
+                capture_output=True, text=True, check=False, timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return f'{label}: import timed out'
+        except OSError:
+            return f'{label}: Python subprocess could not start'
+        if result.returncode:
+            errors = [line.strip() for line in (result.stderr or '').splitlines()
+                      if re.match(r'^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):', line.strip())]
+            if errors:
+                # Truncate, normalize whitespace, and avoid including traceback
+                # paths, source lines, signed messages, or environment values.
+                clean = re.sub(r'[\r\n\t]+', ' ', errors[-1])[:240]
+                return f'{label}: {clean}'
+            return f'{label}: import failed (exit={result.returncode}; exception not provided)'
+    return 'combined Captain import fails although individual imports succeed'
+
+
+def _captain_signing_requirement() -> str:
+    try:
+        lines = (ROOT / 'requirements.txt').read_text(encoding='utf-8').splitlines()
+    except OSError as exc:
+        raise AcceptanceError('Cannot locate canonical requirements.txt for Captain signing') from exc
+    pinned = [line.strip() for line in lines
+              if re.match(r'^\s*eth-account\s*(?:[=<>!~]|$)', line, re.IGNORECASE)]
+    if len(pinned) != 1 or not re.fullmatch(r'eth-account==[0-9]+\.[0-9]+\.[0-9]+', pinned[0]):
+        raise AcceptanceError('Captain eth-account requirement is not pinned exactly once in requirements.txt')
+    return pinned[0]
+
+
+def ensure_captain_signing_dependencies() -> None:
+    """Work-cycle only: install the declared signing wheel in the active venv.
+
+    Fail before opening Chromium if Captain cannot sign. Do not install the
+    full requirements file, modify system Python, or suppress a broken import
+    when all required distributions are already present.
+    """
+    if _captain_signing_imports_ready():
+        print('Captain signing dependencies verified in active Python', flush=True)
+        return
+    missing = [name for name in CAPTAIN_SIGNING_MODULES if importlib.util.find_spec(name) is None]
+    if not missing:
+        raise AcceptanceError('Captain signing import failed in active Python: ' + _captain_signing_failure_detail() + '; check python -m pip check before repairing the environment')
+    if sys.prefix == sys.base_prefix:
+        raise AcceptanceError('Captain signing modules are missing outside a virtual environment; activate .venv before work-cycle')
+    pinned = _captain_signing_requirement()
+    print(f'Captain signing dependency missing ({", ".join(missing)}); installing {pinned} into active .venv', flush=True)
+    try:
+        installed = subprocess.run(
+            [sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check',
+             '--no-input', pinned],
+            capture_output=True, text=True, check=False, timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AcceptanceError('Captain dependency install failed or timed out; run python -m pip install ' + pinned) from exc
+    if installed.returncode:
+        raise AcceptanceError(f'Captain dependency installation failed (exit={installed.returncode}); run python -m pip install {pinned}')
+    if not _captain_signing_imports_ready():
+        raise AcceptanceError('Captain signing imports still fail after installing ' + pinned + ': ' + _captain_signing_failure_detail())
+    print('Captain signing dependencies verified in active Python', flush=True)
 
 
 def wallet_address() -> str:
@@ -275,6 +380,65 @@ def ensure_metamask_extension() -> Path:
         raise AcceptanceError(f'Official MetaMask extension installation failed: {type(exc).__name__}: {exc}') from exc
 
 
+def captain_pending_bridge_evidence() -> dict[str, object]:
+    """Read-only local recovery hints, not chain or Hub settlement evidence."""
+    directory = ROOT / 'runtime' / 'state' / 'captain' / 'pending-bridge-deposits'
+    records: list[dict[str, object]] = []
+    try:
+        files = sorted(directory.glob('*.json')) if directory.is_dir() else []
+        for path in files:
+            try:
+                entry = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                records.append({'file': path.name, 'status': 'unreadable-local-record'})
+                continue
+            if not isinstance(entry, dict):
+                records.append({'file': path.name, 'status': 'invalid-local-record'})
+                continue
+            receipt = entry.get('receipt') if isinstance(entry.get('receipt'), dict) else {}
+            # All these are public chain identifiers, not private keys. Never
+            # print arbitrary fields from the recovery record.
+            records.append({
+                'file': path.name,
+                'status': 'local-recovery-hint-unverified',
+                'depositId': str(entry.get('deposit_id') or ''),
+                'transactionHash': str(entry.get('transaction_hash') or ''),
+                'walletAddress': str(entry.get('wallet_address') or ''),
+                'creditWei': str(entry.get('amount_credit_wei') or ''),
+                'receiptStatus': str(receipt.get('status') or ''),
+                'receiptBlock': str(receipt.get('blockNumber') or ''),
+            })
+    except OSError as exc:
+        raise AcceptanceError('Could not inspect Captain pending-bridge records') from exc
+    return {
+        'schema': 'main-computer.captain-pending-bridge-evidence.v1',
+        'readOnly': True,
+        'count': len(records),
+        'reconciliation': 'not-verified-against-Hub-or-chain',
+        'records': records,
+    }
+
+
+def refuse_unreconciled_captain_bridge_records() -> None:
+    """Before any work-cycle payment, fail closed on earlier deposit hints.
+
+    Captain uses an exact smoke-ID-specific record for replay. A new browser
+    run generates another smoke ID, so relying on per-ID recovery alone can
+    accidentally send an additional deposit. No mutation or chain claim here.
+    """
+    directory = ROOT / 'runtime' / 'state' / 'captain' / 'pending-bridge-deposits'
+    try:
+        pending = list(directory.glob('*.json')) if directory.is_dir() else []
+    except OSError as exc:
+        raise AcceptanceError('Could not inspect Captain bridge recovery directory; refusing new payment') from exc
+    if pending:
+        raise AcceptanceError(
+            f'{len(pending)} unresolved Captain bridge deposit record(s) exist; '
+            'refusing a new work-cycle smoke ID or deposit. Reconcile the prior '
+            'Hub/chain transaction first; do not delete the recovery file.'
+        )
+
+
 def previous_wallet_run(address: str) -> bool:
     if not WALLET_LAST_RUN.exists():
         return False
@@ -288,21 +452,31 @@ def previous_wallet_run(address: str) -> bool:
 
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('plan', 'install', 'cache-wallet', 'rpc-probe', 'run'))
-    parser.add_argument('--mode', choices=('wallet', 'worker'), default='wallet')
+    parser.add_argument('action', choices=('plan', 'install', 'cache-wallet', 'rpc-probe', 'captain-pending', 'run'))
+    parser.add_argument('--mode', choices=('wallet', 'worker', 'work-cycle'), default='wallet')
     parser.add_argument('--url', default=DEFAULT_URL)
     parser.add_argument('--authorize-worker-offer', action='store_true',
                         help='Explicitly allow registering a real paid-worker offer on testnet')
+    parser.add_argument('--authorize-captain-spend', action='store_true',
+                        help='Explicitly authorize one credit-limited Captain smoke request on testnet')
     args = parser.parse_args(argv)
     url = valid_worker_url(args.url)
-    if args.mode == 'worker' and args.action == 'run' and not args.authorize_worker_offer:
+    if args.mode in ('worker', 'work-cycle') and args.action == 'run' and not args.authorize_worker_offer:
         raise AcceptanceError('Worker registration requires --authorize-worker-offer')
+    if args.mode == 'work-cycle' and args.action == 'run' and not args.authorize_captain_spend:
+        raise AcceptanceError('Work-cycle test requires --authorize-captain-spend (one live testnet Captain request may bridge/spend credits)')
+    if args.action == 'captain-pending':
+        print(json.dumps(captain_pending_bridge_evidence(), indent=2))
+        return 0
+    if args.action == 'run' and args.mode == 'work-cycle':
+        refuse_unreconciled_captain_bridge_records()
     if args.action == 'plan':
         print(json.dumps({'project': str(PROJECT), 'browser': 'native Playwright Chromium + MetaMask (no Synpress CLI)',
             'url': url, 'mode': args.mode, 'commands': {
               x: commands(x) for x in ('install', 'cache-wallet', 'rpc-probe', 'run')},
             'wallet_policy': 'generate disposable wallet if absent; fresh wallet for repeated signing tests',
-            'production_code_changed': False, 'purchases_credits': False}, indent=2))
+            'production_code_changed': False, 'purchases_credits': args.mode == 'work-cycle',
+            'maximum_testnet_bridge_credits': 1 if args.mode == 'work-cycle' else 0}, indent=2))
         return 0
 
     env = os.environ.copy()
@@ -316,6 +490,9 @@ def run(argv: list[str] | None = None) -> int:
         raise AcceptanceError(f'Cannot parse Node version: {version}') from exc
     if major < 20:
         raise AcceptanceError(f'Node.js >=20 required; found {version}')
+
+    if args.action == 'run' and args.mode == 'work-cycle':
+        ensure_captain_signing_dependencies()
 
     if args.action == 'rpc-probe':
         # No new wallet or new profile. Reuse only the already verified disposable
@@ -337,6 +514,9 @@ def run(argv: list[str] | None = None) -> int:
     env.update({
         'MC_WORKER_TEST_URL': url,
         'MC_WORKER_TEST_MODE': args.mode,
+        'MC_WORKER_TEST_PYTHON': sys.executable,
+        'MC_WORKER_TEST_ROOT': str(ROOT),
+        'MC_WORKER_TEST_AUTHORIZE_WORK_CYCLE': 'explicit' if (args.mode == 'work-cycle' and args.authorize_worker_offer and args.authorize_captain_spend) else '',
         'MC_WORKER_TEST_WALLET_FILE': str(WALLET_FILE),
         'MC_WORKER_TEST_REPORT_DIR': str(REPORTS),
         'MC_WORKER_TEST_OUTPUT_DIR': str(REPORTS / 'playwright'),

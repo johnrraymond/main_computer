@@ -1,0 +1,1490 @@
+# MCEL Layout Frob Lab machine-readable acceptance obligations.
+# Candidate engines MUST NOT evaluate or certify their own outputs.
+# Statuses describe verified evidence, not aspirational design.
+schema: main-computer.mcel.layout-frob-crosscheck.v1
+id: task-manager-layout-frob
+design_source: mcel_apps/task-manager/design.yaml
+purpose: Evaluate MCEL semantics-to-presentation and layout machines/engines independently of Task Manager-specific CSS
+  or handwritten coordinates.
+authority:
+  domain_truth: design.yaml describes intent, not runtime certification
+  engine_truth: only actual tested production MCEL modules count as implementations
+  measurement_truth: independent browser and effect evidence; never use planner self-score as acceptance
+  safety: read-only/offline fixtures by default; no live PID, server, wallet, AI, or worker mutations
+  live_app: unchanged until separate parity, authorization, and rollback proof
+  no_website_builder_changes: true
+verdicts:
+  PASS: Independent applicable assertion passed with linked evidence.
+  FAIL: Observed violation of an asserted requirement.
+  UNVERIFIED: Runner exists but required environment, measurement, human decision, or evidence is unavailable.
+  NOT_IMPLEMENTED: Required runner, machine, engine, presentation binding, or producer does not exist.
+  BLOCKED: A prerequisite failed; include dependency and original refusal evidence.
+  NOT_APPLICABLE: A capability is explicitly incompatible; requires a documented compatibility reason.
+coverage_rules:
+  full:
+  - semantics.primitives
+  - semantics.entities
+  - semantics.relationships
+  - rows.types
+  - data_sources
+  - intents.read_only
+  - intents.consequential
+  - workflows
+  - hierarchy.children
+  - hierarchy
+  all_designed_objects_must_be_accounted_for: true
+  no_implicit_skip: true
+  new_design_members_require_new_test_instances: true
+  negative_controls_required: true
+  human_review_separate_from_automated_scoring: true
+  default_result_on_missing_runner: NOT_IMPLEMENTED
+  default_result_on_missing_required_evidence: UNVERIFIED
+  claim_rule: PASS only for evidence-backed instance; no collection-level PASS unless every member passed
+fixture_catalog:
+  empty: Zero process/port/work-item rows; explicit empty telemetry and empty tasks.
+  normal: Multiple process owners, ports, Python associations, active worker task and AI request.
+  crowded: Hundreds of processes and network connections; multiple concurrent operations.
+  long_text: Long command lines, Unicode labels, long paths, IPv6, wrapping and truncation.
+  partial: Missing CPU/GPU, withheld command, orphan relationships, unknown process ownership.
+  stale: Old snapshot, PID reused, activity heartbeat gap, late completion after timeout.
+  failure: Rejected action, backend timeout, browser network loss, AI provider error.
+  adversarial: Duplicate IDs, unsafe command, invalid port, contradictory hints, surprise untrusted strings.
+sweep_policy:
+  widths_css_px:
+  - 320
+  - 390
+  - 768
+  - 1024
+  - 1440
+  - 1920
+  font_scales:
+  - 1.0
+  - 1.25
+  - 1.5
+  - 2.0
+  fixtures:
+  - empty
+  - normal
+  - crowded
+  - long_text
+  - partial
+  - stale
+  - failure
+  - adversarial
+  access_modes:
+  - pointer
+  - keyboard
+  - touch
+  - reduced_motion
+  hint_strengths:
+  - none
+  - suggest
+  - prefer
+  - constrain
+  - require
+  search_strategy: bounded_pairwise_plus_declared_critical_cross_product
+  critical_cross_product:
+    widths_css_px:
+    - 320
+    - 390
+    - 1440
+    fixtures:
+    - normal
+    - crowded
+    - long_text
+    - stale
+    - failure
+    hint_strengths:
+    - none
+    - suggest
+    - prefer
+    - constrain
+    - require
+  seed: 2401024
+  timeout_policy: Record timeout and whether search truncated; never claim global optimum from bounded search.
+  candidate_policy: Persist all tested candidates, rejections, valid rankings and deterministically replayable winners.
+layout_machines:
+- id: workspace_inference
+  implementation: main_computer/web/applications/scripts/mcel-semantic-layout-inference.js:inferWorkspaceLayout
+  availability: existing
+  boundary: workspace region ordering/packing
+- id: canonical_tree
+  implementation: main_computer/web/applications/scripts/mcel-semantic-layout-inference.js:evaluateCanonicalLayoutTree
+  availability: existing
+  boundary: recursive group/control-grid region candidates
+- id: adaptive_control_grid
+  implementation: main_computer/web/applications/scripts/mcel-semantic-layout-inference.js
+  availability: existing_limited
+  boundary: local control groups, not a full application shell
+- id: constraint_layout
+  implementation: null
+  availability: proposed
+  boundary: layout constraints and alternative arrangements
+planning_engines:
+- id: workspace_greedy
+  availability: existing
+  method: heuristic order and packing
+- id: bounded_recursive
+  availability: existing
+  method: bounded candidate enumeration with valid-candidate ranking
+- id: graded_hint
+  availability: proposed
+  method: graded-authority constraints and objective-guided ranking
+- id: constraint_optimization
+  availability: proposed
+  method: solver-based feasible alternatives and explanation
+compatibility:
+- machine: adaptive_control_grid
+  engine: bounded_recursive
+  state: subtree_only
+- machine: adaptive_control_grid
+  engine: constraint_optimization
+  state: not_implemented
+  note: No certified adapter for this pairing.
+- machine: adaptive_control_grid
+  engine: graded_hint
+  state: not_implemented
+  note: No certified adapter for this pairing.
+- machine: adaptive_control_grid
+  engine: workspace_greedy
+  state: unassessed
+  note: No certified adapter for this pairing.
+- machine: canonical_tree
+  engine: bounded_recursive
+  state: available
+- machine: canonical_tree
+  engine: constraint_optimization
+  state: not_implemented
+  note: No certified adapter for this pairing.
+- machine: canonical_tree
+  engine: graded_hint
+  state: needs_adapter
+- machine: canonical_tree
+  engine: workspace_greedy
+  state: unassessed
+  note: No certified adapter for this pairing.
+- machine: constraint_layout
+  engine: bounded_recursive
+  state: not_implemented
+  note: No certified adapter for this pairing.
+- machine: constraint_layout
+  engine: constraint_optimization
+  state: not_implemented
+- machine: constraint_layout
+  engine: graded_hint
+  state: not_implemented
+  note: No certified adapter for this pairing.
+- machine: constraint_layout
+  engine: workspace_greedy
+  state: not_implemented
+  note: No certified adapter for this pairing.
+- machine: workspace_inference
+  engine: bounded_recursive
+  state: unassessed
+  note: No certified adapter for this pairing.
+- machine: workspace_inference
+  engine: constraint_optimization
+  state: not_implemented
+  note: No certified adapter for this pairing.
+- machine: workspace_inference
+  engine: graded_hint
+  state: needs_adapter
+- machine: workspace_inference
+  engine: workspace_greedy
+  state: available
+negative_controls:
+- id: unsat_hard_hints
+  linked_tests:
+  - H04-constrain-hard
+  - H05-require-hard
+  - H07-conflict-minimal
+  mutation: Make require top-left and require bottom-right for the same region on the same viewport
+  must: REFUSE with both hint IDs; never pick arbitrary success
+- id: unknown_semantic_entity
+  linked_tests:
+  - S04-row-reference
+  - C08-pattern-refusal
+  mutation: Reference a nonexistent row entity
+  must: FAIL static, refuse generating pattern
+- id: duplicate_entity_identity
+  linked_tests:
+  - C03-identity-stability
+  - I04-relationship-navigation
+  mutation: Same PID with changed process start time
+  must: Not treated as same target
+- id: browser_text_collision
+  linked_tests:
+  - B03-no-overflow
+  - B05-readable-data
+  mutation: Inject long path/IPv6 plus large font at 320px
+  must: Geometry must reject overlap/clipping
+- id: server_timeout
+  linked_tests:
+  - R05-operation-lifecycle
+  - R07-no-duplicate-action
+  mutation: Timeout after action dispatch without receipt
+  must: UNKNOWN with reconciliation, no implicit retry
+- id: unauthorized_termination
+  linked_tests:
+  - R08-terminate-guard
+  - R09-confirmation
+  mutation: Try terminate mismatched reused PID
+  must: No backend effect
+- id: absent_worker_provider
+  linked_tests:
+  - R03-worker-task-feed
+  - R04-ai-call-feed
+  mutation: Remove producer telemetry
+  must: UNVERIFIED/UNAVAILABLE rather than success
+- id: fake_schedule_dispatch
+  linked_tests:
+  - R10-schedule-not-claim
+  mutation: Store schedule with no dispatcher
+  must: Show stored, not running/completed
+- id: silent_machine_fallback
+  linked_tests:
+  - M09-unsupported-pair-refusal
+  mutation: Select unsupported planner-machine combination
+  must: NOT_IMPLEMENTED/refusal with original pair retained
+- id: fabricated_browser_certificate
+  linked_tests:
+  - Q08-console-report-agreement
+  - Q07-run-provenance
+  mutation: Make console column count differ from evidence JSON
+  must: FAIL provenance consistency
+hint_language:
+  authorities:
+    none: No authored influence; baseline defaults only.
+    suggest: Soft, disposable suggestion; violation recorded and explained.
+    prefer: Strongly weighted soft preference; violation has explicit reason.
+    constrain: Feasibility condition; refusal if impossible.
+    require: Hard acceptance obligation; refuse if violated in any applicable viewport.
+  properties:
+  - priority
+  - position
+  - reading_order
+  - prominence
+  - proximity
+  - grouping
+  - density
+  - containment
+  - min_size
+  - available_space
+  - presentation
+  - visibility
+  - responsive_substitution
+  scopes:
+  - all
+  - desktop
+  - tablet
+  - mobile
+  - state_conditional
+  precedence:
+  - semantic_and_safety_invariants
+  - require
+  - constrain
+  - prefer
+  - suggest
+  - machine_defaults
+  must_report:
+  - source_hint_id
+  - viewport
+  - applicability
+  - satisfied
+  - relaxed
+  - conflicted
+  - reason
+  - selected_candidate_id
+  prohibitions:
+  - silently_downgrade_hard_hints
+  - assume_priority_from_visual_position
+  - allow_visual_hint_to_authorize_effect
+  - invent_constraint_feasibility
+run_provenance:
+  required_fields:
+  - run_id
+  - utc_timestamp
+  - source_commit_or_archive_sha256
+  - design_sha256
+  - contract_sha256
+  - machine_version
+  - engine_version
+  - browser_name
+  - browser_version
+  - platform
+  - viewport
+  - fixture_sha256
+  - hint_sha256
+  - sweep_seed
+  artifact_sha256_required: true
+  console_report_agreement_required: true
+  no_reuse_across_source_versions: true
+candidate_contract:
+  required_fields:
+  - candidate_id
+  - machine
+  - engine
+  - semantic_fingerprint
+  - fixture_fingerprint
+  - hint_fingerprint
+  - viewport
+  - pattern_map
+  - tree
+  - measurements
+  - constraints
+  - trace
+  - search_truncated
+  immutability: true
+  replay_independent_of_planner: true
+  report_rejections_as_well_as_successes: true
+probes:
+  static.contract_fields:
+    runner: tools/mcel_layout_frob_crosscheck.py
+    implemented: true
+    evidence:
+    - design_pointer
+    - missing_fields
+  static.refs_resolve:
+    runner: tools/mcel_layout_frob_crosscheck.py
+    implemented: true
+    evidence:
+    - design_pointer
+    - referenced_entity
+  static.hierarchy_integrity:
+    runner: tools/mcel_layout_frob_crosscheck.py
+    implemented: true
+    evidence:
+    - design_pointer
+    - hierarchy_id
+  static.design_coverage:
+    runner: tools/mcel_layout_frob_crosscheck.py
+    implemented: true
+    evidence:
+    - expanded_instances
+    - design_fingerprint
+  semantic.compiler:
+    runner: tools/mcel_layout_frob.py
+    implemented: true
+    evidence:
+    - compiled_ir
+    - compiler_diagnostics
+  semantic.relationships:
+    runner: null
+    implemented: false
+    evidence:
+    - semantic_trace
+    - witness_rows
+  catalog.presentation:
+    runner: tools/mcel_layout_frob_presentations.py
+    implemented: true
+    evidence:
+    - pattern_id
+    - pattern_contract
+    - selection_reason
+  planner.capabilities:
+    runner: tools/mcel_layout_frob.py
+    implemented: true
+    evidence:
+    - capability_matrix
+    - refusal_reason
+  planner.candidates:
+    runner: tools/mcel_layout_frob.py
+    implemented: true
+    evidence:
+    - candidate_manifest
+    - trace
+    - search_truncated
+  planner.hints:
+    runner: tools/mcel_layout_frob.py
+    implemented: true
+    evidence:
+    - hint_decisions
+    - candidate_comparison
+    - refusals
+  planner.objectives:
+    runner: tools/mcel_layout_frob.py
+    implemented: true
+    evidence:
+    - score_dimensions
+    - pareto_frontier
+    - pairwise_choice
+  browser.geometry:
+    runner: tools/mcel_layout_frob.py
+    implemented: true
+    evidence:
+    - viewport
+    - rects
+    - computed_css
+    - screenshot
+  browser.interaction:
+    runner: null
+    implemented: false
+    evidence:
+    - event_trace
+    - state_trace
+    - focus_trace
+  browser.accessibility:
+    runner: null
+    implemented: false
+    evidence:
+    - keyboard_trace
+    - accessibility_tree
+    - contrast_measurements
+  runtime.observations:
+    runner: tools/mcel_layout_frob_runtime.py
+    implemented: true
+    evidence:
+    - fixture_id
+    - observed_values
+    - freshness
+  runtime.operations:
+    runner: tools/mcel_layout_frob_runtime.py
+    implemented: true
+    evidence:
+    - operation_events
+    - receipt
+    - verified_final_state
+  runtime.effect_boundary:
+    runner: tools/mcel_layout_frob_runtime.py
+    implemented: true
+    evidence:
+    - mock_effect_log
+    - authorization_refusal
+  browser.performance:
+    runner: tools/mcel_layout_frob.py
+    implemented: true
+    evidence:
+    - wall_ms
+    - candidate_count
+    - memory_peak
+    - search_truncated
+  human.review:
+    runner: null
+    implemented: false
+    evidence:
+    - reviewer
+    - blinded_candidate
+    - choice
+    - reason
+  metrics.authoring_effort:
+    runner: null
+    implemented: false
+    evidence:
+    - author_decisions
+    - custom_css_lines
+    - app_layout_code_lines
+    - iterations
+  metamorphic.stability:
+    runner: null
+    implemented: false
+    evidence:
+    - paired_input_hashes
+    - candidate_diffs
+    - layout_changes
+  promotion.parity:
+    runner: null
+    implemented: false
+    evidence:
+    - legacy_baseline
+    - generated_runtime
+    - rollback_witness
+acceptance_policy:
+  static_contract_ready: Every static design/reference/coverage obligation PASS; contract validates.
+  layout_experiment_ready: All layout hard requirements pass at mandated viewports; graded hints have complete decision
+    trace; unknown and unimplemented explicitly named.
+  application_ready: All applicable semantic, row, interaction, operation, accessibility and runtime cases pass; human
+    review and rollback proof present.
+  no_single_number_quality_gate: Retain dimensional metrics plus recorded human preference; never pass aesthetics based
+    on no-overflow only.
+  frob_result: Overall PASS only if every required applicable instance passes; missing feature is NOT_IMPLEMENTED, absent
+    evidence UNVERIFIED.
+  separate_scope_reports:
+  - static
+  - layout
+  - runtime
+  - authoring
+  - promotion
+  pre_registration: Freeze fixtures, thresholds, seeds and benchmark cases before evaluating a candidate engine.
+tests:
+- id: S01-primitive-shape
+  group: semantic
+  probe: static.contract_fields
+  target: semantics.primitives
+  assertion:
+    required_fields:
+    - status
+    - fields
+  description: Every semantic primitive declares its status and fields.
+  required: true
+  foreach: mapping_keys
+- id: S02-entity-shape
+  group: semantic
+  probe: static.contract_fields
+  target: semantics.entities
+  assertion:
+    required_fields:
+    - status
+    - identity
+  description: Every domain entity declares status and identity.
+  required: true
+  foreach: mapping_keys
+- id: S03-row-shape
+  group: semantic
+  probe: static.contract_fields
+  target: rows.types
+  assertion:
+    required_fields:
+    - entity
+    - primary
+    - status
+  description: Every projected row declares entity, primary fields and truthful status.
+  required: true
+  foreach: mapping_keys
+- id: S04-row-reference
+  group: semantic
+  probe: static.refs_resolve
+  target: rows.types
+  assertion:
+    field: entity
+    namespace:
+    - semantics.entities
+    - semantics.primitives
+  description: Rows must refer to declared semantic entities.
+  required: true
+  foreach: mapping_keys
+- id: S05-workflow-shape
+  group: semantic
+  probe: static.contract_fields
+  target: workflows
+  assertion:
+    required_fields:
+    - id
+    - path
+    - status
+  description: Every user journey is identified and has a path.
+  required: true
+  foreach: sequence_members
+- id: S06-datasource-shape
+  group: semantic
+  probe: static.contract_fields
+  target: data_sources
+  assertion:
+    required_fields:
+    - status
+  description: Every source advertises its implementation status.
+  required: true
+  foreach: mapping_keys
+- id: S07-region-shape
+  group: semantic
+  probe: static.contract_fields
+  target: hierarchy.children
+  assertion:
+    required_fields:
+    - id
+    - role
+  description: All top-level regions are identifiable.
+  required: true
+  foreach: sequence_members
+- id: S09-readonly-intents
+  group: semantic
+  probe: static.contract_fields
+  target: intents.read_only
+  assertion:
+    required_fields:
+    - id
+    - status
+  description: Every read-only intent is accounted for.
+  required: true
+  foreach: sequence_members
+- id: S10-consequential-intents
+  group: semantic
+  probe: static.contract_fields
+  target: intents.consequential
+  assertion:
+    required_fields:
+    - id
+    - status
+  description: Every consequential intent is accounted for.
+  required: true
+  foreach: sequence_members
+- id: S11-relationship-refs
+  group: semantic
+  probe: static.refs_resolve
+  target: semantics.relationships
+  assertion:
+    field: relation_endpoints
+    namespace:
+    - semantics.entities
+    - semantics.primitives
+  description: Relationship endpoints reference defined objects.
+  required: true
+  foreach: sequence_members
+- id: S12-hierarchy-nodes
+  group: semantic
+  probe: static.hierarchy_integrity
+  target: hierarchy
+  assertion:
+    required_fields:
+    - id
+  description: Every nested region, view, section and semantic stub is visible to Frob planning.
+  required: true
+  foreach: hierarchy_nodes
+- id: S08-full-coverage
+  group: semantic
+  probe: static.design_coverage
+  target: coverage_rules.full
+  assertion:
+    required: true
+  description: Expand all declared semantics, rows, workflows, intents, data sources and regions; new members cannot
+    disappear.
+  required: true
+- id: C01-compiler-no-loss
+  group: semantic
+  probe: semantic.compiler
+  target: hierarchy
+  assertion:
+    predicate: semantics_survive_ir
+    expected: true
+  description: Compiled IR preserves all essential entities, references, visibility and design intent.
+  required: true
+  axes:
+  - machine
+- id: C02-relations-evidence
+  group: semantic
+  probe: semantic.relationships
+  target: semantics.relationships
+  assertion:
+    predicate: relationships_resolvable
+    expected: true
+  description: Object relationships have stable identities and unresolved links are honest.
+  required: true
+  foreach: sequence_members
+- id: C03-identity-stability
+  group: semantic
+  probe: semantic.relationships
+  target: semantics.entities.process
+  assertion:
+    predicate: pid_reuse_not_same_process
+    expected: true
+  description: PID reuse must not connect to the wrong process or authorize a stale action.
+  required: true
+  fixtures:
+  - stale
+- id: C04-work-item-identity
+  group: semantic
+  probe: semantic.relationships
+  target: semantics.entities.worker_task
+  assertion:
+    predicate: remote_identity_without_pid
+    expected: true
+  description: Remote worker tasks have attempt identity even without a local PID.
+  required: true
+  fixtures:
+  - normal
+  - partial
+- id: C05-observation-truth
+  group: semantic
+  probe: runtime.observations
+  target: semantics.primitives.observation
+  assertion:
+    predicate: missing_is_not_zero
+    expected: true
+  description: Unobserved, unavailable, stale and zero remain distinct.
+  required: true
+  fixtures:
+  - empty
+  - partial
+  - stale
+- id: C06-domain-rows
+  group: presentation
+  probe: catalog.presentation
+  target: rows.types
+  assertion:
+    predicate: presentation_for_each_row
+    modes:
+    - table_row
+    - compact_row
+    - detail_panel
+    - narrow_card
+  description: Reusable catalog must select presentation variants for every row type.
+  required: true
+  foreach: mapping_keys
+  axes:
+  - viewport
+- id: C07-no-handcrafted-layout
+  group: presentation
+  probe: catalog.presentation
+  target: hierarchy.children
+  assertion:
+    predicate: no_app_specific_geometry
+    expected: true
+  description: All standard areas are generated from shared contracts, not custom layout CSS.
+  required: true
+  foreach: sequence_members
+- id: C10-hierarchy-rendered
+  group: presentation
+  probe: browser.geometry
+  target: hierarchy
+  assertion:
+    predicate: all_declared_semantic_nodes_have_rendered_or_declared_intentionally_nonvisual_representation
+    expected: true
+  description: Every nested semantic region or component must be mapped, not merely the six top-level regions.
+  required: true
+  foreach: hierarchy_nodes
+  axes:
+  - viewport
+- id: C08-pattern-refusal
+  group: presentation
+  probe: catalog.presentation
+  target: rows.types
+  assertion:
+    predicate: unsupported_pattern_refuses
+    expected: true
+  description: Unsupported semantic interaction or relationship presentation must disclose gap.
+  required: true
+  fixtures:
+  - adversarial
+- id: M01-compatibility-report
+  group: planner
+  probe: planner.capabilities
+  target: compatibility
+  assertion:
+    predicate: all_pairings_explicit
+    expected: true
+  description: Enumerate feasible/incompatible/unbuilt machine×engine pairs with explanations.
+  required: true
+- id: M02-same-input
+  group: planner
+  probe: planner.candidates
+  target: sweep_policy
+  assertion:
+    predicate: frozen_inputs_all_candidates
+    expected: true
+  description: All candidate comparisons consume identical semantic, fixture, hint and viewport fingerprints.
+  required: true
+  axes:
+  - machine
+  - engine
+- id: M03-candidate-manifest
+  group: planner
+  probe: planner.candidates
+  target: candidate_contract
+  assertion:
+    predicate: complete_candidate_trace
+    expected: true
+  description: Persist all candidates, rankings, rejections, and search truncation.
+  required: true
+  axes:
+  - machine
+  - engine
+- id: M04-inert-probe
+  group: planner
+  probe: planner.candidates
+  target: candidate_contract
+  assertion:
+    predicate: no_live_dom_or_side_effect_mutation
+    expected: true
+  description: Measuring rejected variants changes neither live DOM nor real services.
+  required: true
+  fixtures:
+  - adversarial
+- id: M05-deterministic-replay
+  group: planner
+  probe: planner.candidates
+  target: candidate_contract
+  assertion:
+    predicate: replay_reproduces_geometry
+    tolerance_px: 1
+  description: Frozen candidate must replay without rerunning or changing the planner.
+  required: true
+  axes:
+  - viewport
+- id: M06-bounded-search
+  group: planner
+  probe: planner.candidates
+  target: sweep_policy
+  assertion:
+    predicate: bounded_search_reports_truncation
+    expected: true
+  description: Planner may stop at its budget but must report incomplete search without global-optimum claim.
+  required: true
+  fixtures:
+  - crowded
+- id: M07-ranking-multicriteria
+  group: planner
+  probe: planner.objectives
+  target: acceptance_policy
+  assertion:
+    predicate: rank_feasible_without_collapsing_metrics
+    metrics:
+    - priority
+    - legibility
+    - density
+    - balance
+    - stability
+    - effort
+    - runtime
+  description: Compare independent quality dimensions and Pareto tradeoffs.
+  required: true
+  axes:
+  - machine
+  - engine
+- id: M09-unsupported-pair-refusal
+  group: planner
+  probe: planner.capabilities
+  target: compatibility
+  assertion:
+    predicate: incompatible_pairs_report_not_applicable_or_unimplemented
+    expected: true
+  description: An unimplemented machine or engine pair must not silently fall back or masquerade as another.
+  required: true
+- id: M08-cross-application
+  group: generalization
+  probe: planner.candidates
+  target: application
+  assertion:
+    predicate: holdout_apps_with_same_public_contracts
+    minimum_distinct_apps: 2
+  description: Task Manager plus independent holdout must work without app-name heuristics.
+  required: true
+- id: H01-none-baseline
+  group: hints
+  probe: planner.hints
+  target: hint_language
+  assertion:
+    predicate: baseline_not_special_cased
+    expected: true
+  description: With no hints run machine defaults; record which priorities it missed.
+  required: true
+  axes:
+  - viewport
+- id: H02-suggest-soft
+  group: hints
+  probe: planner.hints
+  target: hint_language
+  assertion:
+    predicate: suggest_can_relax_with_reason
+    expected: true
+  description: Soft suggestion may lose to a better feasible layout; reason recorded.
+  required: true
+  axes:
+  - viewport
+- id: H03-prefer-ranking
+  group: hints
+  probe: planner.hints
+  target: hint_language
+  assertion:
+    predicate: prefer_shifts_ranking_or_explains
+    expected: true
+  description: Increasing to prefer must affect score/decision or explain lack of change.
+  required: true
+  axes:
+  - viewport
+- id: H04-constrain-hard
+  group: hints
+  probe: planner.hints
+  target: hint_language
+  assertion:
+    predicate: constrain_cannot_silently_relax
+    expected: true
+  description: Unsatisfied structural constraint rejects the candidate.
+  required: true
+  fixtures:
+  - adversarial
+  critical: true
+- id: H05-require-hard
+  group: hints
+  probe: planner.hints
+  target: hint_language
+  assertion:
+    predicate: require_failure_refuses
+    expected: true
+  description: Unsatisfiable required placement must yield a refusal, not a pass.
+  required: true
+  fixtures:
+  - adversarial
+  critical: true
+- id: H06-mobile-scope
+  group: hints
+  probe: planner.hints
+  target: hierarchy.children
+  assertion:
+    predicate: desktop_upper_left_mobile_first_reading_order
+    expected: true
+  description: Desktop upper-left preference can map to mobile before-workspace order.
+  required: true
+  axes:
+  - viewport
+- id: H07-conflict-minimal
+  group: hints
+  probe: planner.hints
+  target: hint_language
+  assertion:
+    predicate: minimal_conflict_explanation
+    expected: true
+  description: Competing hard constraints identify original hint IDs and unsatisfiable relation.
+  required: true
+  fixtures:
+  - adversarial
+  critical: true
+- id: H09-gradual-strength
+  group: hints
+  probe: planner.hints
+  target: hint_language
+  assertion:
+    predicate: increasing_soft_hint_strength_is_traceable
+    expected: true
+  description: Strength changes must be reflected in candidate ranking, decisions, or a reason for no change.
+  required: true
+- id: H08-no-safety-override
+  group: hints
+  probe: runtime.effect_boundary
+  target: hint_language
+  assertion:
+    predicate: visual_hint_never_authorizes_effect
+    expected: true
+  description: Presentation instructions cannot suppress required authorization.
+  required: true
+  fixtures:
+  - adversarial
+  critical: true
+- id: B01-priority-top-left
+  group: layout
+  probe: browser.geometry
+  target: hierarchy.children
+  assertion:
+    predicate: priority_area_upper_left
+    desktop_width_min: 1024
+    expected: true
+  description: Urgent health/operations, not settings, take the priority position.
+  required: true
+  fixtures:
+  - normal
+  - crowded
+  axes:
+  - viewport
+  critical: true
+- id: B02-mobile-stacking
+  group: layout
+  probe: browser.geometry
+  target: hierarchy.children
+  assertion:
+    predicate: root_column_count
+    width: 390
+    equal: 1
+  description: At 390 CSS pixels, root layout must be one column; old probe wrongly reported three.
+  required: true
+  fixtures:
+  - normal
+  - crowded
+  - long_text
+  axes:
+  - viewport
+  critical: true
+- id: B03-no-overflow
+  group: layout
+  probe: browser.geometry
+  target: hierarchy
+  assertion:
+    predicate: no_unowned_horizontal_overflow
+    expected: true
+  description: No clipped content, offscreen controls, or ungoverned page scroll.
+  required: true
+  fixtures:
+  - crowded
+  - long_text
+  axes:
+  - viewport
+  - font_scale
+  critical: true
+- id: B04-narrow-320
+  group: layout
+  probe: browser.geometry
+  target: hierarchy
+  assertion:
+    predicate: all_primary_actions_reachable
+    width: 320
+    expected: true
+  description: At 320 px navigation, priority and actions remain usable.
+  required: true
+  fixtures:
+  - normal
+  - long_text
+- id: B05-readable-data
+  group: layout
+  probe: browser.geometry
+  target: rows.types
+  assertion:
+    predicate: readable_and_nonoverlapping
+    expected: true
+  description: Long commands, IPv6 addresses, timestamps and port labels wrap/truncate or inspect safely.
+  required: true
+  foreach: mapping_keys
+  fixtures:
+  - long_text
+  axes:
+  - viewport
+  - font_scale
+- id: B06-hierarchy-not-checkbox
+  group: layout
+  probe: browser.geometry
+  target: hierarchy.children
+  assertion:
+    predicate: prominence_and_visual_order_match_semantics
+    expected: true
+  description: Priority must be verified by geometry and visual weight, not merely DOM order.
+  required: true
+  axes:
+  - viewport
+- id: B07-visual-acceptance
+  group: aesthetics
+  probe: human.review
+  target: hierarchy
+  assertion:
+    predicate: blind_pairwise_human_review
+    required: true
+  description: Reviewers judge visual hierarchy, polish and readability against competing uncorrected layouts.
+  required: true
+  fixtures:
+  - normal
+  - crowded
+  axes:
+  - machine
+  - engine
+  - viewport
+- id: B08-theming-flexibility
+  group: aesthetics
+  probe: human.review
+  target: application
+  assertion:
+    predicate: contrasting_valid_visual_directions
+    minimum: 2
+  description: Conventional and unusual but sound themes should both remain possible.
+  required: true
+- id: B09-loading-empty-error
+  group: layout
+  probe: browser.geometry
+  target: rows.common
+  assertion:
+    predicate: states_distinct
+    required_states:
+    - loading
+    - ready
+    - empty
+    - stale
+    - unavailable
+    - error
+  description: No state silently masquerades as empty or ready.
+  required: true
+  fixtures:
+  - empty
+  - stale
+  - failure
+- id: B10-presentation-mode
+  group: layout
+  probe: browser.geometry
+  target: rows.types
+  assertion:
+    predicate: same_object_across_modes
+    expected: true
+  description: Table, mobile card and inspector preserve identity and access to detail.
+  required: true
+  foreach: mapping_keys
+  axes:
+  - viewport
+- id: B11-scroll-ownership
+  group: layout
+  probe: browser.geometry
+  target: hierarchy
+  assertion:
+    predicate: scroll_focus_overlay_unobstructed
+    expected: true
+  description: Inspector, long tables and overlays have clear scroll/focus ownership.
+  required: true
+  fixtures:
+  - crowded
+  axes:
+  - viewport
+- id: I01-keyboard-nav
+  group: interaction
+  probe: browser.accessibility
+  target: hierarchy
+  assertion:
+    predicate: complete_keyboard_route
+    expected: true
+  description: Tab, arrows, activation, Escape and focus restoration work in real browser.
+  required: true
+  axes:
+  - viewport
+  - access_mode
+- id: I02-semantic-controls
+  group: interaction
+  probe: browser.accessibility
+  target: rows.types
+  assertion:
+    predicate: accessible_labels_and_roles
+    expected: true
+  description: Row controls have meaningful accessible names and states.
+  required: true
+  foreach: mapping_keys
+- id: I03-focus-stability
+  group: interaction
+  probe: browser.interaction
+  target: hierarchy
+  assertion:
+    predicate: selection_and_focus_survive_refresh
+    expected: true
+  description: Refresh, data updates and inspector opening do not lose selection/focus.
+  required: true
+  fixtures:
+  - crowded
+  - stale
+- id: I04-relationship-navigation
+  group: interaction
+  probe: browser.interaction
+  target: semantics.relationships
+  assertion:
+    predicate: all_navigable_relationships_work
+    expected: true
+  description: Port owner/worker/AI parent-child navigation works and has an unknown state.
+  required: true
+  foreach: sequence_members
+- id: I05-adaptive-reflow
+  group: interaction
+  probe: browser.interaction
+  target: hierarchy
+  assertion:
+    predicate: resize_preserves_state_and_releases_old_style
+    expected: true
+  description: Repeated resize and mount/unmount produce clean state without lingering inline CSS.
+  required: true
+  axes:
+  - viewport
+- id: I06-valid-exotic
+  group: generalization
+  probe: browser.interaction
+  target: hint_language
+  assertion:
+    predicate: unusual_valid_layout_accepted
+    expected: true
+  description: Unconventional but accessible arrangement must not be rejected only for style preference.
+  required: true
+- id: R01-port-owner
+  group: domain
+  probe: runtime.observations
+  target: semantics.entities.port
+  assertion:
+    predicate: port_to_verified_process_or_unknown
+    expected: true
+  description: Exact port query returns verified process or explicit unresolved result.
+  required: true
+  fixtures:
+  - normal
+  - stale
+  - partial
+  critical: true
+- id: R02-python-classification
+  group: domain
+  probe: runtime.observations
+  target: semantics.entities.process_association
+  assertion:
+    predicate: three_class_evidence
+    classes:
+    - main_computer
+    - other
+    - unknown
+  description: Python association reflects provenance not string-matching guess.
+  required: true
+  fixtures:
+  - normal
+  - partial
+- id: R03-worker-task-feed
+  group: domain
+  probe: runtime.observations
+  target: semantics.entities.worker_task
+  assertion:
+    predicate: worker_attempt_lifecycle_and_origin
+    expected: true
+  description: Local and remote worker events correlate to stable task+attempt and parent.
+  required: true
+  fixtures:
+  - normal
+  - failure
+- id: R04-ai-call-feed
+  group: domain
+  probe: runtime.observations
+  target: semantics.entities.ai_call
+  assertion:
+    predicate: redacted_call_lifecycle
+    expected: true
+  description: AI call has stable ID, model/provider, duration, truthful state, privacy redaction.
+  required: true
+  fixtures:
+  - normal
+  - failure
+- id: R05-operation-lifecycle
+  group: domain
+  probe: runtime.operations
+  target: semantics.entities.operation
+  assertion:
+    predicate: receipt_through_final_or_unknown
+    states:
+    - submitted
+    - acknowledged
+    - running
+    - succeeded
+    - failed
+    - canceled
+    - unknown
+  description: Browser waiting cannot be shown as server running, unknown cannot be shown as success.
+  required: true
+  fixtures:
+  - normal
+  - stale
+  - failure
+  critical: true
+- id: R06-operation-reconnect
+  group: domain
+  probe: runtime.operations
+  target: hierarchy.children
+  assertion:
+    predicate: operation_visible_across_tabs_and_reconnect
+    expected: true
+  description: Progress/receipt survives view changes and transport interruption.
+  required: true
+  fixtures:
+  - stale
+  - failure
+- id: R07-no-duplicate-action
+  group: effects
+  probe: runtime.effect_boundary
+  target: intents.consequential
+  assertion:
+    predicate: no_duplicate_consequential_effect_on_retry
+    expected: true
+  description: Pending actions cannot be duplicated silently by repeat presses or timeouts.
+  required: true
+  foreach: sequence_members
+  fixtures:
+  - stale
+  - adversarial
+  critical: true
+- id: R08-terminate-guard
+  group: effects
+  probe: runtime.effect_boundary
+  target: semantics.entities.process
+  assertion:
+    predicate: pid_starttime_and_authority_revalidated
+    expected: true
+  description: PID reuse and unknown authorization block termination before effect.
+  required: true
+  fixtures:
+  - stale
+  - adversarial
+  critical: true
+- id: R09-confirmation
+  group: effects
+  probe: runtime.effect_boundary
+  target: intents.consequential
+  assertion:
+    predicate: effect_confirmation_where_required
+    expected: true
+  description: Destructive effects require target/effect summary and explicit confirmation.
+  required: true
+  foreach: sequence_members
+  fixtures:
+  - normal
+  - adversarial
+- id: R10-schedule-not-claim
+  group: domain
+  probe: runtime.operations
+  target: semantics.entities.scheduled_action
+  assertion:
+    predicate: stored_not_equated_to_executed
+    expected: true
+  description: Schedule storage does not imply unattended dispatch; Run Now is immediate.
+  required: true
+  fixtures:
+  - normal
+  - failure
+- id: R11-ai-advisory
+  group: effects
+  probe: runtime.effect_boundary
+  target: intents.read_only
+  assertion:
+    predicate: ai_advice_cannot_mutate_service
+    expected: true
+  description: AI recommendation does not itself authorize task or server actions.
+  required: true
+  fixtures:
+  - adversarial
+- id: R12-source-truth
+  group: domain
+  probe: runtime.observations
+  target: data_sources
+  assertion:
+    predicate: reported_sources_reconciled_with_authority
+    expected: true
+  description: Declared existing/integration-needed source statuses match actual producers.
+  required: true
+  foreach: mapping_keys
+- id: R13-workflows
+  group: domain
+  probe: browser.interaction
+  target: workflows
+  assertion:
+    predicate: workflow_effect_and_navigation_proven
+    expected: true
+  description: Every designed user workflow must have end-to-end witness or explicit unimplemented status.
+  required: true
+  foreach: sequence_members
+  fixtures:
+  - normal
+  - failure
+- id: R15-ai-data-redaction
+  group: effects
+  probe: runtime.effect_boundary
+  target: semantics.entities.ai_call
+  assertion:
+    predicate: no_secret_prompt_or_result_in_default_activity
+    expected: true
+  description: Logs, traces, and screenshots must redact credentials, sensitive prompts and outputs.
+  required: true
+  fixtures:
+  - adversarial
+- id: R16-process-snapshot-limit
+  group: domain
+  probe: runtime.observations
+  target: semantics.entities.process
+  assertion:
+    predicate: limited_filter_not_proof_of_absence
+    expected: true
+  description: A bounded/filtered process or port snapshot must never imply host-wide absence.
+  required: true
+  fixtures:
+  - partial
+  - crowded
+- id: R14-live-not-mutated
+  group: effects
+  probe: runtime.effect_boundary
+  target: authority
+  assertion:
+    predicate: fixture_only_no_prod_mutation
+    expected: true
+  description: Frob uses mocks and read-only inspection and leaves production service unchanged.
+  required: true
+  critical: true
+- id: Q07-run-provenance
+  group: quality
+  probe: metamorphic.stability
+  target: run_provenance
+  assertion:
+    predicate: replay_metadata_and_artifact_hashes_complete
+    expected: true
+  description: Record exact source, browser, machine, fixture, hint and run fingerprints for independent replay.
+  required: true
+- id: Q08-console-report-agreement
+  group: quality
+  probe: metamorphic.stability
+  target: run_provenance
+  assertion:
+    predicate: reported_console_and_json_metrics_agree
+    expected: true
+  description: A 390px console measurement must agree with the report for the same run, otherwise refuse.
+  required: true
+  fixtures:
+  - adversarial
+- id: Q01-reflow-stability
+  group: quality
+  probe: metamorphic.stability
+  target: hierarchy
+  assertion:
+    predicate: tiny_input_change_causes_bounded_layout_change
+    expected: true
+  description: Minor label/row changes should not cause unnecessary wholesale relayout.
+  required: true
+  fixtures:
+  - normal
+  - long_text
+- id: Q02-determinism
+  group: quality
+  probe: metamorphic.stability
+  target: sweep_policy
+  assertion:
+    predicate: same_seed_same_plan
+    expected: true
+  description: Identical inputs reproduce candidate ranking and generated layout.
+  required: true
+- id: Q03-runtime-budget
+  group: quality
+  probe: browser.performance
+  target: sweep_policy
+  assertion:
+    predicate: runtime_recorded_and_within_registered_budget
+    expected: true
+  description: Time and search budgets preregistered; errors/truncation visible.
+  required: true
+  axes:
+  - machine
+  - engine
+  - viewport
+- id: Q04-author-effort
+  group: quality
+  probe: metrics.authoring_effort
+  target: application
+  assertion:
+    predicate: record_all_author_escapes
+    fields:
+    - decisions
+    - hints
+    - lines
+    - css_overrides
+    - iterations
+    - time
+  description: Count manual author decisions, code and corrective passes; generated lines are separate.
+  required: true
+- id: Q05-default-quality
+  group: quality
+  probe: human.review
+  target: application
+  assertion:
+    predicate: zero_hint_initial_visual_review
+    expected: true
+  description: Evaluate default attractiveness before manual hint tuning on holdout apps.
+  required: true
+- id: Q06-cost-of-hints
+  group: quality
+  probe: metrics.authoring_effort
+  target: hint_language
+  assertion:
+    predicate: track_hints_to_acceptance
+    expected: true
+  description: Measure number/strength of hints required for acceptance; fewer is better only if correct.
+  required: true
+- id: P01-legacy-parity
+  group: promotion
+  probe: promotion.parity
+  target: application
+  assertion:
+    predicate: live_app_parity_before_cutover
+    expected: true
+  description: Generated Task Manager must preserve existing operations and telemetry before replacement.
+  required: true
+- id: P02-rollback
+  group: promotion
+  probe: promotion.parity
+  target: application
+  assertion:
+    predicate: reversible_activation_with_retained_fallback
+    expected: true
+  description: Promotion requires restore path and no change to Website Builder.
+  required: true
+- id: P03-no-success-by-fixture
+  group: promotion
+  probe: promotion.parity
+  target: application
+  assertion:
+    predicate: live_runtime_external_authority
+    expected: true
+  description: Fixture pass cannot certify production host, AI feed, worker feed, or backend effects.
+  required: true

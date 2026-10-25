@@ -48,8 +48,11 @@
           JSON.stringify(encoded.stateModel) === JSON.stringify(definition.stateModel);
       });
       check("owned-props-and-children", () => {
+        const child = (definition.allowedChildren || []).length
+          ? {id: "acid-child", elementId: definition.allowedChildren[0]}
+          : {id: "acid-child", type: "test"};
         const sourceProps = {id: "acid-instance", metadata: {source: "original"},
-          children: [{id: "acid-child", type: "test"}]};
+          children: [child]};
         const encoded = registry.serializeElement(id, sourceProps);
         encoded.props.metadata.source = "mutated";
         return sourceProps.metadata.source === "original" &&

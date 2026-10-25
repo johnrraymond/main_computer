@@ -216,9 +216,10 @@ export function inspectWorkerMskSignatureSurface({expectedWallet = '', trustedWo
   try { message = JSON.parse(body.slice(start,finish)) }
   catch { return invalid('message-not-parsable') }
   if (!message || Array.isArray(message) || typeof message !== 'object') return invalid('message-shape')
-  const keys = ['purpose','request_id','wallet_address','chain_id','origin','issued_at','expires_at','version']
+  const keys = ['purpose','request_id','user_slug','wallet_address','chain_id','origin','issued_at','expires_at','version']
   if (Object.keys(message).sort().join(',') !== keys.sort().join(',')) return invalid('message-keys')
   if (message.purpose !== 'request_multi_session_key' ||
+      typeof message.user_slug !== 'string' || !/^[0-9a-f]{64}$/.test(message.user_slug) ||
       message.version !== 'main-computer-multisession-key-request-v1' ||
       typeof message.wallet_address !== 'string' ||
       message.wallet_address.toLowerCase() !== expectedWallet.toLowerCase() ||

@@ -1,6 +1,6 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
-import {classifyWorkerMsk, isMskEndpointRequest, waitForWorkerMsk, workerMskEvent, workerMskFailureCategory} from './worker_msk_outcome.mjs'
+import {classifyWorkerMsk, isMskEndpointRequest, waitForWorkerMsk, workerMskEvent, workerMskFailureCategory, safeMskApiRejection, readMskApiRejection, formatMskFailureWithApiReason, assertServedWorkerMskContract} from './worker_msk_outcome.mjs'
 
 const base = {events:['request.start','signature.created','hub.response']}
 
@@ -85,4 +85,61 @@ test('wait expires with stage-specific error for pending Hub issuance', async ()
     readEvents:()=>['request.start','signature.created'],
   }),/hub-issuance-timeout/)
   assert.ok(t>=1400)
+})
+
+test('reports local validation and upstream Hub errors without signed request contents', async () => {
+  const local = {ok:false,error:'signed_request.message.user_slug must contain at least 32 characters.'}
+  assert.equal(safeMskApiRejection(local), local.error)
+  const hub = {ok:false,error:'Hub returned HTTP 400: {"error":"signed_request.message.chain_id mismatch: expected 42424241"}'}
+  assert.equal(safeMskApiRejection(hub), 'hub-http-400: signed_request.message.chain_id mismatch: expected 42424241')
+  const response = {status:()=>400, json:async()=>hub}
+  const result = await readMskApiRejection(response)
+  assert.deepEqual(result,{httpStatus:400,reason:'hub-http-400: signed_request.message.chain_id mismatch: expected 42424241'})
+  const failure = formatMskFailureWithApiReason(new Error('Worker MSK issuance failed: local-api-http-error'),result)
+  assert.match(failure,/localApiRejection=hub-http-400/)
+})
+
+test('does not inspect successful responses that can contain new key material', async () => {
+  let bodyRead = false
+  const res = await readMskApiRejection({status:()=>200,json:async()=>{bodyRead=true;return {key:'very-secret'}}})
+  assert.equal(res,null)
+  assert.equal(bodyRead,false)
+})
+
+test('redacts sensitive values and refuses arbitrary request material in error messages', async () => {
+  assert.equal(safeMskApiRejection({error:'invalid wallet 0x'+'a'.repeat(40)}),'invalid wallet [hex-redacted]')
+  assert.equal(safeMskApiRejection({error:'signature: 0x'+'f'.repeat(130)}),'sensitive-error-detail-redacted')
+  assert.equal(safeMskApiRejection({error:'signed_request: {"private_key":"oops"}'}),'sensitive-error-detail-redacted')
+  assert.equal(safeMskApiRejection({error:'Authorization: Bearer abc'}),'sensitive-error-detail-redacted')
+  assert.equal(safeMskApiRejection({error:'hub URL https://example.com/secret?token=abc'}),'hub URL [url-redacted]')
+  assert.equal(safeMskApiRejection({error:'\n'+'x'.repeat(900)}).length,300)
+  assert.equal(safeMskApiRejection({error:{something:'no'}}),'no-structured-error')
+  assert.deepEqual(await readMskApiRejection({status:()=>400,json:async()=>{throw new Error('malformed')}}),
+    {httpStatus:400,reason:'json-error-unavailable'})
+})
+
+// The earlier user_slug source patch was correct, but the local viewport server
+// retained a pre-patch in-memory HTML snapshot. Reject that SERVED version.
+test('served signer schema is validated before MetaMask signing', async () => {
+  const valid = {builderAvailable:true,hasUserSlug:true,correctChain:true,correctPurpose:true}
+  assert.equal(await assertServedWorkerMskContract({evaluate:async()=>valid}),true)
+})
+
+test('stale served signer missing user_slug refuses before a wallet signature', async () => {
+  const stale = {builderAvailable:true,hasUserSlug:false,correctChain:true,correctPurpose:true}
+  await assert.rejects(assertServedWorkerMskContract({evaluate:async()=>stale}), error =>
+    /restart the local Main Computer viewport server/.test(error.message) &&
+    /No MSK signature was requested/.test(error.message) &&
+    !error.message.includes('0x1111111111111111111111111111111111111111'))
+})
+
+test('missing, throwing, or wrong-chain served builder fails closed', async () => {
+  for (const state of [
+    {builderAvailable:false},
+    {builderAvailable:true,builderFailed:true},
+    {builderAvailable:true,hasUserSlug:true,correctChain:false,correctPurpose:true},
+    {builderAvailable:true,hasUserSlug:true,correctChain:true,correctPurpose:false},
+  ]) {
+    await assert.rejects(assertServedWorkerMskContract({evaluate:async()=>state}), /Served Worker wallet signer/)
+  }
 })

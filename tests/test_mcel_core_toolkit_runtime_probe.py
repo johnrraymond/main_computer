@@ -70,32 +70,40 @@ def test_toolkit_view_resolver_enforces_required_primitives(live_page):
     assert row['observations']['rejectionReasonConsistent'],row['details']
 
 
-def test_corrected_behavior_would_pass_same_probe_without_change_to_probe(live_page):
-    # Simulate hypothetical fixes only inside a disposable page. Nothing in
-    # production or the harness is altered. This proves the witness detects
-    # corrected behavior instead of hard-coding FAIL for the known defects.
+def test_prior_contract_defects_are_caught_by_the_same_unchanged_probe(live_page):
+    """Fault injection must cause the seven original witnesses to fail.
+
+    The real implementation now passes. Deliberately restore both old bugs
+    only inside this disposable page and demand that v5 detects them.
+    """
+    assert live_page.evaluate('McelAcidCoreToolkit.run().status') == 'PASS'
     live_page.evaluate('''() => {
-      const reg=McelElementRegistry;
-      const original=reg.serializeElement;
-      reg.serializeElement=function(id,props={}) {
-        const d=reg.get(id);
-        const limited = {...props, children:(props.children||[]).filter(x=>d?.allowedChildren.includes(x.elementId))};
-        return original(id,limited);
+      const reg = McelElementRegistry;
+      const original = reg.serializeElement;
+      reg.serializeElement = function (id, props={}) {
+        const result = original(id, {...props, children: []});
+        result.children = props.children || []; // buggy legacy serializer
+        return result;
       };
-      const tk=McelToolkitCore;
-      const evaluate=tk.evaluateView;
-      tk.evaluateView=function(contract,view) {
-        const out=evaluate(contract,view);
-        if(out.missingPrimitives.length) {
-          out.eligible=false;
-          out.reason='Rejected: missing primitives '+out.missingPrimitives.join(',');
+      const tk = McelToolkitCore;
+      const evaluate = tk.evaluateView;
+      tk.evaluateView = function (contract, view) {
+        const result = evaluate(contract, view);
+        if (result.missingCapabilities.length === 0 &&
+            !(contract.mustReject || []).includes(view.id) &&
+            result.missingPrimitives.length > 0) {
+          result.eligible = true; // buggy legacy capability-only eligibility
+          result.reason = 'Eligible: capabilities sufficient';
         }
-        return out;
+        return result;
       };
     }''')
-    result=live_page.evaluate('McelAcidCoreToolkit.run()')
-    assert result['status']=='PASS',result['confirmedBoundaryDefects']
-    assert all(row['status']=='PASS' for row in result['elements'])
+    broken = live_page.evaluate('McelAcidCoreToolkit.run()')
+    assert broken['status'] == 'FAIL'
+    assert {entry['id'] for entry in broken['confirmedBoundaryDefects']} == (
+        set(live_page.evaluate('McelAcidCoreToolkit.CORE_PARENTS')) |
+        {'element.toolkit.view-resolver'}
+    )
 
 
 def test_negative_control_broken_primitive_catalog_is_detected(live_page):

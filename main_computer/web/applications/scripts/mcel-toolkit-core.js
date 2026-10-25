@@ -109,7 +109,7 @@
           id: "contract-treegrid",
           label: "Contract treegrid",
           capabilities: ["hierarchy", "multi-column-fields", "typed-cells", "tri-state-selection", "blocked-visible-not-selectable", "selected-output-proof", "interactive-expand-collapse", "resizable-columns", "keyboard-navigation"],
-          primitiveIds: ["control.selection.tristate", "control.disclosure", "control.resize-handle", "cell.path", "cell.status", "cell.risk", "cell.reason", "controller.selection", "controller.expansion", "controller.column-sizing"],
+          primitiveIds: ["control.selection.tristate", "control.disclosure", "control.resize-handle", "cell.path", "cell.status", "cell.risk", "cell.reason", "controller.selection", "controller.expansion", "controller.column-sizing", "controller.view-resolver"],
           bestFor: ["file-basket", "diff-selector", "resource-browser"]
         },
         {
@@ -160,7 +160,9 @@
             "layout.workbench.advanced-risk-zone",
             "layout.workbench.status-band",
             "pattern.workbench-specification",
-            "pattern.capability-projection"
+            "pattern.capability-projection",
+            "pattern.git-backed-document-history",
+            "controller.safety-gate"
           ],
           bestFor: ["workbench-specification", "capability-projection", "git-backed-document-history", "repository-operator", "source-workspace"]
         },
@@ -422,14 +424,18 @@
         const providedPrimitives = normalizeList(view?.primitiveIds);
         const missingPrimitives = requiredPrimitives.filter((primitiveId) => !providedPrimitives.includes(primitiveId));
         const explicitlyRejected = normalizeList(contract?.mustReject).includes(view.id);
-        const eligible = missingCapabilities.length === 0 && !explicitlyRejected;
+        const eligible = missingCapabilities.length === 0 && missingPrimitives.length === 0 && !explicitlyRejected;
         const capabilityScore = required.length ? (required.length - missingCapabilities.length) / required.length : 1;
         const primitiveScore = requiredPrimitives.length ? (requiredPrimitives.length - missingPrimitives.length) / requiredPrimitives.length : 1;
         const safetyPenalty = explicitlyRejected ? 0.5 : 0;
         const score = Math.max(0, Math.round(((capabilityScore * 0.7) + (primitiveScore * 0.3) - safetyPenalty) * 100));
+        const rejectedFor = [];
+        if (missingCapabilities.length) rejectedFor.push(`missing capabilities: ${missingCapabilities.join(", ")}`);
+        if (missingPrimitives.length) rejectedFor.push(`missing primitives: ${missingPrimitives.join(", ")}`);
+        if (explicitlyRejected) rejectedFor.push("explicitly rejected by contract");
         const reason = eligible
-          ? `Eligible: satisfies ${required.length} required capabilities for ${contract.label || contract.id}.`
-          : `Rejected as primary: missing ${missingCapabilities.join(", ") || "no capabilities"}${explicitlyRejected ? "; explicitly rejected by contract" : ""}.`;
+          ? `Eligible: satisfies ${required.length} required capabilities and ${requiredPrimitives.length} required primitives for ${contract?.label || contract?.id || "this contract"}.`
+          : `Rejected as primary: ${rejectedFor.join("; ")}.`;
         return {
           id: view.id,
           label: view.label,

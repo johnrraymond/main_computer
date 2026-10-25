@@ -106,7 +106,7 @@ async function bestLivePage(context, extensionId, {fresh} = {}) {
     // neither an error tab nor a wallet-home tab outranks active onboarding.
     const value = fresh
       ? (ONBOARDING_PROGRESS[label] ?? -1)
-      : label === 'wallet-home' ? 100 : (ONBOARDING_PROGRESS[label] ?? -1)
+      : label === 'wallet-home' ? 100 : label === 'wallet-unlock' ? 95 : (ONBOARDING_PROGRESS[label] ?? -1)
     if (value > rank) { rank = value; best = page }
   }
   return rank >= 0 ? best : null
@@ -202,6 +202,13 @@ async function fixedTextVisible(page, pattern) {
 
 export async function screenLabel(page) {
   if (await fixedTextVisible(page, /MetaMask (encountered an error|had trouble starting)/i)) return 'extension-startup-error'
+  // MetaMask v13.53 reuses a profile at home.html#/onboarding/unlock.
+  // Treat this as a responsive cached-wallet screen, not stalled onboarding.
+  if (/\/home\.html#\/(?:onboarding\/)?unlock(?:[/?]|$)/.test(page.url()) &&
+      await visible(page.getByRole('button', {name: /^unlock$/i}).first()) &&
+      await findVisible(page, ['[data-testid="unlock-password"]', 'input[type="password"]'])) {
+    return 'wallet-unlock'
+  }
   if (await isOptionalWindowsHello(page)) return 'optional-windows-hello'
   if (await isOptionalDataSharing(page)) return 'optional-data-sharing'
   if (await findVisible(page, selectors.termsScroll)) return 'terms-of-use-dialog'

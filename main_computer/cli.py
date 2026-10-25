@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# Captain smoke must not import ViewportServer, MCEL, or the application catalog.
+# The general CLI imports those subsystems for unrelated commands. Route only
+# the established `captain smoke ...` contract before loading that CLI graph.
+import sys as _captain_dispatch_sys
+if (__name__ == "__main__"
+        and _captain_dispatch_sys.argv[1:3] == ["captain", "smoke"]):
+    from main_computer.captain_entrypoint import main as _captain_smoke_main
+    raise SystemExit(_captain_smoke_main(_captain_dispatch_sys.argv[2:]))
+
 import argparse
 import contextlib
 import hashlib

@@ -77,10 +77,10 @@ def test_real_metamask_native_windows_not_a_mock():
     assert 'completeWorkerWalletConnection({' in spec
     assert 'metamask.addNetwork(' not in spec
     assert 'metamask.switchNetwork(' not in spec
-    assert "await page.locator('#worker-connect-wallet').click()" in spec
-    assert 'metamask.confirmSignature()' in spec
+    assert 'startWorkerWalletConnection(page, {' in spec
+    assert 'approveWorkerMskSignature(context, page, extensionId, walletSecret.address' in spec
     assert "method: 'eth_blockNumber'" in spec
-    assert "toHaveText('Active'" in spec
+    assert 'waitForWorkerMsk({' in spec
     assert "toHaveText('Accepted'" in spec
     assert "await importDisposableWallet(activePage, walletSecret.mnemonic.trim(), walletSecret.password, {context, extensionId})" in spec
     assert "safeExtensionTabsDiagnostics(context, extensionId, walletPage)" in spec
@@ -125,7 +125,7 @@ def test_worker_connection_approval_offline_regressions():
     testfile = PROJECT / 'worker_wallet_approvals.test.mjs'
     source = adapter.read_text(encoding='utf-8')
     native = (PROJECT / 'native_acceptance.mjs').read_text(encoding='utf-8')
-    assert "await page.locator('#worker-connect-wallet').click()" in native
+    assert 'startWorkerWalletConnection(page, {' in native
     assert 'completeWorkerWalletConnection({' in native
     assert 'metamask.addNetwork(' not in native
     assert 'metamask.switchNetwork(' not in native

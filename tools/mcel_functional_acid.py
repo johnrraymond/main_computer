@@ -39,7 +39,8 @@ TAB_SPECIMEN = Path('tools/fixtures/mcel_acid_tab_ir.json')
 BROWSER_SCRIPTS = (
     'mcel-element-registry.js', 'mcel-elements-core.js',
     'mcel-toolkit-core.js', 'mcel-concern-core.js',
-    'mcel-file-basket-model.js', 'mcel-project-concern-workbench.js',
+    'mcel-file-basket-model.js', 'mcel-file-basket-controller.js',
+    'mcel-project-concern-workbench.js',
     'mcel-git-file-basket-treegrid-lab.js', 'mcel-element-acid-test.js',
 )
 # Selected existing independent test authorities. Full mode runs all test_mcel_*.py.
@@ -53,7 +54,8 @@ CORE_SUITES = {
     'operations-and-safety': ('tests/test_mcel_semantic_adapter_toolkit.py',
                               'tests/test_mcel_host_bound_semantic_admission.py'),
     'projection-and-interaction': ('tests/test_mcel_notebook_projection.py',),
-    'element-behavior-audit': ('tests/test_mcel_element_behavior_audit.py', 'tests/test_mcel_core_toolkit_runtime_probe.py'),
+    'element-behavior-audit': ('tests/test_mcel_element_behavior_audit.py', 'tests/test_mcel_core_toolkit_runtime_probe.py',
+                               'tests/test_mcel_file_basket_runtime_probe.py'),
 }
 
 
@@ -251,6 +253,44 @@ def _run_browser(repo: Path, output: Path, baseline: Path | None,
                 else:
                     checks.append(result('core-toolkit-public-boundary-behavior','UNVERIFIED',
                         details='Core/toolkit public boundary probe absent'))
+                # Real MCEL FileBasket model/controller, with no application or
+                # filesystem effects. The 6 witnesses are explicitly bounded
+                # to the reusable Git Tools file-basket consumer, not full
+                # implementation/renderer certification of these element IDs.
+                selection_probe = repo / 'tools/mcel_file_basket_runtime_probe.js'
+                if selection_probe.is_file():
+                    try:
+                        page.add_script_tag(content=selection_probe.read_text(encoding='utf-8'))
+                        selection_batch = page.evaluate('() => window.McelAcidFileBasket.run()')
+                        selection_rows = {w['id']:w for w in selection_batch['elements']}
+                        registered = {d['id'] for d in evidence['defs']}
+                        invalid_roster = (set(selection_batch['roster']) - registered or
+                                          set(selection_rows) != set(selection_batch['roster']) or
+                                          len(selection_rows) != len(selection_batch['elements']))
+                        checks.append(result('file-basket-model-controller-behavior',
+                            'FAIL' if invalid_roster else selection_batch['status'],
+                            details='Real in-memory file-basket model/controller; bounded state and safety ' 
+                                    'proof only, not DOM/runtime registry certification',
+                            evidence={'roster':selection_batch['roster'],
+                                      'invalidRoster':bool(invalid_roster),
+                                      'witnesses':selection_rows,
+                                      'failed':selection_batch['failed'],
+                                      'executionContext':selection_batch['executionContext']}))
+                        # Same per-element output path as the existing boundary
+                        # witnesses, with duplicate coverage refused explicitly.
+                        duplicate = set(selection_rows) & set(family_witnesses)
+                        if duplicate:
+                            checks.append(result('file-basket-witness-overlap','FAIL',
+                                details='Duplicate per-ID bounded runtime witnesses',
+                                evidence=sorted(duplicate)))
+                        else:
+                            family_witnesses.update(selection_rows)
+                    except Exception as exc:
+                        checks.append(result('file-basket-model-controller-behavior','FAIL',
+                            details=f'Probe execution failed: {type(exc).__name__}: {exc}'))
+                else:
+                    checks.append(result('file-basket-model-controller-behavior','UNVERIFIED',
+                        details='File-basket runtime probe source absent'))
                 for d in evidence['defs']:
                     identifier = d['id']
                     # Showcase coverage is a declared subset, not all registry

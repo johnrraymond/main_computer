@@ -4325,7 +4325,11 @@ class ViewportEnergyRoutesMixin:
             worker_payload = body.get("worker")
             if not isinstance(worker_payload, dict):
                 raise ValueError("worker registration payload is required.")
-            registration_payload = self._worker_registration_payload_from_ui(worker_payload)
+            # Work now is an explicit, local-only, time-limited authorization.
+            # The ordinary idle gate still applies to all other registrations.
+            registration_payload = self._worker_registration_payload_from_ui(
+                worker_payload, work_now_override=True
+            )
 
             current = self._normalize_worker_network_key(settings.get("selectedNetwork", "none"))
             if current != selected:
@@ -4388,6 +4392,10 @@ class ViewportEnergyRoutesMixin:
                 "hub_url": hub_url,
                 "chain_id": chain_id,
                 "started_at": started_at,
+                # Stable Hub registers the market offer from worker.auth on its
+                # WebSocket. Preserve the actual offer before authenticating;
+                # the runtime client uses this profile rather than an HTTP POST.
+                "worker": registration_payload,
                 "status": "ready",
                 "worker_start_status": "ready",
                 "signed_order_status": "ready",
@@ -5468,9 +5476,19 @@ class ViewportEnergyRoutesMixin:
 
         return cleaned, user_activity
 
-    def _enforce_worker_seller_availability(self, availability: dict[str, Any], user_activity: dict[str, Any] | None) -> None:
+    def _enforce_worker_seller_availability(
+        self,
+        availability: dict[str, Any],
+        user_activity: dict[str, Any] | None,
+        *,
+        work_now_override: bool = False,
+    ) -> None:
         if not bool(availability.get("accept_paid_jobs")):
             raise ValueError("Accept paid jobs is off; this machine will not register a seller offer.")
+        # The local Work now endpoint authorizes a bounded exception to the idle
+        # requirement, not an exception to opting in to paid work.
+        if work_now_override:
+            return
         if not bool(availability.get("only_when_idle")):
             return
         active = user_activity.get("active") if isinstance(user_activity, dict) else None
@@ -5480,7 +5498,9 @@ class ViewportEnergyRoutesMixin:
             reason = str(user_activity.get("reason") or "idle status unavailable") if isinstance(user_activity, dict) else "idle status unavailable"
             raise ValueError(f"Only when totally idle is selected, but this machine's idle status could not be verified: {reason}.")
 
-    def _worker_registration_payload_from_ui(self, worker_payload: dict[str, Any]) -> dict[str, Any]:
+    def _worker_registration_payload_from_ui(
+        self, worker_payload: dict[str, Any], *, work_now_override: bool = False
+    ) -> dict[str, Any]:
         models = [str(item).strip() for item in worker_payload.get("models", []) if str(item).strip()] if isinstance(worker_payload.get("models"), list) else []
         model = str(worker_payload.get("model") or (models[0] if models else "")).strip()
         if model and model not in models:
@@ -5549,7 +5569,9 @@ class ViewportEnergyRoutesMixin:
         }
         capabilities["phase12_worker_seller_offer_ui"] = True
         availability, user_activity = self._worker_seller_availability_from_payload(worker_payload)
-        self._enforce_worker_seller_availability(availability, user_activity)
+        self._enforce_worker_seller_availability(
+            availability, user_activity, work_now_override=work_now_override
+        )
         capabilities["availability"] = availability
         capabilities["target_output_tokens"] = target_output_tokens
 
@@ -5996,7 +6018,105 @@ class ViewportEnergyRoutesMixin:
             + text
         )
 
+    def _post_worker_start_to_stable_hub(
+        self, *, hub_url: str, payload: dict[str, Any], identity: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Register via Stable Hub's existing authenticated live WebSocket.
+
+        Stable Hub has no /workers/connect REST route: a successful
+        hub.auth.accepted plus hub.pong.accepted is the registration proof.
+        Do not synthesize a Hub registration on the basis of a local setting.
+        """
+        network = str(payload.get("network") or "").strip()
+        chain_id = str(payload.get("chain_id") or "").strip()
+        hub_network = identity.get("network") if isinstance(identity.get("network"), dict) else {}
+        if str(hub_network.get("network_key") or "") != network:
+            raise ValueError("Stable Hub network identity does not match Worker network.")
+        if str(hub_network.get("chain_id") or "") != chain_id:
+            raise ValueError("Stable Hub chain identity does not match Worker chain.")
+        wallet_address = self._normalize_worker_wallet_address(payload.get("wallet_address"))
+        requested_ring = self._normalize_worker_ring(payload.get("requested_ring"))
+        supplied_authorization = payload.get("multisession_authorization")
+        if not isinstance(supplied_authorization, dict):
+            raise ValueError("Stable Hub Worker start requires a multi-session authorization.")
+
+        settings = self._load_worker_settings()
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        if (str(signed.get("status") or "") != "registering-with-hub"
+            or str(signed.get("wallet_address") or "").lower() != wallet_address.lower()
+            or str(signed.get("network") or "") != network
+            or str(signed.get("requested_ring") or "") != requested_ring
+            or self._clean_hub_url(str(signed.get("hub_url") or "")) != self._clean_hub_url(hub_url)):
+            raise ValueError("Stable Hub Worker registration does not match the pending local Work now request.")
+        if signed.get("worker") != payload.get("worker"):
+            raise ValueError("Stable Hub Worker market profile changed during registration.")
+        resolved_authorization = self._worker_runtime_multisession_authorization(settings=settings, hub_url=hub_url)
+        expected_key_id = str(supplied_authorization.get("key_id") or supplied_authorization.get("multisession_key_id") or "")
+        actual_key_id = str(resolved_authorization.get("key_id") or resolved_authorization.get("multisession_key_id") or "")
+        if not expected_key_id or actual_key_id != expected_key_id:
+            raise ValueError("Stable Hub Worker authorization changed during registration.")
+
+        live = self._post_worker_runtime_heartbeat_to_hub(
+            hub_url=hub_url, settings=settings, phase="accepting",
+            hub_status="available", active_jobs=0,
+            policy={"allowed_to_accept": True},
+        )
+
+        def reject_unverified_live_session(reason: str) -> None:
+            # Authentication may already have advertised capacity to the Hub.
+            # Do not leave that socket offering work when our verification fails.
+            try:
+                self._close_worker_live_session(
+                    hub_url=hub_url, worker_id=wallet_address.lower(),
+                    reason="unverified_work_now_registration",
+                )
+            except Exception:
+                pass
+            raise RuntimeError(reason)
+
+        session = live.get("live_session") if isinstance(live.get("live_session"), dict) else {}
+        if (not session.get("alive") or not session.get("worker_session", {}).get("connected")
+            or str(session.get("accepted", {}).get("type") or "") != "hub.auth.accepted"
+            or str(session.get("last_pong", {}).get("type") or "") != "hub.pong.accepted"):
+            reject_unverified_live_session("Stable Hub did not prove Worker authentication and live ping/pong.")
+
+        # Access the existing server-owned socket, not a caller-provided ID.
+        key = (self._clean_hub_url(hub_url), wallet_address.lower())
+        lock, clients = self._worker_live_session_clients()
+        with lock:
+            client = clients.get(key)
+            accepted = dict(client.accepted) if client is not None and client.is_alive else {}
+        if accepted.get("type") != "hub.auth.accepted" or accepted.get("ok") is not True:
+            reject_unverified_live_session("Stable Hub Worker registration acknowledgement is unavailable.")
+        market = accepted.get("market") if isinstance(accepted.get("market"), dict) else {}
+        worker_id = str(market.get("worker_id") or "").strip()
+        if not worker_id or worker_id != str(accepted.get("connection_id") or ""):
+            reject_unverified_live_session("Stable Hub did not supply its own authenticated Worker identity.")
+        if str(market.get("worker_wallet_address") or "").lower() != wallet_address.lower():
+            reject_unverified_live_session("Stable Hub authenticated Worker wallet does not match the disposable wallet.")
+        if f"ring-{requested_ring}" not in (market.get("rings") or []):
+            reject_unverified_live_session("Stable Hub registered Worker in a different ring.")
+
+        registration_worker = dict(payload["worker"])
+        registration_worker.update({"worker_id": worker_id, "assigned_ring": requested_ring})
+        return {
+            "ok": True, "transport": "websocket-live-session",
+            "worker_id": worker_id, "assigned_ring": requested_ring,
+            "worker": registration_worker,
+            "pool": {},
+            "market": market,
+            "hub_id": str(accepted.get("hub_id") or ""),
+        }
+
     def _post_worker_start_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if str(payload.get("network") or "") in {"testnet", "mainnet"}:
+            from main_computer.hub_cli_live_session import identify_hub_protocol
+            identity = identify_hub_protocol(self._clean_hub_url(hub_url))
+            if str(identity.get("service") or "") != "main_computer.stable_hub":
+                raise ValueError("Selected network Hub does not advertise the Stable live-session protocol.")
+            return self._post_worker_start_to_stable_hub(
+                hub_url=hub_url, payload=payload, identity=identity,
+            )
         request = Request(
             self._clean_hub_url(hub_url) + "/api/hub/v1/workers/connect",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

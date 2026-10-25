@@ -146,7 +146,7 @@ function fakeMskDOM({messageOverrides={}, surfaceOverrides={}, buttonLabel='Conf
   const issued = new Date(Date.now() - 10_000).toISOString()
   const expiry = new Date(Date.parse(issued) + 600_000).toISOString()
   const message={purpose:'request_multi_session_key',request_id:'msk_req_80cecc9-2679-4b76-a2fe-76908959dbf5',
-    wallet_address:SIGN_WALLET,chain_id:SIGN_CHAIN,origin:SIGN_ORIGIN,
+    user_slug:'a'.repeat(64),wallet_address:SIGN_WALLET,chain_id:SIGN_CHAIN,origin:SIGN_ORIGIN,
     issued_at:issued,expires_at:expiry,version:'main-computer-multisession-key-request-v1',...messageOverrides}
   const messageText=JSON.stringify(message)
   const text=surfaceOverrides.text ??
@@ -177,6 +177,11 @@ test('MSK signature refuses any mismatch in address, chain, origin, purpose, ver
     {messageOverrides:{purpose:'transfer_eth'}},
     {messageOverrides:{version:'future-v2'}},
     {messageOverrides:{request_id:'msk_req_bad'}},
+    {messageOverrides:{user_slug:''}},
+    {messageOverrides:{user_slug:'b'.repeat(31)}},
+    {messageOverrides:{user_slug:'A'.repeat(64)}},
+    {messageOverrides:{user_slug:'z'.repeat(64)}},
+    {messageOverrides:{user_slug:1}},
     {messageOverrides:{value:'100'}},
     {surfaceOverrides:{heading:'Transaction request'}},
     {surfaceOverrides:{text:'Signature request\nNetwork Main Computer Testnet\nRequest from evil.example\nMessage {"purpose":"request_multi_session_key"}'}},
@@ -192,6 +197,22 @@ test('MSK signature refuses any mismatch in address, chain, origin, purpose, ver
       assert.equal(result.verified,false,JSON.stringify(scenario).slice(0,100))
       assert.equal(result.button,null)
     }
+  } finally {delete globalThis.document;delete globalThis.window}
+})
+test('MSK signature requires exactly nine signed message fields including secure user_slug',()=>{
+  try {
+    const valid = fakeMskDOM()
+    assert.deepEqual(Object.keys(valid).sort(), [
+      'purpose','request_id','user_slug','wallet_address','chain_id','origin','issued_at','expires_at','version'
+    ].sort())
+    assert.equal(inspectWorkerMskSignatureSurface({expectedWallet:SIGN_WALLET,trustedWorkerOrigin:true}).verified,true)
+    const missing = {...valid}
+    delete missing.user_slug
+    fakeMskDOM({messageOverrides:missing, surfaceOverrides:{text:`Signature request\nNetwork Main Computer Testnet\nRequest from HTTP 127.0.0.1:8765\nMessage\n${JSON.stringify(missing)}`}})
+    assert.equal(inspectWorkerMskSignatureSurface({expectedWallet:SIGN_WALLET,trustedWorkerOrigin:true}).reason,'message-keys')
+    const extra = {...valid,transfer:'1'}
+    fakeMskDOM({surfaceOverrides:{text:`Signature request\nNetwork Main Computer Testnet\nRequest from HTTP 127.0.0.1:8765\nMessage\n${JSON.stringify(extra)}`}})
+    assert.equal(inspectWorkerMskSignatureSurface({expectedWallet:SIGN_WALLET,trustedWorkerOrigin:true}).reason,'message-keys')
   } finally {delete globalThis.document;delete globalThis.window}
 })
 test('MSK signature rejects expired, future, and non-ten-minute signing messages',()=>{
@@ -264,7 +285,6 @@ test('native acceptance invokes scoped CDP MSK approval after requesting the rea
   assert.ok(runner.indexOf("await page.locator('#worker-request-multisession-key').click()") <
     runner.indexOf('await approveWorkerMskSignature('))
   assert.equal(runner.includes('metamask.confirmSignature()'),false)
-  assert.ok(runner.includes("await waitForWorkerMsk({"), 'Hub issuance still required')
-  assert.ok(runner.includes("readState: () => page.locator('#worker-multisession-key-state')"), 'active Hub key proof still required')
-  assert.ok(runner.includes("workerMskEvent(s)"), 'real signing and failure events still observed')
+  assert.ok(runner.includes('await waitForWorkerMsk({'), 'Hub issuance still required')
+  assert.ok(runner.includes("logs.filter(v => v.startsWith('msk.'))"), 'real signing events still required')
 })

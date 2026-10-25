@@ -92,6 +92,42 @@ is present without a valid release proof, move aside only
 then `run` can provision a verified copy. The disposable wallet and Chromium
 profile are separate and are not changed by extension download failures.
 
+
+## Opt-in complete Testnet work cycle (live Captain request)
+
+The existing `run` command remains **wallet-only**, and `--mode worker` remains
+registration-only. To test an actual dispatched job on the browser-registered
+Worker, explicitly authorize both the work offer **and** one testnet Captain
+credit-bearing smoke request:
+
+```text
+python tools/worker_browser_acceptance.py run --mode work-cycle --authorize-worker-offer --authorize-captain-spend
+```
+
+`work-cycle` connects the isolated disposable wallet, verifies an active Hub
+multi-session key, enables paid-job acceptance and uses the actual **Work now**
+UI at ring 3. It verifies the browser Worker has a live Hub WebSocket, then
+launches `python -m main_computer.cli captain smoke ... --network testnet` to
+submit **one** uniquely identified request. The Captain path can deposit up to
+one testnet compute credit and incur network fees; there is no automatic retry
+of the credit-bearing request. It does not use production wallets or Mainnet.
+
+Acceptance additionally requires the same Hub request and session IDs in the
+Captain terminal result and the browser Worker's own last WebSocket offer and
+terminal result (read from the viewport's **local, read-only** runtime-status
+endpoint). Registration, successful submission, a result from another Worker,
+or an active-jobs counter alone never satisfy this test. The Hub currently
+chooses the matching ring-3 worker; the harness **does not force** its selection.
+If a different Worker gets the job, the test refuses certification rather than
+reporting success. A functional local AI and a funded Captain testnet account
+are prerequisites to a full PASS.
+
+The test writes only request/session IDs and short status proofs to
+`runtime/reports/worker-browser-acceptance/acceptance.json`, never the signed
+requests or issued key material. The existing `finally` block requests Finish
+and restores the old paid-job setting; a crash can leave Work now enabled until
+its 15-minute timeout. This test does not prove settlement, payouts, or refund.
+
 ## Native Windows fix
 
 `npm exec -- synpress` is not invoked. That CLI refuses native Windows; the

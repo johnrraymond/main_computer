@@ -117,16 +117,29 @@ async function safeConnectControlState(page) {
 
 export async function startWorkerWalletConnection(page, {
   readinessMs = 45_000, clickTimeoutMs = 10_000, activityMs = 12_000,
+  allowAlreadyConnected = false,
   onProgress = () => {}
 } = {}) {
   try {
-    await page.waitForFunction(() => {
+    await page.waitForFunction(allowConnected => {
       const button = document.querySelector('#worker-connect-wallet')
-      return Boolean(button?.dataset?.workerBound === 'true' && !button.disabled)
-    }, null, {timeout: readinessMs})
+      if (button?.dataset?.workerBound !== 'true') return false
+      // A reused profile can already be connected. The application's
+      // Connected button is intentionally disabled: do not click it again.
+      if (allowConnected && String(button.textContent || '').trim() === 'Connected') return true
+      return !button.disabled
+    }, allowAlreadyConnected, {timeout: readinessMs})
   } catch {
     throw new Error('Worker Connect Wallet never became handler-bound and enabled: '
       + JSON.stringify(await safeConnectControlState(page)))
+  }
+  const control = await safeConnectControlState(page)
+  if (allowAlreadyConnected && control.handlerBound && control.state === 'connected') {
+    // This is only a UI disposition, NOT a wallet acceptance proof. The caller
+    // still checks exact eth_accounts, eth_chainId, eth_blockNumber, and the
+    // rendered address before treating the session as connected.
+    onProgress('worker.connect.already-connected')
+    return {alreadyConnected: true}
   }
   onProgress('worker.connect.control-ready')
   try {
@@ -152,6 +165,7 @@ export async function startWorkerWalletConnection(page, {
       + JSON.stringify(await safeConnectControlState(page)))
   }
   onProgress('worker.connect.activity-observed')
+  return {alreadyConnected: false}
 }
 
 // Observe the Worker's own wallet state-machine events without copying the

@@ -4,12 +4,14 @@
 import { chromium, expect } from '@playwright/test'
 import { MetaMask } from '@synthetixio/synpress/playwright'
 import { importDisposableWallet, safeExtensionTabsDiagnostics, selectMetaMaskPage, verifyWalletHomeIdentity } from './metamask_onboarding.mjs'
+import {ensureDisposableMetaMaskUnlocked} from './metamask_cached_unlock.mjs'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { completeWorkerWalletConnection, installWorkerWalletTrace, readWorkerWalletTrace, startWorkerWalletConnection } from './worker_wallet_approvals.mjs'
 import { resolve } from 'node:path'
 import {probeRpcClients, rpcProbeSummary} from './rpc_client_probe.mjs'
 import {approveWorkerMskSignature} from './metamask_sidepanel_cdp.mjs'
-import {isMskEndpointRequest, waitForWorkerMsk, workerMskEvent} from './worker_msk_outcome.mjs'
+import {captainCommand, executeCaptain, waitForLiveWorker, waitForDeliveredWork, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection} from './worker_work_cycle.mjs'
+import {isMskEndpointRequest, waitForWorkerMsk, workerMskEvent, readMskApiRejection, safeMskApiRejection, formatMskFailureWithApiReason, assertServedWorkerMskContract} from './worker_msk_outcome.mjs'
 
 const walletFile = process.env.MC_WORKER_TEST_WALLET_FILE
 const extensionDir = process.env.MC_WORKER_TEST_EXTENSION_DIR
@@ -59,12 +61,14 @@ async function prepareWallet(context, walletPage, extensionId) {
     // application behavior and belongs to Worker's own Connect Wallet flow.
     writeFileSync(markerFile, walletSecret.address.toLowerCase() + '\n', {mode: 0o600})
   } else {
-    // Persistent profile may have auto-locked since the previous acceptance run.
-    const locked = activePage.getByTestId('unlock-password')
-    if (await locked.isVisible().catch(() => false)) {
-      await locked.fill(walletSecret.password)
-      await activePage.getByRole('button', {name: /unlock/i}).click()
-    }
+    // A cached MetaMask profile can be locked even when the Worker's provider
+    // still answers read-only RPC. Unlock the isolated test wallet and verify
+    // its public identity before proceeding to account/signature approvals.
+    activePage = await ensureDisposableMetaMaskUnlocked({
+      context, extensionId, expectedAddress: walletSecret.address,
+      password: walletSecret.password,
+      onProgress: phase => console.log('Worker acceptance:', phase),
+    })
   }
   return new MetaMask(context, activePage, walletSecret.password, extensionId)
 }
@@ -118,7 +122,10 @@ async function main() {
 
 async function runWorkerAcceptance({context, page, metamask, extensionId}) {
   const mode = process.env.MC_WORKER_TEST_MODE || 'wallet'
-  if (mode !== 'wallet' && mode !== 'worker') throw new Error('Unsupported acceptance mode')
+  if (!['wallet', 'worker', 'work-cycle'].includes(mode)) throw new Error('Unsupported acceptance mode')
+  if (mode === 'work-cycle' && process.env.MC_WORKER_TEST_AUTHORIZE_WORK_CYCLE !== 'explicit') {
+    throw new Error('Work-cycle requires explicit testnet work/credit authorization from the Python launcher')
+  }
   const evidence = { schema: 'main-computer.worker-browser-acceptance.v1', mode, network: 'testnet', stages: [] }
   const stages = evidence.stages
   const reportDir = resolve(process.env.MC_WORKER_TEST_REPORT_DIR || 'test-results')
@@ -128,11 +135,23 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
   const logs = []
   let mskApiStatus = null
   let mskApiRequestFailed = false
+  let mskApiRejection = null
+  let mskApiRejectionCapture = null
   let rpcProbeBefore = null
   page.on('response', response => {
     if (!isMskEndpointRequest(response.request())) return
     mskApiStatus = response.status()
     console.log('Worker acceptance: worker.msk.local-api-http.' + mskApiStatus)
+    if (mskApiStatus >= 400) {
+      // Capture only a failed local MSK response. Never touch the signed POST
+      // payload or successful response (which can contain issued key material).
+      mskApiRejectionCapture = readMskApiRejection(response).then(detail => {
+        mskApiRejection = detail
+        if (detail) console.log('Worker acceptance: worker.msk.local-api-rejection', JSON.stringify(detail))
+      }).catch(() => {
+        mskApiRejection = {httpStatus: mskApiStatus, reason: 'response-capture-unavailable'}
+      })
+    }
   })
   page.on('requestfailed', request => {
     if (!isMskEndpointRequest(request)) return
@@ -161,6 +180,12 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
   try {
     await page.goto(process.env.MC_WORKER_TEST_URL || 'http://127.0.0.1:8765/applications/worker', { waitUntil: 'domcontentloaded' })
     await expect(page.locator('#worker-app')).toBeVisible()
+    // The viewport snapshots embedded scripts when its Python module loads.
+    // Detect a stale served wallet.js before rotating through approval dialogs
+    // and submitting another signed request the Stable Hub must reject.
+    await assertServedWorkerMskContract(page)
+    stages.push('served-msk-contract-verified')
+    console.log('Worker served MSK signing contract verified')
     await page.locator('#worker-auto-hub-testnet').check()
     await expect(page.locator('#worker-auto-hub-testnet')).toBeChecked()
     await expect(page.locator('#worker-network-chain-id')).toContainText('42424241')
@@ -186,13 +211,19 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
     // this local dapp's permission dialogs in the genuine extension.
     console.log('Worker Connect Wallet: delegating network negotiation and RPC proof to Worker')
     await installWorkerWalletTrace(page)
-    await startWorkerWalletConnection(page, {
+    const connectStart = await startWorkerWalletConnection(page, {
+      // Only registration/work-cycle can reuse an already connected disposable
+      // profile. A fresh wallet acceptance run must exercise Connect Wallet.
+      allowAlreadyConnected: mode === 'worker' || mode === 'work-cycle',
       onProgress: phase => console.log('Worker acceptance:', phase),
     })
-    const approvals = await completeWorkerWalletConnection({
+    const approvals = connectStart.alreadyConnected ? [] : await completeWorkerWalletConnection({
       context, page, extensionId, expectedAddress: walletSecret.address,
       onProgress: phase => console.log('Worker acceptance:', phase),
     })
+    // Even when Connect was skipped, the *same* account/chain/RPC proof below
+    // is mandatory. A stale UI session or wrong MetaMask account must fail.
+    if (connectStart.alreadyConnected) stages.push('existing-wallet-session-reused-pending-proof')
     stages.push('worker-driven-network-and-wallet-approvals')
     evidence.walletApprovalTypes = approvals
     evidence.workerWalletEventTypes = await readWorkerWalletTrace(page)
@@ -219,25 +250,49 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
     // The wallet test exercises real key issuance. Registration mode may
     // reuse the key issued by an earlier wallet run. The Hub will validate
     // that key independently when accepting Worker registration.
+    await expect(page.locator('#worker-multisession-key-state')).toBeVisible({timeout: 10_000})
     const state = (await page.locator('#worker-multisession-key-state').innerText()).trim()
-    const alreadyActive = state === 'Active'
+    const alreadyActive = /^(?:Active|Active server-side key)$/.test(state)
+    console.log('Worker acceptance: worker.msk.state.' + (alreadyActive ? 'active' : 'not-active'))
     if (alreadyActive && mode === 'wallet') {
       throw new Error('Test wallet already has an active MSK. Use a fresh disposable wallet for a new signing test; no automatic revocation.')
     }
     if (!alreadyActive) {
+      // MetaMask may auto-lock between initial RPC/account verification and
+      // a signature. Verify cached test-profile readiness immediately before
+      // requesting a new key (without touching arbitrary side-panel prompts).
+      await ensureDisposableMetaMaskUnlocked({
+        context, extensionId, expectedAddress: walletSecret.address,
+        password: walletSecret.password,
+        onProgress: phase => console.log('Worker acceptance:', phase),
+      })
+      console.log('Worker acceptance: worker.msk.disposable-wallet-unlocked')
       await page.locator('#worker-request-multisession-key').click()
       // Wallet signs locally; Hub must independently verify the signature.
       await approveWorkerMskSignature(context, page, extensionId, walletSecret.address, {
         onProgress: phase => console.log('Worker acceptance:', phase),
       })
-      await waitForWorkerMsk({
-        readState: () => page.locator('#worker-multisession-key-state').innerText(),
-        readStatus: () => page.locator('#worker-save-status').innerText().catch(() => ''),
-        readEvents: () => logs.filter(v => v.startsWith('msk.')).map(v => v.slice(4)),
-        readApiStatus: () => mskApiStatus,
-        readApiRequestFailed: () => mskApiRequestFailed,
-        onProgress: phase => console.log('Worker acceptance: worker.msk.phase.' + phase),
-      })
+      try {
+        await waitForWorkerMsk({
+          readState: () => page.locator('#worker-multisession-key-state').innerText(),
+          readStatus: () => page.locator('#worker-save-status').innerText().catch(() => ''),
+          readEvents: () => logs.filter(v => v.startsWith('msk.')).map(v => v.slice(4)),
+          readApiStatus: () => mskApiStatus,
+          readApiRequestFailed: () => mskApiRequestFailed,
+          onProgress: phase => console.log('Worker acceptance: worker.msk.phase.' + phase),
+        })
+      } catch (error) {
+        // The Playwright response event can precede completion of response.json().
+        // Join that bounded local error capture before reporting the failure.
+        if (mskApiRejectionCapture) {
+          await Promise.race([
+            mskApiRejectionCapture,
+            new Promise(resolve => setTimeout(resolve, 2000)),
+          ])
+        }
+        if (mskApiRejection) evidence.mskApiRejection = mskApiRejection
+        throw new Error(formatMskFailureWithApiReason(error, mskApiRejection))
+      }
       stages.push('hub-msk-issued')
     } else {
       stages.push('existing-msk-reused-for-registration')
@@ -247,16 +302,38 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
     evidence.keyIssued = !alreadyActive
     evidence.keyId = keyId
 
-    if (mode === 'worker') {
+    if (mode === 'worker' || mode === 'work-cycle') {
       // Optional, explicitly authorized mode: worker advertises compute.
-      const enabled = page.locator('#worker-rental-enabled')
-      if (!(await enabled.isChecked())) { await enabled.check(); changedPaidPolicy = true }
-      await page.locator('#worker-network-ring').selectOption('3')
-      await expect(page.locator('#worker-network-work-now')).toBeEnabled()
+      // Do not re-select ring 3 when already selected: its change handler
+      // resets the network session and can race with the Work-now request.
+      // Likewise, wait until any paid-work settings autosave has completed.
+      await prepareWorkerForWorkNow(page, {
+        onProgress: phase => console.log('Worker acceptance:', phase),
+        onPaidPolicyChanged: () => { changedPaidPolicy = true },
+      })
+      await expect(page.locator('#worker-network-work-now')).toBeEnabled({timeout: 30_000})
+      console.log('Worker acceptance: worker.work-now.control-ready')
       await page.locator('#worker-network-work-now').click()
       await expect(page.locator('#worker-work-now-dialog')).toBeVisible()
-      await page.locator('#worker-work-now-15').click()
-      startedWork = true
+      console.log('Worker acceptance: worker.work-now.dialog-open')
+      // A successful button click only opens a dialog. Selecting a duration
+      // must actually POST to the backend before Hub registration can start.
+      // Mark cleanup eligible as soon as POST is dispatched, including when
+      // the response times out after the server may have applied an override.
+      const workNowResponse = await postWorkNowDuration(page, {
+        onProgress: phase => {
+          if (phase === 'worker.work-now.duration-submitted') startedWork = true
+          console.log('Worker acceptance:', phase)
+        },
+      })
+      const workNowRejection = await readWorkNowRejection(workNowResponse)
+      if (workNowRejection) {
+        evidence.workNowRejection = workNowRejection
+        // Report the sanitized local or Hub refusal immediately, before any
+        // optional RPC probe or Work-now cleanup can delay the final error.
+        console.error('Worker acceptance: worker.work-now.local-api-rejection', JSON.stringify(workNowRejection))
+        throw new Error('Worker Work now registration refused (HTTP ' + workNowRejection.httpStatus + '): ' + workNowRejection.reason)
+      }
       await expect(page.locator('#worker-network-hub-registration')).toHaveText('Accepted', {timeout: 45_000})
       const registered = (await page.locator('#worker-network-hub-registration').innerText()).trim()
       if (/failed|error|rejected|wrong chain|unreachable/i.test(registered)) throw new Error('Hub registration failed: ' + registered)
@@ -264,7 +341,25 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
       if (!workerId || workerId === '—') throw new Error('No Hub worker identity was reported')
       evidence.workerId = workerId
       stages.push('hub-worker-registered')
-      // This mode certifies registration, not paid execution or settlement.
+      if (mode === 'work-cycle') {
+        // Only run a credit-bearing Captain request when the browser Worker
+        // is actually selectable on the testnet Hub. No mainnet fallback.
+        await waitForLiveWorker({page, workerId})
+        stages.push('worker-live-session-ready')
+        console.log('Worker acceptance: worker.work-cycle.live-session-ready')
+        const advertisedModel = (await page.locator('#worker-offer-models').inputValue()).split(',')[0].trim()
+        const command = captainCommand({python: process.env.MC_WORKER_TEST_PYTHON || 'python', model: advertisedModel})
+        console.log('Worker acceptance: worker.work-cycle.captain-testnet-submitting')
+        const receipt = await executeCaptain(command, {cwd: process.env.MC_WORKER_TEST_ROOT})
+        evidence.captainRequest = {requestId: receipt.requestId, sessionId: receipt.sessionId, state: receipt.state}
+        stages.push('captain-request-completed')
+        console.log('Worker acceptance: worker.work-cycle.captain-testnet-completed')
+        const delivery = await waitForDeliveredWork({page, workerId, captain: receipt})
+        evidence.workDelivery = delivery
+        stages.push('captain-request-executed-on-browser-worker')
+        console.log('Worker acceptance: worker.work-cycle.worker-result-verified')
+      }
+      // Registration-only mode does not certify execution or settlement.
     }
     evidence.ok = true
   } catch (error) {
@@ -274,7 +369,7 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
     // Repeat after the network switch, when MetaMask's own UI may be showing
     // an RPC connection failure. Distinguish HTTP rejection from CORS/network
     // errors without logging request bodies, secrets, or extension HTML.
-    if (rpcProbeBefore) {
+    if (rpcProbeBefore && !evidence.workNowRejection) {
       try {
         evidence.rpcProbeAfterFailure = await probeRpcClients(context, page, extensionId)
         console.error('RPC clients at failure:', JSON.stringify(rpcProbeSummary(evidence.rpcProbeAfterFailure)))

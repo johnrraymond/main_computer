@@ -243,6 +243,89 @@ def test_worker_offer_registration_blocks_idle_only_when_windows_user_is_active(
         _WorkerRoutesHarness()._worker_registration_payload_from_ui(_seller_payload())
 
 
+def test_work_now_registration_override_preserves_normal_idle_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "main_computer.viewport_routes_energy.collect_windows_user_activity",
+        lambda: {"active": None, "reason": "query-user-unavailable"},
+    )
+    harness = _WorkerRoutesHarness()
+    payload = _seller_payload()
+
+    # The normal registration endpoint must still fail closed.
+    with pytest.raises(ValueError, match="query-user-unavailable"):
+        harness._worker_registration_payload_from_ui(payload)
+
+    # Only the local, authorized Work now handler opts into this exception.
+    registration = harness._worker_registration_payload_from_ui(payload, work_now_override=True)
+    availability = registration["capabilities"]["availability"]
+    assert availability["accept_paid_jobs"] is True
+    assert availability["availability_mode"] == "totally_idle"
+    assert availability["only_when_idle"] is True
+    assert availability["idle_verified"] is False
+
+    disabled = _seller_payload()
+    disabled["availability"] = {"accept_paid_jobs": False, "only_when_idle": True}
+    with pytest.raises(ValueError, match="Accept paid jobs is off"):
+        harness._worker_registration_payload_from_ui(disabled, work_now_override=True)
+
+
+def test_work_now_endpoint_reaches_hub_when_idle_status_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "main_computer.viewport_routes_energy.collect_windows_user_activity",
+        lambda: {"active": None, "reason": "query-user-unavailable"},
+    )
+
+    class _WorkNowHarness(_WorkerRoutesHarness):
+        def __init__(self) -> None:
+            self.client_address = ("127.0.0.1", 12345)
+            self.hub_called = False
+            self.sent_status: HTTPStatus | None = None
+            self.sent_payload: dict[str, object] | None = None
+
+        def _read_json(self) -> dict[str, object]:
+            return {
+                "network": "dev",
+                "requested_ring": "3",
+                "duration_seconds": 900,
+                "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+                "hub_url": "http://127.0.0.1:8871",
+                "chain_id": "42424242",
+                "worker": _seller_payload(),
+            }
+
+        def _worker_multisession_authorization_for_wallet(
+            self, *, hub_url: str, wallet_address: str, chain_id: str = "", requested_key_id: str = ""
+        ) -> dict[str, object]:
+            return {"kind": "multisession_key", "key_id": "test-msk", "wallet_address": wallet_address, "chain_id": chain_id}
+
+        def _post_worker_start_to_hub(self, *, hub_url: str, payload: dict[str, object]) -> dict[str, object]:
+            self.hub_called = True
+            raise RuntimeError("hub-sentinel-after-idle-override")
+
+        def _send_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
+            self.sent_status = status
+            self.sent_payload = payload
+
+    harness = _WorkNowHarness()
+    harness.server = type(
+        "Server", (), {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8871"})(),
+            "signal": lambda *args, **kwargs: None,
+        }
+    )()
+    harness._save_worker_settings({"selectedNetwork": "dev", "sellerEnabled": True})
+
+    harness._handle_worker_network_work_now()
+
+    assert harness.hub_called is True
+    assert harness.sent_status == HTTPStatus.BAD_REQUEST
+    assert "hub-sentinel-after-idle-override" in str(harness.sent_payload)
+    assert "query-user-unavailable" not in str(harness.sent_payload)
+
+
 def test_worker_offer_registration_allows_ai_idle_mode_when_quser_reports_active(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "main_computer.viewport_routes_energy.collect_windows_user_activity",
@@ -1629,3 +1712,125 @@ def test_worker_network_session_select_different_target_clears_saved_setup(tmp_p
     assert len(harness.closed_sessions) == 1
     assert harness.closed_sessions[0]["reason"] == "worker_auto_connect_network_changed"
 
+
+
+def test_work_now_stable_hub_registers_over_authenticated_live_session(
+    tmp_path: Path,
+) -> None:
+    """Stable Hub has no /workers/connect REST endpoint; worker.auth owns registration."""
+    from types import SimpleNamespace
+
+    wallet = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+    hub_url = "https://testnet-hub.greatlibrary.io"
+    worker = _seller_payload()
+    authorization = {
+        "kind": "multisession_key",
+        "key_id": "msk_authorized",
+        "multisession_key_id": "msk_authorized",
+        "wallet_address": wallet,
+        "chain_id": "42424241",
+    }
+
+    class _LiveHarness(_WorkerRoutesHarness):
+        def _worker_runtime_multisession_authorization(self, *, settings, hub_url):
+            return authorization
+
+        def _post_worker_runtime_heartbeat_to_hub(self, **kwargs):
+            self.live_called = kwargs
+            assert kwargs["hub_url"] == hub_url
+            assert kwargs["policy"]["allowed_to_accept"] is True
+            assert kwargs["settings"]["signedWorkerConnection"]["worker"] == worker
+            connection_id = "conn_stable_hub_owned_slot"
+            market = {
+                "worker_id": connection_id,
+                "connection_id": connection_id,
+                "worker_wallet_address": wallet,
+                "rings": ["ring-3"],
+            }
+            accepted = {
+                "type": "hub.auth.accepted", "ok": True,
+                "connection_id": connection_id, "market": market, "hub_id": "testnetb-hub1",
+            }
+            self.server._worker_live_session_clients = {
+                (hub_url, wallet): SimpleNamespace(accepted=accepted, is_alive=True)
+            }
+            return {
+                "live_session": {
+                    "alive": True, "worker_session": {"connected": True},
+                    "accepted": {"type": "hub.auth.accepted"},
+                    "last_pong": {"type": "hub.pong.accepted"},
+                },
+            }
+
+    harness = _LiveHarness()
+    harness.server = SimpleNamespace(
+        debug_root=tmp_path,
+        config=SimpleNamespace(hub_url=hub_url),
+    )
+    harness._save_worker_settings({
+        "selectedNetwork": "testnet", "workerAutoConnectNetwork": "testnet",
+        "sellerEnabled": True,
+        "signedWorkerConnection": {
+            "network": "testnet", "requested_ring": "3",
+            "wallet_address": wallet, "hub_url": hub_url,
+            "status": "registering-with-hub", "worker": worker,
+        },
+    })
+    result = harness._post_worker_start_to_stable_hub(
+        hub_url=hub_url,
+        payload={
+            "network": "testnet", "chain_id": "42424241", "requested_ring": "3",
+            "hub_url": hub_url, "wallet_address": wallet,
+            "worker": worker, "multisession_authorization": authorization,
+        },
+        identity={
+            "service": "main_computer.stable_hub",
+            "network": {"network_key": "testnet", "chain_id": 42424241},
+        },
+    )
+    assert result["transport"] == "websocket-live-session"
+    assert result["worker_id"] == "conn_stable_hub_owned_slot"
+    assert result["worker"]["assigned_ring"] == "3"
+    assert result["market"]["rings"] == ["ring-3"]
+
+
+def test_work_now_stable_hub_refuses_wrong_chain_without_opening_socket(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    class _Harness(_WorkerRoutesHarness):
+        def _post_worker_runtime_heartbeat_to_hub(self, **kwargs):
+            raise AssertionError("must not open the WebSocket for a wrong chain")
+
+    harness = _Harness()
+    harness.server = SimpleNamespace(debug_root=tmp_path, config=SimpleNamespace(hub_url="https://testnet-hub.greatlibrary.io"))
+    with pytest.raises(ValueError, match="chain identity"):
+        harness._post_worker_start_to_stable_hub(
+            hub_url="https://testnet-hub.greatlibrary.io",
+            payload={"network": "testnet", "chain_id": "42424242"},
+            identity={"network": {"network_key": "testnet", "chain_id": 42424241}},
+        )
+
+
+def test_work_now_stable_hub_dispatch_never_falls_back_to_nonexistent_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    from main_computer import hub_cli_live_session
+
+    monkeypatch.setattr(hub_cli_live_session, "identify_hub_protocol", lambda url: {
+        "service": "main_computer.stable_hub", "network": {"network_key": "testnet", "chain_id": 42424241}
+    })
+
+    class _Harness(_WorkerRoutesHarness):
+        def _post_worker_start_to_stable_hub(self, *, hub_url, payload, identity):
+            assert hub_url == "https://testnet-hub.greatlibrary.io"
+            assert identity["service"] == "main_computer.stable_hub"
+            return {"ok": True, "transport": "websocket-live-session"}
+
+    result = _Harness()._post_worker_start_to_hub(
+        hub_url="https://testnet-hub.greatlibrary.io", payload={"network": "testnet"}
+    )
+    assert result["transport"] == "websocket-live-session"
+
+    monkeypatch.setattr(hub_cli_live_session, "identify_hub_protocol", lambda url: {"service": "unknown_hub"})
+    with pytest.raises(ValueError, match="does not advertise"):
+        _Harness()._post_worker_start_to_hub(
+            hub_url="https://testnet-hub.greatlibrary.io", payload={"network": "testnet"}
+        )

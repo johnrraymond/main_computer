@@ -328,13 +328,13 @@ test('RPC proof timeout reports RPC rather than an approval issue', async () => 
 
 // A visible Worker panel is not sufficient: its click binding may still be
 // installing or passive hydration may have disabled Connect Wallet.
-function connectStartFixture({bound = true, disabled = false, activity = 'trace'} = {}) {
+function connectStartFixture({bound = true, disabled = false, activity = 'trace', connected = false} = {}) {
   let clicks = 0
   const trace = []
   const button = {
     dataset: {workerBound: bound ? 'true' : undefined},
     disabled,
-    textContent: disabled ? 'Checking Wallet…' : 'Connect Wallet',
+    textContent: connected ? 'Connected' : disabled ? 'Checking Wallet…' : 'Connect Wallet',
     busy: false,
     getAttribute(name) {return name === 'aria-busy' && this.busy ? 'true' : null},
   }
@@ -342,9 +342,9 @@ function connectStartFixture({bound = true, disabled = false, activity = 'trace'
     document: {querySelector: selector => selector === '#worker-connect-wallet' ? button : null},
     window: {__mcWorkerWalletTrace: trace}
   }
-  const run = fn => vm.runInNewContext(`(${fn.toString()})()`, globals)
+  const run = (fn, arg) => vm.runInNewContext(`(${fn.toString()})(__arg)`, {...globals, __arg: arg})
   const page = {
-    waitForFunction: async fn => {if (!run(fn)) throw new Error('timeout')},
+    waitForFunction: async (fn, arg) => {if (!run(fn, arg)) throw new Error('timeout')},
     evaluate: async fn => run(fn),
     locator: selector => {
       assert.equal(selector, '#worker-connect-wallet')
@@ -365,6 +365,37 @@ test('Connect Wallet waits for actual Worker handler and enabled control', async
     await assert.rejects(startWorkerWalletConnection(f.page), /never became handler-bound and enabled/)
     assert.equal(f.getClicks(), 0)
   }
+})
+
+test('work-cycle reuses the already-connected disposable wallet without clicking again', async () => {
+  const f = connectStartFixture({connected:true, disabled:true})
+  const events = []
+  const result = await startWorkerWalletConnection(f.page, {
+    allowAlreadyConnected: true, onProgress: e => events.push(e),
+  })
+  assert.deepEqual(result, {alreadyConnected:true})
+  assert.equal(f.getClicks(), 0)
+  assert.deepEqual(events, ['worker.connect.already-connected'])
+})
+
+test('wallet-only acceptance does not silently bypass Connect Wallet with a reused profile', async () => {
+  const f = connectStartFixture({connected:true, disabled:true})
+  await assert.rejects(startWorkerWalletConnection(f.page), /never became handler-bound and enabled/)
+  assert.equal(f.getClicks(), 0)
+})
+
+test('connected UI without installed handler is never accepted as a reusable session', async () => {
+  const f = connectStartFixture({connected:true, disabled:true, bound:false})
+  await assert.rejects(startWorkerWalletConnection(f.page, {allowAlreadyConnected:true}),
+    /never became handler-bound and enabled/)
+  assert.equal(f.getClicks(), 0)
+})
+
+test('hydrating/disabled is not accepted just because reuse was authorized', async () => {
+  const f = connectStartFixture({disabled:true})
+  await assert.rejects(startWorkerWalletConnection(f.page, {allowAlreadyConnected:true}),
+    /never became handler-bound and enabled/)
+  assert.equal(f.getClicks(), 0)
 })
 
 test('Connect Wallet confirms a single dispatched click and a real Worker event', async () => {

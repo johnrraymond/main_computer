@@ -234,3 +234,85 @@ can render them. Screenshots cannot self-approve aesthetic quality.
 Run the entire acid test with `python tools/mcel_functional_acid.py --mode core`.
 For narrow tests, `python -m pytest -q tests/test_mcel_core_toolkit_runtime_probe.py
  tests/test_mcel_element_behavior_audit.py` (one command on one line).
+
+## Core composition + toolkit eligibility repairs (v6)
+
+The v5 public-boundary test detected seven failures: six parents preserved
+forbidden children when passed to `McelElementRegistry.serializeElement`, and
+the toolkit resolver admitted views despite absent `requiredPrimitives`.
+The original v5 Chromium witness is unchanged and must now **PASS**, rather
+than marking these defects as expected failures.
+
+- **Composition authority:** `serializeElement` now refuses an entire composed
+  instance (with an explanatory exception) when a parent definition has a
+  nonempty `allowedChildren` list and any submitted nonempty child has an
+  unpermitted `elementId`. Legal children remain intact; there is no silent
+  filtering. Definitions without an explicit child allowlist keep their
+  previous unconstrained behavior, and unregistered-parent fallback remains
+  intact. This is a bounded serializer contract, **not** an assertion about
+  separate MCEL compiler paths or end-to-end rendering. Emitted child models
+  are cloned to avoid caller/output aliasing.
+- **Resolver:** eligibility requires *both* all declared capabilities and all
+  declared primitives, plus no explicit `mustReject`. Missing requirements
+  and contract vetoes appear in the refusal reason, even when the other
+  requirement categories are complete. Scoring continues to rank candidates
+  but never overrides eligibility gates.
+- **Pre-existing recipe compatibility:** `contract-treegrid` now declares the
+  existing `controller.view-resolver` primitive; `workbench-composition-shell`
+  declares the existing Git-backed-history contract and `controller.safety-gate`
+  primitives. These are catalog declarations, **not** proof that their
+  corresponding views are fully rendered or that operational safety effects
+  have been independently exercised. Other incomplete recipes remain
+  ineligible and report their actual missing primitives.
+- **Negative controls:** focused real-Chromium tests revert these two specific
+  behaviors in disposable pages and require the original v5 witnesses to
+  detect the prior seven violations. New Node-driven real-API tests cover
+  *every* definition with an explicit child allowlist, mixed legal/forbidden
+  children, identity and ownership isolation, combined resolver requirements,
+  and incomplete real catalog recipes.
+- **The semantic fixture is corrected, not weakened:** the generic probe now
+  constructs a permitted child for definitions with nonempty allowlists and
+  still checks that input models and emitted models cannot cross-mutate.
+
+The main core test must still report `INCOMPLETE` while 141 element-level full
+contracts or four visual quality approvals remain unwitnessed. Repairing the
+seven bounded failures does not certify unrelated behavior, visual quality,
+renderer bindings, or the remaining test coverage gaps.
+
+## File-basket model and selection-controller behavioral witnesses (v7)
+
+The acid test now executes six further **bounded** element-scoped witnesses in
+Chromium using the *existing* `McelFileBasketModel` and
+`McelFileBasketController` implementations, with an isolated Git Tools–style
+in-memory review. It does not open Task Manager, Website Builder, Git, or a
+filesystem mutation surface. These are concrete consumer-level tests, not a
+new stand-in renderer and **not full registry-to-runtime binding proofs**.
+
+- `element.resource.file-basket-model`: model rows, eligible/blocked separation,
+  visible blocked records, normalized selected-output truth.
+- `element.resource.file-boundary`: adapter-specific path normalization and
+  refusal of traversal, Windows drive paths and UNC paths; this is not a
+  general filesystem sandbox certification.
+- `element.resource.directory-tree`: actual model hierarchy, nested directory
+  records, selectable descendants, and visible blocked rows. No browser tree
+  geometry, expansion, or keyboard operation is credited.
+- `element.resource.tree-selection-model`: none/mixed/all subtree state and
+  blocked node refusal. Focus, preview target, and multi-select UX remain open.
+- `element.toolkit.selection-controller`: valid selection transitions,
+  explicit selected output, blocked/unknown command refusals, preserved state.
+  Generic range selection and all consumer implementations remain unverified.
+- `element.toolkit.bulk-selector`: all-eligible and clear commands with
+  blocked-path exclusion and truthful selected-count reporting. No DOM bulk
+  control or filtered-selection behavior is certified.
+
+The cumulative `checks[].id=file-basket-model-controller-behavior` carries
+original per-ID evidence, with defects left as `FAIL`. Each corresponding
+`elements[].boundedRuntimeWitness` reports only the observed model/controller
+subset; all `elements[].functionalBehavior` remain `UNVERIFIED` until their
+full independent contracts are established. The runner detects unknown IDs,
+misaligned rosters, per-ID witness overlap, missing probe code and exceptions.
+
+Permanent negative controls deliberately tamper with blocked-file acceptance
+and model selected-output filtering in disposable Chromium pages; both must
+turn the originally passing witness red. The established tab and core/toolkit
+proofs and the outstanding four visual baseline approvals remain unchanged.

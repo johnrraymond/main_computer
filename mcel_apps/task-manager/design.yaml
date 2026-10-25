@@ -1,0 +1,466 @@
+# Task Manager product design; descriptive hierarchy, NOT an executable MCEL DSL.
+# Existing capabilities and intended additions are deliberately distinguished.
+schema: main-computer.mcel.application-design.v1
+application:
+  id: task-manager
+  name: Task Manager
+  purpose: Observe, investigate, and safely operate local Main Computer resources and work.
+  stage: design
+  implementation: legacy-hosted
+  intended_implementation: mcel-generated
+  source_of_truth:
+    backend: main_computer/task_manager.py
+    frontend: main_computer/web/applications/apps/task-manager.html
+    controller: main_computer/web/applications/scripts/terminal.js
+    semantics_adapter: main_computer/web/applications/scripts/task-manager-mcel.js
+    experiment_documentation: pretty_docs/mcel-task-manager-notebook-semantic-dsl-baseline.md
+  rules:
+    - Observe before acting; confirm consequences before destructive effects.
+    - Put health, urgent exceptions, and running operations in the top-left.
+    - Preserve identity, evidence, and freshness independently of presentation.
+    - Report requested, dispatched, completed, failed, and unknown as different outcomes.
+    - Hide advanced controls until they are relevant, not their underlying data.
+    - Generate ordinary structure, layout, and interaction through shared MCEL contracts.
+    - Never interpret missing telemetry as zero or an absent row as an absent resource.
+
+# Support is a design claim, not a runtime certification.
+status_terms:
+  existing: Present in the current app, with the limitations in this file.
+  experimental: Proven only in the separate generated notebook experiment.
+  proposed: Desired behavior, not implemented or certified.
+  integration_needed: Depends on an unverified producer or backend integration.
+  incomplete: Present in part; behavior needs additional proof or capability.
+
+semantics:
+  primitives:
+    identity: {fields: [kind, stable_key, observed_id], status: proposed}
+    observation: {fields: [value, unit, observed_at, source, availability, freshness], status: proposed}
+    relationship: {fields: [source_key, relation, target_key, evidence], status: proposed}
+    capability: {fields: [name, available, reason], status: incomplete}
+    action: {fields: [intent, target_key, authority, risk, confirmation, effect], status: incomplete}
+    work_item: {fields: [id, kind, parent_id, origin, state, started_at, updated_at, result], status: proposed}
+    evidence: {fields: [source, captured_at, detail, confidence], status: proposed}
+
+  entities:
+    process:
+      status: existing
+      identity: [pid, created_at]
+      current_fields: [pid, name, status, cmdline, command_preview, memory_rss, memory_human,
+                       is_main_computer, is_current_process, created_at]
+      add_fields: [parent_pid, executable, working_directory, cpu_percent, duration, observed_at]
+      relations: [parent_process, owning_application, owned_connection, executed_work_item]
+      actions: [inspect_process, terminate_process, force_kill_process]
+      caveats:
+        - Windows fallback currently reports empty created_at and unavailable memory.
+        - Existing termination targets PID without a start-time identity guard.
+
+    process_association:
+      status: incomplete
+      identity: [process_key]
+      current_fields: [is_main_computer]
+      add_fields: [classification, evidence, confidence, reason]
+      classification: [main_computer, other, unknown]
+      caveat: Current Boolean classification uses process-name and command-text markers.
+
+    python_process:
+      status: proposed
+      kind: process_projection
+      identity: [process_key]
+      fields: [script, executable, virtual_environment, working_directory, duration,
+               process_association, associated_worker]
+      actions: [inspect_process, inspect_parent, inspect_activity]
+      rule: Python processes are processes, not a separate OS resource type.
+
+    connection:
+      status: existing
+      identity: [protocol, local_endpoint, remote_endpoint, owning_process_key, observed_at]
+      current_fields: [pid, process_name, status, local, remote]
+      add_fields: [protocol, address_family, local_port, remote_port, observed_at, owner_resolution]
+      relations: [owning_process, local_port]
+      actions: [inspect_connection, inspect_process]
+      caveat: A filtered, bounded snapshot cannot prove that no connection exists.
+
+    port:
+      status: proposed
+      kind: connection_projection
+      identity: [protocol, bind_address, port]
+      fields: [number, protocol, bind_address, state, owning_processes, observed_at]
+      relations: [owning_process, matching_connections]
+      actions: [find_owner, inspect_process]
+      rule: Termination acts on a verified process, never on the port number.
+
+    main_computer_server:
+      status: existing
+      identity: [server_instance]
+      fields: [running, pid, port, listener, is_current_process, heartbeat_running,
+               heartbeat_pid, heartbeat_port, heartbeat_ready, heartbeat_evidence]
+      relations: [server_process, heartbeat, active_operations]
+      actions: [server_status, server_start, server_restart, server_shutdown]
+      caveat: A dispatched heartbeat request is not proof of recovered service.
+
+    cpu:
+      status: existing
+      identity: [cpu_device]
+      fields: [available, overall_percent, per_core, physical_cores, logical_cores,
+               frequency_mhz, load_average]
+      actions: [inspect_hardware]
+
+    gpu:
+      status: existing
+      identity: [gpu_device]
+      fields: [available, overall_percent, devices, message]
+      actions: [inspect_hardware]
+      caveat: Device metrics depend on available monitoring support.
+
+    scheduled_action:
+      status: existing
+      identity: [id]
+      fields: [action, run_at, note, payload, created_at, enabled]
+      add_fields: [timezone, dispatch_state, last_execution_id]
+      actions: [add_schedule, reload_schedules, run_schedule_now, delete_schedule]
+      caveat: Storage exists; unattended dispatch and execution history are unverified.
+
+    operation:
+      status: incomplete
+      identity: [operation_id]
+      current_fields: [action, pid, confirm, ok, planned, deferred, message]
+      add_fields: [target_key, requested_at, acknowledged_at, started_at, finished_at,
+                   last_activity_at, progress, evidence, terminal_result, idempotency_key]
+      lifecycle: [draft, submitted, acknowledged, running, succeeded, failed, canceled, unknown]
+      relations: [target_resource, initiating_view, worker_task, ai_call]
+      actions: [inspect_operation, cancel_if_supported, retry_with_confirmation]
+      rules:
+        - Client waiting is not server-side running evidence.
+        - Timeout or lost connectivity yields unknown until reconciled.
+        - Retry does not silently duplicate a consequential request.
+
+    worker_task:
+      status: integration_needed
+      identity: [network, task_id, attempt_id]
+      fields: [origin, network, ring, worker_identity, host_process_key, state,
+               submitted_at, started_at, last_activity_at, finished_at, result, error]
+      relations: [parent_operation, child_ai_calls, local_process, remote_worker]
+      actions: [inspect_worker_task, inspect_worker, inspect_result]
+      caveat: Remote work may have no local PID; task event source must be confirmed.
+
+    ai_call:
+      status: integration_needed
+      identity: [request_id, attempt_id]
+      fields: [origin, provider, model, state, started_at, last_activity_at, finished_at,
+               latency, token_usage_if_available, error, redacted_result]
+      relations: [parent_operation, parent_worker_task, local_process]
+      actions: [inspect_ai_call, inspect_result]
+      privacy: Never expose prompts, credentials, or raw sensitive responses by default.
+      caveat: Existing Task Manager AI brief is not a global AI-call event feed.
+
+    activity_event:
+      status: proposed
+      identity: [event_id]
+      fields: [work_item_id, event_kind, recorded_at, authority, payload_summary, evidence]
+      event_kinds: [submitted, acknowledged, started, heartbeat, progressed, completed,
+                    failed, canceled, timed_out, reconciled]
+
+    alert:
+      status: proposed
+      identity: [alert_id]
+      fields: [severity, subject_key, message, observed_at, acknowledged, evidence]
+      actions: [inspect_alert, acknowledge_alert]
+
+  relationships:
+    - [process, owns, connection]
+    - [process, associated_with, main_computer_server]
+    - [python_process, specializes, process]
+    - [port, indexes, connection]
+    - [operation, targets, process]
+    - [operation, targets, main_computer_server]
+    - [operation, contains, worker_task]
+    - [operation, contains, ai_call]
+    - [worker_task, invokes, ai_call]
+    - [worker_task, executes_on, process]
+    - [scheduled_action, may_initiate, operation]
+    - [activity_event, updates, operation]
+    - [alert, refers_to, process]
+    - [alert, refers_to, operation]
+
+# Hierarchy defines user-visible composition; MCEL component IDs remain to be bound.
+hierarchy:
+  id: task-manager-root
+  role: application
+  layout: adaptive-application-shell
+  children:
+    - id: priority-area
+      role: status-and-attention
+      placement: upper-left
+      priority: highest
+      elements:
+        - {id: server-health, kind: status-summary, entity: main_computer_server, status: existing}
+        - {id: attention-required, kind: alert-summary, entity: alert, status: proposed}
+        - {id: operations-in-progress, kind: activity-summary, entity: operation, status: proposed}
+        - {id: snapshot-freshness, kind: observation-status, entity: observation, status: proposed}
+      exclude: [row-limit, schedule-editor, ai-prompt, destructive-server-controls]
+
+    - id: workspace-header
+      role: global-context-and-search
+      priority: high
+      elements:
+        - {id: view-heading, kind: heading, status: proposed}
+        - {id: universal-search, kind: typed-search, targets: [process, port, connection, worker_task, ai_call], status: proposed}
+        - {id: refresh-status, kind: snapshot-refresh, status: existing}
+        - {id: view-filters, kind: contextual-filters, status: incomplete}
+
+    - id: workspaces
+      role: primary-content
+      presentation: responsive-tabbed-workspace
+      mcel_experiment: task-manager-notebook
+      status: incomplete # Existing host tabs; generated tabs are an independent experiment.
+      views:
+        - id: overview
+          title: Overview
+          status: proposed
+          children:
+            - {id: health-card, kind: server-health, entity: main_computer_server}
+            - {id: attention-feed, kind: alert-list, row: alert-row}
+            - {id: running-work, kind: activity-list, row: operation-row}
+            - {id: resource-summary, kind: hardware-summary, entities: [cpu, gpu]}
+
+        - id: processes
+          title: Processes
+          status: existing
+          sections:
+            - id: server-processes
+              source: task-overview-processes
+              row: process-row
+            - id: all-processes
+              source: task-overview-include-all
+              row: process-row
+              status: existing
+            - id: python-processes
+              source: classified-processes
+              row: python-process-row
+              status: proposed
+          tools: [process-name-pid-search, ownership-filter, resource-sort, row-limit]
+
+        - id: ports-and-connections
+          title: Ports & Connections
+          status: incomplete
+          sections:
+            - {id: port-lookup, kind: port-search, row: port-row, status: proposed}
+            - {id: listening-ports, kind: data-list, row: port-row, status: proposed}
+            - {id: connections, kind: data-list, row: connection-row, status: existing}
+          tools: [port-number-search, protocol-filter, connection-state-filter]
+
+        - id: activity
+          title: Activity
+          status: proposed
+          sections:
+            - {id: all-active-work, kind: activity-list, row: operation-row}
+            - {id: worker-tasks, kind: data-list, row: worker-task-row, status: integration_needed}
+            - {id: ai-calls, kind: data-list, row: ai-call-row, status: integration_needed}
+            - {id: recent-history, kind: activity-history, row: operation-row}
+          tools: [kind-filter, state-filter, origin-filter, time-range]
+
+        - id: hardware
+          title: CPU & GPU
+          status: existing
+          sections:
+            - {id: cpu-summary, kind: metric-summary, entity: cpu}
+            - {id: cpu-cores, kind: data-list, row: cpu-core-row}
+            - {id: gpu-summary, kind: metric-summary, entity: gpu}
+            - {id: gpu-devices, kind: data-list, row: gpu-device-row}
+
+    - id: contextual-inspector
+      role: selection-details
+      placement: right-on-wide-screen-or-drawer-on-narrow-screen
+      status: proposed
+      elements:
+        - {id: selected-object-heading, kind: identity-summary}
+        - {id: object-properties, kind: property-inspector}
+        - {id: related-objects, kind: relationship-list}
+        - {id: observation-evidence, kind: freshness-and-provenance}
+        - {id: context-actions, kind: authorized-actions}
+
+    - id: operations-layer
+      role: supporting-tools
+      priority: secondary
+      status: incomplete
+      drawers:
+        - id: server-controls
+          contains: [server_status, server_start, server_restart, server_shutdown]
+          status: existing
+        - id: schedules
+          contains: [schedule-list, schedule-editor, run-now, delete]
+          status: existing
+        - id: ai-assistant
+          contains: [ask-ai-prompt, ai-brief, advisory-evidence]
+          status: existing
+        - id: preferences
+          contains: [auto-refresh, refresh-interval, row-limit, connection-inclusion]
+          status: incomplete
+
+    - id: operation-feedback
+      role: persistent-nonblocking-feedback
+      status: proposed
+      elements:
+        - {id: immediate-acknowledgment, kind: operation-receipt}
+        - {id: running-indicator, kind: evidence-backed-activity}
+        - {id: progress-events, kind: operation-event-stream}
+        - {id: final-outcome, kind: verified-result}
+        - {id: unknown-outcome, kind: recovery-and-reconciliation}
+        - {id: destructive-confirmation, kind: confirmation-dialog}
+
+# These rows are semantics-first projections, not a commitment to table columns.
+rows:
+  common:
+    fields: [identity, primary_label, state, secondary_facts, relationships,
+             freshness, available_actions]
+    interactions: [select, inspect, navigate_relationship]
+    visual_modes: [compact_row, table_row, detail_panel, narrow_card]
+    view_states: [loading, ready, empty, stale, unavailable, error]
+  types:
+    process-row:
+      entity: process
+      primary: [name, pid]
+      summary: [status, memory_human, command_preview, is_main_computer]
+      actions: [inspect_process, terminate_process, force_kill_process]
+      status: existing
+      note: Existing row has termination buttons; selection and detail inspection are proposed.
+    python-process-row:
+      entity: python_process
+      primary: [script, pid]
+      summary: [classification, reason, cpu_percent, memory_rss, duration]
+      actions: [inspect_process, inspect_activity]
+      status: proposed
+    port-row:
+      entity: port
+      primary: [port, protocol, bind_address]
+      summary: [state, owning_processes]
+      actions: [find_owner, inspect_process]
+      status: proposed
+    connection-row:
+      entity: connection
+      primary: [local, remote]
+      summary: [status, process_name, pid]
+      actions: [inspect_connection, inspect_process]
+      status: existing
+      note: Connection data renders today; process-navigation actions are proposed.
+    operation-row:
+      entity: operation
+      primary: [intent, target_key]
+      summary: [state, last_activity_at, progress, terminal_result]
+      actions: [inspect_operation]
+      status: proposed
+    worker-task-row:
+      entity: worker_task
+      primary: [task_id, origin]
+      summary: [worker_identity, network, state, last_activity_at]
+      actions: [inspect_worker_task]
+      status: integration_needed
+    ai-call-row:
+      entity: ai_call
+      primary: [provider, model]
+      summary: [origin, state, latency, token_usage_if_available]
+      actions: [inspect_ai_call]
+      status: integration_needed
+    schedule-row:
+      entity: scheduled_action
+      primary: [action, run_at]
+      summary: [note, enabled]
+      actions: [run_schedule_now, delete_schedule]
+      status: existing
+    cpu-core-row: {entity: cpu, primary: [core_index], summary: [percent], status: existing}
+    gpu-device-row: {entity: gpu, primary: [device_name], summary: [utilization, memory, temperature], status: existing}
+    alert-row: {entity: alert, primary: [message], summary: [severity, observed_at], status: proposed}
+
+# Actual backend ownership must be verified before these adapters are promoted.
+data_sources:
+  task-overview-processes:
+    status: existing
+    authority: main_computer/task_manager.py:TaskManagerService.snapshot
+    endpoint: /api/applications/task/overview
+    parameters: [query, limit, include_all, include_connections]
+    outputs: [overview, server, processes, connections, hardware, schedules, capabilities]
+  task-overview-include-all:
+    status: existing
+    authority: main_computer/task_manager.py:TaskManagerService.snapshot
+    note: The current UI separately requests include_all for the All Processes tab.
+  classified-processes:
+    status: proposed
+    depends_on: [task-overview-processes, process-association-evidence]
+  port-ownership:
+    status: proposed
+    depends_on: [task-overview-processes, connection-observations, identity-reconciliation]
+  worker-activity:
+    status: integration_needed
+    candidate_producers: [main_computer/worker_runtime_supervisor.py,
+                          main_computer/stable_hub_worker_sessions.py]
+    requirement: Read-only authenticated task/attempt events; no implied PID for remote work.
+  ai-call-activity:
+    status: integration_needed
+    candidate_producers: [main_computer/tactical_ai_service.py,
+                          main_computer/providers/ollama.py,
+                          main_computer/providers/openai_provider.py]
+    requirement: Redacted request lifecycle events with stable IDs and optional usage.
+  schedule-store:
+    status: existing
+    authority: main_computer/task_manager.py:TaskManagerService.list_schedules
+    caveat: Records are not proof of automatic dispatch.
+
+intents:
+  read_only:
+    - {id: refresh_snapshot, status: existing}
+    - {id: search_process, status: existing}
+    - {id: search_port, status: proposed}
+    - {id: classify_python_processes, status: proposed}
+    - {id: inspect_process, status: proposed}
+    - {id: inspect_worker_task, status: integration_needed}
+    - {id: inspect_ai_call, status: integration_needed}
+    - {id: server_status, status: existing}
+    - {id: ask_ai, status: existing, effect: advisory-only}
+  consequential:
+    - {id: terminate_process, service_action: terminate_pid, status: existing, confirmation: proposed}
+    - {id: force_kill_process, service_action: kill_pid, status: existing, confirmation: proposed}
+    - {id: server_start, status: existing, confirmation: proposed}
+    - {id: server_restart, status: existing, confirmation: proposed}
+    - {id: server_shutdown, status: existing, confirmation: proposed}
+    - {id: add_schedule, status: existing, effect: store-only}
+    - {id: run_schedule_now, status: existing, effect: immediate-server-action}
+    - {id: delete_schedule, status: existing, effect: remove-record}
+    - {id: cancel_operation, status: proposed, effect: only-when-supported}
+  common_policy:
+    - Identify and revalidate the consequential target before dispatch.
+    - Require a user-visible effect summary and explicit confirmation.
+    - Preserve immutable request/receipt linkage and truthful final outcomes.
+    - Restrict permissions to declared capabilities; no effect from view navigation.
+
+workflows:
+  - {id: inspect-health, path: [overview, processes, ports-and-connections, hardware], status: existing}
+  - {id: find-port-owner, path: [search_port, port-row, process-row, inspect_process], status: proposed}
+  - {id: review-python-work, path: [python-processes, python-process-row, contextual-inspector], status: proposed}
+  - {id: investigate-resource-pressure, path: [hardware, processes, contextual-inspector], status: incomplete}
+  - {id: act-on-process, path: [process-row, destructive-confirmation, operation-feedback], status: incomplete}
+  - {id: follow-long-operation, path: [operation-feedback, activity, operation-row], status: proposed}
+  - {id: inspect-worker-work, path: [worker-tasks, worker-task-row, contextual-inspector], status: integration_needed}
+  - {id: inspect-ai-call, path: [ai-calls, ai-call-row, contextual-inspector], status: integration_needed}
+  - {id: manage-server, path: [server-controls, destructive-confirmation, operation-feedback], status: incomplete}
+  - {id: plan-server-action, path: [schedules, schedule-row], status: existing}
+  - {id: request-advice, path: [ai-assistant, operation-feedback], status: incomplete}
+
+acceptance:
+  functional:
+    - Search by numeric port resolves the correct process or explicitly reports unknown.
+    - Main Computer versus other versus unknown Python association is evidence-backed.
+    - PID reuse and stale resource identity cannot silently authorize termination.
+    - Long requests remain visible across view changes without invented progress.
+    - Worker tasks and AI calls show lifecycle and parent/child relationships.
+    - Stored schedules never imply unattended execution without a dispatcher.
+    - A server request is not called completed before outcome verification.
+  visual:
+    - Priority information, not settings, occupies the upper-left.
+    - Every row projects consistently to table, inspector, and narrow screen.
+    - Loading, empty, stale, unavailable, and failure states remain distinct.
+    - Keyboard access, focus, contrast, and narrow-viewport overflow are tested.
+  mcel:
+    - The hierarchy compiles through reusable MCEL composition primitives.
+    - Shared MCEL owns ordinary layout, navigation, selection, and operation feedback.
+    - Task Manager domain services retain resource and effect authority.
+    - Do not replace the live UI until parity, safety, and rollback are proven.

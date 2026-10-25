@@ -91,6 +91,18 @@
             children: []
           };
         }
+        // Nonempty allowedChildren is an explicit composition constraint.
+        // Refuse the whole candidate before emitting a misleading valid-looking
+        // element. Empty policy lists retain the legacy unconstrained semantics.
+        const children = normalizeList(props.children);
+        if (definition.allowedChildren.length) {
+          for (const child of children) {
+            const childId = child && typeof child === "object" ? child.elementId : null;
+            if (!definition.allowedChildren.includes(childId)) {
+              throw new Error(`MCEL invalid child ${String(childId || "<missing elementId>")} for ${definition.id}`);
+            }
+          }
+        }
         return {
           id: props.id || `${definition.id.replace(/[^a-z0-9]+/gi, "-")}-${Math.random().toString(36).slice(2, 8)}`,
           elementId: definition.id,
@@ -110,7 +122,7 @@
           dataModel: definition.dataModel,
           migrationHints: definition.migrationHints,
           props: clone(props),
-          children: normalizeList(props.children)
+          children: clone(children)
         };
       }
 
