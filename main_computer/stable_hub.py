@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -61,6 +62,68 @@ from main_computer.stable_hub_worker_sessions import (
     stable_worker_session_store_from_topology,
     worker_market_identity,
 )
+
+
+
+def read_stable_hub_bridge_deposit_provenance(
+    payout_ledger: StableHubPayoutLedgerDirectory,
+    *, chain_id: str, contract_address: str, deposit_id: str, wallet_address: str,
+) -> dict[str, Any]:
+    """Read exact historical FDB credit evidence; never touch the live chain.
+
+    The Hub ledger persists both verified completion intents and finalized
+    credit records in the same atomic store. The key is chain + escrow + deposit;
+    a wallet constraint prevents revealing a different account's record. A
+    historical FDB record is NOT proof that the deposit exists on today's chain.
+    """
+    if not re.fullmatch(r"[0-9]{1,19}", str(chain_id or "")) or int(chain_id) <= 0:
+        raise ValueError("chain_id must be a positive decimal integer")
+    chain = int(chain_id)
+    contract = normalize_evm_address(contract_address, field_name="contract_address")
+    wallet = normalize_evm_address(wallet_address, field_name="wallet_address")
+    deposit = str(deposit_id or "").strip().lower()
+    if not re.fullmatch(r"0x[0-9a-f]{64}", deposit):
+        raise ValueError("deposit_id must be a 32-byte hex identifier")
+    key = f"{chain}:{contract}:{deposit}"
+    data = payout_ledger.store.load()
+    completed = (data.get("payout_deposits") or {}).get(key)
+    intent = (data.get("payout_deposit_intents") or {}).get(key)
+    expected_account = wallet_account_id(wallet)
+    def owned(record: Any) -> bool:
+        return (isinstance(record, dict)
+                and str(record.get("account_id") or "") == expected_account
+                and str(record.get("wallet_address") or "").lower() == wallet
+                and str(record.get("deposit_id") or "").lower() == deposit
+                and str(record.get("contract_address") or "").lower() == contract
+                and str(record.get("chain_id") or "") == str(chain))
+    if not owned(completed):
+        completed = None
+    if not owned(intent):
+        intent = None
+    response: dict[str, Any] = {
+        "ok": True, "readOnly": True,
+        "scope": "historical-hub-fdb-not-current-chain-proof",
+        "found": completed is not None or intent is not None,
+        "completed": completed is not None,
+        "deposit_id": deposit, "chain_id": chain,
+        "contract_address": contract, "wallet_address": wallet,
+    }
+    if completed is not None:
+        response["credit"] = {
+            "status": str(completed.get("status") or ""),
+            "account_id": expected_account,
+            "amount_credit_wei": str(completed.get("deposit_amount_units") or ""),
+            "credits_granted_wei": str(completed.get("credits_granted_wei") or ""),
+            "funding_tx_hash": str(completed.get("funding_tx_hash") or ""),
+            "completion_tx_hash": str(completed.get("completion_tx_hash") or ""),
+            "created_at": str(completed.get("created_at") or ""),
+        }
+    if intent is not None:
+        response["intent"] = {
+            "status": str(intent.get("status") or ""),
+            "created_at": str(intent.get("created_at") or ""),
+        }
+    return response
 
 
 def stable_hub_contract() -> dict[str, str]:
@@ -1930,6 +1993,19 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 "account": account, "unit": "compute_credit",
                 "funding_model": "hub_credit_bridge_escrow_wallet_v2",
             })
+            return
+        if path == "/api/hub/v1/credits/bridge-deposit":
+            query = parse_qs(urlparse(self.path).query)
+            fields = {name: str(query.get(name, [""])[0] or "").strip()
+                      for name in ("chain_id", "contract_address", "deposit_id", "wallet_address")}
+            try:
+                evidence = read_stable_hub_bridge_deposit_provenance(
+                    self.server.payout_ledger_directory, **fields,
+                )
+            except ValueError as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+                return
+            self._send_json(200, evidence)
             return
         if path == "/api/hub/v1/credits/charges":
             query = parse_qs(urlparse(self.path).query)
