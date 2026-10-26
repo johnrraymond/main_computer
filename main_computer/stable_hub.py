@@ -65,6 +65,76 @@ from main_computer.stable_hub_worker_sessions import (
 
 
 
+def settle_disconnected_worker_sessions(
+    server: Any, *, worker_id: str, connection_id: str,
+) -> int:
+    """Fail still-open sessions tied to an irrevocably CLOSED Worker socket.
+
+    A WebSocket-connection-scoped worker cannot deliver a terminal result
+    after the connection is closed. Release each unearned payout hold in the
+    same FDB atomic transaction as the corresponding terminal session state.
+    Never release a successful/charged session or one on a replacement socket.
+    This function is called only after the durable owner record was closed.
+    """
+    sessions = server.accepted_work_session_directory
+    payouts = server.payout_ledger_directory
+    owner_dir = server.worker_session_directory
+    store = payouts.store
+    closed_count = 0
+    for old in sessions.list_open_sessions_for_worker_connection(
+        worker_id=worker_id, connection_id=connection_id,
+    ):
+        session_id = str(old.get("session_id") or "")
+
+        def _fail_unreachable_session() -> bool:
+            owner = owner_dir.get_owner(worker_id)
+            if (not isinstance(owner, dict)
+                    or str(owner.get("connection_id") or "") != connection_id
+                    or str(owner.get("status") or "") != "closed"):
+                # A reconnect/replacement must never be mutated by an old
+                # socket's close handler.
+                return False
+            current = sessions.get_session(session_id)
+            if (not isinstance(current, dict)
+                    or str(current.get("worker_id") or "") != worker_id
+                    or str(current.get("worker_connection_id") or "") != connection_id
+                    or str(current.get("status") or "") not in {"accepted", "running"}):
+                return False
+            payout = dict(current.get("payout") or {})
+            hold_id = str(payout.get("hold_id") or "")
+            if hold_id:
+                hold = payouts.store.load().get("payout_holds", {}).get(hold_id)
+                if (not isinstance(hold, dict) or hold.get("status") != "held"
+                        or str(hold.get("session_id") or "") != session_id):
+                    # Missing/charged/ambiguous credit evidence is NOT a
+                    # license to synthesize a refund or terminal status.
+                    raise StableHubWorkerSessionError("disconnected_session_hold_not_proven_held")
+                released = payouts.release_hold(hold_id=hold_id, session_id=session_id)
+                payout.update({
+                    "hold_status": "released", "payment_status": "released",
+                    "released_credits": str(released.get("amount") or "0"),
+                    "settlement_status": "not_earned", "direct_spend": False,
+                    "charge_id": "", "worker_earning_id": "",
+                    "charged_credits": "0",
+                })
+            sessions.record_failed(
+                session_id=session_id, worker_connection_id=connection_id,
+                worker_failure={
+                    "type": "worker.work.failed",
+                    "error": {"reason_code": "worker_connection_closed_before_result"},
+                },
+                payout=payout,
+            )
+            return True
+
+        atomic = getattr(store, "atomic", None)
+        settled = atomic(_fail_unreachable_session) if callable(atomic) else _fail_unreachable_session()
+        if settled:
+            closed_count += 1
+    return closed_count
+
+
+
 def read_stable_hub_bridge_deposit_provenance(
     payout_ledger: StableHubPayoutLedgerDirectory,
     *, chain_id: str, contract_address: str, deposit_id: str, wallet_address: str,
@@ -1042,6 +1112,28 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                         removed.mark_closed(
                             reason="socket_closed",
                             closed_at=str(closed_owner.get("closed_at") or ""),
+                        )
+                # Closing only owner/market leaves accepted-session payout holds
+                # stranded. A closed connection can no longer send an
+                # authenticated terminal result. Settle its open sessions
+                # atomically, with an exact owner/connection check. Failure is
+                # logged and fail-closed: never fabricate a refund.
+                if str(closed_owner.get("status") or "") == "closed" and (
+                    str(closed_owner.get("connection_id") or "") == connection_id
+                ):
+                    try:
+                        failed = settle_disconnected_worker_sessions(
+                            self.server, worker_id=worker_id, connection_id=connection_id,
+                        )
+                        if failed:
+                            self._log_event(
+                                f"settled {failed} abandoned accepted sessions "
+                                f"for closed connection_id={connection_id}"
+                            )
+                    except Exception as exc:
+                        self._log_event(
+                            "disconnected accepted-session settlement failed closed "
+                            f"connection_id={connection_id} reason={type(exc).__name__}"
                         )
 
 
