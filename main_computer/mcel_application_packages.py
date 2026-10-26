@@ -574,6 +574,19 @@ def build_application_package_catalog(
                 candidates.append(child)
                 continue
             if child.is_dir():
+                # Patch bundles operate on files, so moving an experimental design
+                # out of this authority can leave an empty directory behind.
+                # Empty directories contain no authored package; any nonempty
+                # candidate (even without a manifest) still fails validation.
+                if not any(child.iterdir()):
+                    warnings.append(
+                        ApplicationPackageIssue(
+                            "ignored-empty-package-directory",
+                            "Empty directory under mcel_apps is not an application package.",
+                            _repository_relative(child, repository),
+                        )
+                    )
+                    continue
                 candidates.append(child)
                 continue
             warnings.append(

@@ -40,6 +40,9 @@ def _record_data(raw: Any) -> dict[str, str]:
         raise ValueError('invalid_local_wallet')
     if not values['amount_credit_wei'].isdigit() or int(values['amount_credit_wei']) <= 0:
         raise ValueError('invalid_local_amount')
+    receipt = raw.get('receipt')
+    if isinstance(receipt, dict):
+        values['receipt'] = {key: receipt[key] for key in ('blockNumber', 'blockHash') if key in receipt}
     return values
 
 
@@ -64,13 +67,87 @@ def _verify_receipt_event(receipt: dict[str, Any], record: dict[str, str], contr
     return False
 
 
+def _read_only_missing_receipt_evidence(
+    record: dict[str, str], *, rpc: JsonRpcClient, contract: str,
+) -> dict[str, Any]:
+    """Independently test historical block, transaction, and escrow state.
+
+    Every call is read-only. A historical mismatch is evidence of history drift,
+    not permission to delete a saved receipt or deposit again. If one RPC
+    query fails, preserve the failure category without leaking RPC content.
+    """
+    evidence: dict[str, Any] = {
+        'transactionLookup': 'unverified',
+        'recordedBlockCanonical': 'unverified',
+        'escrowDepositState': 'unverified',
+        'permitsNewDeposit': False,
+    }
+    saved_receipt = record.get('receipt') if isinstance(record.get('receipt'), dict) else {}
+    recorded_number = saved_receipt.get('blockNumber')
+    recorded_hash = str(saved_receipt.get('blockHash') or '').lower()
+    try:
+        height = int(str(recorded_number), 16) if isinstance(recorded_number, str) and recorded_number.startswith('0x') else int(recorded_number)
+        if height < 0: raise ValueError('negative block height')
+        evidence['recordedReceiptBlockNumber'] = height
+    except (ValueError, TypeError):
+        height = None
+    if _HASH.fullmatch(recorded_hash):
+        evidence['recordedReceiptBlockHash'] = recorded_hash
+    try:
+        tip = rpc.rpc('eth_blockNumber', [])
+        current_height = int(str(tip), 16)
+        if current_height < 0: raise ValueError('negative height')
+        evidence['currentHeadBlockNumber'] = current_height
+        if height is not None:
+            if current_height < height:
+                evidence['recordedBlockCanonical'] = 'current_head_below_recorded_receipt'
+            else:
+                block = rpc.rpc('eth_getBlockByNumber', [hex(height), False])
+                if not isinstance(block, dict):
+                    evidence['recordedBlockCanonical'] = 'block_unavailable_from_rpc'
+                elif _HASH.fullmatch(recorded_hash):
+                    current_hash = str(block.get('hash') or '').lower()
+                    if _HASH.fullmatch(current_hash):
+                        evidence['currentBlockHashAtReceiptHeight'] = current_hash
+                        evidence['recordedBlockCanonical'] = (
+                            'matches' if current_hash == recorded_hash else 'different_canonical_block'
+                        )
+                    else:
+                        evidence['recordedBlockCanonical'] = 'block_hash_unavailable'
+                else:
+                    evidence['recordedBlockCanonical'] = 'saved_receipt_missing_block_hash'
+    except (ValueError, TypeError, RuntimeError, KeyError):
+        evidence['recordedBlockCanonical'] = 'read_only_block_lookup_unavailable'
+    try:
+        tx = rpc.rpc('eth_getTransactionByHash', [record['transaction_hash']])
+        evidence['transactionLookup'] = (
+            'known_on_current_rpc' if isinstance(tx, dict) else
+            'absent_from_current_rpc' if tx is None else 'unexpected_rpc_response'
+        )
+    except (ValueError, TypeError, RuntimeError, KeyError):
+        evidence['transactionLookup'] = 'read_only_transaction_lookup_unavailable'
+    try:
+        raw = rpc.eth_call(to=contract, data='0x' + _DEPOSIT_RECORD_SELECTOR + record['deposit_id'][2:])
+        words = _split_words(raw, min_words=5)
+        exists, completed = bool(int(words[0], 16)), bool(int(words[1], 16))
+        evidence['escrowDepositState'] = {
+            'exists': exists, 'completed': completed,
+            'walletMatches': ('0x' + words[2][-40:]).lower() == record['wallet_address'].lower()
+                and ('0x' + words[3][-40:]).lower() == record['wallet_address'].lower(),
+            'amountMatches': int(words[4], 16) == int(record['amount_credit_wei']),
+        }
+    except (ValueError, TypeError, RuntimeError, KeyError):
+        evidence['escrowDepositState'] = 'read_only_escrow_lookup_unavailable'
+    return evidence
+
+
 def audit_record(record: dict[str, str], *, rpc: JsonRpcClient,
                  contract: str, chain_id: int) -> dict[str, Any]:
     # No write methods. Any missing/contradictory proof leaves the guard intact.
     result: dict[str, Any] = {
         'depositId': record['deposit_id'], 'transactionHash': record['transaction_hash'],
         'walletAddress': record['wallet_address'], 'creditWei': record['amount_credit_wei'],
-        'chainProof': 'not-verified', 'hubDepositAttribution': 'not-verifiable-via-current-read-only-hub-api',
+        'chainProof': 'not-verified', 'hubDepositAttribution': 'unverified',
     }
     if rpc.chain_id() != chain_id:
         result['reason'] = 'live_rpc_chain_mismatch'; return result
@@ -79,7 +156,11 @@ def audit_record(record: dict[str, str], *, rpc: JsonRpcClient,
         result['reason'] = 'escrow_contract_code_missing'; return result
     receipt = rpc.transaction_receipt(record['transaction_hash'])
     if not isinstance(receipt, dict):
-        result['reason'] = 'transaction_receipt_absent_from_live_chain'; return result
+        result['reason'] = 'transaction_receipt_absent_from_live_chain'
+        result['missingReceiptEvidence'] = _read_only_missing_receipt_evidence(
+            record, rpc=rpc, contract=contract
+        )
+        return result
     result['liveReceiptBlock'] = str(receipt.get('blockNumber') or '')
     if (str(receipt.get('status') or '').lower() != '0x1'
             or str(receipt.get('transactionHash') or '').lower() != record['transaction_hash'].lower()
@@ -111,6 +192,60 @@ def audit_record(record: dict[str, str], *, rpc: JsonRpcClient,
     return result
 
 
+def inspect_hub_historical_deposit(
+    record: dict[str, Any], *, hub_url: str, chain_id: int, contract: str,
+    hub_get, timeout_s: int,
+) -> dict[str, Any]:
+    """Correlate one saved funding transaction with an FDB deposit record.
+
+    A matching historical record proves Hub-ledger attribution, NOT present-day
+    chain validity or permission to retire/redeposit. Keep every query read-only.
+    """
+    from urllib.parse import urlencode
+    route = '/api/hub/v1/credits/bridge-deposit?' + urlencode({
+        'chain_id': str(chain_id), 'contract_address': contract,
+        'wallet_address': record['wallet_address'], 'deposit_id': record['deposit_id'],
+    })
+    try:
+        response = hub_get(hub_url, route, timeout_s=timeout_s)
+    except (ValueError, RuntimeError, OSError, KeyError):
+        return {'hubDepositAttribution': 'exact_lookup_unavailable'}
+    if not isinstance(response, dict) or response.get('ok') is not True or response.get('readOnly') is not True:
+        return {'hubDepositAttribution': 'exact_lookup_unverified'}
+    expected = {
+        'deposit_id': record['deposit_id'].lower(),
+        'wallet_address': record['wallet_address'].lower(),
+        'contract_address': contract.lower(),
+        'chain_id': str(chain_id),
+    }
+    if any(str(response.get(field) or '').lower() != value for field, value in expected.items()):
+        return {'hubDepositAttribution': 'exact_lookup_identity_conflict'}
+    if response.get('found') is False:
+        return {'hubDepositAttribution': 'not_recorded_in_hub_fdb'}
+    if response.get('found') is not True:
+        return {'hubDepositAttribution': 'exact_lookup_unverified'}
+    credit = response.get('credit')
+    if credit is None and response.get('completed') is False:
+        return {'hubDepositAttribution': 'prepared_only_in_hub_fdb',
+                'hubDepositIntentStatus': str((response.get('intent') or {}).get('status') or '')}
+    if not isinstance(credit, dict) or response.get('completed') is not True:
+        return {'hubDepositAttribution': 'exact_lookup_unverified'}
+    matched = (str(credit.get('status') or '') == 'bridge_completed'
+               and str(credit.get('amount_credit_wei') or '') == record['amount_credit_wei']
+               and str(credit.get('credits_granted_wei') or '') == record['amount_credit_wei']
+               and str(credit.get('funding_tx_hash') or '').lower() == record['transaction_hash'].lower())
+    return {
+        'hubDepositAttribution': 'historical_fdb_credit_verified' if matched else 'hub_deposit_credit_conflict',
+        'hubDepositRecord': {
+            'status': str(credit.get('status') or ''),
+            'creditedAmountMatches': str(credit.get('credits_granted_wei') or '') == record['amount_credit_wei'],
+            'fundingTransactionMatches': str(credit.get('funding_tx_hash') or '').lower() == record['transaction_hash'].lower(),
+            'creditedAt': str(credit.get('created_at') or ''),
+            'completionTransactionHash': str(credit.get('completion_tx_hash') or ''),
+        },
+    }
+
+
 def audit_pending(*, root: Path = ROOT, network: str = 'testnet', timeout_s: int = 15,
                   rpc: JsonRpcClient | None = None, hub_get=None) -> dict[str, Any]:
     # Never auto-select mainnet. It must be requested explicitly.
@@ -137,6 +272,10 @@ def audit_pending(*, root: Path = ROOT, network: str = 'testnet', timeout_s: int
         try:
             data = _record_data(json.loads(path.read_text(encoding='utf-8')))
             row = {'file': path.name, **audit_record(data, rpc=client, contract=contract, chain_id=profile.chain_id)}
+            row.update(inspect_hub_historical_deposit(
+                data, hub_url=hub_url, chain_id=profile.chain_id,
+                contract=contract, hub_get=get, timeout_s=timeout_s,
+            ))
             wallet = data['wallet_address'].lower()
             if wallet not in balances:
                 balance = get(hub_url, '/api/hub/v1/credits/balance?' + urlencode({'wallet_address': wallet}), timeout_s=timeout_s)

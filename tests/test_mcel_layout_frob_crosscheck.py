@@ -12,8 +12,8 @@ spec = importlib.util.spec_from_file_location('mcel_layout_frob_crosscheck', MOD
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(module)
-CONTRACT_PATH = ROOT / 'mcel_apps' / 'task-manager' / 'frob_crosscheck.yaml'
-DESIGN_PATH = ROOT / 'mcel_apps' / 'task-manager' / 'design.yaml'
+CONTRACT_PATH = ROOT / 'mcel_designs' / 'task-manager' / 'frob_crosscheck.yaml'
+DESIGN_PATH = ROOT / 'mcel_designs' / 'task-manager' / 'design.yaml'
 
 
 class FrobCrosscheckTests(unittest.TestCase):

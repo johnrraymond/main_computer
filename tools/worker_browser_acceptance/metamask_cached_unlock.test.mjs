@@ -84,7 +84,7 @@ test('refuse invalid extension ID or wallet before touching secrets',async()=>{
 })
 test('incorrect test password does not disclose secret in thrown error',async()=>{
   const p=page()
-  await assert.rejects(ensureDisposableMetaMaskUnlocked({context:fakeContext([p]),extensionId:ID,expectedAddress:ADDRESS,password:'wrong',verifyHome:verify}),/incorrect test password/)
+  await assert.rejects(ensureDisposableMetaMaskUnlocked({context:fakeContext([p]),extensionId:ID,expectedAddress:ADDRESS,password:'wrong',verifyHome:verify,timeoutMs:100}),/incorrect test password/)
 })
 test('cached unlocked profile selector sees unlock route as responsive instead of waiting 30 seconds',async()=>{
   const {selectMetaMaskPage, screenLabel} = await import('./metamask_onboarding.mjs')
@@ -94,4 +94,94 @@ test('cached unlocked profile selector sees unlock route as responsive instead o
   // no navigation or second onboarding tab is permitted for a cached profile
   const context={pages:()=>[p],newPage:async()=>{throw new Error('unexpected second page')}}
   assert.equal(await selectMetaMaskPage(context,ID,{fresh:false,probeAttempts:1}),p)
+})
+
+
+test('unlock field disappears during fill: verify already-unlocked wallet instead of leaking password', async()=>{
+  const p=page()
+  let fills=0
+  p.locator=()=>({first:()=>({
+    isVisible:async()=>p.url().includes('/unlock'),
+    fill:async(_password,options)=>{
+      fills++
+      assert.equal(options.timeout,1500)
+      // React removes the input while Playwright is in the fill operation.
+      // The default Playwright exception also includes the raw password.
+      p.transitioned=true
+      throw new Error('locator.fill: element was detached; fill('+PASSWORD+')')
+    },
+  })})
+  const originalUrl=p.url.bind(p)
+  p.url=()=>p.transitioned?`chrome-extension://${ID}/home.html#/`:originalUrl()
+  p.isHome=()=>!!p.transitioned
+  let success=false
+  const value=await ensureDisposableMetaMaskUnlocked({context:fakeContext([p]),extensionId:ID,
+    expectedAddress:ADDRESS,password:PASSWORD,verifyHome:verify,timeoutMs:1_000,
+    sleep:async()=>{},onProgress:event=>{if(event.endsWith('identity-verified'))success=true}})
+  assert.equal(value,p)
+  assert.equal(fills,1)
+  assert.equal(success,true)
+})
+
+test('after unlock submitted, stale password field is never refilled while home is verified',async()=>{
+  const locked=page(), home=page({state:'home'})
+  let fills=0, verifyAttempts=0
+  // Simulate a stale, still-visible unlock route even after submission.
+  const originalLocator=locked.locator.bind(locked)
+  const originalGetByRole=locked.getByRole.bind(locked)
+  locked.url=()=>`chrome-extension://${ID}/home.html#/onboarding/unlock`
+  locked.getByRole=(role,options)=>{
+    const original=originalGetByRole(role,options).first()
+    return {first:()=>({...original,isVisible:async()=>true})}
+  }
+  locked.locator=selector=>{
+    if(selector!=='input[type="password"]')return originalLocator(selector)
+    const base=originalLocator(selector).first()
+    return {first:()=>({isVisible:async()=>true, fill:async value=>{
+      fills++
+      if(fills>1)throw new Error('SECOND-FILL-SHOULD-NOT-HAPPEN')
+      return base.fill(value)
+    }})}
+  }
+  const verifyAfterSecondPass=async (p,a,id)=>{
+    verifyAttempts++
+    if(verifyAttempts<3)throw new Error('wallet home is still rendering')
+    return verify(p,a,id)
+  }
+  const result=await ensureDisposableMetaMaskUnlocked({context:fakeContext([locked,home]),
+    extensionId:ID,expectedAddress:ADDRESS,password:PASSWORD,verifyHome:verifyAfterSecondPass,
+    timeoutMs:1000,sleep:async()=>{}})
+  assert.ok(result===home || result===locked)
+  assert.equal(fills,1)
+  assert.equal(locked.clicks,1)
+})
+
+test('if fill keeps failing, bounded retries never expose the disposable secret',async()=>{
+  const locked=page()
+  let trials=0
+  locked.locator=()=>({first:()=>({
+    isVisible:async()=>true,
+    fill:async (_value,options)=>{
+      assert.equal(options.timeout,1_500)
+      trials++
+      throw new Error('locator.fill: timeout '+PASSWORD)
+    },
+  })})
+  await assert.rejects(ensureDisposableMetaMaskUnlocked({context:fakeContext([locked]),
+    extensionId:ID,expectedAddress:ADDRESS,password:PASSWORD,verifyHome:verify,
+    timeoutMs:40,pollMs:2,sleep:async()=>new Promise(r=>setTimeout(r,2))}),error=>{
+      assert.match(error.message,/unlock incomplete/)
+      assert.ok(!error.message.includes(PASSWORD))
+      return true
+    })
+  assert.ok(trials>=1)
+})
+
+test('identity mismatch remains refusal after unlock even if provider might be accessible',async()=>{
+  const p=page()
+  await assert.rejects(ensureDisposableMetaMaskUnlocked({context:fakeContext([p]),
+    extensionId:ID,expectedAddress:'0x'+'b'.repeat(40),password:PASSWORD,
+    verifyHome:verify,timeoutMs:30,pollMs:2,sleep:async()=>new Promise(r=>setTimeout(r,2))}),
+    /unlock incomplete/)
+  assert.equal(p.clicks,1)
 })

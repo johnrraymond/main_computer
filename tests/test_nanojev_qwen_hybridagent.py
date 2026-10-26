@@ -220,3 +220,20 @@ def test_legacy_v1_checkpoint_refused_without_mutation(tmp_path):
     with pytest.raises(RuntimeError, match='legacy v1 and normalized v2'):
         hybrid.load_adapter(target, model, info)
     assert __import__('json').loads((target / 'adapter_config.json').read_text())['schema'] == cfg['schema']
+
+
+def test_fp32_hybrid_link_into_bfloat16_decoder_keeps_gradients():
+    """Real heterogeneous precision: Head fp32, frozen decoder bf16."""
+    model, _ = fixture()
+    model.backbone.to(dtype=torch.bfloat16)
+    model.head.to(dtype=torch.float32)
+    assert model.backbone.get_input_embeddings().weight.dtype == torch.bfloat16
+    assert next(model.head.parameters()).dtype == torch.float32
+    ids = torch.tensor([[2, 3, 4]])
+    h, logits, cache, mask, _ = model.rollout(ids, 2)
+    assert h.dtype == torch.bfloat16 and logits.dtype == torch.bfloat16
+    assert cache == (6,) and mask.shape == (1, 6)
+    h.float().sum().backward()
+    grads = [p.grad for p in model.head.parameters()]
+    assert any(g is not None and bool(torch.isfinite(g).all()) and bool((g != 0).any()) for g in grads)
+    assert all(p.grad is None for p in model.backbone.parameters())

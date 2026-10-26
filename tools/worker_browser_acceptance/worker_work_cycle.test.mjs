@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {captainCommand, captainProof, captainFailureEvidence, executeCaptain, workerSessionProof, verifyDeliveredWork, waitForDeliveredWork, waitForLiveWorker, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection} from './worker_work_cycle.mjs'
+import {captainCommand, captainProof, captainFailureEvidence, captainStdioEvidence, captainPrepareOnlyCommand, probeCaptainPreparation, executeCaptain, workerSessionProof, verifyDeliveredWork, waitForDeliveredWork, waitForLiveWorker, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection} from './worker_work_cycle.mjs'
 import {EventEmitter} from 'node:events'
 import {PassThrough} from 'node:stream'
 const workerId = 'worker-browser-123'
@@ -275,4 +275,151 @@ test('Captain exit 1 propagates a sanitized traceback exception through executab
   assert.doesNotMatch(error.message,/Secrets/)
   return true
  })
+})
+
+
+test('unclassified Captain exit reports non-secret stdout/stderr shape', async()=>{
+ const stdio=captainStdioEvidence({stdout:'unexpected opaque response with wallet 0x'+ 'a'.repeat(40),stderr:''})
+ assert.equal(stdio.stdout.shape,'other-text')
+ assert.equal(stdio.stderr.shape,'empty')
+ assert.equal(stdio.stderr.bytes,0)
+ assert.doesNotMatch(JSON.stringify(stdio),/0x[a-f0-9]{40}/i)
+ const command=captainCommand({nonce:'c23142a2-908e-4972-a6c7-c30259944f8a',model:'gemma4:26b-a4b-it-q4_K_M'})
+ const spawnImpl=()=>{
+   const c=new EventEmitter();c.stdout=new PassThrough();c.stderr=new PassThrough();c.kill=()=>{}
+   queueMicrotask(()=>{c.stdout.write('unclassified opaque refusal');c.emit('close',2)})
+   return c
+ }
+ await assert.rejects(executeCaptain(command,{spawnImpl,timeoutMs:700}),error=>{
+  assert.match(error.message,/captain-unclassified/)
+  assert.match(error.message,/stdout=other-text:\d+/)
+  assert.match(error.message,/stderr=empty:0/)
+  return true
+ })
+})
+
+test('prepare-only command preserves network and smoke id, removes execution flag',()=>{
+ const original=captainCommand({nonce:'c23142a2-908e-4972-a6c7-c30259944f8a',model:'gemma4:26b-a4b-it-q4_K_M'})
+ const safe=captainPrepareOnlyCommand(original)
+ assert.equal(safe.executable,original.executable)
+ assert.deepEqual(safe.args.filter(x=>x!=='--prepare-only'), original.args.filter(x=>x!=='--yes'))
+ assert.equal(safe.args.includes('--prepare-only'),true)
+ assert.equal(safe.args.includes('--yes'),false)
+ assert.equal(original.args.includes('--yes'),true)
+ assert.equal(safe.args[safe.args.indexOf('--network')+1],'testnet')
+ assert.equal(safe.args[safe.args.indexOf('--smoke-id')+1], original.args[original.args.indexOf('--smoke-id')+1])
+ assert.throws(()=>captainPrepareOnlyCommand({args:['--yes','--network','mainnet','--smoke-id','f','--no-chain']}),/Refusing/)
+ assert.throws(()=>captainPrepareOnlyCommand({args:[...original.args, '--private-key','x']}),/refuses/)
+})
+
+test('read-only Captain probe performs no execute or signing and reports PASS without secrets',async()=>{
+ const cmd=captainCommand({nonce:'c23142a2-908e-4972-a6c7-c30259944f8a',model:'gemma4:26b-a4b-it-q4_K_M'})
+ const spawnImpl=(exe,args,options)=>{
+   assert.equal(exe,cmd.executable)
+   assert.ok(args.includes('--prepare-only') && !args.includes('--yes'))
+   assert.equal(options.stdio[0],'ignore')
+   const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{}
+   queueMicrotask(()=>{
+     child.stdout.write(JSON.stringify({ok:true,execute:false,hub:{network:'testnet'},chain:{chain_id:42424241},private_key:'DO_NOT_LEAK'}))
+     child.emit('close',0)
+   })
+   return child
+ }
+ const report=await probeCaptainPreparation(cmd,{spawnImpl,timeoutMs:700})
+ assert.deepEqual(report,{result:'prepare-only-pass',network:'testnet',chainId:42424241})
+ assert.doesNotMatch(JSON.stringify(report),/DO_NOT_LEAK/)
+})
+
+test('read-only Captain probe classifies refusals without copying raw stdout or stderr',async()=>{
+ const cmd=captainCommand({nonce:'c23142a2-908e-4972-a6c7-c30259944f8a',model:'gemma4:26b-a4b-it-q4_K_M'})
+ const spawnImpl=()=>{
+   const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{}
+   queueMicrotask(()=>{
+     child.stdout.write('ERROR: Testnet Hub wallet balance unavailable 0x'+'f'.repeat(40)+'\n')
+     child.stderr.write('SENSITIVE SIGNED REQUEST CONTENT')
+     child.emit('close',2)
+   })
+   return child
+ }
+ const diagnostic=await probeCaptainPreparation(cmd,{spawnImpl,timeoutMs:700})
+ assert.equal(diagnostic.result,'prepare-only-refused')
+ assert.equal(diagnostic.error.category,'captain-funding-or-bridge')
+ assert.match(diagnostic.error.reason,/Testnet Hub wallet balance unavailable/)
+ assert.doesNotMatch(JSON.stringify(diagnostic),/0x[f]{40}|SIGNED REQUEST CONTENT/)
+})
+
+test('read-only Captain probe refuses unknown invocation without launching subprocess',async()=>{
+ const report=await probeCaptainPreparation({executable:'python',args:['--yes','--network','mainnet']},{spawnImpl:()=>{throw Error('must not execute')}})
+ assert.deepEqual(report,{result:'refused-unsafe-command'})
+})
+
+
+test('explicit Captain error is not lost behind more than 32K later output',()=>{
+ const data='ERROR: Bridge completion rejected the pending deposit\n' + ('logging work-cycle snapshot\n'.repeat(2500))
+ const result=captainFailureEvidence({exitCode:2,stdout:data,stderr:''})
+ assert.equal(result.category,'captain-funding-or-bridge')
+ assert.match(result.reason,/Bridge completion rejected/)
+})
+
+test('Captain nested Hub JSON failure reports only validated HTTP metadata and error field',()=>{
+  const secret = 'nonlogged-private-random-secret'
+  const raw='ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP 400: '
+    + JSON.stringify({ok:false,error:'no eligible live worker for requested ring',private_key:secret,authorization:secret})+'\n'
+  const failure=captainFailureEvidence({exitCode:2,stdout:raw})
+  assert.equal(failure.category,'captain-hub-http')
+  assert.equal(failure.hubHttpStatus,400)
+  assert.equal(failure.hubOperation,'live-worker-request-submit')
+  assert.equal(failure.reason,'no eligible live worker for requested ring')
+  assert.doesNotMatch(JSON.stringify(failure),/private_key|authorization|nonlogged-private/)
+})
+
+test('Captain refusal with credentials inside nested JSON is not logged, but endpoint and HTTP are retained',()=>{
+  const secret='super-secret-credential-123'
+  const raw='ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/credits/wallet-funding/complete with HTTP 403: '
+    +JSON.stringify({ok:false,error:`authorization ${secret}`,request:{signed_request:secret}})
+  const evidence=captainFailureEvidence({exitCode:2,stdout:raw})
+  assert.equal(evidence.hubHttpStatus,403)
+  assert.equal(evidence.hubOperation,'bridge-completion')
+  assert.equal(evidence.reason,'hub-error-body-redacted')
+  assert.doesNotMatch(JSON.stringify(evidence),/super-secret|signed_request|authorization/)
+})
+
+test('Unknown Hub paths never expose arbitrary account or request identifiers',()=>{
+  const id='0x'+'e'.repeat(64)
+  const raw=`ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/internal/wallet/${id}?token=secret with HTTP 500: {"error":"unavailable"}`
+  const result=captainFailureEvidence({exitCode:2,stdout:raw})
+  assert.equal(result.hubHttpStatus,500)
+  assert.equal(result.hubOperation,'unknown')
+  assert.ok(!JSON.stringify(result).includes(id))
+  assert.doesNotMatch(JSON.stringify(result),/token=secret/)
+})
+
+test('Unstructured or truncated Hub error does not expose HTML, JSON or credentials',()=>{
+  const raw='ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/requests with HTTP 502: <html>redacted-data</html>'
+  const x=captainFailureEvidence({exitCode:2,stdout:raw})
+  assert.equal(x.hubOperation,'request-submit')
+  assert.equal(x.hubHttpStatus,502)
+  assert.equal(x.reason,'hub-error-body-redacted')
+  assert.doesNotMatch(JSON.stringify(x),/redacted-data|html/)
+})
+
+test('Structured Hub error output from Captain is exposed as safe categorical metadata',async()=>{
+  function fakeSpawn(){
+    const child=new EventEmitter()
+    child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>{}
+    queueMicrotask(()=>{
+      child.stdout.write('ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP 400: '
+        + JSON.stringify({error:'no matching worker sessions',signed_request:'secret-value'}))
+      child.emit('close',2)
+    })
+    return child
+  }
+  const command=captainCommand({nonce:'c23142a2-908e-4972-a6c7-c30259944f8a',model:'gemma4:26b-a4b-it-q4_K_M'})
+  await assert.rejects(executeCaptain(command,{spawnImpl:fakeSpawn,timeoutMs:500}),err=>{
+    assert.match(err.message,/hubHttp=400/)
+    assert.match(err.message,/hubOperation=live-worker-request-submit/)
+    assert.match(err.message,/reason=no matching worker sessions/)
+    assert.doesNotMatch(err.message,/secret-value|signed_request/)
+    return true
+  })
 })

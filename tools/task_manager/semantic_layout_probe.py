@@ -20,7 +20,7 @@ except ImportError as exc:
     raise SystemExit("Task Manager layout probe requires PyYAML (python -m pip install PyYAML)") from exc
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "mcel_apps/task-manager/design.yaml"
+DESIGN = ROOT / "mcel_designs/task-manager/design.yaml"
 RESOLVER = ROOT / "main_computer/web/applications/scripts/mcel-semantic-layout-inference.js"
 DEFAULT_OUTPUT = ROOT / "runtime/reports/task-manager-semantic-layout"
 if str(ROOT) not in sys.path:

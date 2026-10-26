@@ -68,6 +68,11 @@ class HybridQwen(nn.Module):
     def _step(self, *, input_ids=None, inputs_embeds=None, cache=None, mask=None):
         if (input_ids is None) == (inputs_embeds is None):
             raise ValueError('HYBRID_EXPECTS_ONE_INPUT_KIND')
+        if inputs_embeds is not None:
+            # HybridLink may train in fp32 while Qwen's decoder weights are bf16.
+            # The cast preserves autograd: never detach feedback at this boundary.
+            decoder_dtype = self.backbone.get_input_embeddings().weight.dtype
+            inputs_embeds = inputs_embeds.to(dtype=decoder_dtype)
         out = self.backbone(input_ids=input_ids, inputs_embeds=inputs_embeds,
                             attention_mask=mask, past_key_values=cache,
                             output_hidden_states=True, use_cache=True,
@@ -97,7 +102,9 @@ class HybridQwen(nn.Module):
         hidden, logits, cache = self._step(input_ids=prompt_ids, mask=mask)
         trace = []
         for _ in range(latent_steps):
-            next_embedding = self.head(hidden)
+            # The upstream head is often kept fp32 for stable LayerNorm/AdamW.
+            head_dtype = next(self.head.parameters()).dtype
+            next_embedding = self.head(hidden.to(dtype=head_dtype))
             self.last_input_embeddings = next_embedding
             if not torch.isfinite(next_embedding).all():
                 raise RuntimeError('HYBRID_NONFINITE_LATENT')

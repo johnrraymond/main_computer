@@ -106,6 +106,14 @@ def test_runtime_build_is_ephemeral_and_does_not_repopulate_source_tree(tmp_path
     assert not _files_beneath(REPO_ROOT / "main_computer/web/applications/mcel-packages")
 
 
+def test_virtual_browser_catalog_builds_with_separate_design_experiments() -> None:
+    """Check the virtual asset requested by the startup HTML include."""
+    assets = build_virtual_mcel_browser_assets(REPO_ROOT)
+    assert assets.files[CATALOG_ROUTE]
+    assert b"calculator" in assets.files[CATALOG_ROUTE]
+    assert b"code-editor" in assets.files[CATALOG_ROUTE]
+
+
 def test_normal_viewport_mount_assets_stay_in_memory(tmp_path: Path) -> None:
     shutil.copytree(REPO_ROOT / "mcel_apps", tmp_path / "mcel_apps")
 

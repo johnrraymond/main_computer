@@ -50,35 +50,70 @@ export async function ensureDisposableMetaMaskUnlocked({context, extensionId, ex
   let lastState = 'no-extension-home'
   while (Date.now() < deadline) {
     const pages = context.pages().filter(page => extensionPage(page,extensionId))
-    // Always unlock a visible locked tab before trusting any other cached
-    // wallet-home tab. Stale tabs from the same extension may coexist.
+    // Once the unlock action is submitted, do not retry filling a password.
+    // MetaMask may briefly retain a stale unlock route while React tears down
+    // the old input. A second fill can wait 30s on an already-detached node.
     let pending = false
-    for (const page of pages) {
-      const form = await visibleUnlockForm(page, extensionId)
-      if (!form) continue
-      pending = true
-      await form.field.fill(password)
-      if (!await form.button.isEnabled().catch(() => false)) {
-        throw new Error('Cached disposable MetaMask unlock refused: Unlock remains disabled')
-      }
-      await form.button.click({timeout: 5_000})
-      unlocked = true
-      lastState = 'unlock-submitted'
-      onProgress('metamask.disposable-profile-unlock-submitted')
-      break
-    }
-    // The extension can transition to a different home tab after unlocking.
-    // Require that its public address matches the disposable test wallet.
-    if (!pending || unlocked) {
+    if (!unlocked) {
       for (const page of pages) {
+        const form = await visibleUnlockForm(page, extensionId)
+        if (!form) continue
+        pending = true
+        try {
+          // The form can disappear between isVisible() and fill(). Keep the
+          // operation bounded and classify any race without propagating the
+          // Playwright exception, which can contain fill(password) in plaintext.
+          await form.field.fill(password, {timeout: 1_500})
+        } catch {
+          lastState = 'unlock-field-transitioning'
+          pending = false
+          break
+        }
+        if (!unlockPage(page, extensionId) || !await isShown(form.button)) {
+          lastState = 'unlock-page-transitioning'
+          pending = false
+          break
+        }
+        if (!await form.button.isEnabled().catch(() => false)) {
+          throw new Error('Cached disposable MetaMask unlock refused: Unlock remains disabled')
+        }
+        try {
+          await form.button.click({timeout: 2_000})
+        } catch (error) {
+          // The synthetic fixture can report a wrong test password. Never
+          // relay raw Playwright exceptions: click/fill errors may contain the
+          // literal disposable password or untrusted page text.
+          if (String(error?.message || '').trim() === 'incorrect test password') {
+            throw new Error('Cached disposable MetaMask unlock refused: incorrect test password')
+          }
+          // Verify actual public wallet identity first. The button may have
+          // been removed as a simultaneous unlock completed in another tab.
+          lastState = 'unlock-submit-transitioning'
+          pending = false
+          break
+        }
+        unlocked = true
+        lastState = 'unlock-submitted'
+        onProgress('metamask.disposable-profile-unlock-submitted')
+        break
+      }
+    }
+    // The extension can switch to a new tab or route after unlocking. A home
+    // is accepted ONLY when its displayed account matches the disposable
+    // wallet; RPC accessibility alone never certifies MetaMask is unlocked.
+    if (!pending || unlocked) {
+      for (const page of context.pages().filter(page => extensionPage(page,extensionId))) {
         try {
           await verifyHome(page, expectedAddress, extensionId)
           onProgress('metamask.disposable-profile-identity-verified')
           return page
-        } catch { /* UI may be transitioning; no secret-bearing diagnostics. */ }
+        } catch { /* UI transition or incorrect account: not a success. */ }
       }
     }
-    if (!pending) lastState = pages.length ? 'wallet-home-not-verified' : 'no-extension-home'
+    if (!pending && !unlocked && lastState === 'no-extension-home') {
+      lastState = pages.length ? 'wallet-home-not-verified' : 'no-extension-home'
+    }
+    if (unlocked) lastState = 'unlock-submitted-awaiting-verified-home'
     await sleep(pollMs)
   }
   throw new Error(`Cached disposable MetaMask unlock incomplete (${lastState}); no wallet profile certified`)

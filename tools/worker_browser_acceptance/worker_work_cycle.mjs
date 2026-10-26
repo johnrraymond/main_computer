@@ -97,12 +97,78 @@ export function verifyDeliveredWork(status, expectedWorkerId, captain) {
           offerObserved: true, resultObserved: true, resultType: result.type}
 }
 
+// Only emit whitelisted Hub operation names. URLs can contain request IDs,
+// wallet addresses and query parameters and must NEVER enter diagnostics.
+export function safeCaptainHubOperation(urlText) {
+  let url
+  try { url = new URL(urlText) } catch { return 'unknown' }
+  if (url.protocol !== 'https:' || url.hostname !== 'testnet-hub.greatlibrary.io') return 'unknown'
+  const path = url.pathname
+  const operations = new Map([
+    ['/api/hub/v1/credits/wallet-funding/completion', 'bridge-readiness'],
+    ['/api/hub/v1/credits/wallet-funding/complete', 'bridge-completion'],
+    ['/api/hub/v1/credits/wallet-funding/import', 'bridge-import'],
+    ['/api/hub/v1/credits/balance', 'credit-balance'],
+    ['/api/hub/v1/credits/charges', 'credit-charges'],
+    ['/api/hub/v1/requests/quote', 'request-quote'],
+    ['/api/hub/v1/requests/submit', 'request-submit'],
+    ['/api/hub/v1/requests', 'request-submit'],
+    ['/api/hub/v1/work/requests', 'live-worker-request-submit'],
+    ['/api/hub/v1/credits/bridge-reconciliation/record', 'bridge-reconciliation-record'],
+    ['/api/hub/v1/credits/bridge-reconciliation/execute', 'bridge-reconciliation-execute'],
+    ['/api/hub/v1/credits/bridge-deposit', 'bridge-deposit-lookup'],
+  ])
+  if (operations.has(path)) return operations.get(path)
+  if (/^\/api\/hub\/v1\/requests\/[^/]+\/(?:result|pickup)$/.test(path)) return 'request-result'
+  if (/^\/api\/hub\/v1\/requests\/[^/]+$/.test(path)) return 'request-status'
+  if (/^\/api\/hub\/v1\/work\/sessions\/[^/]+\/stream$/.test(path)) return 'session-stream'
+  return 'unknown'
+}
+
+function safeCaptainHubBodyReason(bodyText) {
+  // Parse only a bounded JSON object, never echo entire Hub/Cloudflare bodies.
+  // Whitelist an error field: other keys may contain a signed request or token.
+  if (!bodyText || bodyText.length > 4096 || !bodyText.trimStart().startsWith('{')) return ''
+  let body
+  try { body = JSON.parse(bodyText) } catch { return '' }
+  if (!body || Array.isArray(body) || typeof body !== 'object') return ''
+  const raw = typeof body.error === 'string' ? body.error
+    : typeof body.message === 'string' ? body.message : ''
+  if (raw.length === 0 || raw.length > 220 || /[{}<>\r\n\[\]\"'\\]/.test(raw)) return ''
+  // Even when a field name is not followed by ':'/'=', the value may be
+  // an unquoted secret. Discard the entire extracted error field.
+  if (/(?:mnemonic|seed|recovery|password|private|secret|authorization|bearer|credential|api.key|access.token|signed.request|signature|\btoken\b)/i.test(raw)) return ''
+  // Refuse opaque, arbitrary body text. Only short human-facing errors using
+  // ordinary punctuation and whitespace are eligible for value redaction.
+  if (!/^[A-Za-z0-9_ ,.:;()\-]+$/.test(raw)) return ''
+  if (/\b[A-Za-z0-9_-]{30,}\b/.test(raw) && !/\b0x[0-9a-f]{40,}\b/i.test(raw)) return ''
+  return raw
+    .replace(/\b(?:0x)?[a-f0-9]{32,}\b/gi, '[hex-redacted]')
+    .replace(/\b[A-Za-z0-9_/-]{70,}\b/g, '[long-value-redacted]')
+    .replace(/\s+/g, ' ').trim().slice(0, 170)
+}
+
+export function captainHubFailureMetadata(rawError) {
+  const raw = String(rawError || '')
+  const m = /\bHub request failed for (https:\/\/[^\s]+) with HTTP ([45]\d\d):\s*([\s\S]*)/i.exec(raw)
+  if (!m) return null
+  const status = Number(m[2])
+  const operation = safeCaptainHubOperation(m[1])
+  const reason = safeCaptainHubBodyReason(m[3])
+  // A 403 from a Hub route is not proof of Cloudflare (or of authorization).
+  return {httpStatus: status, operation, ...(reason ? {hubError: reason} : {})}
+}
+
 // Captain writes operator-facing refusals to stdout (`ERROR: ...`) and argparse
 // writes them to stderr (`...: error: ...`). Capture that *specific diagnostic*,
 // not the complete process output: it may include wallet funding records,
 // signed authorizations, transaction details or credentials.
 export function captainFailureEvidence({stdout = '', stderr = '', exitCode = null} = {}) {
-  const lines = (String(stderr).slice(-32_000) + '\n' + String(stdout).slice(-32_000)).split(/\r?\n/)
+  // executeCaptain already bounds each stream to MAX_PROCESS_OUTPUT. Scan the
+  // entire bounded output for explicit error markers: a diagnostic at the
+  // beginning of a verbose Captain response must not disappear simply because
+  // the final 32K contains unrelated output.
+  const lines = (String(stderr).slice(0, MAX_PROCESS_OUTPUT) + '\n' + String(stdout).slice(0, MAX_PROCESS_OUTPUT)).split(/\r?\n/)
   let raw = ''
   let pythonException = ''
   for (const line of lines) {
@@ -133,6 +199,14 @@ export function captainFailureEvidence({stdout = '', stderr = '', exitCode = nul
     category = 'captain-chain-or-rpc'
   }
   if (!raw) return {exitCode, category, reason: 'no-classified-captain-error-line'}
+  const hub = captainHubFailureMetadata(raw)
+  if (hub) {
+    // Preserve the HTTP status and whitelisted route even if the Hub included
+    // sensitive, arbitrary JSON elsewhere in the operator error line.
+    return {exitCode, category: 'captain-hub-http',
+      reason: hub.hubError || 'hub-error-body-redacted',
+      hubHttpStatus: hub.httpStatus, hubOperation: hub.operation}
+  }
   // Arbitrary stderr/stdout text cannot be trusted. Redact possible values,
   // and suppress whole lines which name secret-bearing fields.
   if (/[{}]/.test(raw) || /(?:mnemonic|seed[ _-]?phrase|recovery[ _-]?phrase|password|(?:private|secret)[ _-]?key|authorization|bearer|api[ _-]?key|access[ _-]?token|signed_request|signature)\s*(?:[:=]|\s+bearer)/i.test(raw)) {
@@ -148,6 +222,95 @@ export function captainFailureEvidence({stdout = '', stderr = '', exitCode = nul
     .replace(/[\x00-\x1f\x7f]/g, ' ')
     .replace(/\s+/g, ' ').trim().slice(0, 240)
   return {exitCode, category, reason: reason || 'empty-captain-error'}
+}
+
+// Report only stream SHAPES. Raw subprocess text may contain signed
+// authorizations, private keys or Hub response bodies. In particular an
+// unclassified exit must no longer masquerade as proof of an empty stream.
+export function captainStdioEvidence({stdout = '', stderr = ''} = {}) {
+  const summarize = value => {
+    const output = String(value)
+    const trimmed = output.trim()
+    let shape = 'empty'
+    if (trimmed) {
+      if (/Traceback \(most recent call last\):/.test(output)) shape = 'python-traceback'
+      else if (/^\s*usage:/m.test(output)) shape = 'argument-usage'
+      else if (/^\s*ERROR:/mi.test(output)) shape = 'operator-error'
+      else if (/^[\[{]/.test(trimmed)) shape = 'json-like'
+      else shape = 'other-text'
+    }
+    return {bytes: Buffer.byteLength(output, 'utf8'), shape}
+  }
+  return {stdout: summarize(stdout), stderr: summarize(stderr)}
+}
+
+// A read-only *second process* is invoked ONLY after a failed Captain
+// execution, never as a retry. Construct its arguments by removing every
+// execution authorization and asserting --prepare-only. It must not submit
+// a Hub request, broadcast bridge funding or sign a wallet transaction.
+export function captainPrepareOnlyCommand(command) {
+  const args = Array.isArray(command?.args) ? command.args : []
+  if (!args.includes('--yes') || !args.includes('--network') ||
+      args[args.indexOf('--network') + 1] !== 'testnet' ||
+      !args.includes('--no-chain') || !args.includes('--smoke-id')) {
+    throw new Error('Refusing unrecognized Captain command for read-only preparation')
+  }
+  const safeArgs = args.filter(value => !['--yes', '--execute'].includes(value))
+  if (safeArgs.includes('--private-key') || safeArgs.includes('--bridge-controller-private-key')) {
+    throw new Error('Read-only diagnosis refuses command-line signing overrides')
+  }
+  return {executable: command.executable, args: [...safeArgs, '--prepare-only']}
+}
+
+export function probeCaptainPreparation(command, {cwd, spawnImpl = spawn, timeoutMs = 35_000} = {}) {
+  let prepare
+  try { prepare = captainPrepareOnlyCommand(command) }
+  catch { return Promise.resolve({result: 'refused-unsafe-command'}) }
+  return new Promise(resolve => {
+    let child
+    try { child = spawnImpl(prepare.executable, prepare.args, {
+      cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    }) } catch { return resolve({result: 'process-launch-failed'}) }
+    let stdout = '', stderr = '', complete = false
+    const finish = info => { if (!complete) { complete = true; clearTimeout(timer); resolve(info) } }
+    const timer = setTimeout(() => {
+      try { child.kill() } catch {}
+      finish({result: 'prepare-only-timeout'})
+    }, timeoutMs)
+    child.on('error', () => finish({result: 'process-launch-failed'}))
+    child.stdout.on('data', chunk => {
+      stdout += String(chunk)
+      if (stdout.length > MAX_PROCESS_OUTPUT) {
+        try { child.kill() } catch {}
+        finish({result: 'output-limit-exceeded'})
+      }
+    })
+    child.stderr.on('data', chunk => {
+      stderr += String(chunk)
+      if (stderr.length > MAX_PROCESS_OUTPUT) {
+        try { child.kill() } catch {}
+        finish({result: 'output-limit-exceeded'})
+      }
+    })
+    child.on('close', code => {
+      if (complete) return
+      if (code !== 0) {
+        return finish({result: 'prepare-only-refused', exitCode: code,
+                       error: captainFailureEvidence({stdout, stderr, exitCode: code}),
+                       stdio: captainStdioEvidence({stdout, stderr})})
+      }
+      let payload
+      try { payload = JSON.parse(stdout.trim()) }
+      catch { return finish({result: 'unparseable-prepare-only-result',
+                             stdio: captainStdioEvidence({stdout, stderr})}) }
+      if (payload?.ok === true && payload.execute === false &&
+          payload.hub?.network === 'testnet' && Number(payload.chain?.chain_id) === 42424241) {
+        finish({result: 'prepare-only-pass', network: 'testnet', chainId: 42424241})
+      } else {
+        finish({result: 'prepare-only-proof-incomplete'})
+      }
+    })
+  })
 }
 
 export function executeCaptain(command, {cwd, timeoutMs = WORK_CYCLE_TIMEOUT_MS, spawnImpl = spawn} = {}) {
@@ -171,8 +334,14 @@ export function executeCaptain(command, {cwd, timeoutMs = WORK_CYCLE_TIMEOUT_MS,
       if (finished) return
       if (code !== 0) {
         const failure = captainFailureEvidence({stdout, stderr, exitCode: code})
+        const transport = captainStdioEvidence({stdout, stderr})
         return fail('Captain testnet request refused (exit=' + code + ', category=' + failure.category +
-          ', reason=' + failure.reason + '); no browser Worker execution certified')
+          ', reason=' + failure.reason +
+          (failure.hubHttpStatus ? ', hubHttp=' + failure.hubHttpStatus : '') +
+          (failure.hubOperation ? ', hubOperation=' + failure.hubOperation : '') +
+          ', stdout=' + transport.stdout.shape + ':' + transport.stdout.bytes +
+          ', stderr=' + transport.stderr.shape + ':' + transport.stderr.bytes +
+          '); no browser Worker execution certified')
       }
       let output
       try {

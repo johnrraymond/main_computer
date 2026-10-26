@@ -115,6 +115,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--hub")
     parser.add_argument("--allow-full-deletion", action="store_true")
     parser.add_argument(
+        "--require-hub-route",
+        choices=("/api/hub/v1/credits/bridge-deposit",),
+        default="",
+        help="Fail closed unless the expected feature exists in pushed Hub source and the deployed public route",
+    )
+    parser.add_argument(
         "--force-git",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -143,6 +149,8 @@ class Harness:
         self.hub = str(args.hub or "").strip()
         self.allow_full_deletion = bool(args.allow_full_deletion)
         self.force_git = bool(getattr(args, "force_git", True))
+        if getattr(args, "require_hub_route", "") and self.operation not in {"redeploy-hub", "redeploy-hubs"}:
+            raise HarnessError("--require-hub-route applies only to redeploy-hub(s)")
         self._prepared_boundary_printed = False
         self._resumed_existing_run = False
 
@@ -778,9 +786,23 @@ class Harness:
             # helper emits the existing add/commit/push instructions when Hub
             # image inputs are dirty, and rejects HEADs not pushed to origin.
             revision = git_revision(self.repo_root, self.network)
+            required_route = str(getattr(self.args, "require_hub_route", "") or "")
+            if required_route:
+                from tools.hub_route_provenance import inspect_local_and_git
+                provenance = inspect_local_and_git(self.repo_root, route=required_route)
+                gates = ("workingHubRoutePresent", "committedHubRoutePresent",
+                         "localAuditCallsExactLookup", "headMatchesOriginMain",
+                         "hubSourceClean")
+                absent = [key for key in gates if not provenance.get(key)]
+                if absent:
+                    raise HarnessError("Hub required route is not ready in local audit and pushed Git source: "
+                                       + ", ".join(absent) + "; no build requested")
+                print(f"Hub feature source preflight: {required_route} present in local audit, "
+                      "Hub source and pushed HEAD", flush=True)
             print(
                 f"Hub Git preflight: relevant source clean; HEAD {revision[:12]} "
-                "pushed to origin/main; no commit required for redeployment",
+                "pushed to origin/main; no commit required for redeployment "
+                "(does not prove a requested feature unless --require-hub-route is used)",
                 flush=True,
             )
             ctx = HubContext.from_repo(self.repo_root)
@@ -939,8 +961,24 @@ class Harness:
                 print("\nStopping before live mutation. Rerun with "
                       "--execute-mutations --yes-i-know-this-mutates-hub")
                 return 0
+            def verify_required_live_route(target: dict[str, Any]) -> None:
+                if not required_route:
+                    return
+                from tools.hub_route_provenance import probe_hub_route
+                config_file = self.repo_root / "main_computer/config/hub_networks.json"
+                config = json.loads(config_file.read_text(encoding="utf-8"))
+                public_alias = str(config["networks"][self.network]["hub_public_url"]).rstrip("/")
+                direct_url = str(target["public_url"]).rstrip("/")
+                for url in dict.fromkeys([direct_url, public_alias]):
+                    proof = probe_hub_route(url, route=required_route)
+                    if proof.get("routeVerified") is not True:
+                        raise HarnessError(f"Hub route not verified at {url}: {proof.get('result')}; "
+                                           "build might be healthy but requested feature is not live")
+                    print(f"Hub feature runtime verified: {required_route} at {url}", flush=True)
+
             for target, item in zip(targets, rollout["targets"]):
                 if item["status"] == "verified":
+                    verify_required_live_route(target)
                     print(f"Skipping verified Hub {target['hub_id']}")
                     continue
                 print(f"\n=== redeploy: {target['hub_id']} ===", flush=True)
@@ -986,6 +1024,7 @@ class Harness:
                 if item["status"] == "built":
                     print(f"Hub {target['hub_id']}: verify Hub health and bridge signer", flush=True)
                     verify_runtime(target)
+                    verify_required_live_route(target)
                     current, _ = accepted_targets(ctx, self.network)
                     if sha256_json(current) != accepted_sha:
                         raise HarnessError("accepted Hub topology changed during code rollout")

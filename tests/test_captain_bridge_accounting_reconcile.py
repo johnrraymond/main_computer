@@ -118,19 +118,23 @@ def _run(tmp_path):
     )
 
 
-def test_stale_local_record_logs_drift_and_funds_again_only_after_hub_and_chain_agree(
+def test_hub_chain_drift_logs_warning_but_retains_record_and_refuses_new_payment(
     tmp_path, monkeypatch, caplog, capsys,
 ):
     sent, completed = _setup(tmp_path, monkeypatch)
     with pytest.raises(CaptainCliError, match="temporarily unavailable"):
         _run(tmp_path)
     assert len(sent) == 1
-    with caplog.at_level(logging.WARNING):
-        assert _run(tmp_path) == 0
-    assert len(sent) == 2
-    assert completed == [OLD_ID, OLD_ID, NEW_ID]
     pending_dir = tmp_path / "runtime/state/captain/pending-bridge-deposits"
-    assert not list(pending_dir.glob("*.json"))
+    pending = list(pending_dir.glob("*.json"))
+    assert len(pending) == 1
+    original = pending[0].read_bytes()
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(CaptainCliError, match="refusing another payment"):
+            _run(tmp_path)
+    assert len(sent) == 1  # No second deposit, even when RPC says absent.
+    assert completed == [OLD_ID, OLD_ID]
+    assert pending[0].read_bytes() == original
     log = (pending_dir / "accounting-drift.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(log) == 1
     event = json.loads(log[0])
@@ -139,10 +143,9 @@ def test_stale_local_record_logs_drift_and_funds_again_only_after_hub_and_chain_
     assert event["hub"] == "unknown"
     assert event["deposit_id"] == OLD_ID
     assert event["transaction_hash"] == OLD_TX
+    assert event["action"] == "retain_pending_record_and_refuse_another_payment_until_reconciled"
     assert "LOCAL_ACCOUNTING_DRIFT" in caplog.text
-    emitted = json.loads(capsys.readouterr().out)
-    assert emitted["hub"]["bridge"]["deposit"]["deposit_id"] == NEW_ID
-    assert emitted["hub"]["bridge"]["accounting_warnings"][0]["deposit_id"] == OLD_ID
+    assert not capsys.readouterr().out.strip()
 
 
 @pytest.mark.parametrize("chain_state", [
@@ -170,3 +173,46 @@ def test_unknown_other_deposit_is_not_drift_authority(tmp_path, monkeypatch):
     with pytest.raises(CaptainCliError, match="Unknown bridge deposit"):
         _run(tmp_path)
     assert len(sent) == 1 and completed == [OLD_ID, OLD_ID]
+
+
+def test_new_smoke_id_cannot_evade_same_wallet_pending_record(tmp_path, monkeypatch):
+    sent, completed = _setup(tmp_path, monkeypatch)
+    with pytest.raises(CaptainCliError, match="temporarily unavailable"):
+        _run(tmp_path)
+    assert len(sent) == 1
+    # Same wallet, new smoke ID: the old deposit must block new funding even
+    # though the derived recovery filename is different.
+    with pytest.raises(CaptainCliError, match="another smoke ID; refusing another payment"):
+        run_captain(
+            ["smoke", "o3", "New", "smoke", "request", "--network", "testnet",
+             "--smoke-id", "completely-new-browser-run", "--no-bridge-refund",
+             "--poll-seconds", "0", "--json"],
+            config=MainComputerConfig(workspace=tmp_path), cwd=tmp_path,
+        )
+    assert len(sent) == 1
+    assert completed == [OLD_ID]
+    assert len(list((tmp_path / "runtime/state/captain/pending-bridge-deposits").glob('*.json'))) == 1
+
+
+def test_pending_records_for_different_wallet_are_not_confused(tmp_path):
+    from main_computer.captain_cli import _require_no_other_captain_pending_deposits
+    folder = tmp_path / 'pending-bridge-deposits'
+    folder.mkdir()
+    (folder / 'old.json').write_text(json.dumps({
+        'wallet_address': '0x' + '1' * 40, 'deposit_id': OLD_ID,
+        'transaction_hash': OLD_TX,
+    }), encoding='utf-8')
+    _require_no_other_captain_pending_deposits(
+        folder / 'new.json', wallet_address='0x' + '2' * 40,
+    )
+
+
+def test_corrupt_pending_record_blocks_new_payment(tmp_path):
+    from main_computer.captain_cli import _require_no_other_captain_pending_deposits
+    folder = tmp_path / 'pending-bridge-deposits'
+    folder.mkdir()
+    (folder / 'corrupt.json').write_text('not-json', encoding='utf-8')
+    with pytest.raises(CaptainCliError, match='unreadable pending Captain bridge record'):
+        _require_no_other_captain_pending_deposits(
+            folder / 'new.json', wallet_address='0x' + '2' * 40,
+        )

@@ -36,8 +36,8 @@ DEFAULT_OUTPUT = ROOT/'runtime/reports/mcel-layout-frob'
 # the viewport width. This padding is also used in the Frob preview CSS.
 FROB_HOST_PADDING_PX = 8
 RESOLVER = ROOT/'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js'
-DESIGN = ROOT/'mcel_apps/task-manager/design.yaml'
-CONTRACT = ROOT/'mcel_apps/task-manager/frob_crosscheck.yaml'
+DESIGN = ROOT/'mcel_designs/task-manager/design.yaml'
+CONTRACT = ROOT/'mcel_designs/task-manager/frob_crosscheck.yaml'
 
 # A machine's available scope is NOT silently promoted into application-shell support.
 COMPATIBILITY = {
@@ -455,22 +455,35 @@ def frob_pair_has_full_shell(machine,engine):
     return COMPATIBILITY.get((machine,engine)) in ('whole_app','experimental_bridge')
 
 
-def write_gallery(report,output):
-    specimens=[]
-    for case in report['scenarios']:
-        obs=case.get('observed')
-        if not obs:continue
-        src=html.escape(obs.get('screenshot',''),quote=True)
-        label=html.escape(f"{case['machine']} / {case['engine']} | {case['width']}px | {case['fixture']} | {case['strength']}")
-        state=html.escape(case['status'])
-        specimens.append(f'<article><h2>{label}</h2><p>{state} · {obs["columns"]} measured columns · upper left: {obs["priorityUpperLeft"]}</p><a href="{src}"><img alt="{label}" loading="lazy" src="{src}"></a></article>')
-    body='<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+        '<title>MCEL Frob comparisons</title><style>body{font:15px/1.5 system-ui;margin:24px;max-width:1500px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:14px}article{border:1px solid #ccc;border-radius:8px;padding:12px;min-width:0}h2{font-size:15px;overflow-wrap:anywhere}img{display:block;max-width:100%;height:auto;border:1px solid #ddd}</style>'+        '<h1>MCEL Frob Lab — captured browser candidates</h1><p>Experimental previews. Measured geometries, not a live application or visual acceptance certificate.</p><main>'+''.join(specimens)+'</main></html>'
-    (output/'gallery.html').write_text(body,encoding='utf-8')
+def write_gallery(report, output):
+    """Reuse the shared visual evidence renderer for machine/engine comparisons."""
+    from tools.mcel_frob_visual_evidence import png_size, write_gallery as shared_gallery
+    output = Path(output)
+    specimens = []
+    for case in report.get('scenarios', []):
+        obs = case.get('observed')
+        if not obs or not obs.get('screenshot'):
+            continue
+        name = obs['screenshot']
+        width, height = png_size(output/name)
+        specimens.append({
+            'id': name[:-4], 'kind': 'layout-machine',
+            'label': f"{case['machine']} / {case['engine']} | {case['width']}px | {case['fixture']} | {case['strength']} | {case['status']}",
+            'viewport': case['width'], 'view': f"{case['machine']}/{case['engine']}",
+            'state': f"{case['fixture']}-{case['strength']}",
+            'screenshot': name, 'screenshot_sha256': obs['screenshot_sha256'],
+            'pixel_width': width, 'pixel_height': height, 'full_page': True,
+            'observed': {'columns': obs.get('columns'), 'priorityUpperLeft': obs.get('priorityUpperLeft'),
+                         'layoutStatus': obs.get('witness', {}).get('status'), 'fixture': case['fixture']},
+            'visual_approval': 'UNREVIEWED'
+        })
+    shared_gallery(output, specimens, title='MCEL Frob layout-machine comparisons',
+                   provenance=report.get('provenance', {}))
 
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=['smoke','sweep','plan'],default='smoke')
+    parser.add_argument('--mode',choices=['smoke','sweep','plan','semantic','semantic-compare','design-review','design-quality','design-quality-stress'],default='smoke')
     parser.add_argument('--design',type=Path,default=DESIGN)
     parser.add_argument('--contract',type=Path,default=CONTRACT)
     parser.add_argument('--output',type=Path,default=DEFAULT_OUTPUT)
@@ -481,6 +494,37 @@ def main(argv=None):
     parser.add_argument('--chromium-executable')
     parser.add_argument('--max-cases',type=int,default=128,help='Sweep scenarios (0 = entire cross product; smoke ignores budget)')
     args=parser.parse_args(argv)
+    if args.mode=='design-quality-stress':
+        from tools import mcel_design_quality_stress
+        stress_args=['--mode','run','--design',str(args.design.resolve()),
+                     '--output',str((args.output/'design-quality-stress').resolve())]
+        if args.chromium_executable:
+            stress_args.extend(['--chromium-executable',args.chromium_executable])
+        return mcel_design_quality_stress.main(stress_args)
+    if args.mode=='design-quality':
+        from tools import mcel_design_quality_frob
+        argv=['--mode','run','--design',str(args.design.resolve()),
+              '--output',str((args.output/'design-quality').resolve())]
+        if args.chromium_executable:
+            argv.extend(['--chromium-executable',args.chromium_executable])
+        return mcel_design_quality_frob.main(argv)
+    if args.mode=='design-review':
+        from tools import mcel_design_critic_frob
+        critic_args=['--mode','build','--design',str(args.design.resolve()),
+                     '--output',str((args.output/'design-review').resolve())]
+        if args.chromium_executable:
+            critic_args.extend(['--chromium-executable',args.chromium_executable])
+        return mcel_design_critic_frob.main(critic_args)
+    if args.mode=='semantic-compare':
+        from tools import mcel_semantic_generate
+        return mcel_semantic_generate.compare(args.design.resolve(),
+            (args.output/'presentation-comparison').resolve())
+    if args.mode=='semantic':
+        # Run the real YAML -> registered MCEL elements -> DSL -> browser path,
+        # but do not overwrite existing sweep/compatibility reports.
+        from tools import mcel_semantic_generate
+        return mcel_semantic_generate.run(args.design.resolve(),
+                                          (args.output/'semantic-generation').resolve(),verify=True,chromium_executable=args.chromium_executable)
     output=args.output.resolve();output.mkdir(parents=True,exist_ok=True)
     try:
         from tools import mcel_layout_frob_crosscheck as contract_module

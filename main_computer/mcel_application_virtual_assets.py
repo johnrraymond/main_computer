@@ -116,8 +116,17 @@ def build_virtual_mcel_browser_assets(
     repo = (Path(repo_root) if repo_root is not None else repository_root()).resolve()
     catalog = build_application_package_catalog(repo)
     if not catalog.ok or catalog.invalid_count or catalog.errors:
+        invalid_packages = [record for record in catalog.packages if not record.valid]
+        first_errors = [
+            f"{record.directory_name}: {issue.code} ({issue.path or 'unknown path'})"
+            for record in invalid_packages
+            for issue in record.errors[:3]
+        ]
+        first_errors.extend(f"{issue.code} ({issue.path or 'catalog'})" for issue in catalog.errors[:3])
+        details = "; ".join(first_errors) or "catalog validation returned false"
         raise VirtualMcelAssetError(
-            "Repository application-package catalog must be valid before virtual browser projection."
+            "Repository application-package catalog must be valid before virtual browser projection. "
+            f"Invalid packages: {catalog.invalid_count}. {details}"
         )
 
     projection_set = build_runtime_projection_set(repo)

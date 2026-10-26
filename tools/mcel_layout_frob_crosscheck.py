@@ -27,8 +27,8 @@ except ImportError as exc:
     raise SystemExit('PyYAML is required to read the MCEL frob design contract.') from exc
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONTRACT = PROJECT_ROOT / 'mcel_apps' / 'task-manager' / 'frob_crosscheck.yaml'
-DEFAULT_DESIGN = PROJECT_ROOT / 'mcel_apps' / 'task-manager' / 'design.yaml'
+DEFAULT_CONTRACT = PROJECT_ROOT / 'mcel_designs' / 'task-manager' / 'frob_crosscheck.yaml'
+DEFAULT_DESIGN = PROJECT_ROOT / 'mcel_designs' / 'task-manager' / 'design.yaml'
 DEFAULT_OUTPUT = PROJECT_ROOT / 'runtime' / 'reports' / 'mcel-layout-frob' / 'crosscheck.json'
 SCHEMA = 'main-computer.mcel.layout-frob-crosscheck.v1'
 STATIC_PROBES = {'static.contract_fields', 'static.refs_resolve', 'static.design_coverage', 'static.hierarchy_integrity'}
@@ -120,7 +120,7 @@ def validate(contract: dict, design: dict) -> list[dict]:
         raise ValueError('unsupported frob crosscheck schema')
     if design.get('schema') != 'main-computer.mcel.application-design.v1':
         raise ValueError('unsupported Task Manager design schema')
-    if contract.get('design_source') != 'mcel_apps/task-manager/design.yaml':
+    if contract.get('design_source') != 'mcel_designs/task-manager/design.yaml':
         raise ValueError('contract design_source does not identify the Task Manager YAML')
     probes = contract.get('probes')
     tests = contract.get('tests')

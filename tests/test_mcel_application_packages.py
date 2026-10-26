@@ -72,6 +72,23 @@ def test_repository_catalog_discovers_checked_in_packages_without_fixture_names(
         assert "application-package-discovery" not in record.conformance["missingBridges"]
 
 
+def test_experimental_design_is_outside_authoritative_package_catalog() -> None:
+    """An incomplete experiment must not poison every viewport import.
+
+    Genuine incomplete packages inside mcel_apps still fail closed; experiments
+    are kept in their own tree instead of weakening the catalog validator.
+    """
+    design_root = ROOT / "mcel_designs" / "task-manager"
+    assert (design_root / "design.yaml").is_file()
+    assert (design_root / "frob_crosscheck.yaml").is_file()
+    old_package_dir = ROOT / "mcel_apps" / "task-manager"
+    assert not old_package_dir.exists() or not any(old_package_dir.iterdir())
+    catalog = build_application_package_catalog(ROOT)
+    assert catalog.ok
+    assert catalog.invalid_count == 0
+    assert "task-manager" not in {record.directory_name for record in catalog.packages}
+
+
 def test_repository_catalog_materializes_calculator_authoritative_contracts_in_memory() -> None:
     catalog = build_application_package_catalog(ROOT)
     record = next(item for item in catalog.packages if item.app_id == "calculator")
@@ -142,6 +159,16 @@ def test_repository_catalog_fingerprint_changes_with_package_contents(tmp_path: 
     assert after.ok is True
     assert before.packages[0].fingerprint != after.packages[0].fingerprint
     assert before.fingerprint != after.fingerprint
+
+
+def test_repository_catalog_ignores_empty_directory_left_after_design_move(tmp_path: Path) -> None:
+    empty = tmp_path / "mcel_apps" / "task-manager"
+    empty.mkdir(parents=True)
+    catalog = build_application_package_catalog(tmp_path)
+    assert catalog.ok
+    assert catalog.package_count == 0
+    assert catalog.invalid_count == 0
+    assert {warning.code for warning in catalog.warnings} == {"ignored-empty-package-directory"}
 
 
 def test_repository_catalog_refuses_missing_manifest_candidate(tmp_path: Path) -> None:

@@ -10,7 +10,7 @@ import { completeWorkerWalletConnection, installWorkerWalletTrace, readWorkerWal
 import { resolve } from 'node:path'
 import {probeRpcClients, rpcProbeSummary} from './rpc_client_probe.mjs'
 import {approveWorkerMskSignature} from './metamask_sidepanel_cdp.mjs'
-import {captainCommand, executeCaptain, waitForLiveWorker, waitForDeliveredWork, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection} from './worker_work_cycle.mjs'
+import {captainCommand, executeCaptain, waitForLiveWorker, waitForDeliveredWork, probeCaptainPreparation, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection} from './worker_work_cycle.mjs'
 import {isMskEndpointRequest, waitForWorkerMsk, workerMskEvent, readMskApiRejection, safeMskApiRejection, formatMskFailureWithApiReason, assertServedWorkerMskContract} from './worker_msk_outcome.mjs'
 
 const walletFile = process.env.MC_WORKER_TEST_WALLET_FILE
@@ -350,7 +350,19 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
         const advertisedModel = (await page.locator('#worker-offer-models').inputValue()).split(',')[0].trim()
         const command = captainCommand({python: process.env.MC_WORKER_TEST_PYTHON || 'python', model: advertisedModel})
         console.log('Worker acceptance: worker.work-cycle.captain-testnet-submitting')
-        const receipt = await executeCaptain(command, {cwd: process.env.MC_WORKER_TEST_ROOT})
+        let receipt
+        try {
+          receipt = await executeCaptain(command, {cwd: process.env.MC_WORKER_TEST_ROOT})
+        } catch (captainError) {
+          // The primary failure may have occurred after a bridge deposit.
+          // NEVER retry execution here. Only run the independent Captain
+          // --prepare-only path to distinguish configuration failures from
+          // failures confined to the authorized execution stage.
+          const diagnostic = await probeCaptainPreparation(command, {cwd: process.env.MC_WORKER_TEST_ROOT})
+          evidence.captainNoSpendDiagnostic = diagnostic
+          console.error('Worker acceptance: captain.prepare-only-diagnostic', JSON.stringify(diagnostic))
+          throw captainError
+        }
         evidence.captainRequest = {requestId: receipt.requestId, sessionId: receipt.sessionId, state: receipt.state}
         stages.push('captain-request-completed')
         console.log('Worker acceptance: worker.work-cycle.captain-testnet-completed')

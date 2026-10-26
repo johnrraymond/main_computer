@@ -341,19 +341,24 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                     _require_absent_pending_bridge_on_chain(
                         runtime, pending_deposit, timeout_s=options.timeout_s,
                     )
-                    warning = _log_captain_accounting_drift(
+                    # Chain absence may indicate a reset/reorg while the Hub
+                    # retains historical FDB credits and charges. Neither
+                    # current-chain absence nor aggregate Hub balance grants
+                    # authority to discard the recovery hint and pay again.
+                    # This path is intentionally diagnostic and fail-closed.
+                    _log_captain_accounting_drift(
                         pending_path, runtime=runtime, deposit=pending_deposit,
                     )
-                    bridge.setdefault("accounting_warnings", []).append(warning)
-                    try:
-                        pending_path.unlink()
-                    except OSError as unlink_error:
-                        raise CaptainCliError(
-                            f"Stale bridge hint could not be retired: {pending_path}; "
-                            "refusing a second deposit."
-                        ) from unlink_error
-                    pending_deposit = None
+                    raise CaptainCliError(
+                        f"Hub cannot recognize cached deposit {pending_deposit['deposit_id']} "
+                        "and the selected chain no longer proves it. The local "
+                        "recovery record is retained for deposit-specific Hub/chain "
+                        "reconciliation; refusing another payment."
+                    )
             if pending_deposit is None:
+                _require_no_other_captain_pending_deposits(
+                    pending_path, wallet_address=runtime.wallet.address,
+                )
                 pending_deposit = send_captain_bridge_deposit(
                     runtime,
                     deposit_credit_wei=bridge_credit_wei,
@@ -1053,7 +1058,7 @@ def _log_captain_accounting_drift(
         "local": "pending",
         "hub": "unknown",
         "chain": "deposit_and_transaction_absent",
-        "action": "retire_stale_local_record_and_fund_fresh",
+        "action": "retain_pending_record_and_refuse_another_payment_until_reconciled",
     }
     line = json.dumps(event, sort_keys=True)
     logging.getLogger(__name__).warning("%s", line)
@@ -1066,6 +1071,49 @@ def _log_captain_accounting_drift(
         # record. Keep the warning visible even if the log volume is read-only.
         logging.getLogger(__name__).warning("Accounting drift log append failed: %s", exc)
     return event
+
+
+def _require_no_other_captain_pending_deposits(
+    current_path: Path, *, wallet_address: str,
+) -> None:
+    """Do not evade an unresolved deposit by selecting a fresh smoke ID.
+
+    The historical record format does not carry chain-generation identity, so
+    any unresolved deposit for the same wallet is a reason to refuse automatic
+    funding. Unknown/corrupt records also fail closed; another wallet's
+    well-formed record is not evidence against the current wallet.
+    """
+    folder = current_path.parent
+    if not folder.is_dir():
+        return
+    wallet = normalize_address(wallet_address)
+    try:
+        pending_files = sorted(folder.glob('*.json'))
+        for path in pending_files:
+            if path == current_path:
+                continue
+            try:
+                raw = json.loads(path.read_text(encoding='utf-8'))
+                if not isinstance(raw, dict):
+                    raise ValueError('invalid pending bridge recovery JSON')
+                other_wallet = normalize_address(str(raw.get('wallet_address') or ''))
+                other_deposit = str(raw.get('deposit_id') or '')
+                other_hash = str(raw.get('transaction_hash') or '')
+                if not _BYTES32_RE.fullmatch(other_deposit) or not _TX_HASH_RE.fullmatch(other_hash):
+                    raise ValueError('invalid pending deposit identity')
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                raise CaptainCliError(
+                    'An unreadable pending Captain bridge record prevents another payment; '
+                    'inspect and reconcile pending deposits before retrying.'
+                ) from exc
+            if other_wallet.lower() == wallet.lower():
+                raise CaptainCliError(
+                    'This Captain wallet already has an unresolved bridge deposit '
+                    'under another smoke ID; refusing another payment until '
+                    'deposit-specific Hub and chain reconciliation is complete.'
+                )
+    except OSError as exc:
+        raise CaptainCliError('Cannot inspect Captain pending deposits; refusing another payment.') from exc
 
 
 def _captain_pending_bridge_path(runtime: CaptainRuntime, *, smoke_id: str, cwd: Path) -> Path:
@@ -1081,6 +1129,12 @@ def _captain_pending_bridge_path(runtime: CaptainRuntime, *, smoke_id: str, cwd:
 def _read_captain_pending_bridge(
     path: Path, *, runtime: CaptainRuntime, amount_wei: int
 ) -> dict[str, Any] | None:
+    # Terminal records never return to operational recovery, including when a
+    # caller retries the same smoke ID after archival.
+    from main_computer.captain_bridge_archive import archive_path_for_pending
+    if archive_path_for_pending(path).exists():
+        raise CaptainCliError('This smoke ID belongs to a terminal archived bridge deposit; '
+                              'use a fresh explicitly authorized request, not a replay.')
     if not path.exists():
         return None
     try:
@@ -1100,6 +1154,9 @@ def _read_captain_pending_bridge(
 
 def _save_captain_pending_bridge(path: Path, deposit: dict[str, Any]) -> None:
     import tempfile
+    from main_computer.captain_bridge_archive import archive_path_for_pending
+    if archive_path_for_pending(path).exists():
+        raise CaptainCliError('Refusing to resurrect an archived terminal bridge transaction.')
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
