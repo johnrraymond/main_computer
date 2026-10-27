@@ -2920,7 +2920,7 @@ class StableHubWorkerSessionDirectory:
                 "account_id": str(account_id),
                 "cluster_id": self.cluster_id,
                 "connected_at": now,
-                "last_pong_at": "",
+                "last_pong_at": now,
                 "closed_at": "",
                 "lease_epoch": previous_epoch + 1,
             }
@@ -2940,6 +2940,8 @@ class StableHubWorkerSessionDirectory:
                 raise StableHubWorkerSessionError("worker owner record does not exist.")
             if record.get("connection_id") != connection_id:
                 raise StableHubWorkerSessionError("worker connection_id does not match owner record.")
+            if record.get("status") != "live":
+                raise StableHubWorkerSessionError("worker_owner_lease_fenced")
             if record.get("owner_hub_id") != self.hub.hub_id:
                 raise StableHubWorkerSessionError("worker owner record belongs to a different Hub.")
             record = dict(record)

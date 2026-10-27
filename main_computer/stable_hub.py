@@ -43,6 +43,7 @@ from main_computer.stable_hub_topology import (
     stable_hub_node_to_dict,
     stable_hub_topology_to_dict,
 )
+from main_computer.stable_hub_recovery import recover_expired_worker_leases
 from main_computer.stable_hub_worker_sessions import (
     StableHubAcceptedWorkSessionDirectory,
     StableHubPayoutLedgerDirectory,
@@ -239,6 +240,7 @@ def stable_hub_contract() -> dict[str, str]:
         "worker_identity": "validated-wallet-account-address",
         "worker_slot": "hub-generated-connection-id",
         "worker_connection": "long-lived-msk-session",
+        "execution_authorization": "durable-authorization-v1",
         "heartbeat": "connection-ping-pong",
         "availability_source": "live-worker-session-owner",
         "routing": "entry-hub-reserves-with-worker-home-hub-then-returns-concrete-execution-hub-url",
@@ -333,6 +335,7 @@ class LiveWorkerSession:
         self._send_lock = threading.RLock()
         self._state_condition = threading.Condition(threading.RLock())
         self._pending_acceptances: dict[str, dict[str, Any] | None] = {}
+        self._authorized_executions: dict[str, tuple[str, str]] = {}
 
     @property
     def is_live(self) -> bool:
@@ -422,6 +425,29 @@ class LiveWorkerSession:
                 self._state_condition.wait(timeout=remaining)
             self._pending_acceptances.pop(session_id, None)
             raise ConnectionError("worker live session closed before accepting work.")
+
+    def authorize_durable_execution(self, payload: dict[str, Any]) -> None:
+        """Send authorization and publish its identity as one socket-local step.
+
+        The receiving thread cannot validate a terminal message until this
+        send finishes; the FDB hold and accepted-session transaction MUST have
+        committed before this method is called.
+        """
+        session_id = str(payload.get("session_id") or "")
+        request_id = str(payload.get("request_id") or "")
+        run_id = str(payload.get("run_id") or "")
+        if not all((session_id, request_id, run_id)) or payload.get("type") != "hub.work.authorized":
+            raise StableHubWorkerSessionError("invalid durable execution authorization")
+        with self._state_condition:
+            if session_id in self._authorized_executions:
+                raise StableHubWorkerSessionError("duplicate durable execution authorization")
+            self.send_json(payload)
+            self._authorized_executions[session_id] = (request_id, run_id)
+            self._state_condition.notify_all()
+
+    def verify_durable_execution_authorization(self, *, session_id: str, request_id: str, run_id: str) -> bool:
+        with self._state_condition:
+            return self._authorized_executions.get(session_id) == (request_id, run_id)
 
     def mark_closed(self, *, reason: str = "socket_closed", closed_at: str | None = None) -> None:
         with self._state_condition:
@@ -587,6 +613,14 @@ class StableHubHTTPServer(ThreadingHTTPServer):
         self.work_offer_timeout_seconds = max(0.001, float(work_offer_timeout_seconds))
         self._live_worker_sessions_lock = threading.RLock()
         self.live_worker_sessions: dict[str, LiveWorkerSession] = {}
+        self._recovery_stop = threading.Event()
+        self._recovery_thread: threading.Thread | None = None
+        # 90 seconds permits multiple missed 10-second keepalives. The
+        # complete FDB identity/heartbeat proof is rechecked at commit time.
+        self.recovery_lease_seconds = max(30.0, float(os.getenv(
+            "MAIN_COMPUTER_STABLE_HUB_RECOVERY_LEASE_SECONDS", "90")))
+        self.recovery_interval_seconds = max(5.0, float(os.getenv(
+            "MAIN_COMPUTER_STABLE_HUB_RECOVERY_INTERVAL_SECONDS", "15")))
 
     def register_live_worker_session(self, session: LiveWorkerSession) -> None:
         with self._live_worker_sessions_lock:
@@ -601,7 +635,37 @@ class StableHubHTTPServer(ThreadingHTTPServer):
             return self.live_worker_sessions.pop(connection_id, None)
 
 
+    def recover_expired_workers_once(self) -> dict[str, Any]:
+        return recover_expired_worker_leases(self, lease_seconds=self.recovery_lease_seconds)
+
+    def _recovery_loop(self) -> None:
+        while not self._recovery_stop.wait(self.recovery_interval_seconds):
+            try:
+                result = self.recover_expired_workers_once()
+                if result["recovered"]:
+                    print(f"stable-hub {self.hub.hub_id} - recovery "
+                          f"{result['recovered']} expired leases and "
+                          f"{result['failed_sessions']} unfinished sessions", file=sys.stderr, flush=True)
+                if result["errors"]:
+                    print(f"stable-hub {self.hub.hub_id} - recovery deferred: "
+                          f"{result['errors']}", file=sys.stderr, flush=True)
+            except Exception as exc:
+                # Database outage must not permanently stop future passes.
+                print(f"stable-hub {self.hub.hub_id} - recovery scan deferred: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        if self._recovery_thread is None:
+            self._recovery_stop.clear()
+            self._recovery_thread = threading.Thread(
+                target=self._recovery_loop, name=f"hub-recovery-{self.hub.hub_id}", daemon=True)
+            self._recovery_thread.start()
+        return super().serve_forever(poll_interval=poll_interval)
+
     def server_close(self) -> None:
+        self._recovery_stop.set()
+        if self._recovery_thread is not None:
+            self._recovery_thread.join(timeout=2.0)
         if self.temporal_runtime is not None:
             self.temporal_runtime.close()
         super().server_close()
@@ -756,6 +820,12 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         accepted_session = self.server.accepted_work_session_directory.get_session(session_id)
         if accepted_session is None:
             raise StableHubWorkerSessionError("accepted work session does not exist.")
+        if not session.verify_durable_execution_authorization(
+            session_id=session_id,
+            request_id=request_id,
+            run_id=str(accepted_session.get("run_id") or ""),
+        ):
+            raise StableHubWorkerSessionError("execution_not_authorized")
         # Ignore client worker labels. The socket's connection_id and durable
         # accepted session determine authorization for this terminal message.
         message_run_id = str(message.get("run_id") or "")
@@ -792,12 +862,28 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             atomic = getattr(store, "atomic", None)
             return atomic(action) if callable(atomic) else action()
 
+        def _assert_active_generation() -> None:
+            # Enforce fencing in the SAME transaction as charging or releasing
+            # the hold. A terminal already in flight when a survivor retires a
+            # dead owner must not settle against that expired generation.
+            current = store.load()
+            owner = current.get("workers", {}).get(worker_id)
+            durable = current.get("accepted_sessions", {}).get(session_id)
+            if (not isinstance(owner, dict) or owner.get("status") != "live"
+                    or str(owner.get("connection_id") or "") != connection_id
+                    or str(owner.get("owner_hub_id") or "") != self.server.hub.hub_id
+                    or not isinstance(durable, dict)
+                    or durable.get("status") not in {"accepted", "running"}
+                    or str(durable.get("worker_connection_id") or "") != connection_id):
+                raise StableHubWorkerSessionError("worker_owner_lease_fenced")
+
         if message_type == "worker.work.result":
             result_payload = message.get("result")
             if not isinstance(result_payload, dict):
                 result_payload = {"value": result_payload}
 
             def _record_success() -> dict[str, Any]:
+                _assert_active_generation()
                 final_payout = dict(payout)
                 if hold_id:
                     payment = self.server.payout_ledger_directory.spend_request_credit(
@@ -842,6 +928,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 failure_payload = {"error": str(failure_payload or message.get("message") or "worker_failed")}
 
             def _record_failure() -> dict[str, Any]:
+                _assert_active_generation()
                 final_payout = dict(payout)
                 if hold_id:
                     self.server.payout_ledger_directory.release_hold(
@@ -885,6 +972,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         termination_reason = "handler_exit"
         last_message_type = ""
         last_worker_pong_at = ""
+        graceful_close_requested = False
         try:
             auth_message = self._ws_read_json_message()
             raw_attempt_id = str(auth_message.get("diagnostic_attempt_id") or "")
@@ -895,6 +983,16 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             last_message_type = str(auth_message.get("type") or "<missing-type>")
             if auth_message.get("type") != "worker.auth":
                 raise StableHubWorkerSessionError("first worker live-session message must be worker.auth")
+            # Refuse pre-authorization execution by old Worker implementations.
+            # The signed MSK still supplies identity; this advertises the
+            # execution protocol supported by the live process.
+            if auth_message.get("execution_protocol") != "durable-authorization-v1":
+                self._ws_send_json({
+                    "type": "hub.auth.rejected", "ok": False,
+                    "reason_code": "worker_execution_protocol_unsupported",
+                    "user_message": "Worker must support durable execution authorization.",
+                })
+                return
             # A caller-supplied worker_id is never an identity or routing key.
             # The signed authorization defines the account; the Hub owns sockets.
             authorization = auth_message.get("multisession_authorization")
@@ -969,6 +1067,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 {
                     "type": "hub.auth.accepted",
                     "ok": True,
+                    "execution_protocol": "durable-authorization-v1",
                     "hub_id": self.server.hub.hub_id,
                     "hub_url": self.server.hub.hub_url,
                     "cluster_id": self.server.topology.cluster_id,
@@ -1056,6 +1155,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                         )
                     continue
                 if message_type == "worker.close":
+                    graceful_close_requested = True
                     termination_reason = "worker.close"
                     break
                 session.send_json(
@@ -1118,6 +1218,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             if worker_id and connection_id:
                 abandoned_sessions = 0
+                close_committed = False
                 # Owner close, market close, and unearned-hold settlement must
                 # commit together. Otherwise a Hub crash between commits can
                 # leave a closed Worker with credit held indefinitely.
@@ -1125,10 +1226,40 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     closed_owner, abandoned_sessions = close_worker_connection_and_settle(
                         self.server, worker_id=worker_id, connection_id=connection_id,
                     )
+                    close_committed = (
+                        str(closed_owner.get("status") or "") == "closed"
+                        and str(closed_owner.get("connection_id") or "") == connection_id
+                    )
+                    if graceful_close_requested:
+                        # Only acknowledge AFTER the shared-store atomic commit.
+                        # The client must never mistake a deferred or fenced
+                        # cleanup for a durable refund/terminal transition.
+                        response = (
+                            {"type": "hub.worker.closed", "ok": True,
+                             "connection_id": connection_id,
+                             "settled_sessions": abandoned_sessions}
+                            if close_committed else
+                            {"type": "hub.error", "ok": False,
+                             "error": "worker_close_generation_not_closed",
+                             "connection_id": connection_id}
+                        )
+                        try:
+                            session.send_json(response) if session is not None else self._ws_send_json(response)
+                        except (ConnectionError, OSError):
+                            # Abrupt client EOF does not undo committed cleanup.
+                            pass
                 except Exception as exc:
                     if getattr(exc, "code", None) != 1020:
                         raise
                     self._log_event("worker close/settlement deferred after FDB conflict")
+                    if graceful_close_requested:
+                        try:
+                            response = {"type": "hub.error", "ok": False,
+                                        "error": "worker_close_cleanup_deferred",
+                                        "retryable": True, "connection_id": connection_id}
+                            session.send_json(response) if session is not None else self._ws_send_json(response)
+                        except (ConnectionError, OSError):
+                            pass
                 finally:
                     removed = self.server.remove_live_worker_session(connection_id)
                     if removed is not None:
@@ -1757,7 +1888,11 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             "worker_id": worker_id,
             "partition": partition,
             "task_queue": task_queue,
-            "work": json.loads(json.dumps(work)),
+            "execution_authorization_required": True,
+            # Work payload is deliberately withheld until AFTER the atomic hold
+            # and accepted-session commit. A buggy/legacy Worker cannot compute
+            # the real request from an unreserved preparation message.
+            "work": {"execution_authorization_pending": True},
         }
         try:
             worker_acceptance = live_session.offer_work_and_wait_for_acceptance(
@@ -1828,6 +1963,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         # The worker has accepted the offer, but payment is not earned until
         # an authenticated successful result. Reserve the maximum agreed price
         # atomically with accepted-session creation; failures release the hold.
+        created_reservation: dict[str, Any] = {}
         def _record_acceptance() -> dict[str, Any]:
             reservation = self.server.payout_ledger_directory.create_hold(
                 account_id=str(validation.get("account_id") or ""),
@@ -1837,6 +1973,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 selected_price=dict(selected_worker.get("price") or {}),
                 requester_max_price=(work.get("max_price") if isinstance(work, dict) else None),
             )
+            created_reservation.update(reservation)
             price = dict(selected_worker.get("price") or {})
             price["credit_wei"] = str(reservation["credit_wei"])
             return self.server.accepted_work_session_directory.record_accepted(
@@ -1868,12 +2005,21 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             store = self.server.payout_ledger_directory.store
             atomic = getattr(store, "atomic", None)
             accepted_session = atomic(_record_acceptance) if callable(atomic) else _record_acceptance()
-        except StableHubWorkerSessionError as exc:
+        except Exception as exc:
+            # Real FDB rolls back the entire callback. Nontransactional local
+            # stores used in development need an explicit release if a hold
+            # was created before recording the session failed. Never authorize
+            # work when the persistence boundary is ambiguous.
+            if not callable(atomic) and created_reservation.get("hold_id"):
+                hold_id = str(created_reservation["hold_id"])
+                self.server.payout_ledger_directory.release_hold(
+                    hold_id=hold_id, session_id=session_id,
+                )
             self.server.worker_market_directory.record_session_finished(
                 worker_id=worker_id, connection_id=owner_connection_id,
             )
-            self._send_json(402 if "funds" in str(exc) else 409, {
-                "ok": False, "error": str(exc),
+            self._send_json(402 if "funds" in str(exc) else 503, {
+                "ok": False, "error": str(exc) if isinstance(exc, StableHubWorkerSessionError) else "durable_session_commit_failed",
                 "message": "Requester credit reservation or session acceptance failed.",
                 "request_id": request_id, "worker_id": worker_id,
                 "partition": partition, "hub_id": self.server.hub.hub_id,
@@ -1881,8 +2027,33 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # Capacity was reserved before the offer was sent, so acceptance only
-        # confirms the session record.  Terminal success/failure releases the slot.
+        # This is the sole execution permission. The preceding prepare frame
+        # withheld the work payload and the atomic hold+accepted-session commit
+        # has completed before we send it. A fast terminal can therefore always
+        # find its durable session. A failed send must not strand the hold.
+        try:
+            live_session.authorize_durable_execution({
+                "type": "hub.work.authorized",
+                "execution_protocol": "durable-authorization-v1",
+                "session_id": session_id,
+                "run_id": run_id,
+                "request_id": request_id,
+                "work": json.loads(json.dumps(work)),
+            })
+        except (ConnectionError, OSError) as exc:
+            live_session.mark_closed(reason="execution_authorization_send_failed")
+            close_worker_connection_and_settle(
+                self.server, worker_id=worker_id, connection_id=owner_connection_id,
+            )
+            self._send_json(409, {
+                "ok": False, "error": "worker_execution_authorization_failed",
+                "message": str(exc), "request_id": request_id,
+                "session_id": session_id, "hub_id": self.server.hub.hub_id,
+            })
+            return
+
+        # Capacity was reserved before the offer was sent. Terminal settlement
+        # releases the slot; failed pre-authorization messages never run work.
         market_record = self.server.worker_market_directory.get_worker(worker_id) or market_record
 
         continuation_url = stable_work_session_continuation_url(owner_hub_url, session_id)
