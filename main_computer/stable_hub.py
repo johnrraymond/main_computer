@@ -135,6 +135,41 @@ def settle_disconnected_worker_sessions(
 
 
 
+def close_worker_connection_and_settle(
+    server: Any, *, worker_id: str, connection_id: str,
+) -> tuple[dict[str, Any], int]:
+    """Close an owner and its unearned sessions in ONE durable transaction.
+
+    A separate owner-close commit followed by a settlement commit permits a
+    process crash to strand credit indefinitely. Nested Stable Hub directory
+    operations join the outer FoundationDB transaction. A failure aborts all
+    changes rather than committing a closed owner with an outstanding hold.
+    """
+    store = server.worker_session_directory.store
+    if (store is not server.worker_market_directory.store
+            or store is not server.accepted_work_session_directory.store
+            or store is not server.payout_ledger_directory.store):
+        raise StableHubWorkerSessionError("worker_disconnect_directories_do_not_share_store")
+
+    def _close_and_settle() -> tuple[dict[str, Any], int]:
+        owner = server.worker_session_directory.record_closed(
+            worker_id=worker_id, connection_id=connection_id, reason="socket_closed",
+        ) or {}
+        server.worker_market_directory.record_worker_closed(
+            worker_id=worker_id, connection_id=connection_id, reason="socket_closed",
+        )
+        if (str(owner.get("status") or "") == "closed"
+                and str(owner.get("connection_id") or "") == connection_id):
+            return owner, settle_disconnected_worker_sessions(
+                server, worker_id=worker_id, connection_id=connection_id,
+            )
+        return owner, 0
+
+    atomic = getattr(store, "atomic", None)
+    return atomic(_close_and_settle) if callable(atomic) else _close_and_settle()
+
+
+
 def read_stable_hub_bridge_deposit_provenance(
     payout_ledger: StableHubPayoutLedgerDirectory,
     *, chain_id: str, contract_address: str, deposit_id: str, wallet_address: str,
@@ -1082,59 +1117,28 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 f"reason={termination_reason!r}"
             )
             if worker_id and connection_id:
-                closed_owner: dict[str, Any] = {}
-                # An exhausted FDB conflict must not prevent local socket
-                # deregistration; a later reconnect replaces any stale owner.
-                def _close_worker_records():
-                    owner = self.server.worker_session_directory.record_closed(
-                        worker_id=worker_id, connection_id=connection_id,
-                        reason="socket_closed",
-                    ) or {}
-                    self.server.worker_market_directory.record_worker_closed(
-                        worker_id=worker_id, connection_id=connection_id,
-                        reason="socket_closed",
-                    )
-                    return owner
-
-                store = self.server.worker_session_directory.store
-                atomic = getattr(store, "atomic", None)
+                abandoned_sessions = 0
+                # Owner close, market close, and unearned-hold settlement must
+                # commit together. Otherwise a Hub crash between commits can
+                # leave a closed Worker with credit held indefinitely.
                 try:
-                    closed_owner = (
-                        atomic(_close_worker_records) if callable(atomic) else _close_worker_records()
+                    closed_owner, abandoned_sessions = close_worker_connection_and_settle(
+                        self.server, worker_id=worker_id, connection_id=connection_id,
                     )
                 except Exception as exc:
                     if getattr(exc, "code", None) != 1020:
                         raise
-                    self._log_event("worker owner/market close deferred after FDB conflict")
+                    self._log_event("worker close/settlement deferred after FDB conflict")
                 finally:
                     removed = self.server.remove_live_worker_session(connection_id)
                     if removed is not None:
-                        removed.mark_closed(
-                            reason="socket_closed",
-                            closed_at=str(closed_owner.get("closed_at") or ""),
-                        )
-                # Closing only owner/market leaves accepted-session payout holds
-                # stranded. A closed connection can no longer send an
-                # authenticated terminal result. Settle its open sessions
-                # atomically, with an exact owner/connection check. Failure is
-                # logged and fail-closed: never fabricate a refund.
-                if str(closed_owner.get("status") or "") == "closed" and (
-                    str(closed_owner.get("connection_id") or "") == connection_id
-                ):
-                    try:
-                        failed = settle_disconnected_worker_sessions(
-                            self.server, worker_id=worker_id, connection_id=connection_id,
-                        )
-                        if failed:
-                            self._log_event(
-                                f"settled {failed} abandoned accepted sessions "
-                                f"for closed connection_id={connection_id}"
-                            )
-                    except Exception as exc:
-                        self._log_event(
-                            "disconnected accepted-session settlement failed closed "
-                            f"connection_id={connection_id} reason={type(exc).__name__}"
-                        )
+                        removed.mark_closed(reason="socket_closed")
+                if abandoned_sessions:
+                    self._log_event(
+                        f"settled {abandoned_sessions} abandoned accepted sessions "
+                        f"for closed connection_id={connection_id}"
+                    )
+
 
 
 

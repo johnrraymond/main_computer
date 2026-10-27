@@ -8,6 +8,13 @@
       return routeableApps.has(candidate) ? candidate : "desktop";
     }
 
+    // Keep an explicit Task Manager lab opt-in across canonical tab routes only.
+    // Never persist the flag in storage or propagate it to other applications.
+    function taskManagerLabRouteSuffix() {
+      return new URLSearchParams(window.location.search).get("mcel_task_notebook") === "lab"
+        ? "?mcel_task_notebook=lab" : "";
+    }
+
     function syncApplicationRoute(appName, {replace = false} = {}) {
       const selectedWebsiteBuilderSite = String(
         window.MainComputerWebsiteBuilderRouteState?.selectedSiteId || ""
@@ -18,11 +25,12 @@
           ? websiteBuilderPath(selectedWebsiteBuilderSite || websiteBuilderSiteIdFromPath(window.location.pathname))
           : applicationPath(appName);
       if (window.location.pathname === nextPath) return;
+      const routeTarget = appName === "task-manager" ? nextPath + taskManagerLabRouteSuffix() : nextPath;
       const state = {app: appName};
       if (replace) {
-        window.history.replaceState(state, "", nextPath);
+        window.history.replaceState(state, "", routeTarget);
       } else {
-        window.history.pushState(state, "", nextPath);
+        window.history.pushState(state, "", routeTarget);
       }
     }
 
@@ -71,10 +79,11 @@
       const nextPath = taskManagerTabPath(activeTab);
       if (window.location.pathname === nextPath) return;
       const state = {app: "task-manager", taskTab: activeTab};
+      const routeTarget = nextPath + taskManagerLabRouteSuffix();
       if (replace) {
-        window.history.replaceState(state, "", nextPath);
+        window.history.replaceState(state, "", routeTarget);
       } else {
-        window.history.pushState(state, "", nextPath);
+        window.history.pushState(state, "", routeTarget);
       }
     }
     function aiderInstructionDraftKey(threadId = "") {
@@ -152,6 +161,7 @@
       const isWorker = normalizedApp === "worker";
       const isWallet = normalizedApp === "wallet";
       if (previousApp === "task-manager" && normalizedApp !== "task-manager") {
+        window.McelTaskManagerNotebookLab?.unmount(taskManagerApp);
         stopTaskManagerAutoRefresh();
       }
       if (previousApp === "webgl" && normalizedApp !== "webgl") {

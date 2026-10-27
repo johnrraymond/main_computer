@@ -5,23 +5,92 @@ import { randomUUID } from 'node:crypto'
 import { safeMskApiRejection } from './worker_msk_outcome.mjs'
 
 export const WORK_CYCLE_CHAIN = '0x28757b1'
-export const WORK_CYCLE_TIMEOUT_MS = 240_000
+// The Worker's live local-AI executor defaults to 300 seconds. Allow its
+// legitimate execution timeout plus Hub settlement/polling margin before the
+// browser harness considers an accepted request incomplete.
+export const WORK_CYCLE_TIMEOUT_MS = 480_000
 const MAX_PROCESS_OUTPUT = 3_000_000
 
-export function captainCommand({ python = 'python', nonce = randomUUID(), model } = {}) {
+export function captainCommand({ python = 'python', nonce = randomUUID(), model, retryTwoCredits = false, priceCeilingCredits = null, bridgeFundingRequired = null } = {}) {
   if (!/^[0-9a-f-]{36}$/i.test(nonce)) throw new Error('Invalid work-cycle nonce')
   const prompt = `Main Computer browser worker acceptance ${nonce}. Answer with the exact token: ACK-${nonce}`
   if (!model || typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9:._/-]{0,127}$/.test(model)) {
     throw new Error('Worker model must be the advertised local model')
   }
+  if (priceCeilingCredits !== null && ![1, 2].includes(priceCeilingCredits)) {
+    throw new Error('Work-cycle price ceiling must be exactly 1 or 2 credits')
+  }
+  if (bridgeFundingRequired !== null && typeof bridgeFundingRequired !== 'boolean') {
+    throw new Error('Bridge top-up decision must be explicit and boolean')
+  }
+  if (bridgeFundingRequired === true && priceCeilingCredits !== 2 && !retryTwoCredits) {
+    throw new Error('Bounded bridge funding requires a two-credit price ceiling')
+  }
+  const twoCredits = priceCeilingCredits === 2 || retryTwoCredits
+  // Legacy retry behavior is preserved for callers lacking a prior read-only
+  // balance check. New callers explicitly allow bridging only if necessary.
+  const bridge = twoCredits && (bridgeFundingRequired === true ||
+    (bridgeFundingRequired === null))
   return {
     executable: python,
     args: ['-m', 'main_computer.captain_entrypoint', 'smoke', prompt,
       '--network', 'testnet', '--ring', '3', '--no-chain',
-      '--max-credits', '1', '--bridge-credits', '1',
-      '--poll-seconds', '120', '--timeout-s', '30', '--model', model,
+      // Price ceiling is derived from the registered Worker offer, not guessed.
+      // Two-credit mode permits only the Captain's cumulative capped bridge
+      // behavior; one-credit mode uses existing balance without any deposit.
+      '--max-credits', twoCredits ? '2' : '1',
+      ...(bridge ? ['--bridge-balance-target', '2', '--no-stipend'] : ['--no-bridge', '--no-stipend']),
+      '--poll-seconds', '360', '--timeout-s', '30', '--model', model,
       '--smoke-id', `worker-browser-${nonce}`, '--yes', '--json'],
     nonce,
+  }
+}
+
+// Only the exact, previously observed market rejection warrants one bounded
+// price-ceiling retry. Authorization failures and ambiguous results do not.
+export function shouldRetryCaptainAtTwoCredits(error) {
+  const proof = error?.captainEvidence
+  return proof?.hubHttpStatus === 409 && proof?.hubCode === 'worker_not_live' &&
+    proof?.hubOperation === 'live-worker-request-submit'
+}
+
+export async function executeCaptainWithPriceRetry({
+  python = 'python', model, cwd, execute = executeCaptain,
+  makeCommand = captainCommand, onRetry = () => {}, priceCeilingCredits = null, bridgeFundingRequired = null,
+} = {}) {
+  const initial = makeCommand({python, model, priceCeilingCredits, bridgeFundingRequired})
+  try {
+    return await execute(initial, {cwd})
+  } catch (error) {
+    // When the live Worker's price is known, a 409 is not evidence that
+    // bridging more money will make that Worker selectable. Never perform
+    // another credit-bearing request without a second funding preflight.
+    if (priceCeilingCredits !== null || !shouldRetryCaptainAtTwoCredits(error)) throw error
+    onRetry()
+    // A new nonce gives the second request an independent smoke identity.
+    // The Captain CLI, not this browser script, enforces the balance cap.
+    const retry = makeCommand({python, model, retryTwoCredits: true})
+    return await execute(retry, {cwd})
+  }
+}
+
+// Match the actual registered offer's input policy instead of guessing that
+// the Worker is priced at one credit. Decimal arithmetic is exact to credit-wei.
+export function priceOfWorkerOffer({targetTokens, creditPerToken}) {
+  const tokens = String(targetTokens ?? '').trim()
+  const price = String(creditPerToken ?? '').trim()
+  if (!/^[1-9][0-9]{0,8}$/.test(tokens) || !/^(?:[0-9]+)(?:\.[0-9]{1,18})?$/.test(price)) {
+    throw new Error('Worker price inputs unavailable or not exact decimal amounts')
+  }
+  const [whole, fraction = ''] = price.split('.')
+  const rateWei = BigInt(whole) * 10n ** 18n + BigInt(fraction.padEnd(18, '0') || '0')
+  const requiredWei = BigInt(tokens) * rateWei
+  if (requiredWei <= 0n || requiredWei > 2n * 10n ** 18n) {
+    throw new Error('Worker advertised price is outside the authorized 0-to-2-credit test range')
+  }
+  return {
+    requiredCreditWei: requiredWei.toString(),
+    priceCeilingCredits: requiredWei > 10n ** 18n ? 2 : 1,
   }
 }
 
@@ -42,15 +111,22 @@ export function captainProof(result) {
   if (!requestId || !sessionId) throw new Error('Captain submit lacks stable request/session identifiers')
   const poll = hub.poll || {}
   const state = String(poll.state || poll.status || poll.request?.state || '').trim().toLowerCase()
-  if (!['completed', 'succeeded'].includes(state)) {
-    throw new Error('Captain Hub request did not complete (state=' + (state || 'unknown') + ')')
-  }
   if (String(poll.session_id || '') !== sessionId) throw new Error('Captain completion session does not match submit')
   if (poll.request_id && String(poll.request_id) !== requestId) throw new Error('Captain completion request does not match submit')
+  if (!['completed', 'succeeded'].includes(state)) {
+    const error = new Error('Captain Hub request did not complete (state=' + (state || 'unknown') + ')')
+    // An accepted session has already reserved capacity and credit. Carry only
+    // correlation identifiers to the existing harness: NEVER issue a third
+    // Captain request or treat an accepted session as completed work.
+    if (['accepted', 'running', 'pending'].includes(state)) {
+      error.captainProgress = {requestId, sessionId, state, verdict: 'hub-accepted-worker-not-terminal'}
+    }
+    throw error
+  }
   return {requestId, sessionId, state: 'completed'}
 }
 
-export function workerSessionProof(status, expectedWorkerId = '') {
+export function workerSessionProof(status, expectedWorkerId = '', expectedPriceWei = null) {
   if (!status || status.ok !== true) throw new Error('Worker runtime status is unavailable')
   const runtime = status.runtime || {}
   if (runtime.phase !== 'accepting' || runtime.allowed_to_accept !== true) {
@@ -73,7 +149,59 @@ export function workerSessionProof(status, expectedWorkerId = '') {
   if (String(status.identity?.requestedRing || '').replace(/[^0-9]/g, '') !== '3') {
     throw new Error('Worker has not requested ring 3')
   }
+  if (expectedPriceWei !== null) {
+    const market = session.market_proof || {}
+    if (market.hub_acknowledged !== true) {
+      throw new Error('Hub has not acknowledged this Worker market offer')
+    }
+    if (market.ring_three !== true || market.chat_completions !== true) {
+      throw new Error('Hub acknowledged a Worker with mismatched ring or capability')
+    }
+    if (market.capacity_available !== true) {
+      throw new Error('Hub Worker market has no available capacity')
+    }
+    if (String(market.price_credit_wei || '') !== String(expectedPriceWei)) {
+      throw new Error('Hub advertised Worker price differs from saved browser offer')
+    }
+  }
   return {workerId: expectedWorkerId, lastOffer: session.last_offer || {}, lastResult: session.last_result || {}}
+}
+
+// Diagnostic only: describe what this specific Worker has done with an already
+// accepted Captain session. Do not expose prompts, model output, raw errors,
+// wallets, signed authorizations, or other workers' records.
+export function captainWorkerExecutionAtFailure(status, captain) {
+  const runtime = status?.runtime || {}
+  const session = runtime.heartbeat_result?.live_session || {}
+  const offer = session.last_offer || {}
+  const result = session.last_result || {}
+  const offerMatches = offer.type === 'hub.work.offer' &&
+    offer.request_id === captain?.requestId && offer.session_id === captain?.sessionId
+  const resultMatches = ['worker.work.result', 'worker.work.failed',
+    'hub.work.result.accepted', 'hub.work.failed.accepted', 'hub.work.terminal.accepted'].includes(result.type) &&
+    result.request_id === captain?.requestId && result.session_id === captain?.sessionId
+  const active = Number(session.active_work_count)
+  const resultType = resultMatches ? result.type : 'none'
+  const statusValue = resultMatches ? String(result.status || result.result?.status || '') : ''
+  const resultStatus = ['success', 'succeeded', 'failed', 'cancelled'].includes(statusValue) ? statusValue : 'unknown'
+  let verdict = 'no-matching-work-offer-observed'
+  if (resultMatches) verdict = resultType === 'worker.work.failed' || resultStatus === 'failed'
+    ? 'worker-reported-execution-failure'
+    : resultType === 'hub.work.result.accepted' || resultType === 'hub.work.terminal.accepted'
+      ? 'worker-received-terminal-hub-ack-but-captain-poll-not-terminal'
+      : 'worker-result-sent-but-hub-termination-unverified'
+  else if (offerMatches && active > 0) verdict = 'matching-offer-still-executing'
+  else if (offerMatches) verdict = 'matching-offer-observed-without-terminal-result'
+  return {
+    statusReadable: status?.ok === true,
+    workerWebsocketAlive: session.alive === true,
+    workerWebsocketConnected: session.worker_session?.connected === true,
+    matchingOfferObserved: offerMatches,
+    matchingResultObserved: resultMatches,
+    resultType, resultStatus,
+    activeWorkCount: Number.isInteger(active) && active >= 0 ? Math.min(active, 9999) : null,
+    verdict,
+  }
 }
 
 export function verifyDeliveredWork(status, expectedWorkerId, captain) {
@@ -125,38 +253,109 @@ export function safeCaptainHubOperation(urlText) {
   return 'unknown'
 }
 
-function safeCaptainHubBodyReason(bodyText) {
-  // Parse only a bounded JSON object, never echo entire Hub/Cloudflare bodies.
-  // Whitelist an error field: other keys may contain a signed request or token.
-  if (!bodyText || bodyText.length > 4096 || !bodyText.trimStart().startsWith('{')) return ''
-  let body
-  try { body = JSON.parse(bodyText) } catch { return '' }
-  if (!body || Array.isArray(body) || typeof body !== 'object') return ''
-  const raw = typeof body.error === 'string' ? body.error
-    : typeof body.message === 'string' ? body.message : ''
-  if (raw.length === 0 || raw.length > 220 || /[{}<>\r\n\[\]\"'\\]/.test(raw)) return ''
-  // Even when a field name is not followed by ':'/'=', the value may be
-  // an unquoted secret. Discard the entire extracted error field.
-  if (/(?:mnemonic|seed|recovery|password|private|secret|authorization|bearer|credential|api.key|access.token|signed.request|signature|\btoken\b)/i.test(raw)) return ''
-  // Refuse opaque, arbitrary body text. Only short human-facing errors using
-  // ordinary punctuation and whitespace are eligible for value redaction.
-  if (!/^[A-Za-z0-9_ ,.:;()\-]+$/.test(raw)) return ''
-  if (/\b[A-Za-z0-9_-]{30,}\b/.test(raw) && !/\b0x[0-9a-f]{40,}\b/i.test(raw)) return ''
-  return raw
+// Extract only bounded, schema-like rejection metadata. The full Hub response
+// may include owner records, wallets, signatures and request bodies; those never
+// enter console output or the acceptance evidence JSON.
+function safeHubPublicField(value, {humanMessage = false} = {}) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 220) return ''
+  if (/[{}<>\r\n\[\]"'\\]/.test(value)) return ''
+  if (/(?:mnemonic|seed|recovery|password|private|secret|authorization|bearer|credential|api.key|access.token|signed.request|signature|\btoken\b)/i.test(value)) return ''
+  if (!/^[A-Za-z0-9_ ,.:;()\-]+$/.test(value)) return ''
+  if (/\b[A-Za-z0-9_-]{30,}\b/.test(value) && !/\b0x[0-9a-f]{40,}\b/i.test(value)) return ''
+  const sanitized = value
     .replace(/\b(?:0x)?[a-f0-9]{32,}\b/gi, '[hex-redacted]')
     .replace(/\b[A-Za-z0-9_/-]{70,}\b/g, '[long-value-redacted]')
-    .replace(/\s+/g, ' ').trim().slice(0, 170)
+    .replace(/\s+/g, ' ').trim()
+  return sanitized.slice(0, humanMessage ? 170 : 95)
+}
+
+const KNOWN_HUB_REJECTION_CODES = new Set([
+  'requester_msk_invalid', 'worker_not_live', 'worker_owner_changed',
+  'worker_owner_not_local', 'worker_capacity_unavailable', 'worker_selection_unstable',
+  'worker_offer_timeout', 'worker_acceptance_rejected', 'duplicate_request_id_work_mismatch',
+  'temporal_unavailable', 'insufficient_credits', 'insufficient_available_credit',
+  'owner_hub_handoff_failed',
+])
+
+function safeCaptainHubBodyMetadata(bodyText) {
+  if (!bodyText || !bodyText.trimStart().startsWith('{')) return {}
+  // Fully parse small bounded responses. Never return arbitrary JSON fields.
+  if (bodyText.length <= 16_384) {
+    try {
+      const body = JSON.parse(bodyText)
+      if (body && !Array.isArray(body) && typeof body === 'object') {
+        const code = safeHubPublicField(body.error)
+        const message = safeHubPublicField(body.message, {humanMessage: true})
+        const reasonCode = safeHubPublicField(body.reason_code)
+        return {
+          ...(code ? {hubCode: code} : {}),
+          ...(message ? {hubMessage: message} : {}),
+          ...(reasonCode ? {hubReasonCode: reasonCode} : {}),
+        }
+      }
+    } catch { /* A bounded Captain ERROR line may truncate nested owner JSON. */ }
+  }
+  // Stable Hub emits {"ok": false, "error": "worker_not_live", ...}.
+  // When following nested owner records are large or truncated, recognize
+  // ONLY a known enum in that exact prefix. Never include unparsed text.
+  const match = /^\s*\{\s*"ok"\s*:\s*false\s*,\s*"error"\s*:\s*"([a-z_]{3,80})"/i.exec(bodyText)
+  const code = match?.[1] || ''
+  return KNOWN_HUB_REJECTION_CODES.has(code) ? {hubCode: code} : {}
+}
+
+// An observed HTTP rejection identifies the failing contract boundary, not
+// automatically which software component contains the underlying defect.
+export function diagnoseCaptainHubRejection({hubHttpStatus, hubOperation, hubCode = ''}) {
+  const code = String(hubCode).trim().toLowerCase()
+  if (hubOperation !== 'live-worker-request-submit' && hubOperation !== 'request-submit') {
+    if (hubOperation.startsWith('bridge-')) return 'bridge-operation-rejected'
+    return 'hub-api-operation-rejected'
+  }
+  if (code === 'requester_msk_invalid') return 'requester-multisession-authorization-rejected'
+  if (code === 'worker_not_live') return 'no-eligible-live-worker-in-hub-market'
+  if (code === 'worker_owner_changed' || code === 'worker_owner_not_local') return 'hub-worker-owner-or-socket-mismatch'
+  if (code === 'worker_capacity_unavailable') return 'hub-worker-capacity-unavailable'
+  if (code === 'worker_selection_unstable') return 'hub-worker-market-changed-during-selection'
+  if (code === 'worker_offer_timeout' || code === 'worker_acceptance_rejected') return 'worker-offer-not-accepted'
+  if (code === 'duplicate_request_id_work_mismatch') return 'captain-request-id-conflicts-with-existing-work'
+  if (code === 'temporal_unavailable') return 'hub-temporal-service-unavailable'
+  if (code === 'insufficient_credits' || code === 'insufficient_available_credit') return 'captain-hub-credit-insufficient'
+  if (hubHttpStatus === 401) return 'hub-request-authorization-rejected'
+  if (hubHttpStatus === 403) return 'hub-access-rejected-authorization-or-edge-policy-unresolved'
+  if (hubHttpStatus === 409) return 'hub-work-selection-or-conflict-rejected-unclassified'
+  if (hubHttpStatus === 400 || hubHttpStatus === 422) return 'hub-work-payload-rejected-unclassified'
+  if (hubHttpStatus >= 500) return 'hub-service-unavailable-or-internal-error'
+  return 'hub-work-request-rejected-unclassified'
 }
 
 export function captainHubFailureMetadata(rawError) {
   const raw = String(rawError || '')
   const m = /\bHub request failed for (https:\/\/[^\s]+) with HTTP ([45]\d\d):\s*([\s\S]*)/i.exec(raw)
   if (!m) return null
-  const status = Number(m[2])
-  const operation = safeCaptainHubOperation(m[1])
-  const reason = safeCaptainHubBodyReason(m[3])
-  // A 403 from a Hub route is not proof of Cloudflare (or of authorization).
-  return {httpStatus: status, operation, ...(reason ? {hubError: reason} : {})}
+  const httpStatus = Number(m[2])
+  const hubOperation = safeCaptainHubOperation(m[1])
+  const metadata = safeCaptainHubBodyMetadata(m[3])
+  return {
+    hubHttpStatus: httpStatus,
+    hubOperation,
+    ...metadata,
+    verdict: diagnoseCaptainHubRejection({hubHttpStatus: httpStatus, hubOperation, hubCode: metadata.hubCode}),
+  }
+}
+
+// Recheck the browser-side session on the *same failed run*. A live browser
+// socket is useful evidence, but cannot prove the Hub market record is valid.
+export function captainWorkerAtFailure(status) {
+  const runtime = status?.runtime || {}
+  const session = runtime.heartbeat_result?.live_session || {}
+  return {
+    statusReadable: status?.ok === true,
+    accepting: runtime.phase === 'accepting' && runtime.allowed_to_accept === true,
+    websocketAlive: session.alive === true,
+    websocketConnected: session.worker_session?.connected === true,
+    testnetHub: String(session.hub_url || '').replace(/\/$/, '') === 'https://testnet-hub.greatlibrary.io',
+    ring3Selected: String(status?.identity?.requestedRing || '').replace(/[^0-9]/g, '') === '3',
+  }
 }
 
 // Captain writes operator-facing refusals to stdout (`ERROR: ...`) and argparse
@@ -172,7 +371,7 @@ export function captainFailureEvidence({stdout = '', stderr = '', exitCode = nul
   let raw = ''
   let pythonException = ''
   for (const line of lines) {
-    const operator = /^\s*ERROR:\s*(.{1,1500})\s*$/i.exec(line)
+    const operator = /^\s*ERROR:\s*(.{1,24000})/i.exec(line.slice(0, 24_012))
     const argparse = /^\s*[^\r\n]{0,120}?: error:\s*(.{1,1500})\s*$/i.exec(line)
     if (operator || argparse) raw = (operator || argparse)[1]
     // Exit 1 is normally an uncaught Python exception. We deliberately
@@ -201,11 +400,9 @@ export function captainFailureEvidence({stdout = '', stderr = '', exitCode = nul
   if (!raw) return {exitCode, category, reason: 'no-classified-captain-error-line'}
   const hub = captainHubFailureMetadata(raw)
   if (hub) {
-    // Preserve the HTTP status and whitelisted route even if the Hub included
-    // sensitive, arbitrary JSON elsewhere in the operator error line.
+    // Hub errors are untrusted; only validated scalar metadata escapes.
     return {exitCode, category: 'captain-hub-http',
-      reason: hub.hubError || 'hub-error-body-redacted',
-      hubHttpStatus: hub.httpStatus, hubOperation: hub.operation}
+      reason: hub.hubCode || hub.hubMessage || 'hub-error-body-redacted', ...hub}
   }
   // Arbitrary stderr/stdout text cannot be trusted. Redact possible values,
   // and suppress whole lines which name secret-bearing fields.
@@ -319,7 +516,7 @@ export function executeCaptain(command, {cwd, timeoutMs = WORK_CYCLE_TIMEOUT_MS,
     let stdout = ''
     let stderr = ''
     let finished = false
-    const fail = message => { if (!finished) { finished = true; clearTimeout(timer); reject(new Error(message)) } }
+    const fail = message => { if (!finished) { finished = true; clearTimeout(timer); reject(message instanceof Error ? message : new Error(message)) } }
     const timer = setTimeout(() => { child.kill(); fail('Captain testnet transaction exceeded its deadline') }, timeoutMs)
     child.on('error', () => fail('Captain CLI could not be launched'))
     child.stdout.on('data', chunk => {
@@ -335,13 +532,19 @@ export function executeCaptain(command, {cwd, timeoutMs = WORK_CYCLE_TIMEOUT_MS,
       if (code !== 0) {
         const failure = captainFailureEvidence({stdout, stderr, exitCode: code})
         const transport = captainStdioEvidence({stdout, stderr})
-        return fail('Captain testnet request refused (exit=' + code + ', category=' + failure.category +
+        const message = 'Captain testnet request refused (exit=' + code + ', category=' + failure.category +
           ', reason=' + failure.reason +
           (failure.hubHttpStatus ? ', hubHttp=' + failure.hubHttpStatus : '') +
           (failure.hubOperation ? ', hubOperation=' + failure.hubOperation : '') +
+          (failure.verdict ? ', verdict=' + failure.verdict : '') +
           ', stdout=' + transport.stdout.shape + ':' + transport.stdout.bytes +
           ', stderr=' + transport.stderr.shape + ':' + transport.stderr.bytes +
-          '); no browser Worker execution certified')
+          '); no browser Worker execution certified'
+        const error = new Error(message)
+        error.captainEvidence = failure // validated, non-sensitive fields only
+        finished = true
+        clearTimeout(timer)
+        return reject(error)
       }
       let output
       try {
@@ -354,7 +557,11 @@ export function executeCaptain(command, {cwd, timeoutMs = WORK_CYCLE_TIMEOUT_MS,
       try {
         const proof = captainProof(output)
         finished = true; clearTimeout(timer); resolve(proof)
-      } catch (error) { fail('Captain response validation failed: ' + error.message) }
+      } catch (error) {
+        const reported = new Error('Captain response validation failed: ' + error.message)
+        if (error.captainProgress) reported.captainProgress = error.captainProgress
+        fail(reported)
+      }
     })
   })
 }
@@ -383,19 +590,56 @@ export async function waitForDeliveredWork({page, workerId, captain, timeoutMs =
   throw new Error('No identity-correlated Worker delivery and result proof: ' + last)
 }
 
-export async function waitForLiveWorker({page, workerId, timeoutMs = 45_000, readStatus = readWorkerLiveStatus,
+export async function waitForLiveWorker({page, workerId, expectedPriceWei = null, timeoutMs = 45_000, readStatus = readWorkerLiveStatus,
                                          sleep = ms => new Promise(r => setTimeout(r,ms))}) {
   const deadline = Date.now() + timeoutMs
   let last = 'no-live-session'
   while (Date.now() < deadline) {
     try {
-      return workerSessionProof(await readStatus(page), workerId)
+      return workerSessionProof(await readStatus(page), workerId, expectedPriceWei)
     } catch (error) {
       last = error.message
       await sleep(1000)
     }
   }
   throw new Error('Browser Worker never reached a live testnet WebSocket session: ' + last)
+}
+
+// The functional test has a tiny ACK payload, so it need not reserve the
+// Worker's normal 1024-token request budget. This is a temporary TEST-only
+// seller offer, not a Hub funding or ledger override; the original offer
+// must be restored after the Work-now session is closed.
+export const WORK_CYCLE_SMOKE_TOKEN_LIMIT = 512
+
+export function boundedSmokeOfferTokens(value) {
+  const text = String(value ?? '').trim()
+  if (!/^[1-9][0-9]{0,5}$/.test(text)) throw new Error('Worker token budget is unavailable or invalid')
+  const current = Number(text)
+  if (!Number.isSafeInteger(current) || current > 128_000) throw new Error('Worker token budget is out of bounds')
+  return {originalTokens: current, testTokens: Math.min(current, WORK_CYCLE_SMOKE_TOKEN_LIMIT)}
+}
+
+// Uses the Worker's own form/autosave path, never an unreviewed direct Hub
+// registration or privileged local-file edit. Require positive persistence
+// evidence from the settings API before proceeding to Work-now registration.
+export async function setWorkerOfferTargetTokens(page, tokens) {
+  if (!Number.isSafeInteger(tokens) || tokens < 1 || tokens > 128_000) {
+    throw new Error('Invalid Worker token budget for test setting')
+  }
+  const field = page.locator('#worker-offer-target-tokens')
+  const pending = page.waitForResponse(
+    r => isLocalWorkerPost(r, '/api/applications/worker/settings'), {timeout: 30_000})
+  await field.fill(String(tokens))
+  const response = await pending
+  if (!response.ok()) throw new Error('Worker token budget save failed (HTTP ' + response.status() + ')')
+  let body
+  try { body = await response.json() } catch { throw new Error('Worker token budget save result unreadable') }
+  if (body?.ok !== true || Number(body?.settings?.sellerTargetTokens) !== tokens) {
+    throw new Error('Worker token budget save was not confirmed by local backend')
+  }
+  if (String(await field.inputValue()) !== String(tokens)) {
+    throw new Error('Worker token budget UI changed during persistence')
+  }
 }
 
 // Work now is a two-step UI: opening its duration dialog does not register a

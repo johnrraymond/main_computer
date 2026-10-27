@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import queue
+import select
 import secrets
 import socket
 import threading
@@ -62,6 +63,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verify",
         action="store_true",
         help="Run realistic Stable Hub requester/worker verification traffic against the topology.",
+    )
+    parser.add_argument(
+        "--verify-worker-cycle-local",
+        action="store_true",
+        help="Run the targeted Worker-cycle HTTP/WS and atomic-disconnect regressions without starting Hubs.",
+    )
+    parser.add_argument(
+        "--verify-worker-cycle",
+        action="store_true",
+        help=("Run the October 2026 real Hub API Worker-market/price-refresh/"
+              "Captain-dispatch/disconnect-credit regression on the LOCAL smoke Hubs."),
     )
     parser.add_argument(
         "--verify-stress",
@@ -1127,6 +1139,11 @@ def build_stable_hub_integrated_market_stress_result(
     # the signed wallet account; dispatch ownership is a Hub-created socket ID.
     worker_label = "worker_" + secrets.token_urlsafe(12).rstrip("=")
     scenario_id = "stress_" + secrets.token_urlsafe(8).rstrip("=")
+    # The FDB smoke namespace survives earlier campaigns. Generic python/echo
+    # selection can match a stale or competing socket and falsely attribute its
+    # dispatch failure to the Worker created by this run. Keep the generic
+    # workload, but bind eligibility to a fresh, run-scoped capability.
+    scenario_capability = "stable_stress_" + secrets.token_hex(12)
     worker_user_slug = _new_user_slug()
     requester_user_slug = _new_user_slug()
 
@@ -1156,11 +1173,18 @@ def build_stable_hub_integrated_market_stress_result(
     market_profile = {
         "rings": ["ring-2"],
         "price": {"amount": "0.03", "unit": "credit"},
-        "capabilities": ["python", "echo"],
+        "capabilities": ["python", "echo", scenario_capability],
         "max_concurrency": 2,
     }
 
+    # `--startup-timeout` also controls MSK and connection setup. It must not
+    # become an offer deadline: on local FDB, selection, cross-Hub handoff,
+    # capacity reservation and the Hub's separate 10s acceptance window may
+    # legitimately take longer than the setup timeout. A client that abandons
+    # its WebSocket prematurely makes the Hub return worker_owner_not_local.
+    dispatch_timeout = max(30.0, 3.0 * float(timeout))
     sockets: list[socket.socket] = []
+    sock_auth_map: dict[int, dict[str, Any]] = {}
     events: list[dict[str, Any]] = []
 
     def _auth_worker(hub_url: str) -> tuple[socket.socket, dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -1184,6 +1208,7 @@ def build_stable_hub_integrated_market_stress_result(
             raise StableHubTopologyError(f"worker auth failed during integrated stress: auth={auth} ping={ping}")
         connection_id = str(auth.get("connection_id") or "")
         owner = auth.get("owner") if isinstance(auth.get("owner"), dict) else {}
+        market_echo = auth.get("market") if isinstance(auth.get("market"), dict) else {}
         if (
             not connection_id.startswith("conn_")
             or connection_id == worker_label
@@ -1193,8 +1218,15 @@ def build_stable_hub_integrated_market_stress_result(
             or owner.get("connection_id") != connection_id
             or owner.get("account_id") != worker_account_id
             or owner.get("multisession_key_id") != worker_key_id
+            or market_echo.get("connection_id") != connection_id
+            or market_echo.get("worker_account_id") != worker_account_id
+            or market_echo.get("status") != "live"
+            or market_echo.get("price") != market_profile["price"]
+            or not set(market_profile["capabilities"]).issubset(
+                set(market_echo.get("capabilities") or [])
+            )
         ):
-            raise StableHubTopologyError(f"worker wallet/connection ownership mismatch: {auth}")
+            raise StableHubTopologyError(f"worker wallet/market/connection ownership mismatch: {auth}")
         _ws_send_json(
             sock,
             {
@@ -1206,6 +1238,7 @@ def build_stable_hub_integrated_market_stress_result(
         pong = _ws_recv_json(sock)
         if pong.get("type") != "hub.pong.accepted" or pong.get("ok") is not True:
             raise StableHubTopologyError(f"worker pong failed during integrated stress: {pong}")
+        sock_auth_map[id(sock)] = auth
         events.append({"type": "worker.connected", "hub_url": hub_url, "connection_id": auth.get("connection_id")})
         return sock, auth, ping, pong
 
@@ -1219,7 +1252,7 @@ def build_stable_hub_integrated_market_stress_result(
             "work": {
                 "ring": "ring-2",
                 "max_price": {"amount": max_price, "unit": "credit"},
-                "capabilities": ["python"],
+                "capabilities": ["python", scenario_capability],
                 "input": {"kind": "echo", "value": value},
             },
         }
@@ -1233,36 +1266,84 @@ def build_stable_hub_integrated_market_stress_result(
     ) -> dict[str, Any]:
         q: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
         payload = _work_request(request_id, value=terminal)
+        worker_connection = str(sock_auth_map[id(sock)]["connection_id"])
+        started = time.monotonic()
+        # Keep the socket open longer than the entire dispatch phase. In
+        # particular, do NOT close it merely because the MSK/startup budget
+        # elapsed; doing so causes an artificial owner-not-local response.
+        sock.settimeout(dispatch_timeout)
 
         def _submit() -> None:
             try:
-                q.put(_post_json_url(f"{entry_url.rstrip('/')}/api/hub/v1/work/requests", payload, timeout=timeout))
-            except BaseException as exc:  # pragma: no cover - surfaced below
+                q.put(_post_json_url(
+                    f"{entry_url.rstrip('/')}/api/hub/v1/work/requests",
+                    payload, timeout=dispatch_timeout,
+                ))
+            except BaseException as exc:  # surfaced by the driver below
                 q.put(exc)
 
         thread = threading.Thread(target=_submit, daemon=True)
         thread.start()
-        try:
-            offer = _ws_recv_json(sock)
-        except TimeoutError as exc:
+        offer: dict[str, Any] | None = None
+        deadline = started + dispatch_timeout
+        while time.monotonic() < deadline:
+            # A real Hub refusal should be returned promptly, without waiting
+            # for the full WebSocket deadline. Report it with the identity of
+            # the lab-owned socket instead of suggesting a stale Worker.
             try:
-                queued_before_offer = q.get_nowait()
+                early_response = q.get_nowait()
             except queue.Empty:
-                queued_before_offer = None
-            if isinstance(queued_before_offer, BaseException):
+                early_response = None
+            if early_response is not None:
+                elapsed = time.monotonic() - started
                 raise StableHubTopologyError(
-                    f"stress requester work failed before the worker received hub.work.offer: {queued_before_offer}"
-                ) from queued_before_offer
-            if isinstance(queued_before_offer, dict):
-                raise StableHubTopologyError(
-                    "stress requester work returned before the worker received hub.work.offer: "
-                    f"{queued_before_offer}"
-                ) from exc
+                    "stress requester completed before its worker received an offer: "
+                    f"request_id={request_id} connection_id={worker_connection} "
+                    f"elapsed={elapsed:.3f}s response={early_response}"
+                )
+            readable, _, _ = select.select(
+                [sock], [], [], min(0.25, max(0.0, deadline - time.monotonic()))
+            )
+            if readable:
+                try:
+                    offer = _ws_recv_json(sock)
+                except (TimeoutError, OSError, StableHubTopologyError) as exc:
+                    elapsed = time.monotonic() - started
+                    raise StableHubTopologyError(
+                        "stress worker socket read failed before work offer: "
+                        f"request_id={request_id} connection_id={worker_connection} "
+                        f"elapsed={elapsed:.3f}s error={exc}"
+                    ) from exc
+                break
+        if offer is None:
+            elapsed = time.monotonic() - started
+            try:
+                response_at_timeout = q.get_nowait()
+            except queue.Empty:
+                response_at_timeout = "request_still_pending"
             raise StableHubTopologyError(
-                "worker did not receive hub.work.offer during stress before the WebSocket read timeout."
-            ) from exc
-        if offer.get("type") != "hub.work.offer":
-            raise StableHubTopologyError(f"worker did not receive hub.work.offer during stress: {offer}")
+                "stress worker received no offer within dispatch deadline: "
+                f"request_id={request_id} connection_id={worker_connection} "
+                f"elapsed={elapsed:.3f}s deadline={dispatch_timeout:.3f}s "
+                f"requester={response_at_timeout}"
+            )
+        events.append({
+            "type": "work.offer.received",
+            "request_id": request_id,
+            "connection_id": worker_connection,
+            "offer_wait_seconds": round(time.monotonic() - started, 3),
+        })
+        if (
+            offer.get("type") != "hub.work.offer"
+            or offer.get("request_id") != request_id
+            or offer.get("worker_id") != str(sock_auth_map[id(sock)]["connection_id"])
+            or scenario_capability not in (
+                (offer.get("work") or {}).get("capabilities") or []
+            )
+        ):
+            raise StableHubTopologyError(
+                f"stress offer did not match this campaign's authenticated Worker: {offer}"
+            )
         _ws_send_json(
             sock,
             {
@@ -1271,7 +1352,7 @@ def build_stable_hub_integrated_market_stress_result(
                 "request_id": offer.get("request_id"),
             },
         )
-        queued = q.get(timeout=max(timeout, 1.0))
+        queued = q.get(timeout=dispatch_timeout)
         if isinstance(queued, BaseException):
             raise StableHubTopologyError(f"stress requester work failed: {queued}") from queued
         response = queued
@@ -1535,6 +1616,15 @@ def build_stable_hub_integrated_market_stress_result(
         "no_double_charge_on_duplicate_result": len(charges) == 2,
         "accepted_sessions_linked_to_payout_path": bool(reconnect_payout.get("charge_id"))
         and len([hold for hold in holds if hold.get("status") in {"charged", "released"}]) >= 3,
+        "run_scoped_market_capability_enforced": all(
+            scenario_capability in entry["request"]["work"]["capabilities"]
+            and scenario_capability in entry["offer"]["work"]["capabilities"]
+            for entry in (success, failure, reconnect_success)
+        ),
+        "offers_match_authenticated_connections": all(
+            entry["offer"].get("worker_id") == auth.get("connection_id")
+            for entry, auth in ((success, auth1), (failure, auth1), (reconnect_success, auth2))
+        ),
     }
     ok = all(bool(value) for value in proof.values())
 
@@ -1550,6 +1640,7 @@ def build_stable_hub_integrated_market_stress_result(
                 "multisession_key_id": requester_key_id,
             },
             "worker": {
+                "scenario_capability": scenario_capability,
                 "worker_id": worker_account_id,
                 "client_worker_label": worker_label,
                 "first_connection_id": auth1.get("connection_id"),
@@ -1584,6 +1675,10 @@ def build_stable_hub_integrated_market_stress_result(
             "charges": len(charges),
             "worker_earnings": len(earnings),
             "invariant_violations": 0 if ok else 1,
+            "longest_offer_wait_seconds": max(
+                (float(entry["offer_wait_seconds"]) for entry in events
+                 if entry.get("type") == "work.offer.received"), default=0.0,
+            ),
         },
         "proof": proof,
     }
@@ -1608,6 +1703,7 @@ def _render_stable_hub_integrated_market_stress_text(result: dict[str, Any]) -> 
         f"  completed sessions: {metrics['completed_sessions']}",
         f"  failed sessions: {metrics['failed_sessions']}",
         f"  valid market rejections: {metrics['valid_market_rejections']}",
+        f"  longest work-offer wait: {metrics['longest_offer_wait_seconds']:.3f}s",
         "Payout:",
         f"  holds observed: {metrics['holds']}",
         f"  charges observed: {metrics['charges']}",
@@ -1626,6 +1722,8 @@ def _render_stable_hub_integrated_market_stress_text(result: dict[str, Any]) -> 
         f"  settlement and bridge path completed: {'yes' if proof['settlement_and_bridge_path_completed'] else 'no'}",
         f"  no double charge on duplicate result: {'yes' if proof['no_double_charge_on_duplicate_result'] else 'no'}",
         f"  accepted sessions linked to payout path: {'yes' if proof['accepted_sessions_linked_to_payout_path'] else 'no'}",
+        f"  run-scoped market capability enforced: {'yes' if proof['run_scoped_market_capability_enforced'] else 'no'}",
+        f"  offers match authenticated connections: {'yes' if proof['offers_match_authenticated_connections'] else 'no'}",
     ]
     return "\n".join(lines)
 
@@ -1646,15 +1744,20 @@ def build_stable_hub_integrated_market_stress_runs_result(
     clean_runs = max(1, int(runs or 1))
     results: list[dict[str, Any]] = []
     for index in range(clean_runs):
-        result = build_stable_hub_integrated_market_stress_result(
-            topology_path=topology_path,
-            requester_wallet_path=requester_wallet_path,
-            worker_wallet_path=worker_wallet_path,
-            worker_entry_index=worker_entry_index,
-            requester_entry_index=requester_entry_index,
-            origin=f"{origin}-stress-run-{index + 1}",
-            timeout=timeout,
-        )
+        try:
+            result = build_stable_hub_integrated_market_stress_result(
+                topology_path=topology_path,
+                requester_wallet_path=requester_wallet_path,
+                worker_wallet_path=worker_wallet_path,
+                worker_entry_index=worker_entry_index,
+                requester_entry_index=requester_entry_index,
+                origin=f"{origin}-stress-run-{index + 1}",
+                timeout=timeout,
+            )
+        except StableHubTopologyError as exc:
+            raise StableHubTopologyError(
+                f"stress run {index + 1}/{clean_runs} failed: {exc}"
+            ) from exc
         result["run_index"] = index + 1
         results.append(result)
         if result.get("ok") is not True:
@@ -1674,6 +1777,10 @@ def build_stable_hub_integrated_market_stress_runs_result(
         "charges": sum(int((result.get("metrics") or {}).get("charges", 0) or 0) for result in results),
         "worker_earnings": sum(int((result.get("metrics") or {}).get("worker_earnings", 0) or 0) for result in results),
         "invariant_violations": sum(int((result.get("metrics") or {}).get("invariant_violations", 0) or 0) for result in results),
+        "longest_offer_wait_seconds": max(
+            (float((result.get("metrics") or {}).get("longest_offer_wait_seconds", 0.0))
+             for result in results), default=0.0,
+        ),
     }
     failed = next((result for result in results if result.get("ok") is not True), None)
     return {
@@ -1705,6 +1812,7 @@ def _render_stable_hub_integrated_market_stress_runs_text(result: dict[str, Any]
         f"  completed sessions: {metrics['completed_sessions']}",
         f"  failed sessions: {metrics['failed_sessions']}",
         f"  valid market rejections: {metrics['valid_market_rejections']}",
+        f"  longest work-offer wait: {metrics['longest_offer_wait_seconds']:.3f}s",
         "Aggregate payout:",
         f"  holds observed: {metrics['holds']}",
         f"  charges observed: {metrics['charges']}",
@@ -1883,6 +1991,26 @@ def serve_cluster(
         _terminate_children(children)
 
 
+def _worker_cycle_local_gate() -> dict[str, Any]:
+    """Fail closed before the network campaign on the exact historical faults."""
+    root = Path(__file__).resolve().parents[2]
+    cases = [
+        "tests/test_stable_hub_lab_worker_cycle_regressions.py",
+        "tests/test_stable_hub_fdb_atomic_accounting.py::test_worker_close_and_hold_release_are_one_fdb_commit_with_crash_rollback",
+    ]
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", *cases],
+            cwd=root, capture_output=True, text=True, check=False, timeout=120,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {"ok": False, "exit_code": 124, "tests": cases,
+                "stdout": str(exc.stdout or "")[-12000:],
+                "stderr": "worker-cycle local regression gate timed out after 120 seconds"}
+    return {"ok": completed.returncode == 0, "exit_code": completed.returncode,
+            "tests": cases, "stdout": completed.stdout[-12000:], "stderr": completed.stderr[-6000:]}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -1899,6 +2027,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(result, indent=2, sort_keys=True))
             else:
                 print(_render_check_text(result))
+            return 0 if result["ok"] else 1
+        if args.verify_worker_cycle_local or args.verify_worker_cycle:
+            local_gate = _worker_cycle_local_gate()
+            if not local_gate["ok"] or args.verify_worker_cycle_local:
+                if args.json:
+                    print(json.dumps({"mode": "verify-worker-cycle-local", **local_gate}, indent=2, sort_keys=True))
+                else:
+                    print(f"Stable Hub Worker cycle local regressions: {'ok' if local_gate['ok'] else 'failed'}")
+                    print(local_gate["stdout"], end="" if local_gate["stdout"].endswith("\n") else "\n")
+                    if local_gate["stderr"]:
+                        print(local_gate["stderr"], file=sys.stderr)
+                return 0 if local_gate["ok"] else 1
+        if args.verify_worker_cycle:
+            from tools.stable_hub_lab.worker_cycle_regressions import (
+                build_worker_cycle_regressions_result,
+                render_worker_cycle_regressions_result,
+            )
+            result = build_worker_cycle_regressions_result(
+                topology_path=args.topology,
+                requester_wallet_path=args.requester_wallet,
+                worker_wallet_path=args.worker_wallet,
+                worker_entry_index=args.worker_entry_index,
+                requester_entry_index=args.requester_entry_index,
+                origin=args.origin,
+                timeout=args.startup_timeout,
+            )
+            result["local_regressions"] = {"ok": local_gate["ok"], "tests": local_gate["tests"]}
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print("Stable Hub Worker cycle local regressions: ok")
+                print(render_worker_cycle_regressions_result(result))
             return 0 if result["ok"] else 1
         if args.verify_stress:
             if int(args.verify_stress_runs or 1) > 1:

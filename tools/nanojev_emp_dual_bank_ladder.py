@@ -3,8 +3,9 @@
 
 Carries the full four-AdditionNet state from an existing dual-bank research run.
 No merge, hidden-feature transfer, label oracle at inference, or TEST access.
-A stage only advances after left.left reaches 80% and right.right reaches 50%
-(on both outer and frontier DEV decks in both views) for consecutive probes.
+A stage advances when two *distinct* banks, from any EMP, satisfy the
+Left and Right role thresholds for consecutive probes. Legacy campaigns
+require an explicit one-time gate-policy migration before resuming.
 Weights/optimizer histories are isolated from the original experiments.
 """
 from __future__ import annotations
@@ -28,13 +29,112 @@ from tools import nanojev_zero_line_sampled_radius_ladder as old
 from tools.nanojev_emp_population import example_emphases
 
 SCHEMA = 'nanojev.emp-dual-bank-outward-ladder.v1'
+GATE_POLICY = 'best-distinct-pair-any-emp.v1'
+LEGACY_CODE_SHA256 = 'd48f0614108da39874449eddd7145302263627555a2d9bf2111dbc9c75ec819e'
+MIGRATION_FILE = 'best_pair_gate_migration.json'
+GATE_TUNING_FILE = 'hard_emp_gate_tuning.json'
+PRE_GATE_LADDER_SHA256 = '9ad3aa51e45e8a2acbc0cafd43aff9466f39c21bd4b920c37b6713d2648a3920'
+
+
+def gate_tuning(root):
+    """Read independently versioned forward-only gate overrides, if present."""
+    path = root / GATE_TUNING_FILE
+    if not path.is_file():
+        return None
+    history = json.loads(path.read_text('utf-8'))
+    if (history.get('schema') != SCHEMA + '.gate-tuning.v1'
+            or history.get('campaign_config_sha256') != sha256(root / 'config.json')
+            or history.get('original_ladder_code_sha256') not in
+                 (PRE_GATE_LADDER_SHA256, LEGACY_CODE_SHA256, sha256(__file__))
+            or history.get('patched_ladder_code_sha256') != sha256(__file__)
+            or not history.get('revisions')):
+        raise RuntimeError('EMP_LADDER_GATE_TUNING_DRIFT')
+    for index, entry in enumerate(history['revisions']):
+        if entry.get('revision') != index:
+            raise RuntimeError('EMP_LADDER_GATE_TUNING_DRIFT')
+    return history
+
+
+def current_gate_revision(root):
+    policy = gate_tuning(root)
+    return policy['revisions'][-1]['revision'] if policy else 0
+
+
+def select_pair(scores, left=.80, right=.50):
+    """Pick two distinct candidates, without an EMP-origin restriction.
+
+    Each candidate's score is its *worst* DEV view across frontier and outer.
+    Only pairs meeting both independent role thresholds qualify. A stable
+    ordered ranking prefers a stronger Left candidate, then Right candidate.
+    No model weights are merged and no TEST cases are evaluated.
+    """
+    minimum = {}
+    for name in dual.BANKS:
+        rows = [row for kind in ('frontier', 'outer') for row in scores[name][kind]]
+        if not rows or any(row.get('nonzero', 0) <= 0 for row in rows):
+            minimum[name] = -1.0
+        else:
+            minimum[name] = min(float(row['within_5pct']) for row in rows)
+    options = []
+    for li in dual.BANKS:
+        for ri in dual.BANKS:
+            if li == ri:
+                continue
+            eligible = minimum[li] >= left and minimum[ri] >= right
+            # Bank order acts as a deterministic tie breaker. No EMP affinity.
+            rank = (int(eligible), minimum[li], minimum[ri],
+                    -dual.BANKS.index(li), -dual.BANKS.index(ri))
+            options.append((rank, li, ri, eligible))
+    _, li, ri, good = max(options)
+    return {'left': li, 'right': ri, 'qualified': bool(good),
+            'left_min_5pct': round(minimum[li], 6),
+            'right_min_5pct': round(minimum[ri], 6),
+            'bank_min_5pct': {k: round(v, 6) for k, v in minimum.items()}}
 
 
 def gate(scores, left=.80, right=.50):
-    """Different actual trainable banks govern the two EMPs' gate."""
-    return all(row.get('nonzero', 0)>0 and row['within_5pct']>=threshold
-               for name, threshold in (('left.left',left),('right.right',right))
-               for kind in ('frontier','outer') for row in scores[name][kind])
+    """Compatibility helper; selection is the single source of gate truth."""
+    return select_pair(scores, left, right)['qualified']
+
+
+def _pair_identity(selection):
+    if not isinstance(selection, dict):
+        return None
+    if selection.get('left') not in dual.BANKS or selection.get('right') not in dual.BANKS:
+        return None
+    return (selection['left'], selection['right'])
+
+
+def _authorize_policy(root, cfg, args):
+    """Keep old acceptance/config SHA chains unchanged while switching policy.
+
+    The old file SHA is the published fixed-bank ladder. We never rewrite
+    config.json or accepted stage records; the explicit sidecar pins the old
+    config and new executable code so --resume remains reproducible.
+    """
+    if cfg.get('gate_policy') == GATE_POLICY:
+        return False
+    if cfg.get('gate_policy') is not None or cfg.get('code_sha256') != LEGACY_CODE_SHA256:
+        raise RuntimeError('EMP_LADDER_UNSUPPORTED_GATE_POLICY')
+    marker_path = root / MIGRATION_FILE
+    expected = {'schema': SCHEMA + '.gate-migration', 'gate_policy': GATE_POLICY,
+                'campaign_config_sha256': sha256(root / 'config.json'),
+                'old_code_sha256': LEGACY_CODE_SHA256,
+                'new_code_sha256': sha256(__file__)}
+    if marker_path.is_file():
+        recorded = json.loads(marker_path.read_text('utf-8'))
+        # An already-migrated campaign pins the previously running trainer.
+        # The new gate-tuning journal authorizes the code transition without
+        # rewriting its historical best-pair migration certificate.
+        previous = {**expected, 'new_code_sha256': PRE_GATE_LADDER_SHA256}
+        if recorded != expected and not (gate_tuning(root) and recorded == previous):
+            raise RuntimeError('EMP_LADDER_GATE_MIGRATION_DRIFT')
+        return True
+    if not args.migrate_best_pair:
+        raise RuntimeError('EMP_LADDER_GATE_MIGRATION_REQUIRED: add --migrate-best-pair once, with the trainer stopped')
+    atomic_json(marker_path, expected)
+    print('EMP_LADDER_GATE_MIGRATED=' + json.dumps(expected, sort_keys=True), flush=True)
+    return True
 
 
 def from_source(parent, left_source, right_source, model_state, device):
@@ -87,21 +187,32 @@ def source_config(args):
              'dev_cards':args.dev_cards,'breadth_anchors':args.breadth_anchors,
              'breadth_outer_per_anchor':args.breadth_outer_per_anchor,
              'target':args.target,'left_gate':args.left_gate,'right_gate':args.right_gate,
-             'gate_streak':args.gate_streak,
+             'gate_streak':args.gate_streak, 'gate_policy':GATE_POLICY,
              'source_step':source['step'], 'code_sha256':sha256(__file__),
              'dual_sha256':sha256(dual.__file__),'sampler_sha256':sha256(outward.__file__),
              'note':'Four independent whole backbones, research DEV gate only; not TEST certification.'}
         atomic_json(root/'config.json',cfg)
         atomic_json(root/'controls.json',controls)
+    tuning = gate_tuning(root) if args.resume else None
+    if tuning:
+        active = tuning['revisions'][-1]
+        if (cfg.get('code_sha256') != tuning['original_ladder_code_sha256']
+                or args.left_gate != active['left_gate'] or args.right_gate != active['right_gate']):
+            raise RuntimeError('EMP_LADDER_GATE_TUNING_MISMATCH')
     expected={'schema':SCHEMA,'source_run':str(src),'start_radius':source_cfg['radius'],
               'seed':args.seed,'batch_size':args.batch_size,'probe_every':args.probe_every,
               'dev_cards':args.dev_cards,'breadth_anchors':args.breadth_anchors,
               'breadth_outer_per_anchor':args.breadth_outer_per_anchor,
-              'target':args.target,'left_gate':args.left_gate,'right_gate':args.right_gate,
+              'target':args.target,
+              'left_gate':cfg['left_gate'] if tuning else args.left_gate,
+              'right_gate':cfg['right_gate'] if tuning else args.right_gate,
               'gate_streak':args.gate_streak,
-              'code_sha256':sha256(__file__),'dual_sha256':sha256(dual.__file__),
+              'code_sha256':(tuning['original_ladder_code_sha256'] if tuning else
+                             LEGACY_CODE_SHA256 if cfg.get('gate_policy') is None else sha256(__file__)),'dual_sha256':sha256(dual.__file__),
               'sampler_sha256':sha256(outward.__file__)}
     if any(cfg.get(key)!=value for key,value in expected.items()):raise RuntimeError('EMP_LADDER_CONFIG_DRIFT')
+    if args.resume:
+        _authorize_policy(root, cfg, args)
     # The snapshot, rather than the mutable original source run, is authoritative.
     source=torch.load(root/'source_dual.pt',map_location='cpu',weights_only=True)
     return root,cfg,source,dual.checked_source(root/'source_left.pt'),dual.checked_source(root/'source_right.pt')
@@ -114,6 +225,22 @@ def stage_probe(banks,args,radius):
     return dual.evaluate(banks,fixtures,args.device,args.eval_batch_size)
 
 
+def _checkpoint_pair(path):
+    """Read the just-committed probe selection without altering save API.
+
+    The error/bias monitor wraps save_stage using the original positional
+    signature, so the function signature must remain compatible.
+    """
+    history = path / 'history.json'
+    if history.is_file():
+        records = json.loads(history.read_text('utf-8'))
+        if records:
+            return records[-1].get('selected_pair')
+    baseline = path / 'baseline.json'
+    if baseline.is_file():
+        return json.loads(baseline.read_text('utf-8')).get('selected_pair')
+    return None
+
 def save_stage(path,banks,opt,controls,events,rng,step,cursor,weights,streak,radius):
     atomic_checkpoint(path/'latest.pt',{
         'schema':SCHEMA+'.checkpoint','radius':radius,'step':step,
@@ -121,7 +248,10 @@ def save_stage(path,banks,opt,controls,events,rng,step,cursor,weights,streak,rad
         'controls':copy.deepcopy(controls),'control_log':events,
         'rng':rng.getstate(),'torch_rng':torch.get_rng_state(),
         'cuda_rng':torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-        'cursor':cursor,'weights':weights,'streak':streak})
+        'cursor':cursor,'weights':weights,'streak':streak,
+        'gate_policy':GATE_POLICY,
+        'selected_pair':_checkpoint_pair(path),
+        'gate_revision': current_gate_revision(path.parents[1])})
 
 
 def advance_stage(args,root,parent,parent_sha,radius,parent_src_left,parent_src_right):
@@ -151,7 +281,17 @@ def advance_stage(args,root,parent,parent_sha,radius,parent_src_left,parent_src_
             raise RuntimeError('EMP_LADDER_CHECKPOINT_DRIFT')
         banks.load_state_dict(ckpt['banks'],strict=True)
         for name,o in opt.items():o.load_state_dict(ckpt['optimizers'][name])
-        step=ckpt['step'];streak=ckpt['streak'];cursor=ckpt['cursor'];weights=ckpt['weights']
+        step=ckpt['step'];cursor=ckpt['cursor'];weights=ckpt['weights']
+        if ckpt.get('gate_policy')==GATE_POLICY:
+            streak=ckpt['streak']
+            # Do not count acceptance earned under a weaker earlier policy.
+            if current_gate_revision(root) > ckpt.get('gate_revision', 0):
+                streak=0
+        else:
+            # Old streaks were awarded under fixed-bank gating. Never reuse.
+            if not (root / MIGRATION_FILE).is_file():
+                raise RuntimeError('EMP_LADDER_OLD_GATE_CHECKPOINT_REQUIRES_MIGRATION')
+            streak=0
         rng.setstate(ckpt['rng']);torch.set_rng_state(ckpt['torch_rng'])
         if torch.cuda.is_available() and ckpt['cuda_rng'] is not None:
             torch.cuda.set_rng_state_all(ckpt['cuda_rng'])
@@ -164,9 +304,11 @@ def advance_stage(args,root,parent,parent_sha,radius,parent_src_left,parent_src_
     # This does not retroactively certify the source; we re-evaluate on this stage's frozen DEV cards.
     if step==0:
         scores,paired=stage_probe(banks,args,radius)
-        good=gate(scores,args.left_gate,args.right_gate)
+        selection=select_pair(scores,args.left_gate,args.right_gate)
+        good=selection['qualified']
         rec={'step':0,'radius':radius,'qualified':good,'streak':0,'source_baseline':True,
-             'banks':scores,'paired':paired}
+             'banks':scores,'paired':paired,'selected_pair':selection,
+             'gate_policy':GATE_POLICY,'gate_revision':current_gate_revision(root)}
         atomic_json(path/'baseline.json',rec)
         if good and args.gate_streak==1:
             save_stage(path,banks,opt,controls,events,rng,0,cursor,weights,1,radius)
@@ -202,20 +344,28 @@ def advance_stage(args,root,parent,parent_sha,radius,parent_src_left,parent_src_
             optimizer.step();losses[name]=float(loss.detach())
         if i%args.probe_every and i!=args.stage_steps:continue
         scores,paired=stage_probe(banks,args,radius)
-        good=gate(scores,args.left_gate,args.right_gate)
+        selection=select_pair(scores,args.left_gate,args.right_gate)
+        good=selection['qualified']
+        # Assignment is provisional: the final two winners are chosen after
+        # training. Different qualifying pairs may satisfy successive probes.
         streak=streak+1 if good else 0
         rec={'step':i,'radius':radius,'qualified':good,'streak':streak,
-             'revision':controls['revision'],'losses':losses,'banks':scores,'paired':paired}
+             'revision':controls['revision'],'losses':losses,'banks':scores,'paired':paired,
+             'selected_pair':selection,'gate_policy':GATE_POLICY,
+             'gate_revision':current_gate_revision(root),
+             'left_gate':args.left_gate,'right_gate':args.right_gate}
         log.append(rec)
         atomic_json(path/'history.json',log)
         dual.histogram_svg(path/'histogram.svg',scores)
         save_stage(path,banks,opt,controls,events,rng,i,cursor,weights,streak,radius)
         print('EMP_LADDER_PROBE='+json.dumps({'radius':radius,'step':i,'revision':controls['revision'],
-            'qualified':good,'streak':streak,
-            'left_frontier':[round(row['within_5pct'],4) for row in scores['left.left']['frontier']],
-            'left_outer':[round(row['within_5pct'],4) for row in scores['left.left']['outer']],
-            'right_frontier':[round(row['within_5pct'],4) for row in scores['right.right']['frontier']],
-            'right_outer':[round(row['within_5pct'],4) for row in scores['right.right']['outer']],
+            'qualified':good,'streak':streak,'gate_revision':current_gate_revision(root),
+            'left_bank':selection['left'],
+            'right_bank':selection['right'],'selected_pair':selection,
+            'left_frontier':[round(row['within_5pct'],4) for row in scores[selection['left']]['frontier']],
+            'left_outer':[round(row['within_5pct'],4) for row in scores[selection['left']]['outer']],
+            'right_frontier':[round(row['within_5pct'],4) for row in scores[selection['right']]['frontier']],
+            'right_outer':[round(row['within_5pct'],4) for row in scores[selection['right']]['outer']],
             'tipping':{key:[round(row['tipping_violation_rate'],4) for row in scores[key]['frontier']] for key in dual.BANKS}},sort_keys=True),flush=True)
         if streak>=args.gate_streak:return accept_stage(path,rec)
     atomic_json(path/'result.json',{'status':'halted_budget_exhausted','radius':radius,
@@ -227,11 +377,14 @@ def accept_stage(path,record):
     shutil.copyfile(path/'latest.pt',path/'accepted.pt')
     acceptance={'schema':SCHEMA+'.acceptance','radius':record['radius'],
        'step':record['step'],'status':'acquisition_milestone','qualified':True,
-       'checkpoint_sha256':sha256(path/'accepted.pt'),'stage_config_sha256':sha256(path/'config.json')}
+       'checkpoint_sha256':sha256(path/'accepted.pt'),'stage_config_sha256':sha256(path/'config.json'),
+       'gate_policy':GATE_POLICY,'selected_pair':record['selected_pair']}
     atomic_json(path/'acceptance.json',acceptance)
     atomic_json(path/'result.json',acceptance)
     print('EMP_LADDER_STAGE_ACCEPTED='+json.dumps({'radius':record['radius'],'step':record['step'],
-        'status':'research_acquisition_milestone'}),flush=True)
+        'status':'research_acquisition_milestone',
+        'left_bank':record['selected_pair']['left'],
+        'right_bank':record['selected_pair']['right']}),flush=True)
     return acceptance
 
 
@@ -301,6 +454,8 @@ def parser():
     p.add_argument('--gate-streak',type=int,default=2)
     p.add_argument('--cpu-threads',type=int,default=2)
     p.add_argument('--resume',action='store_true')
+    p.add_argument('--migrate-best-pair',action='store_true',
+                   help='Authorize a one-time fixed-bank to best-distinct-pair gate migration on --resume')
     return p
 
 

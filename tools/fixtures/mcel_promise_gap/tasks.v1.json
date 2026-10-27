@@ -1,0 +1,49 @@
+{
+  "schema": "mcel.promise-gap-tasks.v1",
+  "policy": {
+    "version": "1.0.0",
+    "fixedBeforeTrial": true,
+    "viewports": [320, 390, 560, 1100],
+    "minimumIndependentApplications": 2,
+    "visualJudgment": "independent-human-review-required",
+    "correctness": "real-browser-transitions-and-effect-accounting-required",
+    "comparison": "equivalent-correctness-before-efficiency",
+    "prohibitedShortcuts": ["scaffold-as-finished-app", "compiler-as-runtime-proof", "self-attested-visual-quality", "custom-test-renderer-as-app", "silently-discarded-failures"]
+  },
+  "tasks": [
+    {
+      "id": "inventory-c2", "title": "Inventory", "description": "Create an ordinary inventory app from domain terms, not an application-specific framework template.",
+      "appId": "promise-inventory", "variant": "compact-operations",
+      "semanticRequirements": [
+        {"id": "keyed-items", "kind": "canonical-keyed-collection", "observation": "Stable SKU identity after add, update and remove"},
+        {"id": "add-form", "kind": "validated-form", "observation": "Name, SKU, quantity and category entered and bound to add"},
+        {"id": "invalid-refusal", "kind": "structured-refusal", "observation": "Empty SKU, duplicate SKU and negative quantity rejected"},
+        {"id": "crud", "kind": "canonical-crud", "observation": "Add, update quantity and remove persist via governed intents"},
+        {"id": "row-actions", "kind": "row-bound-actions", "observation": "Editing item B cannot change item A"},
+        {"id": "search-sort", "kind": "local-filter-sort", "observation": "Search, filter and sort preserve identity without canonical mutation"},
+        {"id": "multi-instance", "kind": "instance-state-isolation", "observation": "Local search in one instance cannot leak into another"},
+        {"id": "responsive", "kind": "responsive-readable", "observation": "Required data and actions remain reachable at all fixed viewports"},
+        {"id": "effect-accounting", "kind": "governed-effect-evidence", "observation": "Receipts reconcile all canonical writes; no unexplained external effects"}
+      ],
+      "aestheticDirections": ["compact-operations", "editorial-open"],
+      "negativeCases": ["duplicate-sku", "negative-quantity", "missing-row-target", "unauthorized-write"],
+      "validAlternative": "editorial-open style using the same public components"
+    },
+    {
+      "id": "work-orders-independent", "title": "Work Orders", "description": "Independent held-out structure: editable work-order board, not a renamed inventory table.",
+      "appId": "promise-work-orders", "variant": "editorial-board",
+      "semanticRequirements": [
+        {"id": "order-identity", "kind": "canonical-keyed-collection", "observation": "Order ID stable across movement and edits"},
+        {"id": "status-transitions", "kind": "governed-transition", "observation": "Draft to active to complete; illegal jumps refused"},
+        {"id": "assignment", "kind": "validated-form", "observation": "Assign a named owner and validate required fields"},
+        {"id": "board-layout", "kind": "responsive-readable", "observation": "Board changes grouping/flow with width without losing controls"},
+        {"id": "views", "kind": "local-filter-sort", "observation": "Owner filter and due-date ordering do not rewrite orders"},
+        {"id": "interaction-access", "kind": "keyboard-and-focus", "observation": "All interactive actions accessible by keyboard"},
+        {"id": "effect-accounting", "kind": "governed-effect-evidence", "observation": "State transitions have attributable receipts"}
+      ],
+      "aestheticDirections": ["editorial-board", "dense-operations"],
+      "negativeCases": ["complete-before-active", "missing-assignee", "stale-write"],
+      "validAlternative": "dense-operations layout through the same public contracts"
+    }
+  ]
+}

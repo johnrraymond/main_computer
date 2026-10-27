@@ -461,8 +461,35 @@ class _WorkerHubLiveSessionClient:
 
     def snapshot(self) -> dict[str, Any]:
         with self._state_lock:
+            # Only Hub-authenticated, public market constraints are surfaced.
+            # No worker identifiers, wallet, MSK, connection IDs or raw offer.
+            market = self.accepted.get("market") if isinstance(self.accepted.get("market"), dict) else {}
+            market_price = market.get("price") if isinstance(market.get("price"), dict) else {}
+            market_price_wei = ""
+            if str(market_price.get("unit") or "") == "compute_credit":
+                try:
+                    market_price_wei = str(credit_decimal_text_to_wei(
+                        market_price.get("amount"), default="0", round_up=False,
+                    ))
+                except (TypeError, ValueError):
+                    pass
+            market_proof = {
+                "hub_acknowledged": self.accepted.get("type") == "hub.auth.accepted"
+                    and self.accepted.get("ok") is True,
+                "price_credit_wei": market_price_wei,
+                "ring_three": "ring-3" in (market.get("rings") if isinstance(market.get("rings"), list) else []),
+                "chat_completions": "chat.completions" in (
+                    market.get("capabilities") if isinstance(market.get("capabilities"), list) else []
+                ),
+                "capacity_available": (
+                    isinstance(market.get("max_concurrency"), int)
+                    and isinstance(market.get("active_sessions"), int)
+                    and market["active_sessions"] < market["max_concurrency"]
+                ),
+            }
             return {
                 "ok": not bool(self.last_error),
+                "market_proof": market_proof,
                 "transport": "websocket",
                 "endpoint": self.endpoint_path,
                 "hub_url": self.hub_url,
@@ -4361,12 +4388,27 @@ class ViewportEnergyRoutesMixin:
             existing_network = self._normalize_worker_network_key(existing_connection.get("network") or "none")
             existing_ring = self._normalize_worker_ring(existing_connection.get("requested_ring") or requested_ring)
             existing_hub = self._clean_hub_url(str(existing_connection.get("hub_url") or ""), allow_empty=True)
+            def effective_market(worker: Any) -> dict[str, Any]:
+                profile = worker if isinstance(worker, dict) else {}
+                capability_data = profile.get("capabilities") if isinstance(profile.get("capabilities"), dict) else {}
+                models_data = profile.get("models") if isinstance(profile.get("models"), list) else []
+                return self._worker_runtime_market_profile(
+                    settings=settings, capabilities=capability_data,
+                    models=[str(model) for model in models_data], active_jobs=0,
+                )
+
+            # Reuse is safe only for the SAME advertised market. A newer UI
+            # token budget, rate, model or capability requires a fresh Hub auth
+            # and a fresh Hub-issued connection-scoped Worker ID. Simply
+            # replacing the cached profile would leave workerRegisteredId stale.
+            same_market = effective_market(existing_connection.get("worker")) == effective_market(registration_payload)
             needs_registration = not (
                 self._worker_runtime_signed_connection_registered(settings)
                 and existing_network == selected
                 and existing_wallet == wallet_address
                 and existing_ring == requested_ring
                 and existing_hub == hub_url
+                and same_market
             )
 
             if not needs_registration:

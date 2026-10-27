@@ -8,9 +8,10 @@ import {ensureDisposableMetaMaskUnlocked} from './metamask_cached_unlock.mjs'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { completeWorkerWalletConnection, installWorkerWalletTrace, readWorkerWalletTrace, startWorkerWalletConnection } from './worker_wallet_approvals.mjs'
 import { resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import {probeRpcClients, rpcProbeSummary} from './rpc_client_probe.mjs'
 import {approveWorkerMskSignature} from './metamask_sidepanel_cdp.mjs'
-import {captainCommand, executeCaptain, waitForLiveWorker, waitForDeliveredWork, probeCaptainPreparation, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection} from './worker_work_cycle.mjs'
+import {executeCaptainWithPriceRetry, priceOfWorkerOffer, waitForLiveWorker, waitForDeliveredWork, readWorkerLiveStatus, captainWorkerAtFailure, captainWorkerExecutionAtFailure, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection, boundedSmokeOfferTokens, setWorkerOfferTargetTokens} from './worker_work_cycle.mjs'
 import {isMskEndpointRequest, waitForWorkerMsk, workerMskEvent, readMskApiRejection, safeMskApiRejection, formatMskFailureWithApiReason, assertServedWorkerMskContract} from './worker_msk_outcome.mjs'
 
 const walletFile = process.env.MC_WORKER_TEST_WALLET_FILE
@@ -73,6 +74,30 @@ async function prepareWallet(context, walletPage, extensionId) {
   return new MetaMask(context, activePage, walletSecret.password, extensionId)
 }
 
+// All network calls are GETs. Uses Captain's own read-only wallet preparation
+// to identify the requester, not the disposable *Worker* MetaMask account.
+// Never log the subprocess response: it can contain runtime wallet metadata.
+function requireCaptainFunding({python, cwd, requiredCreditWei, priceCeilingCredits}) {
+  const probe = spawnSync(python, [
+    '-m', 'tools.worker_captain_funding_preflight',
+    '--required-credit-wei', requiredCreditWei,
+    '--ceiling-credits', String(priceCeilingCredits),
+  ], {cwd, shell:false, windowsHide:true, encoding:'utf8', timeout:30_000, maxBuffer:65536})
+  let evidence = null
+  try { evidence = JSON.parse(String(probe.stdout || '').trim()) } catch {}
+  if (probe.status !== 0 || evidence?.ok !== true || evidence?.fundable !== true) {
+    const reason = evidence?.reason && /^[a-z0-9_-]{1,70}$/.test(evidence.reason)
+      ? evidence.reason : 'read_only_funding_probe_unavailable'
+    throw new Error('Captain funding preflight refused: ' + reason +
+      '. No Captain request was submitted. Run the read-only captain funding preflight for account totals.')
+  }
+  if (typeof evidence.bridgeFundingRequired !== 'boolean') {
+    throw new Error('Captain funding preflight returned no bounded-bridge decision. No request submitted.')
+  }
+  console.log('Worker acceptance: captain.read-only-funding-preflight.' + evidence.verdict)
+  return evidence.bridgeFundingRequired
+}
+
 async function main() {
   const action = process.env.MC_WORKER_TEST_ACTION || 'run'
   const context = await chromium.launchPersistentContext(profileDir, {
@@ -132,6 +157,7 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
   mkdirSync(reportDir, { recursive: true })
   let startedWork = false
   let changedPaidPolicy = false
+  let originalOfferTargetTokens = null
   const logs = []
   let mskApiStatus = null
   let mskApiRequestFailed = false
@@ -307,6 +333,19 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
       // Do not re-select ring 3 when already selected: its change handler
       // resets the network session and can race with the Work-now request.
       // Likewise, wait until any paid-work settings autosave has completed.
+      if (mode === 'work-cycle') {
+        // Do not run a paid functional test at the normal large request
+        // reservation when a 512-token ACK budget suffices. Remember the
+        // original settings before changing anything, including save failures.
+        const offer = boundedSmokeOfferTokens(
+          await page.locator('#worker-offer-target-tokens').inputValue())
+        if (offer.testTokens !== offer.originalTokens) {
+          originalOfferTargetTokens = offer.originalTokens
+          await setWorkerOfferTargetTokens(page, offer.testTokens)
+          stages.push('worker-test-offer-temporarily-priced')
+          console.log('Worker acceptance: worker.work-cycle.test-target-tokens.' + offer.testTokens)
+        }
+      }
       await prepareWorkerForWorkNow(page, {
         onProgress: phase => console.log('Worker acceptance:', phase),
         onPaidPolicyChanged: () => { changedPaidPolicy = true },
@@ -344,25 +383,32 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
       if (mode === 'work-cycle') {
         // Only run a credit-bearing Captain request when the browser Worker
         // is actually selectable on the testnet Hub. No mainnet fallback.
-        await waitForLiveWorker({page, workerId})
-        stages.push('worker-live-session-ready')
-        console.log('Worker acceptance: worker.work-cycle.live-session-ready')
         const advertisedModel = (await page.locator('#worker-offer-models').inputValue()).split(',')[0].trim()
-        const command = captainCommand({python: process.env.MC_WORKER_TEST_PYTHON || 'python', model: advertisedModel})
+        const price = priceOfWorkerOffer({
+          targetTokens: await page.locator('#worker-offer-target-tokens').inputValue(),
+          creditPerToken: await page.locator('#worker-offer-credits-per-token').inputValue(),
+        })
+        // A live WebSocket alone does not prove that the Hub's market
+        // advertises this exact offer; verify the authenticated Hub echo
+        // before allowing the Captain to spend any credits.
+        await waitForLiveWorker({page, workerId, expectedPriceWei: price.requiredCreditWei})
+        stages.push('worker-live-session-ready')
+        console.log('Worker acceptance: worker.work-cycle.live-market-price-verified')
+        console.log('Worker acceptance: worker.work-cycle.offer-price-credit-wei.' + price.requiredCreditWei)
+        const bridgeFundingRequired = requireCaptainFunding({
+          python: process.env.MC_WORKER_TEST_PYTHON || 'python',
+          cwd: process.env.MC_WORKER_TEST_ROOT,
+          ...price,
+        })
         console.log('Worker acceptance: worker.work-cycle.captain-testnet-submitting')
-        let receipt
-        try {
-          receipt = await executeCaptain(command, {cwd: process.env.MC_WORKER_TEST_ROOT})
-        } catch (captainError) {
-          // The primary failure may have occurred after a bridge deposit.
-          // NEVER retry execution here. Only run the independent Captain
-          // --prepare-only path to distinguish configuration failures from
-          // failures confined to the authorized execution stage.
-          const diagnostic = await probeCaptainPreparation(command, {cwd: process.env.MC_WORKER_TEST_ROOT})
-          evidence.captainNoSpendDiagnostic = diagnostic
-          console.error('Worker acceptance: captain.prepare-only-diagnostic', JSON.stringify(diagnostic))
-          throw captainError
-        }
+        const receipt = await executeCaptainWithPriceRetry({
+          python: process.env.MC_WORKER_TEST_PYTHON || 'python',
+          model: advertisedModel,
+          cwd: process.env.MC_WORKER_TEST_ROOT,
+          priceCeilingCredits: price.priceCeilingCredits,
+          bridgeFundingRequired,
+          onRetry: () => console.log('Worker acceptance: captain.worker-not-live.retry-two-credits'),
+        })
         evidence.captainRequest = {requestId: receipt.requestId, sessionId: receipt.sessionId, state: receipt.state}
         stages.push('captain-request-completed')
         console.log('Worker acceptance: worker.work-cycle.captain-testnet-completed')
@@ -377,6 +423,33 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
   } catch (error) {
     evidence.ok = false
     evidence.error = error instanceof Error ? error.message : String(error)
+    if (mode === 'work-cycle' && error?.captainProgress) {
+      // No replacement submission: observe the exact accepted session already
+      // paid/reserved for, and report the Worker's in-flight execution state.
+      evidence.captainProgress = error.captainProgress
+      console.error('Worker acceptance: captain.accepted-not-terminal', JSON.stringify(error.captainProgress))
+      try {
+        evidence.captainWorkerProgress = captainWorkerExecutionAtFailure(
+          await readWorkerLiveStatus(page), error.captainProgress)
+      } catch {
+        evidence.captainWorkerProgress = {statusReadable: false, verdict: 'worker-status-unavailable'}
+      }
+      console.error('Worker acceptance: captain.worker-execution-at-timeout',
+        JSON.stringify(evidence.captainWorkerProgress))
+    }
+    if (mode === 'work-cycle' && error?.captainEvidence) {
+      // Both observations come from this same acceptance run. No second
+      // Captain command, no Hub mutation and no new spending authorization.
+      evidence.captainFailure = error.captainEvidence
+      console.error('Worker acceptance: captain.failure-diagnosis', JSON.stringify(evidence.captainFailure))
+      try {
+        evidence.workerAtCaptainFailure = captainWorkerAtFailure(await readWorkerLiveStatus(page))
+        console.error('Worker acceptance: captain.worker-at-failure', JSON.stringify(evidence.workerAtCaptainFailure))
+      } catch {
+        evidence.workerAtCaptainFailure = {statusReadable: false}
+        console.error('Worker acceptance: captain.worker-at-failure', JSON.stringify(evidence.workerAtCaptainFailure))
+      }
+    }
     evidence.workerWalletEventTypes = await readWorkerWalletTrace(page)
     // Repeat after the network switch, when MetaMask's own UI may be showing
     // an RPC connection failure. Distinguish HTTP rejection from CORS/network
@@ -396,18 +469,47 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
       // The acceptance harness must not leave a work session running.
       try {
         await page.locator('#worker-network-work-now').click()
+        const finishing = page.waitForResponse(r => {
+          try { return r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/applications/worker/work-now' }
+          catch { return false }
+        }, {timeout: 60_000})
         await page.locator('#worker-work-now-finish').click()
-        stages.push('work-session-finish-requested')
+        const response = await finishing
+        if (!response.ok()) throw new Error('Work-now finish refused (HTTP ' + response.status() + ')')
+        const body = await response.json()
+        if (body?.ok !== true) throw new Error('Work-now finish not confirmed by local backend')
+        stages.push('work-session-finish-confirmed')
       } catch (error) {
         evidence.ok = false
         evidence.cleanupError = error instanceof Error ? error.message : String(error)
       }
     }
     if (changedPaidPolicy) {
-      try { await page.locator('#worker-rental-enabled').uncheck() }
-      catch (error) {
+      try {
+        const saved = page.waitForResponse(r => {
+          try { return r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/applications/worker/settings' }
+          catch { return false }
+        }, {timeout: 30_000})
+        await page.locator('#worker-rental-enabled').uncheck()
+        const response = await saved
+        if (!response.ok()) throw new Error('Worker paid-work policy restore failed (HTTP ' + response.status() + ')')
+        const body = await response.json()
+        if (body?.ok !== true || body?.settings?.sellerEnabled !== false)
+          throw new Error('Worker paid-work policy restore was not confirmed')
+      } catch (error) {
         evidence.ok = false
         evidence.cleanupError = error instanceof Error ? error.message : String(error)
+      }
+    }
+    if (originalOfferTargetTokens !== null) {
+      try {
+        await setWorkerOfferTargetTokens(page, originalOfferTargetTokens)
+        stages.push('worker-test-offer-restored')
+        console.log('Worker acceptance: worker.work-cycle.original-offer-restored')
+      } catch (error) {
+        evidence.ok = false
+        evidence.cleanupError = 'Worker offer token budget restoration failed: ' +
+          (error instanceof Error ? error.message : String(error))
       }
     }
     evidence.events = logs

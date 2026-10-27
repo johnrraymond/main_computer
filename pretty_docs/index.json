@@ -611,6 +611,12 @@
       "title": "Hub Fdb O F M — architecture specification",
       "kind": "markdown",
       "order": 919
+    },
+    {
+      "path": "stable-hub-lab-runbook.md",
+      "title": "Stable Hub Lab — Local Operator Runbook",
+      "kind": "markdown",
+      "order": 920
     }
   ]
 }

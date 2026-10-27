@@ -75,3 +75,5 @@ def test_stable_hub_lab_exposes_cluster_runner_flags() -> None:
     assert "--serve-cluster" in completed.stdout
     assert "--check-cluster" in completed.stdout
     assert "--check-after-start" in completed.stdout
+    assert "--verify-worker-cycle-local" in completed.stdout
+    assert "--verify-worker-cycle" in completed.stdout

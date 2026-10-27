@@ -571,6 +571,26 @@ function createDsl(metadata, source) {
     integer: () => new SchemaBuilder({kind: "integer"}),
     text: () => new SchemaBuilder({kind: "string"}),
     boolean: () => new SchemaBuilder({kind: "boolean"}),
+    record(fields) {
+      assert(fields && typeof fields === "object" && !Array.isArray(fields) && Object.keys(fields).length > 0,
+        "MCEL_DSL_RECORD_FIELDS_REQUIRED", "A record requires named fields.");
+      const declared = {};
+      for (const [name, schema] of Object.entries(fields)) {
+        assert(/^[a-z][A-Za-z0-9_]*$/.test(name), "MCEL_DSL_RECORD_FIELD_INVALID", `Invalid record field '${name}'.`);
+        assert(schema instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", `Record field '${name}' needs a field schema.`);
+        declared[name] = schema.toJSON();
+      }
+      return new SchemaBuilder({kind: "record", fields: declared});
+    },
+    list(item, options = {}) {
+      assert(item instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", "A list requires an item schema.");
+      const schema = item.toJSON();
+      const key = options.key;
+      assert(typeof key === "string" && schema.kind === "record" && schema.fields &&
+        schema.fields[key] && schema.fields[key].kind === "string",
+        "MCEL_DSL_LIST_KEY_INVALID", "Keyed lists require a declared string identity field.");
+      return new SchemaBuilder({kind: "list", items: schema, key});
+    },
   };
 
   const state = {
@@ -619,7 +639,15 @@ function createDsl(metadata, source) {
 
   function buildMutation(name, options = {}) {
     assert(typeof options.change === "function", "MCEL_DSL_MUTATION_CHANGE_REQUIRED", `Mutation '${name}' requires a constrained change callback.`, `intent:${name}`);
-    const rawSteps = options.change({read, expr});
+    const inputHandles = {};
+    const inputRecords = [];
+    for (const [inputName, inputSchema] of Object.entries(options.inputs || {})) {
+      assert(inputSchema instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", `Intent input '${inputName}' requires schema.`);
+      const id = semanticId("input", `${name}.${inputName}`);
+      inputRecords.push({id, kind: "intent-input", sourceName: inputName, schema: inputSchema.toJSON()});
+      inputHandles[inputName] = {kind: "input.read", input: {ref: id}};
+    }
+    const rawSteps = options.change({read, expr, input: inputHandles});
     assert(Array.isArray(rawSteps) && rawSteps.length > 0, "MCEL_DSL_MUTATION_EMPTY", `Mutation '${name}' must construct at least one transition step.`, `intent:${name}`);
     const transition = {kind: "transition.sequence", steps: rawSteps.map((step) => deepClone(step))};
     const writeIds = [...collectWriteTargets(transition)].sort();
@@ -654,7 +682,7 @@ function createDsl(metadata, source) {
       operationKind: "mutation",
       cancellable: false,
       risk: options.risk || "local-state",
-      input: [],
+      input: inputRecords,
       reads: readIds.map((id) => ({ref: id})),
       writes: writeIds.map((id) => ({ref: id})),
       refusals: [],
@@ -671,6 +699,24 @@ function createDsl(metadata, source) {
 
   const intent = {
     mutation: buildMutation,
+    keyedCollection(name, collectionState) {
+      assert(collectionState instanceof StateHandle && collectionState.record.schema.kind === "list" &&
+        collectionState.record.schema.key, "MCEL_DSL_COLLECTION_STATE_REQUIRED", "Keyed collection intents require keyed list state.");
+      const schema = collectionState.record.schema;
+      const recordSchema = new SchemaBuilder(schema.items);
+      const keySchema = new SchemaBuilder(schema.items.fields[schema.key]);
+      const mk = (operation, inputs, step) => buildMutation(`${name}-${operation}`, {
+        inputs, reads: [collectionState],
+        change: ({input}) => [step(input)],
+      });
+      return Object.freeze({
+        add: mk("add", {item: recordSchema}, input => ({kind: "list.append", target: ref(collectionState), value: input.item})),
+        update: mk("update", {key: keySchema, item: recordSchema}, input =>
+          ({kind: "list.update-by-key", target: ref(collectionState), key: input.key, keyField: schema.key, update: input.item})),
+        remove: mk("remove", {key: keySchema}, input =>
+          ({kind: "list.remove-by-key", target: ref(collectionState), key: input.key, keyField: schema.key})),
+      });
+    },
     prohibited(name, options = {}) {
       const record = {
         id: semanticId("intent", name),
@@ -695,6 +741,35 @@ function createDsl(metadata, source) {
   }
 
   const surface = {
+    form(name, options = {}) {
+      assert(options.fields && typeof options.fields === "object", "MCEL_DSL_FORM_FIELDS_REQUIRED", "Form requires fields.");
+      const fields = {};
+      for (const [fieldName, schema] of Object.entries(options.fields)) {
+        assert(schema instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", `Form field '${fieldName}' requires schema.`);
+        fields[fieldName] = schema.toJSON();
+      }
+      if (options.intent !== undefined) assert(options.intent instanceof IntentHandle,
+        "MCEL_DSL_FORM_INTENT_REQUIRED", "Bound form requires intent handle.");
+      const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "form",
+        sourceName: name, fields, ...(options.intent ? {intent: ref(options.intent)} : {})};
+      return new SurfaceNodeHandle(name, record);
+    },
+    collection(name, options = {}) {
+      assert(typeof options.key === "string" && options.key, "MCEL_DSL_COLLECTION_KEY_REQUIRED", "Collection requires key.");
+      assert(Array.isArray(options.fields) && options.fields.length > 0 && options.fields.every(x => typeof x === "string"),
+        "MCEL_DSL_COLLECTION_FIELDS_REQUIRED", "Collection requires visible fields.");
+      if (options.state !== undefined) assert(options.state instanceof StateHandle &&
+        options.state.record.schema.kind === "list" && options.state.record.schema.key === options.key,
+        "MCEL_DSL_COLLECTION_STATE_REQUIRED", "Surface collection state must match key.");
+      const actions = options.actions || {};
+      for (const [key, value] of Object.entries(actions)) assert(["add", "update", "remove"].includes(key) && value instanceof IntentHandle,
+        "MCEL_DSL_COLLECTION_ACTION_INVALID", "Collection actions must be declared intent handles.");
+      const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "collection", sourceName: name,
+        key: options.key, fields: [...options.fields],
+        ...(options.state ? {state: ref(options.state)} : {}),
+        actions: Object.fromEntries(Object.entries(actions).map(([key, value]) => [key, ref(value)]))};
+      return new SurfaceNodeHandle(name, record);
+    },
     text(name, options = {}) {
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "state-value",

@@ -1,0 +1,50 @@
+{
+  "schema": "mcel.text-shrinker-fixture.v1",
+  "value_sets": {
+    "main_computer_patch_names": [
+      "main_computer_test_nanojev_zero_line_distribution_convergence_patch",
+      "main_computer_test_nanojev_zero_line_outward_return_patch",
+      "main_computer_test_mcel_layout_quality_patch",
+      "main_computer_test_nanojev_zero_line_radius_growth_patch"
+    ],
+    "file_sizes_bytes": [12902, 12903, 23231, 47831],
+    "inventory_skus": [
+      "warehouse_north_blue_widget_series7_sku",
+      "warehouse_north_red_widget_series7_sku",
+      "warehouse_north_green_widget_series7_sku"
+    ]
+  },
+  "widgets": {
+    "downloads": {
+      "behavior": {"task": "browse", "sort_by": "size"},
+      "columns": [
+        {"key": "name", "kind": "identifier", "label": "Name", "required": true, "min_px": 170,
+         "presentation": {"text_shrinker": {"enabled": true, "mode": "contextual_identifier", "values_ref": "main_computer_patch_names"}}},
+        {"key": "size", "kind": "size", "label": "Size", "required": true, "min_px": 92,
+         "presentation": {"text_shrinker": {"enabled": true, "mode": "adaptive_size", "values_ref": "file_sizes_bytes"}}},
+        {"key": "modified", "kind": "timestamp", "label": "Modified", "required": true,
+         "presentation": {"text_shrinker": {"enabled": false}}}
+      ],
+      "rows": [
+        {"id": "f1", "name": "main_computer_test_nanojev_zero_line_distribution_convergence_patch", "size": 12902, "modified": "2026-10-25"},
+        {"id": "f2", "name": "main_computer_test_nanojev_zero_line_outward_return_patch", "size": 12903, "modified": "2026-10-25"},
+        {"id": "f3", "name": "main_computer_test_mcel_layout_quality_patch", "size": 23231, "modified": "2026-10-24"},
+        {"id": "f4", "name": "main_computer_test_nanojev_zero_line_radius_growth_patch", "size": 47831, "modified": "2026-10-24"}
+      ]
+    },
+    "inventory": {
+      "behavior": {"task": "compare", "sort_by": "quantity"},
+      "columns": [
+        {"key": "sku", "kind": "identifier", "label": "SKU", "required": true,
+         "presentation": {"text_shrinker": {"enabled": true, "mode": "contextual_identifier", "values_ref": "inventory_skus"}}},
+        {"key": "quantity", "kind": "number", "label": "Quantity", "required": true,
+         "presentation": {"text_shrinker": {"enabled": false}}}
+      ],
+      "rows": [
+        {"id": "a", "sku": "warehouse_north_blue_widget_series7_sku", "quantity": 110},
+        {"id": "b", "sku": "warehouse_north_red_widget_series7_sku", "quantity": 3},
+        {"id": "c", "sku": "warehouse_north_green_widget_series7_sku", "quantity": 85}
+      ]
+    }
+  }
+}

@@ -1834,3 +1834,108 @@ def test_work_now_stable_hub_dispatch_never_falls_back_to_nonexistent_rest(monke
         _Harness()._post_worker_start_to_hub(
             hub_url="https://testnet-hub.greatlibrary.io", payload={"network": "testnet"}
         )
+
+
+def test_reused_work_now_registration_republishes_changed_market_price(tmp_path: Path) -> None:
+    """Existing authorized wallet does not imply an immutable Hub market offer."""
+    from types import SimpleNamespace
+    from main_computer.viewport_routes_energy import _WorkerHubLiveSessionClient
+
+    wallet = '0x7e5f4552091a69125d5dfcb7b8c2659029395bdf'
+    hub = 'https://testnet-hub.greatlibrary.io'
+    old_offer = _seller_payload()
+    new_offer = _seller_payload()
+    new_offer['target_output_tokens'] = 512
+    new_offer['pricing'] = {**new_offer['pricing'], 'target_output_tokens': 512}
+
+    class Harness(_WorkerRoutesHarness):
+        def _read_json(self):
+            return {'action': 'work-now', 'network': 'testnet', 'requested_ring': '3',
+                    'duration_seconds': 900, 'wallet_address': wallet,
+                    'hub_url': hub, 'worker': new_offer}
+
+        def _worker_network_session_payload(self, settings, *, check_hub=False):
+            return {'ok': True, 'session': {'profile': {'hub_url': hub}}}
+
+        def _worker_multisession_authorization_for_wallet(self, **kwargs):
+            return {'kind': 'multisession_key', 'key_id': 'msk-test',
+                    'multisession_key_id': 'msk-test', 'wallet_address': wallet,
+                    'chain_id': '42424241'}
+
+        def _post_worker_start_to_hub(self, *, hub_url, payload):
+            self.fresh_registration = True
+            return {'worker_id': 'hub-issued-new-connection-id', 'assigned_ring': '3',
+                    'worker': {**payload['worker'], 'worker_id': 'hub-issued-new-connection-id',
+                               'assigned_ring': '3'}, 'pool': {}}
+
+        def _worker_runtime_transition(self, settings, *, action, active_jobs, send_heartbeat):
+            self.current_signed_offer = settings['signedWorkerConnection']['worker']
+            return settings, {'runtime': {'phase': 'accepting'}, 'ok': True}
+
+        def _send_json(self, payload, status=HTTPStatus.OK):
+            self.sent_payload = payload
+            self.status = status
+
+        def _kick_worker_runtime_supervisor(self, reason):
+            pass
+
+    h = Harness()
+    h.client_address = ('127.0.0.1', 12345)
+    h.server = SimpleNamespace(debug_root=tmp_path,
+                               config=SimpleNamespace(hub_url=hub),
+                               signal=lambda *args, **kwargs: None)
+    h._save_worker_settings({
+        'selectedNetwork': 'testnet', 'workerAutoConnectNetwork': 'testnet',
+        'sellerEnabled': True,
+        'signedWorkerConnection': {
+            'network': 'testnet', 'requested_ring': '3',
+            'wallet_address': wallet, 'hub_url': hub,
+            'status': 'hub-registered', 'hub_registration_status': 'accepted',
+            'hub_registered': True, 'worker': old_offer,
+        },
+    })
+    h._handle_worker_network_work_now()
+    assert h.status == HTTPStatus.OK, h.sent_payload
+    assert h.fresh_registration is True
+    assert h._load_worker_settings()['workerRegisteredId'] == 'hub-issued-new-connection-id'
+    assert h.current_signed_offer['pricing']['credits_per_request'] == '0.512'
+    assert h._load_worker_settings()['signedWorkerConnection']['worker']['pricing']['credits_per_request'] == '0.512'
+    # A second Work Now with the same effective offer reuses registration;
+    # Hub-issued worker identity must remain stable until a real offer change.
+    h.fresh_registration = False
+    h._handle_worker_network_work_now()
+    assert h.status == HTTPStatus.OK, h.sent_payload
+    assert h.fresh_registration is False
+    assert h._load_worker_settings()['workerRegisteredId'] == 'hub-issued-new-connection-id'
+    assert h._worker_runtime_market_profile(settings={'workerRequestedRing':'3'},
+        capabilities=h.current_signed_offer['capabilities'], models=['model'],
+        active_jobs=0)['price']['amount'] == '0.512'
+
+    # This is authenticated Hub echo, not a locally manufactured offer.
+    client = object.__new__(_WorkerHubLiveSessionClient)
+    import threading
+    client._state_lock = threading.RLock()
+    client.last_error = ''
+    client.accepted = {'type': 'hub.auth.accepted', 'ok': True,
+                       'market': {'price': {'amount': '0.512', 'unit': 'compute_credit'},
+                                  'rings': ['ring-3'], 'capabilities': ['chat.completions'],
+                                  'max_concurrency': 1, 'active_sessions': 0}}
+    client.last_pong = {}
+    client.last_offer = {}
+    client.last_result = {}
+    client.opened_at = ''
+    client.closed_at = ''
+    client.close_reason = ''
+    client.hub_url = hub
+    client.active_work_count = 0
+    client.worker_id = ''
+    client.websocket_upgrade_status = ''
+    client.connection_id = ''
+    client.endpoint_path = '/api/hub/v1/workers/live-session'
+    client._stop_event = threading.Event()
+    client._reader_thread = None
+    client._keepalive_thread = None
+    client._socket = None
+    assert client.snapshot()['market_proof'] == {
+        'hub_acknowledged': True, 'price_credit_wei': '512000000000000000',
+        'ring_three': True, 'chat_completions': True, 'capacity_available': True}

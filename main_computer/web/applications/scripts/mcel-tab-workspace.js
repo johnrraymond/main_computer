@@ -132,8 +132,12 @@
       });
     }
     app.append(tabList, panelGroup);
-    // Data presentation is generic: no app-specific table templates or host APIs.
+    // Data presentation is generic: optional semantic collection contracts are
+    // interpreted by the registered MCEL collection consumer and shared authority.
+    let collectionMounts=[];
     const renderData = () => {
+      for (const mounted of collectionMounts) mounted.destroy();
+      collectionMounts=[];
       for (const tab of tabs) {
         const parent = ui.get(tab.id).content;
         parent.replaceChildren();
@@ -147,6 +151,14 @@
             (Array.isArray(data) && !data.length) ||
             (typeof data === "object" && !Array.isArray(data) && !Object.keys(data).length)) {
           parent.append(text("p", "No data for this view", "mcel-tab-workspace__notice"));
+          continue;
+        }
+        const declaredSpec=options.collections?.[sources.get(tab.id)];
+        if (declaredSpec) {
+          requireContract(Array.isArray(data),"SEMANTIC_SOURCE_NOT_A_COLLECTION");
+          const consumer=options.collectionConsumer||globalThis.McelSemanticCollectionWorkspace;
+          requireContract(typeof consumer?.mount==="function", "MISSING_SEMANTIC_COLLECTION_CONSUMER");
+          collectionMounts.push(consumer.mount(parent,data,declaredSpec));
           continue;
         }
         const rows = Array.isArray(data) ? data : Object.entries(data).map(([metric, value]) => ({metric, value}));
@@ -239,13 +251,21 @@
         if (disposed) return {ok: false, code: "disposed"};
         if (!nextSnapshot || typeof nextSnapshot !== "object" || Array.isArray(nextSnapshot) ||
             !STATUSES.has(nextStatus)) return {ok: false, code: "invalid-snapshot"};
-        snapshot = structuredClone(nextSnapshot);
-        status = nextStatus;
-        renderData();
+        const previousSnapshot=snapshot,previousStatus=status;
+        snapshot=structuredClone(nextSnapshot);
+        status=nextStatus;
+        try {renderData();}
+        catch (error) {
+          snapshot=previousSnapshot;status=previousStatus;
+          renderData();
+          return {ok:false,code:"semantic-render-refused",message:String(error),effects:[]};
+        }
         return {ok: true, effects: []};
       },
       getState() { return {selected: current[selection.id], status, effects: []}; },
       destroy() {
+        for (const mounted of collectionMounts) mounted.destroy();
+        collectionMounts=[];
         disposed = true;
         doc.defaultView.removeEventListener("hashchange", onRouteChange);
         doc.defaultView.removeEventListener("popstate", onRouteChange);

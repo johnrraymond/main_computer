@@ -1,0 +1,15 @@
+/* Only active in explicit lab mode; baseline Task Manager is unchanged. */
+#task-manager-app[data-mcel-notebook-lab="active"] .task-mcel-notebook-lab-host {
+  min-width:0; width:100%; border:1px solid rgba(155,191,240,.45); border-radius:12px;
+}
+#task-manager-app[data-mcel-notebook-lab="active"] .task-mcel-notebook-lab-provenance {
+  margin:0; padding:7px 12px; font:600 11px/1.45 system-ui,sans-serif;
+  color:#e0ebff; background:#263a58; overflow-wrap:anywhere;
+}
+#task-manager-app[data-mcel-notebook-lab="active"] .task-mcel-notebook-lab-render-target {min-width:0;}
+#task-manager-app[data-mcel-notebook-lab="active"] .task-detail-grid {grid-auto-rows:auto;}
+@media(max-width:980px) {
+  #task-manager-app[data-mcel-notebook-lab="active"] .task-manager-detail {grid-row:1;}
+  #task-manager-app[data-mcel-notebook-lab="active"] .task-manager-sidebar {grid-row:2;}
+  #task-manager-app[data-mcel-notebook-lab="active"] .task-manager-detail {grid-template-rows:auto auto auto;}
+}

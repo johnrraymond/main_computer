@@ -489,3 +489,90 @@ def test_worker_owner_and_market_close_rollback_together_on_error() -> None:
     stores[0].atomic(close_both)
     assert owner_dir.get_owner("worker-close-rollback")["status"] == "closed"
     assert market_dir.get_worker("worker-close-rollback")["status"] == "closed"
+
+
+def test_worker_close_and_hold_release_are_one_fdb_commit_with_crash_rollback() -> None:
+    """An abort after owner close must not strand a committed credit hold."""
+    from main_computer.stable_hub import close_worker_connection_and_settle
+    from main_computer.stable_hub_worker_sessions import (
+        StableHubAcceptedWorkSessionDirectory, StableHubWorkerSessionDirectory,
+    )
+
+    db, stores, ledger, _other = _two_hubs()
+    store = stores[0]
+    topology = load_stable_hub_topology(Path("deploy/hub-topology/dev-topology.json"))
+    owner_dir = StableHubWorkerSessionDirectory(topology=topology, hub_id="dev-hub3", store=store)
+    market_dir = StableHubWorkerMarketDirectory(topology=topology, hub_id="dev-hub3", store=store)
+    accepted_dir = StableHubAcceptedWorkSessionDirectory(topology=topology, hub_id="dev-hub3", store=store)
+    worker_id, connection_id = "worker-crash-atomic", "connection-crash-atomic"
+    wallet = "0x" + "ab" * 20
+    owner = owner_dir.record_connected(
+        worker_id=worker_id, connection_id=connection_id,
+        multisession_key_id="msk-worker", wallet_address=wallet, account_id="account-worker",
+    )
+    market_dir.record_worker_live(
+        worker_id=worker_id, owner=owner,
+        market_profile={"ring": "ring-3", "price": {"amount": "1.024", "unit": "credit"}, "max_concurrency": 1},
+        worker_msk_id="msk-worker", worker_wallet_address=wallet, worker_account_id="account-worker",
+    )
+    ledger.fund_account(account_id="account-one", wallet_address=wallet, credits="2", replace=True)
+    hold = ledger.create_hold(
+        account_id="account-one", wallet_address=wallet, request_id="request-crash-atomic",
+        session_id="session-crash-atomic", worker_id=worker_id, run_id="run-crash-atomic",
+        partition="ring-3", selected_price={"amount": "1.024", "unit": "credit"},
+        requester_max_price={"amount": "2", "unit": "credit"},
+    )
+    accepted_dir.record_accepted(
+        session_id="session-crash-atomic", run_id="run-crash-atomic", request_id="request-crash-atomic",
+        requester_msk_id="msk-requester", requester_account_id="account-one",
+        requester_wallet_address=wallet, worker_id=worker_id, worker_connection_id=connection_id,
+        owner_hub_id="dev-hub3", owner_hub_url="http://127.0.0.1:8873", partition="ring-3",
+        task_queue="main-computer-work-ring-3", work={"kind": "unit-test"},
+        worker_acceptance={"type": "worker.work.accepted"},
+        payout={"hold_id": hold["hold_id"], "hold_status": "held"},
+    )
+    server = SimpleNamespace(
+        worker_session_directory=owner_dir, worker_market_directory=market_dir,
+        accepted_work_session_directory=accepted_dir, payout_ledger_directory=ledger,
+    )
+    original_atomic = store.atomic
+    before = store.load()
+    commits_before = db.commits
+
+    def abort_before_commit(action):
+        # Nested directory calls join the already-open FDB transaction. Inject
+        # an exception only on the top-level close, after all its writes.
+        if getattr(store._transaction_local, "transaction", None) is not None:
+            return original_atomic(action)
+
+        def crashed():
+            action()
+            raise RuntimeError("injected_crash_before_fdb_commit")
+        return original_atomic(crashed)
+
+    store.atomic = abort_before_commit
+    try:
+        with pytest.raises(RuntimeError, match="injected_crash_before_fdb_commit"):
+            close_worker_connection_and_settle(server, worker_id=worker_id, connection_id=connection_id)
+    finally:
+        store.atomic = original_atomic
+    assert db.commits == commits_before
+    assert store.load() == before
+    assert owner_dir.get_owner(worker_id)["status"] == "live"
+    assert ledger.get_hold_for_request(account_id="account-one", request_id="request-crash-atomic")["status"] == "held"
+
+    closed_owner, count = close_worker_connection_and_settle(
+        server, worker_id=worker_id, connection_id=connection_id,
+    )
+    assert closed_owner["status"] == "closed"
+    assert count == 1
+    assert db.commits == commits_before + 1
+    assert accepted_dir.get_session("session-crash-atomic")["status"] == "failed"
+    assert ledger.get_hold_for_request(account_id="account-one", request_id="request-crash-atomic")["status"] == "released"
+    assert ledger.get_account("account-one")["available_credit_wei"] == str(2 * 10**18)
+
+    # A repeat close cannot issue a second refund or a second failure record.
+    assert close_worker_connection_and_settle(
+        server, worker_id=worker_id, connection_id=connection_id,
+    )[1] == 0
+    assert ledger.get_account("account-one")["available_credit_wei"] == str(2 * 10**18)

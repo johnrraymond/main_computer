@@ -1,0 +1,25 @@
+/* Generic registered MCEL collection presentation; authority sets data-layout-mode,
+   field.hidden and track widths. Application CSS does not allocate columns. */
+.mcel-semantic-collection {min-width:0; width:100%; overflow:hidden; padding:8px;}
+.mcel-semantic-collection mcel-collection {display:block;max-height:min(57vh,600px);overflow:auto;min-width:0;}
+.mcel-semantic-collection mcel-row {display:grid;align-items:center;gap:7px;min-width:0;padding:8px;
+  border-bottom:1px solid var(--mcel-line,#33465f);cursor:pointer;}
+.mcel-semantic-collection mcel-row:focus-visible {outline:2px solid var(--mcel-accent,#a5c8ff);outline-offset:-2px;}
+.mcel-semantic-collection mcel-row:hover {background:rgba(160,190,230,.08)}
+.mcel-semantic-collection mcel-field {display:block;min-width:0;overflow:hidden;}
+.mcel-semantic-collection mcel-field[hidden] {display:none!important;}
+.mcel-semantic-collection .field-label {display:block;font-size:10px;letter-spacing:.015em;color:var(--mcel-muted,#aabbd3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mcel-semantic-collection .field-value {display:block;font-size:12px;font-variant-numeric:tabular-nums;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mcel-semantic-collection[data-layout-mode="stacked"] mcel-field {display:flex;align-items:baseline;gap:8px;}
+.mcel-semantic-collection[data-layout-mode="stacked"] .field-label {flex:0 0 80px;}
+.mcel-semantic-collection[data-layout-mode="stacked"] .field-value {flex:1;min-width:0;}
+.mcel-semantic-collection__inspector {min-width:0;max-width:100%;padding:10px 12px;
+  border-top:1px solid var(--mcel-line,#33465f);overflow-wrap:anywhere;word-break:normal;}
+.mcel-semantic-collection__inspector h3 {font-size:13px;margin:0 0 8px;}
+.mcel-semantic-collection__inspector p {margin:0;color:var(--mcel-muted,#aabbd3);font-size:12px;}
+.mcel-semantic-collection__inspector dl {display:grid;grid-template-columns:minmax(64px,100px) minmax(0,1fr);
+  gap:4px 10px;margin:0;font-size:11px;max-height:230px;overflow:auto;}
+.mcel-semantic-collection__inspector dt {color:var(--mcel-muted,#aabbd3)}
+.mcel-semantic-collection__inspector dd {margin:0;min-width:0;overflow-wrap:anywhere;white-space:normal;}

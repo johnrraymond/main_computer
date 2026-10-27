@@ -1002,7 +1002,266 @@
     clearCanonicalLayoutTree(host);
   }
 
+  // Semantic collection representation contract. This is the SAME shared
+  // layout authority exported to MCEL hosts for canonical layout trees.
+  // Collection layout is opt-in: a registered collection renderer supplies a
+  // semantic projection; the host never guesses priorities from CSS classes.
+  const COLLECTION_LINK_SCHEMA = "mcel.representation-layout-link.experiment.v1";
+  const COLLECTION_EVIDENCE_SCHEMA = "mcel.semantic-collection-layout-evaluation.v1";
+  const collectionLayouts = new WeakMap();
+  function resolveSemanticCollection(host, contract, registry) {
+    const link=contract?.layout_link;
+    if (!host || !contract || link?.schema !== COLLECTION_LINK_SCHEMA ||
+        !registry || typeof registry.get!=="function") fail("registered semantic collection contract is required");
+    const columns=contract.field_contracts;
+    const keys=columns?.map(column=>column.key);
+    if (!Array.isArray(columns) || !columns.length || columns.length>16 ||
+        keys.some(key=>typeof key!=="string" || !/^[a-zA-Z][\w-]*$/.test(key)) ||
+        new Set(keys).size!==keys.length ||
+        columns.some(col=>typeof col.label!=="string" || typeof col.required!=="boolean"))
+      fail("invalid semantic collection fields");
+    if (!Array.isArray(link.required_keys) || !Array.isArray(link.identifier_keys) ||
+        link.required_keys.some(key=>!keys.includes(key)) ||
+        link.identifier_keys.some(key=>!keys.includes(key)) ||
+        !Number.isFinite(link.compact_breakpoint_px) || link.compact_breakpoint_px<200 ||
+        !Number.isFinite(link.min_visible_cell_px) || link.min_visible_cell_px<24 ||
+        !Array.isArray(contract.source_rows) ||
+        !Array.isArray(contract.projection?.rows) || contract.projection.collisions?.length)
+      fail("invalid semantic collection obligations");
+    const registered=(id,tag)=>registry.get(id)?.renderer?.htmlTag===tag;
+    if (!registered("element.core.collection","mcel-collection") ||
+        !registered("element.core.collection-row","mcel-row") ||
+        !registered("element.core.field","mcel-field")) fail("unregistered collection component");
+    const collection=host.querySelector("mcel-collection");
+    if (!collection || collection.dataset.mcelElementId!=="element.core.collection" ||
+        host.querySelectorAll("mcel-collection").length!==1) fail("collection host not registered");
+    const rows=[...collection.children];
+    const source=new Map(contract.source_rows.map(row=>[String(row.id),row]));
+    const projection=new Map(contract.projection.rows.map(row=>[String(row.id),row]));
+    const knownIds=new Set(source.keys());
+    if (knownIds.size!==contract.source_rows.length ||
+        projection.size!==contract.projection.rows.length ||
+        [...knownIds].some(id=>!projection.has(id))) fail("duplicate or unmatched source identities");
+    const visibleIds=new Set();
+    // Presentation is not permitted to erase the distinction between
+    // different authoritative identifiers, even for an unfriendly caller.
+    for (const key of link.identifier_keys) {
+      const seen=new Map();
+      for (const [id,row] of source) {
+        if (!Object.prototype.hasOwnProperty.call(row,key)) continue;
+        const raw=String(row[key]);
+        const displayed=String(projection.get(id)?.cells?.[key]?.display);
+        if (seen.has(displayed) && seen.get(displayed)!==raw)
+          fail("semantic identity collision: "+key);
+        seen.set(displayed,raw);
+      }
+    }
+    for (const row of rows) {
+      if (row.localName!=="mcel-row" || row.dataset.mcelElementId!=="element.core.collection-row" ||
+          !knownIds.has(row.dataset.rowId)) fail("unregistered or unknown collection row");
+      if (visibleIds.has(row.dataset.rowId)) fail("duplicate rendered row identity");
+      visibleIds.add(row.dataset.rowId);
+      const fields=[...row.children];
+      if (fields.length!==columns.length || fields.some((field,i)=>
+          field.localName!=="mcel-field" || field.dataset.mcelElementId!=="element.core.field" ||
+          field.dataset.semanticField!==keys[i] || field.dataset.sourceRowId!==row.dataset.rowId ||
+          !field.querySelector(".field-value") || !field.querySelector(".field-label")))
+        fail("collection rows do not match declared semantic fields");
+      for (const field of fields) {
+        const key=field.dataset.semanticField;
+        const original=source.get(row.dataset.rowId);
+        const projected=projection.get(row.dataset.rowId)?.cells?.[key];
+        const missing=!Object.prototype.hasOwnProperty.call(original,key);
+        const empty=!missing && original[key]==="";
+        const expected=missing?"Not provided":empty?"Empty":String(projected?.display);
+        if (!projected || field.dataset.full!==String(missing?"":original[key]) ||
+            field.dataset.sourceMissing!==String(missing) ||
+            field.dataset.sourceEmpty!==String(empty) ||
+            field.querySelector(".field-value").textContent!==expected)
+          fail("rendered collection does not preserve semantic source");
+      }
+    }
+    return {columns,keys,link,collection,rows};
+  }
+  // Evaluation is strictly read-only. Browser font measurement uses actual
+  // rendered content. Every registered field participates in intrinsic sizing.
+  function evaluateSemanticCollectionLayout(host, contract, registry) {
+    try {
+      const {columns,link,rows}=resolveSemanticCollection(host,contract,registry);
+      const context=host.ownerDocument.createElement("canvas").getContext("2d");
+      if (!context) fail("browser text measurement unavailable");
+      function textWidth(node) {
+        if (!node) return 0;
+        context.font=node.ownerDocument.defaultView.getComputedStyle(node).font;
+        return context.measureText(node.textContent||"").width;
+      }
+      const base={};
+      for (const column of columns) {
+        let widest=0;
+        for (const row of rows) {
+          const field=[...row.children].find(f=>f.dataset.semanticField===column.key);
+          widest=Math.max(widest,textWidth(field.querySelector(".field-value")),
+            textWidth(field.querySelector(".field-label")));
+        }
+        base[column.key]=Math.max(link.min_visible_cell_px,Math.ceil(widest)+12);
+      }
+      const gap=7*(columns.length-1);
+      const available=Math.max(0,host.clientWidth-18-gap);
+      const intrinsic=Object.values(base).reduce((sum,n)=>sum+n,0);
+      // Optional semantic tiers. Legacy contracts with no tier retain their
+      // original exact allocation behavior (and existing Frob evidence).
+      const tiered=columns.some(c=>c.tier!==undefined);
+      if (tiered) {
+        if (columns.some(c=>!["primary","secondary","detail"].includes(c.tier)) ||
+            link.required_keys.some(key=>columns.find(c=>c.key===key)?.tier!=="primary"))
+          fail("invalid semantic priority obligations");
+        const primaries=columns.filter(c=>c.tier==="primary");
+        if (!primaries.length) fail("semantic collection needs a primary identifier");
+        const compact=host.clientWidth<link.compact_breakpoint_px;
+        const primaryWidth=primaries.reduce((sum,c)=>sum+base[c.key],0)+7*(primaries.length-1);
+        const stacked=compact || primaryWidth>available;
+        const visible=primaries.map(c=>c.key);
+        const secondary=columns.filter(c=>c.tier==="secondary")
+          .sort((a,b)=>(a.priority??100)-(b.priority??100));
+        let used=primaryWidth;
+        for (const c of secondary) {
+          if (stacked ? c.presentation?.compactDisclosure!==true : used+7+base[c.key]<=available) {
+            visible.push(c.key);
+            used+=7+base[c.key];
+          }
+        }
+        const selected=columns.filter(c=>visible.includes(c.key));
+        const selectedWidth=selected.reduce((sum,c)=>sum+base[c.key],0)+7*(selected.length-1);
+        const spare=stacked?0:Math.max(0,available-selectedWidth);
+        const weight=selected.reduce((sum,c)=>sum+(c.tier==="primary"?2:1),0);
+        const allocated={};let distributed=0;
+        selected.forEach((c,i)=>{
+          const gain=i===selected.length-1?spare-distributed:
+            Math.floor(spare*(c.tier==="primary"?2:1)/weight);
+          allocated[c.key]=base[c.key]+gain;distributed+=gain;
+        });
+        return {schema:COLLECTION_EVIDENCE_SCHEMA,status:"candidate-verified",
+          host_width_px:host.clientWidth,sourceMutationAuthorized:false,
+          contract_authority:"declared semantic tiers and registered MCEL components",
+          plan:{mode:stacked?"stacked":"table",available_px:available,
+            intrinsic_px:intrinsic,deficit_px:Math.max(0,intrinsic-available),
+            unresolved_deficit_px:stacked?0:Math.max(0,selectedWidth-available),
+            allocated_px:allocated,content_minimum_px:base,visible_keys:visible,
+            disclosed_keys:columns.filter(c=>!visible.includes(c.key)).map(c=>c.key),
+            recovered_room_available_px:spare,required_keys:link.required_keys.slice()}};
+      }
+      const stacked=host.clientWidth<link.compact_breakpoint_px;
+      const extra=stacked?0:Math.max(0,available-intrinsic);
+      const weights=columns.map(c=>c.required ?
+        (c.kind==="identifier"?1:(c.presentation?.text_shrinker?.enabled?3:4)):0.5);
+      const weightSum=weights.reduce((a,b)=>a+b,0);
+      const allocated={};let distributed=0;
+      columns.forEach((column,i)=>{
+        const growth=i===columns.length-1?extra-distributed:Math.floor(extra*weights[i]/weightSum);
+        distributed+=growth;
+        allocated[column.key]=base[column.key]+growth;
+      });
+      return {schema:COLLECTION_EVIDENCE_SCHEMA,status:"candidate-verified",
+        host_width_px:host.clientWidth,sourceMutationAuthorized:false,
+        contract_authority:"semantic field requirements and registered MCEL components",
+        plan:{mode:stacked?"stacked":"table",available_px:available,
+          intrinsic_px:intrinsic,deficit_px:Math.max(0,intrinsic-available),
+          allocated_px:allocated,content_minimum_px:base,
+          recovered_room_available_px:extra,required_keys:link.required_keys.slice()}};
+    } catch (error) {
+      return {schema:COLLECTION_EVIDENCE_SCHEMA,status:"refused",reason:String(error),
+        sourceMutationAuthorized:false};
+    }
+  }
+  function applySemanticCollectionLayout(host,contract,registry,evaluation) {
+    if (!evaluation || evaluation.schema!==COLLECTION_EVIDENCE_SCHEMA ||
+        evaluation.status!=="candidate-verified") return {status:"refused",reason:"no verified collection candidate"};
+    const current=evaluateSemanticCollectionLayout(host,contract,registry);
+    if (current.status!=="candidate-verified") return {status:"refused",reason:current.reason};
+    if (current.host_width_px!==evaluation.host_width_px ||
+        JSON.stringify(current.plan)!==JSON.stringify(evaluation.plan))
+      return {status:"refused",reason:"stale semantic collection candidate"};
+    const {rows,columns}=resolveSemanticCollection(host,contract,registry);
+    if (!collectionLayouts.has(host)) collectionLayouts.set(host,{
+      initialMode:host.getAttribute("data-layout-mode"),
+      initialAuthority:host.getAttribute("data-mcel-collection-layout-authority"),
+      rowStyles:new Map(),fieldVisibility:new Map(),observers:[]});
+    const state=collectionLayouts.get(host);
+    for (const row of rows) {
+      if (!state.rowStyles.has(row)) state.rowStyles.set(row,row.getAttribute("style"));
+    }
+    host.dataset.layoutMode=current.plan.mode;
+    host.dataset.mcelCollectionLayoutAuthority="mcel-semantic-layout-inference.v1";
+    const visible=current.plan.visible_keys;
+    const tracks=current.plan.mode==="stacked"?"minmax(0,1fr)":
+      (visible?columns.filter(c=>visible.includes(c.key)):columns)
+        .map(c=>current.plan.allocated_px[c.key].toFixed(2)+"px").join(" ");
+    for (const row of rows) {
+      row.style.gridTemplateColumns=tracks;
+      if (visible) for (const field of row.children) {
+        if (!state.fieldVisibility.has(field)) state.fieldVisibility.set(field,field.hidden);
+        field.hidden=!visible.includes(field.dataset.semanticField);
+      }
+    }
+    return {status:"pass",plan:current.plan,authority:host.dataset.mcelCollectionLayoutAuthority,
+      sourceMutationAuthorized:false};
+  }
+  function clearSemanticCollectionLayout(host) {
+    const state=collectionLayouts.get(host);
+    if (!state) return;
+    for (const observer of state.observers) observer.disconnect();
+    for (const [field,hidden] of state.fieldVisibility) field.hidden=hidden;
+    for (const [row,style] of state.rowStyles) {
+      if (style===null) row.removeAttribute("style");
+      else row.setAttribute("style",style);
+    }
+    if (state.initialMode===null) host.removeAttribute("data-layout-mode");
+    else host.setAttribute("data-layout-mode",state.initialMode);
+    if (state.initialAuthority===null) host.removeAttribute("data-mcel-collection-layout-authority");
+    else host.setAttribute("data-mcel-collection-layout-authority",state.initialAuthority);
+    // Chromium can serialize an empty style after computed-grid reads.
+    // Mirror the canonical tree cleanup and restore exact attribute absence.
+    for (const [row,style] of state.rowStyles) if (style===null) {
+      row.setAttribute("style","");row.removeAttribute("style");
+    }
+    collectionLayouts.delete(host);
+  }
+  function mountSemanticCollectionLayout(host,contract,registry,{observeResize=true}={}) {
+    if (collectionLayouts.has(host)) return {status:"refused",reason:"semantic collection already mounted"};
+    const evaluation=evaluateSemanticCollectionLayout(host,contract,registry);
+    const initial=applySemanticCollectionLayout(host,contract,registry,evaluation);
+    if (initial.status!=="pass") return {...initial,evaluation};
+    const state=collectionLayouts.get(host);
+    let scheduled=false;
+    const reflow=()=>{
+      const latest=evaluateSemanticCollectionLayout(host,contract,registry);
+      const applied=applySemanticCollectionLayout(host,contract,registry,latest);
+      if (applied.status!=="pass") host.dataset.mcelCollectionLayoutAuthority="refused";
+      return applied;
+    };
+    const schedule=()=>{
+      if (scheduled) return;
+      scheduled=true;
+      host.ownerDocument.defaultView.requestAnimationFrame(()=>{scheduled=false;reflow();});
+    };
+    if (observeResize) {
+      const view=host.ownerDocument.defaultView;
+      if (typeof view.ResizeObserver==="function") {
+        const observer=new view.ResizeObserver(schedule);observer.observe(host);state.observers.push(observer);
+      } else {
+        view.addEventListener("resize",schedule);
+        state.observers.push({disconnect:()=>view.removeEventListener("resize",schedule)});
+      }
+      const mutation=new view.MutationObserver(schedule);
+      mutation.observe(host,{subtree:true,childList:true});state.observers.push(mutation);
+    }
+    return {status:"pass",initial,evaluation,refresh:reflow,
+      unmount:()=>clearSemanticCollectionLayout(host)};
+  }
+
   global.McelSemanticLayoutInference = Object.freeze({SCHEMA, ADAPTIVE_SCHEMA, TREE_SCHEMA,
+    evaluateSemanticCollectionLayout, applySemanticCollectionLayout,
+    mountSemanticCollectionLayout, clearSemanticCollectionLayout,
     canonicalLayoutTree, evaluateCanonicalLayoutTree, applyCanonicalLayoutTree, clearCanonicalLayoutTree,
     mountCanonicalLayoutTree, unmountCanonicalLayoutTree,
     inferWorkspaceLayout, applyWorkspaceLayout, clearWorkspaceLayout,

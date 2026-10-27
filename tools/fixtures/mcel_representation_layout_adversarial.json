@@ -1,0 +1,365 @@
+{
+  "schema": "mcel.text-shrinker-fixture.v1",
+  "value_sets": {
+    "long_keys": [
+      "vault/storage/exports/archive/2026/quarter-four/customer_region_west_financial_transaction_reconciliation_verification_batch_001_final_signed_integrity_report_v09_checksum_abcdef1234567890.csv",
+      "vault/storage/exports/archive/2026/quarter-four/customer_region_west_financial_transaction_reconciliation_verification_batch_002_final_signed_integrity_report_v09_checksum_abcdef1234567890.csv",
+      "vault/storage/exports/archive/2026/quarter-four/customer_region_west_financial_transaction_reconciliation_verification_batch_003_final_signed_integrity_report_v09_checksum_abcdef1234567890.csv",
+      "vault/storage/exports/archive/2026/quarter-four/customer_region_west_financial_transaction_reconciliation_verification_batch_004_final_signed_integrity_report_v09_checksum_abcdef1234567890.csv"
+    ],
+    "near_keys": [
+      "environment_cluster_alpha/component/processor_batch/run_series_1110_revision_final_integrity",
+      "environment_cluster_alpha/component/processor_batch/run_series_1111_revision_final_integrity",
+      "environment_cluster_alpha/component/processor_batch/run_series_1112_revision_final_integrity",
+      "environment_cluster_alpha/component/processor_batch/run_series_1113_revision_final_integrity"
+    ],
+    "missing_keys": [
+      "regional_warehouse_telemetry_pipeline_device_alpha_daily",
+      "regional_warehouse_telemetry_pipeline_device_beta_daily",
+      "regional_warehouse_telemetry_pipeline_device_gamma_daily",
+      "regional_warehouse_telemetry_pipeline_device_delta_daily"
+    ],
+    "competing_keys": [
+      "project_executive_weekly_compliance_oversight_submission_A_canonical",
+      "project_executive_weekly_compliance_oversight_submission_B_canonical",
+      "project_executive_weekly_compliance_oversight_submission_C_canonical",
+      "project_executive_weekly_compliance_oversight_submission_D_canonical"
+    ],
+    "sizes": [
+      10241,
+      10242,
+      20241,
+      30241
+    ]
+  },
+  "widgets": {
+    "long_identifiers": {
+      "behavior": {
+        "task": "browse",
+        "sort_by": "size"
+      },
+      "columns": [
+        {
+          "key": "name",
+          "kind": "identifier",
+          "label": "Name",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": true,
+              "mode": "contextual_identifier",
+              "values_ref": "long_keys"
+            }
+          }
+        },
+        {
+          "key": "size",
+          "kind": "size",
+          "label": "Size",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": true,
+              "mode": "adaptive_size",
+              "values_ref": "sizes"
+            }
+          }
+        },
+        {
+          "key": "modified",
+          "kind": "timestamp",
+          "label": "Modified",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": false
+            }
+          }
+        }
+      ],
+      "rows": [
+        {
+          "id": "L1",
+          "name": "vault/storage/exports/archive/2026/quarter-four/customer_region_west_financial_transaction_reconciliation_verification_batch_001_final_signed_integrity_report_v09_checksum_abcdef1234567890.csv",
+          "size": 10241,
+          "modified": "2026-10-25"
+        },
+        {
+          "id": "L2",
+          "name": "vault/storage/exports/archive/2026/quarter-four/customer_region_west_financial_transaction_reconciliation_verification_batch_002_final_signed_integrity_report_v09_checksum_abcdef1234567890.csv",
+          "size": 10242,
+          "modified": "2026-10-25"
+        },
+        {
+          "id": "L3",
+          "name": "vault/storage/exports/archive/2026/quarter-four/customer_region_west_financial_transaction_reconciliation_verification_batch_003_final_signed_integrity_report_v09_checksum_abcdef1234567890.csv",
+          "size": 20241,
+          "modified": "2026-10-25"
+        },
+        {
+          "id": "L4",
+          "name": "vault/storage/exports/archive/2026/quarter-four/customer_region_west_financial_transaction_reconciliation_verification_batch_004_final_signed_integrity_report_v09_checksum_abcdef1234567890.csv",
+          "size": 30241,
+          "modified": "2026-10-25"
+        }
+      ]
+    },
+    "near_collisions": {
+      "behavior": {
+        "task": "compare",
+        "sort_by": "size"
+      },
+      "columns": [
+        {
+          "key": "name",
+          "kind": "identifier",
+          "label": "Name",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": true,
+              "mode": "contextual_identifier",
+              "values_ref": "near_keys"
+            }
+          }
+        },
+        {
+          "key": "size",
+          "kind": "size",
+          "label": "Size",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": true,
+              "mode": "adaptive_size",
+              "values_ref": "sizes"
+            }
+          }
+        },
+        {
+          "key": "state",
+          "kind": "text",
+          "label": "State",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": false
+            }
+          }
+        }
+      ],
+      "rows": [
+        {
+          "id": "N1",
+          "name": "environment_cluster_alpha/component/processor_batch/run_series_1110_revision_final_integrity",
+          "size": 10241,
+          "state": "ok"
+        },
+        {
+          "id": "N2",
+          "name": "environment_cluster_alpha/component/processor_batch/run_series_1111_revision_final_integrity",
+          "size": 10242,
+          "state": "ok"
+        },
+        {
+          "id": "N3",
+          "name": "environment_cluster_alpha/component/processor_batch/run_series_1112_revision_final_integrity",
+          "size": 20241,
+          "state": "ok"
+        },
+        {
+          "id": "N4",
+          "name": "environment_cluster_alpha/component/processor_batch/run_series_1113_revision_final_integrity",
+          "size": 30241,
+          "state": "ok"
+        }
+      ]
+    },
+    "missing_fields": {
+      "behavior": {
+        "task": "browse",
+        "sort_by": "size"
+      },
+      "columns": [
+        {
+          "key": "name",
+          "kind": "identifier",
+          "label": "Name",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": true,
+              "mode": "contextual_identifier",
+              "values_ref": "missing_keys"
+            }
+          }
+        },
+        {
+          "key": "size",
+          "kind": "size",
+          "label": "Size",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": true,
+              "mode": "adaptive_size",
+              "values_ref": "sizes"
+            }
+          }
+        },
+        {
+          "key": "owner",
+          "kind": "text",
+          "label": "Owner",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": false
+            }
+          }
+        },
+        {
+          "key": "state",
+          "kind": "text",
+          "label": "State",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": false
+            }
+          }
+        }
+      ],
+      "rows": [
+        {
+          "id": "M1",
+          "name": "regional_warehouse_telemetry_pipeline_device_alpha_daily",
+          "size": 10241,
+          "state": "ok"
+        },
+        {
+          "id": "M2",
+          "name": "regional_warehouse_telemetry_pipeline_device_beta_daily",
+          "size": 10242,
+          "owner": "",
+          "state": "ok"
+        },
+        {
+          "id": "M3",
+          "name": "regional_warehouse_telemetry_pipeline_device_gamma_daily",
+          "size": 20241,
+          "owner": "Kai",
+          "state": "ok"
+        },
+        {
+          "id": "M4",
+          "name": "regional_warehouse_telemetry_pipeline_device_delta_daily",
+          "size": 30241,
+          "owner": "Amir",
+          "state": "ok"
+        }
+      ]
+    },
+    "competing_required": {
+      "behavior": {
+        "task": "compare",
+        "sort_by": "size"
+      },
+      "columns": [
+        {
+          "key": "name",
+          "kind": "identifier",
+          "label": "Name",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": true,
+              "mode": "contextual_identifier",
+              "values_ref": "competing_keys"
+            }
+          }
+        },
+        {
+          "key": "size",
+          "kind": "size",
+          "label": "Size",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": true,
+              "mode": "adaptive_size",
+              "values_ref": "sizes"
+            }
+          }
+        },
+        {
+          "key": "modified",
+          "kind": "timestamp",
+          "label": "Modified",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": false
+            }
+          }
+        },
+        {
+          "key": "owner",
+          "kind": "text",
+          "label": "Owner",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": false
+            }
+          }
+        },
+        {
+          "key": "state",
+          "kind": "text",
+          "label": "State",
+          "required": true,
+          "presentation": {
+            "text_shrinker": {
+              "enabled": false
+            }
+          }
+        }
+      ],
+      "rows": [
+        {
+          "id": "C1",
+          "name": "project_executive_weekly_compliance_oversight_submission_A_canonical",
+          "size": 10241,
+          "modified": "2026-10-24",
+          "owner": "QF",
+          "state": "open"
+        },
+        {
+          "id": "C2",
+          "name": "project_executive_weekly_compliance_oversight_submission_B_canonical",
+          "size": 10242,
+          "modified": "2026-10-24",
+          "owner": "ZX",
+          "state": "hold"
+        },
+        {
+          "id": "C3",
+          "name": "project_executive_weekly_compliance_oversight_submission_C_canonical",
+          "size": 20241,
+          "modified": "2026-10-24",
+          "owner": "MM",
+          "state": "done"
+        },
+        {
+          "id": "C4",
+          "name": "project_executive_weekly_compliance_oversight_submission_D_canonical",
+          "size": 30241,
+          "modified": "2026-10-24",
+          "owner": "AR",
+          "state": "open"
+        }
+      ]
+    }
+  }
+}

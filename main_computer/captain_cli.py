@@ -166,6 +166,7 @@ def build_captain_options_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-stipend", action="store_true", help="Do not issue fixed hub credits before submit in legacy no-bridge mode.")
     parser.add_argument("--no-bridge", action="store_true", help="Skip the mainnet bridge deposit/refund flow and use the legacy stipend path.")
     parser.add_argument("--bridge-credits", default="1", help="Compute credits to bridge for captain smoke. Defaults to 1.")
+    parser.add_argument("--bridge-balance-target", default="", help="Testnet-only bounded bridge top-up target (exactly 2 credits). Checks live Hub available and cumulative bridge-completed credits; never funds if already at the cap.")
     parser.add_argument("--no-bridge-refund", dest="bridge_refund", action="store_false", help="Do not release leftover bridge credits back to the wallet after the AI response.")
     parser.set_defaults(bridge_refund=True)
     parser.add_argument("--bridge-controller-private-key", default="", help="Private key for the bridge controller/hub admin wallet used for refund release. Never printed.")
@@ -205,8 +206,31 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
         idempotency_key = str(smoke_id).strip()
 
     account_id = wallet_account_id(runtime.wallet.address)
-    use_bridge = bool(not options.no_hub and not options.no_bridge)
-    bridge_credit_wei = _bridge_credit_wei(options.bridge_credits) if use_bridge else 0
+    balance_target_plan: dict[str, Any] | None = None
+    if options.bridge_balance_target:
+        if (runtime.network != "testnet" or bool(options.no_hub)
+                or bool(options.no_bridge) or max_credits > 2):
+            raise CaptainCliError(
+                "--bridge-balance-target is only valid for Testnet Hub, without --no-bridge, "
+                "and with --max-credits no greater than 2."
+            )
+        target_wei = credit_decimal_text_to_wei(options.bridge_balance_target, default="0")
+        if target_wei != 2 * 10**18:
+            raise CaptainCliError("The browser acceptance bridge balance target must be exactly 2 credits.")
+        balance_target_plan = plan_captain_bounded_bridge_top_up(
+            _fetch_hub_credit_balance(runtime.config.hub_url,
+                                      wallet_address=runtime.wallet.address,
+                                      timeout_s=options.timeout_s),
+            wallet_address=runtime.wallet.address, target_wei=target_wei,
+        )
+        # This mode cannot issue a legacy administrative stipend. A balance
+        # already at/above target never enters the chain-funding branch.
+        options.no_stipend = True
+    use_bridge = bool(not options.no_hub and not options.no_bridge and
+                      (balance_target_plan is None or balance_target_plan["deposit_credit_wei"] > 0))
+    bridge_credit_wei = (balance_target_plan["deposit_credit_wei"]
+                         if balance_target_plan is not None else
+                         (_bridge_credit_wei(options.bridge_credits) if use_bridge else 0))
 
     result: dict[str, Any] = {
         "ok": True,
@@ -241,6 +265,15 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
             "smoke_id": smoke_id,
         },
     }
+
+    if balance_target_plan is not None:
+        result["hub"]["bridge_balance_target"] = {
+            "target_credit_wei": str(2 * 10**18),
+            "initial_available_credit_wei": str(balance_target_plan["available_credit_wei"]),
+            "initial_bridge_completed_credit_wei": str(balance_target_plan["bridge_completed_credit_wei"]),
+            "planned_deposit_credit_wei": str(bridge_credit_wei),
+            "funding_skipped": bridge_credit_wei == 0,
+        }
 
     if use_bridge:
         result["hub"]["bridge"] = {
@@ -359,6 +392,22 @@ def run_captain(argv: list[str], *, config: MainComputerConfig | None = None, cw
                 _require_no_other_captain_pending_deposits(
                     pending_path, wallet_address=runtime.wallet.address,
                 )
+                if balance_target_plan is not None:
+                    # Recheck immediately before broadcasting. Never trust a
+                    # stale balance as permission to create a second deposit.
+                    current_plan = plan_captain_bounded_bridge_top_up(
+                        _fetch_hub_credit_balance(
+                            runtime.config.hub_url, wallet_address=runtime.wallet.address,
+                            timeout_s=options.timeout_s,
+                        ),
+                        wallet_address=runtime.wallet.address,
+                        target_wei=2 * 10**18,
+                    )
+                    if current_plan["deposit_credit_wei"] != bridge_credit_wei:
+                        raise CaptainCliError(
+                            "Hub balance changed before bounded bridge deposit; "
+                            "refusing funding. Re-run to recompute the 2-credit cap."
+                        )
                 pending_deposit = send_captain_bridge_deposit(
                     runtime,
                     deposit_credit_wei=bridge_credit_wei,
@@ -581,6 +630,55 @@ def _apply_captain_smoke_defaults(options: argparse.Namespace, *, base_config: M
     """Backward-compatible smoke helper; smoke uses the same live defaults."""
 
     _apply_captain_live_defaults(options, base_config=base_config, cwd=cwd)
+
+
+def plan_captain_bounded_bridge_top_up(
+    balance: dict[str, Any], *, wallet_address: str, target_wei: int = 2 * 10**18,
+) -> dict[str, int]:
+    """Fail-closed available-balance top-up with a cumulative bridge cap.
+
+    Only a verified wallet-specific Hub ledger can authorize a new deposit.
+    Historical bridged credits count toward the cap even when spent, so this
+    helper never replenishes a wallet that has already bridged >= 2 credits.
+    """
+    if not isinstance(balance, dict) or balance.get("ok") is not True:
+        raise CaptainCliError("Hub balance unavailable; refusing capped bridge funding.")
+    account = balance.get("account")
+    if not isinstance(account, dict):
+        raise CaptainCliError("Hub account balance missing; refusing capped bridge funding.")
+    expected = normalize_address(wallet_address)
+    try:
+        reported_wallet = normalize_address(str(balance.get("wallet_address") or ""))
+        account_wallet = normalize_address(str(account.get("wallet_address") or ""))
+        owner = normalize_address(str(account.get("owner_address") or ""))
+    except (ValueError, TypeError) as exc:
+        raise CaptainCliError("Hub balance wallet identity unavailable; refusing bridge funding.") from exc
+    if reported_wallet != expected or account_wallet != expected or owner != expected:
+        raise CaptainCliError("Hub balance account identity mismatch; refusing bridge funding.")
+
+    def _exact_wei(field: str) -> int:
+        raw = account.get(field)
+        if isinstance(raw, bool) or not isinstance(raw, str) or not re.fullmatch(r"[0-9]+", raw):
+            raise CaptainCliError(f"Hub balance {field} not an exact credit-wei string.")
+        return int(raw)
+
+    available = _exact_wei("available_credit_wei")
+    completed = _exact_wei("bridge_completed_credit_wei")
+    if target_wei != 2 * 10**18:
+        raise CaptainCliError("Bounded bridge target must equal 2 credits.")
+    # The two-credit value is a maximum *price* and cumulative bridge cap,
+    # not a minimum available balance required to submit a request. Credits
+    # can be held or spent by an earlier accepted job. Never replenish those
+    # credits once the cumulative bridge cap has been reached; let the Hub's
+    # normal reservation/affordability check decide whether work is fundable.
+    deficit = max(0, target_wei - available)
+    permitted = max(0, target_wei - completed)
+    deposit = min(deficit, permitted)
+    return {
+        "available_credit_wei": available,
+        "bridge_completed_credit_wei": completed,
+        "deposit_credit_wei": deposit,
+    }
 
 
 def _bridge_credit_wei(value: Any) -> int:

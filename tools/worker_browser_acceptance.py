@@ -458,13 +458,13 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument('--authorize-worker-offer', action='store_true',
                         help='Explicitly allow registering a real paid-worker offer on testnet')
     parser.add_argument('--authorize-captain-spend', action='store_true',
-                        help='Explicitly authorize one credit-limited Captain smoke request on testnet')
+                        help='Authorize one Testnet Captain attempt and at most one two-credit retry after a market rejection; cumulative bridge funding capped at two credits')
     args = parser.parse_args(argv)
     url = valid_worker_url(args.url)
     if args.mode in ('worker', 'work-cycle') and args.action == 'run' and not args.authorize_worker_offer:
         raise AcceptanceError('Worker registration requires --authorize-worker-offer')
     if args.mode == 'work-cycle' and args.action == 'run' and not args.authorize_captain_spend:
-        raise AcceptanceError('Work-cycle test requires --authorize-captain-spend (one live testnet Captain request may bridge/spend credits)')
+        raise AcceptanceError('Work-cycle test requires --authorize-captain-spend (one Captain attempt plus at most one bounded retry may spend existing or capped bridged credits)')
     if args.action == 'captain-pending':
         print(json.dumps(captain_pending_bridge_evidence(), indent=2))
         return 0
@@ -476,7 +476,7 @@ def run(argv: list[str] | None = None) -> int:
               x: commands(x) for x in ('install', 'cache-wallet', 'rpc-probe', 'run')},
             'wallet_policy': 'generate disposable wallet if absent; fresh wallet for repeated signing tests',
             'production_code_changed': False, 'purchases_credits': args.mode == 'work-cycle',
-            'maximum_testnet_bridge_credits': 1 if args.mode == 'work-cycle' else 0}, indent=2))
+            'maximum_testnet_bridge_credits': 2 if args.mode == 'work-cycle' else 0}, indent=2))
         return 0
 
     env = os.environ.copy()

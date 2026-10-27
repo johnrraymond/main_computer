@@ -1,0 +1,28 @@
+/* Generic MCEL collection presentation. Not application-specific CSS. */
+:root { color-scheme:light; font-family:system-ui, -apple-system, sans-serif; color:#202937; background:#f5f7fa; }
+* { box-sizing:border-box; }
+body { margin:0; }
+.mcel-app { width:min(1100px, 100%); margin:0 auto; padding:clamp(12px, 3vw, 36px); }
+.mcel-heading h1 {font-size:clamp(26px,3vw,38px); letter-spacing:-.04em;margin:0 0 3px}
+.mcel-heading p {margin:0 0 20px;color:#566276}
+.mcel-form,.mcel-toolbar {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:12px;padding:16px;background:white;border:1px solid #d9e0e9;border-radius:12px;margin-bottom:16px;align-items:end}
+.mcel-toolbar {grid-template-columns:repeat(2,minmax(0,1fr))}
+.mcel-label {display:grid;gap:5px;font-size:13px;font-weight:650;color:#344357;min-width:0}
+.mcel-input {width:100%;min-width:0;max-width:100%;font:inherit;padding:9px;border:1px solid #a7b5c6;border-radius:7px;background:white;color:#172334}
+.mcel-button {font:inherit;cursor:pointer;border:1px solid #8091a4;border-radius:7px;background:#fff;color:#263c57;padding:10px 13px;min-height:40px}
+.mcel-button:focus-visible,.mcel-input:focus-visible {outline:3px solid #498df5;outline-offset:1px}
+.mcel-primary {background:#153c65;border-color:#153c65;color:white;font-weight:700}
+.mcel-danger {color:#8f2437;border-color:#c6a1a8}
+.mcel-feedback {min-height:24px;font-size:14px;color:#365577;margin-bottom:6px;overflow-wrap:anywhere}
+.mcel-count {font-size:14px;color:#516174}
+.mcel-rows {display:grid;gap:10px}
+.mcel-row {display:grid;gap:12px;background:white;border:1px solid #d9e0e9;padding:14px;border-radius:11px;min-width:0}
+.mcel-row-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,130px),1fr));gap:14px;min-width:0}
+.mcel-cell {min-width:0;display:grid;gap:4px}
+.mcel-cell-name {font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#66778c}
+.mcel-cell-value {font-weight:650;overflow-wrap:anywhere}
+.mcel-row-actions {display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.mcel-edit-label {display:grid;gap:4px;font-size:11px;font-weight:600;color:#526176;min-width:90px;max-width:160px;flex:1 1 100px}
+.mcel-row-actions .mcel-input {width:100%}
+.mcel-receipts {padding:0 0 0 20px;color:#657387;font-size:12px;overflow-wrap:anywhere}
+@media(max-width:480px) {.mcel-toolbar{grid-template-columns:minmax(0,1fr)} .mcel-form{padding:12px} .mcel-row-actions{justify-content:flex-start}}

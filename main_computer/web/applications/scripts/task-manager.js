@@ -149,6 +149,13 @@ function initTaskManagerApp() {
       taskScheduleWhen.value = now.toISOString().slice(0, 16);
     }
   }
+  // Opt-in read-only MCEL lab mirror. Any refusal leaves legacy notebook untouched.
+  if (typeof window.McelTaskManagerNotebookLab?.optInHost === "function") {
+    const labMounted = window.McelTaskManagerNotebookLab.optInHost(taskManagerApp);
+    if (labMounted?.ok && Array.isArray(taskManagerSnapshotCache?.processes)) {
+      window.McelTaskManagerNotebookLab.publish(taskManagerSnapshotCache, "available");
+    }
+  }
   scheduleTaskManagerAutoRefresh();
   updateTaskManagerWidgetTickers(taskManagerSnapshotCache, "Task manager awaiting first snapshot.", "Task manager ready");
   updateTaskAiTicker(taskAiOutput.textContent);

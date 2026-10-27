@@ -1141,3 +1141,98 @@ def test_payout_claim_settlement_and_bridge_boundaries_are_worker_scoped() -> No
     assert any(event["event_type"] == "hub.hold.created" for event in status["bridge_audit"])
     assert any(event["event_type"] == "hub.hold.charged" for event in status["bridge_audit"])
     assert any(event["event_type"] == "hub.worker.earning.recorded" for event in status["bridge_audit"])
+
+
+def test_closed_socket_releases_unearned_accepted_hold_without_charge(tmp_path: Path) -> None:
+    """A disconnected browser Worker must not strand Captain's credit forever."""
+    from time import monotonic, sleep
+
+    worker_id = "worker-abandoned-credit"
+    hub, thread, url, sock, _auth, requester = _new_local_hub_with_worker(
+        tmp_path, test_name="abandoned-credit", worker_id=worker_id,
+        worker_price="1.024", max_concurrency=1,
+    )
+    try:
+        account = requester["key"]["account_id"]
+        before = hub.payout_ledger_directory.fund_account(
+            account_id=account, wallet_address=requester["key"]["wallet_address"],
+            credits="2", replace=True,
+        )
+        request_thread, q = _submit_work_async(
+            hub_url=url, requester_msk_id=requester["key"]["id"],
+            request_id="req_abandoned_credit", max_price="2",
+        )
+        offer = _accept_current_offer(sock, worker_id=worker_id)
+        response = q.get(timeout=5)
+        assert response[0] == 200, response
+        request_thread.join(timeout=2)
+        session_id = offer["session_id"]
+        during = hub.payout_ledger_directory.get_account(account)
+        assert during["held_credit_wei"] == str(1024 * 10**15)
+        assert during["available_credit_wei"] == str(976 * 10**15)
+        _ws_send_json(sock, {"type": "worker.close"})
+        deadline = monotonic() + 5
+        while monotonic() < deadline:
+            after = hub.accepted_work_session_directory.get_session(session_id)
+            if after and after.get("status") == "failed":
+                break
+            sleep(.025)
+        assert after["status"] == "failed"
+        assert after["worker_failure"]["error"]["reason_code"] == "worker_connection_closed_before_result"
+        assert after["payout"]["hold_status"] == "released"
+        balance = hub.payout_ledger_directory.get_account(account)
+        assert balance["available_credit_wei"] == str(2 * 10**18)
+        assert balance["held_credit_wei"] == "0"
+        assert balance["spent_credit_wei"] == "0"
+        assert not hub.payout_ledger_directory.store.load().get("payout_charges")
+        assert hub.payout_ledger_directory.store.load()["payout_holds"][after["payout"]["hold_id"]]["status"] == "released"
+    finally:
+        sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
+
+
+def test_closing_socket_after_success_does_not_refund_charged_work(tmp_path: Path) -> None:
+    """The cleanup guard must never fabricate a second refund for paid work."""
+    from time import monotonic, sleep
+
+    worker_id = "worker-paid-close"
+    hub, thread, url, sock, _auth, requester = _new_local_hub_with_worker(
+        tmp_path, test_name="paid-close", worker_id=worker_id,
+        worker_price="1.024", max_concurrency=1,
+    )
+    try:
+        account = requester["key"]["account_id"]
+        hub.payout_ledger_directory.fund_account(
+            account_id=account, wallet_address=requester["key"]["wallet_address"],
+            credits="2", replace=True,
+        )
+        request_thread, q = _submit_work_async(
+            hub_url=url, requester_msk_id=requester["key"]["id"],
+            request_id="req_paid_close", max_price="2",
+        )
+        offer = _accept_current_offer(sock, worker_id=worker_id)
+        response = q.get(timeout=5)
+        assert response[0] == 200, response
+        request_thread.join(timeout=2)
+        _finish_offer_with_result(sock, offer, worker_id=worker_id)
+        _ws_send_json(sock, {"type": "worker.close"})
+        deadline = monotonic() + 5
+        while monotonic() < deadline:
+            owner = hub.worker_session_directory.get_owner(worker_id)
+            if owner and owner.get("status") == "closed":
+                break
+            sleep(.025)
+        session = hub.accepted_work_session_directory.get_session(offer["session_id"])
+        assert session["status"] == "succeeded"
+        account_balance = hub.payout_ledger_directory.get_account(account)
+        assert account_balance["available_credit_wei"] == str(976 * 10**15)
+        assert account_balance["held_credit_wei"] == "0"
+        assert account_balance["spent_credit_wei"] == str(1024 * 10**15)
+        assert len(hub.payout_ledger_directory.store.load().get("payout_charges", {})) == 1
+    finally:
+        sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)

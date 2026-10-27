@@ -900,6 +900,8 @@ async function runTaskManagerRefresh() {
       all_process_overview: allProcessOverview,
       all_processes_error: allProcessMessage,
     };
+    // Lab-only read-only mirror of the existing canonical refresh result.
+    window.McelTaskManagerNotebookLab?.publish(taskManagerSnapshotCache, "available");
     const summary = summarizeTaskSnapshot(taskManagerSnapshotCache);
     taskManagerStatus.textContent = allProcessMessage ? `Task snapshot current. ${allProcessMessage}` : "Task snapshot current.";
     const server = data.server || {};
@@ -916,6 +918,7 @@ async function runTaskManagerRefresh() {
   } catch (error) {
     const message = `Task manager failed: ${error.message || error}`;
     taskManagerStatus.textContent = "Task manager unavailable.";
+    window.McelTaskManagerNotebookLab?.publish(null, "failed");
     updateTaskServerPanel(taskManagerSnapshotCache?.server || {}, taskManagerSnapshotCache?.overview || {}, "viewport offline | heartbeat path still available");
     commitTaskProcessSurface(taskProcessTable, '<div class="task-empty">Server process view unavailable.</div>');
     if (taskAllProcessTable) commitTaskProcessSurface(taskAllProcessTable, '<div class="task-empty">All-process view unavailable.</div>');

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {captainCommand, captainProof, captainFailureEvidence, captainStdioEvidence, captainPrepareOnlyCommand, probeCaptainPreparation, executeCaptain, workerSessionProof, verifyDeliveredWork, waitForDeliveredWork, waitForLiveWorker, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection} from './worker_work_cycle.mjs'
+import {captainCommand, captainProof, captainFailureEvidence, captainStdioEvidence, captainPrepareOnlyCommand, probeCaptainPreparation, executeCaptain, workerSessionProof, verifyDeliveredWork, waitForDeliveredWork, waitForLiveWorker, prepareWorkerForWorkNow, postWorkNowDuration, readWorkNowRejection, boundedSmokeOfferTokens, setWorkerOfferTargetTokens} from './worker_work_cycle.mjs'
 import {EventEmitter} from 'node:events'
 import {PassThrough} from 'node:stream'
 const workerId = 'worker-browser-123'
@@ -16,13 +16,15 @@ const offer = {type:'hub.work.offer',request_id:requestId,session_id:sessionId}
 const result = {type:'worker.work.result',request_id:requestId,session_id:sessionId,result:{status:'success'}}
 const captainResult = {ok:true,hub:{network:'testnet',url:'https://testnet-hub.greatlibrary.io',ring:3,
   submit:{request_id:requestId,session_id:sessionId},poll:{session_id:sessionId,status:'succeeded'}}}
-test('Captain request is one controlled testnet transaction, no mainnet, no chain smoke',()=>{
+test('Captain work cycle uses existing testnet credits without bridge deposits or stipends',()=>{
  const {executable,args}=captainCommand({python:'python',nonce:'c23142a2-908e-4972-a6c7-c30259944f8a',model:'gemma4:26b-a4b-it-q4_K_M'})
  assert.equal(executable,'python')
  assert.deepEqual(args.slice(0,4),['-m','main_computer.captain_entrypoint','smoke',args[3]])
- for (const [name,value] of [['--network','testnet'],['--ring','3'],['--max-credits','1'],['--bridge-credits','1'],['--model','gemma4:26b-a4b-it-q4_K_M']])
+ for (const [name,value] of [['--network','testnet'],['--ring','3'],['--max-credits','1'],['--model','gemma4:26b-a4b-it-q4_K_M']])
   assert.equal(args[args.indexOf(name)+1],value)
  assert.ok(args.includes('--no-chain') && args.includes('--yes') && args.includes('--json'))
+ assert.ok(args.includes('--no-bridge') && args.includes('--no-stipend'))
+ assert.ok(!args.includes('--bridge-credits') && !args.includes('--stipend-credits'))
  assert.doesNotMatch(args.join(' '),/mainnet/)
 })
 test('Valid stable-Hub Captain completion is correlated',()=>{
@@ -422,4 +424,370 @@ test('Structured Hub error output from Captain is exposed as safe categorical me
     assert.doesNotMatch(err.message,/secret-value|signed_request/)
     return true
   })
+})
+
+
+test('Every browser acceptance Captain command is deposit-free even across different nonce values',()=>{
+ for (const nonce of ['c23142a2-908e-4972-a6c7-c30259944f8a','c23142a2-908e-4972-a6c7-c30259944f8b']) {
+  const {args}=captainCommand({python:'python',nonce,model:'gemma4:26b-a4b-it-q4_K_M'})
+  const asFlags=new Set(args)
+  assert.ok(asFlags.has('--no-bridge'), 'must skip chain-funded bridge deposit')
+  assert.ok(asFlags.has('--no-stipend'), 'must skip admin credit issuance')
+  assert.ok(asFlags.has('--no-chain'), 'must skip unrelated smoke transaction')
+  assert.equal(args[args.indexOf('--max-credits')+1],'1')
+  assert.equal(args[args.indexOf('--network')+1],'testnet')
+  assert.ok(!asFlags.has('--bridge-credits'))
+ }
+})
+
+test('same work-cycle diagnoses Hub selector rejection and still masks owner data', async()=>{
+  const {captainWorkerAtFailure} = await import('./worker_work_cycle.mjs')
+  const response = JSON.stringify({
+    ok:false,error:'worker_not_live',message:'No live worker matched the request market constraints.',
+    selected_worker:{worker_id:'0x'+'a'.repeat(40),auth_token:'do-not-expose'},
+    owner:{wallet_address:'0x'+'b'.repeat(40)},request_id:'0x'+'c'.repeat(64),
+  })
+  const stdout = 'ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP 409: '+response
+  const failure = captainFailureEvidence({exitCode:2,stdout})
+  assert.equal(failure.hubHttpStatus,409)
+  assert.equal(failure.hubOperation,'live-worker-request-submit')
+  assert.equal(failure.hubCode,'worker_not_live')
+  assert.equal(failure.hubMessage,'No live worker matched the request market constraints.')
+  assert.equal(failure.verdict,'no-eligible-live-worker-in-hub-market')
+  assert.doesNotMatch(JSON.stringify(failure),/do-not-expose|0x[a-c]{40}/)
+  const snapshot=captainWorkerAtFailure(status({},{}))
+  assert.deepEqual(snapshot, {statusReadable:true, accepting:true, websocketAlive:true,
+    websocketConnected:true, testnetHub:true, ring3Selected:true})
+  assert.doesNotMatch(JSON.stringify(snapshot),/worker-browser-123|worker_id/)
+})
+
+test('Hub requester MSK failure is diagnosed as authorization, not worker selection',()=>{
+  const response={ok:false,error:'requester_msk_invalid',reason_code:'expired',message:'Request key expired',signature:'do-not-log'}
+  const r=captainFailureEvidence({exitCode:2,
+    stdout:'ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP 401: '+JSON.stringify(response)})
+  assert.equal(r.hubHttpStatus,401)
+  assert.equal(r.hubCode,'requester_msk_invalid')
+  assert.equal(r.hubReasonCode,'expired')
+  assert.equal(r.verdict,'requester-multisession-authorization-rejected')
+  assert.doesNotMatch(JSON.stringify(r),/do-not-log|signature/)
+})
+
+test('owner/market and other Hub refusal types produce bounded distinct diagnoses',()=>{
+  function classify(code,status=409){
+    const r=captainFailureEvidence({exitCode:2,stdout:'ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP '+status+': '+JSON.stringify({ok:false,error:code})})
+    return r.verdict
+  }
+  assert.equal(classify('worker_owner_not_local'),'hub-worker-owner-or-socket-mismatch')
+  assert.equal(classify('worker_capacity_unavailable'),'hub-worker-capacity-unavailable')
+  assert.equal(classify('worker_selection_unstable'),'hub-worker-market-changed-during-selection')
+  assert.equal(classify('temporal_unavailable',503),'hub-temporal-service-unavailable')
+  assert.equal(classify('anything_unknown',403),'hub-access-rejected-authorization-or-edge-policy-unresolved')
+  assert.equal(classify('anything_unknown',400),'hub-work-payload-rejected-unclassified')
+})
+
+test('same process error retains bounded diagnosis for browser runner without raw Hub response',async()=>{
+  const secret='hidden-authorization-secret'
+  const makeProcess=()=>{
+    const c=new EventEmitter();c.stdout=new PassThrough();c.stderr=new PassThrough();c.kill=()=>{}
+    queueMicrotask(()=>{
+      c.stdout.write('ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP 409: '
+        +JSON.stringify({error:'worker_owner_changed',message:'Worker owner record changed before work could be offered.',authorization:secret}))
+      c.emit('close',2)
+    })
+    return c
+  }
+  const cmd=captainCommand({nonce:'c23142a2-908e-4972-a6c7-c30259944f8a',model:'gemma4:26b-a4b-it-q4_K_M'})
+  await assert.rejects(executeCaptain(cmd,{spawnImpl:makeProcess,timeoutMs:500}),err=>{
+    assert.equal(err.captainEvidence.hubCode,'worker_owner_changed')
+    assert.equal(err.captainEvidence.verdict,'hub-worker-owner-or-socket-mismatch')
+    assert.match(err.message,/hubHttp=409/)
+    assert.match(err.message,/verdict=hub-worker-owner-or-socket-mismatch/)
+    assert.doesNotMatch(JSON.stringify(err.captainEvidence)+err.message,/hidden-authorization-secret|authorization:/)
+    return true
+  })
+})
+
+test('unrecognized response retains HTTP status without emitting arbitrary body',()=>{
+  const secret='<html>developer internal signed_request='+ 'X'.repeat(120) +'</html>'
+  const raw='ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP 502: '+secret
+  const f=captainFailureEvidence({exitCode:2,stdout:raw})
+  assert.equal(f.hubHttpStatus,502)
+  assert.equal(f.verdict,'hub-service-unavailable-or-internal-error')
+  assert.equal(f.reason,'hub-error-body-redacted')
+  assert.doesNotMatch(JSON.stringify(f),/signed_request|developer internal/)
+})
+
+test('oversized or truncated owner evidence cannot mask known Hub worker selector code',()=>{
+  const raw='ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP 409: '
+    + JSON.stringify({ok:false,error:'worker_not_live',message:'Selected worker has no live owner record.',
+                      owner:{payload:'private-data-'.repeat(3000)}})
+  const failure=captainFailureEvidence({exitCode:2,stdout:raw})
+  assert.equal(failure.hubHttpStatus,409)
+  assert.equal(failure.hubCode,'worker_not_live')
+  assert.equal(failure.verdict,'no-eligible-live-worker-in-hub-market')
+  assert.doesNotMatch(JSON.stringify(failure),/private-data/)
+})
+
+test('truncated unknown or unsafe JSON error cannot escape through fallback',()=>{
+  const raw='ERROR: Hub request failed for https://testnet-hub.greatlibrary.io/api/hub/v1/work/requests with HTTP 409: '
+    + '{"ok":false,"error":"my_secret_password","owner":{"token":"do-not-print"' + 'x'.repeat(25000)
+  const failure=captainFailureEvidence({exitCode:2,stdout:raw})
+  assert.equal(failure.hubHttpStatus,409)
+  assert.equal(failure.reason,'hub-error-body-redacted')
+  assert.equal(failure.verdict,'hub-work-selection-or-conflict-rejected-unclassified')
+  assert.doesNotMatch(JSON.stringify(failure),/do-not-print|secret_password/)
+})
+
+test('worker_not_live 409 gets exactly one two-credit retry, with bounded bridge targeting',async()=>{
+  const {executeCaptainWithPriceRetry} = await import('./worker_work_cycle.mjs')
+  const calls=[];const notes=[]
+  const execute=async command=>{
+    calls.push(command)
+    if(calls.length===1){
+      const error=new Error('safe rejection')
+      error.captainEvidence={hubHttpStatus:409,hubCode:'worker_not_live',hubOperation:'live-worker-request-submit'}
+      throw error
+    }
+    return receipt
+  }
+  const answer=await executeCaptainWithPriceRetry({python:'python',model:'gemma4:26b-a4b-it-q4_K_M',execute,onRetry:()=>notes.push('retry')})
+  assert.deepEqual(answer,receipt)
+  assert.deepEqual(notes,['retry'])
+  assert.equal(calls.length,2)
+  const first=calls[0].args,second=calls[1].args
+  assert.equal(first[first.indexOf('--max-credits')+1],'1')
+  assert.ok(first.includes('--no-bridge') && first.includes('--no-stipend'))
+  assert.equal(second[second.indexOf('--max-credits')+1],'2')
+  assert.equal(second[second.indexOf('--bridge-balance-target')+1],'2')
+  assert.ok(second.includes('--no-stipend') && second.includes('--no-chain'))
+  assert.ok(!second.includes('--bridge-credits') && !second.includes('--no-bridge'))
+  assert.notEqual(first[first.indexOf('--smoke-id')+1],second[second.indexOf('--smoke-id')+1])
+})
+
+test('non-market rejection never triggers a second Captain submission',async()=>{
+  const {executeCaptainWithPriceRetry} = await import('./worker_work_cycle.mjs')
+  for(const refusal of [
+    {hubHttpStatus:409,hubCode:'worker_owner_changed',hubOperation:'live-worker-request-submit'},
+    {hubHttpStatus:401,hubCode:'worker_not_live',hubOperation:'live-worker-request-submit'},
+    {hubHttpStatus:409,hubCode:'worker_not_live',hubOperation:'request-submit'},
+    {hubHttpStatus:409,hubCode:'insufficient_credits',hubOperation:'live-worker-request-submit'},
+    null,
+  ]){
+    let attempts=0
+    const execute=async()=>{
+      attempts++
+      const error=new Error('safe')
+      error.captainEvidence=refusal
+      throw error
+    }
+    await assert.rejects(executeCaptainWithPriceRetry({model:'gemma4:26b-a4b-it-q4_K_M',execute}),/safe/)
+    assert.equal(attempts,1)
+  }
+})
+
+test('second worker_not_live does not retry a third time or issue additional funds',async()=>{
+  const {executeCaptainWithPriceRetry} = await import('./worker_work_cycle.mjs')
+  let count=0
+  const execute=async()=>{
+    count++
+    const error=new Error('rejected')
+    error.captainEvidence={hubHttpStatus:409,hubCode:'worker_not_live',hubOperation:'live-worker-request-submit'}
+    throw error
+  }
+  await assert.rejects(executeCaptainWithPriceRetry({model:'gemma4:26b-a4b-it-q4_K_M',execute}),/rejected/)
+  assert.equal(count,2)
+})
+
+test('work-cycle Captain poll waits beyond the Worker 300-second local-AI deadline', async()=>{
+  const {WORK_CYCLE_TIMEOUT_MS} = await import('./worker_work_cycle.mjs')
+  const command=captainCommand({nonce:'d0c628a3-5b33-4b5a-b4d3-dc41c161a89d',model:'gemma4:26b-a4b-it-q4_K_M'})
+  const index=command.args.indexOf('--poll-seconds')
+  assert.equal(command.args[index+1],'360')
+  assert.ok(WORK_CYCLE_TIMEOUT_MS>=400_000)
+  assert.ok(command.args.includes('--no-bridge') && command.args.includes('--no-stipend'))
+  const retry=captainCommand({nonce:'a064c5aa-f23e-4287-8ec5-10865f8eb7ff',model:'gemma4:26b-a4b-it-q4_K_M',retryTwoCredits:true})
+  assert.equal(retry.args[retry.args.indexOf('--poll-seconds')+1],'360')
+  assert.equal(retry.args[retry.args.indexOf('--bridge-balance-target')+1],'2')
+})
+
+test('accepted session remains failure, but preserves only correlated progress identifiers', ()=>{
+  const incomplete={...captainResult,hub:{...captainResult.hub,
+    poll:{session_id:sessionId,request_id:requestId,status:'accepted',
+      worker_data:{secret:'must-not-leak'}}}}
+  try {
+    captainProof(incomplete)
+    assert.fail('Accepted cannot prove terminal success')
+  } catch (error) {
+    assert.match(error.message,/state=accepted/)
+    assert.deepEqual(error.captainProgress,{requestId,sessionId,state:'accepted',verdict:'hub-accepted-worker-not-terminal'})
+    assert.doesNotMatch(JSON.stringify(error.captainProgress),/secret|worker_data/)
+  }
+  // A mismatched session must not gain a trusted progress identity.
+  assert.throws(()=>captainProof({...incomplete,hub:{...incomplete.hub,poll:{status:'accepted',session_id:'other'}}}),
+    error => !error.captainProgress && /session does not match/.test(error.message))
+})
+
+test('accepted-session Worker diagnostic identifies matching offer still computing', async()=>{
+  const {captainWorkerExecutionAtFailure} = await import('./worker_work_cycle.mjs')
+  const s=status(offer, {})
+  s.runtime.heartbeat_result.live_session.active_work_count=1
+  s.runtime.heartbeat_result.live_session.last_error='secret wallet credentials'
+  assert.deepEqual(captainWorkerExecutionAtFailure(s,{requestId,sessionId}), {
+    statusReadable:true,workerWebsocketAlive:true,workerWebsocketConnected:true,
+    matchingOfferObserved:true,matchingResultObserved:false,
+    resultType:'none',resultStatus:'unknown',activeWorkCount:1,
+    verdict:'matching-offer-still-executing',
+  })
+})
+
+test('accepted-session Worker diagnostic distinguishes failed work from unacknowledged result', async()=>{
+  const {captainWorkerExecutionAtFailure} = await import('./worker_work_cycle.mjs')
+  const failed=captainWorkerExecutionAtFailure(status(offer, {
+    type:'worker.work.failed',request_id:requestId,session_id:sessionId,
+    error:{private_key:'do-not-log',error:'failure details must stay private'},
+  }),{requestId,sessionId})
+  assert.equal(failed.verdict,'worker-reported-execution-failure')
+  assert.equal(failed.resultType,'worker.work.failed')
+  assert.doesNotMatch(JSON.stringify(failed),/private_key|do-not-log/)
+  const sent=captainWorkerExecutionAtFailure(status(offer, result),{requestId,sessionId})
+  assert.equal(sent.verdict,'worker-result-sent-but-hub-termination-unverified')
+  const hubAck=captainWorkerExecutionAtFailure(status(offer, {
+    type:'hub.work.result.accepted',request_id:requestId,session_id:sessionId,status:'succeeded',
+  }),{requestId,sessionId})
+  assert.equal(hubAck.verdict,'worker-received-terminal-hub-ack-but-captain-poll-not-terminal')
+  const other=captainWorkerExecutionAtFailure(status(offer,{...result,request_id:'another-request'}),{requestId,sessionId})
+  assert.equal(other.matchingResultObserved,false)
+})
+
+test('subprocess accepted result propagates progress without permitting successful certification', async()=>{
+  const {EventEmitter} = await import('node:events')
+  const payload={...captainResult,hub:{...captainResult.hub,
+    poll:{session_id:sessionId,request_id:requestId,status:'accepted'}}}
+  const spawnImpl=()=>{
+    const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter()
+    child.kill=()=>{}
+    queueMicrotask(()=>{child.stdout.emit('data',JSON.stringify(payload));child.emit('close',0)})
+    return child
+  }
+  try {
+    await executeCaptain({executable:'python',args:[]},{spawnImpl,timeoutMs:2000})
+    assert.fail('Accepted result must not be successful')
+  } catch (error) {
+    assert.match(error.message,/state=accepted/)
+    assert.equal(error.captainProgress?.requestId,requestId)
+    assert.equal(error.captainProgress?.sessionId,sessionId)
+    assert.equal(error.captainEvidence,undefined)
+  }
+})
+
+test('the actual Worker offer of 1024 tokens at 0.001 costs 1.024 credits', async()=>{
+ const {priceOfWorkerOffer} = await import('./worker_work_cycle.mjs')
+ assert.deepEqual(priceOfWorkerOffer({targetTokens:'1024',creditPerToken:'0.001'}),
+   {requiredCreditWei:'1024000000000000000',priceCeilingCredits:2})
+ const two=captainCommand({nonce:'d0c628a3-5b33-4b5a-b4d3-dc41c161a89d',
+   model:'gemma4:26b-a4b-it-q4_K_M',priceCeilingCredits:2,bridgeFundingRequired:true})
+ assert.equal(two.args[two.args.indexOf('--max-credits')+1],'2')
+ assert.equal(two.args[two.args.indexOf('--bridge-balance-target')+1],'2')
+ assert.ok(!two.args.includes('--no-bridge'))
+ assert.deepEqual(priceOfWorkerOffer({targetTokens:'900',creditPerToken:'0.001'}),
+   {requiredCreditWei:'900000000000000000',priceCeilingCredits:1})
+ for (const [tokens,rate] of [['1024','0.002'],['1024','1e-3'],['0','0.001']]) {
+   assert.throws(()=>priceOfWorkerOffer({targetTokens:tokens,creditPerToken:rate}))
+ }
+})
+
+test('known two-credit offer performs one Captain submission, never a second paid retry', async()=>{
+ const {executeCaptainWithPriceRetry} = await import('./worker_work_cycle.mjs')
+ let count=0
+ const execute=async()=>{count++;throw Object.assign(new Error('rejected'),{
+   captainEvidence:{hubHttpStatus:409,hubCode:'worker_not_live',hubOperation:'live-worker-request-submit'},
+ })}
+ await assert.rejects(executeCaptainWithPriceRetry({model:'gemma4:26b-a4b-it-q4_K_M',execute,
+   priceCeilingCredits:2}),/rejected/)
+ assert.equal(count,1)
+})
+
+test('two-credit Worker offer with sufficient existing balance never bridges',()=>{
+ const command=captainCommand({nonce:'d0c628a3-5b33-4b5a-b4d3-dc41c161a89e',
+  model:'gemma4:26b-a4b-it-q4_K_M',priceCeilingCredits:2,bridgeFundingRequired:false})
+ assert.equal(command.args[command.args.indexOf('--max-credits')+1],'2')
+ assert.ok(command.args.includes('--no-bridge') && command.args.includes('--no-stipend'))
+ assert.ok(!command.args.includes('--bridge-balance-target'))
+ assert.throws(()=>captainCommand({model:'gemma4:26b-a4b-it-q4_K_M',priceCeilingCredits:1,
+   bridgeFundingRequired:true}))
+})
+
+test('known one-credit offer does not bridge or blindly retry a market 409',async()=>{
+ const {executeCaptainWithPriceRetry} = await import('./worker_work_cycle.mjs')
+ let count=0
+ const execute=async()=>{ count++; throw Object.assign(new Error('rejected'),{
+   captainEvidence:{hubHttpStatus:409,hubCode:'worker_not_live',hubOperation:'live-worker-request-submit'},
+ }) }
+ await assert.rejects(executeCaptainWithPriceRetry({model:'gemma4:26b-a4b-it-q4_K_M',
+  execute,priceCeilingCredits:1,bridgeFundingRequired:false}),/rejected/)
+ assert.equal(count,1)
+})
+
+
+test('Work-cycle token budget is reduced only for a nonzero ACK request', () => {
+ assert.deepEqual(boundedSmokeOfferTokens('1024'),{originalTokens:1024,testTokens:512})
+ assert.deepEqual(boundedSmokeOfferTokens('512'),{originalTokens:512,testTokens:512})
+ assert.deepEqual(boundedSmokeOfferTokens('256'),{originalTokens:256,testTokens:256})
+ for (const invalid of ['', '0', '-1', '7.5', 'foo', '128001'])
+   assert.throws(()=>boundedSmokeOfferTokens(invalid),/budget/)
+})
+
+test('Worker smoke offer is persisted by its own UI before Hub registration, and restored',async()=>{
+ let value='1024'
+ const calls=[]
+ const page={
+   locator:()=>({fill:async v=>{calls.push('fill:'+v);value=v},inputValue:async()=>value}),
+   waitForResponse:async predicate=>{
+     const response={request:()=>({method:()=> 'POST'}),url:()=> 'http://127.0.0.1:8765/api/applications/worker/settings',
+       ok:()=>true,status:()=>200,json:async()=>({ok:true,settings:{sellerTargetTokens:Number(value)}})}
+     assert.ok(predicate(response));return response
+   }
+ }
+ await setWorkerOfferTargetTokens(page,512)
+ await setWorkerOfferTargetTokens(page,1024)
+ assert.deepEqual(calls,['fill:512','fill:1024'])
+})
+
+test('Refuse silent repricing when Worker backend rejects its settings save',async()=>{
+ let value='1024'
+ const page={
+   locator:()=>({fill:async v=>{value=v},inputValue:async()=>value}),
+   waitForResponse:async()=>({ok:()=>true,status:()=>200,
+     json:async()=>({ok:true,settings:{sellerTargetTokens:1024}})})
+ }
+ await assert.rejects(setWorkerOfferTargetTokens(page,512),/not confirmed/)
+})
+
+
+test('Hub-acknowledged market price is required before any paid Captain dispatch', async()=>{
+ const s=status(offer,result)
+ s.runtime.heartbeat_result.live_session.market_proof={
+  hub_acknowledged:true,price_credit_wei:'1024000000000000000',
+  ring_three:true,chat_completions:true,capacity_available:true,
+ }
+ assert.throws(()=>workerSessionProof(s,workerId,'512000000000000000'),/Hub advertised Worker price differs/)
+ s.runtime.heartbeat_result.live_session.market_proof.price_credit_wei='512000000000000000'
+ assert.equal(workerSessionProof(s,workerId,'512000000000000000').workerId,workerId)
+ for (const key of ['hub_acknowledged','ring_three','chat_completions','capacity_available']) {
+  const t=structuredClone(s);t.runtime.heartbeat_result.live_session.market_proof[key]=false
+  assert.throws(()=>workerSessionProof(t,workerId,'512000000000000000'))
+ }
+ const missing=status(offer,result)
+ assert.throws(()=>workerSessionProof(missing,workerId,'512000000000000000'),/not acknowledged/)
+})
+
+test('Hub market preflight never proceeds when price remains stale after re-registration',async()=>{
+ const s=status(offer,result)
+ s.runtime.heartbeat_result.live_session.market_proof={hub_acknowledged:true,
+  price_credit_wei:'1024000000000000000',ring_three:true,
+  chat_completions:true,capacity_available:true}
+ let attempts=0
+ await assert.rejects(waitForLiveWorker({page:{},workerId,expectedPriceWei:'512000000000000000',timeoutMs:5,
+  readStatus:async()=>{attempts++;return s},sleep:async()=>new Promise(r=>setTimeout(r,6))}),/advertised Worker price differs/)
+ assert.ok(attempts>=1)
 })
