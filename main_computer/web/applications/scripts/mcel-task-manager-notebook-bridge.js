@@ -8,6 +8,13 @@
   const VALID_SOURCES = ["processes", "all_processes", "connections", "hardware"];
   const instances = new WeakMap();
   let active = null;
+  const BUILD="mcel-task-notebook-lifecycle-p10.v1";
+  const journal=[];
+  function record(receipt) {
+    journal.push({at:new Date().toISOString(),...receipt});
+    if(journal.length>32)journal.shift();
+    return receipt;
+  }
   function refuse(code) { return {ok: false, code, effects: []}; }
   function allow(search) {
     try { return new URLSearchParams(String(search || "")).get("mcel_task_notebook") === "lab"; }
@@ -62,27 +69,43 @@
     }
     try { grid.insertBefore(holder, legacy); root.setAttribute("data-mcel-notebook-lab", "active"); }
     catch (_) { workspace.destroy(); holder.remove(); return refuse("host-attach-failed"); }
-    const state = {root, holder, workspace, version: 0, status: "not-requested"};
+    const state = {root, holder, workspace, version: 0, status: "not-requested",streams:{},lastReceipt:null};
+    holder.dataset.mcelLabBuild=BUILD;
     instances.set(root, state);
     active = state;
     if (snapshot) publish(snapshot, "available", 1);
     return {ok: true, code: "mounted-lab-witness", effects: []};
   }
-  function publish(snapshot, status = "available", version) {
-    const state = active;
-    if (!state || !state.root.isConnected) return refuse("not-mounted");
-    if (!["loading", "available", "empty", "failed"].includes(status)) return refuse("invalid-status");
-    const next = version === undefined ? state.version + 1 : version;
-    if (!Number.isSafeInteger(next) || next <= state.version) return refuse("stale-snapshot");
-    const payload = status === "failed" || status === "loading" ?
-      {processes: [], all_processes: [], connections: [], hardware: {}} : project(snapshot);
-    if (!payload) return refuse("invalid-snapshot");
-    // Commit version only on successful renderer update.
-    const result = state.workspace.updateSnapshot(payload, status);
-    if (result.ok !== true || (result.effects || []).length) return refuse("renderer-update-refused");
-    state.version = next;
-    state.status = status;
-    return {ok: true, status, version: next, effects: []};
+  function publish(snapshot,status="available",version,metadata={}) {
+    const state=active;
+    function fail(code,extra={}) {
+      const response=record({ok:false,code,version:state?.version??0,build:BUILD,effects:[],...extra});
+      if(state)state.lastReceipt=response;
+      return response;
+    }
+    if(!state||!state.root.isConnected)return fail("not-mounted");
+    if(!["loading","available","empty","failed"].includes(status))return fail("invalid-status");
+    const next=version===undefined?state.version+1:version;
+    if(!Number.isSafeInteger(next)||next<=state.version)return fail("stale-snapshot");
+    if(!metadata||typeof metadata!=="object"||Array.isArray(metadata))return fail("invalid-metadata");
+    const allowed=new Set(["available","loading","failed","empty","stale","not-requested"]);
+    const streams=metadata.streams||{};
+    if(!streams||typeof streams!=="object"||Array.isArray(streams)||
+       Object.values(streams).some(v=>!allowed.has(v)))return fail("invalid-streams");
+    const payload=status==="failed"||status==="loading" ?
+      {processes:[],all_processes:[],connections:[],hardware:{}} :project(snapshot);
+    if(!payload)return fail("invalid-snapshot");
+    const outcome=state.workspace.updateSnapshot(payload,status,{streams});
+    if(outcome.ok!==true||(outcome.effects||[]).length)
+      return fail("renderer-update-refused",{cause:outcome.code||"unknown",message:outcome.message||""});
+    state.version=next;state.status=status;state.streams={...streams};
+    const partial=Object.values(streams).some(v=>v==="failed"||v==="stale");
+    const response=record({ok:true,status:partial?"partial":status,version:next,build:BUILD,
+      streams:state.streams,renderReceipts:outcome.streams||{},effects:[]});
+    state.lastReceipt=response;
+    state.holder.dataset.mcelLabSnapshotVersion=String(next);
+    state.holder.dataset.mcelLabDelivery=partial?"partial":status;
+    return response;
   }
   function unmount(root = active?.root) {
     const state = root && instances.get(root);
@@ -95,9 +118,10 @@
     return {ok: true, code: "legacy-restored", effects: []};
   }
   function status() {
-    return active ? {mounted: true, mode: "lab-witness", version: active.version,
-      dataStatus: active.status, selected: active.workspace.getState().selected,
-      effects: []} : {mounted: false, effects: []};
+    return active?{mounted:true,mode:"lab-witness",build:BUILD,version:active.version,
+      dataStatus:active.status,streams:{...active.streams},selected:active.workspace.getState().selected,
+      lastReceipt:active.lastReceipt, recentReceipts:journal.slice(-12),effects:[]}:
+      {mounted:false,build:BUILD,recentReceipts:journal.slice(-12),effects:[]};
   }
   function optInHost(root, search = global.location?.search || "", snapshot = null) {
     return mount({root, search, ir: global.McelTaskManagerTabWitness, snapshot});

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from main_computer.viewport_state import *  # noqa: F401,F403
+from uuid import uuid4
+
+# Host-scoped issuer rotates on web-server process restart. Not a credential.
+_MCEL_PROCESS_GENERATION_INSTANCE = uuid4().hex
 
 class ViewportTaskRoutesMixin:
     def _handle_task_overview(self) -> None:
@@ -17,14 +21,46 @@ class ViewportTaskRoutesMixin:
                 include_all=include_all,
                 include_connections=include_connections,
             )
-            self._send_json(
-                self.server.task_manager.snapshot(
-                    query=query,
-                    limit=limit,
-                    include_all=include_all,
-                    include_connections=include_connections,
-                )
+            snapshot = self.server.task_manager.snapshot(
+                query=query,
+                limit=limit,
+                include_all=include_all,
+                include_connections=include_connections,
+                process_diagnostics=body.get("mcel_semantic_shadow") is True,
             )
+            # Patch 13 stage 3: opt-in, read-only shadow from the exact served
+            # snapshot. A semantic failure never blocks ordinary Task Manager.
+            if body.get("mcel_semantic_shadow") is True:
+                from main_computer.mcel_knowledge.live_adoption import build_live_shadow
+                try:
+                    compat = body.get("mcel_semantic_presentation")
+                    if compat not in (None, "compat"):
+                        raise ValueError("Unrecognized read-only semantic presentation mode")
+                    from main_computer.mcel_knowledge.presentation_policy import load_presentation_policy
+                    policy = load_presentation_policy() if compat == "compat" else None
+                    shadow = build_live_shadow(snapshot, profile="task-manager",
+                        request_scope={"query": query, "limit": limit, "include_all": include_all},
+                        presentation_policy=policy)
+                    # Shadow-only process-generation provenance is issued by this
+                    # server from the actual source path, never from client input.
+                    from main_computer.mcel_knowledge.continuity import with_process_generation_evidence
+                    producer = snapshot.get("_mcel_task_process_producer", {})
+                    if producer.get("status") != "ok":
+                        # Do not convert an OS enumeration error into an empty,
+                        # successfully observed collection. Existing UI and
+                        # last-known shadow rows remain unaffected.
+                        shadow["ok"] = False
+                        shadow["status"] = "source-unavailable"
+                        shadow["observations"]["task-manager.processes"]["status"] = "source-unavailable"
+                    shadow = with_process_generation_evidence(shadow,
+                        server_instance=_MCEL_PROCESS_GENERATION_INSTANCE,
+                        source_kind=producer.get("sourceKind", "unverified"))
+                    shadow["producerObservation"] = producer
+                except Exception as exc:
+                    shadow = {"schema": "mcel.live-semantic-shadow.v1", "ok": False,
+                              "status": "refused", "reason": str(exc), "authority": "read-only"}
+                snapshot = {**snapshot, "_mcel_semantic_shadow": shadow}
+            self._send_json(snapshot)
         except Exception as exc:
             self.server.signal("api-task-overview-error", error=exc)
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

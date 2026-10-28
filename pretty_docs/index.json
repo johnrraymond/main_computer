@@ -617,6 +617,126 @@
       "title": "Stable Hub Lab — Local Operator Runbook",
       "kind": "markdown",
       "order": 920
+    },
+    {
+      "path": "mcel-patch9-semantic-architecture-plan.md",
+      "title": "MCEL Patch 9 — Semantic Architecture and Generality Gate",
+      "kind": "markdown",
+      "order": 100
+    },
+    {
+      "path": "mcel-patch9-user-design-requirements.md",
+      "title": "MCEL Patch 9 — User and Design Requirements",
+      "kind": "markdown",
+      "order": 101
+    },
+    {
+      "path": "mcel-patch9-implementation-review.md",
+      "title": "MCEL Patch 9 — Architecture Audit and Requirements Review",
+      "kind": "markdown",
+      "order": 102
+    },
+    {
+      "path": "mcel-patch10-information-integrity-live-lifecycle-plan.md",
+      "title": "MCEL Patch 10 — Information Fidelity and State-Preserving Live Lifecycle Plan",
+      "kind": "markdown",
+      "order": 103
+    },
+    {
+      "path": "mcel-patch10-user-design-requirements.md",
+      "title": "MCEL Patch 10 — User and Design Requirements",
+      "kind": "markdown",
+      "order": 104
+    },
+    {
+      "path": "mcel-patch10-implementation-review.md",
+      "title": "MCEL Patch 10 — Implementation and Requirements Review",
+      "kind": "markdown",
+      "order": 105
+    },
+    {
+      "path": "mcel-patch11-computer-semantic-knowledge-foundation.md",
+      "title": "MCEL Patch 11.0 — Computer Semantic Knowledge Database",
+      "kind": "markdown",
+      "order": 106
+    },
+    {
+      "path": "mcel-patch11-computer-semantic-knowledge-review.md",
+      "title": "MCEL Patch 11.0 — Semantic Knowledge Acceptance Review",
+      "kind": "markdown",
+      "order": 107
+    },
+    {
+      "path": "mcel-patch11-multi-app-semantic-acquisition.md",
+      "title": "MCEL Patch 11.1–11.4 — Multi-Application Semantic Knowledge Acquisition",
+      "kind": "markdown",
+      "order": 108
+    },
+    {
+      "path": "mcel-patch11-multi-app-semantic-acceptance.md",
+      "title": "MCEL Patch 11.1–11.4 — Acceptance and Evidence Ledger",
+      "kind": "markdown",
+      "order": 109
+    },
+    {
+      "path": "mcel-patch12-semantic-knowledge-unification.md",
+      "title": "MCEL Patch 12 — Semantic Knowledge Unification",
+      "kind": "markdown",
+      "order": 110
+    },
+    {
+      "path": "mcel-patch12-semantic-knowledge-acceptance.md",
+      "title": "MCEL Patch 12 — Acceptance and Evidence",
+      "kind": "markdown",
+      "order": 111
+    },
+    {
+      "path": "mcel-patch13-semantic-foundations-and-correctness.md",
+      "title": "MCEL Patch 13: Semantic Foundations and Correctness",
+      "kind": "markdown",
+      "order": 112
+    },
+    {
+      "path": "mcel-patch13-foundation-acceptance.md",
+      "title": "MCEL Patch 13: Foundation Acceptance Ledger",
+      "kind": "markdown",
+      "order": 113
+    },
+    {
+      "path": "mcel-patch13-live-semantic-adoption.md",
+      "title": "MCEL Patch 13 — Stage 3 Live Semantic Adoption",
+      "kind": "markdown",
+      "order": 114
+    },
+    {
+      "path": "mcel-patch13-live-adoption-acceptance.md",
+      "title": "MCEL Patch 13 — Stage 3 Acceptance Ledger",
+      "kind": "markdown",
+      "order": 115
+    },
+    {
+      "path": "mcel-patch13-continuity-certification.md",
+      "title": "MCEL Patch 13 — Stage 4 Source-Evidenced Continuity",
+      "kind": "markdown",
+      "order": 116
+    },
+    {
+      "path": "mcel-patch13-continuity-acceptance.md",
+      "title": "MCEL Patch 13 — Stage 4 Continuity Acceptance Ledger",
+      "kind": "markdown",
+      "order": 117
+    },
+    {
+      "path": "mcel-patch13-hosted-source-reliability.md",
+      "title": "MCEL Patch 13 Stage 4 — Hosted Process Source Reliability Repair",
+      "kind": "markdown",
+      "order": 118
+    },
+    {
+      "path": "mcel-patch13-presentation-authoring-completion.md",
+      "title": "MCEL Patch 13 — Presentation Compatibility and Authoring Economy",
+      "kind": "markdown",
+      "order": 119
     }
   ]
 }

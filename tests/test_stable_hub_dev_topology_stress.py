@@ -124,7 +124,7 @@ class _DevTopologyWorker:
         _ws_send_json(
             sock,
             {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "worker_id": self.worker_id,
                 "multisession_authorization": {
                     "kind": "multisession_key",
@@ -205,6 +205,7 @@ class _DevTopologyWorker:
     def _run(self) -> None:
         assert self.sock is not None
         try:
+            pending: dict[str, dict[str, Any]] = {}
             while not self.stop.is_set():
                 try:
                     message = _ws_recv_json(self.sock)
@@ -224,19 +225,22 @@ class _DevTopologyWorker:
                 }:
                     self.terminal_acks.append(message)
                     continue
-                if message.get("type") != "hub.work.offer":
-                    continue
-                self.offers.append(message)
-                _ws_send_json(
-                    self.sock,
-                    {
+                if message.get("type") == "hub.work.offer":
+                    self.offers.append(message)
+                    pending[str(message.get("session_id") or "")] = message
+                    _ws_send_json(self.sock, {
                         "type": "worker.work.accepted",
                         "session_id": message.get("session_id"),
                         "request_id": message.get("request_id"),
-                    },
-                )
+                    })
+                    continue
+                if message.get("type") != "hub.work.authorized":
+                    continue
+                authorization = message
+                message = pending.pop(str(authorization.get("session_id") or ""))
+                assert authorization.get("session_id") == message.get("session_id")
                 time.sleep(self.terminal_delay)
-                work = message.get("work") if isinstance(message.get("work"), dict) else {}
+                work = authorization.get("work") if isinstance(authorization.get("work"), dict) else {}
                 work_input = work.get("input") if isinstance(work.get("input"), dict) else {}
                 value = str(work_input.get("value") or "")
                 if value.startswith("fail:"):

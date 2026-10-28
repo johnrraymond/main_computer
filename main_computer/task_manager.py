@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,8 @@ except Exception:  # pragma: no cover
 SERVER_ACTIONS = {"server_status", "server_shutdown", "server_start", "server_restart"}
 PROCESS_ACTIONS = {"terminate_pid", "kill_pid"}
 POWERSHELL_JSON_TIMEOUT_SECONDS = 1.5
+# Win32_Process CIM enumeration is substantially slower than connection checks.
+POWERSHELL_PROCESS_TIMEOUT_SECONDS = 5.0
 
 
 def _env_int(name: str) -> int | None:
@@ -74,9 +77,12 @@ class TaskManagerService:
         limit: int = 24,
         include_all: bool = False,
         include_connections: bool = True,
+        process_diagnostics: bool = False,
     ) -> dict[str, Any]:
         limit = max(5, min(100, int(limit)))
-        processes = self._process_rows(query=query, limit=limit, include_all=include_all)
+        producer_diagnostic: dict[str, Any] | None = {} if process_diagnostics else None
+        processes = self._process_rows(query=query, limit=limit, include_all=include_all,
+                                       diagnostic=producer_diagnostic)
         relevant_pids = {row["pid"] for row in processes if row.get("is_main_computer")}
         connections = self._connection_rows(relevant_pids=relevant_pids, limit=limit, include_all=include_all) if include_connections else []
         server = self._server_summary(processes=processes, connections=connections)
@@ -91,7 +97,7 @@ class TaskManagerService:
             "gpu_percent": hardware["gpu"].get("overall_percent"),
             "watch_hint": "watch listeners, established sockets, CPU or GPU pressure, memory-heavy workers, and server lifecycle actions from one deck.",
         }
-        return {
+        result = {
             "ok": True,
             "repo_root": str(self.repo_root),
             "platform": sys.platform,
@@ -104,6 +110,11 @@ class TaskManagerService:
             "schedules": schedules,
             "capabilities": self.capabilities(),
         }
+        # Opt-in diagnostics only. Do not change the default response shape. A
+        # failed CIM command must not masquerade as an authoritative empty OS.
+        if producer_diagnostic is not None:
+            result["_mcel_task_process_producer"] = producer_diagnostic
+        return result
 
     def perform_action(
         self,
@@ -350,9 +361,13 @@ class TaskManagerService:
             kwargs["start_new_session"] = True
         subprocess.Popen(command, **kwargs)
 
-    def _process_rows(self, *, query: str, limit: int, include_all: bool) -> list[dict[str, Any]]:
+    def _process_rows(self, *, query: str, limit: int, include_all: bool,
+                      diagnostic: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if sys.platform == "win32":
-            return self._powershell_process_rows(query=query, limit=limit, include_all=include_all)
+            return self._powershell_process_rows(query=query, limit=limit,
+                                                 include_all=include_all, diagnostic=diagnostic)
+        if diagnostic is not None:
+            diagnostic.update(sourceKind='psutil-create-time', status='ok' if psutil is not None else 'unavailable')
         if psutil is None:
             return []
         query_text = str(query or "").strip().lower()
@@ -369,7 +384,7 @@ class TaskManagerService:
                 if not include_all and not is_main and self.repo_root.name.lower() not in cmdline.lower():
                     continue
                 memory_info = info.get("memory_info")
-                memory_rss = int(getattr(memory_info, "rss", 0) or 0)
+                memory_rss = int(memory_info.rss) if memory_info is not None and getattr(memory_info, "rss", None) is not None else None
                 rows.append(
                     {
                         "pid": pid,
@@ -378,7 +393,9 @@ class TaskManagerService:
                         "cmdline": cmdline,
                         "command_preview": self._command_preview(cmdline),
                         "memory_rss": memory_rss,
-                        "memory_human": self._human_bytes(memory_rss),
+                        "memory_human": self._human_bytes(memory_rss) if memory_rss is not None else "n/a",
+                        "memory_availability": "present" if memory_rss is not None else "unavailable",
+                        "status_availability": "present" if info.get("status") else "unavailable",
                         "is_main_computer": is_main,
                         "is_current_process": pid == os.getpid(),
                         "created_at": self._format_epoch(info.get("create_time")),
@@ -599,13 +616,27 @@ class TaskManagerService:
         except Exception:
             return None
 
-    def _powershell_process_rows(self, *, query: str, limit: int, include_all: bool) -> list[dict[str, Any]]:
-        data = self._run_powershell_json(
-            "$ErrorActionPreference = 'SilentlyContinue'; $items = Get-CimInstance Win32_Process | Select-Object ProcessId, Name, CommandLine; $items | ConvertTo-Json -Depth 3 -Compress"
-        )
+    def _powershell_process_rows(self, *, query: str, limit: int, include_all: bool,
+                                 diagnostic: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        if diagnostic is not None:
+            diagnostic['sourceKind'] = 'win32-cim-creation-date'
+        script = ("$ErrorActionPreference = 'SilentlyContinue'; $items = Get-CimInstance Win32_Process | "
+                  "Select-Object ProcessId, Name, CommandLine, CreationDate; "
+                  "$items | ConvertTo-Json -Depth 3 -Compress")
+        # Preserve the legacy one-argument process reader used by existing
+        # producer tests and callers. Timeout selection is in the runner.
+        data = (self._run_powershell_json(script) if diagnostic is None else
+                self._run_powershell_json(script, timeout_seconds=POWERSHELL_PROCESS_TIMEOUT_SECONDS,
+                                          diagnostic=diagnostic))
         rows: list[dict[str, Any]] = []
         query_text = str(query or "").strip().lower()
         items = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        if diagnostic is not None:
+            diagnostic['discoveredCount'] = len(items)
+            if diagnostic.get('status') == 'ok' and not isinstance(data, (list, dict)):
+                diagnostic['status'] = 'invalid-output-shape'
+            elif diagnostic.get('status') == 'ok' and not items:
+                diagnostic['status'] = 'empty-cim-result'
         for item in items:
             pid = int(item.get("ProcessId") or 0)
             name = str(item.get("Name") or "")
@@ -622,14 +653,20 @@ class TaskManagerService:
                     "status": "",
                     "cmdline": cmdline,
                     "command_preview": self._command_preview(cmdline),
-                    "memory_rss": 0,
+                    "memory_rss": None,
                     "memory_human": "n/a",
+                    "memory_availability": "unavailable",
+                    "status_availability": "unavailable",
                     "is_main_computer": is_main,
                     "is_current_process": pid == os.getpid(),
-                    "created_at": "",
+                    "created_at": str(item.get("CreationDate") or ""),
                 }
             )
         rows.sort(key=lambda item: (not item.get("is_main_computer"), item.get("pid") or 0))
+        if diagnostic is not None:
+            diagnostic['matchingCount'] = len(rows)
+            diagnostic['servedCount'] = min(len(rows), limit)
+            diagnostic['boundedByFilter'] = not include_all or bool(query_text)
         return rows[:limit]
 
     def _powershell_connection_rows(self, *, relevant_pids: set[int], limit: int, include_all: bool) -> list[dict[str, Any]]:
@@ -660,7 +697,13 @@ class TaskManagerService:
         rows.sort(key=lambda item: (item.get("status") != "Listen", item.get("pid") or 0, item.get("local") or ""))
         return rows[:limit]
 
-    def _run_powershell_json(self, script: str) -> Any:
+    def _run_powershell_json(self, script: str, *, timeout_seconds: float | None = None,
+                             diagnostic: dict[str, Any] | None = None) -> Any:
+        if timeout_seconds is None:
+            timeout_seconds = POWERSHELL_JSON_TIMEOUT_SECONDS
+        started = time.monotonic()
+        if diagnostic is not None:
+            diagnostic.update(status='pending', timeoutSeconds=timeout_seconds)
         try:
             completed = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", script],
@@ -670,18 +713,38 @@ class TaskManagerService:
                 encoding="utf-8",
                 errors="replace",
                 check=False,
-                timeout=POWERSHELL_JSON_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            if diagnostic is not None:
+                diagnostic.update(status='timeout', elapsedMs=round((time.monotonic()-started)*1000),
+                                  reason='PowerShell/CIM query exceeded its bounded deadline')
             return []
+        except OSError as exc:
+            if diagnostic is not None:
+                diagnostic.update(status='launch-error', elapsedMs=round((time.monotonic()-started)*1000),
+                                  reason=type(exc).__name__)
+            return []
+        if diagnostic is not None:
+            diagnostic.update(elapsedMs=round((time.monotonic()-started)*1000),
+                              returnCode=completed.returncode)
         if completed.returncode != 0:
+            if diagnostic is not None:
+                diagnostic.update(status='command-error', stderr=(completed.stderr or '')[:280])
             return []
         payload = completed.stdout.strip()
         if not payload:
+            if diagnostic is not None:
+                diagnostic['status'] = 'empty-output'
             return []
         try:
-            return json.loads(payload)
-        except Exception:
+            result = json.loads(payload)
+            if diagnostic is not None:
+                diagnostic['status'] = 'ok'
+            return result
+        except (ValueError, TypeError):
+            if diagnostic is not None:
+                diagnostic['status'] = 'invalid-json'
             return []
 
     def _server_summary(self, *, processes: list[dict[str, Any]], connections: list[dict[str, Any]]) -> dict[str, Any]:

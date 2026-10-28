@@ -235,3 +235,74 @@ ownership/lease continuity. Do not respond with a larger paid retry; the
 known price has already been checked. Full end-to-end certification still
 requires actual browser work delivery, completion with matching IDs, a
 charge and a Worker earning verified against the Hub ledger.
+
+## Testnet reserve siphon for a shortfall (October 27)
+
+The Captain's ordinary bridge budget remains capped at **2 cumulative credits**.
+That cap was already exhausted in the October 27 check (`bridge_completed = 3.0`,
+`available = 0.464`); the temporary 512-token offer costs **0.512 credits**.
+The new, independently authorized path does **not** reset or weaken the old
+cap, issue administrative stipend credits, release held credits, or modify a
+Hub/escrow ledger directly.
+
+Only when the Worker is *already verified live at the exact price*, the Hub's
+wallet-specific balance preflight reports `insufficient_credit_under_cumulative_cap`,
+and the operator supplied `--authorize-reserve-siphon`, the harness requests
+one small, guarded native payout from the **Testnet XLagBridgeReserve** to the
+Mother-verified **Captain** wallet. The Captain submits a normal `depositFor`
+escrow transaction, and the Hub completes and credits the specific deposit
+using its existing chain-backed bridge completion endpoint. The harness
+then performs the original read-only preflight **again**, and only submits
+work once that independent check says the offered price is affordable.
+
+Safety constraints: Testnet chain ID 42424241 and canonical Testnet Hub only;
+XLag address from Mother's current contract registry; Captain and O2 officers
+resolved from Mother's verified private state; both officer addresses
+validated against the live reserve contract. The transfer uses the contract's
+unaltered `proposePayout` -> `secondPayout` -> delay -> `executePayout`
+governance (including belay/contest/expiry); no unsigned admin faucet or direct
+mint. Maximum 0.2 credit-wei equivalent **bridged per attempt**, plus 0.005
+native units reserved for the Captain's transaction fees; maximum 0.5 credits
+reserved in the local UTC-day journal. The transfer is `shortfall + 0.025`
+credits (unless this exceeds the 0.2-credit per-attempt limit), not a full-credit
+refill. Larger deficits require operator investigation rather than more loops.
+The daily journal is a local safety limit, *not* a chain-enforced lifetime cap.
+
+To see the required credit without paying anything:
+
+```
+python -m tools.worker_captain_funding_preflight --required-credit-wei 512000000000000000 --ceiling-credits 1
+python -m tools.worker_captain_reserve_siphon --required-credit-wei 512000000000000000
+```
+
+To explicitly authorize the reserve pathway for **one** live Worker functional test:
+
+```
+python tools/worker_browser_acceptance.py run --mode work-cycle --authorize-worker-offer --authorize-captain-spend --authorize-reserve-siphon
+```
+
+The old work-cycle command without the reserve authorization remains read-only
+on a preflight funding denial. No Mainnet reserve call is permitted.
+
+The siphon uses an exclusive recovery lock and an fsynced on-disk journal under
+`runtime/state/captain/reserve-siphon/`. An interrupted or uncertain transfer
+**leaves `active.json` in place**, disabling further reserve payouts until
+an operator reconciles the contract proposal, transaction receipts, pending
+Captain escrow deposit, Hub completion, and actual available balance.
+**Do not delete the lock or retry a second siphon to repair uncertainty.**
+Pending bridge deposits remain governed by Captain's existing recovery records
+under `runtime/state/captain/pending-bridge-deposits/`. Neither a reserve
+payout nor a successful test retroactively settles the older held 1.024 credits;
+those must be independently reconciled against their original session.
+
+Offline verification:
+
+```
+python -m pytest -q tests/test_worker_captain_reserve_siphon.py tests/test_worker_captain_funding_preflight.py tests/test_worker_browser_acceptance_harness.py
+node --test tools/worker_browser_acceptance/worker_work_cycle.test.mjs
+```
+
+**Live funding and worker delivery have not been executed by this source patch.**
+Require the observed Testnet proposal execution receipt, deposit completion,
+Hub available-credit increase, and matching completed request/session/worker
+result before declaring the functional test passed.

@@ -44,6 +44,8 @@ def test_worker_market_profile_normalizes_ring_price_capabilities_and_capacity()
         "rings": ["ring-2"],
         "partitions": ["ring-2"],
         "capabilities": ["python", "shell"],
+        "models": [],
+        "model": "",
         "price": {"amount": "0.05", "unit": "credit"},
         "max_concurrency": 3,
         "active_sessions": 0,

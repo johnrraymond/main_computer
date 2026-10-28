@@ -243,7 +243,7 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         _ws_send_json(
             sock,
             {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "worker_id": "worker-remote-owner-handoff",
                 "multisession_authorization": {
                     "kind": "multisession_key",
@@ -299,10 +299,11 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         offer = _ws_recv_json(sock)
         assert offer["type"] == "hub.work.offer"
         assert offer["request_id"] == request_body["request_id"]
-        assert offer["worker_id"] == "worker-remote-owner-handoff"
+        assert offer["worker_id"] == accepted["connection_id"]
         assert offer["partition"] == "ring-2"
         assert offer["task_queue"] == "main-computer-work-ring-2"
-        assert offer["work"] == request_body["work"]
+        assert offer["execution_authorization_required"] is True
+        assert offer["work"] == {"execution_authorization_pending": True}
 
         _ws_send_json(
             sock,
@@ -322,7 +323,7 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         assert response["request_id"] == request_body["request_id"]
         assert response["session_id"] == offer["session_id"]
         assert response["run_id"] == offer["run_id"]
-        assert response["worker_id"] == "worker-remote-owner-handoff"
+        assert response["worker_id"] == accepted["connection_id"]
         assert response["owner_hub_id"] == "dev-hub3"
         assert response["owner_hub_url"] == hub3_url
         assert response["hub_id"] == "dev-hub1"
@@ -359,7 +360,7 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         assert saved["status"] == "accepted"
         assert saved["request_id"] == request_body["request_id"]
         assert saved["requester_msk_id"] == requester_msk["key"]["id"]
-        assert saved["worker_id"] == "worker-remote-owner-handoff"
+        assert saved["worker_id"] == accepted["connection_id"]
         assert saved["worker_connection_id"] == accepted["connection_id"]
         assert saved["owner_hub_id"] == "dev-hub3"
         assert saved["owner_hub_url"] == hub3_url
@@ -386,7 +387,7 @@ def test_entry_hub_hands_off_same_request_to_remote_owner_hub_and_returns_accept
         assert entry_stream_body["execution_hub"] == {"hub_id": "dev-hub3", "hub_url": hub3_url}
         assert entry_stream_body["continuation_url"] == response["continuation_url"]
 
-        market_seen_from_entry = hub1.worker_market_directory.get_worker("worker-remote-owner-handoff")
+        market_seen_from_entry = hub1.worker_market_directory.get_worker(accepted["connection_id"])
         assert market_seen_from_entry is not None
         assert market_seen_from_entry["active_sessions"] == 1
         assert market_seen_from_entry["owner_hub_id"] == "dev-hub3"

@@ -282,6 +282,7 @@ class _WorkerHubLiveSessionClient:
         self.hub_url = str(hub_url or "").rstrip("/")
         self.worker_id = str(worker_id or "").strip()
         self.auth_message = json.loads(json.dumps(auth_message, ensure_ascii=False))
+        self.auth_message["execution_protocol"] = "durable-authorization-v1"
         self.timeout_s = max(1.0, float(timeout_s or 5.0))
         self.work_executor = work_executor
         self.work_canceller = work_canceller
@@ -302,6 +303,8 @@ class _WorkerHubLiveSessionClient:
         self.market: dict[str, Any] = {}
         self.last_pong: dict[str, Any] = {}
         self.last_offer: dict[str, Any] = {}
+        self._pending_authorizations: dict[str, dict[str, Any]] = {}
+        self._authorized_sessions: set[str] = set()
         self.last_result: dict[str, Any] = {}
         self._delta_seq_by_session: dict[str, int] = {}
         self._delta_content_by_session: dict[str, str] = {}
@@ -402,6 +405,9 @@ class _WorkerHubLiveSessionClient:
                 raise RuntimeError(str(message.get("error") or message))
             self._handle_hub_message(message)
             if message_type == "hub.auth.accepted":
+                if (message.get("service") != "main_computer.exp_fdb_hub"
+                        and message.get("execution_protocol") != "durable-authorization-v1"):
+                    raise RuntimeError("Stable Hub does not support durable execution authorization")
                 saw_accepted = True
             elif message_type == "hub.pong.accepted":
                 saw_pong = True
@@ -440,6 +446,8 @@ class _WorkerHubLiveSessionClient:
         if self._stop_event.is_set():
             return
         self._stop_event.set()
+        with self._state_lock:
+            self._pending_authorizations.clear()
         self.close_reason = str(reason or "closed")
         try:
             self._send_json({"type": "worker.close", "reason": self.close_reason})
@@ -600,6 +608,13 @@ class _WorkerHubLiveSessionClient:
         if message_type == "hub.work.offer":
             self._handle_work_offer(message)
             return
+        if message_type == "hub.work.authorized":
+            self._handle_work_authorized(message)
+            return
+        if message_type == "hub.work.denied":
+            with self._state_lock:
+                self._pending_authorizations.pop(str(message.get("session_id") or ""), None)
+            return
         if message_type in {"hub.work.result.accepted", "hub.work.failed.accepted", "hub.work.terminal.accepted"}:
             with self._state_lock:
                 self.last_result = dict(message)
@@ -664,11 +679,48 @@ class _WorkerHubLiveSessionClient:
         run_id = str(offer.get("run_id") or "")
         if run_id:
             accepted["run_id"] = run_id
-        self._send_json(accepted)
+        requires_authorization = offer.get("execution_authorization_required") is True
         with self._state_lock:
+            if requires_authorization:
+                if session_id in self._authorized_sessions or session_id in self._pending_authorizations:
+                    raise RuntimeError("Duplicate work preparation session")
+                self._pending_authorizations[session_id] = dict(offer)
             self.last_offer = dict(offer)
-            self.active_work_count += 1
+        try:
+            self._send_json(accepted)
+        except BaseException:
+            with self._state_lock:
+                self._pending_authorizations.pop(session_id, None)
+            raise
+        if requires_authorization:
+            return  # CRITICAL: no computation, streaming or billable side effects.
+        self._start_authorized_work(offer)
 
+    def _handle_work_authorized(self, message: dict[str, Any]) -> None:
+        session_id = str(message.get("session_id") or "")
+        with self._state_lock:
+            offer = self._pending_authorizations.get(session_id)
+            if offer is None or self._stop_event.is_set():
+                self.last_error = "Unexpected or duplicate Hub work authorization"
+                return
+            if (str(offer.get("request_id") or "") != str(message.get("request_id") or "")
+                    or str(offer.get("run_id") or "") != str(message.get("run_id") or "")
+                    or message.get("execution_protocol") != "durable-authorization-v1"
+                    or not isinstance(message.get("work"), dict)):
+                self.last_error = "Hub work authorization identity or payload mismatch"
+                return
+            self._pending_authorizations.pop(session_id, None)
+            self._authorized_sessions.add(session_id)
+            authorized_offer = dict(offer)
+            authorized_offer["work"] = dict(message["work"])
+            self.last_offer = dict(authorized_offer)
+        self._start_authorized_work(authorized_offer)
+
+    def _start_authorized_work(self, offer: dict[str, Any]) -> None:
+        session_id = str(offer.get("session_id") or "")
+        request_id = str(offer.get("request_id") or "")
+        with self._state_lock:
+            self.active_work_count += 1
         worker_thread = threading.Thread(
             target=self._complete_work_offer,
             args=(dict(offer),),

@@ -6662,6 +6662,15 @@
         const host = runtimePreview.querySelector("#code-studio-runtime-monaco");
         const editor = runtimePreview.querySelector(".code-studio-monaco-authoring-surface");
         if (!host || !file) return;
+        // The applications shell constructs Code Studio on every route. Do not
+        // initialize its external editor for a hidden or unrelated application.
+        // The active Code Editor route mounts its canonical editor separately.
+        if (root.style.display === "none" ||
+            (document.body?.dataset.activeApp && document.body.dataset.activeApp !== "code-editor")) {
+          host.dataset.monacoOutcome = "deferred-inactive-route";
+          if (editor) editor.dataset.monacoOutcome = "deferred-inactive-route";
+          return;
+        }
         const adapter = resolveMonacoAdapter();
         if (!adapter || typeof adapter.mount !== "function") {
           host.dataset.monacoOutcome = "blocked";

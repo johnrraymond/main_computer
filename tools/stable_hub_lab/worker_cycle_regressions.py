@@ -20,7 +20,7 @@ from main_computer.stable_hub_topology import StableHubTopologyError, build_lab_
 from tools.stable_hub_lab.run_lab import (
     DEFAULT_MSK_ORIGIN, DEFAULT_REQUESTER_WALLET, DEFAULT_WORKER_WALLET,
     _new_user_slug, _post_json_url, _post_json_url_status, _read_json_url,
-    _ws_connect, _ws_recv_json, _ws_send_json, build_stable_msk_smoke_result, check_cluster,
+    _ws_connect, _ws_recv_json, _ws_send_json, build_stable_msk_smoke_result, require_durable_execution_cluster,
 )
 
 PRICE_OLD_WEI = 1024000000000000000
@@ -77,7 +77,7 @@ def build_worker_cycle_regressions_result(
 ) -> dict[str, Any]:
     topology = load_stable_hub_topology(topology_path)
     _assert_loopback_lab(topology)
-    identities = check_cluster(topology_path=topology_path, timeout=timeout)
+    identities = require_durable_execution_cluster(topology_path=topology_path, timeout=timeout)
     if not identities.get('ok') or any(
         check.get('storage_namespace') != topology.storage.get('namespace')
         for check in identities.get('checks', [])
@@ -115,7 +115,7 @@ def build_worker_cycle_regressions_result(
         sock.settimeout(timeout)
         try:
             _ws_send_json(sock, {
-                'type': 'worker.auth', 'worker_id': worker_label,
+                'type': 'worker.auth', 'execution_protocol': 'durable-authorization-v1', 'worker_id': worker_label,
                 'multisession_authorization': {'kind': 'multisession_key',
                                                 'multisession_key_id': worker_msk['multisession_key_id']},
                 'market': {'rings': ['ring-3'], 'capabilities': ['python', capability],
@@ -126,6 +126,7 @@ def build_worker_cycle_regressions_result(
             owner = auth.get('owner') if isinstance(auth.get('owner'), dict) else {}
             connection_id = str(auth.get('connection_id') or '')
             if not (auth.get('type') == 'hub.auth.accepted' and auth.get('ok') is True
+                    and auth.get('execution_protocol') == 'durable-authorization-v1'
                     and auth.get('account_id') == account_id and connection_id.startswith('conn_')
                     and connection_id != worker_label and owner.get('connection_id') == connection_id
                     and owner.get('account_id') == account_id
@@ -147,6 +148,30 @@ def build_worker_cycle_regressions_result(
             sock.close()
             raise
 
+    def close_durably(sock: socket.socket, *, connection_id: str, expected_settled: int) -> dict[str, Any]:
+        """Graceful closure has a commit acknowledgment, not merely TCP EOF.
+
+        A deferred FDB cleanup must fail this normal-path test; the separate
+        process-death/recovery campaign owns eventual recovery certification.
+        """
+        _ws_send_json(sock, {'type': 'worker.close'})
+        try:
+            acknowledgement = _ws_recv_json(sock)
+        except (OSError, TimeoutError, StableHubTopologyError) as exc:
+            raise StableHubTopologyError(
+                f'Worker close has no durable-commit acknowledgment for {connection_id}; '
+                f'cleanup may be delayed or deferred: {exc}'
+            ) from exc
+        if (acknowledgement.get('type') != 'hub.worker.closed'
+                or acknowledgement.get('ok') is not True
+                or acknowledgement.get('connection_id') != connection_id
+                or acknowledgement.get('settled_sessions') != expected_settled):
+            raise StableHubTopologyError(
+                f'Worker close was not durably confirmed for {connection_id}; '
+                f'expected {expected_settled} abandoned session(s): {acknowledgement}'
+            )
+        return acknowledgement
+
     def request_payload(label: str, max_price: str) -> dict[str, Any]:
         return {
             'request_id': f'req_{scenario}_{label}',
@@ -167,10 +192,20 @@ def build_worker_cycle_regressions_result(
         thread = threading.Thread(target=post, daemon=True)
         thread.start()
         offer = _ws_recv_json(sock)
-        if offer.get('type') != 'hub.work.offer' or offer.get('request_id') != payload['request_id']:
-            raise StableHubTopologyError(f'expected matching browser-style work offer: {offer}')
+        if (offer.get('type') != 'hub.work.offer'
+                or offer.get('request_id') != payload['request_id']
+                or offer.get('execution_authorization_required') is not True
+                or offer.get('work') != {'execution_authorization_pending': True}):
+            raise StableHubTopologyError(
+                f'expected preparation-only durable work offer; restart stale Hub processes: {offer}'
+            )
         _ws_send_json(sock, {'type': 'worker.work.accepted', 'session_id': offer['session_id'],
                              'request_id': offer['request_id']})
+        authorized = _ws_recv_json(sock)
+        if (authorized.get('type') != 'hub.work.authorized'
+                or authorized.get('session_id') != offer['session_id']
+                or authorized.get('work') != payload['work']):
+            raise StableHubTopologyError(f'durable work authorization missing: {authorized}')
         result = q.get(timeout=timeout)
         thread.join(timeout=1.0)
         if isinstance(result, BaseException):
@@ -204,7 +239,7 @@ def build_worker_cycle_regressions_result(
             raise StableHubTopologyError(f'old 1.024 offer should not fit 1-credit cap: {old_status} {old_response}')
         # Close the original connection before authenticating the same wallet
         # with its new price. This matches the browser test's refresh path.
-        _ws_send_json(old_socket, {'type': 'worker.close'})
+        old_close = close_durably(old_socket, connection_id=old_auth['connection_id'], expected_settled=0)
         old_socket.close()
         old_socket = None
         socket_new, new_auth = connect('0.512')
@@ -236,7 +271,7 @@ def build_worker_cycle_regressions_result(
         held_account = _account(requester_hub.hub_url, str(captain_msk['wallet_address']), timeout=timeout)
         if int(held_account.get('held_credit_wei') or 0) < PRICE_NEW_WEI:
             raise StableHubTopologyError('accepted unfinished work did not reserve .512 credits')
-        _ws_send_json(socket_new, {'type': 'worker.close'})
+        abandoned_close = close_durably(socket_new, connection_id=new_auth['connection_id'], expected_settled=1)
         socket_new.close()
         socket_new = None
         failed_continuation = continuation(abandon, 'failed')
@@ -259,6 +294,8 @@ def build_worker_cycle_regressions_result(
                                                    and success['session_id'] == success_offer['session_id'],
             'successful_result_terminal': success_continuation.get('status') == 'succeeded'
                                           and success_ack.get('type') == 'hub.work.result.accepted',
+            'old_offer_close_commit_acknowledged': old_close['settled_sessions'] == 0,
+            'abandoned_close_commit_acknowledged': abandoned_close['settled_sessions'] == 1,
             'disconnect_terminal_failure': failed_continuation.get('status') == 'failed',
             'successful_hold_charged_exactly_once': holds.get(success_payload['request_id'], {}).get('status') == 'charged'
                                                     and len(charges) == 1

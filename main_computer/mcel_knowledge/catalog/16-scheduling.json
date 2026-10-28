@@ -1,0 +1,29 @@
+{
+  "schema": "mcel.computer-knowledge.v1",
+  "namespace": "scheduling",
+  "origin": "main_computer/task_manager.py:TaskManagerService.create_schedule,delete_schedule; main_computer/stable_hub_worker_sessions.py:record_accepted.task_queue",
+  "operations": [
+    {
+      "id": "scheduler.create-server-action",
+      "concept": "mc.operation",
+      "sourceAction": "task/schedule/create",
+      "target": "task-manager.schedules",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false,
+      "meaning": "Store a future server action; this is not execution"
+    },
+    {
+      "id": "scheduler.delete-server-action",
+      "concept": "mc.operation",
+      "sourceAction": "task/schedule/delete",
+      "target": "task-manager.schedules",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false,
+      "meaning": "Delete planned action; no completed execution implied"
+    }
+  ]
+}

@@ -25,10 +25,11 @@
     const rootNode = documentRef && documentRef.querySelector
       ? documentRef.querySelector("#code-editor-app")
       : null;
+    // The shared applications document includes every application's scripts.
+    // Construct the facade now, but let routing mount the Code Editor surface
+    // only when that app becomes active. Otherwise a hidden Code Editor tries
+    // to start Monaco and its workers on unrelated routes (e.g. Task Manager).
     root.MainComputerCodeEditorRuntime = api.createCodeEditorRuntime({root: rootNode});
-    if (rootNode) {
-      root.MainComputerCodeEditorRuntime.mount(rootNode);
-    }
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function buildMainComputerCodeEditorRuntime(
   root,

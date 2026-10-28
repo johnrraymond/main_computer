@@ -134,65 +134,79 @@
     app.append(tabList, panelGroup);
     // Data presentation is generic: optional semantic collection contracts are
     // interpreted by the registered MCEL collection consumer and shared authority.
-    let collectionMounts=[];
+    const collectionMounts=new Map();
+    let sourceStatuses={};
+    let lastReceipt={};
     const renderData = () => {
-      for (const mounted of collectionMounts) mounted.destroy();
-      collectionMounts=[];
+      const receipts={};
       for (const tab of tabs) {
-        const parent = ui.get(tab.id).content;
+        const parent=ui.get(tab.id).content;
+        const source=sources.get(tab.id);
+        const stream=sourceStatuses[source]||status;
+        const data=snapshot[source];
+        const declaredSpec=options.collections?.[source];
+        const existing=collectionMounts.get(tab.id);
+        const upsertNotice=(message)=>{
+          let notice=parent.querySelector('.mcel-tab-workspace__source-status');
+          if(!message){notice?.remove();return;}
+          if(!notice){notice=text('p',message,'mcel-tab-workspace__source-status');parent.prepend(notice);}
+          notice.textContent=message;
+          notice.dataset.sourceState=stream;
+        };
+        if(stream==='failed'||stream==='loading'||stream==='not-requested'||stream==='stale') {
+          const labels={failed:'Source unavailable; last successful snapshot retained',
+            loading:'Loading data…','not-requested':'Data not requested',stale:'Source stale; showing last successful snapshot'};
+          upsertNotice(labels[stream]);
+          if(existing){receipts[source]={status:stream,retained:true};continue;}
+          if(parent.querySelectorAll('.mcel-tab-workspace__notice').length===0)
+            parent.append(text('p',labels[stream],'mcel-tab-workspace__notice'));
+          continue;
+        }
+        upsertNotice(null);
+        if(declaredSpec && Array.isArray(data) && data.length) {
+          parent.querySelector('.mcel-tab-workspace__notice')?.remove();
+          if(existing) {
+            const outcome=existing.update(data);
+            requireContract(outcome.ok===true,'SEMANTIC_UPDATE_REFUSED_'+(outcome.code||'unknown'));
+            receipts[source]={status:stream, ...outcome};
+          } else {
+            const consumer=options.collectionConsumer||globalThis.McelSemanticCollectionWorkspace;
+            requireContract(typeof consumer?.mount==='function','MISSING_SEMANTIC_COLLECTION_CONSUMER');
+            const mounted=consumer.mount(parent,data,declaredSpec);
+            collectionMounts.set(tab.id,mounted);
+            receipts[source]={status:stream,initial:true,rows:mounted.ids.length};
+          }
+          continue;
+        }
+        if(existing){existing.destroy();collectionMounts.delete(tab.id);}
         parent.replaceChildren();
-        const data = snapshot[sources.get(tab.id)];
-        if (status === "loading" || status === "not-requested" || status === "failed") {
-          const labels = {loading: "Loading data…", "not-requested": "Data not requested", failed: "Data unavailable"};
-          parent.append(text("p", labels[status], "mcel-tab-workspace__notice"));
+        if(data===undefined || data===null || (Array.isArray(data)&&!data.length) ||
+           (typeof data==='object'&&!Array.isArray(data)&&!Object.keys(data).length)) {
+          parent.append(text('p','No data for this view','mcel-tab-workspace__notice'));
+          receipts[source]={status:'empty'};
           continue;
         }
-        if (data === undefined || data === null ||
-            (Array.isArray(data) && !data.length) ||
-            (typeof data === "object" && !Array.isArray(data) && !Object.keys(data).length)) {
-          parent.append(text("p", "No data for this view", "mcel-tab-workspace__notice"));
-          continue;
-        }
-        const declaredSpec=options.collections?.[sources.get(tab.id)];
-        if (declaredSpec) {
-          requireContract(Array.isArray(data),"SEMANTIC_SOURCE_NOT_A_COLLECTION");
-          const consumer=options.collectionConsumer||globalThis.McelSemanticCollectionWorkspace;
-          requireContract(typeof consumer?.mount==="function", "MISSING_SEMANTIC_COLLECTION_CONSUMER");
-          collectionMounts.push(consumer.mount(parent,data,declaredSpec));
-          continue;
-        }
-        const rows = Array.isArray(data) ? data : Object.entries(data).map(([metric, value]) => ({metric, value}));
-        if (rows.some(row => row && typeof row === "object" && !Array.isArray(row))) {
-          const keys = [...new Set(rows.flatMap(row => row && typeof row === "object" && !Array.isArray(row)
-            ? Object.keys(row) : ["value"]))].slice(0, 24);
-          const frame = doc.createElement("div");
-          frame.className = "mcel-tab-workspace__table-scroll";
-          frame.tabIndex = 0;
-          frame.setAttribute("aria-label", `${tab.label} data table, scrollable`);
-          const table = doc.createElement("table");
-          const thead = doc.createElement("thead");
-          const header = doc.createElement("tr");
-          for (const key of keys) header.append(text("th", key));
-          thead.append(header);
-          const tbody = doc.createElement("tbody");
-          for (const row of rows.slice(0, 500)) {
-            const tr = doc.createElement("tr");
-            for (const key of keys) {
-              const value = row && typeof row === "object" && !Array.isArray(row) ? row[key] : row;
-              tr.append(text("td", value === undefined || value === null ? "—" :
-                typeof value === "object" ? JSON.stringify(value) : value));
-            }
+        const rows=Array.isArray(data)?data:Object.entries(data).map(([metric,value])=>({metric,value}));
+        if(rows.some(row=>row&&typeof row==='object'&&!Array.isArray(row))) {
+          const keys=[...new Set(rows.flatMap(row=>row&&typeof row==='object'&&!Array.isArray(row)?Object.keys(row):['value']))].slice(0,24);
+          const frame=doc.createElement('div');frame.className='mcel-tab-workspace__table-scroll';frame.tabIndex=0;
+          frame.setAttribute('aria-label',`${tab.label} data table, scrollable`);
+          const table=doc.createElement('table'),thead=doc.createElement('thead'),header=doc.createElement('tr');
+          for(const key of keys)header.append(text('th',key));thead.append(header);
+          const tbody=doc.createElement('tbody');
+          for(const row of rows.slice(0,500)) {
+            const tr=doc.createElement('tr');
+            for(const key of keys){const value=row&&typeof row==='object'&&!Array.isArray(row)?row[key]:row;
+              tr.append(text('td',value===undefined||value===null?'—':typeof value==='object'?JSON.stringify(value):value));}
             tbody.append(tr);
           }
-          table.append(thead, tbody);
-          frame.append(table);
-          parent.append(frame);
+          table.append(thead,tbody);frame.append(table);parent.append(frame);
         } else {
-          const list = doc.createElement("ul");
-          for (const value of rows.slice(0, 500)) list.append(text("li", value));
-          parent.append(list);
+          const list=doc.createElement('ul');for(const v of rows.slice(0,500))list.append(text('li',v));parent.append(list);
         }
+        receipts[source]={status:stream,rows:rows.length};
       }
+      lastReceipt=receipts;
     };
     const renderSelection = () => {
       for (const [id, {button, panel}] of ui) {
@@ -247,25 +261,29 @@
     }
     return Object.freeze({
       select,
-      updateSnapshot(nextSnapshot, nextStatus = "available") {
-        if (disposed) return {ok: false, code: "disposed"};
-        if (!nextSnapshot || typeof nextSnapshot !== "object" || Array.isArray(nextSnapshot) ||
-            !STATUSES.has(nextStatus)) return {ok: false, code: "invalid-snapshot"};
-        const previousSnapshot=snapshot,previousStatus=status;
-        snapshot=structuredClone(nextSnapshot);
-        status=nextStatus;
+      updateSnapshot(nextSnapshot, nextStatus = "available", envelope={}) {
+        if(disposed)return {ok:false,code:"disposed",effects:[]};
+        if(!nextSnapshot || typeof nextSnapshot!=="object" || Array.isArray(nextSnapshot) ||
+           !STATUSES.has(nextStatus))return {ok:false,code:"invalid-snapshot",effects:[]};
+        const nextStreams=envelope?.streams||{},validStreams=new Set([...STATUSES,"stale"]);
+        if(typeof nextStreams!=="object"||Array.isArray(nextStreams)||
+           Object.values(nextStreams).some(s=>!validStreams.has(s)))
+          return {ok:false,code:"invalid-stream-status",effects:[]};
+        const previousSnapshot=snapshot,previousStatus=status,previousSources=sourceStatuses;
+        snapshot=structuredClone(nextSnapshot);status=nextStatus;sourceStatuses={...nextStreams};
         try {renderData();}
-        catch (error) {
-          snapshot=previousSnapshot;status=previousStatus;
-          renderData();
+        catch(error){
+          snapshot=previousSnapshot;status=previousStatus;sourceStatuses=previousSources;
+          try {renderData();} catch(_ignored) { /* refusal remains visible */ }
           return {ok:false,code:"semantic-render-refused",message:String(error),effects:[]};
         }
-        return {ok: true, effects: []};
+        return Object.keys(nextStreams).length || options.collections ?
+          {ok:true,effects:[],streams:lastReceipt} : {ok:true,effects:[]};
       },
-      getState() { return {selected: current[selection.id], status, effects: []}; },
+      getState() { return {selected: current[selection.id], status, streams:structuredClone(sourceStatuses), receipts:lastReceipt, effects: []}; },
       destroy() {
-        for (const mounted of collectionMounts) mounted.destroy();
-        collectionMounts=[];
+        for (const mounted of collectionMounts.values()) mounted.destroy();
+        collectionMounts.clear();
         disposed = true;
         doc.defaultView.removeEventListener("hashchange", onRouteChange);
         doc.defaultView.removeEventListener("popstate", onRouteChange);

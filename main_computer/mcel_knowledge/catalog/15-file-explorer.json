@@ -1,0 +1,209 @@
+{
+  "schema": "mcel.computer-knowledge.v1",
+  "namespace": "file-explorer",
+  "origin": "main_computer/viewport_routes_file_explorer.py:_handle_file_explorer_roots,list,search,read + _file_explorer_entry_payload",
+  "observations": [
+    {
+      "id": "file-explorer.roots",
+      "concept": "mc.file.root",
+      "source": "roots",
+      "cardinality": "many",
+      "properties": [
+        {
+          "name": "root_id",
+          "source": "id",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "label",
+          "source": "label",
+          "type": "mc.text"
+        },
+        {
+          "name": "display_path",
+          "source": "path_display",
+          "type": "mc.file.path"
+        },
+        {
+          "name": "in_main_computer_purview",
+          "source": "main_computer_purview",
+          "type": "mc.boolean",
+          "evidence": "application-policy-classification"
+        },
+        {
+          "name": "mounted_windows_drive",
+          "source": "mounted_windows_drive",
+          "type": "mc.boolean"
+        }
+      ],
+      "identity": {
+        "fields": [
+          "id"
+        ],
+        "scope": "file-explorer-root-namespace",
+        "requiresAll": true
+      }
+    },
+    {
+      "id": "file-explorer.entries",
+      "concept": "mc.file.entry",
+      "source": "entries",
+      "cardinality": "many",
+      "properties": [
+        {
+          "name": "name",
+          "source": "name",
+          "type": "mc.text",
+          "required": true
+        },
+        {
+          "name": "kind",
+          "source": "kind",
+          "type": "mc.file.entry.kind",
+          "required": true
+        },
+        {
+          "name": "relative_path",
+          "source": "relative_path",
+          "type": "mc.file.relative_path",
+          "required": true
+        },
+        {
+          "name": "display_path",
+          "source": "path_display",
+          "type": "mc.file.path"
+        },
+        {
+          "name": "extension",
+          "source": "extension",
+          "type": "mc.file.extension"
+        },
+        {
+          "name": "size_bytes",
+          "source": "bytes",
+          "type": "mc.quantity.bytes",
+          "availableWhen": {
+            "source": "kind",
+            "equals": "file"
+          },
+          "evidence": "size-only-semantic-for-regular-files"
+        },
+        {
+          "name": "modified_at",
+          "source": "mtime",
+          "type": "mc.timestamp",
+          "availableWhen": {
+            "source": "mtime",
+            "notEquals": 0
+          },
+          "evidence": "zero-is-unavailable-sentinel-in-file-explorer-producer"
+        },
+        {
+          "name": "category",
+          "source": "category",
+          "type": "mc.file.category",
+          "evidence": "application-inferred-not-authoritative"
+        },
+        {
+          "name": "suggested_app",
+          "source": "suggested_app",
+          "type": "mc.text",
+          "evidence": "suggestion-only"
+        },
+        {
+          "name": "main_computer_purview",
+          "source": "main_computer_purview",
+          "type": "mc.boolean",
+          "evidence": "application-policy-classification"
+        }
+      ],
+      "sourceAlternates": [
+        "results"
+      ],
+      "context": {
+        "root_id": "root_id"
+      },
+      "identity": {
+        "fields": [
+          "relative_path"
+        ],
+        "scope": "selected-root-observation",
+        "requiresAll": true,
+        "contextFields": [
+          "root_id"
+        ]
+      },
+      "evidence": "list and search responses share entry shape; require root_id for identity"
+    },
+    {
+      "id": "file-explorer.read-preview",
+      "concept": "mc.file.preview",
+      "source": "entry",
+      "cardinality": "one",
+      "properties": [
+        {
+          "name": "entry_path",
+          "source": "relative_path",
+          "type": "mc.file.relative_path"
+        },
+        {
+          "name": "kind",
+          "source": "kind",
+          "type": "mc.file.entry.kind"
+        },
+        {
+          "name": "readable",
+          "source": "readable",
+          "type": "mc.boolean",
+          "fromContext": "snapshot"
+        },
+        {
+          "name": "reason",
+          "source": "reason",
+          "type": "mc.text",
+          "fromContext": "snapshot"
+        },
+        {
+          "name": "encoding",
+          "source": "encoding",
+          "type": "mc.text",
+          "fromContext": "snapshot"
+        }
+      ],
+      "evidence": "read response preserves readable=false for oversize or binary content; preview bytes are not interpreted"
+    }
+  ],
+  "operations": [
+    {
+      "id": "file-explorer.list",
+      "concept": "mc.operation",
+      "sourceAction": "file-explorer/list",
+      "target": "file-explorer.entries",
+      "effect": "observation",
+      "confirmationRequired": false,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    },
+    {
+      "id": "file-explorer.search",
+      "concept": "mc.operation",
+      "sourceAction": "file-explorer/search",
+      "target": "file-explorer.entries",
+      "effect": "observation",
+      "confirmationRequired": false,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    },
+    {
+      "id": "file-explorer.preview",
+      "concept": "mc.operation",
+      "sourceAction": "file-explorer/read",
+      "target": "file-explorer.read-preview",
+      "effect": "observation",
+      "confirmationRequired": false,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    }
+  ]
+}

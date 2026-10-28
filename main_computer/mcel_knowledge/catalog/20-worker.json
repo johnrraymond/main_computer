@@ -1,0 +1,359 @@
+{
+  "schema": "mcel.computer-knowledge.v1",
+  "namespace": "worker",
+  "origin": "main_computer/stable_hub_worker_sessions.py:StableHubWorkerMarketDirectory.list_workers,StableHubAcceptedSessionDirectory.record_accepted,list_open_sessions_for_worker_connection; viewport_routes_energy.py:_worker_runtime_status_response_payload",
+  "observations": [
+    {
+      "id": "worker.logical-workers",
+      "concept": "mc.worker",
+      "source": "worker_market.market_workers",
+      "sourceAlternates": [
+        "worker_market.workers"
+      ],
+      "collectionFormat": "map-values",
+      "cardinality": "many",
+      "properties": [
+        {
+          "name": "cluster_id",
+          "source": "cluster_id",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "worker_id",
+          "source": "worker_id",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "observed_status",
+          "source": "status",
+          "type": "mc.worker.lease.state",
+          "evidence": "one-market-lease-source-record-is-not-proof-of-persistent-logical-worker-state"
+        }
+      ],
+      "identity": {
+        "fields": [
+          "cluster_id",
+          "worker_id"
+        ],
+        "scope": "cluster-logical-worker-observation",
+        "requiresAll": true
+      },
+      "evidence": "logical-worker IDs projected from observed leases only; concurrent leases with same logical ID are ambiguous; never prove ownership/continuity"
+    },
+    {
+      "id": "worker.market-workers",
+      "concept": "mc.worker.market-lease",
+      "source": "worker_market.market_workers",
+      "cardinality": "many",
+      "properties": [
+        {
+          "name": "worker_id",
+          "source": "worker_id",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "status",
+          "source": "status",
+          "type": "mc.worker.lease.state"
+        },
+        {
+          "name": "connection_id",
+          "source": "connection_id",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "lease_epoch",
+          "source": "lease_epoch",
+          "type": "mc.quantity.count",
+          "required": true
+        },
+        {
+          "name": "rings",
+          "source": "rings",
+          "type": "mc.structured.string-list"
+        },
+        {
+          "name": "capabilities",
+          "source": "capabilities",
+          "type": "mc.structured.string-list"
+        },
+        {
+          "name": "price",
+          "source": "price",
+          "type": "mc.worker.price"
+        },
+        {
+          "name": "max_concurrency",
+          "source": "max_concurrency",
+          "type": "mc.quantity.count"
+        },
+        {
+          "name": "active_sessions",
+          "source": "active_sessions",
+          "type": "mc.quantity.count"
+        },
+        {
+          "name": "owner_hub_id",
+          "source": "owner_hub_id",
+          "type": "mc.identifier"
+        },
+        {
+          "name": "cluster_id",
+          "source": "cluster_id",
+          "type": "mc.identifier"
+        },
+        {
+          "name": "connected_at",
+          "source": "connected_at",
+          "type": "mc.timestamp"
+        },
+        {
+          "name": "updated_at",
+          "source": "updated_at",
+          "type": "mc.timestamp"
+        }
+      ],
+      "sourceAlternates": [
+        "worker_market.workers"
+      ],
+      "collectionFormat": "map-values",
+      "identity": {
+        "fields": [
+          "cluster_id",
+          "worker_id",
+          "connection_id",
+          "lease_epoch"
+        ],
+        "scope": "cluster-worker-lease",
+        "requiresAll": true
+      },
+      "evidence": "lease tuple changes across reconnect; matching IDs alone do not confer ownership or authorization",
+      "relationships": [
+        {
+          "name": "possible_logical_worker",
+          "target": "worker.logical-workers",
+          "certainty": "candidate-only",
+          "reason": "same reported cluster and worker ID is a candidate logical link, not authority or continuity",
+          "matches": [
+            {
+              "property": "cluster_id",
+              "targetProperty": "cluster_id"
+            },
+            {
+              "property": "worker_id",
+              "targetProperty": "worker_id"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "worker.sessions",
+      "concept": "mc.worker.session",
+      "source": "worker_sessions.accepted_sessions",
+      "cardinality": "many",
+      "properties": [
+        {
+          "name": "session_id",
+          "source": "session_id",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "request_id",
+          "source": "request_id",
+          "type": "mc.identifier"
+        },
+        {
+          "name": "run_id",
+          "source": "run_id",
+          "type": "mc.identifier"
+        },
+        {
+          "name": "worker_id",
+          "source": "worker_id",
+          "type": "mc.identifier"
+        },
+        {
+          "name": "worker_connection_id",
+          "source": "worker_connection_id",
+          "type": "mc.identifier"
+        },
+        {
+          "name": "owner_hub_id",
+          "source": "owner_hub_id",
+          "type": "mc.identifier"
+        },
+        {
+          "name": "cluster_id",
+          "source": "cluster_id",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "status",
+          "source": "status",
+          "type": "mc.task.state"
+        },
+        {
+          "name": "task_queue",
+          "source": "task_queue",
+          "type": "mc.task.queue"
+        },
+        {
+          "name": "partition",
+          "source": "partition",
+          "type": "mc.text"
+        },
+        {
+          "name": "execution",
+          "source": "execution",
+          "type": "mc.task.execution"
+        },
+        {
+          "name": "work",
+          "source": "work",
+          "type": "mc.structured.object"
+        },
+        {
+          "name": "worker_result",
+          "source": "worker_result",
+          "type": "mc.task.result"
+        },
+        {
+          "name": "accepted_at",
+          "source": "accepted_at",
+          "type": "mc.timestamp"
+        },
+        {
+          "name": "completed_at",
+          "source": "completed_at",
+          "type": "mc.timestamp"
+        },
+        {
+          "name": "failed_at",
+          "source": "failed_at",
+          "type": "mc.timestamp"
+        }
+      ],
+      "sourceAlternates": [
+        "worker_sessions.sessions"
+      ],
+      "collectionFormat": "map-values",
+      "identity": {
+        "fields": [
+          "cluster_id",
+          "session_id"
+        ],
+        "scope": "cluster-session",
+        "requiresAll": true
+      },
+      "relationships": [
+        {
+          "name": "possible_serving_lease",
+          "target": "worker.market-workers",
+          "certainty": "candidate-only",
+          "reason": "connection and worker IDs without session lease epoch cannot prove lease ownership",
+          "matches": [
+            {
+              "property": "worker_id",
+              "targetProperty": "worker_id"
+            },
+            {
+              "property": "worker_connection_id",
+              "targetProperty": "connection_id"
+            },
+            {
+              "property": "cluster_id",
+              "targetProperty": "cluster_id"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "worker.runtime",
+      "concept": "mc.worker.runtime",
+      "source": "worker_runtime.runtime",
+      "cardinality": "one",
+      "properties": [
+        {
+          "name": "phase",
+          "source": "phase",
+          "type": "mc.worker.runtime.state"
+        },
+        {
+          "name": "state",
+          "source": "state",
+          "type": "mc.worker.runtime.state"
+        },
+        {
+          "name": "active_jobs",
+          "source": "active_jobs",
+          "type": "mc.quantity.count"
+        },
+        {
+          "name": "allowed_to_accept",
+          "source": "allowed_to_accept",
+          "type": "mc.boolean",
+          "evidence": "runtime-reported-policy-not-semantic-authorization"
+        },
+        {
+          "name": "reason",
+          "source": "reason",
+          "type": "mc.text"
+        },
+        {
+          "name": "last_checked_at",
+          "source": "last_checked_at",
+          "type": "mc.timestamp"
+        },
+        {
+          "name": "status",
+          "source": "status",
+          "type": "mc.worker.runtime.state",
+          "fromContext": "parent"
+        }
+      ],
+      "evidence": "read-only projection of existing Worker runtime status; operational authority remains external"
+    }
+  ],
+  "operations": [
+    {
+      "id": "worker.runtime-status",
+      "concept": "mc.operation",
+      "sourceAction": "worker/runtime-status",
+      "target": "worker.runtime",
+      "effect": "observation",
+      "confirmationRequired": false,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    },
+    {
+      "id": "worker.runtime-sync",
+      "concept": "mc.operation",
+      "sourceAction": "worker/runtime-sync",
+      "target": "worker.runtime",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false,
+      "meaning": "Ask external runtime supervisor to reconcile"
+    },
+    {
+      "id": "worker.work-now",
+      "concept": "mc.operation",
+      "sourceAction": "worker/work-now",
+      "target": "worker.runtime",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false,
+      "meaning": "Request external runtime work-now override; may change admission policy"
+    }
+  ]
+}

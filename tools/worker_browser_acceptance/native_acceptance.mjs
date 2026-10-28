@@ -77,7 +77,7 @@ async function prepareWallet(context, walletPage, extensionId) {
 // All network calls are GETs. Uses Captain's own read-only wallet preparation
 // to identify the requester, not the disposable *Worker* MetaMask account.
 // Never log the subprocess response: it can contain runtime wallet metadata.
-function requireCaptainFunding({python, cwd, requiredCreditWei, priceCeilingCredits}) {
+function captainFundingProbe({python, cwd, requiredCreditWei, priceCeilingCredits}) {
   const probe = spawnSync(python, [
     '-m', 'tools.worker_captain_funding_preflight',
     '--required-credit-wei', requiredCreditWei,
@@ -85,7 +85,39 @@ function requireCaptainFunding({python, cwd, requiredCreditWei, priceCeilingCred
   ], {cwd, shell:false, windowsHide:true, encoding:'utf8', timeout:30_000, maxBuffer:65536})
   let evidence = null
   try { evidence = JSON.parse(String(probe.stdout || '').trim()) } catch {}
-  if (probe.status !== 0 || evidence?.ok !== true || evidence?.fundable !== true) {
+  return {status: probe.status, evidence}
+}
+
+function requireCaptainFunding({python, cwd, requiredCreditWei, priceCeilingCredits}) {
+  let {status, evidence} = captainFundingProbe({python, cwd, requiredCreditWei, priceCeilingCredits})
+  // Only the *specific*, fully verified balance-cap denial can authorize a
+  // small reserve transfer. An unreadable Hub, identity mismatch, other error,
+  // or already-fundable account must never trigger a payout.
+  if (status !== 0 && evidence?.ok === true && evidence?.fundable === false &&
+      evidence?.reason === 'insufficient_credit_under_cumulative_cap') {
+    if (process.env.MC_WORKER_TEST_AUTHORIZE_RESERVE_SIPHON !== 'explicit') {
+      throw new Error('Captain funding insufficient; reserve replenishment requires --authorize-reserve-siphon. No payment was sent.')
+    }
+    console.log('Worker acceptance: captain.reserve-siphon.low-balance')
+    const refill = spawnSync(python, [
+      '-m', 'tools.worker_captain_reserve_siphon',
+      '--required-credit-wei', requiredCreditWei, '--execute',
+    ], {cwd, shell:false, windowsHide:true, encoding:'utf8', timeout:420_000, maxBuffer:65536})
+    let refillEvidence = null
+    try { refillEvidence = JSON.parse(String(refill.stdout || '').trim()) } catch {}
+    if (refill.status !== 0 || refillEvidence?.ok !== true ||
+        !['funded', 'already_funded'].includes(refillEvidence?.status)) {
+      const reason = /^[a-z0-9_-]{1,80}$/.test(refillEvidence?.reason || '')
+        ? refillEvidence.reason : 'reserve_funding_unavailable'
+      throw new Error('Captain reserve siphon refused: ' + reason +
+        '. No Captain work request was submitted; inspect runtime/state/captain/reserve-siphon before retrying.')
+    }
+    console.log('Worker acceptance: captain.reserve-siphon.' + refillEvidence.status)
+    // The mutator's success output alone cannot authorize work. Recheck the
+    // *live* Hub account and use only the new preflight funding verdict.
+    ;({status, evidence} = captainFundingProbe({python, cwd, requiredCreditWei, priceCeilingCredits}))
+  }
+  if (status !== 0 || evidence?.ok !== true || evidence?.fundable !== true) {
     const reason = evidence?.reason && /^[a-z0-9_-]{1,70}$/.test(evidence.reason)
       ? evidence.reason : 'read_only_funding_probe_unavailable'
     throw new Error('Captain funding preflight refused: ' + reason +
@@ -474,6 +506,7 @@ async function runWorkerAcceptance({context, page, metamask, extensionId}) {
           catch { return false }
         }, {timeout: 60_000})
         await page.locator('#worker-work-now-finish').click()
+        console.log('Worker acceptance: work-session-finish-requested')
         const response = await finishing
         if (!response.ok()) throw new Error('Work-now finish refused (HTTP ' + response.status() + ')')
         const body = await response.json()

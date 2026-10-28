@@ -1,0 +1,88 @@
+{
+  "ok": true,
+  "platform": "win32",
+  "processes": [
+    {
+      "pid": 101,
+      "name": "python.exe",
+      "status": "running",
+      "status_availability": "present",
+      "cmdline": "python -m main_computer.app_control",
+      "memory_rss": null,
+      "memory_availability": "unavailable",
+      "created_at": "/Date(1793132654474)/",
+      "is_main_computer": true,
+      "is_current_process": false
+    },
+    {
+      "pid": 202,
+      "name": "python.exe",
+      "status": "",
+      "status_availability": "unavailable",
+      "cmdline": "python worker.py",
+      "memory_rss": 0,
+      "memory_availability": "present",
+      "created_at": "2026-10-27T12:00:00Z",
+      "is_main_computer": false,
+      "is_current_process": true
+    }
+  ],
+  "connections": [
+    {
+      "pid": 101,
+      "process_name": "python.exe",
+      "status": "Listen",
+      "local": "[::1]:8765",
+      "remote": ""
+    },
+    {
+      "pid": 999,
+      "process_name": "unknown",
+      "status": "Established",
+      "local": "127.0.0.1:2000",
+      "remote": "8.8.8.8:443"
+    }
+  ],
+  "hardware": {
+    "updated_at": "2026-10-27T12:01:00Z",
+    "cpu": {
+      "available": true,
+      "overall_percent": 0,
+      "physical_cores": 8,
+      "logical_cores": 16,
+      "frequency_mhz": 3600,
+      "per_core": [
+        {
+          "index": 0,
+          "label": "CPU 0",
+          "percent": 13.5
+        }
+      ]
+    },
+    "gpu": {
+      "available": false,
+      "overall_percent": null,
+      "devices": []
+    }
+  },
+  "server": {
+    "running": true,
+    "pid": 101,
+    "port": 8765,
+    "listener": "[::1]:8765",
+    "heartbeat_running": true,
+    "heartbeat_ready": false,
+    "heartbeat_pid": 900,
+    "control_script": "C:\\Main Computer\\control-main-computer.ps1"
+  },
+  "schedules": [
+    {
+      "id": "s1",
+      "action": "server_restart",
+      "run_at": "2026-10-28T11:30:00Z",
+      "created_at": "2026-10-27T12:01:00Z",
+      "enabled": false,
+      "note": "review"
+    }
+  ]
+}

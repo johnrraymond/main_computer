@@ -25,7 +25,7 @@ def html_fixture() -> str:
         ('task-manager.css', 'mcel-tab-workspace.css', 'mcel-semantic-collection-workspace.css', 'mcel-task-manager-notebook-lab.css'))
     js = '\n'.join('<script>\n'+(SCRIPTS / path).read_text(encoding='utf-8')+'\n</script>' for path in
         ('mcel-view-transition.js', 'mcel-element-registry.js', 'mcel-elements-core.js',
-         'mcel-semantic-layout-inference.js', 'mcel-semantic-collection-workspace.js',
+         'mcel-semantic-layout-inference.js', 'mcel-semantic-value-contract.js', 'mcel-semantic-collection-workspace.js',
          'mcel-task-manager-process-contract.js', 'mcel-tab-workspace.js',
          'mcel-task-manager-tab-witness.js', 'mcel-task-manager-notebook-bridge.js'))
     return ('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'

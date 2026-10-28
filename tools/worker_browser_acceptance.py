@@ -459,8 +459,13 @@ def run(argv: list[str] | None = None) -> int:
                         help='Explicitly allow registering a real paid-worker offer on testnet')
     parser.add_argument('--authorize-captain-spend', action='store_true',
                         help='Authorize one Testnet Captain attempt and at most one two-credit retry after a market rejection; cumulative bridge funding capped at two credits')
+    parser.add_argument('--authorize-reserve-siphon', action='store_true',
+                        help='Explicitly allow one governed Testnet reserve payout (max 0.205 native including gas; 0.2 bridge credits) if the Captain lacks Hub credits')
     args = parser.parse_args(argv)
     url = valid_worker_url(args.url)
+    if args.authorize_reserve_siphon and (args.mode != 'work-cycle' or args.action != 'run'
+                                          or not args.authorize_captain_spend):
+        raise AcceptanceError('--authorize-reserve-siphon requires the explicitly authorized work-cycle run')
     if args.mode in ('worker', 'work-cycle') and args.action == 'run' and not args.authorize_worker_offer:
         raise AcceptanceError('Worker registration requires --authorize-worker-offer')
     if args.mode == 'work-cycle' and args.action == 'run' and not args.authorize_captain_spend:
@@ -517,6 +522,7 @@ def run(argv: list[str] | None = None) -> int:
         'MC_WORKER_TEST_PYTHON': sys.executable,
         'MC_WORKER_TEST_ROOT': str(ROOT),
         'MC_WORKER_TEST_AUTHORIZE_WORK_CYCLE': 'explicit' if (args.mode == 'work-cycle' and args.authorize_worker_offer and args.authorize_captain_spend) else '',
+        'MC_WORKER_TEST_AUTHORIZE_RESERVE_SIPHON': 'explicit' if args.authorize_reserve_siphon else '',
         'MC_WORKER_TEST_WALLET_FILE': str(WALLET_FILE),
         'MC_WORKER_TEST_REPORT_DIR': str(REPORTS),
         'MC_WORKER_TEST_OUTPUT_DIR': str(REPORTS / 'playwright'),

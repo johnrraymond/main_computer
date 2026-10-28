@@ -277,6 +277,11 @@
       } else if (isCodeEditor) {
         running = false;
         glStatus.textContent = "aider dock ready";
+        // Mount only after the Code Editor route is visible. Keep its runtime
+        // and Monaco initialization out of unrelated application lifecycles.
+        if (codeEditorApp && codeEditorApp.dataset.codeEditorRuntime !== "dsl-native") {
+          window.MainComputerCodeEditorRuntime?.mount(codeEditorApp);
+        }
         aiderInstruction.focus();
         loadAiderContext().catch(() => {});
         if (!fileExplorerAutoLoaded) {

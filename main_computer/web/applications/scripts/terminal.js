@@ -879,6 +879,8 @@ async function runTaskManagerRefresh() {
       ...requestBase,
       include_all: false,
       include_connections: taskIncludeConnections.checked,
+      ...(window.McelTaskManagerSemanticShadow?.enabled ? {mcel_semantic_shadow: true} : {}),
+      ...(window.McelTaskManagerSemanticShadow?.compatibility ? {mcel_semantic_presentation: "compat"} : {}),
     });
     let allProcesses = [];
     let allProcessOverview = {};
@@ -900,8 +902,31 @@ async function runTaskManagerRefresh() {
       all_process_overview: allProcessOverview,
       all_processes_error: allProcessMessage,
     };
-    // Lab-only read-only mirror of the existing canonical refresh result.
-    window.McelTaskManagerNotebookLab?.publish(taskManagerSnapshotCache, "available");
+    // Lab-only read-only mirror. Record delivery refusal separately from HTTP
+    // success. Stream statuses are independently attributable, not a global OK.
+    const labBridge=window.McelTaskManagerNotebookLab;
+    const labStreams={processes:"available",
+      all_processes:allProcessMessage?"failed":"available",
+      connections:taskIncludeConnections.checked?"available":"not-requested",
+      hardware:data.hardware&&Object.keys(data.hardware).length?"available":"empty"};
+    const labDelivery=labBridge?.status()?.mounted ?
+      labBridge.publish(taskManagerSnapshotCache,"available",undefined,{streams:labStreams}):null;
+    if(labDelivery && labDelivery.ok!==true){
+      taskManagerStatus.dataset.mcelLabDelivery="failed";
+      taskManagerStatus.dataset.mcelLabRefusal=labDelivery.code||"unknown";
+      console.warn("Task Manager MCEL read-only mirror refused snapshot",labDelivery);
+    } else if(labDelivery){
+      taskManagerStatus.dataset.mcelLabDelivery=labDelivery.status;
+      delete taskManagerStatus.dataset.mcelLabRefusal;
+    }
+    // The server shadow was computed from this exact response, not a second
+    // volatile process sample. A refusal is diagnostic and never gates legacy UI.
+    const semanticShadow=window.McelTaskManagerSemanticShadow;
+    if(semanticShadow?.enabled){
+      const receipt=semanticShadow.capture(data._mcel_semantic_shadow, data);
+      taskManagerStatus.dataset.mcelSemanticShadow=receipt.status;
+      if(receipt.status==='refused') console.warn('MCEL semantic shadow refused',receipt);
+    }
     const summary = summarizeTaskSnapshot(taskManagerSnapshotCache);
     taskManagerStatus.textContent = allProcessMessage ? `Task snapshot current. ${allProcessMessage}` : "Task snapshot current.";
     const server = data.server || {};
@@ -918,7 +943,14 @@ async function runTaskManagerRefresh() {
   } catch (error) {
     const message = `Task manager failed: ${error.message || error}`;
     taskManagerStatus.textContent = "Task manager unavailable.";
-    window.McelTaskManagerNotebookLab?.publish(null, "failed");
+    const failedBridge=window.McelTaskManagerNotebookLab;
+    if(failedBridge?.status()?.mounted){
+      const failedDelivery=failedBridge.publish(null,"failed",undefined,{streams:{processes:"failed",
+        all_processes:"failed",connections:"failed",hardware:"failed"}});
+      taskManagerStatus.dataset.mcelLabDelivery=failedDelivery.ok?"failed":"refused";
+      if(!failedDelivery.ok){taskManagerStatus.dataset.mcelLabRefusal=failedDelivery.code;
+        console.warn("Task Manager MCEL failed-state publication refused",failedDelivery);}
+    }
     updateTaskServerPanel(taskManagerSnapshotCache?.server || {}, taskManagerSnapshotCache?.overview || {}, "viewport offline | heartbeat path still available");
     commitTaskProcessSurface(taskProcessTable, '<div class="task-empty">Server process view unavailable.</div>');
     if (taskAllProcessTable) commitTaskProcessSurface(taskAllProcessTable, '<div class="task-empty">All-process view unavailable.</div>');

@@ -131,7 +131,7 @@ def test_affordable_market_selection_can_still_fail_credit_reservation_without_c
         worker_socket = _ws_connect(owner.hub_url, '/api/hub/v1/workers/live-session', timeout=5)
         worker_socket.settimeout(5)
         _ws_send_json(worker_socket, {
-            'type': 'worker.auth', 'worker_id': 'non_authoritative_label',
+            'type': 'worker.auth', 'execution_protocol': 'durable-authorization-v1', 'worker_id': 'non_authoritative_label',
             'multisession_authorization': {'kind': 'multisession_key',
                                             'multisession_key_id': worker['multisession_key_id']},
             'market': {'rings': ['ring-3'], 'price': {'amount': '1.024', 'unit': 'credit'},
@@ -312,3 +312,131 @@ def test_integrated_stress_keeps_socket_open_during_slow_local_fdb_dispatch(
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+def test_integrated_stress_reconnect_cannot_select_retiring_same_run_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduce the intermittent 409 seen on stress iteration 18/25.
+
+    The old (first-generation) socket's closure is intentionally prevented from
+    committing before the new (reconnected) socket is asked to work. Make that
+    old offer cheaper to ensure a same-capability request would select it first.
+    The reconnect must target only the newly authenticated connection, while
+    the previous generation is still a valid *directory* entry.
+    """
+    import main_computer.stable_hub as hub_module
+    from tools.stable_hub_lab.run_lab import build_stable_hub_integrated_market_stress_result
+
+    path = _topology(tmp_path)
+    topology = load_stable_hub_topology(path)
+    shared_store = InMemoryStableWorkerSessionStore()
+    shared_keys = InMemoryStableMultiSessionKeyStore()
+    servers = []
+    for hub in topology.hubs:
+        port = int(hub.hub_url.rsplit(':', 1)[-1])
+        server = create_stable_hub_server(
+            topology=topology, hub_id=hub.hub_id, bind_host='127.0.0.1',
+            bind_port=port, multisession_key_store=shared_keys,
+            worker_session_store=shared_store,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        servers.append((server, thread))
+    first_owner_hub = servers[2][0]
+    close_entered = threading.Event()
+    permit_close = threading.Event()
+    saw_retiring_market_candidate = threading.Event()
+    original_close = hub_module.close_worker_connection_and_settle
+    original_select = first_owner_hub.worker_market_directory.select_worker_for_work
+    old_connection = []
+
+    def stalled_old_close(server, *, worker_id, connection_id):
+        if server is first_owner_hub and not close_entered.is_set():
+            owner = server.worker_session_directory.get_owner(worker_id)
+            old_market = server.worker_market_directory.get_worker(worker_id)
+            assert owner and old_market and old_market['status'] == 'live'
+            # Deterministic negative control: the retiring lease is cheaper
+            # than the reconnect offer, so both sharing one capability would
+            # cause the Hub to select this unusable former socket.
+            server.worker_market_directory.record_worker_live(
+                worker_id=worker_id, owner=owner,
+                market_profile={
+                    'rings': old_market['rings'],
+                    'price': {'amount': '0.001', 'unit': 'credit'},
+                    'capabilities': old_market['capabilities'],
+                    'max_concurrency': old_market['max_concurrency'],
+                },
+                worker_msk_id=old_market['worker_msk_id'],
+                worker_wallet_address=old_market['worker_wallet_address'],
+                worker_account_id=old_market['worker_account_id'],
+            )
+            old_connection.append(connection_id)
+            close_entered.set()
+            permit_close.wait(20)
+        return original_close(server, worker_id=worker_id, connection_id=connection_id)
+
+    def check_reconnect_selection(work, *, excluded_connections=None):
+        caps = set(work.get('capabilities') or [])
+        if any(str(cap).endswith('_reconnect') for cap in caps):
+            old_candidates = [record for record in first_owner_hub.worker_market_directory.list_workers()
+                              if record.get('connection_id') in old_connection
+                              and record.get('status') == 'live'
+                              and record.get('price', {}).get('amount') == '0.001']
+            if close_entered.is_set() and old_candidates:
+                saw_retiring_market_candidate.set()
+        return original_select(work, excluded_connections=excluded_connections)
+
+    monkeypatch.setattr(hub_module, 'close_worker_connection_and_settle', stalled_old_close)
+    monkeypatch.setattr(first_owner_hub.worker_market_directory, 'select_worker_for_work', check_reconnect_selection)
+    try:
+        result = build_stable_hub_integrated_market_stress_result(
+            topology_path=path, requester_wallet_path=tmp_path / 'captain.json',
+            worker_wallet_path=tmp_path / 'worker.json', timeout=5,
+        )
+        assert close_entered.is_set(), 'old-generation close was not exercised'
+        assert saw_retiring_market_candidate.is_set(), 'reconnect did not encounter a still-live older lease'
+        assert result['ok'], result
+        assert result['proof']['reconnect_generation_market_isolation']
+        assert all(result['proof'].values())
+        assert result['traffic']['reconnect_success']['offer']['worker_id'] == result['actors']['worker']['reconnect_connection_id']
+        assert result['actors']['worker']['first_connection_id'] in old_connection
+        assert result['actors']['worker']['initial_generation_capability'] != result['actors']['worker']['reconnect_generation_capability']
+    finally:
+        permit_close.set()
+        for server, thread in servers:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
+def test_cluster_protocol_gate_rejects_stale_or_mixed_smoke_hubs_before_spend(monkeypatch):
+    """Patch-1 harness must not silently drive a pre-Patch-1 long-running Hub."""
+    from tools.stable_hub_lab import run_lab
+
+    expected = "durable-authorization-v1"
+    checks = [
+        {"ok": True, "hub_id": "smoke-hub1", "hub_url": "http://127.0.0.1:8870",
+         "execution_authorization": expected},
+        {"ok": True, "hub_id": "smoke-hub2", "hub_url": "http://127.0.0.1:8871",
+         "execution_authorization": None},
+        {"ok": True, "hub_id": "smoke-hub3", "hub_url": "http://127.0.0.1:8872",
+         "execution_authorization": expected},
+    ]
+    monkeypatch.setattr(run_lab, "check_cluster", lambda **kw: {"ok": True, "checks": checks})
+    with pytest.raises(StableHubTopologyError, match=r"smoke cluster protocol mismatch.*smoke-hub2"):
+        run_lab.require_durable_execution_cluster(topology_path=DEV, timeout=1.0)
+    checks[1]["execution_authorization"] = expected
+    assert run_lab.require_durable_execution_cluster(topology_path=DEV, timeout=1.0)["ok"]
+
+
+def test_stable_hub_identity_advertises_durable_execution_protocol():
+    """The live-version gate reads Hub identity, not the WebSocket handshake."""
+    from main_computer.stable_hub import build_hub_identity, stable_hub_contract
+
+    expected = "durable-authorization-v1"
+    assert stable_hub_contract()["execution_authorization"] == expected
+    topology = load_stable_hub_topology(DEV)
+    for hub in topology.hubs:
+        identity = build_hub_identity(topology, hub.hub_id)
+        assert identity["contract"]["execution_authorization"] == expected

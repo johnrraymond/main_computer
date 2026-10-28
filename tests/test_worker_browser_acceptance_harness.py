@@ -470,3 +470,16 @@ def test_extension_install_refuses_zip_traversal(monkeypatch, tmp_path):
         app.ensure_metamask_extension()
     assert not app.METAMASK_DIR.exists()
     assert not (state / 'outside').exists()
+
+
+def test_reserve_siphon_requires_separate_explicit_work_cycle_authorization():
+    # No autonomous reserve payout from ordinary Worker registration or plan.
+    with pytest.raises(app.AcceptanceError, match='reserve-siphon'):
+        app.run(['plan', '--authorize-reserve-siphon'])
+    with pytest.raises(app.AcceptanceError, match='reserve-siphon'):
+        app.run(['run', '--mode', 'work-cycle', '--authorize-reserve-siphon'])
+    script = (PROJECT / 'native_acceptance.mjs').read_text(encoding='utf8')
+    assert "MC_WORKER_TEST_AUTHORIZE_RESERVE_SIPHON !== 'explicit'" in script
+    assert "evidence?.reason === 'insufficient_credit_under_cumulative_cap'" in script
+    assert "'--required-credit-wei', requiredCreditWei, '--execute'" in script
+    assert 'captainFundingProbe({python, cwd, requiredCreditWei, priceCeilingCredits})' in script

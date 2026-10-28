@@ -1,0 +1,423 @@
+{
+  "schema": "mcel.computer-knowledge.v1",
+  "namespace": "task-manager",
+  "origin": "main_computer/task_manager.py:TaskManagerService.snapshot",
+  "observations": [
+    {
+      "id": "task-manager.processes",
+      "concept": "mc.process",
+      "source": "processes",
+      "cardinality": "many",
+      "identity": {
+        "fields": [
+          "pid",
+          "created_at"
+        ],
+        "scope": "host-process-lifetime",
+        "requiresAll": true
+      },
+      "properties": [
+        {
+          "name": "pid",
+          "source": "pid",
+          "type": "mc.process.pid",
+          "required": true
+        },
+        {
+          "name": "name",
+          "source": "name",
+          "type": "mc.text"
+        },
+        {
+          "name": "state",
+          "source": "status",
+          "type": "mc.process.state",
+          "availabilityFrom": "status_availability"
+        },
+        {
+          "name": "command",
+          "source": "cmdline",
+          "type": "mc.process.command_line"
+        },
+        {
+          "name": "resident_memory",
+          "source": "memory_rss",
+          "type": "mc.quantity.bytes",
+          "availabilityFrom": "memory_availability"
+        },
+        {
+          "name": "created_at",
+          "source": "created_at",
+          "type": "mc.timestamp"
+        },
+        {
+          "name": "is_current_process",
+          "source": "is_current_process",
+          "type": "mc.boolean"
+        },
+        {
+          "name": "is_main_computer",
+          "source": "is_main_computer",
+          "type": "mc.boolean",
+          "evidence": "application-heuristic-not-os-authority"
+        }
+      ],
+      "derivedProperties": [
+        {
+          "name": "role",
+          "type": "mc.text",
+          "evidence": "task-manager-application-classification; is_main_computer remains a heuristic, never OS authority",
+          "rule": {
+            "op": "first-true",
+            "cases": [
+              {
+                "property": "is_current_process",
+                "equals": true,
+                "value": "current-process"
+              },
+              {
+                "property": "is_main_computer",
+                "equals": true,
+                "value": "main-computer"
+              }
+            ],
+            "default": "other-process"
+          }
+        }
+      ]
+    },
+    {
+      "id": "task-manager.connections",
+      "concept": "mc.network.connection",
+      "source": "connections",
+      "cardinality": "many",
+      "identity": {
+        "fields": [
+          "pid",
+          "local",
+          "remote"
+        ],
+        "scope": "single-observation-only",
+        "requiresAll": false
+      },
+      "properties": [
+        {
+          "name": "owner_pid",
+          "source": "pid",
+          "type": "mc.process.pid"
+        },
+        {
+          "name": "owner_name",
+          "source": "process_name",
+          "type": "mc.text"
+        },
+        {
+          "name": "local_endpoint",
+          "source": "local",
+          "type": "mc.network.endpoint"
+        },
+        {
+          "name": "remote_endpoint",
+          "source": "remote",
+          "type": "mc.network.endpoint"
+        },
+        {
+          "name": "state",
+          "source": "status",
+          "type": "mc.network.connection.state"
+        }
+      ],
+      "relationships": [
+        {
+          "name": "possible_owner",
+          "property": "owner_pid",
+          "target": "task-manager.processes",
+          "targetProperty": "pid",
+          "certainty": "candidate-only",
+          "reason": "PID has no generation in the connection observation"
+        }
+      ]
+    },
+    {
+      "id": "task-manager.cpu",
+      "concept": "mc.hardware.cpu",
+      "source": "hardware.cpu",
+      "cardinality": "one",
+      "properties": [
+        {
+          "name": "available",
+          "source": "available",
+          "type": "mc.boolean"
+        },
+        {
+          "name": "utilization",
+          "source": "overall_percent",
+          "type": "mc.quantity.percent",
+          "availableIf": "available"
+        },
+        {
+          "name": "logical_cores",
+          "source": "logical_cores",
+          "type": "mc.quantity.count"
+        },
+        {
+          "name": "physical_cores",
+          "source": "physical_cores",
+          "type": "mc.quantity.count"
+        },
+        {
+          "name": "frequency",
+          "source": "frequency_mhz",
+          "type": "mc.quantity.frequency"
+        }
+      ]
+    },
+    {
+      "id": "task-manager.cpu-cores",
+      "concept": "mc.hardware.cpu_core",
+      "source": "hardware.cpu.per_core",
+      "cardinality": "many",
+      "identity": {
+        "fields": [
+          "index"
+        ],
+        "scope": "single-cpu-observation",
+        "requiresAll": true
+      },
+      "properties": [
+        {
+          "name": "index",
+          "source": "index",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "label",
+          "source": "label",
+          "type": "mc.text"
+        },
+        {
+          "name": "utilization",
+          "source": "percent",
+          "type": "mc.quantity.percent"
+        }
+      ]
+    },
+    {
+      "id": "task-manager.gpu",
+      "concept": "mc.hardware.gpu",
+      "source": "hardware.gpu",
+      "cardinality": "one",
+      "properties": [
+        {
+          "name": "available",
+          "source": "available",
+          "type": "mc.boolean"
+        },
+        {
+          "name": "utilization",
+          "source": "overall_percent",
+          "type": "mc.quantity.percent",
+          "availableIf": "available"
+        }
+      ]
+    },
+    {
+      "id": "task-manager.gpu-devices",
+      "concept": "mc.hardware.gpu",
+      "source": "hardware.gpu.devices",
+      "cardinality": "many",
+      "identity": {
+        "fields": [
+          "name"
+        ],
+        "scope": "single-hardware-observation",
+        "requiresAll": false
+      },
+      "properties": [
+        {
+          "name": "name",
+          "source": "name",
+          "type": "mc.text"
+        },
+        {
+          "name": "utilization",
+          "source": "utilization_percent",
+          "type": "mc.quantity.percent"
+        },
+        {
+          "name": "used_memory",
+          "source": "memory_used_mb",
+          "type": "mc.quantity.reported-gpu-mb"
+        },
+        {
+          "name": "total_memory",
+          "source": "memory_total_mb",
+          "type": "mc.quantity.reported-gpu-mb"
+        },
+        {
+          "name": "temperature",
+          "source": "temperature_c",
+          "type": "mc.quantity.temperature"
+        }
+      ]
+    },
+    {
+      "id": "task-manager.server",
+      "concept": "mc.service",
+      "source": "server",
+      "cardinality": "one",
+      "properties": [
+        {
+          "name": "running",
+          "source": "running",
+          "type": "mc.boolean"
+        },
+        {
+          "name": "pid",
+          "source": "pid",
+          "type": "mc.process.pid"
+        },
+        {
+          "name": "listen_port",
+          "source": "port",
+          "type": "mc.identifier"
+        },
+        {
+          "name": "listener",
+          "source": "listener",
+          "type": "mc.network.endpoint"
+        },
+        {
+          "name": "heartbeat_running",
+          "source": "heartbeat_running",
+          "type": "mc.boolean"
+        },
+        {
+          "name": "heartbeat_ready",
+          "source": "heartbeat_ready",
+          "type": "mc.boolean"
+        },
+        {
+          "name": "heartbeat_pid",
+          "source": "heartbeat_pid",
+          "type": "mc.process.pid"
+        },
+        {
+          "name": "control_script",
+          "source": "control_script",
+          "type": "mc.file.path"
+        }
+      ]
+    },
+    {
+      "id": "task-manager.schedules",
+      "concept": "mc.schedule",
+      "source": "schedules",
+      "cardinality": "many",
+      "identity": {
+        "fields": [
+          "id"
+        ],
+        "scope": "stored-task-manager-schedule",
+        "requiresAll": true
+      },
+      "properties": [
+        {
+          "name": "id",
+          "source": "id",
+          "type": "mc.identifier",
+          "required": true
+        },
+        {
+          "name": "action",
+          "source": "action",
+          "type": "mc.schedule.action"
+        },
+        {
+          "name": "run_at",
+          "source": "run_at",
+          "type": "mc.timestamp"
+        },
+        {
+          "name": "created_at",
+          "source": "created_at",
+          "type": "mc.timestamp"
+        },
+        {
+          "name": "enabled",
+          "source": "enabled",
+          "type": "mc.boolean"
+        },
+        {
+          "name": "note",
+          "source": "note",
+          "type": "mc.text"
+        }
+      ],
+      "evidence": "Stored server lifecycle action plan; run_at is intended time and does not prove an execution occurred"
+    }
+  ],
+  "operations": [
+    {
+      "id": "task-manager.terminate",
+      "concept": "mc.operation",
+      "sourceAction": "terminate_pid",
+      "target": "task-manager.processes",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    },
+    {
+      "id": "task-manager.kill",
+      "concept": "mc.operation",
+      "sourceAction": "kill_pid",
+      "target": "task-manager.processes",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    },
+    {
+      "id": "task-manager.status",
+      "concept": "mc.operation",
+      "sourceAction": "server_status",
+      "target": "task-manager.server",
+      "effect": "observation",
+      "confirmationRequired": false,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    },
+    {
+      "id": "task-manager.start",
+      "concept": "mc.operation",
+      "sourceAction": "server_start",
+      "target": "task-manager.server",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    },
+    {
+      "id": "task-manager.shutdown",
+      "concept": "mc.operation",
+      "sourceAction": "server_shutdown",
+      "target": "task-manager.server",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    },
+    {
+      "id": "task-manager.restart",
+      "concept": "mc.operation",
+      "sourceAction": "server_restart",
+      "target": "task-manager.server",
+      "effect": "consequential",
+      "confirmationRequired": true,
+      "authority": "external-runtime-required",
+      "implementedHere": false
+    }
+  ]
+}

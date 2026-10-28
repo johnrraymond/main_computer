@@ -251,7 +251,7 @@ def serve_cli_live_worker(
     }
     diagnostic_attempt_id = "worker_attempt_" + uuid.uuid4().hex[:16]
     auth_message = {
-        "type": "worker.auth", "chain_id": auth["chain_id"],
+        "type": "worker.auth", "execution_protocol": "durable-authorization-v1", "chain_id": auth["chain_id"],
         "diagnostic_attempt_id": diagnostic_attempt_id,
         "status": "available", "model": model, "models": [model],
         "queue_depth": 0, "active_requests": 0, "max_concurrency": 1,

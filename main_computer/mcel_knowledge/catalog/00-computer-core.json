@@ -1,0 +1,419 @@
+{
+  "schema": "mcel.computer-knowledge.v1",
+  "namespace": "mc",
+  "origin": "built-in-computer-vocabulary",
+  "concepts": [
+    {
+      "id": "mc.text",
+      "kind": "value",
+      "meaning": "Uninterpreted text; original bytes/characters remain authoritative"
+    },
+    {
+      "id": "mc.boolean",
+      "kind": "value",
+      "meaning": "Boolean fact, distinct from a quantity or a string"
+    },
+    {
+      "id": "mc.identifier",
+      "kind": "value",
+      "meaning": "Identifier scoped by its declaring entity; never a globally unique identity by default"
+    },
+    {
+      "id": "mc.timestamp",
+      "kind": "value",
+      "meaning": "Recorded time; source format and precision preserved"
+    },
+    {
+      "id": "mc.duration",
+      "kind": "measurement",
+      "dimension": "time",
+      "unit": "seconds",
+      "meaning": "Elapsed time rather than clock time"
+    },
+    {
+      "id": "mc.quantity.count",
+      "kind": "measurement",
+      "dimension": "count",
+      "unit": "items",
+      "bounds": {
+        "min": 0
+      }
+    },
+    {
+      "id": "mc.quantity.bytes",
+      "kind": "measurement",
+      "dimension": "information",
+      "unit": "bytes",
+      "bounds": {
+        "min": 0
+      },
+      "semantics": {
+        "invariants": [
+          "Unavailable differs from measured zero",
+          "Bytes are not vendor GPU MB"
+        ]
+      }
+    },
+    {
+      "id": "mc.quantity.percent",
+      "kind": "measurement",
+      "dimension": "ratio",
+      "unit": "percent",
+      "bounds": {
+        "min": 0,
+        "max": 100
+      }
+    },
+    {
+      "id": "mc.quantity.frequency",
+      "kind": "measurement",
+      "dimension": "frequency",
+      "unit": "MHz",
+      "bounds": {
+        "min": 0
+      }
+    },
+    {
+      "id": "mc.quantity.temperature",
+      "kind": "measurement",
+      "dimension": "temperature",
+      "unit": "celsius"
+    },
+    {
+      "id": "mc.file.path",
+      "kind": "structured-value",
+      "meaning": "Filesystem path with components, ancestry and exact source spelling",
+      "semantics": {
+        "components": [
+          "root",
+          "parent-path",
+          "basename"
+        ],
+        "invariants": [
+          "Preserve original path spelling",
+          "Path interpretation depends on filesystem/platform"
+        ],
+        "affordances": [
+          "shared-prefix-factorization",
+          "path-hierarchy"
+        ]
+      }
+    },
+    {
+      "id": "mc.process.pid",
+      "kind": "value",
+      "base": "mc.identifier",
+      "meaning": "Process ID scoped to a host and process lifetime; may be reused"
+    },
+    {
+      "id": "mc.process.command_line",
+      "kind": "structured-value",
+      "representation": "string",
+      "meaning": "OS command line with platform-dependent quoting; keep authoritative original text"
+    },
+    {
+      "id": "mc.process.state",
+      "kind": "state",
+      "meaning": "Observed process lifecycle state, not proof of process ownership"
+    },
+    {
+      "id": "mc.process",
+      "kind": "entity",
+      "meaning": "Operating-system process with lifetime and host-scoped identity",
+      "semantics": {
+        "identity": [
+          "host",
+          "pid",
+          "created_at"
+        ],
+        "invariants": [
+          "PID is not lifetime-unique",
+          "A PID-only process relationship is candidate-only"
+        ],
+        "affordances": [
+          "observe-lifecycle",
+          "compare-resource-consumption"
+        ]
+      }
+    },
+    {
+      "id": "mc.network.endpoint",
+      "kind": "structured-value",
+      "meaning": "Network address and port; preserve IPv4/IPv6 and source spelling"
+    },
+    {
+      "id": "mc.network.connection.state",
+      "kind": "state",
+      "meaning": "Observed connection state"
+    },
+    {
+      "id": "mc.network.connection",
+      "kind": "entity",
+      "meaning": "Observed socket association; endpoints and owner may change between observations",
+      "semantics": {
+        "invariants": [
+          "PID without generation cannot prove process ownership",
+          "Endpoints can change with time"
+        ]
+      }
+    },
+    {
+      "id": "mc.hardware.cpu",
+      "kind": "entity",
+      "meaning": "Processor telemetry producer"
+    },
+    {
+      "id": "mc.hardware.cpu_core",
+      "kind": "entity",
+      "meaning": "Processor core indexed within a CPU telemetry sample"
+    },
+    {
+      "id": "mc.hardware.gpu",
+      "kind": "entity",
+      "meaning": "Graphics device telemetry producer"
+    },
+    {
+      "id": "mc.service",
+      "kind": "entity",
+      "meaning": "Managed service with observed lifecycle and optional readiness"
+    },
+    {
+      "id": "mc.service.state",
+      "kind": "state",
+      "meaning": "Service running state or readiness, which are not interchangeable"
+    },
+    {
+      "id": "mc.schedule",
+      "kind": "entity",
+      "meaning": "Stored plan to request an operation at a specified time, not evidence of execution",
+      "semantics": {
+        "identity": [
+          "schedule-id"
+        ],
+        "invariants": [
+          "Planned time is not completion",
+          "Enabled is not proof of execution"
+        ],
+        "affordances": [
+          "chronological-order",
+          "upcoming-plans"
+        ]
+      }
+    },
+    {
+      "id": "mc.operation",
+      "kind": "operation",
+      "meaning": "Declared intent and effect boundary, not an executable capability or grant of authority"
+    },
+    {
+      "id": "mc.quantity.reported-gpu-mb",
+      "kind": "measurement",
+      "dimension": "memory",
+      "unit": "nvidia-smi-reported-MB",
+      "bounds": {
+        "min": 0
+      },
+      "meaning": "Vendor-reported GPU memory figures; do not assume bytes or silently convert units"
+    },
+    {
+      "id": "mc.structured.object",
+      "kind": "structured-value",
+      "meaning": "Source object whose member names, types and exact values are retained",
+      "representation": "object"
+    },
+    {
+      "id": "mc.structured.string-list",
+      "kind": "structured-value",
+      "meaning": "Ordered list of unmodified textual tokens",
+      "representation": "string-list"
+    },
+    {
+      "id": "mc.file.relative_path",
+      "kind": "structured-value",
+      "meaning": "Path relative to an explicitly named filesystem root; do not treat as globally unique",
+      "representation": "string"
+    },
+    {
+      "id": "mc.file.extension",
+      "kind": "structured-value",
+      "meaning": "File suffix as reported; category cannot be assumed from extension alone",
+      "representation": "string"
+    },
+    {
+      "id": "mc.file.entry.kind",
+      "kind": "state",
+      "meaning": "Filesystem entry type as reported by File Explorer: file, directory, symlink or other",
+      "representation": "string",
+      "values": [
+        "file",
+        "directory",
+        "symlink",
+        "other"
+      ]
+    },
+    {
+      "id": "mc.file.root",
+      "kind": "entity",
+      "meaning": "Named accessible filesystem root with scope and purview metadata",
+      "semantics": {
+        "identity": [
+          "root-id"
+        ],
+        "invariants": [
+          "Root ID is scoped to File Explorer policy",
+          "Root availability does not imply permission to read all descendants"
+        ]
+      }
+    },
+    {
+      "id": "mc.file.entry",
+      "kind": "entity",
+      "meaning": "Filesystem directory entry, path scoped to a selected root; metadata is observation-dependent",
+      "semantics": {
+        "identity": [
+          "root-id",
+          "relative-path"
+        ],
+        "relationships": [
+          "contained-by-root",
+          "directory-parent"
+        ],
+        "invariants": [
+          "Root scope required to interpret relative path",
+          "Producer stat failures cannot become genuine zero"
+        ]
+      }
+    },
+    {
+      "id": "mc.file.preview",
+      "kind": "entity",
+      "meaning": "Read-only text preview response, with explicit readable and encoding status"
+    },
+    {
+      "id": "mc.file.category",
+      "kind": "state",
+      "meaning": "Application-suggested file content category, heuristic not an authoritative media type",
+      "representation": "string"
+    },
+    {
+      "id": "mc.task",
+      "kind": "entity",
+      "meaning": "Work to be performed, distinct from the observation of its completion",
+      "semantics": {
+        "identity": [
+          "execution-scope",
+          "task-id"
+        ],
+        "invariants": [
+          "Requested task is distinct from accepted session and result"
+        ],
+        "affordances": [
+          "track-status",
+          "inspect-outcome"
+        ]
+      }
+    },
+    {
+      "id": "mc.task.queue",
+      "kind": "structured-value",
+      "meaning": "Named routing queue or partition for work dispatch, not proof of worker ownership",
+      "representation": "string"
+    },
+    {
+      "id": "mc.task.state",
+      "kind": "state",
+      "meaning": "Observed work execution or acceptance state",
+      "representation": "string"
+    },
+    {
+      "id": "mc.task.execution",
+      "kind": "structured-value",
+      "meaning": "Task execution metadata and run identity preserved without interpretation",
+      "representation": "object"
+    },
+    {
+      "id": "mc.task.result",
+      "kind": "structured-value",
+      "meaning": "Submitted task result object, not independent evidence of correctness",
+      "representation": "object"
+    },
+    {
+      "id": "mc.schedule.action",
+      "kind": "state",
+      "meaning": "Named scheduled server lifecycle action, planned not performed",
+      "representation": "string"
+    },
+    {
+      "id": "mc.worker",
+      "kind": "entity",
+      "meaning": "Agent or worker registered for computational work; lease distinct from worker identifier"
+    },
+    {
+      "id": "mc.worker.market-lease",
+      "kind": "entity",
+      "meaning": "Worker marketplace connection generation and advertised capacity",
+      "semantics": {
+        "identity": [
+          "cluster",
+          "worker-id",
+          "connection-id",
+          "lease-epoch"
+        ],
+        "invariants": [
+          "A reconnect changes lease identity",
+          "A market record is not permission to send work"
+        ],
+        "affordances": [
+          "capacity-and-capability-comparison"
+        ]
+      }
+    },
+    {
+      "id": "mc.worker.runtime",
+      "kind": "entity",
+      "meaning": "Observed worker readiness and admission-policy status, not permission to accept work",
+      "semantics": {
+        "invariants": [
+          "Runtime admission status does not grant MCEL authority to perform effects",
+          "Cached connected status may lack live heartbeat proof"
+        ]
+      }
+    },
+    {
+      "id": "mc.worker.session",
+      "kind": "entity",
+      "meaning": "Accepted work request associated with a worker lease, requester and lifecycle",
+      "semantics": {
+        "identity": [
+          "cluster",
+          "session-id"
+        ],
+        "relationships": [
+          "candidate-serving-worker-lease"
+        ],
+        "invariants": [
+          "Work result is a reported outcome",
+          "Worker ID alone does not identify a live connection generation"
+        ]
+      }
+    },
+    {
+      "id": "mc.worker.price",
+      "kind": "structured-value",
+      "meaning": "Market price amount and unit reported as source object, not interchangeable with fiat",
+      "representation": "object"
+    },
+    {
+      "id": "mc.worker.lease.state",
+      "kind": "state",
+      "representation": "string",
+      "meaning": "Worker marketplace connection lease lifecycle, not the lifecycle of a work task"
+    },
+    {
+      "id": "mc.worker.runtime.state",
+      "kind": "state",
+      "representation": "string",
+      "meaning": "Worker admission/runtime phase or readiness, distinct from work completion state"
+    }
+  ]
+}

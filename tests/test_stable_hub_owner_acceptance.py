@@ -210,7 +210,7 @@ def test_owner_hub_accepts_local_work_over_live_worker_socket_and_saves_session(
         _ws_send_json(
             sock,
             {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "worker_id": "worker-owner-local-acceptance",
                 "multisession_authorization": {
                     "kind": "multisession_key",
@@ -265,10 +265,11 @@ def test_owner_hub_accepts_local_work_over_live_worker_socket_and_saves_session(
         offer = _ws_recv_json(sock)
         assert offer["type"] == "hub.work.offer"
         assert offer["request_id"] == request_body["request_id"]
-        assert offer["worker_id"] == "worker-owner-local-acceptance"
+        assert offer["worker_id"] == accepted["connection_id"]
         assert offer["partition"] == "ring-2"
         assert offer["task_queue"] == "main-computer-work-ring-2"
-        assert offer["work"] == request_body["work"]
+        assert offer["execution_authorization_required"] is True
+        assert offer["work"] == {"execution_authorization_pending": True}
         assert offer["session_id"].startswith("sess_")
         assert offer["run_id"].startswith("run_")
 
@@ -290,7 +291,7 @@ def test_owner_hub_accepts_local_work_over_live_worker_socket_and_saves_session(
         assert response["session_id"] == offer["session_id"]
         assert response["run_id"] == offer["run_id"]
         assert response["request_id"] == request_body["request_id"]
-        assert response["worker_id"] == "worker-owner-local-acceptance"
+        assert response["worker_id"] == accepted["connection_id"]
         assert response["owner_hub_id"] == "dev-hub3"
         assert response["partition"] == "ring-2"
         assert response["task_queue"] == "main-computer-work-ring-2"
@@ -336,7 +337,7 @@ def test_owner_hub_accepts_local_work_over_live_worker_socket_and_saves_session(
         assert saved["requester_msk_id"] == requester_msk["key"]["id"]
         assert saved["requester_account_id"] == requester_msk["key"]["account_id"]
         assert saved["requester_wallet_address"] == requester_msk["key"]["wallet_address"]
-        assert saved["worker_id"] == "worker-owner-local-acceptance"
+        assert saved["worker_id"] == accepted["connection_id"]
         assert saved["worker_connection_id"] == accepted["connection_id"]
         assert saved["partition"] == "ring-2"
         assert saved["task_queue"] == "main-computer-work-ring-2"
@@ -350,7 +351,7 @@ def test_owner_hub_accepts_local_work_over_live_worker_socket_and_saves_session(
         }
         assert saved["worker_acceptance"]["type"] == "worker.work.accepted"
 
-        market_record = hub3.worker_market_directory.get_worker("worker-owner-local-acceptance")
+        market_record = hub3.worker_market_directory.get_worker(accepted["connection_id"])
         assert market_record is not None
         assert market_record["active_sessions"] == 1
     finally:
@@ -652,7 +653,7 @@ def test_reselection_accepts_once_on_live_socket_after_closed_owner() -> None:
                                    user_slug=REQUESTER_USER_SLUG, request_id="reselect-requester-msk")
         sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
         _ws_send_json(sock, {
-            "type": "worker.auth",
+            "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
             "multisession_authorization": {
                 "kind": "multisession_key", "multisession_key_id": worker_key["key"]["id"],
             },

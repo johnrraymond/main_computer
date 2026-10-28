@@ -27,6 +27,8 @@ from main_computer.mcel_notebook_projection import (
 from main_computer.mcel_dsl_compiler import compile_dsl_application
 from tools.mcel_task_manager_notebook_lab_acceptance import run as run_lab_acceptance
 from tools.mcel_task_manager_semantic_pipeline_acceptance import run as run_semantic_acceptance
+from tools.mcel_semantic_generality_frob import run as run_generality_frob
+from tools.mcel_task_manager_live_lifecycle_frob import run as run_lifecycle_frob
 
 SCHEMA = "mcel.task-manager-promise.v1"
 HOST = ROOT / "main_computer/web/applications/apps/task-manager.html"
@@ -252,11 +254,13 @@ def check_browser(output: Path, host_ok: bool, candidate_html: str | None,
             "boundary": "No operational scripts, endpoints, production bindings or task mutations executed"}
 
 
-def barriers(host: dict, source: dict, witness: dict, browser: dict, lab: dict, semantic: dict | None = None) -> list[dict[str, Any]]:
+def barriers(host: dict, source: dict, witness: dict, browser: dict, lab: dict, semantic: dict | None = None, generality: dict | None = None, lifecycle: dict | None = None) -> list[dict[str, Any]]:
     def entry(name, status, evidence, repair, *, depends=()):
         return {"id": name, "status": status, "evidence": evidence,
                 "dependsOn": list(depends), "nextGeneralRepair": repair}
     semantic = semantic or {"status":"UNVERIFIED"}
+    generality = generality or {"status":"UNVERIFIED"}
+    lifecycle = lifecycle or {"offline":"UNVERIFIED","hosted":"UNVERIFIED"}
     implementation = host.get("implementation", {})
     mobile = [x for x in browser.get("cases", [])
               if x.get("case") == "existing-app-static" and x.get("width") in (320, 390)]
@@ -273,17 +277,38 @@ def barriers(host: dict, source: dict, witness: dict, browser: dict, lab: dict, 
                "Pinned IR witness is not the recovered Phase 3 DSL; local HTTP route remains unverified"],
               "Verify the recovered Phase 3 DSL in the hosted route before considering notebook promotion",
               depends=("frozen-notebook-source",)),
-        entry("live-snapshot-parity", "PARTIAL_VERIFIED" if lab["status"] == "PASS" else "UNVERIFIED",
-              ["Host refresh hook forwards bounded data to the lab bridge; Chromium confirms updates, failure states, stale refusal" if lab["status"] == "PASS"
-               else "No independent provider lifecycle evidence", "Live HTTP telemetry parity remains unverified"],
+        entry("live-snapshot-parity", "PASS" if lifecycle.get("hosted")=="PASS" else
+              "PARTIAL_VERIFIED" if lab["status"]=="PASS" else "UNVERIFIED",
+              ["Live HTTP identity-set comparison: "+lifecycle.get("hosted","UNVERIFIED"),
+               "Guarded synthetic snapshot delivery: "+lab["status"],
+               "Unvisited hosted URL does NOT qualify as a live PASS"],
               "Exercise real telemetry lifecycle and state transitions without acquiring operational authority",
               depends=("real-app-mount",)),
+        entry("semantic-architecture-generality", "PASS" if generality["status"] == "PASS" and
+              generality.get("architecturalGeneralityVerified") is True else
+              "FAIL" if generality["status"] == "FAIL" else "UNVERIFIED",
+              ["Independent same-code process/parcel substitution, adversarial source renaming, typed value-state distinctions and registered Chromium layout: " +
+               generality.get("status", "UNVERIFIED"),
+               "Generality source fingerprint and fresh test observations are in semanticGenerality report",
+               "Authoring cost savings and full live application correctness remain unverified"],
+              "Keep source-bound independent generality gate and measure real authoring economy; preserve v1 compatibility"),
         entry("semantic-collection-pipeline", "PARTIAL_VERIFIED" if semantic["status"] == "PASS" else "UNVERIFIED",
               ["Real registered MCEL collection and shared layout handle 22 synthetic process records, exact inspector, tiers and responsive disclosure"
                if semantic["status"] == "PASS" else "No verified end-to-end semantic collection allocation",
                "Live telemetry values and the full application remain unverified"],
               "Verify identical semantic behavior on the hosted Task Manager's real snapshot lifecycle",
               depends=("real-app-mount",)),
+        entry("information-fidelity", "PARTIAL_VERIFIED" if lifecycle.get("offline")=="PASS" else "UNVERIFIED",
+              ["Offline measured-zero/unavailable producer-bound states and exact inspector: "+lifecycle.get("offline","UNVERIFIED"),
+               "Hosted Windows producer telemetry still requires HTTP verification"],
+              "Verify real producer meaning and correct availability on hosted route; do not collapse missing to zero",
+              depends=("semantic-architecture-generality",)),
+        entry("state-preserving-live-lifecycle", "PASS" if lifecycle.get("hosted")=="PASS" and lifecycle.get("offline")=="PASS" else
+              "PARTIAL_VERIFIED" if lifecycle.get("offline")=="PASS" else "UNVERIFIED",
+              ["Chromium keyed update, inspector/focus persistence, reuse refusal, partial failure, stale and duplicate refusal: "+lifecycle.get("offline","UNVERIFIED"),
+               "Actual HTTP cold-load identity parity: "+lifecycle.get("hosted","BLOCKED")],
+              "Run hosted Chromium cold-load and repeated refresh, preserving read-only authority",
+              depends=("semantic-architecture-generality","real-app-mount")),
         entry("shared-layout-authority", "PARTIAL_VERIFIED" if semantic["status"] == "PASS" else "UNVERIFIED",
               ["The shared authority selects and allocates registered process collection fields across four widths"
                if semantic["status"] == "PASS" else "Shared field allocation is not proven",
@@ -310,7 +335,8 @@ def barriers(host: dict, source: dict, witness: dict, browser: dict, lab: dict, 
 
 
 def run(*, output: Path = OUTPUT, source: Path = NOTEBOOK,
-        fixture: Path | None = FIXTURE, browser: bool = True) -> dict[str, Any]:
+        fixture: Path | None = FIXTURE, browser: bool = True,
+        host_url: str | None = None) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     host = check_host()
     candidate, candidate_html = notebook_candidate(source, fixture)
@@ -321,10 +347,16 @@ def run(*, output: Path = OUTPUT, source: Path = NOTEBOOK,
                   {"status": "UNVERIFIED", "reason": "Browser disabled"})
     semantic_report = (run_semantic_acceptance(output / "semantic-pipeline") if browser else
                        {"status":"UNVERIFIED", "reason":"Browser disabled"})
-    blocks = barriers(host, candidate, witness, browser_report, lab_report, semantic_report)
+    # Compute fresh architectural evidence in this run. Never trust a stale
+    # report.json or permit a runtime-source hash mismatch to certify generality.
+    generality_report = run_generality_frob(output=output / "semantic-generality", browser=browser)
+    lifecycle_report=(run_lifecycle_frob(output=output / "live-lifecycle", host_url=host_url) if browser else
+                      {"offline":"UNVERIFIED","hosted":"UNVERIFIED", "hostReason":"Browser disabled"})
+    blocks = barriers(host, candidate, witness, browser_report, lab_report, semantic_report, generality_report, lifecycle_report)
     status = "FAIL" if (host["status"] in ("FAIL", "BLOCKED") or candidate["status"] == "FAIL"
                         or witness["status"] == "FAIL" or browser_report["status"] == "FAIL" or lab_report["status"] == "FAIL"
-                        or semantic_report["status"] == "FAIL") else "INCOMPLETE"
+                        or semantic_report["status"] == "FAIL" or generality_report["status"] == "FAIL" or
+                        lifecycle_report["offline"]=="FAIL" or lifecycle_report["hosted"]=="FAIL") else "INCOMPLETE"
     result = {
         "schema": SCHEMA, "generatedUtc": datetime.now(timezone.utc).isoformat(),
         "status": status, "promiseFulfilled": False,
@@ -333,6 +365,8 @@ def run(*, output: Path = OUTPUT, source: Path = NOTEBOOK,
         "independentGenericRendererWitness": witness, "browser": browser_report,
         "guardedLabMount": lab_report,
         "semanticCollectionPipeline": semantic_report,
+        "semanticGenerality": generality_report,
+        "liveLifecycle": lifecycle_report,
         "orderedBarriers": blocks,
         "releaseAuthority": {"taskManagerModified": True, "websiteBuilderModified": False,
                              "fileManagerModified": False, "operationalActionsExecuted": False,
@@ -342,7 +376,8 @@ def run(*, output: Path = OUTPUT, source: Path = NOTEBOOK,
                         "The generic IR witness is not the original authored Phase 3 notebook",
                         "A lab-only host mount is not a production application-route or original DSL continuity proof",
                         "Screenshots are review evidence, not independent beauty certification",
-                        "No real machine actions or telemetry requests are performed"],
+                        "Offline acceptance executes no real telemetry requests or operator actions",
+                        "Hosted route is BLOCKED unless an explicit host URL was reached and verified"],
     }
     (output / "report.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     lines = ["# Task Manager — MCEL Promise Barrier Report", "",
@@ -354,7 +389,9 @@ def run(*, output: Path = OUTPUT, source: Path = NOTEBOOK,
              f"- Independent generic tab renderer witness: {witness['status']} (not Task Manager certification)",
              f"- Offline Chromium observations: {browser_report['status']}",
              f"- Guarded lab host mount: {lab_report['status']} (bounded witness; not original DSL)",
-             f"- Semantic collection and shared layout: {semantic_report['status']} (22 synthetic processes, not live telemetry)", "",
+             f"- Semantic collection and shared layout: {semantic_report['status']} (22 synthetic processes, not live telemetry)",
+             f"- Independent semantic architecture generality: {generality_report['status']} (source-bound process/parcel fixtures)",
+             f"- State-preserving lifecycle offline: {lifecycle_report['offline']}; hosted: {lifecycle_report['hosted']}", "",
              "## Ordered barriers", ""]
     for i, b in enumerate(blocks, 1):
         lines.extend([f"{i}. **{b['id']} — {b['status']}**. {b['nextGeneralRepair']}",
@@ -372,16 +409,19 @@ def main(argv=None) -> int:
     parser.add_argument("--notebook-source", type=Path, default=NOTEBOOK)
     parser.add_argument("--notebook-fixture", type=Path, default=FIXTURE)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--host-url",help="Opt-in actual hosted Task Manager read-only browser acceptance URL")
     parser.add_argument("--require-promise", action="store_true")
     args = parser.parse_args(argv)
     report = run(output=args.output, source=args.notebook_source, fixture=args.notebook_fixture,
-                 browser=not args.no_browser)
+                 browser=not args.no_browser,host_url=args.host_url)
     print("MCEL_TASK_MANAGER_PROMISE_" + report["status"])
     print("primary: existing-task-manager; secondary: existing-file-manager-if-needed")
     print("host:", report["existingApplication"]["status"], "phase3:", report["notebookCandidate"]["status"],
           "generic_renderer:", report["independentGenericRendererWitness"]["status"],
           "chromium:", report["browser"]["status"], "lab_mount:", report["guardedLabMount"]["status"],
-          "semantic:", report["semanticCollectionPipeline"]["status"])
+          "semantic:", report["semanticCollectionPipeline"]["status"],
+          "generality:", report["semanticGenerality"]["status"],
+          "lifecycle:", report["liveLifecycle"]["offline"], "hosted:",report["liveLifecycle"]["hosted"])
     for b in report["orderedBarriers"]:
         print("barrier", b["id"], b["status"])
     print("report:", (args.output / "report.json").resolve())

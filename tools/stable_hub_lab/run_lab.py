@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -65,6 +65,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run realistic Stable Hub requester/worker verification traffic against the topology.",
     )
     parser.add_argument(
+        "--verify-pathway-local",
+        action="store_true",
+        help=("Run the broad offline Hub pathway assurance suite: authentication, "
+              "market, handoff, execution, accounting, bridge, and crash harness. "
+              "Passing does NOT certify process-death recovery or the live chain."),
+    )
+    parser.add_argument(
+        "--pathway-timeout",
+        type=float,
+        default=300.0,
+        help="Per-lane pytest timeout in seconds for --verify-pathway-local (default: 300).",
+    )
+    parser.add_argument(
         "--verify-worker-cycle-local",
         action="store_true",
         help="Run the targeted Worker-cycle HTTP/WS and atomic-disconnect regressions without starting Hubs.",
@@ -88,6 +101,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "Number of integrated Stable Hub stress iterations to run when --verify-stress is set. "
             "Use values greater than 1 for long-running golden-path payout/reconnect soak runs."
         ),
+    )
+    parser.add_argument(
+        "--stress-progress-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between live stress heartbeat lines while a phase is waiting (default: 5).",
+    )
+    parser.add_argument(
+        "--quiet-stress-progress",
+        action="store_true",
+        help="Suppress live stress progress logging. JSON output is always progress-free.",
     )
     parser.add_argument(
         "--smoke-msk",
@@ -662,7 +686,7 @@ def build_worker_live_session_smoke_result(
         _ws_send_json(
             sock,
             {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "worker_id": resolved_worker_id,
                 "multisession_authorization": {
                     "kind": "multisession_key",
@@ -858,7 +882,7 @@ def build_stable_hub_verification_result(
         _ws_send_json(
             sock,
             {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "worker_id": worker_label,
                 "multisession_authorization": {
                     "kind": "multisession_key",
@@ -922,6 +946,12 @@ def build_stable_hub_verification_result(
                 "request_id": offer.get("request_id"),
             },
         )
+
+        authorized = _ws_recv_json(sock)
+        if (authorized.get("type") != "hub.work.authorized"
+                or authorized.get("session_id") != offer.get("session_id")
+                or authorized.get("work") != work_request["work"]):
+            raise StableHubTopologyError(f"Hub did not authorize durable work: {authorized}")
 
         queued = result_queue.get(timeout=max(timeout, 1.0))
         if isinstance(queued, BaseException):
@@ -1001,7 +1031,9 @@ def build_stable_hub_verification_result(
         and handoff.get("from_hub_id") == requester_hub.hub_id
         and handoff.get("to_hub_id") == worker_hub.hub_id,
         "owner_hub_offered_work_over_live_socket": offer.get("request_id") == request_id
-        and offer.get("work") == work_request["work"],
+        and offer.get("execution_authorization_required") is True
+        and (offer.get("work") or {}).get("execution_authorization_pending") is True
+        and authorized.get("work") == work_request["work"],
         "worker_accepted_over_same_socket": response.get("ok") is True
         and response.get("accepted") is True
         and response.get("worker_id") == connection_id
@@ -1105,6 +1137,71 @@ def _render_stable_hub_verification_text(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+class _StressProgressMonitor:
+    """Live, bounded-rate progress while the synchronous HTTP/WS lab is blocked.
+
+    The watcher is diagnostic only: it does not change socket deadlines, abort
+    transactions, mutate Hub state, or affect the final result. A daemon thread
+    can report the last completed phase even when the worker/client is blocked.
+    """
+
+    def __init__(
+        self, *, index: int, total: int, interval: float,
+        log: Callable[[str], None],
+    ) -> None:
+        self.index = index
+        self.total = total
+        self.interval = max(0.1, float(interval))
+        self.log = log
+        self._start = time.monotonic()
+        self._phase_start = self._start
+        self._phase = "initializing"
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _prefix(self) -> str:
+        return f"STRESS_PROGRESS run={self.index}/{self.total}"
+
+    def start(self) -> None:
+        self.log(f"{self._prefix()} START phase=initializing elapsed=0.0s")
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+        self._thread.start()
+
+    def phase(self, name: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._phase, self._phase_start = name, now
+            elapsed = now - self._start
+        self.log(f"{self._prefix()} phase={name} elapsed={elapsed:.1f}s")
+
+    def _watch(self) -> None:
+        while not self._stop.wait(self.interval):
+            now = time.monotonic()
+            with self._lock:
+                phase, phase_elapsed = self._phase, now - self._phase_start
+                elapsed = now - self._start
+            self.log(
+                f"{self._prefix()} STILL_WAITING phase={phase} "
+                f"phase_elapsed={phase_elapsed:.1f}s elapsed={elapsed:.1f}s"
+            )
+
+    def finish(self, *, passed: bool, detail: str = "") -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+        now = time.monotonic()
+        with self._lock:
+            phase = self._phase
+        # Do not put exception bodies here: HTTP errors can contain request
+        # payloads. The normal exception handler reports the actual failure.
+        self.log(
+            f"{self._prefix()} {'PASS' if passed else 'FAIL'} "
+            f"last_phase={phase} elapsed={now - self._start:.1f}s"
+            + (f" {detail}" if detail else "")
+        )
+
+
 def build_stable_hub_integrated_market_stress_result(
     *,
     topology_path: str | Path = DEFAULT_TOPOLOGY,
@@ -1114,6 +1211,7 @@ def build_stable_hub_integrated_market_stress_result(
     requester_entry_index: int = 0,
     origin: str = DEFAULT_MSK_ORIGIN,
     timeout: float = 10.0,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Run one integrated Stable Hub market/reconnect/payout stress scenario.
 
@@ -1122,6 +1220,11 @@ def build_stable_hub_integrated_market_stress_result(
     claim/settlement/bridge idempotency, and invariant checks in one scenario.
     """
 
+    def report(phase: str) -> None:
+        if progress is not None:
+            progress(phase)
+
+    report("topology.load")
     topology = load_stable_hub_topology(topology_path)
     plan = build_lab_plan(
         topology,
@@ -1134,6 +1237,12 @@ def build_stable_hub_integrated_market_stress_result(
         raise StableHubTopologyError("stable Hub stress requires worker and requester entries.")
     worker_hub = topology.hub_by_id(str(worker_entry["hub_id"]))
     requester_hub = topology.hub_by_id(str(requester_entry["hub_id"]))
+    # Preflight must run before issuing MSKs or local credit mutations.
+    report("hub_protocol_preflight")
+    require_durable_execution_cluster(
+        topology_path=topology_path, timeout=timeout,
+        required_hub_ids=(worker_hub.hub_id, requester_hub.hub_id),
+    )
 
     # The client label is deliberately not an identity. Payout ownership is
     # the signed wallet account; dispatch ownership is a Hub-created socket ID.
@@ -1144,9 +1253,16 @@ def build_stable_hub_integrated_market_stress_result(
     # dispatch failure to the Worker created by this run. Keep the generic
     # workload, but bind eligibility to a fresh, run-scoped capability.
     scenario_capability = "stable_stress_" + secrets.token_hex(12)
+    # A run has TWO connection generations. An old socket can still have a
+    # live market lease while its close/settlement transaction is completing.
+    # Distinct generation capabilities prevent reconnect work being routed
+    # back to that retiring socket, even within one isolated run.
+    initial_capability = scenario_capability + "_first"
+    reconnect_capability = scenario_capability + "_reconnect"
     worker_user_slug = _new_user_slug()
     requester_user_slug = _new_user_slug()
 
+    report("worker_msk_issue_validate")
     worker_msk = build_stable_msk_smoke_result(
         topology_path=topology_path,
         wallet_path=worker_wallet_path,
@@ -1157,6 +1273,7 @@ def build_stable_hub_integrated_market_stress_result(
         request_id=f"{scenario_id}-worker-msk",
         timeout=timeout,
     )
+    report("captain_msk_issue_validate")
     requester_msk = build_stable_msk_smoke_result(
         topology_path=topology_path,
         wallet_path=requester_wallet_path,
@@ -1170,12 +1287,13 @@ def build_stable_hub_integrated_market_stress_result(
     worker_key_id = str(worker_msk["multisession_key_id"])
     worker_account_id = wallet_account_id(worker_msk.get("wallet_address"))
     requester_key_id = str(requester_msk["multisession_key_id"])
-    market_profile = {
-        "rings": ["ring-2"],
-        "price": {"amount": "0.03", "unit": "credit"},
-        "capabilities": ["python", "echo", scenario_capability],
-        "max_concurrency": 2,
-    }
+    def _market_profile(generation_capability: str) -> dict[str, Any]:
+        return {
+            "rings": ["ring-2"],
+            "price": {"amount": "0.03", "unit": "credit"},
+            "capabilities": ["python", "echo", scenario_capability, generation_capability],
+            "max_concurrency": 2,
+        }
 
     # `--startup-timeout` also controls MSK and connection setup. It must not
     # become an offer deadline: on local FDB, selection, cross-Hub handoff,
@@ -1187,13 +1305,17 @@ def build_stable_hub_integrated_market_stress_result(
     sock_auth_map: dict[int, dict[str, Any]] = {}
     events: list[dict[str, Any]] = []
 
-    def _auth_worker(hub_url: str) -> tuple[socket.socket, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    def _auth_worker(
+        hub_url: str, *, generation_capability: str,
+    ) -> tuple[socket.socket, dict[str, Any], dict[str, Any], dict[str, Any]]:
+        report(f"worker.{generation_capability}.websocket_connect")
+        market_profile = _market_profile(generation_capability)
         sock = _ws_connect(hub_url, "/api/hub/v1/workers/live-session", timeout=timeout)
         sockets.append(sock)
         _ws_send_json(
             sock,
             {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "worker_id": worker_label,
                 "multisession_authorization": {
                     "kind": "multisession_key",
@@ -1202,8 +1324,14 @@ def build_stable_hub_integrated_market_stress_result(
                 "market": market_profile,
             },
         )
+        report(f"worker.{generation_capability}.auth_ack_wait")
         auth = _ws_recv_json(sock)
         ping = _ws_recv_json(sock)
+        if auth.get("type") == "hub.auth.accepted" and auth.get("execution_protocol") != "durable-authorization-v1":
+            raise StableHubTopologyError(
+                "authenticated Worker Hub is running an older execution protocol; "
+                "restart the smoke cluster before stress testing"
+            )
         if auth.get("type") != "hub.auth.accepted" or ping.get("type") != "hub.ping":
             raise StableHubTopologyError(f"worker auth failed during integrated stress: auth={auth} ping={ping}")
         connection_id = str(auth.get("connection_id") or "")
@@ -1235,14 +1363,25 @@ def build_stable_hub_integrated_market_stress_result(
                 "ping_id": ping.get("ping_id"),
             },
         )
+        report(f"worker.{generation_capability}.pong_ack_wait")
         pong = _ws_recv_json(sock)
         if pong.get("type") != "hub.pong.accepted" or pong.get("ok") is not True:
             raise StableHubTopologyError(f"worker pong failed during integrated stress: {pong}")
-        sock_auth_map[id(sock)] = auth
-        events.append({"type": "worker.connected", "hub_url": hub_url, "connection_id": auth.get("connection_id")})
+        sock_auth_map[id(sock)] = {
+            "auth": auth,
+            "generation_capability": generation_capability,
+        }
+        events.append({
+            "type": "worker.connected", "hub_url": hub_url,
+            "connection_id": auth.get("connection_id"),
+            "generation_capability": generation_capability,
+        })
         return sock, auth, ping, pong
 
-    def _work_request(request_id: str, *, max_price: str = "0.10", value: str = "ok") -> dict[str, Any]:
+    def _work_request(
+        request_id: str, *, generation_capability: str,
+        max_price: str = "0.10", value: str = "ok",
+    ) -> dict[str, Any]:
         return {
             "request_id": request_id,
             "multisession_authorization": {
@@ -1252,7 +1391,7 @@ def build_stable_hub_integrated_market_stress_result(
             "work": {
                 "ring": "ring-2",
                 "max_price": {"amount": max_price, "unit": "credit"},
-                "capabilities": ["python", scenario_capability],
+                "capabilities": ["python", scenario_capability, generation_capability],
                 "input": {"kind": "echo", "value": value},
             },
         }
@@ -1265,9 +1404,15 @@ def build_stable_hub_integrated_market_stress_result(
         terminal: str,
     ) -> dict[str, Any]:
         q: queue.Queue[dict[str, Any] | BaseException] = queue.Queue()
-        payload = _work_request(request_id, value=terminal)
-        worker_connection = str(sock_auth_map[id(sock)]["connection_id"])
+        socket_profile = sock_auth_map[id(sock)]
+        generation_capability = str(socket_profile["generation_capability"])
+        worker_connection = str(socket_profile["auth"]["connection_id"])
+        payload = _work_request(
+            request_id, generation_capability=generation_capability,
+            value=terminal,
+        )
         started = time.monotonic()
+        report(f"work.{terminal}.captain_submit_offer_wait request={request_id} connection={worker_connection}")
         # Keep the socket open longer than the entire dispatch phase. In
         # particular, do NOT close it merely because the MSK/startup budget
         # elapsed; doing so causes an artificial owner-not-local response.
@@ -1336,14 +1481,13 @@ def build_stable_hub_integrated_market_stress_result(
         if (
             offer.get("type") != "hub.work.offer"
             or offer.get("request_id") != request_id
-            or offer.get("worker_id") != str(sock_auth_map[id(sock)]["connection_id"])
-            or scenario_capability not in (
-                (offer.get("work") or {}).get("capabilities") or []
-            )
+            or offer.get("worker_id") != worker_connection
+            or offer.get("execution_authorization_required") is not True
         ):
             raise StableHubTopologyError(
                 f"stress offer did not match this campaign's authenticated Worker: {offer}"
             )
+        report(f"work.{terminal}.preparation_accepted request={request_id}")
         _ws_send_json(
             sock,
             {
@@ -1352,6 +1496,15 @@ def build_stable_hub_integrated_market_stress_result(
                 "request_id": offer.get("request_id"),
             },
         )
+        report(f"work.{terminal}.authorization_wait request={request_id}")
+        authorized = _ws_recv_json(sock)
+        if (authorized.get("type") != "hub.work.authorized"
+                or authorized.get("session_id") != offer.get("session_id")
+                or authorized.get("request_id") != request_id
+                or not {scenario_capability, generation_capability}.issubset(
+                    set((authorized.get("work") or {}).get("capabilities") or []))):
+            raise StableHubTopologyError(f"stress work authorization mismatched: {authorized}")
+        report(f"work.{terminal}.captain_acceptance_wait request={request_id}")
         queued = q.get(timeout=dispatch_timeout)
         if isinstance(queued, BaseException):
             raise StableHubTopologyError(f"stress requester work failed: {queued}") from queued
@@ -1383,7 +1536,9 @@ def build_stable_hub_integrated_market_stress_result(
                     "error": {"code": "injected_worker_failure", "message": "stress failure injection"},
                 },
             )
+        report(f"work.{terminal}.terminal_ack_wait request={request_id}")
         terminal_ack = _ws_recv_json(sock)
+        report(f"work.{terminal}.continuation_read request={request_id}")
         continuation = _read_json_url(str(response.get("continuation_url")), timeout=timeout)
         events.append(
             {
@@ -1397,6 +1552,7 @@ def build_stable_hub_integrated_market_stress_result(
         return {
             "request": payload,
             "offer": offer,
+            "authorized": authorized,
             "response": response,
             "terminal_ack": terminal_ack,
             "continuation": continuation,
@@ -1405,13 +1561,17 @@ def build_stable_hub_integrated_market_stress_result(
     sock1: socket.socket | None = None
     sock2: socket.socket | None = None
     try:
-        sock1, auth1, ping1, pong1 = _auth_worker(worker_hub.hub_url)
+        report("worker.first.register")
+        sock1, auth1, ping1, pong1 = _auth_worker(
+            worker_hub.hub_url, generation_capability=initial_capability,
+        )
         success = _submit_and_terminal(
             entry_url=requester_hub.hub_url,
             sock=sock1,
             request_id="req_" + secrets.token_urlsafe(12).rstrip("="),
             terminal="result",
         )
+        report("work.result.duplicate_idempotency")
         _ws_send_json(
             sock1,
             {
@@ -1432,12 +1592,16 @@ def build_stable_hub_integrated_market_stress_result(
             terminal="failed",
         )
 
+        report("worker.first.disconnect")
         _ws_send_json(sock1, {"type": "worker.close"})
         sock1.close()
         sockets.remove(sock1)
         events.append({"type": "worker.disconnected", "connection_id": auth1.get("connection_id")})
 
-        sock2, auth2, ping2, pong2 = _auth_worker(requester_hub.hub_url)
+        report("worker.reconnect.register")
+        sock2, auth2, ping2, pong2 = _auth_worker(
+            requester_hub.hub_url, generation_capability=reconnect_capability,
+        )
         reconnect_success = _submit_and_terminal(
             entry_url=worker_hub.hub_url,
             sock=sock2,
@@ -1445,9 +1609,14 @@ def build_stable_hub_integrated_market_stress_result(
             terminal="result",
         )
 
+        report("market.low_price_rejection")
         low_price_status, low_price_body = _post_json_url_status(
             f"{worker_hub.hub_url.rstrip('/')}/api/hub/v1/work/requests",
-            _work_request("req_" + secrets.token_urlsafe(12).rstrip("="), max_price="0.01", value="too-low"),
+            _work_request(
+                "req_" + secrets.token_urlsafe(12).rstrip("="),
+                generation_capability=reconnect_capability,
+                max_price="0.01", value="too-low",
+            ),
             timeout=timeout,
         )
 
@@ -1457,6 +1626,7 @@ def build_stable_hub_integrated_market_stress_result(
                 "multisession_key_id": worker_key_id,
             }
         }
+        report("payout.claim")
         claim = _post_json_url(
             f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_account_id}/payout/claim",
             {
@@ -1465,6 +1635,7 @@ def build_stable_hub_integrated_market_stress_result(
             },
             timeout=timeout,
         )
+        report("payout.claim_idempotency")
         duplicate_claim = _post_json_url(
             f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_account_id}/payout/claim",
             {
@@ -1473,6 +1644,7 @@ def build_stable_hub_integrated_market_stress_result(
             },
             timeout=timeout,
         )
+        report("payout.settlement")
         settlement = _post_json_url(
             f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_account_id}/payout/settlements",
             {
@@ -1484,6 +1656,7 @@ def build_stable_hub_integrated_market_stress_result(
             },
             timeout=timeout,
         )
+        report("payout.bridge_request")
         bridge = _post_json_url(
             f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/workers/{worker_account_id}/payout/bridge",
             {
@@ -1493,16 +1666,19 @@ def build_stable_hub_integrated_market_stress_result(
             },
             timeout=timeout,
         )
+        report("payout.bridge_failure_injection")
         failed_bridge = _post_json_url(
             f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/payout/bridge/{bridge.get('bridge_payout', {}).get('bridge_payout_id')}/fail",
             {"reason": "injected_bridge_failure"},
             timeout=timeout,
         )
+        report("payout.bridge_recovery")
         recovered_bridge = _post_json_url(
             f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/payout/bridge/{bridge.get('bridge_payout', {}).get('bridge_payout_id')}/confirm",
             {"settlement_reference": f"{scenario_id}-bridge-confirmed"},
             timeout=timeout,
         )
+        report("payout.ledger_read")
         payout_status = _read_json_url(f"{requester_hub.hub_url.rstrip('/')}/api/hub/v1/payout/status", timeout=timeout)
     finally:
         for sock in list(sockets):
@@ -1515,6 +1691,7 @@ def build_stable_hub_integrated_market_stress_result(
             except OSError:
                 pass
 
+    report("payout.invariant_verification")
     payout = payout_status.get("payout") if isinstance(payout_status.get("payout"), dict) else {}
     all_holds = [item for item in payout.get("holds", []) if isinstance(item, dict)]
     all_charges = [item for item in payout.get("charges", []) if isinstance(item, dict)]
@@ -1618,8 +1795,21 @@ def build_stable_hub_integrated_market_stress_result(
         and len([hold for hold in holds if hold.get("status") in {"charged", "released"}]) >= 3,
         "run_scoped_market_capability_enforced": all(
             scenario_capability in entry["request"]["work"]["capabilities"]
-            and scenario_capability in entry["offer"]["work"]["capabilities"]
+            and scenario_capability in entry["authorized"]["work"]["capabilities"]
             for entry in (success, failure, reconnect_success)
+        ),
+        "reconnect_generation_market_isolation": (
+            initial_capability != reconnect_capability
+            and all(
+                initial_capability in entry["request"]["work"]["capabilities"]
+                and initial_capability in entry["authorized"]["work"]["capabilities"]
+                and reconnect_capability not in entry["request"]["work"]["capabilities"]
+                for entry in (success, failure)
+            )
+            and reconnect_capability in reconnect_success["request"]["work"]["capabilities"]
+            and reconnect_capability in reconnect_success["authorized"]["work"]["capabilities"]
+            and initial_capability not in reconnect_success["request"]["work"]["capabilities"]
+            and initial_capability not in reconnect_success["authorized"]["work"]["capabilities"]
         ),
         "offers_match_authenticated_connections": all(
             entry["offer"].get("worker_id") == auth.get("connection_id")
@@ -1641,6 +1831,8 @@ def build_stable_hub_integrated_market_stress_result(
             },
             "worker": {
                 "scenario_capability": scenario_capability,
+                "initial_generation_capability": initial_capability,
+                "reconnect_generation_capability": reconnect_capability,
                 "worker_id": worker_account_id,
                 "client_worker_label": worker_label,
                 "first_connection_id": auth1.get("connection_id"),
@@ -1723,6 +1915,7 @@ def _render_stable_hub_integrated_market_stress_text(result: dict[str, Any]) -> 
         f"  no double charge on duplicate result: {'yes' if proof['no_double_charge_on_duplicate_result'] else 'no'}",
         f"  accepted sessions linked to payout path: {'yes' if proof['accepted_sessions_linked_to_payout_path'] else 'no'}",
         f"  run-scoped market capability enforced: {'yes' if proof['run_scoped_market_capability_enforced'] else 'no'}",
+        f"  reconnect generation market isolation: {'yes' if proof['reconnect_generation_market_isolation'] else 'no'}",
         f"  offers match authenticated connections: {'yes' if proof['offers_match_authenticated_connections'] else 'no'}",
     ]
     return "\n".join(lines)
@@ -1740,10 +1933,20 @@ def build_stable_hub_integrated_market_stress_runs_result(
     origin: str = DEFAULT_MSK_ORIGIN,
     timeout: float = 10.0,
     runs: int = 1,
+    progress_log: Callable[[str], None] | None = None,
+    progress_interval: float = 5.0,
 ) -> dict[str, Any]:
     clean_runs = max(1, int(runs or 1))
     results: list[dict[str, Any]] = []
     for index in range(clean_runs):
+        monitor = (
+            _StressProgressMonitor(
+                index=index + 1, total=clean_runs,
+                interval=progress_interval, log=progress_log,
+            ) if progress_log is not None else None
+        )
+        if monitor is not None:
+            monitor.start()
         try:
             result = build_stable_hub_integrated_market_stress_result(
                 topology_path=topology_path,
@@ -1753,11 +1956,19 @@ def build_stable_hub_integrated_market_stress_runs_result(
                 requester_entry_index=requester_entry_index,
                 origin=f"{origin}-stress-run-{index + 1}",
                 timeout=timeout,
+                progress=monitor.phase if monitor is not None else None,
             )
-        except StableHubTopologyError as exc:
+        except Exception as exc:
+            phase = monitor._phase if monitor is not None else "unknown"
+            elapsed = time.monotonic() - monitor._start if monitor is not None else 0.0
+            if monitor is not None:
+                monitor.finish(passed=False)
             raise StableHubTopologyError(
-                f"stress run {index + 1}/{clean_runs} failed: {exc}"
+                f"stress run {index + 1}/{clean_runs} failed "
+                f"at phase={phase} after {elapsed:.1f}s: {exc}"
             ) from exc
+        if monitor is not None:
+            monitor.finish(passed=result.get("ok") is True)
         result["run_index"] = index + 1
         results.append(result)
         if result.get("ok") is not True:
@@ -1889,6 +2100,7 @@ def check_cluster(
             "storage_namespace": (identity.get("storage") or {}).get("namespace"),
             "auth": (identity.get("contract") or {}).get("auth"),
             "worker_connection": (identity.get("contract") or {}).get("worker_connection"),
+            "execution_authorization": (identity.get("contract") or {}).get("execution_authorization"),
         })
 
     return {
@@ -1898,6 +2110,37 @@ def check_cluster(
         "cluster_id": topology.cluster_id,
         "checks": checks,
     }
+
+
+def require_durable_execution_cluster(
+    *, topology_path: str | Path, timeout: float,
+    required_hub_ids: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Reject old/mixed Hub processes before Worker-cycle credit mutations.
+
+    Smoke requires every Hub. Partial dev fixtures may start only the two
+    participating entry/owner Hubs.
+    """
+    cluster = check_cluster(topology_path=topology_path, timeout=timeout)
+    topology = load_stable_hub_topology(topology_path)
+    selected = set(required_hub_ids or ()) if "smoke" not in topology.cluster_id.lower() else set()
+    checks = [c for c in cluster.get("checks", []) if not selected or c.get("hub_id") in selected]
+    count = len(selected) if selected else len(topology.hubs)
+    if len(checks) != count or any(not c.get("ok") for c in checks):
+        raise StableHubTopologyError("smoke cluster identity/health preflight failed: " + repr(checks))
+    expected = "durable-authorization-v1"
+    incompatible = [
+        f"{c['hub_id']}@{c['hub_url']}: {c.get('execution_authorization') or '<missing>'}"
+        for c in checks if c.get("execution_authorization") != expected
+    ]
+    if incompatible:
+        raise StableHubTopologyError(
+            "smoke cluster protocol mismatch (expected durable-authorization-v1): "
+            + "; ".join(incompatible)
+            + ". Stop the existing --serve-cluster with Ctrl+C and restart all smoke Hubs "
+              "from the patched checkout before running Worker-cycle or stress tests."
+        )
+    return cluster
 
 
 def _render_check_text(result: dict[str, Any]) -> str:
@@ -1997,6 +2240,7 @@ def _worker_cycle_local_gate() -> dict[str, Any]:
     cases = [
         "tests/test_stable_hub_lab_worker_cycle_regressions.py",
         "tests/test_stable_hub_fdb_atomic_accounting.py::test_worker_close_and_hold_release_are_one_fdb_commit_with_crash_rollback",
+        "tests/test_stable_hub_worker_live_session.py::test_graceful_worker_close_ack_waits_for_durable_cleanup",
     ]
     try:
         completed = subprocess.run(
@@ -2015,6 +2259,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.verify_pathway_local:
+            from tools.stable_hub_lab.pathway_audit import run_pathway_audit
+            result = run_pathway_audit(
+                root=Path(__file__).resolve().parents[2],
+                timeout_per_lane=args.pathway_timeout,
+                progress=(None if args.json else lambda lane, phase:
+                          print(f"  {lane}: {phase}", flush=True)),
+            )
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(f"Stable Hub pathway local assurance: {'ok' if result['ok'] else 'FAILED'}")
+                for lane in result["lanes"]:
+                    print(f"  {lane['lane']}: {'PASS' if lane['ok'] else 'FAIL'}")
+                    if not lane['ok']:
+                        print(lane["stdout"][-2500:])
+                        print(lane["stderr"][-1200:], file=sys.stderr)
+                print("FULL PATHWAY CERTIFIED: no (known recovery and acceptance-order gaps remain)")
+                for gap in result["open_assurance_boundaries"]:
+                    print(f"  OPEN: {gap}")
+            return 0 if result["ok"] else 1
         if args.serve_cluster:
             return serve_cluster(
                 topology_path=args.topology,
@@ -2061,6 +2326,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(render_worker_cycle_regressions_result(result))
             return 0 if result["ok"] else 1
         if args.verify_stress:
+            if args.stress_progress_interval <= 0:
+                raise StableHubTopologyError("--stress-progress-interval must be positive")
+            progress_log = (
+                None if args.json or args.quiet_stress_progress else
+                lambda message: print(message, file=sys.stderr, flush=True)
+            )
             if int(args.verify_stress_runs or 1) > 1:
                 result = build_stable_hub_integrated_market_stress_runs_result(
                     topology_path=args.topology,
@@ -2071,6 +2342,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     origin=args.origin,
                     timeout=args.startup_timeout,
                     runs=args.verify_stress_runs,
+                    progress_log=progress_log,
+                    progress_interval=args.stress_progress_interval,
                 )
                 if args.json:
                     print(json.dumps(result, indent=2, sort_keys=True))
@@ -2078,15 +2351,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(_render_stable_hub_integrated_market_stress_runs_text(result))
                 return 0 if result["ok"] else 1
 
-            result = build_stable_hub_integrated_market_stress_result(
-                topology_path=args.topology,
-                requester_wallet_path=args.requester_wallet,
-                worker_wallet_path=args.worker_wallet,
-                worker_entry_index=args.worker_entry_index,
-                requester_entry_index=args.requester_entry_index,
-                origin=args.origin,
-                timeout=args.startup_timeout,
+            monitor = (
+                _StressProgressMonitor(
+                    index=1, total=1, interval=args.stress_progress_interval,
+                    log=progress_log,
+                ) if progress_log is not None else None
             )
+            if monitor is not None:
+                monitor.start()
+            try:
+                result = build_stable_hub_integrated_market_stress_result(
+                    topology_path=args.topology,
+                    requester_wallet_path=args.requester_wallet,
+                    worker_wallet_path=args.worker_wallet,
+                    worker_entry_index=args.worker_entry_index,
+                    requester_entry_index=args.requester_entry_index,
+                    origin=args.origin,
+                    timeout=args.startup_timeout,
+                    progress=monitor.phase if monitor is not None else None,
+                )
+            except Exception:
+                if monitor is not None:
+                    monitor.finish(passed=False)
+                raise
+            if monitor is not None:
+                monitor.finish(passed=result.get("ok") is True)
             if args.json:
                 print(json.dumps(result, indent=2, sort_keys=True))
             else:

@@ -1,0 +1,23 @@
+{
+  "schema":"mcel.semantic-generality-fixture.v1",
+  "domain":"parcel",
+  "contract":{
+    "schema":"mcel.semantic-collection-spec.v2",
+    "identity":"ident",
+    "sourceFields":["tracking","recipient","weight_kg","weight_quality","weight_age","weight_conflicts","rush","international","destination"],
+    "fields":[
+      {"key":"ident","from":"tracking","kind":"identifier","tier":"primary","label":"Identity","exact":true},
+      {"key":"title","from":"recipient","kind":"text","tier":"primary","label":"Name"},
+      {"key":"flagA","from":"rush","kind":"boolean","tier":"detail","label":"Flag A"},
+      {"key":"flagB","from":"international","kind":"boolean","tier":"detail","label":"Flag B"},
+      {"key":"category","kind":"enum","tier":"secondary","priority":1,"label":"Category","derive":{"kind":"first-true","cases":[{"ref":"flagA","value":"Priority"},{"ref":"flagB","value":"International"}],"default":"Standard"}},
+      {"key":"measurement","from":"weight_kg","kind":"quantity","tier":"secondary","priority":2,"label":"Measurement","validity":{"availabilityFrom":"weight_quality","freshnessFrom":"weight_age","conflictFrom":"weight_conflicts"}},
+      {"key":"details","from":"destination","kind":"long-text","tier":"secondary","priority":3,"label":"Details","presentation":{"maxChars":46,"compactDisclosure":true}}
+    ]
+  },
+  "rows":[
+    {"tracking":"A-01","recipient":"Adele","weight_kg":0,"weight_quality":"present","weight_age":"fresh","weight_conflicts":false,"rush":true,"international":false,"destination":"20 Some Very Very Very Long Road, City, Country 12345"},
+    {"tracking":"A-02","recipient":"Boris","weight_kg":0,"weight_quality":"unavailable","weight_age":"unknown","weight_conflicts":false,"rush":false,"international":true,"destination":"100 Example Street"},
+    {"tracking":"A-03","recipient":"Claire","weight_kg":24.5,"weight_quality":"present","weight_age":"stale","weight_conflicts":["warehouse sensors disagree"],"rush":false,"international":false,"destination":"Address Three"}
+  ]
+}

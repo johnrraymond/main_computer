@@ -187,7 +187,7 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory(c
         _ws_send_json(
             sock,
             {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "diagnostic_attempt_id": "diag-normal-close",
                 "multisession_authorization": {
                     "kind": "multisession_key",
@@ -315,6 +315,11 @@ def test_worker_live_session_uses_open_websocket_and_fdb_style_owner_directory(c
         assert selected["partition"] == "ring-2"
 
         _ws_send_json(sock, {"type": "worker.close"})
+        close_ack = _ws_recv_json(sock)
+        assert close_ack == {
+            "type": "hub.worker.closed", "ok": True,
+            "connection_id": accepted["connection_id"], "settled_sessions": 0,
+        }
         sock.close()
         sock = None
         deadline = time.monotonic() + 2.0
@@ -360,7 +365,7 @@ def test_worker_live_session_logs_correlated_abrupt_tcp_eof(capsys) -> None:
         )
         sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
         _ws_send_json(sock, {
-            "type": "worker.auth",
+            "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
             "diagnostic_attempt_id": "diag-abrupt-eof",
             "multisession_authorization": {
                 "kind": "multisession_key",
@@ -489,7 +494,7 @@ def test_same_wallet_concurrent_connections_have_independent_hub_slots() -> None
             sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
             sockets.append(sock)
             _ws_send_json(sock, {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "worker_id": "same-client-label-must-be-ignored",
                 "multisession_authorization": {
                     "kind": "multisession_key", "multisession_key_id": key_id,
@@ -665,7 +670,10 @@ def test_captain_websocket_client_handshake_and_live_auth_using_real_server() ->
                         and node.name == "_WorkerHubLiveSessionClient")
     module = ast.Module(body=[client_class], type_ignores=[])
     ast.fix_missing_locations(module)
+    from main_computer.credit_units import credit_decimal_text_to_wei
+
     namespace = {
+        "credit_decimal_text_to_wei": credit_decimal_text_to_wei,
         "Any": object, "json": json, "os": os, "socket": socket,
         "ssl": ssl, "threading": threading, "time": time,
         "hashlib": hashlib, "base64": base64, "urlparse": urlparse,
@@ -691,7 +699,7 @@ def test_captain_websocket_client_handshake_and_live_auth_using_real_server() ->
             worker_id="display-only",
             timeout_s=5.0,
             auth_message={
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "multisession_authorization": {
                     "kind": "multisession_key",
                     "multisession_key_id": issued["key"]["id"],
@@ -735,3 +743,97 @@ def test_transport_smoke_detects_the_pre_patch_http10_upgrade(monkeypatch, capsy
         hub.shutdown()
         hub.server_close()
         thread.join(timeout=3)
+
+
+def test_graceful_worker_close_ack_waits_for_durable_cleanup(monkeypatch) -> None:
+    """No WebSocket close acknowledgment may precede the atomic store commit."""
+    import main_computer.stable_hub as stable_hub_module
+
+    key_store = InMemoryStableMultiSessionKeyStore()
+    state_store = InMemoryStableWorkerSessionStore()
+    server, thread = _start_server("dev-hub1", key_store, state_store)
+    sock = None
+    entered = threading.Event()
+    release = threading.Event()
+    original_close = stable_hub_module.close_worker_connection_and_settle
+
+    def controlled_close(target_server, *, worker_id, connection_id):
+        entered.set()
+        if not release.wait(timeout=5):
+            raise AssertionError("test did not release blocked cleanup")
+        return original_close(target_server, worker_id=worker_id, connection_id=connection_id)
+
+    monkeypatch.setattr(stable_hub_module, "close_worker_connection_and_settle", controlled_close)
+    try:
+        issued = _post_json(
+            f"http://127.0.0.1:{server.server_port}/api/hub/v1/credits/multisession-keys/request",
+            {"signed_request": _signed_msk_request(request_id="ack-before-commit-check")},
+        )
+        sock = _ws_connect("127.0.0.1", server.server_port, "/api/hub/v1/workers/live-session")
+        _ws_send_json(sock, {
+            "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
+            "multisession_authorization": {"kind": "multisession_key",
+                                           "multisession_key_id": issued["key"]["id"]},
+            "market": {"rings": ["ring-2"], "price": {"amount": "0.05", "unit": "credit"},
+                       "capabilities": ["python"], "max_concurrency": 1},
+        })
+        auth, ping = _ws_recv_json(sock), _ws_recv_json(sock)
+        assert auth["type"] == "hub.auth.accepted"
+        _ws_send_json(sock, {"type": "worker.pong", "connection_id": auth["connection_id"],
+                             "ping_id": ping["ping_id"]})
+        assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
+        _ws_send_json(sock, {"type": "worker.close"})
+        assert entered.wait(timeout=2), "Hub did not begin close cleanup"
+        assert server.worker_session_directory.get_owner(auth["connection_id"])["status"] == "live"
+        sock.settimeout(0.15)
+        try:
+            _ws_recv_json(sock)
+        except socket.timeout:
+            pass
+        else:
+            raise AssertionError("Hub acknowledged close before cleanup committed")
+        release.set()
+        sock.settimeout(3)
+        ack = _ws_recv_json(sock)
+        assert ack == {"type": "hub.worker.closed", "ok": True,
+                       "connection_id": auth["connection_id"], "settled_sessions": 0}
+        assert server.worker_session_directory.get_owner(auth["connection_id"])["status"] == "closed"
+        assert server.worker_market_directory.get_worker(auth["connection_id"])["status"] == "closed"
+        sock.close()
+        sock = None
+
+        # A conflicted cleanup must never produce a success acknowledgment.
+        class RetriableConflict(Exception):
+            code = 1020
+
+        def deferred_close(target_server, *, worker_id, connection_id):
+            raise RetriableConflict("injected_transaction_conflict")
+
+        monkeypatch.setattr(stable_hub_module, "close_worker_connection_and_settle", deferred_close)
+        sock = _ws_connect("127.0.0.1", server.server_port, "/api/hub/v1/workers/live-session")
+        _ws_send_json(sock, {
+            "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
+            "multisession_authorization": {"kind": "multisession_key",
+                                           "multisession_key_id": issued["key"]["id"]},
+            "market": {"rings": ["ring-2"], "price": {"amount": "0.05", "unit": "credit"},
+                       "capabilities": ["python"], "max_concurrency": 1},
+        })
+        deferred_auth, deferred_ping = _ws_recv_json(sock), _ws_recv_json(sock)
+        assert deferred_auth["type"] == "hub.auth.accepted"
+        _ws_send_json(sock, {"type": "worker.pong", "connection_id": deferred_auth["connection_id"],
+                             "ping_id": deferred_ping["ping_id"]})
+        assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
+        _ws_send_json(sock, {"type": "worker.close"})
+        error = _ws_recv_json(sock)
+        assert error["type"] == "hub.error"
+        assert error["error"] == "worker_close_cleanup_deferred"
+        assert error["retryable"] is True
+        assert error["connection_id"] == deferred_auth["connection_id"]
+        assert server.worker_session_directory.get_owner(deferred_auth["connection_id"])["status"] == "live"
+    finally:
+        release.set()
+        if sock is not None:
+            sock.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

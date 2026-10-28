@@ -1,0 +1,23 @@
+{
+  "schema": "mcel.semantic-generality-fixture.v1",
+  "domain": "process",
+  "contract": {
+    "schema": "mcel.semantic-collection-spec.v2",
+    "identity": "ident",
+    "sourceFields": ["proc_uid","app","ram_bytes","ram_quality","ram_age","ram_conflicts","flag_self","flag_owned","command"],
+    "fields": [
+      {"key":"ident","from":"proc_uid","kind":"identifier","tier":"primary","label":"Identity","exact":true},
+      {"key":"title","from":"app","kind":"text","tier":"primary","label":"Name"},
+      {"key":"flagA","from":"flag_self","kind":"boolean","tier":"detail","label":"Flag A"},
+      {"key":"flagB","from":"flag_owned","kind":"boolean","tier":"detail","label":"Flag B"},
+      {"key":"category","kind":"enum","tier":"secondary","priority":1,"label":"Category","derive":{"kind":"first-true","cases":[{"ref":"flagA","value":"Current"},{"ref":"flagB","value":"Owned"}],"default":"Other"}},
+      {"key":"measurement","from":"ram_bytes","kind":"quantity","tier":"secondary","priority":2,"label":"Measurement","validity":{"availabilityFrom":"ram_quality","freshnessFrom":"ram_age","conflictFrom":"ram_conflicts"},"presentation":{"units":"bytes"}},
+      {"key":"details","from":"command","kind":"long-text","tier":"secondary","priority":3,"label":"Details","presentation":{"maxChars":46,"compactDisclosure":true}}
+    ]
+  },
+  "rows": [
+    {"proc_uid":"P-01","app":"worker","ram_bytes":0,"ram_quality":"present","ram_age":"fresh","ram_conflicts":false,"flag_self":true,"flag_owned":false,"command":"C:\\A\\worker.exe --long-path C:\\One\\Two\\Three\\Four\\Five\\Six"},
+    {"proc_uid":"P-02","app":"helper","ram_bytes":0,"ram_quality":"unavailable","ram_age":"unknown","ram_conflicts":false,"flag_self":false,"flag_owned":true,"command":"C:\\B\\helper.exe"},
+    {"proc_uid":"P-03","app":"daemon","ram_bytes":24576,"ram_quality":"present","ram_age":"stale","ram_conflicts":["primary and secondary sensors disagree"],"flag_self":false,"flag_owned":false,"command":"C:\\C\\daemon.exe"}
+  ]
+}

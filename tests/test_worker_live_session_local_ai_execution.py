@@ -95,7 +95,7 @@ def test_worker_live_session_reports_hub_auth_rejection_details(monkeypatch: pyt
     assert "Request a new worker authorization." in message
     assert "mainnetc-hub1" in message
     assert "did not accept worker.auth" not in message
-    assert sent_messages == [{"type": "worker.auth"}]
+    assert sent_messages == [{"type": "worker.auth", "execution_protocol": "durable-authorization-v1"}]
     assert client._reader_thread is None
 
 
@@ -1079,3 +1079,71 @@ def test_worker_runtime_sync_uses_live_session_active_work_instead_of_closing_as
     assert status["runtime"]["heartbeat_result"]["live_session"]["active_work_count"] == 1
     assert client.close_reason == ""
     assert saved_settings["workerRuntimeActiveJobs"] == 1
+
+
+def test_durable_execution_offer_waits_for_exact_hub_authorization() -> None:
+    """No executor or delta may run before paid-session authorization."""
+    sent: list[dict[str, object]] = []
+    executed: list[dict[str, object]] = []
+
+    def executor(offer: dict[str, object]) -> dict[str, object]:
+        executed.append(offer)
+        return {"status": "success", "response": {"content": "authorized"}}
+
+    client = _WorkerHubLiveSessionClient(
+        hub_url="http://127.0.0.1:8871", worker_id="worker-durable",
+        auth_message={"type": "worker.auth"}, work_executor=executor,
+    )
+    client._send_json = sent.append  # type: ignore[method-assign]
+    offer = {
+        "type": "hub.work.offer", "session_id": "sess_durable",
+        "run_id": "run_durable", "request_id": "req_durable",
+        "execution_authorization_required": True,
+        "work": {"execution_authorization_pending": True},
+    }
+    client._handle_hub_message(offer)
+    assert [m["type"] for m in sent] == ["worker.work.accepted"]
+    assert executed == []
+    assert client.active_work_count == 0
+
+    authorization = {
+        "type": "hub.work.authorized", "session_id": "sess_durable",
+        "run_id": "run_durable", "request_id": "req_durable",
+        "execution_protocol": "durable-authorization-v1",
+        "work": {"input": {"prompt": "actual funded work"}},
+    }
+    client._handle_hub_message({**authorization, "run_id": "run_wrong"})
+    assert executed == []
+    assert client.active_work_count == 0
+    client._handle_hub_message(authorization)
+    deadline = time.monotonic() + 2
+    while len(sent) < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert [m["type"] for m in sent] == ["worker.work.accepted", "worker.work.result"]
+    assert len(executed) == 1
+    assert executed[0]["work"] == authorization["work"]
+    client._handle_hub_message(authorization)
+    assert len(executed) == 1  # Duplicate authorization cannot rerun computation.
+
+
+def test_durable_worker_closure_invalidates_unfunded_preparations() -> None:
+    sent: list[dict[str, object]] = []
+    executed: list[dict[str, object]] = []
+    client = _WorkerHubLiveSessionClient(
+        hub_url="http://127.0.0.1:8871", worker_id="worker-closed",
+        auth_message={"type": "worker.auth"},
+        work_executor=lambda offer: executed.append(offer) or {"ok": True},
+    )
+    client._send_json = sent.append  # type: ignore[method-assign]
+    client._handle_hub_message({
+        "type": "hub.work.offer", "session_id": "sess_closed", "run_id": "run_closed",
+        "request_id": "req_closed", "execution_authorization_required": True,
+    })
+    client.close()
+    client._handle_hub_message({
+        "type": "hub.work.authorized", "session_id": "sess_closed",
+        "run_id": "run_closed", "request_id": "req_closed",
+        "execution_protocol": "durable-authorization-v1", "work": {"input": "never run"},
+    })
+    assert executed == []
+    assert not client.has_active_work

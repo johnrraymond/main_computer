@@ -1,0 +1,15 @@
+{
+  "schema": "mcel.knowledge-presentation-overlay.v1",
+  "observation": "task-manager.processes",
+  "fields": ["pid", "name", "role", "resident_memory", "state", "command", "created_at"],
+  "labels": {
+    "pid": "PID", "name": "Process", "role": "Role", "resident_memory": "Memory",
+    "state": "Status", "command": "Command", "created_at": "Started"
+  },
+  "primary": ["pid", "name"],
+  "detail": ["created_at"],
+  "presentation": {"command": {"maxChars": 46, "compactDisclosure": true}},
+  "valueLabels": {
+    "role": {"current-process": "Current", "main-computer": "Main Computer", "other-process": "Other"}
+  }
+}

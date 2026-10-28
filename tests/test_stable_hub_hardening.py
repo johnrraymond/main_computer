@@ -423,7 +423,7 @@ def test_owner_hub_times_out_when_worker_does_not_accept_offer(tmp_path: Path) -
         _ws_send_json(
             sock,
             {
-                "type": "worker.auth",
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
                 "worker_id": "worker-offer-timeout",
                 "multisession_authorization": {
                     "kind": "multisession_key",
@@ -474,9 +474,9 @@ def test_owner_hub_times_out_when_worker_does_not_accept_offer(tmp_path: Path) -
         assert status == 504
         assert body["ok"] is False
         assert body["error"] == "worker_offer_timeout"
-        assert body["worker_id"] == "worker-offer-timeout"
+        assert body["worker_id"] == accepted["connection_id"]
         assert hub3.accepted_work_session_directory.get_session(offer["session_id"]) is None
-        market_record = hub3.worker_market_directory.get_worker("worker-offer-timeout")
+        market_record = hub3.worker_market_directory.get_worker(accepted["connection_id"])
         assert market_record is not None
         assert market_record["active_sessions"] == 0
     finally:
@@ -514,7 +514,7 @@ def _connect_live_worker(
     _ws_send_json(
         sock,
         {
-            "type": "worker.auth",
+            "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
             "worker_id": worker_id,
             "multisession_authorization": {
                 "kind": "multisession_key",
@@ -584,7 +584,11 @@ def _accept_current_offer(sock: socket.socket, *, worker_id: str) -> dict:
     return offer
 
 
-def _finish_offer_with_result(sock: socket.socket, offer: dict, *, worker_id: str, value: str = "ok") -> dict:
+def _finish_offer_with_result(sock: socket.socket, offer: dict, *, worker_id: str, value: str = "ok", already_authorized: bool = False) -> dict:
+    if not already_authorized:
+        authorized = _ws_recv_json(sock)
+        assert authorized["type"] == "hub.work.authorized"
+        assert authorized["session_id"] == offer["session_id"]
     _ws_send_json(
         sock,
         {
@@ -603,6 +607,9 @@ def _finish_offer_with_result(sock: socket.socket, offer: dict, *, worker_id: st
 
 
 def _finish_offer_with_failure(sock: socket.socket, offer: dict, *, worker_id: str, message: str = "boom") -> dict:
+    authorized = _ws_recv_json(sock)
+    assert authorized["type"] == "hub.work.authorized"
+    assert authorized["session_id"] == offer["session_id"]
     _ws_send_json(
         sock,
         {
@@ -740,7 +747,7 @@ def test_duplicate_request_id_returns_existing_session_without_second_worker_off
         thread3.join(timeout=2)
 
 
-def test_duplicate_request_id_after_timeout_is_rejected_before_new_offer(tmp_path: Path) -> None:
+def test_timed_out_unaccepted_request_can_retry_without_duplicate_charge(tmp_path: Path) -> None:
     hub3_port = _free_port()
     hub3_url = f"http://127.0.0.1:{hub3_port}"
     topology_path = tmp_path / "stable-hub-duplicate-after-timeout-topology.json"
@@ -789,18 +796,39 @@ def test_duplicate_request_id_after_timeout_is_rejected_before_new_offer(tmp_pat
         assert status == 504
         assert body["error"] == "worker_offer_timeout"
 
-        duplicate_status, duplicate_body = _post_json_status(
-            f"{hub3_url}/api/hub/v1/work/requests",
-            _valid_request_body(requester_msk["key"]["id"], request_id="req_duplicate_timeout"),
-        )
-        assert duplicate_status == 409
-        assert duplicate_body["error"] == "duplicate_request_id_already_reserved"
-        assert duplicate_body["hold_status"] == "released"
+        # A pre-acceptance timeout has neither a durable paid session nor a
+        # hold. Retrying the same request ID is therefore permitted, but only
+        # the eventual accepted session may be charged.
+        assert hub3.accepted_work_session_directory.get_session(offer["session_id"]) is None
+        payout_before = hub3.payout_ledger_directory.status()
+        assert not [h for h in payout_before["holds"] if h.get("request_id") == "req_duplicate_timeout"]
 
-        sock.settimeout(0.2)
-        with pytest.raises((TimeoutError, socket.timeout)):
-            _ws_recv_json(sock)
-        sock.settimeout(None)
+        # Late acknowledgment of the cancelled offer cannot create a session.
+        _ws_send_json(sock, {
+            "type": "worker.work.accepted", "session_id": offer["session_id"],
+            "request_id": offer["request_id"],
+        })
+        late_ack = _ws_recv_json(sock)
+        assert late_ack["type"] == "hub.error"
+        assert "does not match a pending offer" in late_ack["error"]
+
+        retry_thread, retry_queue = _submit_work_async(
+            hub_url=hub3_url,
+            requester_msk_id=requester_msk["key"]["id"],
+            request_id="req_duplicate_timeout",
+        )
+        retry_offer = _accept_current_offer(sock, worker_id="worker-duplicate-timeout")
+        retry_status, retry_body = retry_queue.get(timeout=3)
+        retry_thread.join(timeout=2)
+        assert retry_status == 200, retry_body
+        assert retry_offer["session_id"] != offer["session_id"]
+        assert retry_body["session_id"] == retry_offer["session_id"]
+        _finish_offer_with_result(sock, retry_offer, worker_id="worker-duplicate-timeout")
+        payout_after = hub3.payout_ledger_directory.status()
+        matching = [c for c in payout_after["charges"] if c.get("request_id") == "req_duplicate_timeout"]
+        assert len(matching) == 1
+        assert matching[0]["session_id"] == retry_offer["session_id"]
+        assert not [h for h in payout_after["holds"] if h.get("session_id") == offer["session_id"]]
     finally:
         if sock is not None:
             try:
@@ -833,6 +861,9 @@ def test_worker_terminal_messages_are_bound_to_session_run_request_and_worker(tm
         status_before, continuation_before = _get_json_status(response[1]["continuation_url"])
         assert status_before == 200
         assert continuation_before["status"] == "accepted"
+        authorized = _ws_recv_json(sock)
+        assert authorized["type"] == "hub.work.authorized"
+        assert authorized["session_id"] == offer["session_id"]
 
         _ws_send_json(
             sock,
@@ -847,22 +878,7 @@ def test_worker_terminal_messages_are_bound_to_session_run_request_and_worker(tm
         )
         wrong_request_ack = _ws_recv_json(sock)
         assert wrong_request_ack["type"] == "hub.error"
-        assert "request_id mismatch" in wrong_request_ack["error"]
-
-        _ws_send_json(
-            sock,
-            {
-                "type": "worker.work.result",
-                "worker_id": "other-worker",
-                "session_id": offer["session_id"],
-                "run_id": offer["run_id"],
-                "request_id": offer["request_id"],
-                "result": {"value": "bad"},
-            },
-        )
-        wrong_worker_ack = _ws_recv_json(sock)
-        assert wrong_worker_ack["type"] == "hub.error"
-        assert "worker_id mismatch" in wrong_worker_ack["error"]
+        assert wrong_request_ack["error"] == "execution_not_authorized"
 
         _ws_send_json(
             sock,
@@ -879,7 +895,32 @@ def test_worker_terminal_messages_are_bound_to_session_run_request_and_worker(tm
         assert wrong_run_ack["type"] == "hub.error"
         assert "run_id mismatch" in wrong_run_ack["error"]
 
-        _finish_offer_with_result(sock, offer, worker_id=worker_id)
+        # The arbitrary worker_id field supplied by the client is NOT an
+        # authorization identity. The authenticated socket and durable
+        # connection ID determine who can finish the work.
+        _ws_send_json(
+            sock,
+            {
+                "type": "worker.work.result",
+                "worker_id": "forged-unauthenticated-label",
+                "session_id": offer["session_id"],
+                "run_id": offer["run_id"],
+                "request_id": offer["request_id"],
+                "result": {"value": "ok"},
+            },
+        )
+        terminal_ack = _ws_recv_json(sock)
+        assert terminal_ack["type"] == "hub.work.result.accepted"
+        assert terminal_ack["ok"] is True
+        # A correct label on the same socket cannot cause a second charge.
+        _ws_send_json(sock, {
+            "type": "worker.work.result", "worker_id": worker_id,
+            "session_id": offer["session_id"], "run_id": offer["run_id"],
+            "request_id": offer["request_id"], "result": {"value": "duplicate"},
+        })
+        duplicate_ack = _ws_recv_json(sock)
+        assert duplicate_ack["type"] == "hub.work.terminal.accepted"
+        assert duplicate_ack["idempotent"] is True
         status_after, continuation_after = _get_json_status(response[1]["continuation_url"])
         assert status_after == 200
         assert continuation_after["status"] == "succeeded"
@@ -973,7 +1014,7 @@ def test_worker_terminal_messages_are_idempotent_after_success_or_failure(tmp_pa
         thread3.join(timeout=2)
 
 
-def test_worker_capacity_and_requester_funds_reject_before_offer(tmp_path: Path) -> None:
+def test_worker_capacity_rejects_before_offer_and_insufficient_funds_rejects_after_acceptance(tmp_path: Path) -> None:
     worker_id = "worker-capacity-and-funds"
     hub3, thread3, hub3_url, sock, _auth, requester_msk = _new_local_hub_with_worker(
         tmp_path,
@@ -999,12 +1040,15 @@ def test_worker_capacity_and_requester_funds_reject_before_offer(tmp_path: Path)
         )
         assert second_status == 409
         assert second_body["error"] == "worker_not_live"
+        authorized = _ws_recv_json(sock)
+        assert authorized["type"] == "hub.work.authorized"
+        assert authorized["session_id"] == first_offer["session_id"]
         sock.settimeout(0.2)
         with pytest.raises((TimeoutError, socket.timeout)):
             _ws_recv_json(sock)
         sock.settimeout(None)
 
-        _finish_offer_with_result(sock, first_offer, worker_id=worker_id)
+        _finish_offer_with_result(sock, first_offer, worker_id=worker_id, already_authorized=True)
 
         account_id = requester_msk["key"]["account_id"]
         hub3.payout_ledger_directory.fund_account(
@@ -1013,16 +1057,28 @@ def test_worker_capacity_and_requester_funds_reject_before_offer(tmp_path: Path)
             credits="0.005",
             replace=True,
         )
-        poor_status, poor_body = _post_json_status(
-            f"{hub3_url}/api/hub/v1/work/requests",
-            _valid_request_body(requester_msk["key"]["id"], request_id="req_insufficient_funds"),
+        poor_thread, poor_queue = _submit_work_async(
+            hub_url=hub3_url,
+            requester_msk_id=requester_msk["key"]["id"],
+            request_id="req_insufficient_funds",
         )
+        # A preparation offer has no work payload. Failed funding MUST NOT
+        # produce execution authorization, an active job, or a credit hold.
+        poor_offer = _accept_current_offer(sock, worker_id=worker_id)
+        poor_response = poor_queue.get(timeout=3)
+        assert not isinstance(poor_response, BaseException), poor_response
+        poor_status, poor_body = poor_response
+        poor_thread.join(timeout=2)
         assert poor_status == 402
         assert poor_body["error"] == "requester_funds_unavailable"
+        assert hub3.accepted_work_session_directory.get_session(poor_offer["session_id"]) is None
         sock.settimeout(0.2)
         with pytest.raises((TimeoutError, socket.timeout)):
             _ws_recv_json(sock)
         sock.settimeout(None)
+        payout = hub3.payout_ledger_directory.status()
+        assert not [h for h in payout["holds"] if h.get("request_id") == "req_insufficient_funds"]
+        assert not [c for c in payout["charges"] if c.get("request_id") == "req_insufficient_funds"]
     finally:
         try:
             _ws_send_json(sock, {"type": "worker.close"})
@@ -1127,7 +1183,10 @@ def test_payout_claim_settlement_and_bridge_boundaries_are_worker_scoped() -> No
     status = ledger.status()
     assert status["ledger_version"] == "stable-hub-exp-compatible-credit-ledger-v1"
     assert status["exp_compatible_golden_path"] is True
-    assert any(tx["transaction_type"] == "hold_created" for tx in status["transactions"])
+    # Stable Hub records reservations in its durable holds table and payout
+    # event log, not as a `hold_created` payout transaction.
+    assert len([h for h in status["holds"] if h["hold_id"] == hold["hold_id"]]) == 1
+    assert any(e.get("type") == "stable.work.payout.held" or e.get("event_type") == "stable.work.payout.held" for e in status["events"])
     assert any(tx["transaction_type"] == "request_charged" for tx in status["transactions"])
     assert any(tx["transaction_type"] == "worker_claimed" for tx in status["transactions"])
     assert any(tx["transaction_type"] == "batch_settled" for tx in status["transactions"])
@@ -1138,8 +1197,8 @@ def test_payout_claim_settlement_and_bridge_boundaries_are_worker_scoped() -> No
     assert claim["claimed_credit_wei"] == hold["credit_wei"]
     assert settled["total_credit_wei_published"] == hold["credit_wei"]
     assert recovered["credit_wei"] == hold["credit_wei"]
-    assert any(event["event_type"] == "hub.hold.created" for event in status["bridge_audit"])
-    assert any(event["event_type"] == "hub.hold.charged" for event in status["bridge_audit"])
+    assert any(event.get("type") == "stable.work.payout.held" or event.get("event_type") == "stable.work.payout.held" for event in status["events"])
+    assert any(event["event_type"] == "hub.request.charged" for event in status["bridge_audit"])
     assert any(event["event_type"] == "hub.worker.earning.recorded" for event in status["bridge_audit"])
 
 
@@ -1232,6 +1291,163 @@ def test_closing_socket_after_success_does_not_refund_charged_work(tmp_path: Pat
         assert account_balance["spent_credit_wei"] == str(1024 * 10**15)
         assert len(hub.payout_ledger_directory.store.load().get("payout_charges", {})) == 1
     finally:
+        sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
+
+
+def test_authenticated_second_socket_cannot_complete_first_workers_session(tmp_path: Path) -> None:
+    """A forged terminal label cannot move an accepted session to another socket."""
+    hub, thread, url, first_socket, first_auth, requester = _new_local_hub_with_worker(
+        tmp_path, test_name="second-socket-terminal", worker_id="display-worker-one",
+        worker_price="0.01",
+    )
+    second_socket = None
+    try:
+        second_msk = _issue_msk(
+            url, private_key=WORKER_PRIVATE_KEY, user_slug=WORKER_USER_SLUG,
+            request_id="second-socket-terminal-key",
+        )
+        second_socket, second_auth = _connect_live_worker(
+            hub_port=int(url.rsplit(':', 1)[1]),
+            worker_msk_id=second_msk["key"]["id"],
+            worker_id="display-worker-two", price="0.05",
+        )
+        assert second_auth["connection_id"] != first_auth["connection_id"]
+        request_thread, reply = _submit_work_async(
+            hub_url=url, requester_msk_id=requester["key"]["id"],
+            request_id="req_cross_socket_terminal",
+        )
+        offer = _accept_current_offer(first_socket, worker_id="display-worker-one")
+        response = reply.get(timeout=3)
+        assert not isinstance(response, BaseException), response
+        assert response[0] == 200, response
+        request_thread.join(timeout=2)
+        assert offer["worker_id"] == first_auth["connection_id"]
+
+        _ws_send_json(second_socket, {
+            "type": "worker.work.result", "worker_id": first_auth["connection_id"],
+            "session_id": offer["session_id"], "run_id": offer["run_id"],
+            "request_id": offer["request_id"], "result": {"value": "forged"},
+        })
+        rejected = _ws_recv_json(second_socket)
+        assert rejected["type"] == "hub.error"
+        assert rejected["error"] == "execution_not_authorized"
+        assert hub.accepted_work_session_directory.get_session(offer["session_id"])["status"] == "accepted"
+        assert not hub.payout_ledger_directory.status()["charges"]
+
+        _finish_offer_with_result(first_socket, offer, worker_id="display-worker-one")
+        payout = hub.payout_ledger_directory.status()
+        assert len(payout["charges"]) == 1
+        assert len(payout["worker_earnings"]) == 1
+        assert payout["charges"][0]["session_id"] == offer["session_id"]
+    finally:
+        for sock in (second_socket, first_socket):
+            if sock is not None:
+                try:
+                    _ws_send_json(sock, {"type": "worker.close"})
+                except OSError:
+                    pass
+                sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
+
+
+def test_premature_terminal_before_worker_acceptance_is_rejected_without_charge(tmp_path: Path) -> None:
+    """The prepare frame is not authorization and cannot earn a payment."""
+    hub, thread, url, sock, _, requester = _new_local_hub_with_worker(
+        tmp_path, test_name="premature-terminal", worker_id="untrusted-early-worker",
+    )
+    try:
+        request_thread, replies = _submit_work_async(
+            hub_url=url, requester_msk_id=requester["key"]["id"],
+            request_id="req_premature_terminal",
+        )
+        offer = _ws_recv_json(sock)
+        assert offer["type"] == "hub.work.offer"
+        assert offer["execution_authorization_required"] is True
+        assert "input" not in offer["work"]
+        _ws_send_json(sock, {
+            "type": "worker.work.result", "session_id": offer["session_id"],
+            "request_id": offer["request_id"], "run_id": offer["run_id"],
+            "result": {"value": "unfunded"},
+        })
+        premature = _ws_recv_json(sock)
+        assert premature["type"] == "hub.error"
+        assert "accepted work session does not exist" in premature["error"]
+        assert not hub.payout_ledger_directory.status()["charges"]
+        _ws_send_json(sock, {
+            "type": "worker.work.accepted", "session_id": offer["session_id"],
+            "request_id": offer["request_id"], "run_id": offer["run_id"],
+        })
+        authorization = _ws_recv_json(sock)
+        assert authorization["type"] == "hub.work.authorized"
+        assert authorization["session_id"] == offer["session_id"]
+        assert authorization["work"]["input"] == {"kind": "echo", "value": "hardening"}
+        completed = replies.get(timeout=3)
+        assert not isinstance(completed, BaseException), completed
+        assert completed[0] == 200
+        _ws_send_json(sock, {
+            "type": "worker.work.result", "session_id": offer["session_id"],
+            "request_id": offer["request_id"], "run_id": offer["run_id"],
+            "result": {"value": "funded"},
+        })
+        terminal = _ws_recv_json(sock)
+        assert terminal["type"] == "hub.work.result.accepted"
+        assert len(hub.payout_ledger_directory.status()["charges"]) == 1
+        request_thread.join(timeout=2)
+    finally:
+        try:
+            _ws_send_json(sock, {"type": "worker.close"})
+        except OSError:
+            pass
+        sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)
+
+
+def test_durable_session_write_failure_does_not_authorize_or_strand_local_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-FDB development stores release the prepared hold on record failure."""
+    hub, thread, url, sock, _, requester = _new_local_hub_with_worker(
+        tmp_path, test_name="authorization-commit-failure", worker_id="worker-commit-failure",
+    )
+    try:
+        def refuse_session(**_kwargs):
+            raise RuntimeError("injected session persistence failure")
+        monkeypatch.setattr(hub.accepted_work_session_directory, "record_accepted", refuse_session)
+        request_thread, replies = _submit_work_async(
+            hub_url=url, requester_msk_id=requester["key"]["id"],
+            request_id="req_auth_commit_failure",
+        )
+        offer = _ws_recv_json(sock)
+        assert offer["type"] == "hub.work.offer"
+        _ws_send_json(sock, {
+            "type": "worker.work.accepted", "session_id": offer["session_id"],
+            "request_id": offer["request_id"], "run_id": offer["run_id"],
+        })
+        response = replies.get(timeout=3)
+        assert not isinstance(response, BaseException), response
+        assert response[0] == 503
+        assert response[1]["error"] == "durable_session_commit_failed"
+        sock.settimeout(0.2)
+        with pytest.raises((socket.timeout, TimeoutError)):
+            _ws_recv_json(sock)
+        holds = [h for h in hub.payout_ledger_directory.status()["holds"]
+                 if h.get("request_id") == offer["request_id"]]
+        assert len(holds) == 1
+        assert holds[0]["status"] == "released"
+        assert not hub.payout_ledger_directory.status()["charges"]
+        request_thread.join(timeout=2)
+    finally:
+        try:
+            _ws_send_json(sock, {"type": "worker.close"})
+        except OSError:
+            pass
         sock.close()
         hub.shutdown()
         hub.server_close()

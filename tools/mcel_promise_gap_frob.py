@@ -442,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--candidate', action='append', default=[], metavar='TASK_ID=APPLICATION_JS')
     parser.add_argument('--browser-url', action='append', default=[], metavar='TASK_ID=LOCAL_URL')
     parser.add_argument('--no-browser', action='store_true', help='Skip Chromium; mark visual observations UNVERIFIED')
+    parser.add_argument('--task-manager-host-url',help='Opt-in actual hosted Task Manager read-only acceptance URL')
     parser.add_argument('--require-promise', action='store_true', help='Fail unless all full authoring principles are proved')
     args = parser.parse_args(argv)
     if args.focus == 'task-manager':
@@ -453,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         target = args.output or task_frob.OUTPUT
         report = task_frob.run(output=target, source=args.notebook_source or task_frob.NOTEBOOK,
                                fixture=args.notebook_fixture or task_frob.FIXTURE,
-                               browser=not args.no_browser)
+                               browser=not args.no_browser, host_url=args.task_manager_host_url)
         print('MCEL_PROMISE_GAP_FROB_' + report['status'])
         print('focus: existing-task-manager; file-manager-secondary-if-needed')
         print('host:', report['existingApplication']['status'],

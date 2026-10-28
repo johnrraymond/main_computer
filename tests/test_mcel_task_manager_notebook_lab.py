@@ -22,8 +22,10 @@ def test_host_wiring_opt_in_only_and_existing_operations_preserved():
     assert app.index('mcel-task-manager-notebook-bridge.js') < app.index('applications/scripts/task-manager.js')
     assert app.index('mcel-view-transition.js') < app.index('mcel-tab-workspace.js')
     assert 'McelTaskManagerNotebookLab.optInHost(taskManagerApp)' in entry
-    assert 'McelTaskManagerNotebookLab?.publish(taskManagerSnapshotCache, "available")' in refresh
-    assert 'McelTaskManagerNotebookLab?.publish(null, "failed")' in refresh
+    # Patch 10 records bridge delivery receipts and independently describes each stream.
+    assert 'labBridge.publish(taskManagerSnapshotCache,"available",undefined,{streams:labStreams})' in refresh
+    assert 'failedBridge.publish(null,"failed",undefined,{streams:' in refresh
+    assert 'taskManagerStatus.dataset.mcelLabRefusal' in refresh
     assert 'mcel_task_notebook' in bridge and '=== "lab"' in bridge
     assert 'fetch(' not in bridge and 'setInterval(' not in bridge and 'localStorage' not in bridge
     assert 'server_shutdown' in entry and 'runTaskAction(' in entry
