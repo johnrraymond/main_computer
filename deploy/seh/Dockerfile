@@ -1,6 +1,9 @@
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/opt/seh
 WORKDIR /opt/seh
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system seh && useradd --system --gid seh seh && \
     pip install --no-cache-dir 'cryptography>=42,<49' 'websockets>=13,<17'
 RUN mkdir -p main_computer/slh main_computer/seh && \
