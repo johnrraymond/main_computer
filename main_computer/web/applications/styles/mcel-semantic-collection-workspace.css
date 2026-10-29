@@ -23,3 +23,154 @@
   gap:4px 10px;margin:0;font-size:11px;max-height:230px;overflow:auto;}
 .mcel-semantic-collection__inspector dt {color:var(--mcel-muted,#aabbd3)}
 .mcel-semantic-collection__inspector dd {margin:0;min-width:0;overflow-wrap:anywhere;white-space:normal;}
+
+/* Patch 14.5: human-first presentation is activated only by the explicitly
+   opted-in universal semantic laboratory; existing collection hosts are inert. */
+.mcel-universal-composition--human-first {
+  font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+  color:var(--mcel-text,#eef2f8);
+  font-size:13px;
+}
+.mcel-universal-composition--human-first .mcel-universal-composition__region {
+  border:1px solid var(--mcel-line,#33465f);
+  border-radius:10px;
+  padding:10px;
+  background:var(--mcel-surface,#101822);
+  min-width:0;
+}
+.mcel-universal-composition--human-first .mcel-universal-composition__region > h3 {
+  font-size:13px;font-weight:650;letter-spacing:.012em;
+  line-height:1.5;margin:0 0 7px;
+}
+.mcel-universal-composition--human-first #semantic-observed-status p {
+  font-size:12px;line-height:1.65;
+  color:var(--mcel-muted,#aabbd3);margin:0;
+}
+.mcel-semantic-collection--human-first {padding:0;overflow:visible;}
+.mcel-semantic-collection--human-first mcel-collection {max-height:min(52vh,640px);}
+.mcel-semantic-collection--human-first mcel-row {
+  gap:9px;min-height:48px;padding:10px 8px;
+  transition:background-color .12s linear;
+}
+.mcel-semantic-collection--human-first mcel-row[aria-pressed="true"] {
+  background:rgba(130,182,243,.14);
+  box-shadow:inset 3px 0 0 var(--mcel-accent,#a5c8ff);
+}
+.mcel-semantic-collection--human-first .field-label {
+  color:var(--mcel-muted,#aabbd3);font-size:11px;letter-spacing:.01em;
+}
+.mcel-semantic-collection--human-first .field-value {
+  color:var(--mcel-text,#eef2f8);font-size:13px;line-height:1.4;
+}
+.mcel-semantic-collection--human-first mcel-field[data-canonical-identity="true"] .field-label,
+.mcel-semantic-collection--human-first mcel-field[data-canonical-identity="true"] .field-value {
+  font-size:10px;color:var(--mcel-muted,#aabbd3);opacity:.75;
+}
+.mcel-semantic-collection--human-first mcel-field[data-canonical-identity="true"] {
+  min-width:0;max-width:100%;
+}
+.mcel-semantic-collection--human-first .mcel-semantic-collection__inspector {
+  padding:8px 4px 0;
+}
+.mcel-semantic-collection--human-first .mcel-semantic-collection__inspector h3 {
+  font-size:15px;font-weight:650;line-height:1.45;
+  overflow-wrap:anywhere;
+}
+.mcel-semantic-collection--human-first .mcel-semantic-collection__readable-facts {
+  grid-template-columns:minmax(100px,170px) minmax(0,1fr);
+  font-size:12px;line-height:1.55;max-height:none;overflow:visible;
+  padding:3px 0 12px;
+}
+.mcel-semantic-collection--human-first details {
+  border-top:1px solid var(--mcel-line,#33465f);
+  margin-top:8px;padding-top:8px;
+}
+.mcel-semantic-collection--human-first summary {
+  cursor:pointer;color:var(--mcel-accent,#a5c8ff);
+  font-size:12px;font-weight:600;line-height:1.6;
+}
+.mcel-semantic-collection--human-first summary:focus-visible {
+  outline:2px solid var(--mcel-accent,#a5c8ff);
+  outline-offset:3px;
+}
+.mcel-semantic-collection--human-first .mcel-semantic-collection__exact-identity {
+  margin:10px 0;font-size:11px;
+}
+.mcel-semantic-collection--human-first .mcel-semantic-collection__exact-identity code {
+  white-space:pre-wrap;overflow-wrap:anywhere;
+}
+.mcel-semantic-collection--human-first .mcel-semantic-collection__raw-values {
+  grid-template-columns:minmax(96px,150px) minmax(0,1fr);
+  font-size:11px;max-height:280px;
+}
+.mcel-semantic-collection--human-first .mcel-semantic-collection__exact-semantics {
+  margin:12px 0 0;
+}
+@media(max-width:500px){
+  .mcel-universal-composition--human-first .mcel-universal-composition__region {padding:8px;}
+  .mcel-semantic-collection--human-first mcel-row {padding:9px 6px;}
+  .mcel-semantic-collection--human-first .mcel-semantic-collection__readable-facts {
+    grid-template-columns:minmax(92px,38%) minmax(0,1fr);
+  }
+}
+
+/* Patch 14.7: opt-in universal negotiated presentations; no production takeover. */
+.mcel-semantic-collection--negotiated .mcel-semantic-collection__inspector[hidden]{display:none!important}
+.mcel-semantic-collection--negotiated mcel-row[aria-expanded="true"]{background:rgba(130,182,243,.14);}
+.mcel-semantic-collection--negotiated .mcel-semantic-collection__inline-detail{
+  grid-column:1/-1;grid-row:auto;min-width:0;max-width:100%;padding:12px;
+  background:var(--mcel-surface,#101822);border:1px solid var(--mcel-line,#33465f);
+  border-radius:8px;overflow-wrap:anywhere;cursor:auto;
+}
+.mcel-negotiated-floating-card{position:fixed;z-index:2147483000;box-sizing:border-box;
+  background:var(--mcel-surface,#101822);color:var(--mcel-text,#eef2f8);
+  border:1px solid var(--mcel-accent,#a5c8ff);border-radius:9px;
+  box-shadow:0 10px 35px rgba(0,0,0,.45);padding:12px;max-height:85vh;overflow:auto;
+  font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;user-select:text;
+  transition:opacity .12s ease-out;
+}
+.mcel-negotiated-floating-card--fade{opacity:0;pointer-events:none;}
+.mcel-semantic-collection__detail-content{min-width:0;max-width:100%;user-select:text;}
+.mcel-semantic-collection__detail-content h3{font-size:15px;margin:0 0 8px;overflow-wrap:anywhere;}
+.mcel-semantic-collection__detail-content dl{display:grid;grid-template-columns:minmax(75px,38%) minmax(0,1fr);
+  gap:4px 9px;font-size:12px;min-width:0;max-height:none;overflow:visible;}
+.mcel-semantic-collection__detail-content dd{margin:0;min-width:0;overflow-wrap:anywhere;}
+.mcel-semantic-collection__detail-content dt{color:var(--mcel-muted,#aabbd3)}
+.mcel-semantic-collection__detail-content details{border-top:1px solid var(--mcel-line,#33465f);margin-top:8px;padding-top:8px;}
+.mcel-semantic-collection__detail-content summary{cursor:pointer;color:var(--mcel-accent,#a5c8ff)}
+.mcel-semantic-collection__detail-content .mcel-semantic-collection__raw-values{max-height:240px;overflow:auto;}
+.mcel-semantic-collection__copy-actions{display:flex;justify-content:flex-end;margin:8px 0;}
+.mcel-semantic-collection__copy{font-size:11px;padding:2px 6px;line-height:1.5;cursor:pointer;
+  color:var(--mcel-text,#eef2f8);background:transparent;border:1px solid var(--mcel-line,#33465f);border-radius:4px;margin-inline-start:5px;}
+.mcel-semantic-collection__copy:focus-visible{outline:2px solid var(--mcel-accent,#a5c8ff)}
+/* Canonical layout may put list rows into a flex column. Prevent flex-shrink
+   from reducing expanded content to a clipped 48px track under stress. */
+.mcel-semantic-collection--negotiated mcel-collection > mcel-row{flex:0 0 auto;}
+
+/* Selected-details is not a separate visual region in negotiated mode. */
+.mcel-universal-composition--negotiated #semantic-selected-details{display:none!important;}
+
+/* Patch 14.7.2: explicit disclosure when selected row text is retained.
+   Only the active native browser selection can authorize this transient state. */
+.mcel-semantic-collection--negotiated mcel-field[data-update-pending="true"] .field-value::after{
+  content:" (older selected value)";color:var(--mcel-muted,#aabbd3);
+  font-size:10px;white-space:normal;
+}
+.mcel-semantic-collection__selection-stale{
+  margin:6px 0 0;font-size:11px;color:var(--mcel-muted,#aabbd3);
+  line-height:1.4;
+}
+
+/* 14.7.3: retirement describes a presentation snapshot, never a live record. */
+.mcel-semantic-collection--negotiated mcel-row[data-mcel-source-status="retired"]{
+  opacity:.78;border-left:3px solid #d5a65d;
+  background:rgba(213,166,93,.07);
+}
+.mcel-semantic-collection--negotiated mcel-row[data-mcel-source-status="retired"]::before{
+  content:"No longer in current observation · retained snapshot";
+  display:block;grid-column:1/-1;color:#f0c98c;font-size:11px;
+  line-height:1.5;pointer-events:none;
+}
+.mcel-semantic-collection--negotiated mcel-row[data-mcel-retirement-state="protected"]::before{
+  content:"No longer in current observation · retained during interaction";
+}

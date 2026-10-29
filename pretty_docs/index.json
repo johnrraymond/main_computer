@@ -445,8 +445,20 @@
       "order": 91
     },
     {
+      "path": "slh-managed-worker-passthrough-phase2bc.md",
+      "title": "Secure Local Hub Managed Worker Passthrough (Phase 2B/2C)",
+      "kind": "markdown",
+      "order": 91
+    },
+    {
       "path": "game-ai-patch-10-b-pax-neutrality-under-fire.md",
       "title": "Game AI Patch 10B — Pax: Neutrality Under Fire",
+      "kind": "markdown",
+      "order": 92
+    },
+    {
+      "path": "slh-scheduler-policy-phase2d.md",
+      "title": "Secure Local Hub Scheduler — Phase 2D Allocation Policy",
       "kind": "markdown",
       "order": 92
     },
@@ -491,6 +503,90 @@
       "title": "Verge Cluster Scenario Dossiers",
       "kind": "markdown",
       "order": 99
+    },
+    {
+      "path": "mcel-patch9-semantic-architecture-plan.md",
+      "title": "MCEL Patch 9 — Semantic Architecture and Generality Gate",
+      "kind": "markdown",
+      "order": 100
+    },
+    {
+      "path": "mcel-patch9-user-design-requirements.md",
+      "title": "MCEL Patch 9 — User and Design Requirements",
+      "kind": "markdown",
+      "order": 101
+    },
+    {
+      "path": "mcel-patch9-implementation-review.md",
+      "title": "MCEL Patch 9 — Architecture Audit and Requirements Review",
+      "kind": "markdown",
+      "order": 102
+    },
+    {
+      "path": "mcel-patch10-information-integrity-live-lifecycle-plan.md",
+      "title": "MCEL Patch 10 — Information Fidelity and State-Preserving Live Lifecycle Plan",
+      "kind": "markdown",
+      "order": 103
+    },
+    {
+      "path": "mcel-patch10-user-design-requirements.md",
+      "title": "MCEL Patch 10 — User and Design Requirements",
+      "kind": "markdown",
+      "order": 104
+    },
+    {
+      "path": "mcel-patch10-implementation-review.md",
+      "title": "MCEL Patch 10 — Implementation and Requirements Review",
+      "kind": "markdown",
+      "order": 105
+    },
+    {
+      "path": "mcel-patch11-computer-semantic-knowledge-foundation.md",
+      "title": "MCEL Patch 11.0 — Computer Semantic Knowledge Database",
+      "kind": "markdown",
+      "order": 106
+    },
+    {
+      "path": "mcel-patch11-computer-semantic-knowledge-review.md",
+      "title": "MCEL Patch 11.0 — Semantic Knowledge Acceptance Review",
+      "kind": "markdown",
+      "order": 107
+    },
+    {
+      "path": "mcel-patch11-multi-app-semantic-acquisition.md",
+      "title": "MCEL Patch 11.1–11.4 — Multi-Application Semantic Knowledge Acquisition",
+      "kind": "markdown",
+      "order": 108
+    },
+    {
+      "path": "mcel-patch11-multi-app-semantic-acceptance.md",
+      "title": "MCEL Patch 11.1–11.4 — Acceptance and Evidence Ledger",
+      "kind": "markdown",
+      "order": 109
+    },
+    {
+      "path": "mcel-patch12-semantic-knowledge-unification.md",
+      "title": "MCEL Patch 12 — Semantic Knowledge Unification",
+      "kind": "markdown",
+      "order": 110
+    },
+    {
+      "path": "mcel-patch12-semantic-knowledge-acceptance.md",
+      "title": "MCEL Patch 12 — Acceptance and Evidence",
+      "kind": "markdown",
+      "order": 111
+    },
+    {
+      "path": "mcel-patch14-universal-composition-frob.md",
+      "title": "Patch 14.3 — Universal Semantic Layout Composition Frob",
+      "kind": "markdown",
+      "order": 148
+    },
+    {
+      "path": "slh-seh-integrated-hub-lab.md",
+      "title": "Secure Local Hub / Secure External Hub — Integrated Hub Lab",
+      "kind": "markdown",
+      "order": 370
     },
     {
       "path": "mother.md",
@@ -619,124 +715,58 @@
       "order": 920
     },
     {
-      "path": "mcel-patch9-semantic-architecture-plan.md",
-      "title": "MCEL Patch 9 — Semantic Architecture and Generality Gate",
+      "path": "secure-local-hub-administrator-manual.md",
+      "title": "Secure Local Hub — Administrator and Operator Manual",
       "kind": "markdown",
-      "order": 100
+      "order": 921
     },
     {
-      "path": "mcel-patch9-user-design-requirements.md",
-      "title": "MCEL Patch 9 — User and Design Requirements",
+      "path": "secure-worker-managed-mode-spec.md",
+      "title": "Secure Worker — Managed SLH Mode Change Specification",
       "kind": "markdown",
-      "order": 101
+      "order": 922
     },
     {
-      "path": "mcel-patch9-implementation-review.md",
-      "title": "MCEL Patch 9 — Architecture Audit and Requirements Review",
+      "path": "slh-identity-protocol-spec.md",
+      "title": "SLH Identity, Authentication and Routing Protocol Specification",
       "kind": "markdown",
-      "order": 102
+      "order": 923
     },
     {
-      "path": "mcel-patch10-information-integrity-live-lifecycle-plan.md",
-      "title": "MCEL Patch 10 — Information Fidelity and State-Preserving Live Lifecycle Plan",
+      "path": "seh-secure-external-hub-coolify-harness.md",
+      "title": "SEH — Secure External Hub Coolify Deployment and Harness",
       "kind": "markdown",
-      "order": 103
+      "order": 924
     },
     {
-      "path": "mcel-patch10-user-design-requirements.md",
-      "title": "MCEL Patch 10 — User and Design Requirements",
+      "path": "slh-seh-key-certificate-authenticator-architecture.md",
+      "title": "SLH/SEH — Key, Certificate and Authenticator Architecture",
       "kind": "markdown",
-      "order": 104
+      "order": 925
     },
     {
-      "path": "mcel-patch10-implementation-review.md",
-      "title": "MCEL Patch 10 — Implementation and Requirements Review",
+      "path": "slh-backend-seh-deployment-phase1.md",
+      "title": "SLH Backend and SEH Deployment — Phase 1 Control Plane",
       "kind": "markdown",
-      "order": 105
+      "order": 926
     },
     {
-      "path": "mcel-patch11-computer-semantic-knowledge-foundation.md",
-      "title": "MCEL Patch 11.0 — Computer Semantic Knowledge Database",
+      "path": "seh-harness-o-f-m.md",
+      "title": "SEH Harness — Operations × Functionality × Modules (User/Design)",
       "kind": "markdown",
-      "order": 106
+      "order": 927
     },
     {
-      "path": "mcel-patch11-computer-semantic-knowledge-review.md",
-      "title": "MCEL Patch 11.0 — Semantic Knowledge Acceptance Review",
+      "path": "seh-real-relay-deployment-and-acceptance.md",
+      "title": "Secure External Hub — Real Relay Deployment and Acceptance",
       "kind": "markdown",
-      "order": 107
+      "order": 1905
     },
     {
-      "path": "mcel-patch11-multi-app-semantic-acquisition.md",
-      "title": "MCEL Patch 11.1–11.4 — Multi-Application Semantic Knowledge Acquisition",
+      "path": "slh-seh-automatic-local-coolify.md",
+      "title": "SEH — Automatic Local Coolify Deployment",
       "kind": "markdown",
-      "order": 108
-    },
-    {
-      "path": "mcel-patch11-multi-app-semantic-acceptance.md",
-      "title": "MCEL Patch 11.1–11.4 — Acceptance and Evidence Ledger",
-      "kind": "markdown",
-      "order": 109
-    },
-    {
-      "path": "mcel-patch12-semantic-knowledge-unification.md",
-      "title": "MCEL Patch 12 — Semantic Knowledge Unification",
-      "kind": "markdown",
-      "order": 110
-    },
-    {
-      "path": "mcel-patch12-semantic-knowledge-acceptance.md",
-      "title": "MCEL Patch 12 — Acceptance and Evidence",
-      "kind": "markdown",
-      "order": 111
-    },
-    {
-      "path": "mcel-patch13-semantic-foundations-and-correctness.md",
-      "title": "MCEL Patch 13: Semantic Foundations and Correctness",
-      "kind": "markdown",
-      "order": 112
-    },
-    {
-      "path": "mcel-patch13-foundation-acceptance.md",
-      "title": "MCEL Patch 13: Foundation Acceptance Ledger",
-      "kind": "markdown",
-      "order": 113
-    },
-    {
-      "path": "mcel-patch13-live-semantic-adoption.md",
-      "title": "MCEL Patch 13 — Stage 3 Live Semantic Adoption",
-      "kind": "markdown",
-      "order": 114
-    },
-    {
-      "path": "mcel-patch13-live-adoption-acceptance.md",
-      "title": "MCEL Patch 13 — Stage 3 Acceptance Ledger",
-      "kind": "markdown",
-      "order": 115
-    },
-    {
-      "path": "mcel-patch13-continuity-certification.md",
-      "title": "MCEL Patch 13 — Stage 4 Source-Evidenced Continuity",
-      "kind": "markdown",
-      "order": 116
-    },
-    {
-      "path": "mcel-patch13-continuity-acceptance.md",
-      "title": "MCEL Patch 13 — Stage 4 Continuity Acceptance Ledger",
-      "kind": "markdown",
-      "order": 117
-    },
-    {
-      "path": "mcel-patch13-hosted-source-reliability.md",
-      "title": "MCEL Patch 13 Stage 4 — Hosted Process Source Reliability Repair",
-      "kind": "markdown",
-      "order": 118
-    },
-    {
-      "path": "mcel-patch13-presentation-authoring-completion.md",
-      "title": "MCEL Patch 13 — Presentation Compatibility and Authoring Economy",
-      "kind": "markdown",
-      "order": 119
+      "order": 371
     }
   ]
 }

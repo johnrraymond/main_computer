@@ -705,7 +705,11 @@
   }
   function canonicalTreeEvidence(entries, choices) {
     const failures = [], records=[];
-    let emptyCells=0, gridRows=0;
+    let emptyCells=0, gridRows=0, minControlSlack=null;
+    const trackControlSlack=(width,minimum)=>{
+      const slack=width-minimum;
+      if(Number.isFinite(slack))minControlSlack=minControlSlack===null?slack:Math.min(minControlSlack,slack);
+    };
     entries.forEach((entry,index) => {
       const {el,def}=entry, choice=choices[index];
       const style=el.ownerDocument.defaultView.getComputedStyle(el);
@@ -747,8 +751,16 @@
       // excellent keypad layout is still invalid if the adjacent toolbar
       // becomes unreadable or unusable.
       if (def.role === "region" && def.verifyControls !== false) for (const button of el.querySelectorAll('button, [role="button"]')) {
+        // A verified, negotiated collection has its own registered presentation
+        // authority. Its dynamic slot must not be reinterpreted as an ordinary
+        // region-level control (including a row whose accessible name now
+        // contains the disclosed record). Non-negotiated controls still gate.
+        const negotiated=!!el.closest('.mcel-universal-composition--negotiated');
+        if (negotiated && button.closest('mcel-row[data-mcel-element-id="element.core.collection-row"]')?.
+            querySelector(':scope > [data-mcel-presentation-slot="inline-detail"]'))continue;
         if (!treeElementVisible(button)) continue;
         const r=button.getBoundingClientRect();
+        trackControlSlack(r.width,def.minTargetWidth ?? 40);
         if (r.width + .5 < (def.minTargetWidth ?? 40))
           failures.push({id:def.id,code:"sibling-undersized-target",label:button.textContent.trim(),width:r.width});
         if (button.scrollWidth > button.clientWidth + 1)
@@ -762,6 +774,7 @@
       if (def.role === "control-grid") for (const button of children) {
         if (!treeElementVisible(button)) continue;
         const r=button.getBoundingClientRect();
+        trackControlSlack(r.width,def.minTargetWidth ?? 40);
         if (r.width + .5 < (def.minTargetWidth ?? 40)) failures.push({id:def.id,code:"undersized-target",label:button.textContent.trim(),width:r.width});
         if (button.scrollWidth > button.clientWidth + 1) failures.push({id:def.id,code:"control-content-overflow",label:button.textContent.trim()});
         if (def.atomicText !== false && atomicFitRequired(button)) {
@@ -774,7 +787,7 @@
         computedColumns:style.gridTemplateColumns});
     });
     return {failures,records,quality:{height:entries[0].el.getBoundingClientRect().height,
-      emptyCells,gridRows}};
+      emptyCells,gridRows,minControlSlackPx:minControlSlack}};
   }
   function prepareCanonicalTreePreview(host, tree) {
     if (!host.parentElement) fail("layout host must be attached");
@@ -861,6 +874,27 @@
     try {return measureCanonicalTreePreview(context,choices);}
     finally {context.preview.remove();}
   }
+  // Patch 14.0: decisions are discrete; measurements never participate in
+  // their identity. This projection is observational and does not replace
+  // incumbent layout selection or the canonical tree schema.
+  function separateCanonicalTreeLayout(tree, selected) {
+    if (!selected) return null;
+    const regions=[];
+    function walk(node, index) {
+      const choice=selected.choices[index.value++];
+      regions.push({id:node.id,role:node.role,columns:choice.columns,
+        template:choice.template,gap:choice.gap,areas:choice.areas||null});
+      for (const child of node.children||[]) walk(child,index);
+    }
+    walk(tree.root,{value:0});
+    return {
+      decision:{schema:"mcel.layout-decision.v1",name:"mcel.layout.tree/"+encodeURIComponent(tree.root.id),
+        family:"canonical-tree",mode:"declared",fields:[],regions,ordering:"explicit",configuration:null},
+      metrics:{schema:"mcel.layout-measurements.v1",quality:{...selected.evidence.quality},
+        failures:selected.evidence.failures.map(x=>({...x})),
+        records:selected.evidence.records.map(x=>({...x}))}
+    };
+  }
   function evaluateCanonicalLayoutTree(host, source, options={}) {
     const tree=canonicalLayoutTree(source);
     const entries=resolveLayoutNodes(host,tree);
@@ -890,15 +924,33 @@
         }
       }
       search([],0);
+      // A bounded search must never drop the incumbent by truncation. The
+      // previous state can only nominate a choice from the CURRENT tree's
+      // allowed options, and it receives the same independent browser gates.
+      if (options.continuity === "lab" && options.incumbentChoices !== undefined) {
+        const prior=options.incumbentChoices;
+        const equalChoice=(a,b)=>global.McelLayoutContinuity.canonical(a)===
+          global.McelLayoutContinuity.canonical(b);
+        if (!Array.isArray(prior) || prior.length!==optionsByEntry.length ||
+            prior.some((choice,i)=>!optionsByEntry[i].some(allowed=>equalChoice(choice,allowed))))
+          fail("committed tree choices do not match current canonical options");
+        if (!candidates.some(candidate=>equalChoice(candidate.choices,prior))) {
+          const evidence=measureCanonicalTreePreview(context,prior);
+          candidates.push({choices:prior.map(choice=>({...choice})),
+            accepted:!evidence.failures.length,evidence,incumbentMeasured:true});
+        }
+      }
     } finally { context.preview.remove(); }
     const acceptable=candidates.filter(candidate=>candidate.accepted);
     acceptable.sort((a,b)=>a.evidence.quality.height-b.evidence.quality.height ||
       a.evidence.quality.emptyCells-b.evidence.quality.emptyCells ||
       a.evidence.quality.gridRows-b.evidence.quality.gridRows ||
-      JSON.stringify(a.choices).localeCompare(JSON.stringify(b.choices)));
+      (JSON.stringify(a.choices)<JSON.stringify(b.choices)?-1:(JSON.stringify(a.choices)>JSON.stringify(b.choices)?1:0)));
     const selected=acceptable[0] || null;
+    const separated=separateCanonicalTreeLayout(tree,selected);
     return {schema:TREE_EVIDENCE,status:selected?"candidate-verified":"unsatisfied",
-      tree, candidates,selected,searchTruncated:totalCombinations>maxCandidates,
+      tree, candidates,selected,decision:separated?.decision||null,
+      metrics:separated?.metrics||null,searchTruncated:totalCombinations>maxCandidates,
       authoredCss, generatedCss:selected?entries.filter(entry=>entry.def.role!=="region").map(entry=>({
         id:entry.def.id,selector:entry.def.selector,
         gridTemplateColumns:selected.choices[entries.indexOf(entry)].template,
@@ -979,25 +1031,74 @@
   function mountCanonicalLayoutTree(host, normalizedIr, options={}) {
     if (!host || treeObservers.has(host)) fail("canonical layout host is already mounted");
     const tree=canonicalLayoutTree(normalizedIr);
+    const active=options.continuity === "lab";
+    if (active && !global.McelLayoutContinuity?.planTree)
+      fail("explicit tree continuity lab requires mcel-layout-continuity.js");
+    if (options.continuity !== undefined && options.continuity !== "off" && !active)
+      fail("unknown canonical-tree continuity policy");
+    const continuity=active?global.McelLayoutContinuity:null;
+    let committed=active && options.previousState ? JSON.parse(JSON.stringify(options.previousState)) : null;
+    if(active && committed && (committed.schema!==continuity.TREE_STATE_SCHEMA ||
+        committed.policy!==continuity.TREE_POLICY))fail("incompatible restored canonical-tree state");
+    let last=null,closed=false,pending=false;
     const run=()=>{
-      const evaluation=evaluateCanonicalLayoutTree(host,tree,options);
-      return {...applyCanonicalLayoutTree(host,evaluation),evaluation};
+      let evaluation;
+      try {
+        const sameTree=committed && committed.signature===continuity.canonical(tree);
+        evaluation=evaluateCanonicalLayoutTree(host,tree,{...options,
+          incumbentChoices:active && sameTree?committed.choices:undefined});
+        let planned=null;
+        if(active) {
+          planned=continuity.planTree({tree,evaluation,previous:committed,policy:options.continuityPolicy||{}});
+          if(planned.status!=="selected")return last={status:"refused",reason:planned.record.reason,
+            continuity:planned.record,evaluation};
+          const selected=planned.candidate;
+          const separated=separateCanonicalTreeLayout(tree,selected);
+          evaluation={...evaluation,selected,decision:separated.decision,metrics:separated.metrics,
+            generatedCss:evaluation.generatedCss.map(entry=>{
+              const region=separated.decision.regions.find(region=>region.id===entry.id);
+              return {...entry,gridTemplateColumns:region.template,gapPx:region.gap};
+            })};
+        }
+        const applied=applyCanonicalLayoutTree(host,evaluation);
+        if(active && applied.status==="pass")committed=planned.state;
+        return last={...applied,evaluation,continuity:planned?.record||null};
+      } catch(error) {return last={status:"refused",reason:String(error),evaluation:evaluation||null};}
     };
     const initial=run();
-    if (initial.status !== "pass") return {status:"refused",reason:initial.reason || "unsatisfied",initial};
+    if(initial.status!=="pass")return {status:"refused",reason:initial.reason||"unsatisfied",initial};
     let lastWidth=host.getBoundingClientRect().width;
-    const observer=options.observeResize !== false && typeof ResizeObserver === "function" ? new ResizeObserver(() => {
-      const width=host.getBoundingClientRect().width;
-      if (Math.abs(width-lastWidth) < 1) return;
-      lastWidth=width;
-      try {run();} catch (_) { host.dataset.mcelCanonicalLayoutProof="fail"; }
-    }) : null;
-    observer?.observe(host);
-    treeObservers.set(host,{observer});
-    return {status:"pass",initial,observation:observer?"active":(options.observeResize === false ? "external" : "unavailable")};
+    const observers=[];
+    const schedule=()=>{
+      if(closed||pending)return;
+      pending=true;
+      const view=host.ownerDocument.defaultView;
+      const frame=view?.requestAnimationFrame || (fn=>fn());
+      frame.call(view,()=>{pending=false;if(!closed)run();});
+    };
+    if(options.observeResize!==false && typeof ResizeObserver==="function") {
+      const observer=new ResizeObserver(()=>{
+        const width=host.getBoundingClientRect().width;
+        if(Math.abs(width-lastWidth)<1)return;
+        lastWidth=width;
+        if(active)schedule();
+        else try{run();}catch(_){host.dataset.mcelCanonicalLayoutProof="fail";}
+      });observer.observe(host);observers.push(observer);
+    }
+    if(active && options.observeMutations!==false && typeof MutationObserver==="function") {
+      const observer=new MutationObserver(schedule);
+      observer.observe(host,{subtree:true,childList:true,characterData:true});
+      observers.push(observer);
+    }
+    treeObservers.set(host,{observers});
+    return {status:"pass",initial,observation:observers.length?"active":"external",
+      refresh:run,getLastDecision:()=>last?.continuity||null,
+      getCommittedState:()=>committed?JSON.parse(JSON.stringify(committed)):null,
+      unmount:()=>unmountCanonicalLayoutTree(host)};
   }
   function unmountCanonicalLayoutTree(host) {
-    treeObservers.get(host)?.observer?.disconnect();
+    const record=treeObservers.get(host);
+    if(record)for(const observer of record.observers||[])observer.disconnect();
     treeObservers.delete(host);
     clearCanonicalLayoutTree(host);
   }
@@ -1061,8 +1162,22 @@
           !knownIds.has(row.dataset.rowId)) fail("unregistered or unknown collection row");
       if (visibleIds.has(row.dataset.rowId)) fail("duplicate rendered row identity");
       visibleIds.add(row.dataset.rowId);
-      const fields=[...row.children];
-      if (fields.length!==columns.length || fields.some((field,i)=>
+      // Negotiated dynamic presentations are explicitly declared auxiliary slots,
+      // never semantic fields. Reject arbitrary children, duplicate slots and
+      // slots whose owning row identity does not match the source record.
+      const children=[...row.children];
+      const slots=children.filter(child=>child.dataset.mcelPresentationSlot!==undefined);
+      const slotsAuthorized=host.classList.contains('mcel-semantic-collection--negotiated') &&
+        slots.length<=1 && slots.every(slot=>slot.localName==='section' &&
+          slot.classList.contains('mcel-semantic-collection__inline-detail') &&
+          slot.dataset.mcelPresentationSlot==='inline-detail' &&
+          slot.dataset.sourceRowId===row.dataset.rowId &&
+          slot.dataset.presentation==='inline-expand' &&
+          !!slot.querySelector(':scope > .mcel-semantic-collection__detail-content'));
+      if(slots.length && !slotsAuthorized)fail('unauthorized collection presentation slot');
+      const fields=children.filter(child=>!slots.includes(child));
+      if (fields.length!==columns.length || children.length!==fields.length+slots.length ||
+          fields.some((field,i)=>
           field.localName!=="mcel-field" || field.dataset.mcelElementId!=="element.core.field" ||
           field.dataset.semanticField!==keys[i] || field.dataset.sourceRowId!==row.dataset.rowId ||
           !field.querySelector(".field-value") || !field.querySelector(".field-label")))
@@ -1074,14 +1189,68 @@
         const missing=!Object.prototype.hasOwnProperty.call(original,key);
         const empty=!missing && original[key]==="";
         const expected=missing?"Not provided":empty?"Empty":String(projected?.display);
+        const display=field.querySelector(".field-value");
+        const current=display?.textContent;
+        // A negotiated row may temporarily retain precisely the text the user
+        // is selecting. The live canonical value remains in the projection and
+        // the pending target is verified; selection MUST overlap the retained
+        // text and the retained DOM must match the recorded previous value.
+        // No bare flag can authorize showing arbitrary stale semantic values.
+        let selectedRetention=false;
+        if (current!==expected && host.classList.contains('mcel-semantic-collection--negotiated') &&
+            field.dataset.updatePending==='true' && display?.dataset.updatePending==='true' &&
+            display.dataset.retainedText===current && display.dataset.pendingCurrent===expected){
+          const selection=host.ownerDocument.getSelection?.();
+          if(selection && !selection.isCollapsed && display.isConnected){
+            for(let n=0;n<selection.rangeCount;n++){
+              try{if(selection.getRangeAt(n).intersectsNode(display))selectedRetention=true;}
+              catch(_ignored){}
+            }
+          }
+        }
         if (!projected || field.dataset.full!==String(missing?"":original[key]) ||
             field.dataset.sourceMissing!==String(missing) ||
             field.dataset.sourceEmpty!==String(empty) ||
-            field.querySelector(".field-value").textContent!==expected)
+            (current!==expected && !selectedRetention))
           fail("rendered collection does not preserve semantic source");
       }
     }
     return {columns,keys,link,collection,rows};
+  }
+  // Stable decisions and volatile geometry are exposed separately. Field
+  // source keys are explicitly marked nonportable until a canonical semantic
+  // property reference is registered; they are never silently promoted to
+  // persistent semantic identities. Existing consumers continue using plan.
+  function separateSemanticCollectionLayout(evaluation,contract) {
+    if (evaluation?.status!=="candidate-verified" || !evaluation.plan) return null;
+    const plan=evaluation.plan;
+    const fields=(contract.field_contracts||[]).map(field=>({
+      // Never add source names to a portable decision. Unresolved bindings
+      // remain explicitly source-scoped and cannot support saved profiles.
+      property:field.semanticPropertyId||field.conceptRef||("source:"+field.key),
+      scope:field.semanticPropertyId||field.conceptRef?"semantic":"source-local",
+      occurrence:field.occurrence||"default",
+      visible:!plan.visible_keys||plan.visible_keys.includes(field.key),
+      disclosed:!!plan.disclosed_keys?.includes(field.key)
+    }));
+    const semanticNamed=fields.every(field=>field.scope==="semantic");
+    const name=typeof contract.layout_link?.semantic_layout_id==="string" &&
+      contract.layout_link.semantic_layout_id.trim() ? contract.layout_link.semantic_layout_id : null;
+    const decision={schema:"mcel.layout-decision.v1",name,
+      family:"semantic-collection",mode:plan.mode,fields,regions:[],
+      ordering:"source",configuration:null,portable:!!name && semanticNamed};
+    const metrics={schema:"mcel.layout-measurements.v1",
+      host_width_px:evaluation.host_width_px,available_px:plan.available_px,
+      intrinsic_px:plan.intrinsic_px,deficit_px:plan.deficit_px,
+      unresolved_deficit_px:plan.unresolved_deficit_px||0,
+      allocated_px:{...plan.allocated_px},content_minimum_px:{...plan.content_minimum_px},
+      sourceBindings:(contract.field_contracts||[]).map(field=>({property:field.semanticPropertyId||field.conceptRef||null,sourceKey:field.key})),
+      recovered_room_available_px:plan.recovered_room_available_px};
+    return {decision,metrics};
+  }
+  function finishCollectionEvidence(evidence,contract) {
+    const separated=separateSemanticCollectionLayout(evidence,contract);
+    return separated ? {...evidence,...separated} : evidence;
   }
   // Evaluation is strictly read-only. Browser font measurement uses actual
   // rendered content. Every registered field participates in intrinsic sizing.
@@ -1140,7 +1309,7 @@
             Math.floor(spare*(c.tier==="primary"?2:1)/weight);
           allocated[c.key]=base[c.key]+gain;distributed+=gain;
         });
-        return {schema:COLLECTION_EVIDENCE_SCHEMA,status:"candidate-verified",
+        return finishCollectionEvidence({schema:COLLECTION_EVIDENCE_SCHEMA,status:"candidate-verified",
           host_width_px:host.clientWidth,sourceMutationAuthorized:false,
           contract_authority:"declared semantic tiers and registered MCEL components",
           plan:{mode:stacked?"stacked":"table",available_px:available,
@@ -1148,7 +1317,7 @@
             unresolved_deficit_px:stacked?0:Math.max(0,selectedWidth-available),
             allocated_px:allocated,content_minimum_px:base,visible_keys:visible,
             disclosed_keys:columns.filter(c=>!visible.includes(c.key)).map(c=>c.key),
-            recovered_room_available_px:spare,required_keys:link.required_keys.slice()}};
+            recovered_room_available_px:spare,required_keys:link.required_keys.slice()}},contract);
       }
       const stacked=host.clientWidth<link.compact_breakpoint_px;
       const extra=stacked?0:Math.max(0,available-intrinsic);
@@ -1161,19 +1330,22 @@
         distributed+=growth;
         allocated[column.key]=base[column.key]+growth;
       });
-      return {schema:COLLECTION_EVIDENCE_SCHEMA,status:"candidate-verified",
+      return finishCollectionEvidence({schema:COLLECTION_EVIDENCE_SCHEMA,status:"candidate-verified",
         host_width_px:host.clientWidth,sourceMutationAuthorized:false,
         contract_authority:"semantic field requirements and registered MCEL components",
         plan:{mode:stacked?"stacked":"table",available_px:available,
           intrinsic_px:intrinsic,deficit_px:Math.max(0,intrinsic-available),
           allocated_px:allocated,content_minimum_px:base,
-          recovered_room_available_px:extra,required_keys:link.required_keys.slice()}};
+          recovered_room_available_px:extra,required_keys:link.required_keys.slice()}},contract);
     } catch (error) {
       return {schema:COLLECTION_EVIDENCE_SCHEMA,status:"refused",reason:String(error),
         sourceMutationAuthorized:false};
     }
   }
-  function applySemanticCollectionLayout(host,contract,registry,evaluation) {
+  function linkIsMissingRequired(required, visible) {
+    return !Array.isArray(required) || required.some(k=>!visible.includes(k));
+  }
+  function applySemanticCollectionLayout(host,contract,registry,evaluation, committedPlan = null) {
     if (!evaluation || evaluation.schema!==COLLECTION_EVIDENCE_SCHEMA ||
         evaluation.status!=="candidate-verified") return {status:"refused",reason:"no verified collection candidate"};
     const current=evaluateSemanticCollectionLayout(host,contract,registry);
@@ -1182,6 +1354,22 @@
         JSON.stringify(current.plan)!==JSON.stringify(evaluation.plan))
       return {status:"refused",reason:"stale semantic collection candidate"};
     const {rows,columns}=resolveSemanticCollection(host,contract,registry);
+    const plan=committedPlan || current.plan;
+    if (committedPlan) {
+      const keys=new Set(columns.map(c=>c.key));
+      if (!Array.isArray(plan.visible_keys) || plan.visible_keys.some(k=>!keys.has(k)) ||
+          linkIsMissingRequired(contract.layout_link.required_keys,plan.visible_keys) ||
+          !["table","stacked"].includes(plan.mode))
+        return {status:"refused",reason:"unsafe committed collection decision"};
+      if (plan.mode==="table") {
+        const used=plan.visible_keys.reduce((n,k)=>n+plan.allocated_px[k],0)+
+          7*Math.max(0,plan.visible_keys.length-1);
+        if (!Number.isFinite(used) || used>current.plan.available_px+0.02 ||
+            plan.visible_keys.some(k=>!Number.isFinite(plan.allocated_px[k]) ||
+              plan.allocated_px[k]<contract.layout_link.min_visible_cell_px-0.02))
+          return {status:"refused",reason:"committed tracks violate viewport constraints"};
+      }
+    }
     if (!collectionLayouts.has(host)) collectionLayouts.set(host,{
       initialMode:host.getAttribute("data-layout-mode"),
       initialAuthority:host.getAttribute("data-mcel-collection-layout-authority"),
@@ -1190,20 +1378,22 @@
     for (const row of rows) {
       if (!state.rowStyles.has(row)) state.rowStyles.set(row,row.getAttribute("style"));
     }
-    host.dataset.layoutMode=current.plan.mode;
-    host.dataset.mcelCollectionLayoutAuthority="mcel-semantic-layout-inference.v1";
-    const visible=current.plan.visible_keys;
-    const tracks=current.plan.mode==="stacked"?"minmax(0,1fr)":
+    host.dataset.layoutMode=plan.mode;
+    host.dataset.mcelCollectionLayoutAuthority=committedPlan ?
+      "mcel-semantic-layout-continuity.lab.v1" : "mcel-semantic-layout-inference.v1";
+    const visible=plan.visible_keys;
+    const tracks=plan.mode==="stacked"?"minmax(0,1fr)":
       (visible?columns.filter(c=>visible.includes(c.key)):columns)
-        .map(c=>current.plan.allocated_px[c.key].toFixed(2)+"px").join(" ");
+        .map(c=>plan.allocated_px[c.key].toFixed(2)+"px").join(" ");
     for (const row of rows) {
       row.style.gridTemplateColumns=tracks;
       if (visible) for (const field of row.children) {
+        if (field.localName!=='mcel-field')continue; // independent presentation slot
         if (!state.fieldVisibility.has(field)) state.fieldVisibility.set(field,field.hidden);
         field.hidden=!visible.includes(field.dataset.semanticField);
       }
     }
-    return {status:"pass",plan:current.plan,authority:host.dataset.mcelCollectionLayoutAuthority,
+    return {status:"pass",plan,authority:host.dataset.mcelCollectionLayoutAuthority,
       sourceMutationAuthorized:false};
   }
   function clearSemanticCollectionLayout(host) {
@@ -1211,6 +1401,13 @@
     if (!state) return;
     for (const observer of state.observers) observer.disconnect();
     for (const [field,hidden] of state.fieldVisibility) field.hidden=hidden;
+    if (state.collectionOriginalStyle !== undefined) {
+      const collection=host.querySelector("mcel-collection");
+      if (collection) {
+        if (state.collectionOriginalStyle===null) collection.removeAttribute("style");
+        else collection.setAttribute("style",state.collectionOriginalStyle);
+      }
+    }
     for (const [row,style] of state.rowStyles) {
       if (style===null) row.removeAttribute("style");
       else row.setAttribute("style",style);
@@ -1226,21 +1423,67 @@
     }
     collectionLayouts.delete(host);
   }
-  function mountSemanticCollectionLayout(host,contract,registry,{observeResize=true}={}) {
+  function mountSemanticCollectionLayout(host,contract,registry,
+      {observeResize=true,continuity="off",previousState=null}={}) {
     if (collectionLayouts.has(host)) return {status:"refused",reason:"semantic collection already mounted"};
-    const evaluation=evaluateSemanticCollectionLayout(host,contract,registry);
-    const initial=applySemanticCollectionLayout(host,contract,registry,evaluation);
+    if (!["off","lab"].includes(continuity)) return {status:"refused",reason:"unknown continuity mode"};
+    const active=continuity==="lab";
+    const selector=active?global.McelLayoutContinuity:null;
+    if (active && (!selector || typeof selector.planCollection!=="function"))
+      return {status:"refused",reason:"opt-in continuity selector not loaded"};
+    let currentContract=contract;
+    let committed=previousState;
+    const evaluation=evaluateSemanticCollectionLayout(host,currentContract,registry);
+    const select=(ev)=>{
+      if (!active || ev.status!=="candidate-verified")return {plan:null,state:committed,record:null};
+      const rows=[...host.querySelectorAll("mcel-collection > mcel-row")];
+      return selector.planCollection({evaluation:ev,columns:currentContract.field_contracts,
+        link:currentContract.layout_link,previous:committed,
+        rowIds:rows.map(row=>row.dataset.rowId)});
+    };
+    let initialCommit;
+    try {initialCommit=select(evaluation);} catch(err) {
+      return {status:"refused",reason:"continuity planner: "+String(err),evaluation};
+    }
+    const initial=applySemanticCollectionLayout(host,currentContract,registry,evaluation,initialCommit.plan);
     if (initial.status!=="pass") return {...initial,evaluation};
     const state=collectionLayouts.get(host);
+    const stableRows=(commit)=>{
+      if (!active || !commit)return;
+      const collection=host.querySelector("mcel-collection");
+      if (state.collectionOriginalStyle===undefined)state.collectionOriginalStyle=collection.getAttribute("style");
+      collection.style.display="flex";
+      collection.style.flexDirection="column";
+      const order=new Map(commit.rowOrder.map((id,i)=>[id,i]));
+      for (const row of collection.children) {
+        if (!state.rowStyles.has(row))state.rowStyles.set(row,row.getAttribute("style"));
+        row.style.order=String(order.get(row.dataset.rowId)??order.size);
+      }
+    };
+    if (active) {committed=initialCommit.state;stableRows(committed);}
     let scheduled=false;
-    const reflow=()=>{
-      const latest=evaluateSemanticCollectionLayout(host,contract,registry);
-      const applied=applySemanticCollectionLayout(host,contract,registry,latest);
-      if (applied.status!=="pass") host.dataset.mcelCollectionLayoutAuthority="refused";
-      return applied;
+    const reflow=(nextContract=null)=>{
+      if (nextContract)currentContract=nextContract;
+      const latest=evaluateSemanticCollectionLayout(host,currentContract,registry);
+      let next;
+      try {next=select(latest);} catch(error) {
+        host.dataset.mcelCollectionContinuity="refused";
+        return {status:"refused",reason:String(error)};
+      }
+      const applied=applySemanticCollectionLayout(host,currentContract,registry,latest,next.plan);
+      if (applied.status!=="pass") {
+        host.dataset.mcelCollectionContinuity="refused";
+        return applied;
+      }
+      if (active) {
+        committed=next.state;
+        stableRows(committed);
+        host.dataset.mcelCollectionContinuity=next.record.action;
+      }
+      return {...applied,record:next.record};
     };
     const schedule=()=>{
-      if (scheduled) return;
+      if (scheduled)return;
       scheduled=true;
       host.ownerDocument.defaultView.requestAnimationFrame(()=>{scheduled=false;reflow();});
     };
@@ -1256,13 +1499,19 @@
       mutation.observe(host,{subtree:true,childList:true});state.observers.push(mutation);
     }
     return {status:"pass",initial,evaluation,refresh:reflow,
+      getCommittedState:()=>committed ? JSON.parse(JSON.stringify(committed)) : null,
+      commitSourceRowOrder:()=>{
+        if (!active)return {status:"unavailable"};
+        committed={...committed,rowOrder:[]};
+        return reflow();
+      },
       unmount:()=>clearSemanticCollectionLayout(host)};
   }
 
   global.McelSemanticLayoutInference = Object.freeze({SCHEMA, ADAPTIVE_SCHEMA, TREE_SCHEMA,
-    evaluateSemanticCollectionLayout, applySemanticCollectionLayout,
+    evaluateSemanticCollectionLayout, separateSemanticCollectionLayout, applySemanticCollectionLayout,
     mountSemanticCollectionLayout, clearSemanticCollectionLayout,
-    canonicalLayoutTree, evaluateCanonicalLayoutTree, applyCanonicalLayoutTree, clearCanonicalLayoutTree,
+    canonicalLayoutTree, evaluateCanonicalLayoutTree, separateCanonicalTreeLayout, applyCanonicalLayoutTree, clearCanonicalLayoutTree,
     mountCanonicalLayoutTree, unmountCanonicalLayoutTree,
     inferWorkspaceLayout, applyWorkspaceLayout, clearWorkspaceLayout,
     adaptiveContract, evaluateAdaptiveControlGrid, applyAdaptiveControlGrid,

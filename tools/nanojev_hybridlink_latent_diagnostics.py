@@ -234,6 +234,12 @@ def verify_paths(output,inputs):
 
 def run(args):
     import torch
+    if args.stage=='lm-packet':
+        from tools import nanojev_hybridlink_lm_packet_probe as lm_packet
+        return lm_packet.run(args)
+    if args.stage in ('readiness-preview','readiness'):
+        from tools import nanojev_hybridlink_readiness as readiness
+        return readiness.run(args)
     if args.stage=='preview':
         pmeta,_=parent.load_parent(args)
         s=parent.stage1()
@@ -339,13 +345,34 @@ def run(args):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--stage',choices=('preview','t00','all'),default='t00')
+    p.add_argument('--stage',choices=('preview','t00','all','readiness-preview','readiness','lm-packet'),default='t00')
     p.add_argument('--device',choices=('cpu','cuda'),default='cuda')
-    p.add_argument('--split',choices=('dev','ood','test'),default='dev')
+    p.add_argument('--split',choices=('train','dev','ood','test'),default='dev')
     p.add_argument('--stage1-checkpoint',required=True)
     p.add_argument('--text-checkpoint',required=True)
     p.add_argument('--detector-checkpoint')
     p.add_argument('--checkpoint')
+    p.add_argument('--radius',type=int,default=8,help='Target signed-zero residual radius for readiness')
+    p.add_argument('--generate-zero-line',action='store_true',
+                   help='Use exact deterministic full-chain diagnostic deck, every rung x signed result x operand band')
+    p.add_argument('--generated-per-cell',type=int,default=1,
+                   help='Distinct full-chain diagnostic cases per cell (1..8); NOT capped by --max-cases-per-rung')
+    p.add_argument('--operand-limit',type=int,default=1024,help='Hard maximum abs literal in every recorded reduction state')
+    p.add_argument('--max-rung',type=int,default=8,help='T00..T08 requested diagnostic coverage')
+    p.add_argument('--max-cases-per-rung',type=int,default=24,help='Readiness audit budget per rung')
+    p.add_argument('--min-per-cell',type=int,default=1,help='Required cases per signed-residual x magnitude cell')
+    p.add_argument('--min-gold-cosine',type=float,default=.60)
+    p.add_argument('--overrun-steps',type=int,default=1)
+    p.add_argument('--seed',type=int,default=42257)
+    p.add_argument('--cache-dir')
+    p.add_argument('--qwen-text-probe-per-rung',type=int,default=0,help='Optional slow autonomous raw-Qwen text reduction control; protocol-dependent')
+    p.add_argument('--qwen-text-max-new-tokens',type=int,default=48)
+    p.add_argument('--lm-packet-modes',default='qwen_free,qwen_prefilled,hybrid_free,hybrid_prefilled',
+                   help='Comma-separated LM-head controls: qwen_free,qwen_prefilled,hybrid_free,hybrid_prefilled')
+    p.add_argument('--lm-packet-max-new-tokens',type=int,default=24)
+    p.add_argument('--lm-packet-cases-per-rung',type=int,default=0,
+                   help='Optional cap per rung for a quick packet smoke test; 0 tests every selected case')
+    p.add_argument('--max-tokens',type=int,default=192)
     p.add_argument('--t00-cases',type=int,default=12)
     p.add_argument('--trace-cases',type=int,default=6)
     p.add_argument('--max-depth',type=int,default=12)
@@ -358,6 +385,8 @@ def main(argv=None):
     p.add_argument('--baseline');p.add_argument('--backbone');p.add_argument('--activation');p.add_argument('--format')
     p.add_argument('--allow-model-download',action='store_true')
     args=p.parse_args(argv)
+    if args.stage in ('readiness','readiness-preview','lm-packet') and args.answer_threshold is None:
+        args.answer_threshold=.9
     if args.answer_threshold is not None and not 0<args.answer_threshold<=1:
         p.error('DIAGNOSTIC_INVALID_ANSWER_THRESHOLD')
     if args.drift_threshold<0 or args.stall_patience<1:p.error('DIAGNOSTIC_INVALID_DRIFT_SETTING')

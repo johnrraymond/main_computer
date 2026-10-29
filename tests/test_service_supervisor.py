@@ -78,6 +78,8 @@ def test_supervisor_starts_app_executor_applications_and_blockchain_with_python_
     assert state["children"]["executor"]["state"] == "running"
     assert state["children"]["applications"]["state"] == "running"
     assert state["children"]["blockchain"]["state"] == "running"
+    assert state["children"]["slh"]["state"] == "running"
+    assert [sys.executable, "-m", "main_computer.slh.gateway_service", "--root", str(repo.resolve()), "run"] in commands
     assert state["children"]["executor"]["stdout"].endswith(".stdout.log")
     assert load_service_supervisor_state(repo)["ok"] is True
 
@@ -110,6 +112,7 @@ def test_supervisor_restarts_child_process_when_it_exits(tmp_path: Path) -> None
     assert starts_by_module["main_computer.executor_service"] == 2
     assert starts_by_module["main_computer.applications_service"] == 1
     assert starts_by_module["main_computer.blockchain_service"] == 1
+    assert starts_by_module["main_computer.slh.gateway_service"] == 1
     assert state["children"]["executor"]["restart_count"] == 1
     assert state["children"]["executor"]["last_exit_code"] == 7
     assert state["children"]["executor"]["state"] == "running"
@@ -332,22 +335,25 @@ def test_start_and_stop_bat_use_source_tree_start_stop_session() -> None:
     root = Path(__file__).resolve().parents[1]
     start = (root / "start.bat").read_text(encoding="utf-8")
     stop = (root / "stop.bat").read_text(encoding="utf-8")
+    start_v2 = (root / "start_v2.bat").read_text(encoding="utf-8")
+    stop_v2 = (root / "stop_v2.bat").read_text(encoding="utf-8")
     helper = (root / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 
-    assert "run-main-computer.ps1" not in start
-    assert "main-computer-install.json" not in start
-    assert "scripts\\main-computer-start-stop.ps1" in start
-    assert "-Action start" in start
-    assert "main_computer.app_control" not in start
-    assert "status --summary --wait-s 30 --interval-s 2" in start
-    assert "Waiting briefly for startup status" in start
+    assert "start_v2.bat" in start
+    assert "stop_v2.bat" in stop
+    assert "run-main-computer.ps1" not in start_v2
+    assert "main-computer-install.json" not in start_v2
+    assert "scripts\\main-computer-start-stop.ps1" in start_v2
+    assert "-Action start" in start_v2
+    assert "main_computer.app_control" not in start_v2
+    assert "Waiting briefly for startup status" in start_v2
 
-    assert "scripts\\main-computer-start-stop.ps1" in stop
-    assert "-Action stop" in stop
-    assert "runtime\\start_stop" in stop
+    assert "scripts\\main-computer-start-stop.ps1" in stop_v2
+    assert "-Action stop" in stop_v2
+    assert "runtime\\start_stop" in stop_v2
 
     assert "start-session.json" in helper
-    assert "source-tree-supervisor" in helper
+    assert "source-tree" in helper
     assert "main_computer.app_control" in helper
     assert ".main_computer_service_supervisor.pid" in helper
     assert "runtime\\service_supervisor\\state.json" in helper
@@ -618,7 +624,8 @@ def test_supervisor_control_queue_can_shutdown_all_children_without_restart(tmp_
     assert starts_by_module["main_computer.executor_service"] == 1
     assert starts_by_module["main_computer.applications_service"] == 1
     assert starts_by_module["main_computer.blockchain_service"] == 1
-    assert len(terminated) == 5
+    assert starts_by_module["main_computer.slh.gateway_service"] == 1
+    assert len(terminated) == 6
     assert terminated[-1] == pid_by_module["main_computer.main_log_service"]
     assert pending_control_requests(repo, channel="supervisor") == []
 
@@ -693,14 +700,17 @@ def test_supervisor_restart_all_restarts_main_log_last_down_first_up(tmp_path: P
         "main_computer.blockchain_service",
     ]
     assert started_modules[5:] == [
+        "main_computer.slh.gateway_service",
         "main_computer.main_log_service",
         "main_computer.app_control",
         "main_computer.executor_service",
         "main_computer.applications_service",
         "main_computer.blockchain_service",
+        "main_computer.slh.gateway_service",
     ]
     terminated_modules = [module_by_pid[pid] for pid in terminated]
     assert terminated_modules == [
+        "main_computer.slh.gateway_service",
         "main_computer.app_control",
         "main_computer.executor_service",
         "main_computer.applications_service",

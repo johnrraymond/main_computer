@@ -8232,3 +8232,118 @@ body.mcel-modal-open {
     margin-left: 0;
   }
 }
+
+/* Lifecycle Taguchi acid workspace: visible in MCEL Lab, independently bootstrapped. */
+#mcel-lifecycle-acid{margin:20px 0;padding:20px;border:1px solid var(--border-color,#64748b55);border-radius:14px;display:grid;gap:13px;min-width:0;max-width:100%;color:inherit}
+#mcel-lifecycle-acid h3{margin:0;font-size:1.2rem}
+#mcel-lifecycle-acid p{margin:0;line-height:1.5}
+.mcel-lifecycle-acid__toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.mcel-lifecycle-acid__toolbar label{display:flex;align-items:center;gap:6px;font-size:0.85rem}
+.mcel-lifecycle-acid__toolbar input{width:7rem}
+.mcel-lifecycle-acid__toolbar :is(select,input,button),.mcel-lifecycle-acid__factors select{background:var(--mcel-panel-bg,#121b2a);color:inherit;border:1px solid #94a3b877;border-radius:7px;padding:6px;max-width:100%}
+.mcel-lifecycle-acid__table-scroll{overflow:auto;max-height:390px;border:1px solid #94a3b850;border-radius:8px}
+.mcel-lifecycle-acid__table-scroll table,.mcel-lifecycle-acid__followups table{border-collapse:collapse;width:100%;min-width:760px;font-size:0.78rem}
+.mcel-lifecycle-acid__table-scroll :is(td,th),.mcel-lifecycle-acid__followups :is(td,th){padding:8px;text-align:left;border-bottom:1px solid #94a3b82b;white-space:nowrap}
+.mcel-lifecycle-acid__table-scroll th{position:sticky;top:0;background:#17243a;color:#f1f5f9;z-index:2}
+.mcel-lifecycle-acid__table-scroll td[data-status="pass"]{color:#16a34a;font-weight:700}
+.mcel-lifecycle-acid__table-scroll td[data-status="fail"]{color:#ef4444;font-weight:700}
+.mcel-lifecycle-acid__table-scroll tr:hover{background:#94a3b821}
+#mcel-lifecycle-acid-drill{border:1px solid #94a3b84d;border-radius:9px;padding:12px;min-width:0}
+#mcel-lifecycle-acid-drill>summary{cursor:pointer;font-weight:700}
+.mcel-lifecycle-acid__factors{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:9px;margin:12px 0}
+.mcel-lifecycle-acid__factors label{display:grid;gap:5px;font-size:0.8rem}
+.mcel-lifecycle-acid__preview{margin:12px 0;max-width:100%;overflow:auto;background:#94a3b80b;border:1px dashed #94a3b866;padding:10px;border-radius:9px;min-height:42px}
+.mcel-lifecycle-acid__specimen{max-width:100%;min-width:0}
+.mcel-lifecycle-acid__offscreen-stage{position:fixed;top:6px;left:6px;width:calc(100vw - 12px);max-width:1000px;max-height:500px;opacity:0;pointer-events:none;z-index:-1000}
+.mcel-lifecycle-acid__followups{overflow:auto}
+#mcel-lifecycle-acid-trace{max-height:450px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.mcel-lifecycle-acid__limits{font-size:0.8rem;opacity:0.8}
+
+
+/* Lifecycle Acid Lab is a first-class workspace, not a legacy proof drawer.
+ * Preserve the original Blueprint Inspector as an independently selectable view. */
+.mcel-lab-workspace-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 4px;
+  align-items: center;
+}
+.mcel-lab-workspace-switch button {
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.mcel-lab-workspace-switch button[aria-pressed="true"] {
+  background: rgba(8, 145, 178, 0.24);
+  border-color: #22d3ee;
+  color: #ecfeff;
+}
+.mcel-lab-workspace-switch button:focus-visible {
+  outline: 3px solid #fbbf24;
+  outline-offset: 2px;
+}
+#mcel-lab-app[data-mcel-workspace-view="blueprint"] > #mcel-lifecycle-acid {display:none;}
+#mcel-lab-app[data-mcel-workspace-view="lifecycle"] > :is(
+  .mcel-lab-blueprint-topbar,
+  .mcel-lab-blueprint-workbench,
+  .mcel-lab-blueprint-status,
+  .mcel-lab-advanced-legacy
+) {display:none;}
+#mcel-lab-app[data-mcel-workspace-view="lifecycle"] > #mcel-lifecycle-acid {
+  margin-top: 3px;
+  max-width: 100%;
+}
+@media (max-width: 550px) {
+  .mcel-lab-workspace-switch button {flex: 1 1 190px;}
+}
+/* MCEL L18 operator-first experiment console. The live specimen, not a PASS table,
+   is the primary workspace; automation remains an optional diagnostic. */
+.mcel-lifecycle-acid__workbench{display:grid;gap:12px;padding:14px;border:1px solid #22d3ee91;border-radius:12px;background:#0c1624;min-width:0;scroll-margin-top:18px}
+.mcel-lifecycle-acid__case-nav{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mcel-lifecycle-acid__case-nav label{display:flex;align-items:center;gap:8px;font-weight:650}
+.mcel-lifecycle-acid__case-nav select{min-width:185px}
+.mcel-lifecycle-acid__case-nav :is(button,select),.mcel-lifecycle-acid__review button{background:#15273d;color:#f8fafc;border:1px solid #6483a4;border-radius:7px;padding:9px 12px;cursor:pointer}
+.mcel-lifecycle-acid__case-nav :is(button,select):focus-visible,.mcel-lifecycle-acid__review button:focus-visible{outline:2px solid #67e8f9;outline-offset:2px}
+.mcel-lifecycle-acid__case-info{padding:12px;background:#0b2234;border:1px solid #305b76;border-radius:8px;overflow-wrap:anywhere}
+.mcel-lifecycle-acid__case-info strong{font-size:1.08rem}
+.mcel-lifecycle-acid__case-info p{font-size:.84rem;color:#cbd5e1;margin-top:6px}
+.mcel-lifecycle-acid__case-info .mcel-lifecycle-acid__guidance{color:#a5f3fc}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__preview{min-height:245px;max-width:100%;background:#07111d;border:1px solid #5e829a;overflow:auto;padding:10px}
+.mcel-lifecycle-acid__instruction{font-weight:550;color:#e2e8f0}
+.mcel-lifecycle-acid__feedback{padding:8px 10px;border-left:3px solid #67e8f9;color:#cbd5e1;background:#0b1a2b;overflow-wrap:anywhere}
+.mcel-lifecycle-acid__review{display:flex;align-items:center;flex-wrap:wrap;gap:9px;border-top:1px solid #4b6a8066;padding-top:12px}
+.mcel-lifecycle-acid__review>span:first-child{font-weight:650;margin-right:8px}
+.mcel-lifecycle-acid__review [data-mcel-acid-verdict="correct"][aria-pressed="true"]{background:#14532d;border-color:#4ade80}
+.mcel-lifecycle-acid__review [data-mcel-acid-verdict="broken"][aria-pressed="true"]{background:#7f1d1d;border-color:#f87171}
+.mcel-lifecycle-acid__review [data-mcel-acid-verdict="unsure"][aria-pressed="true"]{background:#713f12;border-color:#facc15}
+.mcel-lifecycle-acid__review label{flex-basis:100%;font-size:.85rem}
+.mcel-lifecycle-acid__review textarea{display:block;flex:1 1 300px;min-width:0;background:#111b2e;color:#f8fafc;border:1px solid #7589a6;border-radius:6px;padding:9px;resize:vertical}
+#mcel-lifecycle-acid-review-progress{font-size:.85rem;color:#a5f3fc;white-space:nowrap}
+.mcel-lifecycle-acid__automated{border:1px solid #65758e55;padding:10px;border-radius:9px}
+.mcel-lifecycle-acid__automated summary{cursor:pointer;font-weight:600}
+.mcel-lifecycle-acid__automated .mcel-lifecycle-acid__toolbar{margin-top:12px}
+.mcel-lifecycle-acid__matrix-title{margin:6px 0 0;font-size:1rem}
+.mcel-lifecycle-acid__table-scroll tr[data-active="true"]{background:#155e75aa}
+.mcel-lifecycle-acid__table-scroll td[data-verdict="broken"]{color:#fca5a5;font-weight:700}
+.mcel-lifecycle-acid__table-scroll td[data-verdict="correct"]{color:#86efac;font-weight:700}
+.mcel-lifecycle-acid__table-scroll td[data-verdict="unsure"]{color:#fde68a;font-weight:700}
+@media(max-width:600px){.mcel-lifecycle-acid__case-nav label{width:100%}.mcel-lifecycle-acid__case-nav select{flex:1;min-width:0}.mcel-lifecycle-acid__case-nav button{flex:1 1 auto}.mcel-lifecycle-acid__workbench{padding:9px}}
+
+.mcel-lifecycle-acid__scenario-step{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#12253a;border:1px solid #467b9c;border-radius:9px;padding:10px}
+.mcel-lifecycle-acid__scenario-step button{background:#0e7490;color:white;border:1px solid #67e8f9;border-radius:7px;padding:10px 14px;font-weight:650;cursor:pointer}
+.mcel-lifecycle-acid__scenario-step button:disabled{opacity:.55;cursor:default}
+.mcel-lifecycle-acid__scenario-step span{color:#dbeafe;font-size:.85rem}
+/* Avoid min-content forcing the interactive lab wider than a phone viewport. */
+#mcel-lifecycle-acid .mcel-lifecycle-acid__workbench{grid-template-columns:minmax(0,1fr);width:100%;box-sizing:border-box;overflow:hidden}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__workbench>*{min-width:0;max-width:100%;box-sizing:border-box}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__case-info{overflow-wrap:anywhere;word-break:normal}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__case-nav{max-width:100%}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__review{max-width:100%}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__scenario-step{min-width:0}
+@media(max-width:600px){#mcel-lifecycle-acid .mcel-lifecycle-acid__case-nav label{flex:1 0 100%;min-width:0}#mcel-lifecycle-acid .mcel-lifecycle-acid__case-nav select{width:100%;min-width:0;max-width:100%}#mcel-lifecycle-acid .mcel-lifecycle-acid__case-nav button{flex:1 1 42%;min-width:0}}

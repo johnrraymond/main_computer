@@ -950,8 +950,16 @@ class _WorkerHubLiveSessionClient:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         raw_sock = socket.create_connection((parsed.hostname, port), timeout=self.timeout_s)
         if parsed.scheme == "https":
-            context = ssl.create_default_context()
+            managed_pin = getattr(self, "managed_slh_fingerprint", None)
+            context = ssl.create_default_context() if not managed_pin else ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            if managed_pin:
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
             sock: socket.socket = context.wrap_socket(raw_sock, server_hostname=parsed.hostname)
+            if managed_pin and hashlib.sha256(sock.getpeercert(binary_form=True)).hexdigest() != managed_pin:
+                sock.close()
+                raise RuntimeError("SLH_TLS_PIN_MISMATCH")
         else:
             sock = raw_sock
         sock.settimeout(self.timeout_s)
@@ -1655,13 +1663,13 @@ class ViewportEnergyRoutesMixin:
             return value if isinstance(value, type(default)) else default
 
         selected_network = text(settings.get("selectedNetwork", settings.get("selected_network")), "none").lower()
-        if selected_network not in {"mainnet", "testnet", "test", "dev", "none"}:
+        if selected_network not in {"mainnet", "testnet", "test", "dev", "none", "slh"}:
             selected_network = "none"
         auto_connect_network = text(
             settings.get("workerAutoConnectNetwork", settings.get("worker_auto_connect_network")),
             selected_network,
         ).lower()
-        if auto_connect_network not in {"mainnet", "testnet", "test", "dev", "none"}:
+        if auto_connect_network not in {"mainnet", "testnet", "test", "dev", "none", "slh"}:
             auto_connect_network = selected_network
         if auto_connect_network != "none":
             selected_network = auto_connect_network
@@ -1766,6 +1774,10 @@ class ViewportEnergyRoutesMixin:
             assigned_ring = ""
         cleaned: dict[str, Any] = {
             "selectedNetwork": selected_network,
+            "managedSLHUrl": text(settings.get("managedSLHUrl"), ""),
+            "managedSLHDeviceId": text(settings.get("managedSLHDeviceId"), ""),
+            "managedSLHFingerprint": text(settings.get("managedSLHFingerprint"), ""),
+            "managedSLHIdentityDir": text(settings.get("managedSLHIdentityDir"), ""),
             "workerAutoConnectNetwork": auto_connect_network,
             "workerRequestedRing": requested_ring,
             "workerAssignedRing": assigned_ring,
@@ -1949,6 +1961,7 @@ class ViewportEnergyRoutesMixin:
     def _worker_runtime_network_label(self, network: Any) -> str:
         labels = {
             "mainnet": "Mainnet",
+            "slh": "Secure Local Hub",
             "testnet": "Testnet",
             "test": "Test",
             "dev": "Dev",
@@ -1982,6 +1995,20 @@ class ViewportEnergyRoutesMixin:
         if network != "none":
             cleaned["selectedNetwork"] = network
         paid_jobs_enabled = bool(cleaned.get("sellerEnabled")) or bool(cleaned.get("rentalEnabled"))
+        if network == "slh":
+            url = str(cleaned.get("managedSLHUrl") or "")
+            did = str(cleaned.get("managedSLHDeviceId") or "")
+            pin = str(cleaned.get("managedSLHFingerprint") or "")
+            identity_dir = str(cleaned.get("managedSLHIdentityDir") or "")
+            required = {"hub_url":url.startswith("https://"), "device_id":bool(did),
+                        "fingerprint":len(pin)==64, "authenticator":bool(identity_dir)}
+            missing = [key for key,ok in required.items() if not ok]
+            return {"ready":paid_jobs_enabled and not missing,
+                    "state":"ready" if paid_jobs_enabled and not missing else "setup",
+                    "network":"slh", "hubUrl":url, "hub_url":url,
+                    "paidJobsEnabled":paid_jobs_enabled, "paid_jobs_enabled":paid_jobs_enabled,
+                    "missing":missing, "reason":"Managed SLH uses Known Device authentication",
+                    "signedOrder":{},"hubRegistration":{},"multisessionAuthorizationPresent":False}
         worker_id = self._worker_runtime_worker_id(cleaned)
         hub_url = self._worker_runtime_hub_url(cleaned)
         signed_order = self._worker_runtime_signed_order_state(cleaned)
@@ -2088,6 +2115,8 @@ class ViewportEnergyRoutesMixin:
         connection id internal to the live socket.
         """
 
+        if str(settings.get("workerAutoConnectNetwork") or "").lower() == "slh":
+            return str(settings.get("managedSLHDeviceId") or "")
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
         wallet_obj = signed.get("wallet") if isinstance(signed.get("wallet"), dict) else {}
         wallet = str(
@@ -2104,6 +2133,8 @@ class ViewportEnergyRoutesMixin:
         return ""
 
     def _worker_runtime_hub_url(self, settings: dict[str, Any]) -> str:
+        if str(settings.get("workerAutoConnectNetwork") or "").lower() == "slh":
+            return str(settings.get("managedSLHUrl") or "").rstrip("/")
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
         return self._clean_hub_url(
             str(settings.get("workerConnectedHubUrl") or signed.get("hub_url") or settings.get("registrationHubUrl") or self.server.config.hub_url),
@@ -3128,7 +3159,19 @@ class ViewportEnergyRoutesMixin:
         lock, clients = self._worker_live_session_clients()
         with lock:
             existing = clients.get(key)
-            candidate = _WorkerHubLiveSessionClient(
+            managed = bool(auth_message.get("managed_slh"))
+            if managed:
+                from main_computer.slh.managed_client import ManagedSLHWorkerClient
+                client_cls = ManagedSLHWorkerClient
+                managed_config = auth_message["managed_slh"]
+                extra = {"device_id": managed_config["device_id"],
+                         "identity_dir": Path(managed_config["identity_dir"]),
+                         "tls_fingerprint": managed_config["tls_fingerprint"]}
+            else:
+                client_cls = _WorkerHubLiveSessionClient
+                extra = {}
+            candidate = client_cls(
+                **extra,
                 hub_url=normalized_hub_url,
                 worker_id=key[1],
                 auth_message=auth_message,
@@ -3176,6 +3219,22 @@ class ViewportEnergyRoutesMixin:
                 worker_id=worker_id,
                 reason="runtime_not_accepting",
             )
+
+        if str(settings.get("workerAutoConnectNetwork") or "").lower() == "slh":
+            from main_computer.slh.managed_gateway import MANAGED_PATH
+            market = self._worker_runtime_market_profile(
+                settings=settings, capabilities={"capabilities":["chat.completions"]},
+                models=models, active_jobs=active_jobs)
+            auth_message={"type":"worker.auth", "execution_protocol":"durable-authorization-v1",
+                "device_id":worker_id,"managed_slh":{
+                    "device_id":worker_id,
+                    "identity_dir":settings.get("managedSLHIdentityDir"),
+                    "tls_fingerprint":settings.get("managedSLHFingerprint")},
+                "market":market, "status":hub_status}
+            snapshot=self._ensure_worker_live_session(hub_url=hub_url,worker_id=worker_id,
+                                                       auth_message=auth_message)
+            return {"ok":True,"transport":"wss","endpoint":MANAGED_PATH,
+                    "managed":True,"live_session":snapshot}
 
         signed_connection = settings.get("signedWorkerConnection")
         signed_worker = signed_connection.get("worker") if isinstance(signed_connection, dict) else {}

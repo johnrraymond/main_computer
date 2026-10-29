@@ -1,0 +1,26 @@
+[
+  {
+    "width": 320,
+    "identical": true,
+    "mode": "stacked",
+    "rows": 4
+  },
+  {
+    "width": 390,
+    "identical": true,
+    "mode": "stacked",
+    "rows": 4
+  },
+  {
+    "width": 560,
+    "identical": true,
+    "mode": "table",
+    "rows": 4
+  },
+  {
+    "width": 1100,
+    "identical": true,
+    "mode": "table",
+    "rows": 4
+  }
+]

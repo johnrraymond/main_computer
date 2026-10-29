@@ -1,0 +1,15 @@
+{
+  "target_id": "company-relay-1",
+  "organization_id": "example-org",
+  "slh_id": "example-slh",
+  "public_url": "https://hub.secure.company.com",
+  "coolify_url": "https://coolify.company.com",
+  "project_uuid": "PROJECT_UUID",
+  "environment_uuid": "ENVIRONMENT_UUID",
+  "server_uuid": "SERVER_UUID",
+  "image": "registry.example.invalid/main-computer/seh",
+  "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "service_uuid": null,
+  "internal_port": 8080,
+  "local_lab": false
+}

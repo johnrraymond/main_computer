@@ -3393,6 +3393,7 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HEARTBEAT_PORT" "8766"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_PORT" "8767"),
+      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_SLH_PORT" "8898"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" ""),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_PORT" "8871")
     )) {
@@ -3442,6 +3443,8 @@ function Test-MainComputerServiceCommandLine([string]$CommandLine, [string]$Root
     "main_computer.executor_service",
     "main_computer.applications_service",
     "main_computer.blockchain_service",
+    "main_computer.slh.gateway_service",
+    "tools.slh_managed_gateway",
     "main_computer.cli",
     "main_computer.exp_fdb_hub",
     "exp-fdb-hub.py"

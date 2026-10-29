@@ -323,14 +323,18 @@ CHILD_SPECS: tuple[ChildSpec, ...] = (
     ChildSpec(name="executor", module="main_computer.executor_service", args=("boot", "--watch")),
     ChildSpec(name="applications", module="main_computer.applications_service", args=("boot", "--watch")),
     ChildSpec(name="blockchain", module="main_computer.blockchain_service", args=("boot", "--watch")),
+    # Main Computer owns the SLH's lifecycle. The gateway itself owns any
+    # configured SEH tunnel and reconnects independently of the lab.
+    ChildSpec(name="slh", module="main_computer.slh.gateway_service", args=("run",),
+              start_priority=20, stop_priority=5),
 )
 
 
 class ServiceSupervisor:
     """Start and supervise the resident Main Computer services.
 
-    The app, executor, applications, and blockchain services each own their own
-    boot behavior. This supervisor is the outer resident process: it starts
+    The app, executor, applications, blockchain, and SLH services own their
+    respective boot behavior. This supervisor is the outer resident process: it starts
     those service processes and restarts any one of them if the Python process
     exits.
     """
@@ -659,6 +663,9 @@ class ServiceSupervisor:
         if target in {"blockchain", "chain", "anvil", "ethereum"}:
             return self._restart_child("blockchain", source=source, parameters=parameters)
 
+        if target in {"slh", "secure-local-hub", "slh-gateway"}:
+            return self._restart_child("slh", source=source, parameters=parameters)
+
         if target in {"main-log", "main_log", "logging", "logger"}:
             return self._restart_child(MAIN_LOG_CHILD_NAME, source=source, parameters=parameters)
 
@@ -681,6 +688,7 @@ class ServiceSupervisor:
                 "executor",
                 "applications",
                 "blockchain",
+                "slh",
                 "main-log",
                 "all",
                 "onlyoffice",
@@ -1421,7 +1429,7 @@ def render_service_supervisor_summary(root: Path | str) -> str:
 
     children = supervisor.get("children") if isinstance(supervisor.get("children"), dict) else {}
     if children:
-        for child_name in (MAIN_LOG_CHILD_NAME, "app", "executor", "applications", "blockchain"):
+        for child_name in (MAIN_LOG_CHILD_NAME, "app", "executor", "applications", "blockchain", "slh"):
             child = children.get(child_name)
             if not isinstance(child, dict):
                 continue
@@ -1524,6 +1532,7 @@ def print_service_supervisor_summary(
             and bool(children.get("executor"))
             and bool(children.get("applications"))
             and bool(children.get("blockchain"))
+            and bool(children.get("slh"))
         )
         if state.get("ok") and has_children:
             break
@@ -1547,7 +1556,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
 
-    supervise = subparsers.add_parser("supervise", help="Start and supervise app/executor/applications/blockchain services.")
+    supervise = subparsers.add_parser("supervise", help="Start and supervise app/executor/applications/blockchain/SLH services.")
     supervise.add_argument("--max-loops", type=int, default=None, help=argparse.SUPPRESS)
 
     status = subparsers.add_parser("status", help="Print service-supervisor status.")

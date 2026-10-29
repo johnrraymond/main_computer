@@ -18,3 +18,9 @@ foundationdb==7.4.6
 PyYAML==6.0.3
 graphifyy==0.9.29
 jsonschema>=4.26.0,<5
+
+# SLH Known Device P-256 challenge signatures
+cryptography>=42,<49
+
+# SLH managed LAN worker websocket gateway
+websockets>=13,<17

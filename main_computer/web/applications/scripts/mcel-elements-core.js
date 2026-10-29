@@ -37,6 +37,7 @@
           supersedes: extra.supersedes || [],
           stateModel: extra.stateModel || {},
           interactionModel: extra.interactionModel || {},
+          presentationPolicy: extra.presentationPolicy || null,
           accessibility: extra.accessibility || {},
           dataModel: extra.dataModel || {},
           migrationHints: extra.migrationHints || {},
@@ -99,6 +100,7 @@
         }),
         def("element.core.collection-row", "Collection Row", "core", "collection-row", "One repeated item with stable identity and selection policy.", {
           htmlTag: "mcel-row",
+          presentationPolicy: global.McelPresentationNegotiation?.defaultPolicy || null,
           riskPolicy: safe,
           decoderHints: ["row", "item", "entry", "record"]
         }),
