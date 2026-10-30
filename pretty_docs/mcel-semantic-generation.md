@@ -16,7 +16,7 @@ The generated files are placed under `runtime/reports/mcel-semantic-generation/`
 
 ## Authoring
 
-Add hints in `mcel_designs/task-manager/design.yaml`:
+Add hints in `tools/fixtures/mcel/task-manager/design.yaml`:
 
 ```yaml
 layout_hints:

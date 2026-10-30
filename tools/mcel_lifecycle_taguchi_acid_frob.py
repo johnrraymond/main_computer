@@ -82,7 +82,8 @@ def verify(output: Path=OUTPUT, widths: tuple[int, ...]=(390, 1440), *, seed: in
                         return {detected:outcome.verdict==='fail',reason:outcome.failure};}
                       finally{window.McelLifecycleAcidFixtures=previous;stage.remove();}
                     }''')
-                    page.locator('#mcel-lifecycle-acid-matrix tr[data-run="L18-05"] button').click()
+                    page.locator('.mcel-lifecycle-acid__single-advanced > summary').click()
+                    page.locator('#mcel-lifecycle-acid-case-picker').select_option('L18-05')
                     page.locator('#mcel-lifecycle-acid-focused').click()
                     page.wait_for_function("document.querySelectorAll('#mcel-lifecycle-acid-preview mcel-row').length>0")
                     focus_rows = page.locator('#mcel-lifecycle-acid-preview mcel-row').count()
@@ -91,7 +92,10 @@ def verify(output: Path=OUTPUT, widths: tuple[int, ...]=(390, 1440), *, seed: in
                     page.locator('[data-mcel-acid-action="native selection"]').click()
                     selection = page.evaluate("() => JSON.parse(document.querySelector('#mcel-lifecycle-acid-trace').textContent)")
                     image_path = output / f'lifecycle-acid-{width}.png'
-                    page.locator('#mcel-lifecycle-acid').screenshot(path=str(image_path), timeout=30000)
+                    # A full-element screenshot would attempt to rasterize all 18 tall, live
+                    # specimens at once; capture the viewport rather than an enormous strip.
+                    page.locator('#mcel-lifecycle-acid-gallery > [data-case-id=\"L18-01\"]').scroll_into_view_if_needed()
+                    page.screenshot(path=str(image_path), full_page=False, timeout=30000)
                     case = {'viewport': width, 'status': 'PASS' if all_pass and focus_rows and
                         fault.get('result',{}).get('ok') and selection.get('result',{}).get('ok') and negative_control['detected'] and not errors else 'FAIL',
                         'runs':matrix['runs'], 'orthogonal':matrix['orthogonal'], 'seed':matrix['seed'],

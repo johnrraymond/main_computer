@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Qwen LM-head one-hop acquisition: T00 -> ANSWER; T01..T08 -> PROBLEM.
+"""Qwen one-hop reduction ladder with numeric-terminal PROBLEM packets.
 
-This deliberately does NOT invoke HybridLink, detector, numeric sidecars, or a
-final-answer executor. Targets are used for masked supervised fine-tuning ONLY;
-greedy LM-head continuation of the source packet is the *only* certificate.
-Every optimizer-step budget is durable, per-rung, and never auto-extended.
+In the new numeric contract, T00 emits PROBLEM: <integer> (not ANSWER:),
+while T01+ emits a shorter PROBLEM expression. A strict terminal recognizer
+classifies a complete numeric-literal problem without target labels or gold
+answers. This module does not execute HybridLink or its learned detector: the
+recognizer exposes a clear integration contract; acquisition still grades
+unassisted greedy Qwen outputs. Existing legacy targets remain readable for
+legacy checkpoint lineage and tests, never migrated silently.
 """
 from __future__ import annotations
 
@@ -103,17 +106,54 @@ def _bounded_numbers(rung, residual, low, high, limit, seed, variant, attempt=0)
     return tuple(nums)
 
 
-def _case(rung, nums, tag):
-    rows=stage1._rows_for(list(nums),'ladder',0)
-    assert len(rows)==rung+1
-    source=rows[0]['source'];target=rows[0]['target']
-    if rung==0:assert target.startswith('ANSWER: ')
-    else:assert target.startswith('PROBLEM: ')
+# Numeric completion is a property of the *whole packet*, not of whether a
+# question happens to contain numbers. No oracle, targets, logits, or prefix
+# generation enter this recognizer. This is not the learned HybridLink detector.
+NUMERIC_TERMINAL = re.compile(r'^PROBLEM: (0|[1-9][0-9]*|-[1-9][0-9]*)$')
+
+
+def numeric_terminal(packet):
+    """Return exact int for a terminal PROBLEM packet, else None (including 0)."""
+    if not isinstance(packet,str):return None
+    canonical=packet.replace('\r\n','\n').replace('\r','\n')
+    if canonical.endswith('\n'):canonical=canonical[:-1]
+    matched=NUMERIC_TERMINAL.fullmatch(canonical)
+    return int(matched.group(1)) if matched else None
+
+
+def numerical_completion(packet):
+    """Inference-only completion signal. False for expressions/worded scales."""
+    value=numeric_terminal(packet)
+    return {'numerical':value is not None,'complete':value is not None,'value':value}
+
+
+def _case(rung, nums, tag, terminal_mode='legacy'):
+    if terminal_mode not in ('legacy','numeric'):
+        raise ValueError('LADDER_UNKNOWN_TERMINAL_MODE')
+    if terminal_mode=='legacy':
+        rows=stage1._rows_for(list(nums),'ladder',0)
+        assert len(rows)==rung+1
+        source=rows[0]['source'];target=rows[0]['target']
+        if rung==0:assert target.startswith('ANSWER: ')
+        else:assert target.startswith('PROBLEM: ')
+        chain=[r['source'] for r in rows]+[rows[-1]['target']]
+    else:
+        remaining=list(nums)
+        chain=[]
+        while len(remaining)>1:
+            chain.append('PROBLEM: '+stage1._expr(remaining))
+            remaining=[remaining[0]+remaining[1]]+remaining[2:]
+        chain.append(f'PROBLEM: {remaining[0]}')
+        source=chain[0];target=chain[1]
+        assert len(chain)==rung+2
+        assert numerical_completion(chain[-1])['value']==sum(nums)
+        if rung==0:assert numeric_terminal(target) is not None
+        else:assert numeric_terminal(target) is None
     return {'id':tag,'rung':rung,'residual':sum(nums),'source':source,'target':target,
-            'leaves':list(nums),'complete_chain':[r['source'] for r in rows]+[rows[-1]['target']]}
+            'leaves':list(nums),'complete_chain':chain}
 
 
-def deck(rung,radius,limit,per_cell=8,seed=42257,t00_mode='exhaustive'):
+def deck(rung,radius,limit,per_cell=8,seed=42257,t00_mode='exhaustive',terminal_mode='legacy'):
     """Deterministic *finite* acquisition contract, no holdout semantics.
 
     T00 exhaustive is all ORDERED pairs in [-limit,limit] with sum in [-R,R].
@@ -127,7 +167,7 @@ def deck(rung,radius,limit,per_cell=8,seed=42257,t00_mode='exhaustive'):
             for a in range(-limit,limit+1):
                 b=d-a
                 if -limit<=b<=limit:
-                    cases.append(_case(0,(a,b),f'T00-D{d:+d}-A{a:+d}'))
+                    cases.append(_case(0,(a,b),f'T00-D{d:+d}-A{a:+d}',terminal_mode))
         assert len(cases)==(2*radius+1)*(2*limit+1)-radius*(radius+1)
         return cases,{'kind':'exhaustive_ordered_t00','cells':2*radius+1,
                        'unreachable_cells':[],'undersampled_cells':[],
@@ -145,7 +185,7 @@ def deck(rung,radius,limit,per_cell=8,seed=42257,t00_mode='exhaustive'):
                     if nums is not None and nums not in seen:break
                 else:break
                 seen.add(nums)
-                cases.append(_case(rung,nums,f'T{rung:02d}-D{d:+d}-B{label}-V{variant}'))
+                cases.append(_case(rung,nums,f'T{rung:02d}-D{d:+d}-B{label}-V{variant}',terminal_mode))
                 count+=1
             if count!=per_cell:
                 undersampled.append({'residual':d,'band':label,'observed':count,'requested':per_cell})
@@ -206,7 +246,9 @@ def _config(args):
         raise ValueError('LADDER_BAD_CONTEXT_OR_COVERAGE')
     if getattr(args,'probe_cases',128)<1 or getattr(args,'audit_progress_every',32)<0:
         raise ValueError('LADDER_BAD_CONTEXT_OR_COVERAGE')
-    return {'schema':SCHEMA,'radii':list(radii),'operand_limit':args.operand_limit,
+    mode=getattr(args,'terminal_mode','legacy')
+    if mode not in ('legacy','numeric'):raise ValueError('LADDER_UNKNOWN_TERMINAL_MODE')
+    cfg={'schema':SCHEMA,'radii':list(radii),'operand_limit':args.operand_limit,
        'max_rung':args.max_rung,'per_cell':args.per_cell,'seed':args.seed,'t00_mode':args.t00_mode,
        'steps_per_rung':args.steps_per_rung,'repair_steps':args.repair_steps,
        'batch_size':args.batch_size,'replay_per_batch':args.replay_per_batch,
@@ -217,6 +259,11 @@ def _config(args):
        'model_family':'Qwen q/v LoRA, frozen base + frozen LM vocabulary head',
        'grading':'greedy LM-head exact one-hop emitted packet, NOT teacher-forcing or cosine',
        'no_hybridlink':True,'no_detector':True,'no_numeric_sidecars':True}
+    if mode=='numeric':
+        cfg['terminal_mode']='numeric'
+        cfg['numerical_completion']='strict_integer_literal_PROBLEM_packet'
+        cfg['grading']='greedy exact one-hop PROBLEM packet; numeral terminal detected independently'
+    return cfg
 
 
 def _batch_loss(bb,tok,rows,device,max_seq):
@@ -660,6 +707,7 @@ def _audit(bb,tok,rows,device,max_tokens,max_new_tokens,batch_size,*,fail_limit=
     if population_total is None:population_total=len(rows)
     if population_total<len(rows):raise ValueError('LADDER_BAD_GATE_POPULATION')
     count=0;passed=0;fail=[];errors_seen=0;pass_ids=[]
+    terminal_seen=terminal_correct=terminal_false_positive=0
     rng=_rng('AUDIT_FAILURE_RESERVOIR',len(rows),rows[0]['id'] if rows else '')
     next_progress=max(1,progress_every)
     for start in range(0,len(rows),batch_size):
@@ -667,6 +715,11 @@ def _audit(bb,tok,rows,device,max_tokens,max_new_tokens,batch_size,*,fail_limit=
         generated=_greedy(bb,tok,[r['source'] for r in subset],device,max_tokens,max_new_tokens)
         for row,response in zip(subset,generated):
             count+=1;ok,parsed=correctness(row['source'],row['target'],response)
+            sensed=numeric_terminal(response)
+            if sensed is not None:
+                terminal_seen+=1
+                if ok and sensed==row['residual']:terminal_correct+=1
+                elif numeric_terminal(row['target']) is None:terminal_false_positive+=1
             if ok:
                 passed+=1
                 if record_pass_ids:pass_ids.append(row['id'])
@@ -693,11 +746,15 @@ def _audit(bb,tok,rows,device,max_tokens,max_new_tokens,batch_size,*,fail_limit=
                         'failures':fail,'truncated':True,'tripwire_tripped':True,
                         'allowed_errors':allowed,'error_projection':projection,
                         'retention_threshold_impossible':True}
+                result['numeric_completion']={'detected':terminal_seen,'correct':terminal_correct,
+                    'premature':terminal_false_positive}
                 if record_pass_ids:result['passed_ids']=pass_ids
                 return result
             if not ok and stop_at_first:
                 result={'all_pass':False,'tested':count,'passed':passed,'total':len(rows),
                         'failures':fail,'truncated':True}
+                result['numeric_completion']={'detected':terminal_seen,'correct':terminal_correct,
+                    'premature':terminal_false_positive}
                 if record_pass_ids:result['passed_ids']=pass_ids
                 return result
         if progress_every and (count >= next_progress or count==len(rows)):
@@ -709,6 +766,8 @@ def _audit(bb,tok,rows,device,max_tokens,max_new_tokens,batch_size,*,fail_limit=
     result={'all_pass':passed==len(rows),'tested':count,'passed':passed,'total':len(rows),
             'failures':fail,'truncated':False,'tripwire_tripped':False,
             'error_projection':_project_errors(count,errors_seen,population_total)}
+    result['numeric_completion']={'detected':terminal_seen,'correct':terminal_correct,
+        'premature':terminal_false_positive}
     if record_pass_ids:result['passed_ids']=pass_ids
     return result
 
@@ -841,6 +900,8 @@ def _load_resume(out,cfg,bb,zero,source_hash,frozen_hash):
         raise RuntimeError('LADDER_RESUME_CONFIG_MISMATCH')
     if state['source_sha256']!=source_hash or state['frozen_sha256']!=frozen_hash:
         raise RuntimeError('LADDER_RESUME_MODEL_DRIFT')
+    if state['config'].get('terminal_mode','legacy')!=cfg.get('terminal_mode','legacy'):
+        raise RuntimeError('LADDER_TERMINAL_CONTRACT_CHANGED_USE_NEW_OUTPUT')
     changed=state['config']!=cfg
     if changed:
         info=_migrate_radius_schedule(state,cfg)
@@ -858,7 +919,8 @@ def _load_resume(out,cfg,bb,zero,source_hash,frozen_hash):
 
 
 def _case_bank(cfg,rung,radius):
-    return deck(rung,radius,cfg['operand_limit'],cfg['per_cell'],cfg['seed'],cfg['t00_mode'])
+    return deck(rung,radius,cfg['operand_limit'],cfg['per_cell'],cfg['seed'],cfg['t00_mode'],
+                cfg.get('terminal_mode','legacy'))
 
 
 def _certified_bank(cfg,certs):
@@ -1206,7 +1268,7 @@ def _local_radius_rows(cfg,certs,guard,local_radius):
                     if abs(partial)>cfg['operand_limit']:
                         valid=False;break
                 if not valid:continue
-                case=_case(rung,tuple(new),center['id']+f'-LOCAL-{i}-{d:+d}')
+                case=_case(rung,tuple(new),center['id']+f'-LOCAL-{i}-{d:+d}',cfg.get('terminal_mode','legacy'))
                 if case['residual']!=center['residual']:
                     raise RuntimeError('LADDER_LOCAL_REPAIR_RESIDUAL_DRIFT')
                 result[(case['source'],case['target'])]=case
@@ -1402,6 +1464,72 @@ def _fork_certified_zero(parent_dir, state, cfg, bb, zero):
     return state
 
 
+def _numeric_bootstrap_from_certified_zero(parent_dir,state,cfg,bb,zero):
+    """Copy only legacy T00/R0 LoRA seed; discard its old ANSWER certificates.
+
+    This is a NEW mathematical contract. All learned regions must be regraded
+    and reacquired on new PROBLEM:<integer> targets. Never alter parent files.
+    """
+    import torch
+    root=Path(parent_dir).resolve()
+    work=root/'working.pt';snapshot=root/'certified_T00_R0000.pt'
+    if not work.is_file() or not snapshot.is_file():
+        raise FileNotFoundError('LADDER_NUMERIC_BOOTSTRAP_REQUIRES_CERTIFIED_ZERO')
+    parent=torch.load(work,map_location='cpu',weights_only=True)
+    snap=torch.load(snapshot,map_location='cpu',weights_only=True)
+    prior=parent.get('state')
+    if (parent.get('schema')!=SCHEMA or not isinstance(prior,dict) or
+            prior.get('config_hash')!=_hash(prior.get('config'))):
+        raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_PARENT_CONFIG_DRIFT')
+    if prior['source_sha256']!=state['source_sha256'] or prior['frozen_sha256']!=state['frozen_sha256']:
+        raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_MODEL_DRIFT')
+    old_cfg=prior['config']
+    if old_cfg.get('terminal_mode','legacy')!='legacy':
+        raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_EXPECTS_LEGACY_PARENT')
+    cert=snap.get('certificate')
+    cert_cfg=cert.get('deck_config') if isinstance(cert,dict) else None
+    if (snap.get('schema')!=SCHEMA or snap.get('status')!='CERTIFIED' or
+            not isinstance(cert_cfg,dict) or cert_cfg.get('terminal_mode','legacy')!='legacy' or
+            snap.get('config_hash')!=_hash(cert_cfg) or
+            cert.get('rung')!=0 or cert.get('radius')!=0 or
+            not any(x==cert for x in prior.get('certificates',[]))):
+        raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_INVALID_CERTIFICATE')
+    rows,scope=_case_bank(cert_cfg,0,0)
+    if (scope!=cert.get('scope') or len(rows)!=cert.get('case_count') or
+            deck_fingerprint(rows)!=cert.get('deck_sha256')):
+        raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_LEGACY_DECK_DRIFT')
+    # Only share Qwen parent weights and tokenizer lineage. Historical LoRA
+    # may be from the ANSWER protocol, but is a seed, NOT an acquired proof.
+    for key in ('stage1_checkpoint','text_checkpoint','model_family'):
+        if old_cfg[key]!=cfg[key]:raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_LINEAGE_CHANGED')
+    zero.restore_lora(bb,snap['lora'])
+    state['numeric_bootstrap']={'parent_directory':str(root),
+        'snapshot_sha256':hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+        'source':'certified_T00_R0000.pt: LoRA weights ONLY',
+        'old_certificate_reused':False,'old_step_ledger_reused':False,
+        'new_contract':'PROBLEM:<integer> numerical completion'}
+    print('QWEN_LADDER_NUMERIC_BOOTSTRAP='+json.dumps(state['numeric_bootstrap'],sort_keys=True),flush=True)
+    return state
+
+
+def _ensure_numeric_bootstrap_snapshot(out,state,source_dir=None):
+    """Durably keep the immutable imported seed independent of its parent."""
+    meta=state.get('numeric_bootstrap')
+    if not meta:return
+    source=Path(meta['parent_directory'])/'certified_T00_R0000.pt'
+    local=Path(out)/'numeric_bootstrap_legacy_seed.pt'
+    if not local.exists():
+        if not source.is_file() or hashlib.sha256(source.read_bytes()).hexdigest()!=meta['snapshot_sha256']:
+            raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_SEED_MISSING')
+        temp=local.with_name(local.name+'.tmp')
+        shutil.copyfile(source,temp)
+        os.replace(temp,local)
+    if hashlib.sha256(local.read_bytes()).hexdigest()!=meta['snapshot_sha256']:
+        raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_LOCAL_SEED_DRIFT')
+    if source_dir and str(Path(source_dir).resolve())!=meta['parent_directory']:
+        raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_RESUME_SOURCE_MISMATCH')
+
+
 def _ensure_local_zero_snapshot(out, state, fork_dir=None):
     """Require the imported certificate to survive as a self-contained copy."""
     import shutil
@@ -1479,12 +1607,18 @@ def run(args):
     adaptive_policy=_adaptive_policy(args)
     if not args.stage1_checkpoint or not args.text_checkpoint:raise ValueError('LADDER_REQUIRES_PARENT_CHECKPOINTS')
     out=Path(args.output)
-    if args.warm_start_ladder and getattr(args,'fork_certified_zero_from',None):
-        raise RuntimeError('LADDER_CANNOT_WARM_START_AND_FORK_ZERO')
+    numeric_dir=getattr(args,'numeric_bootstrap_from',None)
     fork_dir=getattr(args,'fork_certified_zero_from',None)
+    if sum(bool(x) for x in (args.warm_start_ladder,fork_dir,numeric_dir))>1:
+        raise RuntimeError('LADDER_MULTIPLE_BOOTSTRAP_SOURCES')
+    if cfg.get('terminal_mode')=='numeric' and (fork_dir or args.warm_start_ladder):
+        raise RuntimeError('LADDER_NUMERIC_NEEDS_NEW_OUTPUT_AND_NUMERIC_BOOTSTRAP_FROM')
+    if cfg.get('terminal_mode')!='numeric' and numeric_dir:
+        raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_REQUIRES_NUMERIC_MODE')
     _outputs_safe(out,[Path(args.stage1_checkpoint).parent,Path(args.text_checkpoint).parent]+
                   ([Path(args.warm_start_ladder).parent] if args.warm_start_ladder else [])+
-                  ([Path(fork_dir)] if fork_dir else []))
+                  ([Path(fork_dir)] if fork_dir else [])+
+                  ([Path(numeric_dir)] if numeric_dir else []))
     if out.exists() and any(out.iterdir()) and not (out/'working.pt').exists():
         raise RuntimeError('LADDER_REFUSES_NONEMPTY_UNRECOGNIZED_OUTPUT')
     bb,tok,sources,frozen,dirs,zero=_fresh_parent(args)
@@ -1492,6 +1626,8 @@ def run(args):
     if (out/'working.pt').exists():
         if args.warm_start_ladder:raise RuntimeError('LADDER_WARM_START_REQUIRES_NEW_OUTPUT')
         state,optimizer_state=_load_resume(out,cfg,bb,zero,sources,frozen)
+        if numeric_dir and not state.get('numeric_bootstrap'):
+            raise RuntimeError('LADDER_NUMERIC_BOOTSTRAP_RESUME_SOURCE_MISMATCH')
         if fork_dir:
             source=state.get('zero_fork')
             if not source or source['parent_directory']!=str(Path(fork_dir).resolve()):
@@ -1506,11 +1642,14 @@ def run(args):
             state=_expand_from(Path(args.warm_start_ladder),state,cfg,bb,zero)
         elif fork_dir:
             state=_fork_certified_zero(fork_dir,state,cfg,bb,zero)
+        elif numeric_dir:
+            state=_numeric_bootstrap_from_certified_zero(numeric_dir,state,cfg,bb,zero)
         _persist(out,bb,zero,state)
     # A crash after initial state persistence but before copying the snapshot
     # is restartable with the original fork option; never accept a substituted
     # local certificate or silently proceed without one.
     _ensure_local_zero_snapshot(out,state,fork_dir)
+    _ensure_numeric_bootstrap_snapshot(out,state,numeric_dir)
     _record_learning_policy(state,args)
     _retention_settings(args)
     advancement=_record_advancement_policy(state,args)
@@ -1619,6 +1758,7 @@ def run(args):
              'retention_pending':full_checked and grade['all_pass'],
              'scope':scope['kind'],
              'tripwire_tripped':grade.get('tripwire_tripped',False),
+             'numeric_completion':grade.get('numeric_completion'),
              'estimated_current_deck_errors':grade.get('estimated_current_deck_errors')},
              sort_keys=True),flush=True)
         # Certification remains exact for the NEW rung; historical decks only
@@ -1899,7 +2039,11 @@ def status(args):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--stage',choices=('preview','run','status'),default='preview')
+    p.add_argument('--stage',choices=('preview','run','status','detect'),default='preview')
+    p.add_argument('--terminal-mode',choices=('numeric','legacy'),default='numeric',
+                   help='numeric: T00 emits PROBLEM: <integer>, terminal detector signals complete; '
+                        'legacy: old ANSWER: targets for existing campaigns only')
+    p.add_argument('--packet',help='For --stage detect: classify a complete PROBLEM packet')
     p.add_argument('--stage1-checkpoint');p.add_argument('--text-checkpoint')
     p.add_argument('--device',choices=('cpu','cuda'),default='cuda')
     p.add_argument('--output',default=str(Path.home()/'NanoJev'/'runs'/'qwen_lm_radius_ladder_v1'))
@@ -1963,11 +2107,17 @@ def main(argv=None):
     p.add_argument('--max-new-tokens',type=int,default=64)
     p.add_argument('--extend-budget',type=int,default=0)
     p.add_argument('--warm-start-ladder',help='Certified previous working.pt; new output, expanded radii')
-    p.add_argument('--fork-certified-zero-from',help='Original campaign folder with certified_T00_R0000.pt; new output and --radii 0')
+    p.add_argument('--fork-certified-zero-from',help='LEGACY only: original certified zero fork; never imports into numeric mode')
+    p.add_argument('--numeric-bootstrap-from',help='NUMERIC only: old certified zero parent folder; copies LoRA seed, NOT certificates/steps; requires NEW output')
     p.add_argument('--seed',type=int,default=42257)
     p.add_argument('--baseline');p.add_argument('--backbone');p.add_argument('--activation');p.add_argument('--format')
     p.add_argument('--allow-model-download',action='store_true')
     args=p.parse_args(argv)
+    if args.stage=='detect':
+        if args.packet is None:raise ValueError('LADDER_DETECT_REQUIRES_PACKET')
+        report={'packet':args.packet,**numerical_completion(args.packet)}
+        print('QWEN_LADDER_NUMERICAL_DETECTION='+json.dumps(report,sort_keys=True),flush=True)
+        return report
     if args.stage=='status':return status(args)
     if args.stage=='preview':return preview(args)
     return run(args)

@@ -243,7 +243,7 @@ class ManagedScheduler:
 class SLHManagedGateway:
     """Socket server: TLS-pinned clients, existing SLH Known Device verification."""
     def __init__(self, authority: SLHAuthority, *, host='127.0.0.1', port=DEFAULT_MANAGED_PORT,
-                 seh_lab_identity=None, seh_lab_id=None):
+                 seh_lab_identity=None, seh_lab_id=None, allow_seh=True):
         self.authority=authority
         self.scheduler=ManagedScheduler(policy_store=SchedulerPolicyStore(authority),is_authorized=lambda did: any(
             d['id']==did and d['status']=='active' and d['role']=='worker'
@@ -256,6 +256,7 @@ class SLHManagedGateway:
         self.on_worker_registered=None
         self.on_worker_disconnected=None
         self.seh_connection=None
+        self.allow_seh=allow_seh
         # Lab-only key injection avoids persisting the real organization's key
         # in disposable lab state; normal gateways load their own state key.
         self._seh_lab_identity=seh_lab_identity
@@ -333,7 +334,7 @@ class SLHManagedGateway:
             self.port=server.socket.getsockname()[1]
             from main_computer.slh.seh_autoconnect import read_seh_settings, SEHAutoConnection
             settings=read_seh_settings(self.authority.directory)
-            if settings is not None and settings.enabled:
+            if self.allow_seh and settings is not None and settings.enabled:
                 if settings.organization_id != self.authority.org_id():
                     raise RuntimeError('Configured SEH organization differs from initialized SLH')
                 self.seh_connection=SEHAutoConnection(

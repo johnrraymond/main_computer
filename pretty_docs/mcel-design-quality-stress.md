@@ -4,7 +4,7 @@
 
 ## Run
 
-This compatibility release preserves the task-manager design isolation: experimental YAML resides in `mcel_designs/task-manager/`, not `mcel_apps/task-manager/`. The CLI mode is merged with the isolation repair instead of overwriting it.
+Task Manager design intent and historical Frob acceptance YAML are under `tools/fixtures/mcel/task-manager/`, not the authoritative application-package directory. The CLI mode is merged with the isolation repair instead of overwriting it.
 
 
 From `main_computer` with Python, PyYAML, Playwright and locally usable Chromium/Edge/Chrome:

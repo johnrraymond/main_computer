@@ -21,20 +21,21 @@ from http.client import HTTPConnection
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from main_computer.slh.authenticator import generate_identity, public_key_fingerprint, sign_object
+from main_computer.slh.authenticator import sign_object
+from main_computer.slh.authenticator_store import (LocalIdentityStore, IdentityStoreError,
+    default_identity_directory)
 from main_computer.slh.ports import DEFAULT_SLH_API_HOST, DEFAULT_SLH_API_PORT
 
 _DEVICE_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z')
 
 
 def _default_auth_dir() -> Path:
-    root = os.environ.get('LOCALAPPDATA') or str(Path.home() / '.local' / 'share')
-    return Path(root) / 'MainComputer' / 'authenticators'
+    return default_identity_directory()
 
 
 def _default_state_dir() -> Path:
-    root = os.environ.get('LOCALAPPDATA') or str(Path.home() / '.local' / 'share')
-    return Path(root) / 'MainComputer' / 'slh'
+    from main_computer.slh.storage import slh_state_dir
+    return slh_state_dir()
 
 
 def identity_file(directory: Path, device_id: str) -> Path:
@@ -44,45 +45,24 @@ def identity_file(directory: Path, device_id: str) -> Path:
 
 
 def save_identity(directory: Path, device_id: str) -> dict:
-    """Create unencrypted PKCS#8 key, refusing to overwrite an existing key."""
-    destination = identity_file(directory, device_id)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if os.name == 'posix':
-        os.chmod(destination.parent, 0o700)
-    key, public = generate_identity()
-    pem = key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    )
-    fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    """Backward-compatible CLI wrapper over the shared local identity store."""
+    store = LocalIdentityStore(directory)
     try:
-        with os.fdopen(fd, 'wb') as output:
-            output.write(pem)
-            output.flush()
-            os.fsync(output.fileno())
-    except BaseException:
-        destination.unlink(missing_ok=True)
+        result = store.create(device_id)
+    except IdentityStoreError as exc:
+        if exc.code == 'IDENTITY_ALREADY_EXISTS':
+            raise FileExistsError(str(identity_file(directory, device_id))) from None
         raise
-    if os.name == 'posix':
-        os.chmod(destination, 0o600)
-    return {'device_id': device_id, 'identity_file': str(destination.resolve()),
-            'fingerprint': public_key_fingerprint(public), 'encrypted': False}
+    return {'device_id': device_id,
+            'identity_file': str(identity_file(directory, device_id).resolve()),
+            'fingerprint': result['fingerprint'], 'encrypted': False}
 
 
 def load_identity(directory: Path, device_id: str):
-    destination = identity_file(directory, device_id)
-    try:
-        key = serialization.load_pem_private_key(destination.read_bytes(), password=None)
-    except TypeError as exc:
-        raise ValueError('Existing authenticator key is encrypted; this passphrase-free CLI cannot open it') from exc
-    if not isinstance(key, ec.EllipticCurvePrivateKey) or not isinstance(key.curve, ec.SECP256R1):
-        raise ValueError('Not a Main Computer P-256 authenticator')
-    public = key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode('ascii')
-    return key, public
+    """Existing CLI and managed client retain their private-key loading API."""
+    store = LocalIdentityStore(directory)
+    key = store.load_private_key(device_id)
+    return key, store.get(device_id)['public_key']
 
 
 def _request(port: int, method: str, path: str, body: dict | None = None, token: str | None = None):

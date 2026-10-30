@@ -174,3 +174,148 @@
 .mcel-semantic-collection--negotiated mcel-row[data-mcel-retirement-state="protected"]::before{
   content:"No longer in current observation · retained during interaction";
 }
+
+/* 14.7.6.1: extension belongs to the original mcel-row interaction subtree.
+   Position:fixed escapes ordinary scroll overflow; it participates in neither
+   row geometry nor collection reflow. The real visible row is never cloned. */
+.mcel-negotiated-floating-card.mcel-unclip-card{
+  position:fixed;display:block;grid-column:auto;grid-row:auto;
+  padding:0;border:0;border-radius:0;background:transparent;max-height:none;overflow:visible;
+  box-shadow:none;transition:none;user-select:text;pointer-events:auto;cursor:auto;
+}
+.mcel-unclip-extension-frame{position:relative;width:100%;box-sizing:border-box;
+  border:1px solid var(--mcel-accent,#a5c8ff);border-top:0;
+  background:var(--mcel-surface,#101822);
+}
+.mcel-unclip-extension-viewport{width:100%;box-sizing:border-box;overflow-y:auto;overflow-x:hidden;
+  scrollbar-width:none;overscroll-behavior:contain;padding:8px;max-height:60vh;cursor:auto;}
+.mcel-unclip-extension-viewport::-webkit-scrollbar{display:none;}
+.mcel-unclip-exterior-track{position:absolute;left:100%;top:0;width:12px;
+  border:1px solid var(--mcel-line,#33465f);border-left:0;border-radius:0 4px 4px 0;
+  background:var(--mcel-surface,#101822);pointer-events:auto;cursor:pointer;box-sizing:border-box;}
+.mcel-unclip-exterior-track[hidden]{display:none!important;}
+.mcel-unclip-exterior-thumb{position:absolute;top:0;left:3px;right:3px;border-radius:4px;
+  background:var(--mcel-accent,#a5c8ff);min-height:18px;}
+.mcel-unclip-exterior-track.mcel-unclip-track--left{left:auto;right:100%;
+  border-left:1px solid var(--mcel-line,#33465f);border-right:0;}
+.mcel-unclip-card .mcel-semantic-collection__detail-content{padding:0;border:0;max-width:100%;}
+/* Exterior track space is reserved without reducing original content width. */
+.mcel-semantic-collection--negotiated mcel-collection{margin-inline-end:14px;}
+
+/* 14.7.6.2: pop the actual mcel-row into browser top layer, not a duplicate.
+   The invisible anchor retains list geometry; the real row owns all pointers. */
+.mcel-semantic-collection--negotiated mcel-collection > .mcel-unclip-layout-anchor {
+  display:block;pointer-events:none;visibility:hidden;padding:0;margin:0;border:0;
+}
+.mcel-semantic-collection--negotiated mcel-collection > mcel-row.mcel-source-toplayer:popover-open {
+  position:fixed;inset:auto;right:auto;bottom:auto;display:grid;
+  margin:0;box-sizing:border-box;overflow:visible;
+  border:0;border-bottom:1px solid var(--mcel-line,#33465f);
+  background:transparent;color:inherit;
+  box-shadow:none;max-width:none;max-height:none;
+}
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer .mcel-unclip-card{
+  position:absolute;
+}
+
+/* 14.7.6.3: ONLY the existing mcel-collection is promoted, not any row.
+   It keeps its original DOM rows, native scroll offset, width and appearance. */
+.mcel-semantic-collection--negotiated mcel-collection.mcel-collection-unclipped:popover-open{
+  position:fixed;inset:auto;right:auto;bottom:auto;display:block;
+  border:0;border-radius:0;box-shadow:none;outline:0;scrollbar-width:none;
+  overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;
+}
+.mcel-semantic-collection--negotiated mcel-collection.mcel-collection-unclipped::-webkit-scrollbar{display:none;}
+.mcel-collection-unclip-anchor{display:block;visibility:hidden;pointer-events:none;}
+.mcel-collection-exterior-scrollbar:popover-open{
+  position:fixed;inset:auto;margin:0;padding:0;width:12px;min-width:12px;max-width:12px;
+  border:1px solid var(--mcel-line,#33465f);border-radius:3px;
+  background:var(--mcel-surface,#101822);box-shadow:none;overflow:hidden;cursor:pointer;
+}
+.mcel-collection-exterior-scrollbar[hidden]{display:none!important;}
+.mcel-collection-exterior-thumb{position:absolute;left:2px;right:2px;top:0;
+  border-radius:3px;background:var(--mcel-accent,#a5c8ff);pointer-events:auto;}
+.mcel-collection-unclip-extension{box-sizing:border-box;width:100%;order:2147483647;flex:0 0 auto;border-top:1px solid var(--mcel-line,#33465f);}
+
+.mcel-semantic-collection__collection-extension{padding:10px;background:var(--mcel-surface,#101822);border-top:1px solid var(--mcel-line,#33465f);}
+.mcel-semantic-collection__collection-extension-label{font:600 11px/1.4 system-ui,sans-serif;margin:0 0 8px;color:var(--mcel-accent,#a5c8ff);}
+
+/* Do not allow a native in-flow scrollbar to steal content width before hover;
+   when exposed, the scrollbar receives its own exterior track. */
+.mcel-semantic-collection--negotiated mcel-collection[data-mcel-collection-hover-unclip="true"]{scrollbar-width:none;}
+.mcel-semantic-collection--negotiated mcel-collection[data-mcel-collection-hover-unclip="true"]::-webkit-scrollbar{display:none;}
+
+/* 14.7.7: each row owns its original top-layer presentation. The collection
+   keeps its own 20-record scrollport; no collection-owned hover expansion. */
+.mcel-semantic-collection--negotiated mcel-collection[data-mcel-row-hover-unclip="true"]{
+  scrollbar-width:auto;
+}
+.mcel-semantic-collection--negotiated mcel-collection[data-mcel-row-hover-unclip="true"] > mcel-row.mcel-source-toplayer:popover-open{
+  border-bottom:1px solid var(--mcel-line,#33465f);
+  overflow:visible;
+  background:rgba(160,190,230,.08);
+}
+.mcel-semantic-collection--negotiated mcel-collection[data-mcel-row-hover-unclip="true"] .mcel-unclip-card{
+  position:absolute;visibility:visible;overflow:visible;max-width:none;
+}
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer .mcel-unclip-extension-viewport{
+  box-sizing:border-box;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;
+}
+
+/* 14.7.7b: ONE ORIGINAL VISUAL CARD. The real mcel-row grows with a new
+   in-flow grid track. No absolutely positioned floating dialog is created. */
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer:popover-open{
+  display:grid;overflow:visible;box-sizing:border-box;
+  /* Preserve the same hover background as the source before promotion. */
+  background:rgba(160,190,230,.08);
+}
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer > .mcel-unclip-card{
+  position:relative!important;inset:auto!important;
+  grid-column:1 / -1;grid-row:auto;align-self:stretch;justify-self:stretch;
+  display:block;min-width:0;width:auto!important;max-width:none;
+  margin:0;padding:0;border:0;
+  border-radius:0;background:transparent;box-shadow:none;overflow:visible;
+  font:inherit;color:inherit;cursor:auto;box-sizing:border-box;
+}
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer .mcel-unclip-extension-frame{
+  position:relative;display:block;width:100%;height:100%;border:0;
+  background:transparent;box-sizing:border-box;
+}
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer .mcel-unclip-extension-viewport{
+  display:block;width:100%;padding:8px 0 0;box-sizing:border-box;
+  overflow-y:auto;overflow-x:hidden;scrollbar-width:none;
+}
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer .mcel-unclip-exterior-track{
+  left:calc(100% + 6px);top:0;
+}
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer .mcel-unclip-exterior-track.mcel-unclip-track--left{
+  left:auto;right:calc(100% + 6px);
+}
+
+/* The original bottom-border pixel is still part of the preserved region,
+   even though the card's actual outer border has moved to its new bottom. */
+.mcel-semantic-collection--negotiated mcel-row.mcel-source-toplayer:popover-open::after{
+  content:"";position:absolute;pointer-events:none;
+  left:0;right:0;
+  top:calc(var(--mcel-hover-original-height) - var(--mcel-hover-original-border-width));
+  height:var(--mcel-hover-original-border-width);
+  background:var(--mcel-hover-original-border-color);
+}
+
+/* 14.7.7d: this track is a *second native popover* in the top layer.
+   Browser UA popover rules add inset:auto/0 and margin:auto; absent an explicit
+   reset, left:471px can physically paint at x=767px (measured in Chromium).
+   The track therefore has an explicit 12px box flush against the original row. */
+.mcel-unclip-row-scroll-track:popover-open{
+  position:fixed;inset:auto;right:auto;bottom:auto;margin:0;padding:0;
+  display:block;box-sizing:border-box;min-width:12px;max-width:12px;width:12px;
+  border:1px solid var(--mcel-line,#33465f);border-radius:3px;
+  background:var(--mcel-surface,#101822);box-shadow:none;
+  overflow:hidden;cursor:pointer;z-index:2147483001;
+}
+.mcel-unclip-row-scroll-track[hidden]{display:none!important;}
+.mcel-unclip-row-scroll-thumb{
+  position:absolute;left:2px;right:2px;top:0;min-height:18px;
+  border-radius:3px;background:var(--mcel-accent,#a5c8ff);
+  pointer-events:auto;
+}

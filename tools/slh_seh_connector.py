@@ -23,7 +23,8 @@ from main_computer.slh.ports import DEFAULT_SLH_MANAGED_PORT
 
 
 def default_state():
-    return Path(os.getenv('LOCALAPPDATA') or Path.home()/'.local'/'share')/'MainComputer'/'slh'
+    from main_computer.slh.storage import slh_state_dir
+    return slh_state_dir()
 
 
 def service_identity(state_dir:Path, *, create=False):

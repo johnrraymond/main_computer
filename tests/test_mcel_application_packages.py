@@ -72,13 +72,12 @@ def test_repository_catalog_discovers_checked_in_packages_without_fixture_names(
         assert "application-package-discovery" not in record.conformance["missingBridges"]
 
 
-def test_experimental_design_is_outside_authoritative_package_catalog() -> None:
-    """An incomplete experiment must not poison every viewport import.
+def test_task_manager_design_fixture_is_not_an_application_package() -> None:
+    """Task Manager design and frob obligations are research documents, not a valid application package.
 
-    Genuine incomplete packages inside mcel_apps still fail closed; experiments
-    are kept in their own tree instead of weakening the catalog validator.
+    An incomplete package inside mcel_apps must still fail closed.
     """
-    design_root = ROOT / "mcel_designs" / "task-manager"
+    design_root = ROOT / "tools" / "fixtures" / "mcel" / "task-manager"
     assert (design_root / "design.yaml").is_file()
     assert (design_root / "frob_crosscheck.yaml").is_file()
     old_package_dir = ROOT / "mcel_apps" / "task-manager"

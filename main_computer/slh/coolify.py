@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import urllib.request
 import urllib.error
+from urllib.parse import urlsplit
 from typing import Any, Protocol
 
 from .config import SEHTarget
@@ -36,6 +37,12 @@ class CoolifyHTTP:
     def __init__(self, origin: str, token: str, timeout: float = 12.0):
         if not token or not token.strip():
             raise SEHDeploymentError("SLH_COOLIFY_TOKEN is required for live Coolify calls")
+        parsed = urlsplit(origin)
+        if (not parsed.hostname or parsed.username or parsed.password or parsed.query or
+                parsed.fragment or parsed.path not in ('', '/') or
+                not (parsed.scheme == 'https' or
+                     (parsed.scheme == 'http' and parsed.hostname in ('localhost', '127.0.0.1', '::1')))):
+            raise SEHDeploymentError('Coolify management API requires HTTPS or loopback HTTP; never send an API token to a public HTTP origin')
         self.origin = origin.rstrip("/")
         self.token = token.strip()
         self.timeout = timeout

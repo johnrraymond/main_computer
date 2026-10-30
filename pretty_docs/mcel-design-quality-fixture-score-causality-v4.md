@@ -2,7 +2,7 @@
 
 ## Boundary
 
-The Frob remains a **research-only** browser evaluator. This change does not promote the optimizer, change the application's semantic truth, alter production MCEL selection, or require ChatGPT/Gemma. Production application packages and the isolated `mcel_designs/task-manager/` fixtures stay separate.
+The Frob remains a **research-only** browser evaluator. This change does not promote the optimizer, change the application's semantic truth, alter production MCEL selection, or require ChatGPT/Gemma. Production application packages and the descriptive Task Manager design/Frob fixtures under `tools/fixtures/mcel/task-manager/` remain separate.
 
 ## Repairs
 

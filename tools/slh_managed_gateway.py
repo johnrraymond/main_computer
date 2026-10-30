@@ -54,7 +54,8 @@ def authenticated_upstream(network:str, wallet_file:Path, *, allow_live:bool=Fal
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['serve','fingerprint'])
-    root=Path(os.environ.get('LOCALAPPDATA') or str(Path.home()/'.local/share'))/'MainComputer'/'slh'
+    from main_computer.slh.storage import slh_state_dir
+    root=slh_state_dir()
     p.add_argument('--state-dir',type=Path,default=root)
     p.add_argument('--host',default='127.0.0.1')
     p.add_argument('--port',type=int,default=DEFAULT_MANAGED_PORT)

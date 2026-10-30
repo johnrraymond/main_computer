@@ -32,7 +32,8 @@ class ExclusiveSLHServer(WSGIServer):
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=('init','serve','contracts','verify-local'))
-    default_root=Path(os.environ.get('LOCALAPPDATA',str(Path.home()/'.local'/'share'))) / 'MainComputer' / 'slh'
+    from main_computer.slh.storage import slh_state_dir
+    default_root=slh_state_dir()
     p.add_argument('--state-dir',type=Path,default=default_root)
     p.add_argument('--host',default=DEFAULT_SLH_API_HOST)
     p.add_argument('--port',type=int,default=DEFAULT_SLH_API_PORT)
@@ -43,6 +44,9 @@ def main(argv=None):
         from tests.test_slh_phase2a_auth_api import run_isolated_harness
         result=run_isolated_harness()
     else:
+        from main_computer.slh.storage import secure_machine_state_dir, guard_legacy_state
+        guard_legacy_state(args.state_dir)
+        secure_machine_state_dir(args.state_dir)
         auth=SLHAuthority(args.state_dir)
         api=SLHAPI(auth)
         if args.command=='init':

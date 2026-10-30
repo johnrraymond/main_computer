@@ -13,6 +13,7 @@ from .control import SLHControlBackend
 from .schemas import AUTH_REQUESTS, KNOWN_RESPONSES
 from .ports import DEFAULT_SLH_API_ORIGIN
 from .scheduler_policy import SchedulerPolicyStore
+from .local_authenticator_api import LocalAuthenticatorAPI
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,23 @@ class Endpoint:
 
 ENDPOINTS = (
     Endpoint('GET','/v1/bootstrap/status','bootstrap_status','public'),
+    Endpoint('GET','/v1/local/status','local_status','public'),
+    Endpoint('GET','/v1/local/services','local_services','admin'),
+    Endpoint('GET','/v1/local/organization/config','local_org_config','admin'),
+    Endpoint('PATCH','/v1/local/organization/config','local_org_configure','admin'),
+    Endpoint('POST','/v1/local/organization/enable','local_org_enable','admin'),
+    Endpoint('POST','/v1/local/organization/disable','local_org_disable','admin'),
+    Endpoint('POST','/v1/local/organization/restart','local_org_restart','admin'),
+    Endpoint('GET','/v1/local/authenticator/status','local_authenticator_status','local_identity'),
+    Endpoint('GET','/v1/local/authenticator/identities','local_authenticator_list','local_identity'),
+    Endpoint('POST','/v1/local/authenticator/identities','local_authenticator_create','local_identity'),
+    Endpoint('GET','/v1/local/authenticator/identities/{id}','local_authenticator_get','local_identity'),
+    Endpoint('POST','/v1/local/authenticator/identities/{id}/sign','local_authenticator_sign','local_identity'),
+    Endpoint('POST','/v1/bootstrap/begin','bootstrap_begin','local_bootstrap'),
+    Endpoint('PUT','/v1/bootstrap/{id}/administrator','bootstrap_stage_admin','local_bootstrap'),
+    Endpoint('GET','/v1/bootstrap/{id}/status','bootstrap_transaction_status','local_bootstrap'),
+    Endpoint('POST','/v1/bootstrap/{id}/cancel','bootstrap_cancel','local_bootstrap'),
+    Endpoint('POST','/v1/bootstrap/{id}/activate-p256','bootstrap_activate_p256','local_bootstrap'),
     Endpoint('POST','/v1/bootstrap/admin','bootstrap_admin','local_bootstrap'),
     Endpoint('GET','/v1/capabilities','capabilities','public'),
     Endpoint('POST','/v1/bootstrap/recovery','stub','local_bootstrap','unimplemented'),
@@ -85,9 +103,13 @@ def _match(pattern, path):
 
 
 class SLHAPI:
-    def __init__(self, authority: SLHAuthority, *, control=None):
+    def __init__(self, authority: SLHAuthority, *, control=None, local_status_provider=None,
+                 local_authenticator=None, organization_controller=None):
         self.authority=authority
         self.control=control or SLHControlBackend()
+        self.local_status_provider=local_status_provider
+        self.local_authenticator=local_authenticator or LocalAuthenticatorAPI()
+        self.organization_controller=organization_controller
 
     def openapi(self):
         paths={}
@@ -106,7 +128,7 @@ class SLHAPI:
                 op['security']=[{'DeviceSession':[]}]
             elif e.access=='optional_key':
                 op['description']='Either an admin bearer session or a single-use enrollment_key; same approval engine.'
-            if e.method in ('POST','PATCH'):
+            if e.method in ('POST','PATCH','PUT'):
                 op['requestBody']={'content':{'application/json':{'schema':AUTH_REQUESTS.get(e.handler,{'type':'object'})}}}
             paths.setdefault(e.path,{})[e.method.lower()]=op
         return {'openapi':'3.1.0','info':{'title':'Main Computer SLH API','version':'2A.1'},
@@ -130,8 +152,12 @@ class SLHAPI:
             if not found:raise SLHError('ENDPOINT_NOT_FOUND',404)
             e,params=found
             identity=None
+            if e.access=='local_identity':
+                return self.local_authenticator.call(method,path,body,loopback=loopback)
             if e.access=='local_bootstrap' and not loopback:
                 raise SLHError('BOOTSTRAP_LOCAL_ONLY',403)
+            if e.path.startswith('/v1/local/') and not loopback:
+                raise SLHError('LOCAL_TRANSPORT_ONLY',403)
             if e.access=='admin':identity=self.authority.authenticate(token,admin=True)
             elif e.access=='known':identity=self.authority.authenticate(token)
             elif e.access=='optional_key' and not body.get('enrollment_key'):
@@ -139,7 +165,7 @@ class SLHAPI:
             if e.state=='unimplemented':
                 return 501,{'error':{'code':'NOT_IMPLEMENTED','operation':e.method+' '+e.path,'available':False}}
             result=self._invoke(e.handler,body,params,identity,token,loopback)
-            status = 201 if e.handler in ('bootstrap_admin','request_enrollment','approve_enrollment','issue_key') else 200
+            status = 201 if e.handler in ('bootstrap_admin','bootstrap_begin','request_enrollment','approve_enrollment','issue_key') else 200
             return status,result
         except SLHError as exc:
             return exc.status,{'error':{'code':exc.code}}
@@ -150,6 +176,33 @@ class SLHAPI:
         a=self.authority
         actor=ident['user_id'] if ident else None
         if op=='bootstrap_status':return a.status()
+        if op=='local_status':
+            if self.local_status_provider is not None:
+                return self.local_status_provider()
+            from .local_service import local_status
+            from .ports import DEFAULT_SLH_API_PORT
+            return local_status(a, DEFAULT_SLH_API_PORT)
+        if op=='bootstrap_begin':
+            return a.begin_bootstrap(b,secret=b.get('bootstrap_secret') or token)
+        if op=='bootstrap_stage_admin':
+            return a.stage_bootstrap_administrator(p['id'],b,secret=b.get('bootstrap_secret') or token)
+        if op=='bootstrap_transaction_status':
+            return a.bootstrap_transaction_status(p['id'],secret=token)
+        if op=='bootstrap_cancel':
+            return a.cancel_bootstrap_transaction(p['id'],secret=b.get('bootstrap_secret') or token)
+        if op=='bootstrap_activate_p256':
+            return a.activate_bootstrap_without_totp(p['id'], secret=b.get('bootstrap_secret') or token,
+                                                    explicit_defer=b.get('defer_totp') is True)
+        if op.startswith('local_org_') or op=='local_services':
+            if self.organization_controller is None:
+                raise SLHError('ORGANIZATION_CONTROLLER_UNAVAILABLE', 503)
+            c=self.organization_controller
+            if op=='local_services':return {'organization_service':c.status(),'local_service':'running'}
+            if op=='local_org_config':return c.config()
+            if op=='local_org_configure':return c.configure(b)
+            if op=='local_org_enable':return c.enable()
+            if op=='local_org_disable':return c.disable()
+            if op=='local_org_restart':return c.restart()
         if op=='bootstrap_admin':return a.bootstrap(b,loopback=loopback)
         if op=='capabilities':return {'schema':'main-computer.slh-capabilities.v1','operations':[
             {'method':e.method,'path':e.path,'status':e.state,'access':e.access} for e in ENDPOINTS]}
@@ -222,7 +275,7 @@ class SLHAPI:
                 token=auth[7:] if auth.startswith('Bearer ') else ''
                 status,result=self.call(method,environ.get('PATH_INFO',''),body,token=token,loopback=True)
         raw=json.dumps(result,sort_keys=True).encode('utf-8')
-        reasons={200:'OK',201:'Created',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',409:'Conflict',413:'Content Too Large',415:'Unsupported Media Type',501:'Not Implemented'}
+        reasons={200:'OK',201:'Created',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',409:'Conflict',413:'Content Too Large',415:'Unsupported Media Type',501:'Not Implemented',503:'Service Unavailable'}
         start_response(f'{status} {reasons.get(status,"Error")}',
                        [('Content-Type','application/json; charset=utf-8'),('Content-Length',str(len(raw))),
                         ('Cache-Control','no-store'),('X-Content-Type-Options','nosniff')])

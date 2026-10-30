@@ -323,8 +323,8 @@ CHILD_SPECS: tuple[ChildSpec, ...] = (
     ChildSpec(name="executor", module="main_computer.executor_service", args=("boot", "--watch")),
     ChildSpec(name="applications", module="main_computer.applications_service", args=("boot", "--watch")),
     ChildSpec(name="blockchain", module="main_computer.blockchain_service", args=("boot", "--watch")),
-    # Main Computer owns the SLH's lifecycle. The gateway itself owns any
-    # configured SEH tunnel and reconnects independently of the lab.
+    # SLH child is the permanent localhost control plane only.
+    # Organization gateway and SEH are NOT launched by bootstrap.
     ChildSpec(name="slh", module="main_computer.slh.gateway_service", args=("run",),
               start_priority=20, stop_priority=5),
 )

@@ -66,6 +66,23 @@ class SLHAuthority:
         with self._lock, self._db() as c:
             c.executescript('''
             CREATE TABLE IF NOT EXISTS organization(org_id TEXT PRIMARY KEY, initialized_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS bootstrap_transactions(
+                id TEXT PRIMARY KEY,
+                org_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN
+                    ('PENDING','AWAITING_AUTHENTICATOR','EXPIRED','CANCELED','INITIALIZED')),
+                challenge_nonce TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                admin_id TEXT,
+                admin_name TEXT,
+                device_id TEXT,
+                public_key TEXT,
+                fingerprint TEXT,
+                proof_at INTEGER);
+            CREATE UNIQUE INDEX IF NOT EXISTS bootstrap_one_active
+                ON bootstrap_transactions((1))
+                WHERE status IN ('PENDING','AWAITING_AUTHENTICATOR');
             CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
                 status TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
@@ -105,8 +122,21 @@ class SLHAuthority:
             return c.execute('SELECT 1 FROM organization LIMIT 1').fetchone() is not None
 
     def status(self):
-        return {'initialized': self.initialized(), 'bootstrap': 'CLOSED' if self.initialized() else 'LOCAL_ONLY',
-                'organization_id': self.org_id()}
+        # Public status deliberately contains no pending administrator details or
+        # setup nonce; it is safe to display before initial provisioning.
+        initialized = self.initialized()
+        setup = 'INITIALIZED' if initialized else 'UNCONFIGURED'
+        if not initialized:
+            with self._lock, self._db() as c:
+                c.execute('BEGIN IMMEDIATE')
+                self._expire_bootstrap(c)
+                row = c.execute("SELECT status FROM bootstrap_transactions WHERE status IN "
+                                "('PENDING','AWAITING_AUTHENTICATOR') LIMIT 1").fetchone()
+                if row:
+                    setup = row['status']
+        return {'initialized': initialized,
+                'bootstrap': 'CLOSED' if initialized else 'LOCAL_ONLY',
+                'organization_id': self.org_id(), 'setup_phase': setup}
 
     def org_id(self):
         with self._db() as c:
@@ -116,6 +146,153 @@ class SLHAuthority:
     def _audit(self, c, actor, action, target, detail=''):
         c.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
                   (int(time.time()), actor, action, target, detail))
+
+    # Patch B: a durable, inert first-administrator proposal.  Patch C will
+    # add the TOTP enrollment and atomic activation transaction.  Nothing here
+    # creates a user, device, or organization, or enables a network listener.
+    SETUP_TTL_SECONDS = 1800
+
+    def _authorize_setup(self, secret: str):
+        path = self.directory / 'bootstrap.secret'
+        if (not isinstance(secret, str) or not path.is_file()
+                or not secrets.compare_digest(path.read_text(encoding='ascii').strip(), secret)):
+            raise SLHError('BOOTSTRAP_DENIED', 403)
+
+    def _expire_bootstrap(self, c):
+        now = int(time.time())
+        c.execute("UPDATE bootstrap_transactions SET status='EXPIRED' "
+                  "WHERE status IN ('PENDING','AWAITING_AUTHENTICATOR') AND expires_at <= ?", (now,))
+
+    def _bootstrap_transaction(self, c, transaction_id):
+        if not isinstance(transaction_id, str) or len(transaction_id) != 32 or any(
+                ch not in '0123456789abcdef' for ch in transaction_id):
+            raise SLHError('SETUP_NOT_FOUND', 404)
+        row = c.execute('SELECT * FROM bootstrap_transactions WHERE id=?', (transaction_id,)).fetchone()
+        if row is None:
+            raise SLHError('SETUP_NOT_FOUND', 404)
+        return row
+
+    def begin_bootstrap(self, data, *, secret: str):
+        self._authorize_setup(secret)
+        org_id = _required(data.get('org_id'), 'org_id')
+        with self._lock, self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if c.execute('SELECT 1 FROM organization LIMIT 1').fetchone():
+                raise SLHError('ALREADY_INITIALIZED', 409)
+            self._expire_bootstrap(c)
+            active = c.execute("SELECT id FROM bootstrap_transactions WHERE status IN "
+                               "('PENDING','AWAITING_AUTHENTICATOR') LIMIT 1").fetchone()
+            if active:
+                raise SLHError('SETUP_ALREADY_PENDING', 409)
+            now = int(time.time())
+            transaction_id = uuid.uuid4().hex
+            nonce = secrets.token_urlsafe(32)
+            expiry = now + self.SETUP_TTL_SECONDS
+            c.execute('INSERT INTO bootstrap_transactions '
+                      '(id,org_id,status,challenge_nonce,created_at,expires_at) '
+                      'VALUES (?,?,?,?,?,?)',
+                      (transaction_id,org_id,'PENDING',nonce,now,expiry))
+            self._audit(c, 'local-bootstrap', 'bootstrap.begin', transaction_id)
+        return {'transaction_id': transaction_id, 'state': 'PENDING',
+                'org_id': org_id, 'created_at': now, 'expires_at': expiry,
+                'proof_context': {'version': 1, 'action': 'slh.admin.bootstrap.pending',
+                                  'org_id': org_id, 'transaction_id': transaction_id,
+                                  'nonce': nonce, 'issued_at': now, 'expires_at': expiry}}
+
+    def bootstrap_transaction_status(self, transaction_id: str, *, secret: str):
+        self._authorize_setup(secret)
+        with self._lock, self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            self._expire_bootstrap(c)
+            row = self._bootstrap_transaction(c, transaction_id)
+            return {'transaction_id': row['id'], 'state': row['status'],
+                    'org_id': row['org_id'], 'admin_id': row['admin_id'],
+                    'device_id': row['device_id'], 'created_at': row['created_at'],
+                    'expires_at': row['expires_at']}
+
+    def stage_bootstrap_administrator(self, transaction_id: str, data, *, secret: str):
+        self._authorize_setup(secret)
+        admin_id = _required(data.get('admin_id'), 'admin_id')
+        admin_name = _required(data.get('admin_name'), 'admin_name')
+        device_id = _required(data.get('device_id'), 'device_id')
+        public_key = data.get('public_key')
+        if not isinstance(public_key, str) or not 0 < len(public_key) <= 2048:
+            raise SLHError('INVALID_PUBLIC_KEY')
+        with self._lock, self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if c.execute('SELECT 1 FROM organization LIMIT 1').fetchone():
+                raise SLHError('ALREADY_INITIALIZED', 409)
+            self._expire_bootstrap(c)
+            row = self._bootstrap_transaction(c, transaction_id)
+            if row['status'] != 'PENDING':
+                raise SLHError('SETUP_NOT_PENDING', 409)
+            statement = {'version': 1, 'action': 'slh.admin.bootstrap.pending',
+                         'org_id': row['org_id'], 'transaction_id': row['id'],
+                         'nonce': row['challenge_nonce'], 'issued_at': row['created_at'],
+                         'expires_at': row['expires_at'], 'admin_id': admin_id,
+                         'device_id': device_id, 'public_key': public_key}
+            if not verify_object(public_key, statement, data.get('proof')):
+                raise SLHError('INVALID_KEY_PROOF', 403)
+            fingerprint = public_key_fingerprint(public_key)
+            c.execute("UPDATE bootstrap_transactions SET status='AWAITING_AUTHENTICATOR', "
+                      'admin_id=?,admin_name=?,device_id=?,public_key=?,fingerprint=?,proof_at=? '
+                      "WHERE id=? AND status='PENDING'",
+                      (admin_id,admin_name,device_id,public_key,fingerprint,int(time.time()),transaction_id))
+            self._audit(c, admin_id, 'bootstrap.administrator.staged', transaction_id)
+        return {'transaction_id': transaction_id, 'state': 'AWAITING_AUTHENTICATOR',
+                'org_id': row['org_id'], 'admin_id': admin_id, 'device_id': device_id,
+                'fingerprint': fingerprint, 'expires_at': row['expires_at']}
+
+    def activate_bootstrap_without_totp(self, transaction_id: str, *, secret: str,
+                                        explicit_defer: bool):
+        """Interim P-256-only activation; TOTP rollout is deliberately deferred.
+
+        Nothing is initialized until this one database transaction commits.
+        The client must explicitly acknowledge that personal TOTP is not active.
+        """
+        self._authorize_setup(secret)
+        if explicit_defer is not True:
+            raise SLHError('TOTP_DEFERRAL_ACKNOWLEDGEMENT_REQUIRED', 400)
+        with self._lock, self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if c.execute('SELECT 1 FROM organization LIMIT 1').fetchone():
+                raise SLHError('ALREADY_INITIALIZED', 409)
+            self._expire_bootstrap(c)
+            row = self._bootstrap_transaction(c, transaction_id)
+            if row['status'] != 'AWAITING_AUTHENTICATOR':
+                raise SLHError('SETUP_NOT_READY', 409)
+            if not all(row[k] for k in ('admin_id','admin_name','device_id','public_key','fingerprint','proof_at')):
+                raise SLHError('SETUP_NOT_READY', 409)
+            now = int(time.time())
+            c.execute('INSERT INTO organization VALUES (?,?)', (row['org_id'], now))
+            c.execute('INSERT INTO users VALUES (?,?,?,?)',
+                      (row['admin_id'], row['admin_name'], 'admin', 'active'))
+            c.execute('INSERT INTO devices VALUES (?,?,?,?,?,?,?,?,?)',
+                      (row['device_id'], row['admin_id'], row['public_key'], row['fingerprint'],
+                       'administrator', row['admin_name'], '', 'active', now))
+            c.execute("UPDATE bootstrap_transactions SET status='INITIALIZED' WHERE id=?",
+                      (transaction_id,))
+            self._audit(c, row['admin_id'], 'bootstrap.activate.p256_only', row['device_id'],
+                        'TOTP deferred by explicit administrator acknowledgement')
+        # A committed organization closes bootstrap even if deleting the secret
+        # is interrupted; initialized() is the authoritative guard.
+        (self.directory / 'bootstrap.secret').unlink(missing_ok=True)
+        return {'status': 'INITIALIZED', 'org_id': row['org_id'],
+                'admin_id': row['admin_id'], 'device_id': row['device_id'],
+                'administrator_authentication': 'p256_device_only',
+                'totp_enrolled': False}
+
+    def cancel_bootstrap_transaction(self, transaction_id: str, *, secret: str):
+        self._authorize_setup(secret)
+        with self._lock, self._db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            self._expire_bootstrap(c)
+            row = self._bootstrap_transaction(c, transaction_id)
+            if row['status'] not in ('PENDING','AWAITING_AUTHENTICATOR'):
+                raise SLHError('SETUP_NOT_PENDING', 409)
+            c.execute("UPDATE bootstrap_transactions SET status='CANCELED' WHERE id=?", (transaction_id,))
+            self._audit(c, 'local-bootstrap', 'bootstrap.cancel', transaction_id)
+        return {'transaction_id': transaction_id, 'state': 'CANCELED'}
 
     def bootstrap(self, data, *, loopback: bool):
         if not loopback:
@@ -128,6 +305,10 @@ class SLHAuthority:
             c.execute('BEGIN IMMEDIATE')
             if c.execute('SELECT 1 FROM organization LIMIT 1').fetchone():
                 raise SLHError('ALREADY_INITIALIZED', 409)
+            self._expire_bootstrap(c)
+            if c.execute("SELECT 1 FROM bootstrap_transactions WHERE status IN "
+                         "('PENDING','AWAITING_AUTHENTICATOR') LIMIT 1").fetchone():
+                raise SLHError('SETUP_IN_PROGRESS', 409)
             if not path.exists() or not secrets.compare_digest(path.read_text().strip(), secret):
                 raise SLHError('BOOTSTRAP_DENIED', 403)
             org_id = _required(data.get('org_id'), 'org_id')

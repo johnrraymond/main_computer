@@ -89,6 +89,7 @@ def main():
                 const m=McelUniversalSemanticLayoutLab.mount(host,data,{lab:true,presentationNegotiation:true,
                     sourceRetirement:true,retirementPolicy:policy});
                 window.__audit={host,data,m};
+                host.querySelector('mcel-row')?.scrollIntoView({block:'center'});
                 const id=m.collection.ids[0],opened=m.collection.request(id,'onHover'),pane=m.collection.floatingCard;
                 const r=pane.getBoundingClientRect();
                 return {opened:opened.ok,x:r.x+Math.min(35,r.width/2),y:r.y+Math.min(30,r.height/2)};
@@ -204,7 +205,8 @@ def main():
                 delayMs:160,pauseWhen:['hovered'],onPause:'reset',maxRetained:40};
               const m=McelUniversalSemanticLayoutLab.mount(host,data,{lab:true,
                 presentationNegotiation:true,sourceRetirement:true,retirementPolicy:policy});
-              window.__lifecycle={m,host,data};const id=m.collection.ids[0];
+              window.__lifecycle={m,host,data};host.querySelector('mcel-row')?.scrollIntoView({block:'center'});
+              const id=m.collection.ids[0];
               const open=m.collection.request(id,'onHover');
               const rect=m.collection.floatingCard.getBoundingClientRect();
               return {ok:open.ok,x:rect.x+Math.min(32,rect.width/2),y:rect.y+Math.min(24,rect.height/2)};
@@ -216,7 +218,8 @@ def main():
               return {ok:update.ok,entries:m.collection.retirement.entries};
             }''')
             page.wait_for_timeout(240)
-            held=page.evaluate('''()=>({hovered:!!__lifecycle.m.collection.floatingCard?.matches(':hover'),
+            held=page.evaluate('''()=>({hovered:!!(__lifecycle.m.collection.floatingCard?.matches(':hover') ||
+               __lifecycle.m.collection.floatingCard?.parentElement?.matches(':hover')),
               protected:__lifecycle.m.collection.retirement.entries.some(e=>e.reasons.includes('hovered')),
               retained:__lifecycle.m.collection.retirement.ids.length===1})''')
             page.mouse.move(2,2)

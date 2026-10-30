@@ -61,6 +61,22 @@ class SEHControl:
         result=st.mutate(self.root,network,generation,operation_id,update)
         return {'seh':seh,'network':network,'operation':command,**result}
 
+    def prepare_git(self, network: str, seh: str, **kwargs) -> dict:
+        from .git_deployment import prepare
+        return prepare(self.root, network, seh, **kwargs)
+
+    def preflight_git(self, network: str, seh: str, **kwargs) -> dict:
+        from .git_deployment import preflight
+        return preflight(self.root, network, seh, **kwargs)
+
+    def deploy_git(self, network: str, seh: str, *, operation_id: str, **kwargs) -> dict:
+        from .git_deployment import deploy
+        return deploy(self.root, network, seh, operation_id=operation_id, **kwargs)
+
+    def status_git(self, network: str, seh: str, **kwargs) -> dict:
+        from .git_deployment import status
+        return status(self.root, network, seh, **kwargs)
+
     def resolved(self, network: str, seh: str):
         _, state, doc=st.read(self.root,network)
         return st.resolve(doc,network,seh,state.binding.generation)

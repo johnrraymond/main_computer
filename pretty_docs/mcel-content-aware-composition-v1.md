@@ -21,7 +21,7 @@ Run focused tests:
 ## Scope and caveats
 
 - This changes the **generic synthetic MCEL application generator and Frob measurement**, not the live Task Manager, Website Builder, or production selection engine.
-- Do not alter catalog validation; Task Manager design fixtures remain outside `mcel_apps/` under `mcel_designs/task-manager/`.
+- Do not alter catalog validation; the descriptive Task Manager design and experimental Frob contract are stored under `tools/fixtures/mcel/task-manager/`. They are not an executable MCEL application package.
 - The optimizer's weights and unsupported-task abstentions remain unchanged.
 - Complete browser wrapping does not certify typography, accessibility, usefulness, or human visual approval.
 - The generated candidate preview must be recompiled before its screenshots can reflect this fix. A previously created `stress-review.zip` is immutable evidence of the earlier renderer.

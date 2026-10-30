@@ -8347,3 +8347,42 @@ body.mcel-modal-open {
 #mcel-lifecycle-acid .mcel-lifecycle-acid__review{max-width:100%}
 #mcel-lifecycle-acid .mcel-lifecycle-acid__scenario-step{min-width:0}
 @media(max-width:600px){#mcel-lifecycle-acid .mcel-lifecycle-acid__case-nav label{flex:1 0 100%;min-width:0}#mcel-lifecycle-acid .mcel-lifecycle-acid__case-nav select{width:100%;min-width:0;max-width:100%}#mcel-lifecycle-acid .mcel-lifecycle-acid__case-nav button{flex:1 1 42%;min-width:0}}
+
+/* MCEL 14.7.5c: truly flat, independently interactive L18 experimental gallery. */
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery{display:flex;flex-direction:column;gap:20px;min-width:0}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px;border:1px solid #526c86;border-radius:9px;background:#101d2b}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-toolbar span{font-size:.83rem;color:#cbd5e1}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-card{min-width:0;max-width:100%;padding:16px;display:flex;flex-direction:column;gap:12px;border:1px solid #44758c;border-radius:12px;background:#0b1423;scroll-margin-top:16px}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-heading{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-heading h4{margin:0;color:#a5f3fc;font-size:1.05rem}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-factors{display:flex;flex-wrap:wrap;gap:6px}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-factors span{padding:4px 7px;border-radius:5px;border:1px solid #38546c;background:#142538;font-size:.74rem;color:#e2e8f0}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-description{font-size:.84rem;color:#cbd5e1}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-stage{display:block;width:100%;max-width:100%;min-width:0;min-height:130px;border:1px solid #38546c;border-radius:8px;padding:10px;overflow:auto;background:#080f1b;box-sizing:border-box}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-stage .mcel-lifecycle-acid__specimen{box-sizing:border-box}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-actions{display:flex;flex-wrap:wrap;gap:6px}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-card button,#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-toolbar button{background:#182c42;color:#f1f5f9;border:1px solid #5a86a4;border-radius:6px;padding:7px 10px;cursor:pointer;font-size:.8rem}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-card button:hover{border-color:#67e8f9}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-card button:focus-visible{outline:2px solid #67e8f9;outline-offset:2px}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-options{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;font-size:.82rem;color:#cbd5e1}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-options label{display:flex;gap:6px;align-items:center;cursor:pointer}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-status{font-size:.79rem;color:#bfeadf;overflow-wrap:anywhere}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-status[data-problem="true"]{color:#fca5a5;font-weight:650}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-review{display:grid;gap:10px;padding-top:10px;border-top:1px solid #475569}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-verdicts{display:flex;flex-wrap:wrap;gap:7px}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-verdicts [data-verdict="correct"][aria-pressed="true"]{background:#14532d;border-color:#4ade80}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-verdicts [data-verdict="broken"][aria-pressed="true"]{background:#7f1d1d;border-color:#f87171}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-verdicts [data-verdict="unsure"][aria-pressed="true"]{background:#713f12;border-color:#facc15}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-review label{font-size:.82rem;color:#cbd5e1}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-review textarea{display:block;box-sizing:border-box;width:100%;min-height:65px;margin-top:5px;background:#101a2a;color:#f8fafc;border:1px solid #617e9a;border-radius:6px;padding:8px}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-card details{min-width:0;font-size:.83rem}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-card details pre{max-height:250px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__single-advanced{padding:12px;border:1px solid #526b7a;border-radius:9px}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__single-advanced>summary{cursor:pointer;font-weight:650}
+@media(max-width:600px){#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-card{padding:10px;gap:9px}#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-stage{padding:5px}#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-card button{padding:7px 8px}}
+
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-planned{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:.82rem;color:#a5f3fc}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-planned button{background:#0e526b;border-color:#67e8f9;font-weight:600}
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-planned button:disabled{opacity:.5;cursor:default}
+
+#mcel-lifecycle-acid .mcel-lifecycle-acid__gallery-options select{padding:4px 6px;color:#f8fafc;background:#142538;border:1px solid #6483a4;border-radius:5px;}

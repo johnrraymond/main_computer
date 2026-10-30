@@ -87,33 +87,10 @@ def _missing_deployment_fields(root: Path, network: str, seh: str, changes: dict
 
 
 def _create_deployment_draft(runtime_state_root: Path, network: str, seh: str, path: Path) -> dict:
-    """Create a nonsecret editable input exactly once; never commit fake remote values."""
-    from tools.seh_control.identity import read, seh_doc
-    _, binding, document = read(runtime_state_root, network)
-    entry = seh_doc(document, network, seh)
-    active = entry['coolify'].get('active_identity')
-    if not active:
-        raise SEHIdentityError('Copy or select a Coolify identity before configuring the SEH')
-    controller = entry['coolify']['identities'][active]['controller']
-    previous = entry['deployment']
-    fields = ('public_url', 'image', 'image_digest', 'environment_uuid',
-              'slh_public_key_b64', 'project_uuid', 'server_uuid')
-    draft = {'enabled': True}
-    for name in fields:
-        # Controller carries nonsecret deployment placement as well as the token;
-        # never serialize the controller, its URL, or the token into this file.
-        value = previous.get(name) or (controller.get(name) if name in
-                  ('project_uuid', 'environment_uuid', 'server_uuid') else None)
-        draft[name] = value if isinstance(value, str) else ''
-    if not draft['slh_public_key_b64']:
-        try:
-            from tools.slh_seh_connector import default_state, service_identity
-            _, public = service_identity(default_state(), create=False)
-            draft['slh_public_key_b64'] = public
-        except (FileNotFoundError, OSError, ValueError):
-            # No local SLH key is a normal remote-management condition.
-            # Never create a new identity or guess the public key here.
-            pass
+    """Create one nonsecret draft, auto-discovering only supported evidence."""
+    from tools.seh_control.discovery import discover
+    result = discover(runtime_state_root, network, seh)
+    draft = result['values']
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open('x', encoding='utf-8') as output:
@@ -122,9 +99,34 @@ def _create_deployment_draft(runtime_state_root: Path, network: str, seh: str, p
     except FileExistsError:
         raise SEHIdentityError('Deployment draft was created concurrently; review it before configuring') from None
     return {'status': 'DRAFT_CREATED', 'network': network, 'seh': seh,
-            'path': str(path), 'state_generation': binding.binding.generation,
-            'missing_fields': _missing_deployment_fields(runtime_state_root, network, seh, draft),
+            'path': str(path), 'state_generation': result['state_generation'],
+            'missing_fields': result['missing_fields'],
+            'discovered_fields': result['discovered_fields'],
+            'blockers': result['blockers'],
+            'public_dns_verified': False, 'public_tls_verified': False,
             'identity_committed': False, 'remote_mutation': False}
+
+
+def _refresh_deployment_draft(runtime_state_root: Path, network: str, seh: str,
+                              path: Path, changes: dict) -> tuple[dict, dict]:
+    """Fill only missing nonsecret fields; never replace operator selections."""
+    from tools.seh_control.discovery import discover
+    import tempfile
+    result = discover(runtime_state_root, network, seh, existing=changes)
+    resolved = result['values']
+    if resolved != changes:
+        # File is operator-owned input, not Mother state. Write a complete new
+        # file before replacing the old one; keep manual values unchanged.
+        fd, temp = tempfile.mkstemp(prefix='.seh-draft-', suffix='.json', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as output:
+                json.dump(resolved, output, indent=2, sort_keys=True)
+                output.write('\n')
+            os.replace(temp, path)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
+    return resolved, result
 
 
 def _target(path):
@@ -181,7 +183,7 @@ def _local_verify(target):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('profiles','contracts','probe-hub','plan','preflight','verify-coolify','deploy','start','verify-local','list','inspect','coolify-sources','reserve','coolify-copy','coolify-refresh','coolify-select','configure','status','recover'))
+    parser.add_argument('command', choices=('profiles','contracts','probe-hub','plan','preflight','verify-coolify','deploy','start','verify-local','list','inspect','coolify-sources','reserve','coolify-copy','coolify-refresh','coolify-select','configure','discover','status','recover','prepare'))
     parser.add_argument('--target', type=Path)
     parser.add_argument('--network', choices=('mainnet','testnet','test','dev'))
     parser.add_argument('--isolate', action='store_true', help='Explicit local isolated mock mode')
@@ -200,6 +202,9 @@ def main(argv=None):
     parser.add_argument('--source', default='', help='Exact existing Coolify state path')
     parser.add_argument('--as', dest='alias', default='', help='SEH-owned Coolify identity alias')
     parser.add_argument('--replace', action='store_true', help='Explicitly replace existing copied identity')
+    parser.add_argument('--project-name', default='My first project', help='Exact project name on selected Coolify host')
+    parser.add_argument('--environment-name', help='Exact environment name (default: <network>-hubs)')
+    parser.add_argument('--public-url', help='Optional SEH public HTTPS hostname')
     parser.add_argument('--deployment-file', type=Path, help='Override the default runtime/deployments/<network>/sehs/<seh>/deployment.json input')
 
     a = parser.parse_args(argv)
@@ -213,7 +218,7 @@ def main(argv=None):
             if not a.network:
                 parser.error('--network required')
             result = backend.probe_marketplace_hub(a.network)
-        elif a.command in ('list','inspect','coolify-sources','reserve','coolify-copy','coolify-refresh','coolify-select','configure','status','recover') or (a.seh and not a.target):
+        elif a.command in ('list','inspect','coolify-sources','reserve','coolify-copy','coolify-refresh','coolify-select','configure','discover','status','recover','prepare') or (a.seh and not a.target):
             control=SEHControl(a.runtime_state_root)
             if a.command=='coolify-sources':
                 result=control.sources(a.network)
@@ -226,14 +231,43 @@ def main(argv=None):
                     parser.error('--seh required')
                 if a.command=='inspect':
                     result=control.inspect(a.network,a.seh)
+                elif a.command=='discover':
+                    from tools.seh_control.discovery import discover
+                    config_path = a.deployment_file or _deployment_config_path(
+                        a.runtime_state_root, a.network, a.seh)
+                    original = json.loads(config_path.read_text(encoding='utf-8')) if config_path.is_file() else None
+                    if original is not None and type(original) is not dict:
+                        raise SEHIdentityError('Deployment configuration must be an object')
+                    result=discover(a.runtime_state_root,a.network,a.seh,existing=original)
+                    result['path']=str(config_path)
+                elif a.command=='prepare':
+                    result=control.prepare_git(a.network,a.seh, project_name=a.project_name,
+                                               environment_name=a.environment_name,
+                                               public_url=a.public_url)
                 elif a.command=='plan':
-                    result=control.plan(a.network,a.seh)
+                    from tools.seh_control.git_deployment import _loaded, _plan_path, SEHGitError
+                    if _plan_path(a.runtime_state_root,a.network,a.seh).is_file():
+                        prepared=_loaded(a.runtime_state_root,a.network,a.seh)
+                        result={k:prepared[k] for k in ('schema','seh','network','plan_digest','placement','source','public_url')}
+                        result['status']='PLANNED_ONLY'
+                    else:
+                        result=control.plan(a.network,a.seh)
                 elif a.command in ('preflight','verify-coolify'):
                     if a.command=='verify-coolify' and not a.read_only:
                         raise SEHIdentityError('verify-coolify requires --read-only')
-                    result=control.preflight(a.network,a.seh)
+                    from tools.seh_control.git_deployment import _plan_path
+                    result=(control.preflight_git(a.network,a.seh)
+                            if _plan_path(a.runtime_state_root,a.network,a.seh).is_file()
+                            else control.preflight(a.network,a.seh))
                 elif a.command=='status':
-                    result=control.status(a.network,a.seh)
+                    from tools.seh_control import identity as _state
+                    _,_,_document=_state.read(a.runtime_state_root,a.network)
+                    _record=_state.seh_doc(_document,a.network,a.seh)
+                    from tools.seh_control.git_deployment import _plan_path
+                    result=(control.status_git(a.network,a.seh)
+                            if (_record['deployment'].get('application_uuid') or
+                                _plan_path(a.runtime_state_root,a.network,a.seh).is_file())
+                            else control.status(a.network,a.seh))
                 else:
                     if not a.execute:
                         raise SEHIdentityError('Mutation requires --execute')
@@ -254,12 +288,19 @@ def main(argv=None):
                             changes=json.loads(config_path.read_text(encoding='utf-8'))
                             if type(changes) is not dict:
                                 raise SEHIdentityError('Deployment configuration must be an object')
+                            discovery = None
+                            if not a.deployment_file:
+                                changes, discovery = _refresh_deployment_draft(
+                                    a.runtime_state_root, a.network, a.seh, config_path, changes)
                             if changes.get('enabled'):
                                 missing = _missing_deployment_fields(a.runtime_state_root, a.network, a.seh, changes)
                                 if missing:
                                     result = {'status': 'NEEDS_CONFIGURATION', 'network': a.network,
                                               'seh': a.seh, 'path': str(config_path),
-                                              'missing_fields': missing, 'identity_committed': False}
+                                              'missing_fields': missing,
+                                              'blockers': discovery['blockers'] if discovery else [],
+                                              'discovered_fields': discovery['discovered_fields'] if discovery else {},
+                                              'identity_committed': False, 'remote_mutation': False}
                                     print(json.dumps(result, indent=2, sort_keys=True))
                                     return 2
                         else:
@@ -269,9 +310,13 @@ def main(argv=None):
                                               source=a.source,alias=a.alias,replace_identity=a.replace,
                                               changes=changes)
                     elif a.command=='deploy':
-                        result=control.deploy(a.network,a.seh,generation=a.approve_generation,
-                                              digest=a.approve_digest,target_id=a.approve_target,
-                                              operation_id=operation_id)
+                        from tools.seh_control.git_deployment import _plan_path
+                        if _plan_path(a.runtime_state_root,a.network,a.seh).is_file():
+                            result=control.deploy_git(a.network,a.seh, operation_id=operation_id)
+                        else:
+                            result=control.deploy(a.network,a.seh,generation=a.approve_generation,
+                                                  digest=a.approve_digest,target_id=a.approve_target,
+                                                  operation_id=operation_id)
                     elif a.command=='start':
                         result=control.start(a.network,a.seh,generation=a.approve_generation,
                                              digest=a.approve_digest,uuid=a.approve_uuid)
@@ -311,6 +356,10 @@ def main(argv=None):
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result.get('status') != 'INCOMPLETE' else 2
     except (SEHDeploymentError, SLHConfigError, SEHIdentityError, OSError, ValueError) as exc:
+        from tools.seh_control.git_deployment import SEHGitError
+        if isinstance(exc, SEHGitError) and exc.git_command:
+            print('SEH_GIT_COMMIT_PUSH_COMMAND:', file=sys.stderr, flush=True)
+            print(exc.git_command, file=sys.stderr, flush=True)
         print(json.dumps({'status':'REFUSED', 'reason': str(exc)}), file=sys.stderr)
         return 2
 

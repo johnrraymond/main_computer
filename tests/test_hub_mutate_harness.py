@@ -1442,7 +1442,7 @@ def test_redeploy_dirty_source_emits_existing_git_commands(
     assert (
         "git add -- 'Dockerfile.hub.exp-fdb' 'main_computer/captain_cli.py' "
         "'main_computer/hub_cli_live_session.py'; "
-        "if ($LASTEXITCODE -eq 0) { git commit -m 'Update Hub deployment source' }; "
+        "if ($LASTEXITCODE -eq 0) { git commit --only -m 'Update Hub deployment source' -- 'Dockerfile.hub.exp-fdb' 'main_computer/captain_cli.py' 'main_computer/hub_cli_live_session.py' }; "
         "if ($LASTEXITCODE -eq 0) { git push origin HEAD }"
     ) in stderr
 

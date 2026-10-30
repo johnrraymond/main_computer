@@ -756,8 +756,9 @@
         // region-level control (including a row whose accessible name now
         // contains the disclosed record). Non-negotiated controls still gate.
         const negotiated=!!el.closest('.mcel-universal-composition--negotiated');
+        if (negotiated && button.closest('[data-mcel-presentation-slot="collection-unclip-extension"]'))continue;
         if (negotiated && button.closest('mcel-row[data-mcel-element-id="element.core.collection-row"]')?.
-            querySelector(':scope > [data-mcel-presentation-slot="inline-detail"]'))continue;
+            querySelector(':scope > [data-mcel-presentation-slot="inline-detail"], :scope > [data-mcel-presentation-slot="unclip-extension"]'))continue;
         if (!treeElementVisible(button)) continue;
         const r=button.getBoundingClientRect();
         trackControlSlack(r.width,def.minTargetWidth ?? 40);
@@ -1136,7 +1137,24 @@
     const collection=host.querySelector("mcel-collection");
     if (!collection || collection.dataset.mcelElementId!=="element.core.collection" ||
         host.querySelectorAll("mcel-collection").length!==1) fail("collection host not registered");
-    const rows=[...collection.children];
+    const anchors=[...collection.children].filter(child=>child.dataset.mcelPopoverAnchor==='true');
+    // Anchors carry no semantic fields and exist solely to reserve the current
+    // row's list geometry during its top-layer promotion. Require exact pairing.
+    if(anchors.some(a=>a.localName!=='div'||a.children.length||
+       !collection.querySelector(':scope > mcel-row.mcel-source-toplayer[data-row-id="'+CSS.escape(a.dataset.rowId||'')+'"]')))
+      fail('unpaired popover geometry anchor');
+    // The scrolling element itself can own a single append-only presentation
+    // extension. It is real DOM content but never an authoritative source row.
+    const collectionExtensions=[...collection.children].filter(child=>
+      child.dataset.mcelPresentationSlot==='collection-unclip-extension');
+    if(collectionExtensions.length>1 || collectionExtensions.some(child=>
+      child.localName!=='section'||!collection.classList.contains('mcel-collection-unclipped') ||
+      !host.classList.contains('mcel-semantic-collection--negotiated') ||
+      !(child.matches('.mcel-semantic-collection__detail-content') ||
+        child.querySelector('.mcel-semantic-collection__detail-content'))))
+      fail('unauthorized collection unclipping extension');
+    const rows=[...collection.children].filter(child=>child.dataset.mcelPopoverAnchor!=='true' &&
+      child.dataset.mcelPresentationSlot!=='collection-unclip-extension');
     const source=new Map(contract.source_rows.map(row=>[String(row.id),row]));
     const projection=new Map(contract.projection.rows.map(row=>[String(row.id),row]));
     const knownIds=new Set(source.keys());
@@ -1168,12 +1186,19 @@
       const children=[...row.children];
       const slots=children.filter(child=>child.dataset.mcelPresentationSlot!==undefined);
       const slotsAuthorized=host.classList.contains('mcel-semantic-collection--negotiated') &&
-        slots.length<=1 && slots.every(slot=>slot.localName==='section' &&
-          slot.classList.contains('mcel-semantic-collection__inline-detail') &&
-          slot.dataset.mcelPresentationSlot==='inline-detail' &&
-          slot.dataset.sourceRowId===row.dataset.rowId &&
-          slot.dataset.presentation==='inline-expand' &&
-          !!slot.querySelector(':scope > .mcel-semantic-collection__detail-content'));
+        slots.length<=2 && new Set(slots.map(slot=>slot.dataset.mcelPresentationSlot)).size===slots.length &&
+        slots.every(slot=>slot.localName==='section' &&
+          slot.dataset.sourceRowId===row.dataset.rowId && (
+            (slot.classList.contains('mcel-semantic-collection__inline-detail') &&
+              slot.dataset.mcelPresentationSlot==='inline-detail' &&
+              slot.dataset.presentation==='inline-expand' &&
+              !!slot.querySelector(':scope > .mcel-semantic-collection__detail-content')) ||
+            // A positioned descendant of the *real row*. It is not an extra
+            // semantic record, and must contain only the negotiated extension.
+            (slot.classList.contains('mcel-unclip-card') &&
+              slot.dataset.mcelPresentationSlot==='unclip-extension' &&
+              slot.dataset.presentation==='unclip-preserve-geometry' &&
+              !!slot.querySelector(':scope > .mcel-unclip-extension-frame > .mcel-unclip-extension-viewport > .mcel-semantic-collection__detail-content'))));
       if(slots.length && !slotsAuthorized)fail('unauthorized collection presentation slot');
       const fields=children.filter(child=>!slots.includes(child));
       if (fields.length!==columns.length || children.length!==fields.length+slots.length ||

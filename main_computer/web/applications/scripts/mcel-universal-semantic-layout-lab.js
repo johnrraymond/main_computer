@@ -72,7 +72,8 @@
           presentationNegotiation:opts.presentationNegotiation===true,
           presentationPolicy:opts.presentationPolicy,capabilities:opts.capabilities,
           sourceRetirement:opts.sourceRetirement===true,retirementPolicy:opts.retirementPolicy,
-          retirementPolicies:opts.retirementPolicies});
+          retirementPolicies:opts.retirementPolicies,
+          rowHoverUnclip:opts.rowHoverUnclip===true||opts.collectionHoverUnclip===true});
       // Move the existing generic inspector exactly once *before interaction*;
       // it remains the same node, owned and updated by the original consumer.
       const inspector=regions.get('selected-details');
@@ -81,7 +82,9 @@
         if(detail)inspector.append(detail);
       }
       if(inspector && opts.presentationNegotiation===true){inspector.dataset.detailOwnership='inline-or-floating';
-        inspector.append(el('p'));inspector.lastChild.textContent='Selection expands inside the list; hover opens a floating card.';}
+        inspector.append(el('p'));inspector.lastChild.textContent=(opts.rowHoverUnclip===true||opts.collectionHoverUnclip===true)?
+          'Selection expands inside the list; hovering exposes the original individual record.':
+          'Selection expands inside the list; hover opens a floating card.';}
       tree=global.McelSemanticLayoutInference.mountCanonicalLayoutTree(host,plan.tree,
         {continuity:'lab',observeResize:false,observeMutations:false});
       if(tree.status!=='pass')throw Error('MCEL_UNIVERSAL_LAB_TREE_REFUSED: '+tree.reason);
@@ -92,7 +95,7 @@
       get profile(){return PROFILE;},get decision(){return active.decision;},
       get collection(){return collection;},get tree(){return tree;},
       get state(){return tree?.getCommittedState?.()||null;},
-      update(next,{observation}={}){
+      update(next,{observation,incrementalValues=false}={}){
         if(destroyed)return {ok:false,reason:'destroyed'};
         try{validate(next);}catch(err){return {ok:false,reason:String(err)}}
         // In-place updates only for identical semantic structure/purpose;
@@ -100,10 +103,15 @@
         if(next.decision.semanticSignature!==active.decision.semanticSignature ||
            next.decision.name!==active.decision.name)
           return {ok:false,reason:'structural-change-requires-explicit-remount'};
-        const response=collection.update(next.collection.rows,{observation});
+        const response=collection.update(next.collection.rows,{observation,incrementalValues});
         if(!response.ok)return response;
+        const retainedTree=incrementalValues && response.valueOnlyRetainedLayout===true &&
+          JSON.stringify(next.tree)===JSON.stringify(active.tree);
         active=next;updateSummary(next);
-        const reflow=tree.refresh();
+        // A verified value-only telemetry tick cannot change the canonical
+        // tree topology. Reapplying the tree here causes unnecessary layout
+        // churn; structural changes still take the full validation route.
+        const reflow=retainedTree?{status:'pass',retained:true}:tree.refresh();
         return {ok:reflow.status==='pass',collection:response,tree:reflow,
                 effects:[],decisionUnchanged:true};
       },

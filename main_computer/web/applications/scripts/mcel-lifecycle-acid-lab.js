@@ -56,17 +56,65 @@ function validateArray(){
 }
 validateArray();
 const EXPERIMENTS=L18.map((row,i)=>({id:'L18-'+String(i+1).padStart(2,'0'),index:i,settings:choices(row)}));
+// Only L18-01 is an operator-facing example. Keep the complete L18 matrix
+// available exclusively to the independent orthogonal screening runner.
+const LIVE_EXPERIMENTS=Object.freeze([EXPERIMENTS[0]]);
 function randomOrder(n,seed){let x=seed>>>0||1;const arr=Array.from({length:n},(_,i)=>i);
   for(let i=arr.length-1;i>0;i--){x^=x<<13;x^=x>>>17;x^=x<<5;const j=(x>>>0)%(i+1);[arr[i],arr[j]]=[arr[j],arr[i]];}
   return arr;
 }
-function makePlan(data,identity){
+function makePlan(data,identity,{rows=0}={}){
   const plan=clone(global.McelLifecycleAcidFixtures[data]);
   if(!plan)throw Error('ACID_FIXTURE_UNAVAILABLE');
   if(identity!=='unverified'){
     if(!plan.collection.spec.sourceFields.includes('acidGeneration'))plan.collection.spec.sourceFields.push('acidGeneration');
     plan.collection.spec.reconciliation={generationFrom:'acidGeneration'};
     plan.collection.rows.forEach((row,i)=>{row.acidGeneration='g'+i;});
+  }
+  if(rows>plan.collection.rows.length){
+    // Twenty independently identified REAL semantic source records, not twenty
+    // copies of one DOM element. Use the canonical process fixture as a seed.
+    const source=clone(plan.collection.rows);
+    const names=['python.exe','node.exe','worker-agent','postgres','java.exe',
+      'nginx','task-runner','sync-service','indexer','mcel-renderer'];
+    const states=['running','sleeping','running','stopped','running','waiting'];
+    for(let i=plan.collection.rows.length;i<rows;i++){
+      const record=clone(source[i%source.length]);
+      const pid=1100+i*7;
+      const createdAt=`2026-10-27T12:${String(i%60).padStart(2,'0')}:00Z`;
+      record.mcelIdentity=JSON.stringify(['host-process-lifetime',[pid,createdAt]]);
+      record.pid=pid;record.pidAvailability='present';
+      record.created_at=createdAt;record.created_atAvailability='present';
+      record.name=names[i%names.length];record.nameAvailability='present';
+      record.state=states[i%states.length];record.stateAvailability='present';
+      record.command=`${record.name} --lab-fixture --case=${i+1} --immutable-identity=${pid}`;
+      record.commandAvailability='present';
+      record.role=i%4===0?'main-computer':'observed-process';record.roleAvailability='present';
+      record.is_current_process=false;record.is_main_computer=i%4===0;
+      record.resident_memory=(48+i*19)*1048576;
+      record.resident_memoryAvailability=i%5===0?'unavailable':'present';
+      const canonical=record.mcelCanonicalRecord;
+      canonical.identity.parts=[pid,createdAt];
+      for(const [key,value] of Object.entries({pid,created_at:createdAt,name:record.name,
+        state:record.state,command:record.command,role:record.role,
+        is_current_process:false,is_main_computer:record.is_main_computer,
+        resident_memory:record.resident_memory})){
+        if(canonical.properties[key]){
+          canonical.properties[key].raw=key==='resident_memory' && record.resident_memoryAvailability==='unavailable'?null:value;
+          canonical.properties[key].state=key==='resident_memory'?record.resident_memoryAvailability:'present';
+          if(key==='resident_memory')canonical.properties[key].availabilityEvidence=record.resident_memoryAvailability;
+        }
+      }
+      if(identity!=='unverified')record.acidGeneration='g'+i;
+      plan.collection.rows.push(record);
+    }
+    plan.capabilities.entityCount=plan.collection.rows.length;
+    if(Array.isArray(plan.summaryFacts))for(const fact of plan.summaryFacts){
+      if(fact.property==='state')fact.counts=Object.fromEntries(states.map(st=>[st,
+        plan.collection.rows.filter(r=>r.state===st).length]));
+      if(fact.property==='resident_memory')fact.counts={present:plan.collection.rows.filter(r=>r.resident_memoryAvailability==='present').length,
+        unavailable:plan.collection.rows.filter(r=>r.resident_memoryAvailability==='unavailable').length};
+    }
   }
   return plan;
 }
@@ -78,14 +126,14 @@ function environment(){
   if(!global.McelUniversalSemanticLayoutLab?.mount||!global.McelLifecycleAcidFixtures||
      !global.McelPresentationNegotiation?.negotiate)throw Error('MCEL_14_7_LIFECYCLE_RUNTIME_UNAVAILABLE');
 }
-function invariants(instance,root,expected,trace){
+function invariants(instance,root,expected,trace,{validatedTree=false}={}){
   const ids=instance.collection.ids;
   const assertions={
     sourceIds:JSON.stringify([...ids].sort())===JSON.stringify([...expected].sort()),
     uniqueSourceIds:new Set(ids).size===ids.length,
     noInventedRows:root.querySelectorAll('mcel-row').length===ids.length+instance.collection.retirement.ids.length,
     layout:!!instance.collection.layout,
-    canonicalLayout:instance.tree.refresh().status==='pass',
+    canonicalLayout:validatedTree||instance.tree.refresh().status==='pass',
     noOperationalControls:root.querySelectorAll('#task-server-shutdown,#task-server-start,#task-server-restart,#task-schedule-create').length===0
   };
   trace.push({event:'invariants',assertions});
@@ -124,16 +172,26 @@ function applyEvent(session,event,trace){
     list.scrollTop+=70;list.dispatchEvent(new WheelEvent('wheel',{bubbles:true}));
     const result={ok:true,scrollTop:list.scrollTop};trace.push({event,...result});return result;
   }
-  if(event==='source unchanged' || event==='source update' || event==='source remove'){
+  if(event==='source unchanged' || event==='source update' || event==='source remove' || event==='telemetry tick'){
     const next=clone(session.currentPlan);session.sequence++;
-    if(event==='source update'){
-      const target=next.collection.rows[0];if(!target)return {ok:false,reason:'no-live-row-to-update'};target.name='acid-updated-'+session.sequence;
+    if(event==='source update' || event==='telemetry tick'){
+      const target=next.collection.rows[0];if(!target)return {ok:false,reason:'no-live-row-to-update'};target.name=event==='telemetry tick'?'python.exe sample '+session.sequence:'acid-updated-'+session.sequence;
       if(target.mcelCanonicalRecord?.properties?.name)target.mcelCanonicalRecord.properties.name.raw=target.name;
-      if(session.settings.identity==='new generation')target.acidGeneration='replacement-'+session.sequence;
-      if(session.settings.source==='partial update')next.collection.rows=[target];
+      if(event==='telemetry tick'){
+        // Vary an actual process measurement, not the semantic identity.
+        // Each value is explicitly synthetic fixture data, never a claim about the host OS.
+        target.name=session.currentPlan.collection.rows[0].name;
+        target.mcelCanonicalRecord.properties.name.raw=target.name;
+        const bytes=64*1024*1024+(session.sequence%12)*4*1024*1024;
+        target.resident_memory=bytes;target.resident_memoryAvailability='present';
+        const prop=target.mcelCanonicalRecord?.properties?.resident_memory;
+        if(prop){prop.raw=bytes;prop.state='present';prop.availabilityEvidence='present';prop.unit='bytes';}
+      }
+      if(event==='source update' && session.settings.identity==='new generation')target.acidGeneration='replacement-'+session.sequence;
+      if(event==='source update' && session.settings.source==='partial update')next.collection.rows=[target];
     }else if(event==='source remove')next.collection.rows=next.collection.rows.slice(1);
-    const observation={schema:'mcel.source-observation.v1',complete:event==='source unchanged'||event==='source remove'||session.settings.source!=='partial update',sequence:session.sequence};
-    const receipt=instance.update(next,{observation});
+    const observation={schema:'mcel.source-observation.v1',complete:event==='telemetry tick'||event==='source unchanged'||event==='source remove'||session.settings.source!=='partial update',sequence:session.sequence};
+    const receipt=instance.update(next,{observation,incrementalValues:event==='telemetry tick'});
     if(receipt.ok){if(observation.complete)session.expected=next.collection.rows.map(r=>r.mcelIdentity);
       if(observation.complete)session.currentPlan=next;else {const updated=next.collection.rows[0];
         session.currentPlan.collection.rows=session.currentPlan.collection.rows.map(row=>row.mcelIdentity===updated.mcelIdentity?updated:row);}}
@@ -168,15 +226,19 @@ function applyEvent(session,event,trace){
   }
   return {ok:false,reason:'unknown-event'};
 }
-function start(settings,stage){
+function start(settings,stage,overrides={}){
   environment();
-  const plan=makePlan(settings.data,settings.identity);
+  const plan=makePlan(settings.data,settings.identity,{rows:overrides.galleryExpanded?20:0});
   const frame=document.createElement('section');frame.className='mcel-lifecycle-acid__specimen';
   frame.style.width=settings.width;frame.style.maxWidth='100%';frame.style.boxSizing='border-box';
   stage.append(frame);
   const capabilities={allowScroll:settings.host!=='scroll denied',allowOverlay:settings.host!=='overlay denied'};
+  const presentationPolicy=clone(global.McelPresentationNegotiation.defaultPolicy);
+  if(overrides.handoffPercent!==undefined)
+    presentationPolicy.events.onHover[0].lifecycle.handoffThresholdPercent=overrides.handoffPercent;
   const instance=global.McelUniversalSemanticLayoutLab.mount(frame,plan,{lab:true,presentationNegotiation:true,
-    sourceRetirement:true,capabilities,retirementPolicy:policyFor(settings)});
+    sourceRetirement:true,capabilities,retirementPolicy:policyFor(settings),presentationPolicy,
+    rowHoverUnclip:overrides.galleryExpanded===true});
   const list=frame.querySelector('mcel-collection');
   if(list){list.style.maxHeight='200px';list.style.overflowY='auto';}
   const session={settings,plan,currentPlan:plan,frame,root:frame,instance,sequence:0,expected:plan.collection.rows.map(r=>r.mcelIdentity),
@@ -288,7 +350,9 @@ function build(root){
   }
   function showProgress(){
     const reviewed=[...state.reviews.values()].filter(r=>r.verdict).length;
-    reviewProgress.textContent=`${reviewed} of 18 reviewed · ${[...state.reviews.values()].filter(r=>r.verdict==='broken').length} flagged`;
+    reviewProgress.textContent=`${reviewed} of ${LIVE_EXPERIMENTS.length} reviewed · ${[...state.reviews.values()].filter(r=>r.verdict==='broken').length} flagged`;
+    const galleryProgress=root.querySelector('#mcel-lifecycle-acid-review-progress-gallery');
+    if(galleryProgress)galleryProgress.textContent=reviewProgress.textContent;
   }
   function showReview(){
     const review=state.reviews.get(currentId())||{};
@@ -299,7 +363,7 @@ function build(root){
   function showCase(){
     const exp=EXPERIMENTS[state.activeIndex];casePicker.value=exp.id;
     caseInfo.replaceChildren();
-    const heading=create('strong',`${exp.id} · Experiment ${state.activeIndex+1} of 18${state.custom?' · edited variant':''}`);
+    const heading=create('strong',`${exp.id} · Experiment ${state.activeIndex+1} of ${LIVE_EXPERIMENTS.length}${state.custom?' · edited variant':''}`);
     caseInfo.append(heading);
     const description=create('p',FACTORS.map(f=>`${f.name}: ${state.current[f.key]}`).join('  ·  '));caseInfo.append(description);
     const guidance=create('p',`Try ${state.current.trigger==='hover'?'hovering a row':state.current.trigger==='select near edge'?'selecting a row near the lower edge':'selecting a row'}, then ${state.current.source==='authoritative removal'?'removing the source record':state.current.source==='partial update'?'sending a partial update':'checking an unchanged source snapshot'}. Host: ${state.current.host}; retirement clock: ${state.current.retirement}.`);
@@ -322,7 +386,7 @@ function build(root){
   }
   function activateCase(index,{scroll=true}={}){
     if(state.busy)return;
-    state.activeIndex=(index+EXPERIMENTS.length)%EXPERIMENTS.length;
+    state.activeIndex=0; // No navigation to removed examples.
     state.current={...EXPERIMENTS[state.activeIndex].settings};state.custom=false;
     renderFactorControls(state.current);showCase();mountInteractive();
     if(scroll)workbench.scrollIntoView({block:'start'});
@@ -356,12 +420,12 @@ function build(root){
     follow.append(table);
   }
   function renderMatrix(){matrix.replaceChildren();
-    const table=create('table');const heading=create('tr');['Run',...FACTORS.map(f=>f.name),'Your verdict','Automated','Mean / worst','Interact'].forEach(h=>heading.append(create('th',h)));table.append(heading);
-    for(const exp of EXPERIMENTS){const tr=create('tr');tr.dataset.run=exp.id;tr.dataset.active=String(state.activeIndex===exp.index);
+    const table=create('table');const heading=create('tr');['Run',...FACTORS.map(f=>f.name),'Your verdict','Automated','Mean / worst','Jump to live case'].forEach(h=>heading.append(create('th',h)));table.append(heading);
+    for(const exp of LIVE_EXPERIMENTS){const tr=create('tr');tr.dataset.run=exp.id;tr.dataset.active=String(state.activeIndex===exp.index);
       tr.append(create('td',exp.id));FACTORS.forEach(f=>tr.append(create('td',exp.settings[f.key])));
       const review=state.reviews.get(exp.id);const human=create('td',review?.verdict||'not reviewed');human.dataset.verdict=review?.verdict||'pending';tr.append(human);const result=state.runs.get(exp.id);const status=create('td',result?.verdict||'not run');status.dataset.status=result?.verdict||'pending';tr.append(status);
       tr.append(create('td',result?`${result.averageMs} / ${result.worstMs} ms`:'—'));
-      const cell=create('td'),btn=create('button','Try live');btn.type='button';btn.setAttribute('aria-label','Open interactive experiment '+exp.id);btn.addEventListener('click',()=>activateCase(exp.index));cell.append(btn);tr.append(cell);table.append(tr);
+      const cell=create('td'),btn=create('button','Jump to '+exp.id);btn.type='button';btn.setAttribute('aria-label','Scroll to live experiment '+exp.id);btn.addEventListener('click',()=>galleryRows.get(exp.id)?.section.scrollIntoView({block:'start'}));cell.append(btn);tr.append(cell);table.append(tr);
     }matrix.append(table);
   }
   async function screen(){if(state.busy)return;state.busy=true;safe();state.runs.clear();state.seed=Math.max(1,Math.min(2147483647,Number(seedInput.value)||1475));
@@ -404,7 +468,7 @@ function build(root){
       report.textContent=JSON.stringify({event,result,checks,trace},null,2);recordEvent('action-'+event,{result,checks});feedback.textContent=`${currentId()}: ${event} → ${result?.ok?'completed':'refused or failed'} · ${Object.values(checks).every(Boolean)?'invariants hold':'check trace for invariant failure'}`;
     }catch(e){report.textContent=JSON.stringify({event,error:String(e),trace},null,2);feedback.textContent=`${currentId()}: ${event} failed: ${String(e)}`;recordEvent('action-error-'+event,String(e));}
   }
-  EXPERIMENTS.forEach(exp=>{const option=create('option',`${exp.id} · ${exp.settings.trigger} / ${exp.settings.source}`);option.value=exp.id;casePicker.append(option);});
+  LIVE_EXPERIMENTS.forEach(exp=>{const option=create('option',`${exp.id} · ${exp.settings.trigger} / ${exp.settings.source}`);option.value=exp.id;casePicker.append(option);});
   casePicker.addEventListener('change',()=>activateCase(EXPERIMENTS.findIndex(exp=>exp.id===casePicker.value)));
   stepButton.addEventListener('click',async()=>{if(state.busy)return;const steps=scenarioSteps(state.current);const step=steps[state.stepIndex];if(!step)return;state.stepIndex++;updateStep();await liveAction(step.event);recordEvent('planned-scenario-step',{index:state.stepIndex,total:steps.length,label:step.label});});
   root.querySelector('#mcel-lifecycle-acid-prev').addEventListener('click',()=>activateCase(state.activeIndex-1));
@@ -433,7 +497,7 @@ function build(root){
   root.querySelector('#mcel-lifecycle-acid-pair-run').addEventListener('click',()=>void pairwise());
   root.querySelector('#mcel-lifecycle-acid-clear').addEventListener('click',()=>{recordEvent('specimen-released');safe();report.textContent='Specimen released.';feedback.textContent='Specimen released. Click Restart this experiment to try again.';});
   root.querySelector('#mcel-lifecycle-acid-export').addEventListener('click',()=>{
-    const data={schema:SCHEMA,seed:state.seed,experiments:[...state.runs.values()],focused:state.last?{...state.last,session:undefined}:null,manualReviews:EXPERIMENTS.map(exp=>({id:exp.id,settings:exp.settings,...(state.reviews.get(exp.id)||{verdict:null,notes:''}),events:state.events.get(exp.id)||[]})),humanReviewed:[...state.reviews.values()].filter(r=>r.verdict).length};
+    const data={hoverDiagnostics:window.MCELDiagnosticPlugins?.exportHoverTrace?.()||null,schema:SCHEMA,seed:state.seed,experiments:[...state.runs.values()],focused:state.last?{...state.last,session:undefined}:null,manualReviews:LIVE_EXPERIMENTS.map(exp=>({id:exp.id,settings:exp.settings,...(state.reviews.get(exp.id)||{verdict:null,notes:''}),events:state.events.get(exp.id)||[]})),humanReviewed:[...state.reviews.values()].filter(r=>r.verdict).length,verticalGallery:{cases:[...galleryRows.values()].map(entry=>({id:entry.exp.id,settings:entry.exp.settings,mounted:!!entry.session,liveUpdates:entry.liveToggle.checked,handoffThresholdPercent:entry.handoffPercent,snapshot:gallerySnapshot(entry),events:entry.events}))}};
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
     const a=create('a');a.href=url;a.download='mcel-lifecycle-acid-'+state.seed+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   });
@@ -443,6 +507,203 @@ function build(root){
     FACTORS.forEach(f=>{const el=create('option',f.name);el.value=f.key;select.append(el);});
     select.value=name==='a'?'source':'interaction';
   }
+  // The Taguchi array is an interactive vertical gallery, not a carousel of test results.
+  // Each case owns a separate real MCEL renderer, observation sequence, and review.
+  const galleryRoot=root.querySelector('#mcel-lifecycle-acid-gallery');
+  const galleryRows=new Map();
+  const visibleCases=new Set();
+  let galleryMounted=false;
+  const galleryObserver=typeof IntersectionObserver==='function'?new IntersectionObserver(entries=>{
+    for(const item of entries){if(item.isIntersecting)visibleCases.add(item.target.dataset.caseId);
+      else visibleCases.delete(item.target.dataset.caseId);}
+  },{root:null,rootMargin:'160px 0px'}):null;
+  function galleryEvent(entry,event,detail){
+    entry.events.push({event,detail:detail||null,at:new Date().toISOString()});
+    if(entry.events.length>200)entry.events.shift();
+    state.events.set(entry.exp.id,entry.events);
+    entry.trace.textContent=JSON.stringify(entry.events.slice(-25),null,2);
+    entry.count.textContent=`${entry.events.length} recorded events`;
+  }
+  function gallerySnapshot(entry){
+    const session=entry.session;if(!session)return {mounted:false};
+    return {live:session.instance.collection.ids.length,
+      retired:session.instance.collection.retirement.ids.length,
+      expanded:!!entry.stage.querySelector('.mcel-inline-details,[data-mcel-inline-detail]'),
+      scrollTop:Math.round(entry.stage.querySelector('mcel-collection')?.scrollTop||0)};
+  }
+  function galleryStatus(entry,message,problem=false){
+    entry.status.textContent=message+' · '+JSON.stringify(gallerySnapshot(entry));
+    entry.status.dataset.problem=String(!!problem);
+  }
+  function galleryMount(entry){
+    entry.session?.destroy();entry.session=null;entry.stage.replaceChildren();
+    try{
+      // The operator gallery is a long-lived process monitor. Give its
+      // *synthetic telemetry* explicit generation tokens; otherwise the
+      // orthogonal L18-01 "unverified" scenario correctly replaces every
+      // row on each observation, which is inappropriate for a live hover demo.
+      // The independent 18-case screening still uses exact EXPERIMENTS settings.
+      entry.session=start({...entry.exp.settings,identity:'verified'},entry.stage,
+        {handoffPercent:entry.handoffPercent,galleryExpanded:true});
+      const list=entry.stage.querySelector('mcel-collection');
+      if(list)list.style.maxHeight='380px';
+      entry.events=[];entry.count.textContent='0 recorded events';
+      galleryEvent(entry,'mounted',{settings:entry.exp.settings});
+      galleryStatus(entry,'20 independent records with synthetic stable-generation telemetry. Hover a single row; source identity in the separate orthogonal L18-01 screening remains unverified.');
+    }catch(error){galleryStatus(entry,'MOUNT ERROR: '+String(error),true);galleryEvent(entry,'mount-error',String(error));}
+  }
+  async function galleryAction(entry,event){
+    if(!entry.session){galleryStatus(entry,'Case is not mounted',true);return;}
+    try{
+      const trace=[];let result;
+      if(event==='retirement expiry'){
+        await new Promise(resolve=>setTimeout(resolve,2200));
+        if(!entry.session)return;
+        result={ok:true,retired:entry.session.instance.collection.retirement.ids.length};
+      }else result=applyEvent(entry.session,event,trace);
+      const checks=invariants(entry.session.instance,entry.stage,entry.session.expected,trace,{
+        validatedTree:event==='telemetry tick' && result?.collection?.valueOnlyRetainedLayout===true &&
+          result?.tree?.status==='pass'});
+      const good=Object.values(checks).every(Boolean);
+      galleryEvent(entry,event,{result,checks,trace});
+      galleryStatus(entry,`${event}: ${result?.ok?'completed':'refused'}; ${good?'integrity checks pass':'INVARIANT FAILURE'}`,!good);
+    }catch(error){galleryEvent(entry,event,{error:String(error)});galleryStatus(entry,`${event} failed: ${String(error)}`,true);}
+  }
+  function galleryCard(exp){
+    const section=create('section',null,'mcel-lifecycle-acid__gallery-card');section.dataset.caseId=exp.id;
+    section.setAttribute('aria-label',exp.id+' interactive experiment');
+    const head=create('div',null,'mcel-lifecycle-acid__gallery-heading');
+    const name=create('h4',`${exp.id} · ${exp.settings.trigger} / ${exp.settings.source}`);
+    head.append(name);
+    const reset=create('button','Restart specimen');reset.type='button';reset.dataset.galleryRestart=exp.id;head.append(reset);
+    section.append(head);
+    const chips=create('div',null,'mcel-lifecycle-acid__gallery-factors');
+    for(const factor of FACTORS){const chip=create('span',`${factor.name}: ${exp.settings[factor.key]}`);chips.append(chip);}section.append(chips);
+    const explain=create('p',`Try ${exp.settings.trigger} with ${exp.settings.host}; then inspect ${exp.settings.source}. Every scroll area contains 20 independently identified process records. Live gallery telemetry uses synthetic stable generation tokens; the independent L18 matrix retains its original identity factor.`,'mcel-lifecycle-acid__gallery-description');section.append(explain);
+    const stage=create('div',null,'mcel-lifecycle-acid__gallery-stage');stage.id='mcel-lifecycle-acid-stage-'+exp.id;section.append(stage);
+    const actions=create('div',null,'mcel-lifecycle-acid__gallery-actions');actions.setAttribute('role','group');actions.setAttribute('aria-label',exp.id+' actions');
+    const buttons=[['select','Select / expand'],['hover','Hover / float'],['native selection','Select text'],['clear selection','Release selection'],['source update','Source update'],['source remove','Source disappears'],['scroll','Scroll list'],['stale observation','Stale snapshot'],['fault injection','Fail transaction'],['retirement expiry','Wait for retirement']];
+    for(const [event,title] of buttons){const btn=create('button',title);btn.type='button';btn.dataset.galleryAction=event;btn.addEventListener('click',()=>void galleryAction(entry,event));actions.append(btn);}
+    section.append(actions);
+    const steps=scenarioSteps(exp.settings);let stepIndex=0;
+    const planned=create('div',null,'mcel-lifecycle-acid__gallery-planned');
+    const stepButton=create('button','Apply next planned condition');stepButton.type='button';
+    const nextStep=create('span');
+    function showNextStep(){nextStep.textContent=steps[stepIndex]?
+      `Next: ${steps[stepIndex].label} (${stepIndex+1}/${steps.length})`:'All configured conditions applied; continue interacting or restart.';
+      stepButton.disabled=stepIndex>=steps.length;}
+    stepButton.addEventListener('click',()=>{const step=steps[stepIndex];if(!step)return;stepIndex++;showNextStep();void galleryAction(entry,step.event);});
+    reset.addEventListener('click',()=>{stepIndex=0;showNextStep();});
+    planned.append(stepButton,nextStep);section.append(planned);showNextStep();
+    const options=create('div',null,'mcel-lifecycle-acid__gallery-options');
+    const liveLabel=create('label');const liveToggle=create('input');liveToggle.type='checkbox';liveToggle.checked=true;
+    liveToggle.setAttribute('aria-label','Simulated live source updates for '+exp.id);
+    liveLabel.append(liveToggle,document.createTextNode(' Simulated live updates every 3 seconds while visible'));
+    options.append(liveLabel);
+    const percentLabel=create('label','Overscroll handoff');
+    const handoffSelect=create('select');handoffSelect.setAttribute('aria-label',exp.id+' overscroll handoff threshold');
+    for(const percent of [10,15,20,30]){const choice=create('option',percent+'%');choice.value=String(percent);handoffSelect.append(choice);}
+    handoffSelect.value='15';percentLabel.append(handoffSelect);
+    options.append(percentLabel);
+    handoffSelect.addEventListener('change',()=>{
+      entry.handoffPercent=Number(handoffSelect.value);
+      galleryEvent(entry,'handoff-threshold-changed',{percent:entry.handoffPercent});
+      galleryMount(entry);
+    });
+    const count=create('small','0 recorded events');options.append(count);section.append(options);
+    const status=create('p','Mounting real MCEL renderer…','mcel-lifecycle-acid__gallery-status');status.setAttribute('role','status');section.append(status);
+    const review=create('div',null,'mcel-lifecycle-acid__gallery-review');
+    const group=create('div',null,'mcel-lifecycle-acid__gallery-verdicts');group.setAttribute('role','group');group.setAttribute('aria-label',exp.id+' manual verdict');
+    const notesLabel=create('label');notesLabel.textContent='Your observations / unexpected behavior';
+    const notes=create('textarea');notes.rows=2;notes.placeholder='What did you try, expect, and see?';notes.setAttribute('aria-label',exp.id+' observations');notesLabel.append(notes);
+    review.append(group,notesLabel);section.append(review);
+    const traceDetails=create('details');const summary=create('summary','Show this experiment’s event trace');
+    const trace=create('pre','[]');traceDetails.append(summary,trace);section.append(traceDetails);
+    const entry={exp,section,stage,status,trace,count,notes,liveToggle,handoffPercent:15,session:null,events:state.events.get(exp.id)||[]};
+    reset.addEventListener('click',()=>galleryMount(entry));
+    for(const [value,title] of [['correct','Works correctly'],['broken','Something is wrong'],['unsure','Needs investigation']]){
+      const button=create('button',title);button.type='button';button.dataset.verdict=value;
+      button.addEventListener('click',()=>{const review=state.reviews.get(exp.id)||{};
+        state.reviews.set(exp.id,{...review,verdict:value,notes:notes.value});
+        updateReviewButtons();galleryEvent(entry,'human-verdict',value);showProgress();renderMatrix();});
+      group.append(button);
+    }
+    function updateReviewButtons(){const value=state.reviews.get(exp.id)?.verdict;
+      group.querySelectorAll('[data-verdict]').forEach(btn=>btn.setAttribute('aria-pressed',String(btn.dataset.verdict===value)));}
+    notes.value=state.reviews.get(exp.id)?.notes||'';
+    notes.addEventListener('input',()=>{const review=state.reviews.get(exp.id)||{};
+      state.reviews.set(exp.id,{...review,notes:notes.value});showProgress();});
+    updateReviewButtons();galleryRows.set(exp.id,entry);galleryRoot.append(section);
+    galleryObserver?.observe(section);
+  }
+  for(const exp of LIVE_EXPERIMENTS)galleryCard(exp);
+  // A page scroll moves an anchored source in viewport coordinates. The
+  // original overlay host only knows about scrolling inside its list.
+  // Dismiss previews when scrolling the containing page; do not allow an old
+  // overlay to cover a different experiment after the source moves.
+  const dismissOtherPreviews=(activeId,reason)=>{
+    for(const entry of galleryRows.values())if(entry.exp.id!==activeId)
+      entry.session?.instance.collection.dismissFloating?.(reason);
+  };
+  galleryRoot.addEventListener('pointerdown',e=>{
+    const owner=e.target.closest('[data-case-id]')?.dataset.caseId;
+    if(owner)dismissOtherPreviews(owner,'another-experiment-engaged');
+  },true);
+  const pageScroll=ev=>{
+    if(ev.target===document || ev.target===document.documentElement || ev.target===document.body)
+      dismissOtherPreviews(null,'page-scrolled');
+  };
+  document.addEventListener('scroll',pageScroll,true);
+  function mountGalleryAll(){if(galleryMounted)return;galleryMounted=true;
+    for(const entry of galleryRows.values())galleryMount(entry);
+  }
+  // One timer for all specimens. Only on-screen cases receive live changes.
+  // Every update is an observation of the existing generation, not a fabricated removal.
+  const liveScheduler=setInterval(()=>{
+    if(state.busy||!galleryMounted||document.hidden||root.getClientRects().length===0)return;
+    for(const entry of galleryRows.values()){
+      if(!entry.session||!entry.liveToggle.checked)continue;
+      if(galleryObserver && !visibleCases.has(entry.exp.id))continue;
+      void galleryAction(entry,'telemetry tick');
+    }
+  },3000);
+  // Timer is intentionally owned by this lab instance and does not multiply per row.
+  root.addEventListener('mcel-acid-dispose',()=>{clearInterval(liveScheduler);galleryObserver?.disconnect();
+    document.removeEventListener('scroll',pageScroll,true);
+    for(const entry of galleryRows.values()){entry.session?.destroy();entry.session=null;}},{once:true});
+  // The optional MCELDiagnosticPlugins recorder records browser pointer facts AND
+  // hover-host layout/ownership decisions. No network calls or injected rrweb.
+  const hoverRecordButton=root.querySelector('#mcel-lifecycle-acid-hover-record');
+  const hoverExportButton=root.querySelector('#mcel-lifecycle-acid-hover-export');
+  const hoverStatus=root.querySelector('#mcel-lifecycle-acid-hover-status');
+  hoverRecordButton?.addEventListener('click',async()=>{
+    const plugins=window.MCELDiagnosticPlugins;
+    if(!plugins){hoverStatus.textContent='Diagnostic plugins unavailable';return;}
+    const active=plugins.list().some(x=>x.id==='mcel-hover-pointer'&&x.enabled);
+    hoverRecordButton.disabled=true;
+    try{
+      const result=active?await plugins.disable('mcel-hover-pointer'):
+        await plugins.enable('mcel-hover-pointer');
+      const enabled=plugins.list().some(x=>x.id==='mcel-hover-pointer'&&x.enabled);
+      hoverRecordButton.setAttribute('aria-pressed',String(enabled));
+      hoverRecordButton.textContent=enabled?'Stop cursor + hover':'Record cursor + hover';
+      hoverStatus.textContent=enabled?'Recording locally':result?.reason||'Stopped · trace retained';
+    }catch(e){hoverStatus.textContent=String(e).slice(0,160);}
+    finally{hoverRecordButton.disabled=false;}
+  });
+  hoverExportButton?.addEventListener('click',()=>{
+    const trace=window.MCELDiagnosticPlugins?.exportHoverTrace?.();
+    if(!trace){hoverStatus.textContent='Diagnostic plugin unavailable';return;}
+    const url=URL.createObjectURL(new Blob([JSON.stringify(trace,null,2)],{type:'application/json'}));
+    const anchor=create('a');anchor.href=url;anchor.download='MCEL-L18-01-cursor-hover-trace.json';
+    anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    hoverStatus.textContent=`Exported ${trace.events.length} local diagnostic events`;
+  });
+  const galleryExport=root.querySelector('#mcel-lifecycle-acid-gallery-export');
+  galleryExport.addEventListener('click',()=>root.querySelector('#mcel-lifecycle-acid-export').click());
+  const showGallery=()=>{if(!galleryMounted)mountGalleryAll();};
+  root.mcelMountLifecycleGallery=showGallery;
+  if(root.getClientRects().length && root.getBoundingClientRect().width>0)showGallery();
   renderFactorControls(state.current);renderOverview();activateCase(0,{scroll:false});
   root.dataset.ready='true';
 }
@@ -457,6 +718,7 @@ function init(){
   if(!lifecycle || !blueprint)return;
   const setView=view=>{
     lab.dataset.mcelWorkspaceView=view;
+    if(view==='lifecycle')root.mcelMountLifecycleGallery?.();
     lifecycle.setAttribute('aria-pressed',String(view==='lifecycle'));
     blueprint.setAttribute('aria-pressed',String(view==='blueprint'));
   };

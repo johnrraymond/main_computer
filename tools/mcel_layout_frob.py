@@ -36,8 +36,8 @@ DEFAULT_OUTPUT = ROOT/'runtime/reports/mcel-layout-frob'
 # the viewport width. This padding is also used in the Frob preview CSS.
 FROB_HOST_PADDING_PX = 8
 RESOLVER = ROOT/'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js'
-DESIGN = ROOT/'mcel_designs/task-manager/design.yaml'
-CONTRACT = ROOT/'mcel_designs/task-manager/frob_crosscheck.yaml'
+DESIGN = ROOT/'tools/fixtures/mcel/task-manager/design.yaml'
+CONTRACT = ROOT/'tools/fixtures/mcel/task-manager/frob_crosscheck.yaml'
 
 # A machine's available scope is NOT silently promoted into application-shell support.
 COMPATIBILITY = {

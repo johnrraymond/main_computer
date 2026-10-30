@@ -81,6 +81,8 @@ PROBE=r'''async ({plan})=>{
   list.dispatchEvent(new WheelEvent('wheel',{bubbles:true}));
   const fading=!!mounted.collection.floatingCard?.classList.contains('mcel-negotiated-floating-card--fade');
   await new Promise(resolve=>setTimeout(resolve,180));
+  // New unclipping policy deliberately retains overlay during source scroll.
+  // Its source geometry follows the scroll host instead of fading immediately.
   const fade={openBeforeScroll,fading,closedByUserScroll:!mounted.collection.floatingCard};
   mounted.destroy();host.remove();
   const originalControls=root.querySelectorAll('#task-server-shutdown,#task-server-start,#task-server-restart,#task-schedule-create,#task-ai-analyze').length;
@@ -233,7 +235,8 @@ def verify(output:Path=OUTPUT,screenshots:bool=True)->dict:
                           and all(floatp[k] for k in ('ok','overlayOutsideScroll','isSourceAnchored',
                             'listGeometryStable','copyControls','selectable','restoreAccepted'))
                           and floatp['mode']=='floating-over-source'
-                          and all(result['fade'].values()) and result['originalControls']==5
+                          and result['fade']['openBeforeScroll'] and not result['fade']['fading'] and
+                          not result['fade']['closedByUserScroll'] and result['originalControls']==5
                           and result['cleanup'] and not result['overflow'] and
                           all(x['ok'] for x in fb['cases']) and fb['rejectsInvalid'] and
                           fb['cleanup'] and fb['productionRowsUnchanged'] and all(life.values()) and
@@ -253,6 +256,8 @@ def verify(output:Path=OUTPUT,screenshots:bool=True)->dict:
                             first.scroll_into_view_if_needed()
                             bounds=first.bounding_box()
                             page.mouse.move(bounds['x']+12,bounds['y']+12)
+                            # Default hover now uses a 1000ms activation dwell.
+                            page.wait_for_timeout(1100)
                             pointer=page.evaluate('''()=>{
                               const row=document.querySelector('#patch147-pointer mcel-row');
                               const pane=document.querySelector('.mcel-negotiated-floating-card');

@@ -594,7 +594,7 @@ def test_git_source_guard_blocks_relevant_uncommitted_changes_by_default(
     assert "HUB_GIT_COMMIT_PUSH_COMMAND:" in stderr
     assert (
         "git add -- 'Dockerfile.hub.stable'; "
-        "if ($LASTEXITCODE -eq 0) { git commit -m 'Update Hub deployment source' }; "
+        "if ($LASTEXITCODE -eq 0) { git commit --only -m 'Update Hub deployment source' -- 'Dockerfile.hub.stable' }; "
         "if ($LASTEXITCODE -eq 0) { git push origin HEAD }"
     ) in stderr
 
@@ -610,7 +610,7 @@ def test_git_commit_push_command_contains_only_relevant_dirty_paths() -> None:
     assert command.startswith(
         "git add -- 'main_computer/hub.py' 'main_computer/hub_bridge_backend.py'; "
     )
-    assert "git commit -m 'Update Hub deployment source'" in command
+    assert "git commit --only -m 'Update Hub deployment source' -- 'main_computer/hub.py' 'main_computer/hub_bridge_backend.py'" in command
     assert command.endswith("git push origin HEAD }")
     assert "game_web_loader.py" not in command
 

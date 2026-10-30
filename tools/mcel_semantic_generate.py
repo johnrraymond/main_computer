@@ -2,7 +2,7 @@
 
 python tools/mcel_semantic_generate.py --mode generate
 python tools/mcel_semantic_generate.py --mode verify
-python tools/mcel_semantic_generate.py --mode verify --design mcel_designs/task-manager/design.yaml
+python tools/mcel_semantic_generate.py --mode verify --design tools/fixtures/mcel/task-manager/design.yaml
 
 Authors edit application semantic YAML and graduated hints, not CSS positions.
 Outputs a standalone generated *fixture application*, a canonical MCEL layout,
@@ -33,7 +33,7 @@ from tools.mcel_presentation_planner import plan_presentation, validate_pattern_
 from tools.mcel_presentation_state import fixture_state, plan_state
 from tools.mcel_task_composition import plan_task_composition
 
-DEFAULT_DESIGN = ROOT/'mcel_designs/task-manager/design.yaml'
+DEFAULT_DESIGN = ROOT/'tools/fixtures/mcel/task-manager/design.yaml'
 DEFAULT_OUTPUT = ROOT/'runtime/reports/mcel-semantic-generation'
 SCRIPTS = ROOT/'main_computer/web/applications/scripts'
 REGISTRY = SCRIPTS/'mcel-element-registry.js'

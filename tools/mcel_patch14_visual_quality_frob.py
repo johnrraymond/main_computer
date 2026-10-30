@@ -371,14 +371,14 @@ def run(output: Path, *, run_regressions: bool = False) -> dict:
         selected=['tests/test_mcel_patch14_universal_composition.py','tests/test_mcel_patch14_canonical_tree_continuity.py',
           'tests/test_mcel_patch14_active_continuity.py','tests/test_mcel_patch14_visual_quality.py',
           'tests/test_mcel_design_critic_frob.py']
-        known_fixture_missing=not (ROOT/'mcel_designs/task-manager/design.yaml').exists()
+        known_fixture_missing=not (ROOT/'tools/fixtures/mcel/task-manager/design.yaml').exists()
         cmd=[sys.executable,'-m','pytest','-q',*selected]
         if known_fixture_missing:
             cmd+=['-k','not test_run_packet_generates_distinct_canonical_browser_outputs']
         p=subprocess.run(cmd,cwd=ROOT,capture_output=True,text=True,timeout=240)
         regression={'status':'PASS' if p.returncode==0 else 'FAIL',
           'skippedLegacyDesignCriticFixtureTest':known_fixture_missing,
-          'skipReason':'mcel_designs/task-manager/design.yaml absent from export' if known_fixture_missing else None,
+          'skipReason':'tools/fixtures/mcel/task-manager/design.yaml absent from export' if known_fixture_missing else None,
           'output':(p.stdout+p.stderr)[-4500:]}
     checks={
       '36-matched-pngs':len(captures)==36,

@@ -313,7 +313,8 @@ def test_configure_missing_creates_nonsecret_runtime_draft_and_preserves_state(t
     assert created['path'] == str(path)
     assert created['identity_committed'] is False
     assert created['remote_mutation'] is False
-    assert set(created['missing_fields']) == {'public_url', 'image', 'image_digest', 'environment_uuid'}
+    assert set(created['missing_fields']) == {'image', 'image_digest', 'environment_uuid'}
+    assert json.loads(path.read_text(encoding='utf-8'))['public_url'] == 'https://external.greatlibrary.io'
     draft = json.loads(path.read_text(encoding='utf-8'))
     assert draft['project_uuid'] == 'proj-a' and draft['server_uuid'] == 'server-a'
     assert draft['slh_public_key_b64'] == public
@@ -382,3 +383,163 @@ def test_configure_explicit_deployment_file_override_remains_supported(tmp_path)
 def test_default_path_rejects_untrusted_seh_name(tmp_path):
     with pytest.raises(st.SEHIdentityError, match='Invalid seh'):
         _deployment_config_path(tmp_path / 'runtime/state', 'mainnet', '../../escape')
+
+
+def test_seh_discovery_autofills_environment_and_published_image_from_coolify(tmp_path, monkeypatch):
+    from tools.seh_control.discovery import discover
+    from tools import slh_seh_connector
+    root, _, c = build(tmp_path)
+    key_dir = tmp_path / 'signing'
+    slh_seh_connector.service_identity(key_dir, create=True)
+    monkeypatch.setattr(slh_seh_connector, 'default_state', lambda: key_dir)
+    class Inventory:
+        calls = []
+        def request(self, method, path, body=None):
+            self.calls.append((method, path))
+            if path.endswith('/environments'):
+                return [{'uuid':'env-actual','name':'production'}]
+            if path == '/api/v1/services':
+                return [{'uuid':'seh-live','description':'main-computer-seh:v1 target=other org=org slh=slh'}]
+            if path == '/api/v1/services/seh-live':
+                return {'docker_compose':'services:\n  seh:\n    image: ghcr.io/mycompany/main-computer-seh@sha256:' + 'a'*64}
+            raise AssertionError((method,path))
+    import tools.seh_control.discovery as d
+    inst = Inventory()
+    values=discover(root, 'mainnet', 'company', transport=inst)
+    # The test fixture's .example.org controller is intentionally blocked, even
+    # if someone supplies a mock transport. Switch to a concrete HTTPS origin.
+    assert 'COOLIFY_MANAGEMENT_TRANSPORT_INSECURE' in values['blockers'][0]
+    def change(doc,gen,base):
+        doc['networks']['mainnet']['sehs']['company']['coolify']['identities']['primary']['controller']['url']='https://coolify.mock-internal.org'
+    st.mutate(root, 'mainnet', None, 'set-controller-test-origin', change)
+    data=discover(root, 'mainnet', 'company', transport=inst)
+    v=data['values']
+    assert v['public_url'] == 'https://external.greatlibrary.io'
+    assert v['environment_uuid']=='env-actual'
+    assert v['image']=='ghcr.io/mycompany/main-computer-seh'
+    assert v['image_digest']=='sha256:'+'a'*64
+    assert v['slh_public_key_b64']
+    assert data['missing_fields']==[]
+    assert data['remote_mutation'] is False
+    assert all(method == 'GET' for method,_ in inst.calls)
+    assert SECRET not in json.dumps(data)
+
+
+def test_insecure_remote_management_does_not_transmit_token_and_does_not_guess_digest(tmp_path):
+    from tools.seh_control.discovery import discover
+    root,_,c=build(tmp_path)
+    class Forbidden:
+        def request(self,*a,**k):
+            raise AssertionError('Unauthorized credentialed HTTP')
+    def change(doc,gen,base):
+        doc['networks']['mainnet']['sehs']['company']['coolify']['identities']['primary']['controller']['url']='http://159.203.184.182:8000/'
+    st.mutate(root,'mainnet',None,'set-http-test-origin',change)
+    output=discover(root,'mainnet','company',transport=Forbidden())
+    assert output['values']['public_url']=='https://external.greatlibrary.io'
+    assert 'environment_uuid' in output['missing_fields']
+    assert 'image_digest' in output['missing_fields']
+    assert any('TRANSPORT_INSECURE' in item for item in output['blockers'])
+    assert output['identity_committed'] is False
+
+
+def test_discovery_refuses_ambiguous_environment_and_multiple_images(tmp_path):
+    from tools.seh_control.discovery import discover
+    root,_,c=build(tmp_path)
+    def change(doc,gen,base):
+        ctl=doc['networks']['mainnet']['sehs']['company']['coolify']['identities']['primary']['controller']
+        ctl['url']='https://coolify.mock-internal.org'
+        for name,digest in [('one','1'),('two','2')]:
+            doc['networks']['mainnet']['sehs'][name]={
+                'schema':'main-computer.seh-identity.v1','organization_id':'org','slh_id':'slh',
+                'coolify':{'active_identity':None,'identities':{}},
+                'deployment':{'enabled':True,'image':'ghcr.io/org/main-computer-seh','image_digest':'sha256:'+digest*64}}
+    st.mutate(root,'mainnet',None,'ambiguous-images',change)
+    class Inventory:
+        def request(self,method,path,body=None):
+            if path.endswith('/environments'):
+                return [{'uuid':'env1','name':'one'},{'uuid':'env2','name':'two'}]
+            if path == '/api/v1/services':return []
+            raise AssertionError(path)
+    response=discover(root,'mainnet','company',transport=Inventory())
+    assert 'environment_uuid' in response['missing_fields']
+    assert 'image_digest' in response['missing_fields']
+    assert any('ENVIRONMENT_AMBIGUOUS' in x for x in response['blockers'])
+    assert any('IMAGE_AMBIGUOUS' in x for x in response['blockers'])
+
+
+def test_discovery_preserves_existing_draft_values(tmp_path):
+    from tools.seh_control.discovery import discover
+    root,_,c=build(tmp_path)
+    vals=discover(root,'mainnet','company',existing={'enabled':False,'public_url':'https://custom.example.net',
+                    'image':'ghcr.io/private/custom-seh','image_digest':'sha256:'+'a'*64})['values']
+    assert vals['public_url']=='https://custom.example.net'
+    assert vals['enabled'] is False
+    assert vals['image']=='ghcr.io/private/custom-seh'
+    assert vals['image_digest']=='sha256:'+'a'*64
+
+
+def test_configure_existing_draft_applies_hostname_without_committing_incomplete(tmp_path):
+    root,_,c=build(tmp_path)
+    path=_deployment_config_path(root,'mainnet','company')
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'enabled':True,'public_url':'','image':'','image_digest':'',
+                                'environment_uuid':''}),encoding='utf-8')
+    args=['configure','--network','mainnet','--seh','company','--execute',
+          '--runtime-state-root',str(root)]
+    with redirect_stdout(io.StringIO()) as output:
+        assert main(args)==2
+    response=json.loads(output.getvalue())
+    assert response['status']=='NEEDS_CONFIGURATION'
+    assert 'public_url' not in response['missing_fields']
+    assert json.loads(path.read_text())['public_url']=='https://external.greatlibrary.io'
+    assert c.inspect('mainnet','company')['generation']==3
+
+
+def test_cli_configure_autocommits_discovered_environment_and_registry_digest(tmp_path, monkeypatch):
+    from tools import slh_seh_connector
+    import tools.seh_control.discovery as discovery
+    root,_,c=build(tmp_path)
+    keydir=tmp_path/'slh-key'
+    slh_seh_connector.service_identity(keydir,create=True)
+    monkeypatch.setattr(slh_seh_connector,'default_state',lambda: keydir)
+    def make_live(doc,gen,base):
+        doc['networks']['mainnet']['sehs']['company']['coolify']['identities']['primary']['controller']['url']='https://coolify.secure-internal.net'
+    st.mutate(root,'mainnet',None,'test-controller-https',make_live)
+    class Inventory:
+        def __init__(self,*args,**kwargs):self.calls=[]
+        def request(self,method,path,body=None):
+            self.calls.append((method,path))
+            if path.endswith('/environments'):
+                return {'environments':[{'name':'production','uuid':'env-prod'}]}
+            if path=='/api/v1/services':
+                return [{'description':'main-computer-seh:v1 target=old org=x slh=y',
+                         'image':'ghcr.io/organization/main-computer-seh@sha256:'+'b'*64}]
+            raise AssertionError(path)
+    sessions=[]
+    def factory(*args,**kwargs):
+        result=Inventory(*args,**kwargs);sessions.append(result);return result
+    monkeypatch.setattr(discovery,'CoolifyHTTP',factory)
+    args=['configure','--network','mainnet','--seh','company','--execute',
+          '--runtime-state-root',str(root)]
+    with redirect_stdout(io.StringIO()) as out:
+        assert main(args)==0
+    assert json.loads(out.getvalue())['status']=='DRAFT_CREATED'
+    with redirect_stdout(io.StringIO()) as out:
+        assert main(args)==0
+    assert json.loads(out.getvalue())['status']=='COMMITTED'
+    assert c.inspect('mainnet','company')['generation']==5
+    target=c.resolved('mainnet','company').target
+    assert target.public_url=='https://external.greatlibrary.io'
+    assert target.environment_uuid=='env-prod'
+    assert target.image=='ghcr.io/organization/main-computer-seh'
+    assert target.image_digest=='sha256:'+'b'*64
+    assert sessions and all(method=='GET' for session in sessions for method,_ in session.calls)
+    assert SECRET not in out.getvalue()
+
+
+def test_coolify_management_client_refuses_public_http_token_transport():
+    from main_computer.slh.coolify import CoolifyHTTP, SEHDeploymentError
+    with pytest.raises(SEHDeploymentError, match='HTTPS or loopback'):
+        CoolifyHTTP('http://159.203.184.182:8000/', SECRET)
+    assert CoolifyHTTP('https://coolify.example.com/', SECRET).origin == 'https://coolify.example.com'
+    assert CoolifyHTTP('http://127.0.0.1:8000/', SECRET).origin == 'http://127.0.0.1:8000'

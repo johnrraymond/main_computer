@@ -109,6 +109,249 @@
       return {violations:result.violations.length,incomplete:result.incomplete.length,passes:result.passes.length};
     }});
 
+  // An opt-in, local-only recorder for MCEL hover/scroll ownership decisions.
+  // Instrumentation is independent of rrweb, Sentry and hosted analytics. Nothing
+  // is transmitted; applications may export the buffer explicitly as JSON.
+  const hoverCapture = {events:[],running:false,scope:"#mcel-lifecycle-acid",limit:10000,startedAt:null,dropped:0};
+  const hoverNow = () => Math.round(performance.now()*10)/10;
+  function hoverExport() {
+    // Summarize the recorded facts without interpreting why the browser moved.
+    const counts={}, alerts=[];
+    let maxRailGap=0,maxUnexpectedMotion=0,maxFrameGap=0;
+    for(const e of hoverCapture.events){
+      counts[e.kind]=(counts[e.kind]||0)+1;
+      if(e.kind==='geometry-invariant-warning' || e.kind==='geometry-delta'){
+        if(Number.isFinite(e.railGap))maxRailGap=Math.max(maxRailGap,Math.abs(e.railGap));
+        if(e.kind==='geometry-invariant-warning')alerts.push({ms:e.ms,kind:e.kind,reason:e.reason,rowId:e.rowId});
+        if(e.kind==='geometry-delta')maxUnexpectedMotion=Math.max(maxUnexpectedMotion,Math.abs(e.unexplainedRowDx||0),Math.abs(e.unexplainedRowDy||0));
+      }
+      if(e.kind==='frame-gap')maxFrameGap=Math.max(maxFrameGap,e.gapMs||0);
+    }
+    return {schema:"mcel.hover-pointer-trace.v2",localOnly:true,recording:hoverCapture.running,
+      scope:hoverCapture.scope,startedAt:hoverCapture.startedAt,exportedAt:new Date().toISOString(),
+      viewport:{width:innerWidth,height:innerHeight,devicePixelRatio:devicePixelRatio},
+      summary:{eventCounts:counts,discardedOldEvents:hoverCapture.dropped,maxRailGap,maxUnexpectedMotion,maxFrameGap,
+        invariantAlerts:alerts.slice(-100)},
+      events:hoverCapture.events.slice(),
+      performanceFindings:window.MCELDiagnosticPlugins.findings().filter(e=>e.pluginId==='chrome-performance').slice(-100),
+      plugins:window.MCELDiagnosticPlugins.list().filter(x=>["mcel-hover-pointer","rrweb","chrome-performance","sentry"].includes(x.id))};
+  }
+  window.MCELDiagnosticPlugins.exportHoverTrace = hoverExport;
+  window.MCELDiagnosticPlugins.clearHoverTrace = () => {hoverCapture.events.length=0;hoverCapture.dropped=0;hoverCapture.startedAt=null;};
+  register({id:"mcel-hover-pointer",kind:"recorder",description:"Local cursor, hit-test, scroll owner and MCEL hover decision trace; opt-in only",
+    availability:()=>"ready",
+    start(ctx) {
+      const selector=typeof ctx.config.scope==="string" && ctx.config.scope.startsWith("#mcel-")?
+        ctx.config.scope:"#mcel-lifecycle-acid";
+      const root=document.querySelector(selector);
+      if(!root)throw new Error("Hover diagnostic scope not mounted: "+selector);
+      hoverCapture.running=true;hoverCapture.scope=selector;
+      hoverCapture.startedAt=new Date().toISOString();hoverCapture.dropped=0;
+      hoverCapture.limit=Math.max(100,Math.min(30000,Number(ctx.config.maxEvents)||10000));
+      const keep=(kind,data={})=>{
+        const item={ms:hoverNow(),kind,...data};hoverCapture.events.push(item);
+        if(hoverCapture.events.length>hoverCapture.limit){
+          const removed=hoverCapture.events.length-hoverCapture.limit;
+          hoverCapture.events.splice(0,removed);hoverCapture.dropped+=removed;
+        }
+      };
+      const geom=element=>{
+        if(!element?.isConnected)return null;
+        const r=element.getBoundingClientRect();
+        return {x:+r.x.toFixed(2),y:+r.y.toFixed(2),w:+r.width.toFixed(2),h:+r.height.toFixed(2)};
+      };
+      const elementName=el=>el?.closest?.('mcel-row')?.dataset.rowId||
+        el?.closest?.('mcel-collection')?.localName||el?.localName||null;
+      let lastPoint=null,lastSample=-Infinity,frame=0,lastFrameTime=0,lastPaint=0;
+      let lastGeom=null,baseline=null,lastBoundary=null,lastRailWarning=0,lastHeartbeat=0,lastBadField=null,lastBadFieldAt=0;
+      const scrollHost=()=>activeRow()?.closest('mcel-collection')||
+        root.querySelector('[data-case-id="L18-01"] mcel-collection');
+      const activeRow=()=>root.querySelector('mcel-row:popover-open');
+      const activeRail=()=>document.querySelector('.mcel-unclip-row-scroll-track:popover-open');
+      const scrollFacts=()=>{
+        const row=activeRow(),list=scrollHost(),page=document.scrollingElement;
+        const rail=activeRail(),anchor=row?.mcelPopoverAnchor||null;
+        const rr=row?.getBoundingClientRect(),tr=rail?.getBoundingClientRect();
+        const gapRight=rr&&tr?tr.left-rr.right:null;
+        const gapLeft=rr&&tr?rr.left-tr.right:null;
+        const railSide=gapRight===null?null:Math.abs(gapRight)<=Math.abs(gapLeft)?'right':'left';
+        return {rowId:row?.dataset.rowId||null,row:geom(row),rail:geom(rail),anchor:geom(anchor),list:geom(list),
+          railHidden:!!rail?.hidden,rowScrollTop:row?.scrollTop??null,
+          rowScrollHeight:row?.scrollHeight??null,rowClientHeight:row?.clientHeight??null,
+          listScrollTop:list?.scrollTop??null,listScrollHeight:list?.scrollHeight??null,
+          pageScrollTop:page?.scrollTop??null,
+          railSide,railGap:row&&rail&&!rail.hidden?
+            +((railSide==='right'?gapRight:gapLeft)).toFixed(2):null};
+      };
+      const inBox=(r,p)=>!!(r&&p&&p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h);
+      const recordPointer=ev=>{
+        const hit=document.elementFromPoint(ev.clientX,ev.clientY);
+        const row=activeRow();
+        const inside=root.contains(hit)||hit?.closest?.('.mcel-unclip-row-scroll-track');
+        if(!inside&&!row)return;
+        const x=+ev.clientX.toFixed(1),y=+ev.clientY.toFixed(1);
+        const id=elementName(hit),last=lastPoint;
+        if(ev.type==='pointermove'&&last&&hoverNow()-lastSample<40 &&
+           id===last.target && Math.abs(x-last.x)<6 && Math.abs(y-last.y)<6)return;
+        lastSample=hoverNow();lastPoint={x,y,target:id};
+        const f=scrollFacts();
+        const boundary=inBox(f.row,lastPoint)?'row':inBox(f.rail,lastPoint)&&!f.railHidden?'rail':'outside';
+        if(boundary!==lastBoundary){keep('pointer-hit-region-change',{from:lastBoundary,to:boundary,
+          pointer:lastPoint,rowId:f.rowId,railGap:f.railGap,hit:id});lastBoundary=boundary;}
+        keep('browser-'+ev.type,{x,y,isTrusted:ev.isTrusted,pointerType:ev.pointerType,
+          hit:id,target:elementName(ev.target),activeRowId:f.rowId,
+          row:f.row,rail:f.rail,anchor:f.anchor,list:f.list,
+          region:boundary,rowScrollTop:f.rowScrollTop,listScrollTop:f.listScrollTop});
+      };
+      const recordScroll=ev=>{
+        const el=ev.target;
+        if(!root.contains(el)&&el!==document&&el!==document.scrollingElement)return;
+        if(!['mcel-row','mcel-collection'].includes(el.localName) && el!==document && el!==document.scrollingElement)return;
+        keep('browser-scroll',{owner:el.localName||'#document',rowId:el.dataset?.rowId||null,
+          top:el.scrollTop??null,clientHeight:el.clientHeight??null,scrollHeight:el.scrollHeight??null,
+          ...scrollFacts()});
+      };
+      let wheelSeq=0;
+      const recordWheel=ev=>{
+        const row=activeRow(),list=scrollHost(),rail=activeRail();
+        if(!row&&!root.contains(ev.target))return;
+        if(!row&&!list?.contains(ev.target))return;
+        const seq=++wheelSeq;
+        const before=scrollFacts();
+        const pixels=ev.deltaY*(ev.deltaMode===1?16:ev.deltaMode===2?(row?.clientHeight||innerHeight):1);
+        keep('wheel-before',{seq,deltaY:ev.deltaY,deltaX:ev.deltaX,deltaMode:ev.deltaMode,
+          normalizedDeltaY:pixels,cancelable:ev.cancelable,isTrusted:ev.isTrusted,
+          target:elementName(ev.target),point:{x:ev.clientX,y:ev.clientY},...before});
+        // A post-default rAF reveals the real scroll offsets after host arbitration.
+        requestAnimationFrame(()=>{if(!hoverCapture.running)return;
+          const after=scrollFacts();keep('wheel-after',{seq,...after,
+            rowDelta:(after.rowScrollTop??0)-(before.rowScrollTop??0),
+            listDelta:(after.listScrollTop??0)-(before.listScrollTop??0),
+            pageDelta:(after.pageScrollTop??0)-(before.pageScrollTop??0)});
+        });
+      };
+      const recordNativeToggle=ev=>{
+        const el=ev.target;
+        if(el?.localName==='mcel-row'&&root.contains(el)){
+          keep('browser-popover-toggle',{rowId:el.dataset.rowId||null,
+            oldState:ev.oldState||null,newState:ev.newState||null,geometry:geom(el),...scrollFacts()});
+        }
+      };
+      const recordHoverDecision=ev=>{
+        const d=ev.detail||{};
+        if(d.scope!=="mcel-row-hover")return;
+        if(d.source && !root.contains(d.source))return;
+        keep('host-'+(d.kind||'event'),{rowId:d.rowId||null,reason:d.reason||null,
+          pointer:d.pointer||null,geometry:d.geometry||null,
+          scrollOwner:d.scrollOwner||null,open:d.open??null,extra:d.extra||null,
+          observed:scrollFacts()});
+      };
+      const near=(a,b)=>a!=null&&b!=null&&Math.abs(a-b)<.75;
+      const frameStep=(time)=>{
+        if(!hoverCapture.running)return;
+        if(lastFrameTime && time-lastFrameTime>90){keep('frame-gap',{gapMs:+(time-lastFrameTime).toFixed(1),documentHidden:document.hidden});}
+        lastFrameTime=time;
+        // Sample at most ten times per second while the original row is open.
+        // Emit meaningful deltas plus a 4 Hz heartbeat rather than 60 events/s.
+        // This catches short jumps without flooding the bounded trace.
+        if(time-lastPaint>=100){
+          lastPaint=time;
+          const f=scrollFacts(),row=activeRow();
+          if(row){
+            if(!baseline||baseline.rowId!==f.rowId){
+              baseline={rowId:f.rowId,scrollTop:f.rowScrollTop,fields:[...row.children].filter(x=>x.localName==='mcel-field').slice(0,6)
+                .map(x=>{const b=geom(x);return b?{el:x,x:b.x-f.row.x,y:b.y-f.row.y,w:b.w,h:b.h}:null;}).filter(Boolean)};
+              keep('geometry-baseline',{rowId:f.rowId,fieldCount:baseline.fields.length,...f});
+            }
+            const fieldDrift=baseline.fields.map(b=>{
+              const r=geom(b.el);return r?{dx:+(r.x-f.row.x-b.x).toFixed(2),dy:+(r.y-f.row.y-b.y).toFixed(2)}:null;
+            });
+            // Changing the row scrollTop legitimately moves normal fields and
+            // may hold sticky fields in place. Only judge original-field layout
+            // continuity at the exact baseline scroll offset.
+            const comparableScroll=Math.abs((f.rowScrollTop||0)-(baseline.scrollTop||0))<.5;
+            const badField=comparableScroll&&fieldDrift.some(v=>v&&(Math.abs(v.dx)>.75||Math.abs(v.dy)>.75));
+            if(badField){
+              const fingerprint=JSON.stringify(fieldDrift);
+              if(lastBadField!==fingerprint||time-lastBadFieldAt>500){
+                keep('original-fields-shifted',{rowId:f.rowId,fieldDrift,...f});
+                lastBadField=fingerprint;lastBadFieldAt=time;
+              }
+            }else if(comparableScroll&&lastBadField){keep('original-fields-restored',{rowId:f.rowId,...f});lastBadField=null;}
+            if(lastGeom&&lastGeom.rowId===f.rowId){
+              const dx=f.row.x-lastGeom.row.x,dy=f.row.y-lastGeom.row.y;
+              const adx=f.anchor&&lastGeom.anchor?f.anchor.x-lastGeom.anchor.x:0;
+              const ady=f.anchor&&lastGeom.anchor?f.anchor.y-lastGeom.anchor.y:0;
+              const unexplainedRowDx=dx-adx,unexplainedRowDy=dy-ady;
+              if(!near(f.row.x,lastGeom.row.x)||!near(f.row.y,lastGeom.row.y)||
+                 !near(f.row.h,lastGeom.row.h)||!near(f.rowScrollTop,lastGeom.rowScrollTop)||
+                 !near(f.listScrollTop,lastGeom.listScrollTop)||
+                 !near(f.rail?.x,lastGeom.rail?.x)){
+                keep('geometry-delta',{rowId:f.rowId,...f,
+                  delta:{rowDx:+dx.toFixed(2),rowDy:+dy.toFixed(2),
+                    anchorDx:+adx.toFixed(2),anchorDy:+ady.toFixed(2),
+                    rowHeight:f.row.h-lastGeom.row.h,
+                    rowScroll:(f.rowScrollTop??0)-(lastGeom.rowScrollTop??0),
+                    listScroll:(f.listScrollTop??0)-(lastGeom.listScrollTop??0)},
+                  unexplainedRowDx:+unexplainedRowDx.toFixed(2),unexplainedRowDy:+unexplainedRowDy.toFixed(2)});
+              }
+            }
+            if(f.rail&&!f.railHidden&&f.railGap!==null&&
+               (Math.abs(f.railGap)>1||Math.abs(f.rail.y-f.row.y)>1||Math.abs(f.rail.h-f.row.h)>1)&&
+               time-lastRailWarning>200){
+              lastRailWarning=time;
+              keep('geometry-invariant-warning',{rowId:f.rowId,reason:'rail-disconnected',...f});
+            }
+            if(time-lastHeartbeat>=250){lastHeartbeat=time;keep('paint-frame',{...f,
+              hit:lastPoint?elementName(document.elementFromPoint(lastPoint.x,lastPoint.y)):null});}
+            lastGeom={...f,ms:time};
+          } else {lastGeom=null;baseline=null;lastBoundary=null;lastBadField=null;}
+        }
+        frame=requestAnimationFrame(frameStep);
+      };
+      for(const type of ['pointerenter','pointerleave','pointermove','pointerdown','pointerup'])
+        document.addEventListener(type,recordPointer,true);
+      document.addEventListener('scroll',recordScroll,true);
+      document.addEventListener('wheel',recordWheel,{capture:true,passive:true});
+      document.addEventListener('toggle',recordNativeToggle,true);
+      window.addEventListener('mcel-hover-trace',recordHoverDecision);
+      // A removedNodes notification means "removed from this parent", NOT
+      // "removed from the document". Real MCEL layout updates can MOVE the
+      // exact same row several times in a transaction. Check after the DOM
+      // has settled and deduplicate by node identity before reporting loss.
+      const detachObserver=new MutationObserver(records=>{
+        const removed=new Set();
+        for(const change of records)for(const node of change.removedNodes){
+          if(node.nodeType!==1)continue;
+          if(node.localName==='mcel-row')removed.add(node);
+          for(const row of node.querySelectorAll?.('mcel-row')||[])removed.add(row);
+        }
+        if(!removed.size)return;
+        queueMicrotask(()=>{
+          let moved=0;
+          for(const row of removed){
+            if(row.isConnected && root.contains(row)){moved++;continue;}
+            keep('dom-row-detached',{rowId:row.dataset.rowId||null,
+              wasOpen:row.matches(':popover-open'),lastPointer:lastPoint,
+              reason:'not-connected-after-mutation'});
+          }
+          if(moved)keep('dom-rows-moved',{count:moved,reason:'retained-dom-identity'});
+        });
+      });
+      detachObserver.observe(root,{childList:true,subtree:true});
+      frame=requestAnimationFrame(frameStep);
+      keep('recording-started',{scope:selector});
+      return {stop(){hoverCapture.running=false;cancelAnimationFrame(frame);
+        for(const type of ['pointerenter','pointerleave','pointermove','pointerdown','pointerup'])
+          document.removeEventListener(type,recordPointer,true);
+        document.removeEventListener('scroll',recordScroll,true);
+        document.removeEventListener('wheel',recordWheel,true);
+        detachObserver.disconnect();
+        document.removeEventListener('toggle',recordNativeToggle,true);
+        window.removeEventListener('mcel-hover-trace',recordHoverDecision);
+        keep('recording-stopped');}};
+    }});
+
   register({id:"rrweb",kind:"recorder",description:"Local DOM/session event recording (not uploaded)",availability:() => (window.rrweb?.record || window.rrwebRecord?.record) ? "ready" : "requires-local-rrweb-script",
     start(ctx) {
       const record = window.rrweb?.record || window.rrwebRecord?.record;

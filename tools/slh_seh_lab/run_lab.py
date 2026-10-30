@@ -65,7 +65,8 @@ def validate_topology(path: str | Path) -> dict:
 def plan(path: str | Path) -> dict:
     topology = validate_topology(path)
     return {'schema': SCHEMA, 'status': 'PLANNED_ONLY', 'topology': topology,
-            'lanes': ['known_device_and_lan', 'seh_production_runtime_local_integration',
+            'lanes': ['two_service_real_process_bootstrap_lifecycle_worker_seh',
+                      'known_device_and_lan', 'seh_production_runtime_local_integration',
                       'stable_hub_shared_wallet_sessions', 'scheduler_reconcile_and_drain',
                       'private_authorized_execution', 'paid_requester_charge_and_wallet_earning',
                       'seh_coolify_contract'],
@@ -355,6 +356,11 @@ def _in_memory_hub():
 
 
 def verify_local() -> dict:
+    from .service_lifecycle import verify_services
+    services = verify_services()
+    # Keep the previously proven paid-work lane. It uses an in-process
+    # scheduler/proxy and is NOT falsely counted as paid work through the
+    # network Organization process (which lacks marketplace control APIs).
     server, thread = _in_memory_hub()
     try:
         trial = _local_demo(f'http://127.0.0.1:{server.server_port}',
@@ -364,9 +370,9 @@ def verify_local() -> dict:
         server.server_close()
         thread.join(timeout=3)
     seh = _mock_coolify_gate()
-    ok = trial['pass'] and seh['status']=='PASS'
+    ok = services['pass'] and trial['pass'] and seh['status']=='PASS'
     return {'schema':SCHEMA, 'mode':'verify-local', 'status':'PASS' if ok else 'FAIL',
-            'slh':trial, 'seh_coolify_contract':seh, 'production_seh':'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
+            'two_service_lab':services, 'slh':trial, 'seh_coolify_contract':seh, 'production_seh':'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
             'paid_work_settlement':'LAB_LEDGER_SETTLED_NOT_BRIDGED'}
 
 
@@ -405,6 +411,10 @@ def _launch_cluster(topology_path, log_dir):
 
 
 def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|None=None) -> dict:
+    from .service_lifecycle import verify_services
+    # Always run against a disposable, real child process before the existing
+    # paid Stable Hub path. Never mutate an installed organizational SLH.
+    services = verify_services()
     from tools.stable_hub_lab.run_lab import check_cluster, _terminate_children
     children=[];logs=[]
     try:
@@ -433,8 +443,9 @@ def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|Non
         trial = _local_demo(urls[2],topology_label='three-hub-smoke-fdb', payout_ledger=ledger,
                             deployed=deployed)
         seh = _mock_coolify_gate() if deployed is None else {'status':'NOT_APPLICABLE_DEPLOYED'}
-        ok = trial['pass'] and (deployed is not None or seh['status']=='PASS')
+        ok = services['pass'] and trial['pass'] and (deployed is not None or seh['status']=='PASS')
         return {'schema':SCHEMA,'mode':'verify-deployed' if deployed else 'run', 'status':'PASS' if ok else 'FAIL',
+                'two_service_lab': services,
                 'hub_cluster': {'ok':True,'ids':[x['hub_id'] for x in identities],
                                 'cluster_id':health['cluster_id']},
                 'slh':trial,'seh_coolify_contract':seh,
@@ -551,7 +562,7 @@ def verify_deployed(topology: Path, *, use_existing:bool, report_dir:Path,
 
 def main(argv=None) -> int:
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('plan','verify-local','run','verify-deployed','prepare-local-coolify','deploy-local-coolify'))
+    p.add_argument('command',choices=('plan','verify-services','verify-local','run','verify-deployed','prepare-local-coolify','deploy-local-coolify'))
     p.add_argument('--topology',type=Path,default=DEFAULT_TOPOLOGY)
     p.add_argument('--use-existing-hubs',action='store_true',help='Only run on a verified, already-running smoke cluster; never stop it')
     p.add_argument('--report-dir',type=Path,default=REPORT_ROOT)
@@ -620,7 +631,12 @@ def main(argv=None) -> int:
             # Keep Hub/WS request diagnostics in the run folder, not the operator's console.
             with (path/'lab-runtime.log').open('w', encoding='utf-8') as log:
                 with redirect_stdout(log), redirect_stderr(log):
-                    if a.command=='verify-local':report=verify_local()
+                    if a.command=='verify-services':
+                        from .service_lifecycle import verify_services
+                        services=verify_services()
+                        report={'schema':SCHEMA, 'mode':'verify-services',
+                                'status':services['status'], 'two_service_lab':services}
+                    elif a.command=='verify-local':report=verify_local()
                     elif a.command=='verify-deployed':
                         report=verify_deployed(a.topology,use_existing=a.use_existing_hubs,
                                                report_dir=path,org=a.org_id,slh=a.slh_id,
@@ -636,6 +652,10 @@ def main(argv=None) -> int:
     if a.json:print(json.dumps(report,indent=2,sort_keys=True))
     else:
         print('SLH / SEH lab:',report['status'])
+        if 'two_service_lab' in report:
+            print('  Production two-service lifecycle:',report['two_service_lab']['status'])
+            for k,v in report['two_service_lab']['gates'].items():
+                print('  ', 'PASS' if v else 'FAIL', k)
         if 'slh' in report:
             for k,v in report['slh']['gates'].items():
                 print('  ', 'PASS' if v else 'FAIL', k)
@@ -649,7 +669,9 @@ def main(argv=None) -> int:
             p=report['slh']['paid_marketplace']
             print('  Paid Stable Hub cycle:', 'PASS' if p.get('pass') else 'FAIL',
                   '(synthetic smoke credits; local ledger settlement only)')
-        if a.command=='verify-deployed':
+        if a.command=='verify-services':
+            print('  Paid-marketplace / public deployment: NOT TESTED by verify-services')
+        elif a.command=='verify-deployed':
             if 'primary_tunnel' in report:
                 print('  Production SLH tunnel:',report['primary_tunnel']['status'],
                       '(separate from isolated paid test)')

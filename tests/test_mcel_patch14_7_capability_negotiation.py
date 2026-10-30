@@ -26,7 +26,7 @@ def test_real_task_manager_negotiation_and_fallbacks(tmp_path:Path):
         assert case['continuity']['refusesUnprovenIdentity']
         assert case['floatProof']['overlayOutsideScroll']
         assert case['floatProof']['listGeometryStable']
-        assert case['fade']['fading'] and case['fade']['closedByUserScroll']
+        assert case['fade']['openBeforeScroll'] and not case['fade']['fading'] and not case['fade']['closedByUserScroll']
         assert case['originalControls']==5
         assert not case['browserErrors'] and not case['networkRequests']
         assert not case['overflow']

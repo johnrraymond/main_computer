@@ -23,8 +23,8 @@ class QualityStressTests(unittest.TestCase):
 
     def test_cli_preserves_isolated_task_manager_source(self):
         from tools import mcel_layout_frob as launcher
-        self.assertIn('mcel_designs/task-manager/design.yaml',launcher.DESIGN.as_posix())
-        self.assertIn('mcel_designs/task-manager/frob_crosscheck.yaml',launcher.CONTRACT.as_posix())
+        self.assertIn('tools/fixtures/mcel/task-manager/design.yaml',launcher.DESIGN.as_posix())
+        self.assertIn('tools/fixtures/mcel/task-manager/frob_crosscheck.yaml',launcher.CONTRACT.as_posix())
         with self.assertRaises(SystemExit) as raised:
             launcher.main(['--mode','invalid-stress-mode'])
         self.assertEqual(raised.exception.code,2)

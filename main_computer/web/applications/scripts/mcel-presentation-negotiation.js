@@ -9,7 +9,8 @@
   const MODES=new Set(['inline-expand','floating-over-source']);
   const CAPABILITIES=new Set(['geometry.child-resize','scroll.reveal','scroll.anchor-preserve',
     'scroll.observe-visibility','scroll.user-activity','overlay.anchor-source',
-    'overlay.collision','overlay.portal','overlay.dismiss']);
+    'overlay.collision','overlay.portal','overlay.dismiss','overlay.unclip-preserve-geometry',
+    'scroll.threshold-handoff']);
   const MODES_REQUIRE={ 'inline-expand':'geometry.child-resize',
     'floating-over-source':'overlay.anchor-source' };
   function validate(policy){
@@ -28,7 +29,10 @@
           if(typeof l!=='object' || !Number.isInteger(l.pointerLeaveDelayMs??0) ||
              (l.pointerLeaveDelayMs??0)<0 || (l.pointerLeaveDelayMs??0)>30000 ||
              ![undefined,'fade-now','ignore'].includes(l.onUserScroll) ||
-             (l.preserveWhileSelecting!==undefined && typeof l.preserveWhileSelecting!=='boolean'))
+             (l.preserveWhileSelecting!==undefined && typeof l.preserveWhileSelecting!=='boolean') ||
+             (l.hoverActivationDelayMs!==undefined && (!Number.isInteger(l.hoverActivationDelayMs)||l.hoverActivationDelayMs<0||l.hoverActivationDelayMs>30000)) ||
+             (l.handoffThresholdPercent!==undefined && (typeof l.handoffThresholdPercent!=='number'||!Number.isFinite(l.handoffThresholdPercent)||l.handoffThresholdPercent<0||l.handoffThresholdPercent>100)) ||
+             (l.momentumGuardMs!==undefined && (!Number.isInteger(l.momentumGuardMs)||l.momentumGuardMs<0||l.momentumGuardMs>1500)))
             throw Error('MCEL_PRESENTATION_LIFECYCLE_INVALID');
         }
       }
@@ -104,8 +108,12 @@
        lifecycle:{pointerLeaveDelayMs:2000,onUserScroll:'fade-now',preserveWhileSelecting:true}},
       {mode:'inline-expand',requires:['geometry.child-resize']}
     ],
-    onHover:[{mode:'floating-over-source',requires:['overlay.anchor-source','overlay.collision','overlay.portal','overlay.dismiss'],
-      lifecycle:{pointerLeaveDelayMs:2000,onUserScroll:'fade-now',preserveWhileSelecting:true}}]
+    onHover:[{mode:'floating-over-source',requires:['overlay.anchor-source','overlay.portal',
+      'overlay.unclip-preserve-geometry','scroll.threshold-handoff'],
+      lifecycle:{hoverActivationDelayMs:1000,pointerLeaveDelayMs:1000,onUserScroll:'ignore',
+        preserveWhileSelecting:true,preserveVisiblePixels:true,handoffThresholdPercent:15,momentumGuardMs:140}},
+      {mode:'floating-over-source',requires:['overlay.anchor-source','overlay.collision','overlay.portal','overlay.dismiss'],
+        lifecycle:{pointerLeaveDelayMs:1000,onUserScroll:'fade-now',preserveWhileSelecting:true}}]
   }});
   global.McelPresentationNegotiation=Object.freeze({SCHEMA,validate,negotiate,createTransaction,defaultPolicy,CAPABILITIES:[...CAPABILITIES]});
 })(typeof window!=='undefined'?window:globalThis);

@@ -23,6 +23,7 @@ from main_computer.network_safety import (
 )
 from main_computer.service_control import control_status, enqueue_supervisor_action
 from main_computer.service_supervisor import load_service_supervisor_state
+from main_computer.slh.local_authenticator_api import LocalAuthenticatorAPI
 
 
 HARD_HALT_PATH = "/system/hard-halt"
@@ -1774,10 +1775,50 @@ def _handle_control_panel_system_sanity_stream(self) -> None:
 
 
 
+def _handle_main_computer_authenticator(self, method: str, route_path: str) -> None:
+    """Viewport's own localhost-bound backend for per-user identities.
+
+    Uses exactly the same API implementation as the resident host SLH local
+    service, but executes in the interactive application's user context.
+    """
+    if not _hard_halt_client_is_local(self):
+        self._send_json({'error': {'code': 'LOCAL_TRANSPORT_ONLY'}}, HTTPStatus.FORBIDDEN)
+        return
+    # Do not make this endpoint callable by a remote website via Origin requests.
+    origin = self.headers.get('Origin')
+    if origin:
+        parsed = urlsplit(origin)
+        host = (self.headers.get('Host') or '').lower()
+        if parsed.scheme not in ('http', 'https') or parsed.netloc.lower() != host:
+            self._send_json({'error': {'code': 'CROSS_ORIGIN_DENIED'}}, HTTPStatus.FORBIDDEN)
+            return
+    if method == 'POST':
+        try:
+            size = int(self.headers.get('Content-Length', '0'))
+            if size < 0 or size > 8192:
+                self._send_json({'error': {'code': 'BODY_TOO_LARGE'}}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
+            if self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
+                self._send_json({'error': {'code': 'JSON_REQUIRED'}}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                return
+            body = json.loads(self.rfile.read(size)) if size else {}
+        except (ValueError, UnicodeDecodeError):
+            self._send_json({'error': {'code': 'INVALID_REQUEST'}}, HTTPStatus.BAD_REQUEST)
+            return
+    else:
+        body = {}
+    endpoint = '/v1/local/authenticator' + route_path[len('/api/local/authenticator'):]
+    code, result = LocalAuthenticatorAPI().call(method, endpoint, body, loopback=True)
+    self._send_json(result, HTTPStatus(code))
+
+
 def dispatch_get(self) -> None:
     route_path = urlsplit(self.path).path
     if route_path != "/api/activity/snapshot":
         self.server.signal("http-request", method="GET", path=self.path)
+    if route_path.startswith("/api/local/authenticator/"):
+        _handle_main_computer_authenticator(self, "GET", route_path)
+        return
     if route_path == HARD_HALT_PATH:
         self.server.signal("api-hard-halt-method-rejected", method="GET")
         _send_hard_halt_method_not_allowed(self)
@@ -2074,6 +2115,9 @@ def dispatch_get(self) -> None:
 def dispatch_post(self) -> None:
     self.server.signal("http-request", method="POST", path=self.path)
     route_path = urlsplit(self.path).path
+    if route_path.startswith("/api/local/authenticator/"):
+        _handle_main_computer_authenticator(self, "POST", route_path)
+        return
     if route_path == HARD_HALT_PATH:
         _handle_hard_halt_post(self)
         return

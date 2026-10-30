@@ -139,6 +139,7 @@
     const humanFirst=opts.humanFirst===true;
     const negotiated=opts.presentationNegotiation===true;
     // Explicit lab opt-in: source snapshots remain authoritative only while live.
+    const rowHoverUnclip=negotiated && (opts.rowHoverUnclip===true || opts.collectionHoverUnclip===true);
     const retirementEnabled=negotiated && opts.sourceRetirement===true;
     if(retirementEnabled)requireIt(!!global.McelElementRetirement,'RETIREMENT_UNAVAILABLE');
     if(negotiated)requireIt(humanFirst && global.McelPresentationNegotiation &&
@@ -189,6 +190,10 @@
         if(!disposed)container.dataset.overlayOpen='false';
         if(reason==='escape'||reason==='user-scroll')suppressedHoverId=lastHoverId;
       }}):null;
+    // Opt-in now means ROW-owned unclip, with the collection acting solely as
+    // a scroll/geometry host. No full-collection automatic hover.
+    if(rowHoverUnclip)collection.dataset.mcelRowHoverUnclip='true';
+    const collectionUnclip=null;
     const unsuppressOnExit=ev=>{
       if(!suppressedHoverId)return;
       const row=rowCache.get(suppressedHoverId)?.node,rect=row?.getBoundingClientRect();
@@ -238,6 +243,10 @@
       const valueRecord=prior.value_records?.find(r=>r.id===id)||null;
       if(!projected||!semantic)return false;
       entry.node.dataset.rowId=key;entry.node.dataset.mcelRetirementKey=key;
+      // Keep the purely geometric anchor paired with this same DOM row after
+      // its semantic identity changes from live source to retired snapshot.
+      const popoverAnchor=entry.node.mcelPopoverAnchor;
+      if(popoverAnchor?.dataset.mcelPopoverAnchor==='true')popoverAnchor.dataset.rowId=key;
       entry.node.dataset.mcelOriginalRowId=id;
       entry.node.dataset.mcelSourceStatus='retired';
       entry.node.dataset.mcelSelectionScope=key;
@@ -246,6 +255,8 @@
       for(const field of entry.node.querySelectorAll('mcel-field'))field.dataset.sourceRowId=key;
       const slot=entry.node.querySelector('[data-mcel-presentation-slot="inline-detail"]');
       if(slot)slot.dataset.sourceRowId=key;
+      const hoverSlot=entry.node.querySelector('[data-mcel-presentation-slot="unclip-extension"]');
+      if(hoverSlot)hoverSlot.dataset.sourceRowId=key;
       if(selected===id)selected=key;
       if(expandedId===id)expandedId=key;
       const frozen={entry,raw:structuredClone(raw),semantic,projected,valueRecord};
@@ -302,22 +313,42 @@
         b.coverage-a.coverage||a.length-b.length||a.field.key.localeCompare(b.field.key));
       return scores[0].field;
     }
-    function buildDetails(id,{withCopy=false}={}) {
+    // Hover never recreates what the user can already read in the original
+    // fields. Only fields hidden by layout or genuinely clipped are appended.
+    // Use the canonical semantic display formatter, not unformatted dataset.full.
+    function hoverAdditionalKeys(row){
+      const keys=new Set();
+      if(!row)return keys;
+      for(const cell of row.querySelectorAll(':scope > mcel-field')){
+        const key=cell.dataset.semanticField;if(!key)continue;
+        const clipped=element=>!!element && element.clientWidth>0 &&
+          element.scrollWidth>element.clientWidth+1;
+        if(cell.hidden||clipped(cell.querySelector('.field-label'))||
+           clipped(cell.querySelector('.field-value')))keys.add(key);
+      }
+      return keys;
+    }
+    function buildDetails(id,{withCopy=false,hoverRow=null}={}) {
       const raw=recordForId(id);
       if(!raw)return null;
       const valueRecord=valueForId(id);
       const surface=node('section','mcel-semantic-collection__detail-content');
       surface.dataset.mcelSelectionScope=id;
         const primary=readableField();
-        const value=primary && valueRecord?.fields?.[primary.key];
-        const readable=value?.availability==='present'?String(value.rawValue):'';
-        const heading=node('h3','',readable?'Selected: '+readable:'Selected record');
-        heading.dataset.mcelSelectionKey='heading';surface.append(heading);
+        if(hoverRow)surface.dataset.mcelHoverExtension='true';
+        else {
+          const value=primary && valueRecord?.fields?.[primary.key];
+          const readable=value?.availability==='present'?String(value.rawValue):'';
+          const heading=node('h3','',readable?'Selected: '+readable:'Selected record');
+          heading.dataset.mcelSelectionKey='heading';surface.append(heading);
+        }
+        const additional=hoverRow?hoverAdditionalKeys(hoverRow):null;
         const facts=node('dl','mcel-semantic-collection__readable-facts');
         let added=0;
         for(const field of spec.fields){
-          if(field.key===spec.identity || field.kind==='long-text' || field.tier==='detail' ||
-             field.key===primary?.key || added>=8)continue;
+          if(hoverRow ? !additional.has(field.key) :
+             (field.key===spec.identity || field.kind==='long-text' || field.tier==='detail' ||
+              field.key===primary?.key || added>=8))continue;
           const fact=valueRecord?.fields?.[field.key];
           if(!fact)continue;
           const shown=global.McelSemanticValueContract.display(fact,field);
@@ -415,6 +446,21 @@
         return collapsed;
       }
       if(event==='onHover')lastHoverId=id;
+      if(event==='onHover' && rowHoverUnclip){
+        // There is exactly one automatic hover owner: this original mcel-row.
+        // Do not use the old floating-card fallback if the native row popover
+        // is unavailable; that would revive the competing imitation dialog.
+        if(opts.capabilities?.allowOverlay===false)return {ok:false,reason:'overlay-denied'};
+        const detail=buildDetails(id,{withCopy:true,hoverRow:entry.node});
+        if(!detail)return {ok:false,reason:'missing-source'};
+        appendExpandInlineAction(detail,id);
+        const lifecycle=policy.events.onHover?.[0]?.lifecycle||{};
+        const opened=overlayHost.openUnclip(entry.node,detail,lifecycle,collection,scrollHost);
+        container.dataset.overlayOpen=String(opened.ok);
+        receipts.push({id,event,ok:opened.ok,mode:opened.ok?'row-unclip':null,
+          attempts:[{mode:'row-unclip',status:opened.ok?'fulfilled':'refused',reason:opened.reason||null}]});
+        return {...opened,mode:opened.ok?'row-unclip':null};
+      }
       const decision=negotiation.negotiate(policy,event,presentationProviders(),
         {id,beginTransaction:()=>negotiation.createTransaction()},(choice,{transaction})=>{
         const detail=buildDetails(id,{withCopy:true});
@@ -447,7 +493,10 @@
         }
         if(choice.mode==='floating-over-source'){
           if(event==='onHover')appendExpandInlineAction(detail,id);
-          const opened=overlayHost.open(entry.node,detail,choice.lifecycle,collection);
+          const unclip=choice.requires.includes('overlay.unclip-preserve-geometry');
+          const opened=unclip?overlayHost.openUnclip(entry.node,detail,choice.lifecycle,collection,scrollHost,{
+            onMirrorClick:()=>{overlayHost.close('mirror-selected');reveal(id,'onSelect');}
+          }):overlayHost.open(entry.node,detail,choice.lifecycle,collection);
           if(opened.ok){
             transaction.addUndo(()=>{overlayHost.close('presentation-rollback');
               container.dataset.overlayOpen='false';});
@@ -470,9 +519,11 @@
     const pendingDetails=new Set();
     const pendingRowFields=new Set();
     function updateDetailSurface(surface,id){
-      const fresh=buildDetails(id,{withCopy:true});
+      const inUnclip=!!surface.closest('.mcel-unclip-card');
+      const sourceRow=inUnclip?(rowCache.get(id)||retiredRecords.get(id)?.entry)?.node:null;
+      const fresh=buildDetails(id,{withCopy:true,hoverRow:sourceRow});
       if(!fresh)return false;
-      if(surface.closest('.mcel-negotiated-floating-card') &&
+      if(surface.closest('.mcel-negotiated-floating-card, .mcel-unclip-card') &&
          surface.querySelector('[aria-label="Expand inline"]'))appendExpandInlineAction(fresh,id);
       const receipt=continuity.mutate(surface,fresh);
       if(receipt.deferred)pendingDetails.add(id);
@@ -486,12 +537,16 @@
       const overlay=overlayHost?.active;
       if(overlay && overlayHost.sourceConnected && overlayHost.sourceId===id){
         const surface=overlay.querySelector('.mcel-semantic-collection__detail-content');
-        if(surface && !updateDetailSurface(surface,id))pending=true;
+        if(surface){
+          if(!updateDetailSurface(surface,id))pending=true;
+          overlay.mcelUnclipRefresh?.();
+        }
       }
       if(pending)pendingDetails.add(id);else pendingDetails.delete(id);
     }
     function flushPendingDetails(){
       if(disposed || !negotiated)return;
+      overlayHost?.active?.mcelUnclipRefresh?.();
       for(const id of [...pendingRowFields]){
         const archived=retiredRecords.get(id);
         const row=(rowCache.get(id)||archived?.entry)?.node;
@@ -552,8 +607,18 @@
         row.append(field);
       }
       if(negotiated){
+        if(rowHoverUnclip)row.dataset.mcelHoverOwner='row';
         row.setAttribute('aria-expanded','false');
-        row.addEventListener('pointerenter',()=>{if(!disposed && expandedId!==id && suppressedHoverId!==id)reveal(row.dataset.rowId,'onHover');});
+        let activation=null;
+        row.addEventListener('pointerenter',()=>{
+          if(disposed||expandedId===id||suppressedHoverId===id)return;
+          const hover=policy.events.onHover?.[0]?.lifecycle;
+          activation=setTimeout(()=>{activation=null;
+            if(!disposed && row.isConnected && row.matches(':hover') && expandedId!==row.dataset.rowId &&
+               suppressedHoverId!==row.dataset.rowId)reveal(row.dataset.rowId,'onHover');
+          },hover?.hoverActivationDelayMs??1000);
+        });
+        row.addEventListener('pointerleave',()=>{clearTimeout(activation);activation=null;});
         if(policy.events.onFocus)row.addEventListener('focus',()=>{if(!disposed)reveal(row.dataset.rowId,'onFocus');});
       }
       row.addEventListener('click',ev=>{if(ev.target.closest?.('.mcel-semantic-collection__detail-content'))return;
@@ -624,9 +689,15 @@
       // node identity and keyboard focus when their source generation is verified.
       // Avoid moving already correctly ordered nodes: even an append of the
       // same node can collapse the browser's native selection or lose focus.
-      let cursor=collection.firstElementChild;
+      // A popover anchor reserves geometry *before* the actual row. It must
+      // never be mistaken for a source row: reinserting an already mounted
+      // top-layer row destroys native selection even when nothing has changed.
+      const nextSourceSibling=el=>{let sibling=el?.nextElementSibling;
+        while(sibling?.dataset.mcelPopoverAnchor==='true')sibling=sibling.nextElementSibling;
+        return sibling;};
+      let cursor=[...collection.children].find(el=>el.localName==='mcel-row')||null;
       for(const entry of nextCache.values()){
-        if(entry.node===cursor){cursor=cursor.nextElementSibling;continue;}
+        if(entry.node===cursor){cursor=nextSourceSibling(cursor);continue;}
         collection.insertBefore(entry.node,cursor);
       }
       for(const [id,entry] of rowCache)if(!nextCache.has(id)||nextCache.get(id)!==entry) {
@@ -703,8 +774,11 @@
       request(id,event){return !disposed && negotiated?reveal(String(id),event):{ok:false,reason:'not-opted-in'};},
       get negotiations(){return receipts.map(r=>structuredClone(r));},
       get expandedId(){return expandedId;},
-      get floatingCard(){return overlayHost?.active||null;},
-      update(rows,{observation}={}) {
+      get floatingCard(){return collectionUnclip?.active||overlayHost?.active||null;},
+      dismissFloating(reason='container-navigation'){if(!negotiated)return false;
+        const dismissed=!!collectionUnclip?.active||!!overlayHost?.active;
+        collectionUnclip?.close(reason);overlayHost?.close(reason);return dismissed;},
+      update(rows,{observation,incrementalValues=false}={}) {
         if(disposed)return {ok:false,code:'disposed'};
         // selectionchange is asynchronous: release stale presentation as soon as
         // the next synchronous lifecycle operation observes that selection ended.
@@ -727,18 +801,47 @@
         // Retirement is an effect of an accepted source-membership transition,
         // not a side effect that may outlive a failed update.
         const priorRetirements=new Set(retiredRecords.keys());
+        // A top-layer collection is still the same original DOM node, but its
+        // transient extension and fixed geometry are not source layout inputs.
+        // Suspend that presentation for the synchronous reconcile, then restore
+        // it before the browser's next paint. Never put a replica in its place.
+        const exposedCollection=!!collectionUnclip?.active;
+        if(exposedCollection)collectionUnclip.close('observation-reconcile');
+        // A value-only observation of exactly the same ordered, generated
+        // records must NOT unmount and remount the whole layout.  That used to
+        // detach 20 rows repeatedly and recreate hover geometry every 3s.
+        // Caller opt-in is necessary, and we independently verify the source
+        // generation, order, contracts, and lack of retirement before reuse.
+        const sameStructure=incrementalValues && applied && !retiredRecords.size &&
+          next.source_rows.length===result.source_rows.length &&
+          next.source_rows.every((item,i)=>{
+            const id=String(item.id),previous=result.source_rows[i];
+            const prior=rowCache.get(id),incoming=next.rawRecords.get(id);
+            return prior && String(previous.id)===id && prior.gen!==null &&
+              prior.gen===generation(incoming);
+          }) &&
+          JSON.stringify(next.field_contracts)===JSON.stringify(result.field_contracts) &&
+          JSON.stringify(next.layout_link)===JSON.stringify(result.layout_link);
+        if(sameStructure && global.dispatchEvent && global.CustomEvent)
+          global.dispatchEvent(new global.CustomEvent('mcel-hover-trace',{
+            detail:{scope:'mcel-row-hover',kind:'stable-value-reconciliation',
+              reason:'unchanged-generation-and-layout',rowId:overlayHost?.sourceId||null}}));
         try {
-          committedLayoutState=applied.getCommittedState?.()||null;
-          applied.unmount();applied=null;
+          if(!sameStructure){
+            committedLayoutState=applied.getCommittedState?.()||null;
+            applied.unmount();applied=null;
+          }
           const receipt=reconcile(next);
           // Synchronous reconciliation and DOM order changes can end a native
           // selection before the asynchronous selectionchange event fires.
           // Never present a stale flag to layout authority without the actual
           // selection which authorized it.
           if(negotiated)flushPendingDetails();
-          installLayout();
+          if(!sameStructure)installLayout();
+          overlayHost?.active?.mcelUnclipRefresh?.();
+          if(exposedCollection)collectionUnclip.open();
           if(decision)observationCursor=decision.cursor;
-          return {ok:true,effects:[],...receipt,
+          return {ok:true,effects:[],...receipt,valueOnlyRetainedLayout:!!sameStructure,
             observation:decision?{complete:decision.complete,sequence:decision.sequence,
               authoritativeAbsences:decision.absent}:null};
         } catch(error) {
@@ -751,12 +854,14 @@
             if(selected && result.rawRecords.has(selected)){
               if(negotiated)refreshDetailsFor(selected);else inspect(selected);
             }
-            installLayout();}
+            if(applied){applied.refresh(layoutResult);}else installLayout();
+            overlayHost?.active?.mcelUnclipRefresh?.();
+            if(exposedCollection)collectionUnclip.open();}
           catch(_ignored) { /* a failed rollback is never reported as success */ }
           return {ok:false,code:'layout-refused',message:String(error),effects:[]};
         }
       },
-      destroy(){if(disposed)return;disposed=true;retirement?.destroy();overlayHost?.destroy();scrollHost?.destroy();
+      destroy(){if(disposed)return;disposed=true;collectionUnclip?.destroy();retirement?.destroy();overlayHost?.destroy();scrollHost?.destroy();
         if(negotiated){doc.removeEventListener('pointermove',unsuppressOnExit);
           unobserveSelection?.();
           doc.removeEventListener('focusout',flushPendingDetails,true);}

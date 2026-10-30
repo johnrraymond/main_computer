@@ -9,7 +9,7 @@ python tools/mcel_layout_frob.py --mode design-quality-stress
 python -m unittest tests.test_mcel_design_quality_validity tests.test_mcel_design_quality_stress tests.test_mcel_design_quality_frob -q
 ```
 
-The runner requires locally available Playwright and Chromium/Edge/Chrome. The source Task Manager experimental design remains under `mcel_designs/task-manager/`; it must not be moved into `mcel_apps/`. There is no need to start the Main Computer viewport server to run the offline experiment.
+The runner requires locally available Playwright and Chromium/Edge/Chrome. The source Task Manager experimental design lives under `tools/fixtures/mcel/task-manager/`; it is not an executable app package and must not be placed by itself in `mcel_apps/`. There is no need to start the Main Computer viewport server to run the offline experiment.
 
 Results under `runtime/reports/mcel-layout-frob/design-quality-stress/`:
 

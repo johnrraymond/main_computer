@@ -83,7 +83,7 @@ def _render_git_commit_push_command(changes: list[dict[str, str]]) -> str:
     rendered_paths = " ".join(_powershell_single_quote(path) for path in paths)
     return (
         f"git add -- {rendered_paths}; "
-        "if ($LASTEXITCODE -eq 0) { git commit -m 'Update Hub deployment source' }; "
+        f"if ($LASTEXITCODE -eq 0) {{ git commit --only -m 'Update Hub deployment source' -- {rendered_paths} }}; "
         "if ($LASTEXITCODE -eq 0) { git push origin HEAD }"
     )
 

@@ -16,7 +16,7 @@
   data-mcel-workspace-view="blueprint"
 >
   <nav class="mcel-lab-workspace-switch" aria-label="MCEL Lab workspaces">
-    <button type="button" id="mcel-lab-workspace-lifecycle" aria-controls="mcel-lifecycle-acid" aria-pressed="false">Lifecycle Acid Test · L18</button>
+    <button type="button" id="mcel-lab-workspace-lifecycle" aria-controls="mcel-lifecycle-acid" aria-pressed="false">Lifecycle Acid Test · L18-01</button>
     <button type="button" id="mcel-lab-workspace-blueprint" aria-controls="mcel-lab-blueprint-workspace" aria-pressed="true">App Blueprint / Inspector</button>
   </nav>
   <header
@@ -78,13 +78,16 @@
 
   <section id="mcel-lifecycle-acid" class="mcel-lifecycle-acid" aria-label="MCEL lifecycle Taguchi acid test" data-mc-component-id="mcel-lab.lifecycle-acid" data-mc-component-kind="proof">
     <p class="eyebrow">MCEL Lifecycle Acid Test · Patch 14.7</p>
-    <h3>18 live experiments. Try each one yourself.</h3>
-    <p>Start with experiment 1, interact with the real MCEL specimen, then move through the other 17 configurations. The orthogonal L18 design controls what changes between experiments. You judge whether the behavior is correct. Automated screening is an optional second opinion, not your test.</p>
+    <h3>L18-01 · One live experiment.</h3>
+    <p>Only the first L18 example is mounted. Its scroll area contains 20 independent process records for hover, scrolling, text selection, live updates, and source changes.</p>
+    <div class="mcel-lifecycle-acid__gallery-toolbar"><strong>L18-01 only</strong><span>Simulated updates are on while each specimen is onscreen.</span><button type="button" id="mcel-lifecycle-acid-hover-record" aria-pressed="false">Record cursor + hover</button><button type="button" id="mcel-lifecycle-acid-hover-export">Export cursor trace</button><span id="mcel-lifecycle-acid-hover-status" role="status">Local diagnostic off</span><button type="button" id="mcel-lifecycle-acid-gallery-export">Export this review and trace (JSON)</button><span id="mcel-lifecycle-acid-review-progress-gallery"></span></div>
+    <section id="mcel-lifecycle-acid-gallery" class="mcel-lifecycle-acid__gallery" aria-label="L18-01 live lifecycle specimen"></section>
+    <details class="mcel-lifecycle-acid__single-advanced"><summary>Advanced single-case editor and pairwise drill</summary>
     <section class="mcel-lifecycle-acid__workbench" id="mcel-lifecycle-acid-workbench" aria-label="Interactive L18 experiment">
       <div class="mcel-lifecycle-acid__case-nav">
-        <button type="button" id="mcel-lifecycle-acid-prev">← Previous</button>
-        <label>Experiment <select id="mcel-lifecycle-acid-case-picker" aria-label="Choose one of the 18 live experiments"></select></label>
-        <button type="button" id="mcel-lifecycle-acid-next">Next →</button>
+        <button type="button" id="mcel-lifecycle-acid-prev" hidden disabled>← Previous</button>
+        <label>Experiment <select id="mcel-lifecycle-acid-case-picker" aria-label="L18-01 only"></select></label>
+        <button type="button" id="mcel-lifecycle-acid-next" hidden disabled>Next →</button>
         <button type="button" id="mcel-lifecycle-acid-restart">Restart this experiment</button>
       </div>
       <div id="mcel-lifecycle-acid-case-info" class="mcel-lifecycle-acid__case-info" role="status" aria-live="polite"></div>
@@ -114,9 +117,10 @@
         <button type="button" data-mcel-acid-verdict="unsure">Needs investigation</button>
         <label for="mcel-lifecycle-acid-notes">What did you observe?</label>
         <textarea id="mcel-lifecycle-acid-notes" rows="2" placeholder="Optional observation: what you did, expected behavior, what actually happened"></textarea>
-        <span id="mcel-lifecycle-acid-review-progress" role="status">0 of 18 reviewed</span>
+        <span id="mcel-lifecycle-acid-review-progress" role="status">0 of 1 reviewed</span>
       </div>
     </section>
+    </details>
     <details class="mcel-lifecycle-acid__automated">
       <summary>Optional automated screening (separate from your live tests)</summary>
     <div class="mcel-lifecycle-acid__toolbar">
@@ -127,7 +131,7 @@
       <span id="mcel-lifecycle-acid-overview" role="status" aria-live="polite">Preparing screening array</span>
     </div>
     </details>
-    <h4 class="mcel-lifecycle-acid__matrix-title">All 18 configurations — choose any one to try live</h4>
+    <h4 class="mcel-lifecycle-acid__matrix-title">L18-01 · example results</h4>
     <div class="mcel-lifecycle-acid__table-scroll" id="mcel-lifecycle-acid-matrix" aria-label="Interactive orthogonal experiment matrix"></div>
     <details id="mcel-lifecycle-acid-drill" open>
       <summary>Advanced drill-in · change factors and compare cases</summary>
@@ -145,7 +149,7 @@
     <details><summary>Inspect event trace and verification evidence</summary>
       <pre id="mcel-lifecycle-acid-trace" aria-label="MCEL lifecycle acid test evidence">Run a screening experiment or mount a focused specimen.</pre>
     </details>
-    <p class="mcel-lifecycle-acid__limits">Scope: genuine universal MCEL presentation and lifecycle code on offline, read-only Task Manager fixtures. This first screen is a main-effect screening tool, not a concurrency, accessibility, virtualization, or production Task Manager certification. Failed or refused requests remain visible in the event trace.</p>
+    <p class="mcel-lifecycle-acid__limits">Scope: genuine universal MCEL presentation and lifecycle code on offline, read-only Task Manager fixtures. The live example is not a concurrency, accessibility, virtualization, or production Task Manager certification. Failed or refused requests remain visible in the event trace.</p>
   </section>
 
   <div id="mcel-lab-blueprint-workspace" class="mcel-lab-blueprint-workbench mc-app-workspace" aria-label="MCEL Lab blueprint workbench">

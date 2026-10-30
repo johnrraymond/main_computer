@@ -34,6 +34,46 @@ To inspect the topology and acceptance plan without launching anything:
 python -m tools.slh_seh_lab.run_lab plan --json
 ```
 
+## Production two-service acceptance (no Hub or Coolify required)
+
+Patch 2A changes the SLH from a directly launched gateway into **two real
+services**. The lab now checks that boundary before running its legacy
+paid-marketplace integration lane. To test only the real SLH services:
+
+```powershell
+python -m tools.slh_seh_lab.run_lab verify-services --json
+```
+
+`verify-services` runs a real localhost Local Service and a **separate TLS
+Organization Service process** under the Local Service's control. It uses only
+isolated temporary state and localhost ports: it never reads the installed
+SLH's organizational directory, wallets or identities and never talks to
+mainnet/testnet. It checks the local Authenticator API, staged P-256 bootstrap,
+explicit TOTP deferral, denied early activation, remote TLS admin access,
+local/organization API separation, enrollment queue and approval, a real
+Worker WebSocket session, and a real authenticated SEH relay that forwards
+another pinned-TLS Worker session. It also kills **only its own lab Organization
+child** to prove recovery, checks SEH reconnection after a controlled service
+restart, and verifies saved enabled/disabled states across local-control
+restarts. Every gate is written under `two_service_lab.gates` in `report.json`.
+
+The normal `verify-local`, `run`, and `verify-deployed` commands additionally
+execute this same real-process lane and **require both its PASS and the
+existing paid-work lane's PASS**. The paid-work lane still builds its own
+in-process scheduler and marketplace proxy; it has *not yet* been routed
+through a marketplace control API on the separate Organization Service. The
+report does not imply that the paid request passed through the production
+Organization process. Moving that remaining in-process lane to the live
+Organization process requires additional marketplace control interfaces.
+
+A passing `verify-services` alone does **not** test Stable Hub settlement,
+external bridge funding, remote Coolify, public DNS/WSS, actual Windows boot
+registration, or TOTP. These must not be inferred from this result. The
+full `verify-local`/`run` lab still tests its existing paid-work paths. A
+trimmed source export that lacks `game_projects/webgl-demo/game.json` may
+block those legacy paths; a PASS from `verify-services` must not be substituted
+for a full paid-work PASS.
+
 ## What is exercised
 
 | Lane | Actual assertion |
@@ -161,19 +201,20 @@ service was restarted with its persistent autoconnect configuration.
 
 ## Normal Main Computer startup (SLH lifecycle)
 
-`start.bat` now starts the SLH worker gateway (loopback port 8898) as a child of
-`ServiceSupervisor`, just like the app, executor, applications, and blockchain
-services. The gateway owns its existing configured SEH connection, including
-reconnection. If SLH has not been bootstrapped yet, the supervised child stays
-alive waiting for local administrator bootstrap instead of restarting repeatedly.
+The Main Computer supervisor now starts the **SLH localhost control service**
+(`127.0.0.1:8897`). If initial organizational setup has not been completed,
+this service remains available for local bootstrap and **does not start** the
+organization-facing gateway. Completing first-admin bootstrap also **does not
+enable organizational serving**. An authenticated administrator must configure
+and explicitly enable the separately spawned TLS Organization Service. The
+Local Service owns child-process start, stop and recovery, and preserves the
+administrator's enabled/disabled preference across restarts. The Worker
+listener and optional SEH connection are governed by separate enablement
+settings. Neither worker-serving nor outbound SEH connectivity is implied by
+local supervisor startup.
 
-`stop.bat` stops the supervised SLH alongside the other Main Computer services.
-Repeated `start.bat` runs also reclaim an old manually started gateway listening
-on 8898 through the existing Windows port-ownership scan. No separate
-`tools.slh_managed_gateway serve` or `slh_seh_connector run` command is needed.
-The public marketplace remains disabled unless configured separately; enabling
-a configured SEH does not authorize marketplace spending.
-
-Verify with `Get-NetTCPConnection -LocalPort 8898 -State Listen`,
-`Get-Content runtime/service_supervisor/state.json`, and the deployed SEH's
-`/readyz`. A listening SLH gateway and a connected SEH are separate checks.
+A separate, default-selected Windows boot-start option is specified for the
+future organization setup UI, but its UI integration is not yet implemented.
+The SLH Lab's `verify-services` lane proves process lifecycle through the
+localhost API; it does not claim an operating-system reboot or Windows task
+registration has been tested.
