@@ -137,7 +137,11 @@ def notebook_candidate(source: Path, fixture: Path | None) -> tuple[dict[str, An
         rendered = compile_notebook_preview(source, fixture_path=fixture)
     except (OSError, ValueError, NotebookProjectionRefused) as exc:
         return ({"status": "FAIL", "reason": "Present notebook failed to render: " + str(exc)}, None)
-    return ({"status": "PASS", "reason": "Original public DSL compiled and rendered, offline and read-only",
+    is_new_candidate = "NEW SOURCE-BOUND CANDIDATE" in source.read_text(encoding="utf-8")
+    return ({"status": "PASS", "reason": "New semantic DSL candidate compiled and rendered, offline and read-only" if is_new_candidate
+             else "Existing source DSL compiled and rendered, offline and read-only",
+             "sourceOrigin": "new-candidate-not-original-phase3" if is_new_candidate else "source-present-origin-not-independently-verified",
+             "historicalPhase3SourceRecovered": False,
              "sourceSha256": sha(source), "fixtureSha256": sha(fixture) if fixture else None,
              "emittedHtmlSha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest()}, rendered)
 
@@ -269,13 +273,13 @@ def barriers(host: dict, source: dict, witness: dict, browser: dict, lab: dict, 
     return [
         entry("frozen-notebook-source", "PASS" if source["status"] == "PASS" else source["status"],
               [source.get("reason", ""), str(source.get("source", ""))],
-              "Recover/point to the existing Phase 3 DSL and sample fixture; do not reconstruct or certify a guessed replacement"),
+              "Original Phase 3 source remains missing; new DSL candidate is explicitly labeled and must be evaluated separately"),
         entry("real-app-mount", "PARTIAL_VERIFIED" if lab["status"] == "PASS" else
               "GAP_OBSERVED" if host["status"] == "PASS" and implementation.get("legacyTabController") and not implementation.get("guardedLabHostHook") else "UNVERIFIED",
               ["Explicit lab-only normal-host mount, with exact legacy rollback, verified in Chromium" if lab["status"] == "PASS" else
                "Legacy tab controller remains the only verified host renderer",
                "Pinned IR witness is not the recovered Phase 3 DSL; local HTTP route remains unverified"],
-              "Verify the recovered Phase 3 DSL in the hosted route before considering notebook promotion",
+              "Verify source-bound new candidate in hosted Task Manager before considering any promotion",
               depends=("frozen-notebook-source",)),
         entry("live-snapshot-parity", "PASS" if lifecycle.get("hosted")=="PASS" else
               "PARTIAL_VERIFIED" if lab["status"]=="PASS" else "UNVERIFIED",

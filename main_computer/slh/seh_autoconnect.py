@@ -7,6 +7,8 @@ An absent or disabled configuration starts no outbound connection.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
+import time
 import json
 import os
 from pathlib import Path
@@ -107,6 +109,29 @@ class SEHAutoConnection:
         self.connections = 0
         self.failures = 0
         self.last_error = None
+        self._retired_stream_events = deque(maxlen=4096)
+        self._tunnel_lifecycle = deque(maxlen=256)
+
+    def stream_diagnostics_for_gateway_ports(self, ports):
+        selected = set(ports)
+        with self._lock:
+            retained = list(self._retired_stream_events)
+            current = self._current
+            lifecycle = list(self._tunnel_lifecycle)
+            attempts = self.connections
+            failures = self.failures
+            last_error = self.last_error
+        if current is not None:
+            retained.extend(current.diagnostics_for_gateway_ports(selected))
+        tags = {row['stream_tag'] for row in retained
+                if row.get('gateway_peer_port') in selected}
+        # Include pre-failure events from retired connectors even after an
+        # automatic reconnect replaces the connector object.
+        selected_events = [dict(row) for row in retained
+                           if row.get('stream_tag') in tags][-160:]
+        return {'events': selected_events, 'tunnel_lifecycle': lifecycle[-32:],
+                'connections': attempts, 'failures': failures,
+                'last_error_class': last_error}
 
     @property
     def connected(self) -> bool:
@@ -143,17 +168,34 @@ class SEHAutoConnection:
                     self._current = conn
                     self.connections += 1
                     self.last_error = None
+                    self._tunnel_lifecycle.append({'event': 'seh_tunnel_connected',
+                                                   'unix_ns': time.time_ns(),
+                                                   'monotonic_ns': time.monotonic_ns()})
                 while conn._running.is_set() and not self._stop.wait(0.1):
                     pass
             except Exception as exc:  # reconnect on transport/protocol failures; never leak credentials
                 with self._lock:
                     self.failures += 1
                     self.last_error = type(exc).__name__
+                    self._tunnel_lifecycle.append({'event': 'seh_tunnel_connect_failed',
+                                                   'exception_class': type(exc).__name__,
+                                                   'unix_ns': time.time_ns(),
+                                                   'monotonic_ns': time.monotonic_ns()})
             finally:
                 with self._lock:
                     if self._current is conn:
                         self._current = None
                 if conn is not None:
+                    # Preserve cause evidence BEFORE replacing the connector.
+                    with conn._lock:
+                        retired = list(conn._stream_events)
+                    with self._lock:
+                        self._retired_stream_events.extend(retired)
+                        self._tunnel_lifecycle.append({
+                            'event': 'seh_tunnel_disconnected',
+                            'error_class': conn.last_error,
+                            'unix_ns': time.time_ns(),
+                            'monotonic_ns': time.monotonic_ns()})
                     conn.stop()
             self._stop.wait(s.retry_seconds)
 

@@ -1,0 +1,363 @@
+{
+  "application": {
+    "appId": "file-explorer-semantic-probe",
+    "id": "app:file-explorer-semantic-probe",
+    "kind": "application",
+    "semanticVersion": "1",
+    "title": "File Explorer layout-free semantic authoring probe"
+  },
+  "intents": [
+    {
+      "effectRefs": [],
+      "id": "intent:file-explorer-semantic-probe.select-root",
+      "input": [
+        {
+          "id": "input:file-explorer-semantic-probe.select-root.selection",
+          "kind": "intent-input",
+          "schema": {
+            "enum": [
+              "fixture-root-alpha",
+              "fixture-root-beta"
+            ],
+            "kind": "string",
+            "of": {
+              "ref": "model:knowledge.file-explorer.roots"
+            }
+          }
+        }
+      ],
+      "kind": "intent",
+      "lane": "local-view-state",
+      "operationKind": "interaction",
+      "outcomes": [
+        "completed",
+        "refused"
+      ],
+      "reads": [],
+      "risk": "local-state",
+      "viewTransition": {
+        "invalidInput": "refuse",
+        "kind": "transition.assign",
+        "target": {
+          "ref": "state:file-explorer-semantic-probe.selected-root"
+        },
+        "value": {
+          "input": {
+            "ref": "input:file-explorer-semantic-probe.select-root.selection"
+          },
+          "kind": "input.read"
+        }
+      },
+      "viewWrites": [
+        {
+          "ref": "state:file-explorer-semantic-probe.selected-root"
+        }
+      ],
+      "writes": []
+    },
+    {
+      "effectRefs": [],
+      "id": "intent:file-explorer-semantic-probe.select-entry",
+      "input": [
+        {
+          "id": "input:file-explorer-semantic-probe.select-entry.selection",
+          "kind": "intent-input",
+          "schema": {
+            "enum": [
+              "fixture-entry-one",
+              "fixture-entry-two"
+            ],
+            "kind": "string",
+            "of": {
+              "ref": "model:knowledge.file-explorer.entries"
+            }
+          }
+        }
+      ],
+      "kind": "intent",
+      "lane": "local-view-state",
+      "operationKind": "interaction",
+      "outcomes": [
+        "completed",
+        "refused"
+      ],
+      "reads": [
+        {
+          "ref": "state:file-explorer-semantic-probe.selected-root"
+        }
+      ],
+      "risk": "local-state",
+      "viewTransition": {
+        "invalidInput": "refuse",
+        "kind": "transition.assign",
+        "target": {
+          "ref": "state:file-explorer-semantic-probe.selected-entry"
+        },
+        "value": {
+          "input": {
+            "ref": "input:file-explorer-semantic-probe.select-entry.selection"
+          },
+          "kind": "input.read"
+        }
+      },
+      "viewWrites": [
+        {
+          "ref": "state:file-explorer-semantic-probe.selected-entry"
+        }
+      ],
+      "writes": []
+    },
+    {
+      "declaredOnly": true,
+      "effectRefs": [],
+      "id": "intent:file-explorer-semantic-probe.list-directory",
+      "input": [],
+      "kind": "intent",
+      "lane": "external-read",
+      "operationKind": "capability",
+      "outcomes": [
+        "completed",
+        "failed",
+        "refused"
+      ],
+      "reads": [
+        {
+          "ref": "state:file-explorer-semantic-probe.selected-root"
+        }
+      ],
+      "risk": "external-read",
+      "writes": []
+    },
+    {
+      "declaredOnly": true,
+      "effectRefs": [],
+      "id": "intent:file-explorer-semantic-probe.read-preview",
+      "input": [],
+      "kind": "intent",
+      "lane": "external-read",
+      "operationKind": "capability",
+      "outcomes": [
+        "completed",
+        "failed",
+        "refused"
+      ],
+      "reads": [
+        {
+          "ref": "state:file-explorer-semantic-probe.selected-root"
+        },
+        {
+          "ref": "state:file-explorer-semantic-probe.selected-entry"
+        }
+      ],
+      "risk": "external-read",
+      "writes": []
+    }
+  ],
+  "models": [
+    {
+      "cardinality": "many",
+      "conceptRef": "mc.file.entry",
+      "fields": [
+        {
+          "conceptRef": "mc.file.category",
+          "id": "field:knowledge.file-explorer.entries.category",
+          "kind": "field",
+          "propertyName": "category",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.file.path",
+          "id": "field:knowledge.file-explorer.entries.display_path",
+          "kind": "field",
+          "propertyName": "display_path",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.file.extension",
+          "id": "field:knowledge.file-explorer.entries.extension",
+          "kind": "field",
+          "propertyName": "extension",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.file.entry.kind",
+          "id": "field:knowledge.file-explorer.entries.kind",
+          "kind": "field",
+          "propertyName": "kind",
+          "requiredObservation": true
+        },
+        {
+          "conceptRef": "mc.boolean",
+          "id": "field:knowledge.file-explorer.entries.main_computer_purview",
+          "kind": "field",
+          "propertyName": "main_computer_purview",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.timestamp",
+          "id": "field:knowledge.file-explorer.entries.modified_at",
+          "kind": "field",
+          "propertyName": "modified_at",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.text",
+          "id": "field:knowledge.file-explorer.entries.name",
+          "kind": "field",
+          "propertyName": "name",
+          "requiredObservation": true
+        },
+        {
+          "conceptRef": "mc.file.relative_path",
+          "id": "field:knowledge.file-explorer.entries.relative_path",
+          "kind": "field",
+          "propertyName": "relative_path",
+          "requiredObservation": true
+        },
+        {
+          "conceptRef": "mc.quantity.bytes",
+          "id": "field:knowledge.file-explorer.entries.size_bytes",
+          "kind": "field",
+          "propertyName": "size_bytes",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.text",
+          "id": "field:knowledge.file-explorer.entries.suggested_app",
+          "kind": "field",
+          "propertyName": "suggested_app",
+          "requiredObservation": false
+        }
+      ],
+      "id": "model:knowledge.file-explorer.entries",
+      "identityScope": "selected-root-observation",
+      "kind": "model",
+      "observationRef": "file-explorer.entries"
+    },
+    {
+      "cardinality": "one",
+      "conceptRef": "mc.file.preview",
+      "fields": [
+        {
+          "conceptRef": "mc.text",
+          "id": "field:knowledge.file-explorer.read-preview.encoding",
+          "kind": "field",
+          "propertyName": "encoding",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.file.relative_path",
+          "id": "field:knowledge.file-explorer.read-preview.entry_path",
+          "kind": "field",
+          "propertyName": "entry_path",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.file.entry.kind",
+          "id": "field:knowledge.file-explorer.read-preview.kind",
+          "kind": "field",
+          "propertyName": "kind",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.boolean",
+          "id": "field:knowledge.file-explorer.read-preview.readable",
+          "kind": "field",
+          "propertyName": "readable",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.text",
+          "id": "field:knowledge.file-explorer.read-preview.reason",
+          "kind": "field",
+          "propertyName": "reason",
+          "requiredObservation": false
+        }
+      ],
+      "id": "model:knowledge.file-explorer.read-preview",
+      "identityScope": null,
+      "kind": "model",
+      "observationRef": "file-explorer.read-preview"
+    },
+    {
+      "cardinality": "many",
+      "conceptRef": "mc.file.root",
+      "fields": [
+        {
+          "conceptRef": "mc.file.path",
+          "id": "field:knowledge.file-explorer.roots.display_path",
+          "kind": "field",
+          "propertyName": "display_path",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.boolean",
+          "id": "field:knowledge.file-explorer.roots.in_main_computer_purview",
+          "kind": "field",
+          "propertyName": "in_main_computer_purview",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.text",
+          "id": "field:knowledge.file-explorer.roots.label",
+          "kind": "field",
+          "propertyName": "label",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.boolean",
+          "id": "field:knowledge.file-explorer.roots.mounted_windows_drive",
+          "kind": "field",
+          "propertyName": "mounted_windows_drive",
+          "requiredObservation": false
+        },
+        {
+          "conceptRef": "mc.identifier",
+          "id": "field:knowledge.file-explorer.roots.root_id",
+          "kind": "field",
+          "propertyName": "root_id",
+          "requiredObservation": true
+        }
+      ],
+      "id": "model:knowledge.file-explorer.roots",
+      "identityScope": "file-explorer-root-namespace",
+      "kind": "model",
+      "observationRef": "file-explorer.roots"
+    }
+  ],
+  "schema": "mcel.application-ir.v1",
+  "states": [
+    {
+      "authority": "renderer-local",
+      "id": "state:file-explorer-semantic-probe.selected-root",
+      "initial": "fixture-root-alpha",
+      "kind": "state",
+      "schema": {
+        "enum": [
+          "fixture-root-alpha",
+          "fixture-root-beta"
+        ],
+        "kind": "string",
+        "of": {
+          "ref": "model:knowledge.file-explorer.roots"
+        }
+      }
+    },
+    {
+      "authority": "renderer-local",
+      "id": "state:file-explorer-semantic-probe.selected-entry",
+      "initial": "fixture-entry-one",
+      "kind": "state",
+      "schema": {
+        "enum": [
+          "fixture-entry-one",
+          "fixture-entry-two"
+        ],
+        "kind": "string",
+        "of": {
+          "ref": "model:knowledge.file-explorer.entries"
+        }
+      }
+    }
+  ]
+}

@@ -13,3 +13,8 @@
   #task-manager-app[data-mcel-notebook-lab="active"] .task-manager-sidebar {grid-row:2;}
   #task-manager-app[data-mcel-notebook-lab="active"] .task-manager-detail {grid-template-rows:auto auto auto;}
 }
+
+/* Candidate is one generated notebook, not another accessible mirror. */
+#task-manager-app[data-mcel-notebook-mode="candidate"] .task-notebook[hidden] {
+  display: none !important;
+}

@@ -57,22 +57,37 @@ child** to prove recovery, checks SEH reconnection after a controlled service
 restart, and verifies saved enabled/disabled states across local-control
 restarts. Every gate is written under `two_service_lab.gates` in `report.json`.
 
-The normal `verify-local`, `run`, and `verify-deployed` commands additionally
-execute this same real-process lane and **require both its PASS and the
-existing paid-work lane's PASS**. The paid-work lane still builds its own
-in-process scheduler and marketplace proxy; it has *not yet* been routed
-through a marketplace control API on the separate Organization Service. The
-report does not imply that the paid request passed through the production
-Organization process. Moving that remaining in-process lane to the live
-Organization process requires additional marketplace control interfaces.
+The normal `verify-local`, `run`, and `verify-deployed` commands also require
+**a distinct real-Organization-process paid-work lane** and preserve the
+existing in-process paid-work regression lane. The real-process lane uses the
+localhost service for provisioning and enabling the Organization Service,
+then its authenticated TLS organization management API to configure scheduling
+and reconcile public Hub sessions. Its single walletless Worker connects
+**through the local SEH relay**, and the real Stable Hub accepts the request,
+charges synthetic lab credit, records the Worker earning and settles it in its
+local ledger. The lab reports this evidence separately under
+`real_process_paid_work`, with the prior in-process path retained under `slh`.
+A failure of either paid lane fails the overall command.
+
+The new organization-facing admin endpoints
+`GET /v1/org/admin/marketplace/status` and
+`POST /v1/org/admin/marketplace/reconcile` operate on the actual marketplace
+proxy and scheduler inside the Organization Service process. They require a
+valid organizational admin session and do not expose the upstream MSK in their
+status responses. The reconciliation call takes a Hub URL and an
+MSK authorization; it is **not yet** a durable marketplace connection setting
+or an automatic periodic reconciliation scheduler. Configuring that ongoing
+organizational behavior remains future work.
 
 A passing `verify-services` alone does **not** test Stable Hub settlement,
 external bridge funding, remote Coolify, public DNS/WSS, actual Windows boot
 registration, or TOTP. These must not be inferred from this result. The
-full `verify-local`/`run` lab still tests its existing paid-work paths. A
-trimmed source export that lacks `game_projects/webgl-demo/game.json` may
-block those legacy paths; a PASS from `verify-services` must not be substituted
-for a full paid-work PASS.
+full `verify-local`/`run` lab requires both the new real-process paid-work
+acceptance and the existing in-process regression checks. A trimmed source
+export that lacks `game_projects/webgl-demo/game.json` may prevent importing
+the existing Worker runtime; the fixture is not recreated or silently included
+in this patch. A PASS from `verify-services` must not be substituted for a
+full paid-work PASS.
 
 ## What is exercised
 
@@ -85,6 +100,7 @@ for a full paid-work PASS.
 | Marketplace MSK | A disposable lab-only marketplace wallet obtains a real signed MSK from the selected Stable Hub |
 | Public capacity | SLH opens two independent public live Worker sessions under that one account, after applying 50% public and 25% private reserve policy |
 | Private execution | SLH reserves a nonadvertised worker, transmits authorized work, collects terminal result and releases capacity |
+| **Paid work through the actual Organization Service** | Real localhost control starts a separate Organization process; authenticated organizational marketplace API advertises its Worker through a real local SEH relay, and Stable Hub accepts, executes, charges and settles one synthetic-credit job; reports `real_process_paid_work` separately |
 | **Paid Stable Hub requester cycle** | Separate disposable requester wallet acquires real MSK; is given **synthetic smoke-only credits**; submits one paid request through Stable Hub; SLH proxy must forward authorization to a walletless managed Worker (including `echo` input) |
 | **Payout accounting** | Real Hub records exactly one requester charge and one wallet-owned worker earning, holds resolve to `charged`, request replay is idempotent, worker wallet performs claim and ledger settlement; no external bridge is claimed |
 | Scheduler drain | Setting public allocation to zero closes both live marketplace sessions without leaving stale advertisements |
@@ -218,3 +234,250 @@ future organization setup UI, but its UI integration is not yet implemented.
 The SLH Lab's `verify-services` lane proves process lifecycle through the
 localhost API; it does not claim an operating-system reboot or Windows task
 registration has been tested.
+
+## Automatic Organization marketplace participation and decision stress
+
+The real Organization Service owns the public-marketplace controller alongside
+its enrolled-Worker scheduler. Marketplace participation is **disabled by
+ default**, even when the Organization Service itself and Worker listener are
+ enabled. Administrator-configured marketplace enablement, an upstream Hub URL,
+ and the permitted scheduler capacity policy are distinct. The scheduler's
+ existing private reserve, public percentage, dedicated assignments, rotation,
+ and credit-cap fail-closed rules remain authoritative. Enabling participation
+ must not override these constraints.
+
+Authenticated organization administrator APIs provide:
+
+- `GET /v1/org/admin/marketplace/config` — view participation policy,
+  credential presence, and reconciliation health without exposing secrets.
+- `PATCH /v1/org/admin/marketplace/config` — change enablement, Hub URL, and
+  reconciliation interval using an expected configuration revision.
+- `POST /v1/org/admin/marketplace/authorization` — install a Hub-issued
+  multisession authorization; the authorization itself is never echoed.
+- `GET /v1/org/admin/marketplace/status` — inspect actual public sessions,
+  managed Workers, and nonsecret automatic-controller observations.
+- `POST /v1/org/admin/marketplace/reconcile` — force a serialized reconciliation
+  using **saved** participation settings; this is for diagnostics, not a
+  prerequisite for normal operation. Disabled participation cannot be bypassed.
+
+The Organization Service stores nonsecret participation choices separately from
+its Hub authorization under the service-owned organizational state directory.
+Hub authorization is not returned by status or configuration APIs. These paths
+are service-owned local persistence, not UI or Worker settings. Private
+credential encryption/dongle controls remain a separate future capability.
+
+The controller wakes on authenticated Worker registration/disconnection and
+scheduler-policy edits, and checks periodically for missed changes, completed
+jobs, or lost upstream sessions. Automatic and manual reconcile calls are
+serialized. Disabling participation, changing Hub destinations, or replacing
+Hub authorization drains old advertisements without canceling authorized
+in-flight jobs; new sessions are opened only under the resulting valid state.
+On a restart, the service reloads saved participation policy and authorization
+and reconciles when Workers return. It never advertises solely because a
+scheduler policy happens to permit public slots.
+
+`verify-local` and `run` must retain the separate real-process paid-work lane,
+legacy paid-work regression lane, and two-service lifecycle lane, and also
+require the bounded deterministic Decision Stress Frob. The routine stress lane
+checks 1,500 seeded scheduler decisions across 16-, 64-, and 256-Worker pools
+with Worker churn, lost authorization, private/public jobs, policy conflict,
+credit limits, and rotation, plus parallel reconciler operations. A separate
+`stress-decisions --json` command tests 9,000 decisions and 1,000 parallel
+reconcile operations. Seeds and the first failing event prefix must be
+reportable for reproduction. The production scheduler is used for large
+simulated fleets; the real-process paid-work lane independently proves TLS,
+SEH transport, automatic opening, policy-change draining, concurrent manual
+calls, and synthetic-ledger settlement. Simulation is not represented as
+thousands of real network Worker connections.
+
+These tests do not validate deployed public WSS, cloud Coolify, actual bridge
+settlement, OS-level boot registration, or unbounded endurance. They must not
+modify a configured organization's live Worker sessions or secrets.
+
+## Real network and paid-work integrated stress (separate opt-in lane)
+
+The `stress-integrated` command runs against a disposable **real in-memory
+Stable Hub HTTP server**, real Local Service, **separate Organization Service
+process**, real local SEH relay, TLS-enrolled Worker sockets and the existing
+Hub ledger. It does **not** instantiate a fake SLH scheduler, credit bridge,
+or public SEH. It performs a baseline paid transaction, then concurrently
+submits additional paid requests through actual network sessions. The same
+Organization Service must automatically maintain public Worker sessions.
+
+```powershell
+# Bounded starting point (actual Worker sockets, not a simulated fleet)
+python -m tools.slh_seh_lab.run_lab stress-integrated --workers 8 --requests 16 --concurrency 4 --seed 1729 --json
+# Progressively probe the real connection ceiling on the host being tested
+python -m tools.slh_seh_lab.run_lab stress-integrated --workers 16 --requests 32 --concurrency 8 --seed 1729 --json
+python -m tools.slh_seh_lab.run_lab stress-integrated --workers 64 --requests 64 --concurrency 8 --seed 1729 --json
+python -m tools.slh_seh_lab.run_lab stress-integrated --workers 256 --requests 256 --concurrency 16 --seed 1729 --json
+```
+
+The maximum requested scale is **256 actual network Workers**, not proof that
+256 connections already pass. Start small and increase only after the previous
+scale succeeds; the larger tiers can expose operating-system socket/thread
+limits, upstream Hub limits, or teardown stalls. `verify-local` remains a
+bounded, separate baseline and does not claim to have run this opt-in workload.
+
+The integrated stress lane checks that Workers are enrolled by the real
+Organization API, authenticate through the local SEH relay, and are
+advertised without calling manual reconcile; that overlapping paid work
+produces a unique session per accepted request, matching Worker output,
+correct single charges and earnings, wallet-authorized claim and settlement,
+and replay-safe accounting. Refused requests are **counted as refused**, not
+misreported as completed paid jobs; at least half of bounded requests must
+be accepted. It then changes private reserve, disconnects/reconnects Workers,
+fully disables and re-enables public participation, and requires the
+advertised capacity to converge without a manual reconcile. Local Service
+and Organization Service crash-recovery tests remain in `verify-services`;
+this new stress lane does **not** claim to exercise a process crash during
+settlement or live public internet failures.
+
+The report includes the seed, workload profile, acceptance and refusal counts,
+settlement gates, latency distribution, and decision events. A redacted
+`integrated-stress-events.json` file is written progressively beside
+`report.json`; it remains useful if a high-scale run times out. Random
+identifiers and OS scheduling are not deterministically replayed byte for
+byte; the seed controls the test's generated markers and scenario choices.
+No Hub token, worker private key, or authenticator secret should enter these
+reports. All funding is synthetic lab credit, and settlements are strictly
+local ledger settlements. Cloud Coolify, public WSS and real bridge payouts
+remain NOT TESTED.
+
+
+## Network stream isolation at the SEH capacity boundary
+
+The single SEH relay currently supports **64 simultaneous client streams**.
+A Worker connection above that limit must be refused without disconnecting
+existing Workers or destroying the authenticated SLH-SEH tunnel. Likewise,
+a failed local TCP connect, failed per-stream write, or invalid per-stream
+payload must close only that stream. The SLH's marketplace may temporarily
+withdraw or re-advertise capacity while the connector and relay finish closing
+streams; the integrated lab waits for the *actual relay client count* to drain
+before reconnecting previously approved Workers.
+
+`stress-integrated` does not execute the `verify-local` single-Worker eight-step
+policy-reversal preflight before starting its fleet. Both are independent tests.
+The integrated lane tests the real network path, checks that surviving Workers
+remain registered after churn, and requires continued SEH tunnel connectivity.
+It records per-phase connection progress and treats transport failures as failures,
+not as valid Hub capacity refusals.
+
+Profiles above 64 real Worker connections are explicitly rejected for one SEH;
+validating 256 simultaneous network Workers requires a separately designed
+multi-SEH topology and is **not** established by the scheduler-only 256-Worker
+decision stress. This does not change the scheduler's supported simulated fleet sizes.
+
+### Slow WebSocket close isolation and churn diagnostics
+
+The SEH control tunnel must never wait for an individual Worker WebSocket
+close handshake. A stream close is dispatched independently, with a bounded
+server WebSocket close timeout and duplicate-close suppression. This preserves
+healthy multiplexed streams during Worker churn. The integrated stress lane
+checks the **exact surviving device set**, not only the count; failures report
+missing and unexpected device IDs, tunnel state, relay client count and
+pending close handshakes. No authorization or secret material is recorded.
+
+### Diagnosing partial Worker loss with an intact SEH tunnel
+
+A healthy authenticated SEH control tunnel does **not** prove every individual
+Worker WebSocket remains connected. If the lab expects 48 survivors and observes
+40, it must fail even when the tunnel is up and paid work has already settled.
+The lab now asserts that a private-reserve change alone never drops Worker
+registrations, checks actual Worker row identities before and after intentional
+churn, and verifies that departed device identities really disappeared from the
+Organization Service's list of Worker rows. Previously, the disconnection wait
+compared a name against a list of dictionaries and could pass prematurely.
+
+On loss, the progressive trace includes the exact missing device IDs and a
+redacted per-device connection classification (`client_alive`,
+`client_close_reason`, `client_error_class`) from the actual test-owned Worker
+clients. The local SEH relay additionally tracks aggregate WebSocket close
+codes without recording frames or credential material. Interpret `1006` and
+unknown closure codes as diagnostic symptoms, not by themselves the proven root
+cause. Do not convert missing Workers to acceptable capacity loss or simply
+extend timeouts: an unexpected Worker disconnect is an acceptance failure.
+
+### Worker WebSocket frame-boundary hardening
+
+Worker live-session reads preserve a partially received WebSocket frame across
+short socket timeouts. An idle read may time out normally, but a header,
+extended-length field, or payload already in progress may not be discarded
+and reinterpreted as a fresh header. Incomplete frames fail after a bounded
+15-second interval. The lab records a remote WebSocket close code, when
+available, without copying any peer-provided reason text or credentials.
+This protects protocol framing under multiplexed SEH congestion; a successful
+local stress run does not by itself certify Windows reliability.
+
+
+### Worker-stream write backpressure and closure evidence
+
+The SEH tunnel carries multiple Worker TCP streams. Each stream uses a bounded,
+ordered, nonblocking write queue on the SLH and relay sides. The queue defaults
+to 64 pending chunks with a separate 2 MiB byte budget, rather than the former
+eight-chunk-only budget, which could close healthy streams during short bursts
+of small TLS records. A persistently blocked stream still fails independently.
+This does not change the 64-client limit or grant a Worker new authority.
+
+SLH-to-SEH close messages now include a fixed, non-secret cause classification:
+`local_eof`, `local_read_error`, `write_error`, `write_queue_full`, or
+`write_byte_budget`. The SEH returns WebSocket code 1013 on queue saturation,
+1011 on read/write failures, and 1000 on local EOF; it counts these causes
+without storing Worker credentials or payloads. Integrated stress records these
+aggregate counters after paid settlement and reserve-policy updates, and on
+unexpected Worker loss. A clean 1000 code alone does *not* prove who initiated
+an upstream TLS shutdown; the classified cause supplies additional evidence.
+
+For the default 64-Worker integration test, all underlying Worker connections
+must remain registered after the private-reserve policy changes. Runs stalled
+in marketplace disable/re-enable are not successes even if paid execution and
+Worker churn completed; report them as independent convergence failures.
+
+### Worker-retention causal probe (optional; real connections, no production mutation)
+
+If the integrated stress lane reports missing Workers only at the post-paid
+reserve-change check, it has **not** established that reconciliation caused
+the loss: the Workers may have disconnected during the paid work phase.
+Run the following on the same Windows machine and repository revision:
+
+```powershell
+python -m tools.slh_seh_lab.run_lab stress-integrated `
+  --workers 64 --requests 64 --concurrency 8 --seed 1729 `
+  --causal-probe --json
+```
+
+The opt-in probe adds six checkpoints: immediately before a **pre-paid**
+reserve reduction, after that reduction, after restoration to full capacity,
+immediately before paid jobs, immediately after paid settlement and **before**
+the regular reserve reduction, and after that reduction. (The existing
+post-reserve Worker-retention check is also preserved.) Every checkpoint logs
+the exact registered Worker identifiers and relay close-code counters to the
+existing `integrated-stress-events.json`, including on failure.
+
+Interpret the **first failed checkpoint**:
+
+- `after_prepaid_reserve_change`: reserve adjustment can trigger Worker loss
+  even without paid-job load. Follow the managed gateway / SEH stream-close
+  chain rather than the Stable Hub payout ledger.
+- `immediately_before_paid_requests` or `paid_settled_before_reserve_change`:
+  the Workers were already lost *before* the contested post-paid reserve
+  change; investigate the connection, keepalive, or paid-job data path.
+- `paid_settled_after_reserve_change`: Workload alone did not lose Workers in
+  this run. Focus on the policy transition and concurrent session draining.
+
+One passing run does not establish a persistent root cause. In particular,
+WebSocket close code `1000` represents a normal close handshake, **not** the
+identity of its initiator. The test deliberately does not change production
+scheduler, Worker, or SEH transport code. Do not claim a transport fix on
+its evidence alone; repair the first proven initiating close path and rerun
+all existing acceptance lanes and repeated Windows 64-Worker stress.
+
+The causal probe also records adapter `first_close_causes` counters. A
+`worker_tcp_eof_first` observation means the *local Worker-to-adapter TCP*
+side ended before the adapter observed the relay WebSocket ending; a
+`relay_websocket_ended_first` observation means the reverse was observed.
+These are observation-order categories, **not** definitive remote intent;
+use them with the Worker last-error classification and SLH stream-close
+counters to locate the initiating path. Normal `1000` close codes alone
+never identify the initiator. The counters are process-local test evidence,
+not exposed through public administrator endpoints.

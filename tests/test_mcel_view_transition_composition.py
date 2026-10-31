@@ -25,6 +25,9 @@ def _ir():
     return report.normalized_ir
 
 
+def _view_intent(ir):
+    return next(intent for intent in ir["intents"] if intent["sourceName"] == "selectTab")
+
 def _codes(ir):
     return {d.code for d in validate_application_ir(ir).diagnostics}
 
@@ -41,7 +44,7 @@ def _tab(ir):
 
 def test_generic_compiler_accepts_complete_bounded_selection():
     ir = _ir()
-    intent = ir["intents"][0]
+    intent = _view_intent(ir)
     states = {s["id"]: s for s in ir["states"]}
     target_id = intent["viewTransition"]["target"]["ref"]
     assert states[target_id]["authority"] == "renderer-local"
@@ -49,7 +52,9 @@ def test_generic_compiler_accepts_complete_bounded_selection():
     assert intent["viewTransition"]["value"]["input"]["ref"] == intent["input"][0]["id"]
     assert intent["input"][0]["schema"] == states[target_id]["schema"]
     assert intent["viewWrites"] == [{"ref": target_id}]
-    assert not intent["writes"] and not ir["effects"] and not ir["capabilities"]
+    assert not intent["writes"] and not intent["effectRefs"]
+    assert all(effect["risk"] == "external-read" for effect in ir["effects"])
+    assert all(capability["risk"] == "external-read" for capability in ir["capabilities"])
 
 
 @pytest.mark.parametrize('change', [
@@ -61,7 +66,7 @@ def test_generic_compiler_accepts_complete_bounded_selection():
     lambda ir: ir["surfaces"][0]["semanticSurface"]["controls"][0].update(controls="#other-panel"),
     lambda ir: ir["surfaces"][0]["semanticSurface"]["regions"][3].update(controlledBy="#wrong-tab"),
     lambda ir: _tab(ir)["a11y"].update(keyboard="none"),
-    lambda ir: ir["surfaces"][0]["semanticSurface"]["controls"].pop(),
+    lambda ir: ir["surfaces"][0]["semanticSurface"]["controls"].pop(0),
 ])
 def test_general_tab_panel_composition_refuses_broken_relationships(change):
     ir = _mutate(change)
@@ -69,14 +74,14 @@ def test_general_tab_panel_composition_refuses_broken_relationships(change):
 
 
 @pytest.mark.parametrize('change', [
-    lambda ir: ir["intents"][0]["input"][0]["schema"].update(enum=["server-processes", "hardware"]),
-    lambda ir: ir["intents"][0]["viewWrites"].clear(),
-    lambda ir: ir["intents"][0]["viewTransition"].update(invalidInput="ignore"),
-    lambda ir: ir["intents"][0]["viewTransition"].update(target={"ref": "state:task-manager-notebook.notebook-data"}),
-    lambda ir: ir["intents"][0].update(operationKind="mutation"),
-    lambda ir: ir["intents"][0].update(lane="external-mutation"),
+    lambda ir: _view_intent(ir)["input"][0]["schema"].update(enum=["server-processes", "hardware"]),
+    lambda ir: _view_intent(ir)["viewWrites"].clear(),
+    lambda ir: _view_intent(ir)["viewTransition"].update(invalidInput="ignore"),
+    lambda ir: _view_intent(ir)["viewTransition"].update(target={"ref": "state:task-manager-notebook.notebook-data"}),
+    lambda ir: _view_intent(ir).update(operationKind="mutation"),
+    lambda ir: _view_intent(ir).update(lane="external-mutation"),
     lambda ir: ir["states"][0].update(authority="canonical") if ir["states"][0]["sourceName"] == "activeTabId" else next(s.update(authority="canonical") for s in ir["states"] if s["sourceName"] == "activeTabId"),
-    lambda ir: ir["intents"][0].update(effectRefs=[{"ref": "effect:illegal"}]),
+    lambda ir: _view_intent(ir).update(effectRefs=[{"ref": "effect:illegal"}]),
 ])
 def test_typed_local_state_transition_refuses_invalid_authority(change):
     ir = _mutate(change)
@@ -104,7 +109,7 @@ process.stdout.write(JSON.stringify(output));"""
 
 def test_generic_transition_changes_only_view_state_without_mutating_source():
     ir = _ir()
-    intent = ir["intents"][0]
+    intent = _view_intent(ir)
     state_id = intent["viewTransition"]["target"]["ref"]
     initial = {state_id: "server-processes", "other": "persist"}
     definitions = ir["states"]
@@ -123,7 +128,7 @@ def test_generic_transition_changes_only_view_state_without_mutating_source():
 
 def test_transition_refuses_effect_injection_even_when_input_is_valid():
     ir = _ir()
-    intent = ir["intents"][0]
+    intent = _view_intent(ir)
     state_id = intent["viewTransition"]["target"]["ref"]
     intent["effectRefs"] = [{"ref": "effect:bad"}]
     output = _execute({"intent": intent, "states": {state_id: "server-processes"},
@@ -133,7 +138,7 @@ def test_transition_refuses_effect_injection_even_when_input_is_valid():
 
 def test_transition_refuses_unverified_state_authority():
     ir = _ir()
-    intent = ir["intents"][0]
+    intent = _view_intent(ir)
     state_id = intent["viewTransition"]["target"]["ref"]
     definitions = ir["states"]
     for state in definitions:

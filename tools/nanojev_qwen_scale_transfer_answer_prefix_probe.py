@@ -151,7 +151,7 @@ def run(args):
         return
     if not args.stage1_checkpoint or not args.text_checkpoint:
         raise ValueError('TRANSFER_PREFIX_REQUIRES_STAGE1_AND_TEXT_CHECKPOINT')
-    from tools import nanojev_qwen_lm_deformation_smoke as smoke
+    from tools import nanojev_qwen_lm_deformation_legacy as smoke
     bb,tok,zero,_ = transfer._load_model(args)
     glass = transfer._glass(args,bb,zero,smoke)
     lora_before = smoke._lora_digest(bb,zero)

@@ -64,7 +64,8 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
         raise ValueError('In-memory lab must use in-memory payout ledger')
     if not proxy.sessions:
         raise RuntimeError('SLH has no public sessions available for paid work')
-    actual_accounts={slot.accepted.get('account_id') for slot in proxy.sessions.values()}
+    initial_sessions = list(proxy.sessions.values())
+    actual_accounts={slot.accepted.get('account_id') for slot in initial_sessions}
     if actual_accounts != {worker_account_id}:
         raise RuntimeError('Public sessions are not bound to expected SLH wallet account')
 
@@ -144,7 +145,7 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     settlement={}
     if all(gates.values()):
         # Confirm the economic authority belongs to the wallet, not the worker slot.
-        worker_msk=next(iter(proxy.sessions.values())).auth_message['multisession_authorization']['multisession_key_id']
+        worker_msk=initial_sessions[0].auth_message['multisession_authorization']['multisession_key_id']
         auth={'kind':'multisession_key','multisession_key_id':worker_msk}
         claim=_json(f'{hub_url.rstrip("/")}/api/hub/v1/workers/{quote(worker_account_id)}/payout/claim',
                   {'multisession_authorization':auth,'earning_ids':[earning['earning_id']]},timeout=10)

@@ -532,6 +532,19 @@ ${extra ? escapeHtml(extra) : ""}${openWith}
       }
     }
     function initSystemFileExplorerApp() {
+      // Explicit opt-in; original read-only File Explorer remains the rollback.
+      const mode = new URLSearchParams(window.location.search).get('mcel_file_explorer');
+      if (window.McelFileExplorerCandidate?.status().mounted) {
+        if(mode === 'candidate')return;
+        window.McelFileExplorerCandidate.destroy();
+      }
+      if (mode === 'candidate' && window.McelFileExplorerCandidate?.mount) {
+        const p = new URLSearchParams(window.location.search).get('mcel_design');
+        const result=window.McelFileExplorerCandidate.mount(systemFileExplorerApp,{
+          presentation:p==='analytical'?'analytical':'operational',
+          planner:new URLSearchParams(window.location.search).get('mcel_planner')==='task-aware'?'task-aware':'legacy'});
+        if(result.ok)return;
+      }
       const surface = systemFileExplorerMcelSurface();
       if (surface && typeof surface.applyStaticSurfaceRidges === "function") {
         surface.applyStaticSurfaceRidges(document);

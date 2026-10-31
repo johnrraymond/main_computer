@@ -14,6 +14,7 @@ from tools.slh_seh_lab.service_lifecycle import verify_services
 def test_lab_plan_includes_real_process_acceptance():
     result = plan(DEFAULT_TOPOLOGY)
     assert 'two_service_real_process_bootstrap_lifecycle_worker_seh' in result['lanes']
+    assert 'real_organization_process_paid_work_via_seh' in result['lanes']
     assert result['no_external_urls'] is True
     assert result['production_mutations'] is False
 
@@ -39,7 +40,13 @@ def test_verify_local_requires_both_real_service_and_paid_lanes():
     good = {'status': 'PASS', 'pass': True, 'gates': {'real_org_running': True}}
     bad = {'status': 'FAIL', 'pass': False, 'gates': {'real_org_running': False}}
     paid = {'pass': True, 'gates': {'paid': True}}
-    with mock.patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=good), \
+    real_paid = {'pass': True, 'gates': {'real_paid': True}}
+    import sys
+    from types import ModuleType
+    real_module = ModuleType('tools.slh_seh_lab.real_paid_service')
+    real_module.verify_real_process_paid = lambda **kwargs: real_paid
+    with mock.patch.dict(sys.modules, {'tools.slh_seh_lab.real_paid_service': real_module}), \
+         mock.patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=good), \
          mock.patch('tools.slh_seh_lab.run_lab._in_memory_hub', return_value=(DummyHub(), DummyThread())), \
          mock.patch('tools.slh_seh_lab.run_lab._local_demo', return_value=paid), \
          mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}):
@@ -47,7 +54,16 @@ def test_verify_local_requires_both_real_service_and_paid_lanes():
         assert report['status'] == 'PASS'
         assert report['two_service_lab'] == good
         assert report['slh'] == paid
-    with mock.patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=bad), \
+        assert report['real_process_paid_work'] == real_paid
+    with mock.patch.dict(sys.modules, {'tools.slh_seh_lab.real_paid_service': real_module}), \
+         mock.patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=bad), \
+         mock.patch('tools.slh_seh_lab.run_lab._in_memory_hub', return_value=(DummyHub(), DummyThread())), \
+         mock.patch('tools.slh_seh_lab.run_lab._local_demo', return_value=paid), \
+         mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}):
+        assert verify_local()['status'] == 'FAIL'
+    real_module.verify_real_process_paid = lambda **kwargs: {'pass': False, 'gates': {'real_paid': False}}
+    with mock.patch.dict(sys.modules, {'tools.slh_seh_lab.real_paid_service': real_module}), \
+         mock.patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=good), \
          mock.patch('tools.slh_seh_lab.run_lab._in_memory_hub', return_value=(DummyHub(), DummyThread())), \
          mock.patch('tools.slh_seh_lab.run_lab._local_demo', return_value=paid), \
          mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}):
@@ -82,3 +98,21 @@ def test_disposable_protector_refuses_outside_lab_root(tmp_path):
     from tools.slh_seh_lab.service_lifecycle import _protect_disposable_lab_state, ServiceLabFailure
     with pytest.raises(ServiceLabFailure, match='outside the SLH lab'):
         _protect_disposable_lab_state(tmp_path / 'not-a-lab')
+
+
+def test_real_process_paid_work_integration():
+    """Uses actual TLS Organization child, SEH relay, Hub and Worker sockets."""
+    from tools.slh_seh_lab.run_lab import _in_memory_hub
+    from tools.slh_seh_lab.real_paid_service import verify_real_process_paid
+    hub, thread = _in_memory_hub()
+    try:
+        result = verify_real_process_paid(
+            hub_url=f'http://127.0.0.1:{hub.server_port}',
+            payout_ledger=hub.payout_ledger_directory)
+        assert result['pass'], result
+        assert all(result['gates'].values()), result['gates']
+        assert result['paid_marketplace']['settlement'] == 'LOCAL_LEDGER_SETTLED_NOT_BRIDGED'
+    finally:
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=3)

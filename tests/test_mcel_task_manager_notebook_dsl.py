@@ -68,7 +68,7 @@ def test_dsl_compiles_without_live_application_or_package_enrollment():
     assert ir["application"]["appId"] == "task-manager-notebook"
     assert ir["provenance"]["frontend"]["id"] == "mcel.dsl.v1"
     assert len(ir["states"]) == 3
-    assert len(ir["intents"]) == 1
+    assert len(ir["intents"]) == 2
     assert len(ir["surfaces"]) == 1
     assert not (ROOT / "mcel_apps/task-manager-notebook").exists()
     assert not (ROOT / "main_computer/web/applications/apps/task-manager-notebook.html").exists()
@@ -90,9 +90,10 @@ def test_notebook_semantics_match_observed_read_only_host_surface():
     assert semantic["tabGroup"]["defaultTabId"] == "server-processes"
     actual = tuple((x["id"], x["tab"], x["panel"]) for x in semantic["tabGroup"]["tabs"])
     assert actual == EXPECTED_TABS
-    assert len(semantic["controls"]) == 4
-    assert {x["intent"] for x in semantic["controls"]} == {"selectTab"}
-    assert all(x["role"] == "select-tab" for x in semantic["controls"])
+    assert len(semantic["controls"]) == 5
+    assert {x["intent"] for x in semantic["controls"]} == {"selectTab", "refreshProcessData"}
+    assert len([x for x in semantic["controls"] if x["role"] == "select-tab"]) == 4
+    assert len([x for x in semantic["controls"] if x["role"] == "capability-action"]) == 1
     assert all(region.get("readOnly") for region in semantic["regions"] if region["role"] == "notebook-data-panel")
     tree = _TagInventory()
     tree.feed(HOST.read_text(encoding="utf-8"))
@@ -106,7 +107,7 @@ def test_notebook_semantics_match_observed_read_only_host_surface():
 
 def test_compiled_dsl_does_not_fake_generated_interaction_or_external_authority():
     _, ir = _candidate_ir()
-    intent = ir["intents"][0]
+    intent = next(i for i in ir["intents"] if i["sourceName"] == "selectTab")
     assert intent["sourceName"] == "selectTab"
     assert intent["risk"] == "local-state"
     assert len(intent["input"]) == 1
@@ -118,8 +119,11 @@ def test_compiled_dsl_does_not_fake_generated_interaction_or_external_authority(
     assert intent["viewTransition"]["invalidInput"] == "refuse"
     assert "transition" not in intent  # canonical mutation remains distinct
     assert intent["effectRefs"] == []
-    assert ir["capabilities"] == []
-    assert ir["effects"] == []
+    assert len(ir["capabilities"]) == 1 and ir["capabilities"][0]["risk"] == "external-read"
+    assert len(ir["effects"]) == 1 and ir["effects"][0]["risk"] == "external-read"
+    read = next(i for i in ir["intents"] if i["sourceName"] == "refreshProcessData")
+    assert read["operationKind"] == "capability" and read["lane"] == "external-read"
+    assert not read["writes"] and len(read["effectRefs"]) == 1
     assert intent["executionBinding"] == "task-manager-notebook-runtime.select-tab"
     # Merely declaring this proposed binding is not evidence that it exists.
     assert "hostMarkup" not in ir["surfaces"][0].get("semanticSurface", {})

@@ -240,7 +240,7 @@ def _load_model(args):
     """Restore the immutable post-training LoRA; never update weights."""
     import torch
     from tools import nanojev_qwen_lm_radius_ladder as ladder
-    from tools import nanojev_qwen_lm_deformation_smoke as smoke
+    from tools import nanojev_qwen_lm_deformation_legacy as smoke
     baseline_file=Path(args.output)/'baseline.pt'
     if not baseline_file.is_file():raise FileNotFoundError('TRANSFER_BASELINE_NOT_FOUND:'+str(baseline_file))
     baseline=torch.load(baseline_file,map_location='cpu',weights_only=True)

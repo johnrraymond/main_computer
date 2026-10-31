@@ -1,3 +1,5 @@
+> **Historical mode-bank experiment (archived).** The primary `tools.nanojev_qwen_lm_deformation_smoke` now implements an edge-first, continuous ungated-versus-gated numerical-terminal A/B smoke. See `pretty_docs/nanojev/QWEN_EDGE_FIRST_CONTINUOUS_GLASS_AB.md`. This document remains for reproducing legacy checkpoints through `tools.nanojev_qwen_lm_deformation_legacy`.
+
 # Qwen Relative Deformation Glass — Two-Pass Smoke
 
 ## Goal

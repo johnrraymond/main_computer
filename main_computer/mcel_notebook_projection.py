@@ -41,13 +41,35 @@ def _validate_projection_scope(ir: Mapping[str, Any]) -> None:
         raise NotebookProjectionRefused("No supported tab group")
     if group.get("inactivePanelPolicy") != "hidden-but-model-preserved":
         raise NotebookProjectionRefused("Unsupported inactive panel policy")
-    if ir.get("effects") or ir.get("capabilities") or any(
-        intent.get("writes") or intent.get("effectRefs") or intent.get("lane") != "local-view-state"
-        for intent in ir.get("intents", [])
-    ):
-        raise NotebookProjectionRefused("Preview cannot project operational authority")
-    if len(ir.get("intents", [])) != 1 or len(ir.get("states", [])) < 1:
+    # Offline preview may display a declared external-read control, but it
+    # injects NO capability adapter, so no host operation is executable.
+    local = [i for i in ir.get("intents", []) if i.get("lane") == "local-view-state"
+             and not i.get("writes") and not i.get("effectRefs")]
+    if len(local) != 1 or len(ir.get("states", [])) < 1:
         raise NotebookProjectionRefused("Unsupported notebook transition state")
+    operational = [i for i in ir.get("intents", []) if i not in local]
+    if len(operational) != len(ir.get("effects", [])) or len(operational) != len(ir.get("capabilities", [])):
+        raise NotebookProjectionRefused("Unbounded operational authority")
+    controls = [c for c in surfaces[0]["semanticSurface"].get("controls", [])
+                if c.get("role") == "capability-action"]
+    if len(controls) != len(operational):
+        raise NotebookProjectionRefused("Missing capability-action declarations")
+    for intent in operational:
+        if (intent.get("operationKind") != "capability" or intent.get("lane") != "external-read"
+            or intent.get("risk") != "external-read" or intent.get("writes") or intent.get("input")
+            or intent.get("viewWrites") or len(intent.get("effectRefs", [])) != 1
+            or len([c for c in controls if c.get("intent") == intent.get("sourceName")
+                    and c.get("risk") == "external-read"]) != 1):
+            raise NotebookProjectionRefused("Preview cannot project unsafe operational authority")
+        effect = next((e for e in ir["effects"] if e.get("id") == intent["effectRefs"][0]["ref"]), None)
+        capability = next((c for c in ir["capabilities"] if c.get("id") == (effect or {}).get("target", {}).get("ref")), None)
+        if (not effect or effect.get("effectKind") != "capability-request" or effect.get("risk") != "external-read"
+            or effect.get("owner", {}).get("ref") != intent.get("id") or not capability
+            or effect.get("authority", {}).get("ref") != capability.get("id")
+            or capability.get("risk") != "external-read" or len(capability.get("operations", [])) != 1
+            or capability["operations"][0].get("name") != intent.get("runtimeMethod")):
+            raise NotebookProjectionRefused("Invalid preview effect graph")
+
 
 
 def render_notebook_html(ir: Mapping[str, Any], *, fixture: Mapping[str, Any] | None = None) -> str:
@@ -58,6 +80,7 @@ def render_notebook_html(ir: Mapping[str, Any], *, fixture: Mapping[str, Any] | 
     options = {"snapshot": dict(fixture or {}), "status": "available" if fixture is not None else "not-requested",
                "instanceId": "mcel-generated-notebook", "syncRoute": True}
     js = "\n".join((TRANSITIONS.read_text(encoding="utf-8"),
+                    (REPOSITORY_ROOT / "main_computer/web/applications/scripts/mcel-intent-effect-runtime.js").read_text(encoding="utf-8"),
                     RENDERER.read_text(encoding="utf-8")))
     css = STYLES.read_text(encoding="utf-8")
     if "</script" in js.lower() or "</style" in css.lower():

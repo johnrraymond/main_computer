@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 from tools import nanojev_qwen_lm_deformation_refine as refine
-from tools import nanojev_qwen_lm_deformation_smoke as base
+from tools import nanojev_qwen_lm_deformation_legacy as base
 
 SCHEMA = 'nanojev.qwen.failure-mode-glass.v1'
 

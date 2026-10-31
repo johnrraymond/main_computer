@@ -240,7 +240,9 @@ function start(settings,stage,overrides={}){
     sourceRetirement:true,capabilities,retirementPolicy:policyFor(settings),presentationPolicy,
     rowHoverUnclip:overrides.galleryExpanded===true});
   const list=frame.querySelector('mcel-collection');
-  if(list){list.style.maxHeight='200px';list.style.overflowY='auto';}
+  if(list){list.style.maxHeight='200px';list.style.overflowY='auto';
+    // L18-01 explicitly exercises a card wider than its scroll view on hover.
+    if(overrides.galleryExpanded===true)list.dataset.mcelWideHover='true';}
   const session={settings,plan,currentPlan:plan,frame,root:frame,instance,sequence:0,expected:plan.collection.rows.map(r=>r.mcelIdentity),
     destroy(){const selection=document.getSelection();
       if(selection && !selection.isCollapsed && selection.containsNode(frame,true))selection.removeAllRanges();
@@ -549,7 +551,7 @@ function build(root){
       if(list)list.style.maxHeight='380px';
       entry.events=[];entry.count.textContent='0 recorded events';
       galleryEvent(entry,'mounted',{settings:entry.exp.settings});
-      galleryStatus(entry,'20 independent records with synthetic stable-generation telemetry. Hover a single row; source identity in the separate orthogonal L18-01 screening remains unverified.');
+      galleryStatus(entry,'20 records; on hover the original card expands wider than this scroll view (existing fields stay fixed). Synthetic stable-generation telemetry; orthogonal screening still tests unverified identity.');
     }catch(error){galleryStatus(entry,'MOUNT ERROR: '+String(error),true);galleryEvent(entry,'mount-error',String(error));}
   }
   async function galleryAction(entry,event){
@@ -637,10 +639,11 @@ function build(root){
     galleryObserver?.observe(section);
   }
   for(const exp of LIVE_EXPERIMENTS)galleryCard(exp);
-  // A page scroll moves an anchored source in viewport coordinates. The
-  // original overlay host only knows about scrolling inside its list.
-  // Dismiss previews when scrolling the containing page; do not allow an old
-  // overlay to cover a different experiment after the source moves.
+  // An active original-row popover follows its layout anchor on window and
+  // document scroll; dismissal belongs to its pointer/lifecycle controller.
+  // Never forcibly close it on every document scroll (even a one-pixel scroll
+  // was closing an otherwise correctly anchored hover). Other specimens are
+  // still dismissed when a different specimen is directly engaged.
   const dismissOtherPreviews=(activeId,reason)=>{
     for(const entry of galleryRows.values())if(entry.exp.id!==activeId)
       entry.session?.instance.collection.dismissFloating?.(reason);
@@ -649,11 +652,6 @@ function build(root){
     const owner=e.target.closest('[data-case-id]')?.dataset.caseId;
     if(owner)dismissOtherPreviews(owner,'another-experiment-engaged');
   },true);
-  const pageScroll=ev=>{
-    if(ev.target===document || ev.target===document.documentElement || ev.target===document.body)
-      dismissOtherPreviews(null,'page-scrolled');
-  };
-  document.addEventListener('scroll',pageScroll,true);
   function mountGalleryAll(){if(galleryMounted)return;galleryMounted=true;
     for(const entry of galleryRows.values())galleryMount(entry);
   }
@@ -669,7 +667,6 @@ function build(root){
   },3000);
   // Timer is intentionally owned by this lab instance and does not multiply per row.
   root.addEventListener('mcel-acid-dispose',()=>{clearInterval(liveScheduler);galleryObserver?.disconnect();
-    document.removeEventListener('scroll',pageScroll,true);
     for(const entry of galleryRows.values()){entry.session?.destroy();entry.session=null;}},{once:true});
   // The optional MCELDiagnosticPlugins recorder records browser pointer facts AND
   // hover-host layout/ownership decisions. No network calls or injected rrweb.

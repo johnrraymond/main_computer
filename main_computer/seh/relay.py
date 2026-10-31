@@ -8,6 +8,8 @@ client identity is asserted by the SEH; Known Device checks run at the SLH.
 from __future__ import annotations
 
 import argparse
+from collections import deque
+import hashlib
 import base64
 from http import HTTPStatus
 import json
@@ -20,6 +22,7 @@ from typing import Any
 
 from main_computer.slh.authenticator import verify_object, load_public_key
 from websockets.exceptions import ConnectionClosed
+from .stream_writer import StreamWriter
 
 MAX_FRAME = 1024 * 1024
 MAX_CLIENTS = 64
@@ -58,6 +61,88 @@ class SEHRelay:
         self.bytes_forwarded = 0
         self.authenticated_slh_count = 0
         self.closed_streams = 0
+        # Close status counts only: no Worker IDs, tokens, or frame bodies.
+        # Keep anomalous closes diagnosable when the shared tunnel survives.
+        self.client_close_codes: dict[str, int] = {}
+        # Classified SLH-origin stream closes; no private Worker identifiers.
+        self.slh_close_causes: dict[str, int] = {}
+        self._closing_clients: set[int] = set()
+        # FIFO writes are isolated per Worker; one blocked send cannot stall
+        # the shared authenticated SLH tunnel reader.
+        self._client_writers: dict[tuple[str | None, str], StreamWriter] = {}
+        # Secret-free per-stream causal events. Stream IDs are hashed, never logged.
+        self._stream_events = deque(maxlen=2048)
+
+    def _stream_event(self, event, sid, *, ws=None, exc=None, cause=None):
+        row = {'event': event, 'stream_tag': hashlib.sha256(sid.encode()).hexdigest()[:16],
+               'monotonic_ns': time.monotonic_ns(), 'unix_ns': time.time_ns()}
+        if ws is not None:
+            # websockets.sync.connection.remote_address calls getpeername().
+            # On Windows, querying a closed socket raises WinError 10038;
+            # forensic telemetry must never crash the handler during cleanup.
+            try:
+                peer = getattr(ws, 'remote_address', None)
+            except OSError:
+                peer = None
+            if isinstance(peer, tuple) and len(peer) > 1 and isinstance(peer[1], int):
+                row['relay_peer_port'] = peer[1]
+            protocol = getattr(ws, 'protocol', None)
+            if protocol is not None:
+                for attr, target in (('close_rcvd', 'received_close_code'),
+                                     ('close_sent', 'sent_close_code')):
+                    frame = getattr(protocol, attr, None)
+                    code = getattr(frame, 'code', None)
+                    if isinstance(code, int):
+                        row[target] = code
+                order = getattr(protocol, 'close_rcvd_then_sent', None)
+                if isinstance(order, bool):
+                    row['received_close_before_sent'] = order
+        if exc is not None:
+            row['exception_class'] = type(exc).__name__
+            if isinstance(getattr(exc, 'errno', None), int):
+                row['errno'] = exc.errno
+        if cause in {'local_eof', 'local_read_error', 'write_error', 'write_queue_full',
+                     'write_byte_budget', 'unspecified'}:
+            row['cause'] = cause
+        with self._lock:
+            self._stream_events.append(row)
+
+    def diagnostics_for_relay_ports(self, ports):
+        selected = set(ports)
+        with self._lock:
+            tags={row['stream_tag'] for row in self._stream_events
+                  if row.get('relay_peer_port') in selected}
+            return [dict(row) for row in self._stream_events
+                    if row['stream_tag'] in tags][-160:]
+
+    def _schedule_client_close(self, client, *, code: int, reason: str = '') -> None:
+        """Do not block the shared SLH tunnel on one WebSocket close handshake.
+
+        websockets.sync.Connection.close() waits for the peer and TCP teardown.
+        Closing many departing Workers serially in _handle_slh can stall *all*
+        of the multiplexed Workers. There are at most max_clients live clients;
+        deduplicate overlapping close requests to keep close workers bounded.
+        """
+        # A close requested by the relay must be distinguishable from a close
+        # frame initiated by the Worker adapter.
+        key = id(client)
+        with self._lock:
+            if key in self._closing_clients:
+                return
+            self._closing_clients.add(key)
+
+        # Explicit relay close: the code is diagnostic metadata, never log reason text.
+        # A socket may already be gone by the time the asynchronous close starts.
+        def close_one():
+            try:
+                client.close(code=code, reason=reason)
+            except (OSError, TimeoutError, ConnectionClosed, RuntimeError):
+                pass
+            finally:
+                with self._lock:
+                    self._closing_clients.discard(key)
+
+        threading.Thread(target=close_one, name='seh-client-close', daemon=True).start()
 
     @property
     def tunnel_ready(self):
@@ -119,19 +204,38 @@ class SEHRelay:
                 if op == 'data':
                     encoded = msg.get('data')
                     if not isinstance(encoded, str) or len(encoded) > MAX_FRAME * 2:
-                        break
+                        # Bad data belongs to one stream, not the authenticated
+                        # organization's entire Worker tunnel.
+                        self._stream_event('relay_initiated_invalid_frame_close', sid, ws=client)
+                        self._schedule_client_close(client, code=1008, reason='INVALID_STREAM_FRAME')
+                        continue
                     try:
                         value = base64.b64decode(encoded, validate=True)
                         if len(value) > MAX_FRAME:
-                            break
-                        client.send(value)
-                        with self._lock:
-                            self.bytes_forwarded += len(value)
-                    except (OSError, ValueError, ConnectionClosed):
-                        break
+                            raise ValueError('oversized stream frame')
+                    except (ValueError, base64.binascii.Error):
+                        self._schedule_client_close(client, code=1008, reason='INVALID_STREAM_FRAME')
+                        continue
+                    with self._lock:
+                        writer = self._client_writers.get((lab_id, sid))
+                    if writer is not None and writer.offer(value):
+                        pass
+                    else:
+                        self._stream_event('relay_initiated_backpressure_close', sid, ws=client)
+                        self._schedule_client_close(client, code=1011, reason='STREAM_BACKPRESSURE')
                 elif op == 'close':
-                    try: client.close(code=1000)
-                    except OSError: pass
+                    cause = msg.get('cause')
+                    if cause not in ('local_eof', 'local_read_error', 'write_error',
+                                     'write_queue_full', 'write_byte_budget'):
+                        cause = 'unspecified'
+                    with self._lock:
+                        self.slh_close_causes[cause] = self.slh_close_causes.get(cause, 0) + 1
+                    # Do not report a local stream failure as an ordinary
+                    # WebSocket closure. Preserve stream-scoped semantics.
+                    code = 1013 if cause in ('write_queue_full', 'write_byte_budget') else (
+                        1011 if cause in ('write_error', 'local_read_error') else 1000)
+                    self._stream_event('relay_slh_requested_close', sid, ws=client, cause=cause)
+                    self._schedule_client_close(client, code=code)
                 else:
                     break
         except (OSError, ValueError, ConnectionClosed):
@@ -148,8 +252,7 @@ class SEHRelay:
                 else:
                     clients = []
             for client in clients:
-                try:client.close(code=1012, reason='SLH_DISCONNECTED')
-                except (OSError, ConnectionClosed):pass
+                self._schedule_client_close(client, code=1012, reason='SLH_DISCONNECTED')
 
     def _handle_client(self, ws, *, lab_id: str | None = None):
         with self._lock:
@@ -158,8 +261,17 @@ class SEHRelay:
                 ws.close(code=1013, reason='SLH_UNAVAILABLE_OR_BUSY')
                 return
             sid = secrets.token_urlsafe(18)
+            self._stream_event('relay_client_accepted', sid, ws=ws)
             if lab_id:self._lab_clients[(lab_id, sid)] = ws
             else:self._clients[sid] = ws
+            def send_client(data):
+                ws.send(data)
+                with self._lock:
+                    self.bytes_forwarded += len(data)
+            self._client_writers[(lab_id, sid)] = StreamWriter(
+                send_client,
+                lambda: self._schedule_client_close(ws, code=1011, reason='STREAM_WRITE_FAILED'),
+                name='seh-client-stream-writer')
         try:
             self._send_slh({'op':'open', 'id':sid}, lab_id=lab_id)
             for raw in ws:
@@ -167,13 +279,26 @@ class SEHRelay:
                     break
                 self._send_slh({'op':'data', 'id':sid, 'data':base64.b64encode(raw).decode('ascii')}, lab_id=lab_id)
                 with self._lock:self.bytes_forwarded += len(raw)
-        except (OSError, ConnectionError, ConnectionClosed):
-            pass
+        except (OSError, ConnectionError, ConnectionClosed) as exc:
+            self._stream_event('relay_client_receive_exception', sid, ws=ws, exc=exc)
         finally:
+            self._stream_event('relay_client_handler_exiting', sid, ws=ws)
+            # Client WebSocket close codes distinguish orderly Worker churn
+            # from transport errors (1006), without logging credentials.
+            try:
+                code = ws.close_code
+            except (AttributeError, RuntimeError):
+                code = None
+            label = str(code) if code is not None else 'unknown'
             with self._lock:
+                writer = self._client_writers.pop((lab_id, sid), None)
+                if writer is not None:
+                    writer.close()
                 if lab_id:self._lab_clients.pop((lab_id, sid), None)
                 else:self._clients.pop(sid, None)
                 self.closed_streams += 1
+                self.client_close_codes[label] = self.client_close_codes.get(label, 0) + 1
+            self._stream_event('relay_client_close_forwarded_to_slh', sid, ws=ws)
             try:self._send_slh({'op':'close', 'id':sid}, lab_id=lab_id)
             except (OSError, ConnectionError, ConnectionClosed):pass
 
@@ -210,7 +335,7 @@ class SEHRelay:
         from websockets.sync.server import serve
         with serve(self.handler, self.host, self.port, process_request=self.process_request,
                    compression=None, max_size=MAX_FRAME * 2 + 8192,
-                   open_timeout=8, ping_interval=20) as server:
+                   open_timeout=8, ping_interval=20, close_timeout=2) as server:
             self._server = server
             self.port = server.socket.getsockname()[1]
             server.serve_forever()

@@ -401,10 +401,38 @@
       close('replaced');
       const win=doc.defaultView,origin=source.getBoundingClientRect(),parent=source.parentElement;
       if(!parent||origin.width<1||origin.height<1)return {ok:false,reason:'source-has-no-geometry'};
+      // Hover timers can mature after scrolling has removed the row from the
+      // viewport. Opening at (for example) y=-276 in a 588px viewport would
+      // create a taller-than-viewport card with an incorrectly hidden rail.
+      // Do not invent a different origin: refuse this stale hover transaction.
+      const visibleList=scrollContainer?.getBoundingClientRect();
+      const viewportWidth=win.innerWidth,viewportHeight=win.innerHeight;
+      const clippedTop=Math.max(0,visibleList?.top??0);
+      const clippedBottom=Math.min(viewportHeight,visibleList?.bottom??viewportHeight);
+      const clippedLeft=Math.max(0,visibleList?.left??0);
+      const clippedRight=Math.min(viewportWidth,visibleList?.right??viewportWidth);
+      if(origin.bottom<=clippedTop || origin.top>=clippedBottom ||
+         origin.right<=clippedLeft || origin.left>=clippedRight){
+        traceHover('open-refused-offscreen',source,{reason:'source-outside-visible-scroll-view',
+          geometry:{x:origin.left,y:origin.top,width:origin.width,height:origin.height},
+          extra:{visibleList:{top:clippedTop,bottom:clippedBottom,left:clippedLeft,right:clippedRight}}});
+        return {ok:false,reason:'source-outside-visible-scroll-view'};
+      }
       const initialStyle=source.getAttribute('style'),initialPopover=source.getAttribute('popover');
-      const computed=win.getComputedStyle(source),originalTracks=computed.gridTemplateRows;
+      const computed=win.getComputedStyle(source),originalTracks=computed.gridTemplateRows,
+        originalColumns=computed.gridTemplateColumns;
       const originalTrackCount=(originalTracks.match(/-?\d+(?:\.\d+)?px/g)||[]).length;
       const originalPaddingBottom=parseFloat(computed.paddingBottom)||0;
+      const originalHorizontalPadding=(parseFloat(computed.paddingLeft)||0)+(parseFloat(computed.paddingRight)||0)+
+        (parseFloat(computed.borderLeftWidth)||0)+(parseFloat(computed.borderRightWidth)||0);
+      // The operator-only wide-hover fixture exercises horizontal unclipping.
+      // Freeze the original grid columns so existing fields NEVER reflow.
+      const wideHover=scrollContainer?.dataset?.mcelWideHover==='true';
+      const listWidth=scrollContainer?.getBoundingClientRect().width||origin.width;
+      const wideTarget=wideHover?Math.min(
+        Math.max(origin.width,listWidth*1.45),
+        win.innerWidth-origin.left-20):origin.width;
+      const expandedWidth=Math.max(origin.width,wideTarget);
       const originalBorderWidth=parseFloat(computed.borderBottomWidth)||0;
       // Match the original blended row background while lifting the REAL node
       // above its previous painted ancestor. No copy of the row is created.
@@ -421,7 +449,10 @@
       })();
       const anchor=doc.createElement('div');anchor.className='mcel-unclip-layout-anchor';
       anchor.dataset.mcelPopoverAnchor='true';anchor.dataset.rowId=source.dataset.rowId;
-      anchor.style.cssText=`height:${origin.height}px;width:${origin.width}px;box-sizing:border-box;flex:0 0 ${origin.height}px;`;
+      // Continuity layout is flex column with each row assigned CSS `order`.
+      // A default-order anchor otherwise jumps to the first flex slot,
+      // hundreds of pixels above the row it is supposed to preserve.
+      anchor.style.cssText=`height:${origin.height}px;width:${origin.width}px;box-sizing:border-box;flex:0 0 ${origin.height}px;order:${computed.order};`;
       // Exactly ONE visual card and ONE scrollport: the original source row.
       // The extension is just another in-flow grid child, not another viewport.
       const pane=doc.createElement('section');pane.className='mcel-unclip-card';
@@ -451,28 +482,40 @@
       set('--mcel-hover-original-border-width',originalBorderWidth+'px');
       set('--mcel-hover-original-border-color',computed.borderBottomColor);
       const fullExtensionHeight=()=>{
-        // Measure the real in-flow content without making a visible change:
-        // the row is not in the top layer during initial negotiation.
-        const height=Math.max(1,pane.scrollHeight,pane.getBoundingClientRect().height);
-        return Math.ceil(height);
+        // Measure the content, NOT the grid item holding it. Once the row is
+        // promoted, the frame is height:100% and its grid track is explicitly
+        // sized to the previous measurement. Measuring pane.scrollHeight then
+        // feeds that track size back into the next plan (+8px on each refresh).
+        // The content's own scroll height is independent of the allocated track.
+        const size=win.getComputedStyle(extensionFrame);
+        const pad=(parseFloat(size.paddingTop)||0)+(parseFloat(size.paddingBottom)||0)+
+          (parseFloat(size.borderTopWidth)||0)+(parseFloat(size.borderBottomWidth)||0);
+        return Math.max(1,Math.ceil(extension.scrollHeight+pad));
       };
       const planFor=(extHeight)=>{
         const r=anchor.getBoundingClientRect();
         const fullHeight=Math.ceil(origin.height+extHeight+originalPaddingBottom);
         const below=Math.max(origin.height,win.innerHeight-r.top-8);
         const height=Math.max(origin.height,Math.min(fullHeight,below));
-        const placement=win.innerWidth-r.right>=12?'right':r.left>=12?'left':'unavailable';
-        return {width:origin.width,height,fullHeight,extensionHeight:extHeight,
+        const placement=win.innerWidth-r.left-expandedWidth>=12?'right':r.left>=12?'left':'unavailable';
+        return {width:expandedWidth,height,fullHeight,extensionHeight:extHeight,
           needsRail:fullHeight>height+1,placement};
       };
       function apply(next){
         // One synchronous commit: no independent extension resize/reclip.
         set('grid-template-rows',originalTracks+' '+next.extensionHeight+'px');
+        set('width',next.width+'px');
+        if(wideHover){
+          // New width belongs only to the original card and its added content.
+          // Existing field grid tracks retain their original measured pixels.
+          set('grid-template-columns',originalColumns);
+          pane.style.setProperty('width',Math.max(0,next.width-originalHorizontalPadding)+'px','important');
+        }
         set('height',next.height+'px');
         set('overflow-y','auto');set('overflow-x','hidden');set('scrollbar-width','none');
         track.hidden=!next.needsRail||next.placement==='unavailable';
         const r=anchor.getBoundingClientRect();
-        const railX=next.placement==='right'?r.right:r.left-12;
+        const railX=next.placement==='right'?r.left+next.width:r.left-12;
         track.style.left=railX+'px';track.style.top=r.top+'px';
         track.style.height=next.height+'px';
         track.classList.toggle('mcel-unclip-row-scroll-track--left',next.placement==='left');
@@ -481,7 +524,7 @@
         const max=Math.max(0,source.scrollHeight-source.clientHeight);
         thumb.style.transform='translateY('+(max?source.scrollTop/max*Math.max(0,next.height-thumbHeight):0)+'px)';
         traceHover('geometry-apply',source,{reason:'plan-applied',geometry:next,
-          extra:{anchorX:r.left,anchorY:r.top,anchorRight:r.right,railRequestedX:railX,
+          extra:{anchorX:r.left,anchorY:r.top,anchorRight:r.right,wideHover,railRequestedX:railX,
             railRequestedHeight:next.height,rowRequestedHeight:next.height}});
       }
       let plan=planFor(fullExtensionHeight());
@@ -496,7 +539,15 @@
         source.classList.remove('mcel-source-toplayer');
         delete source.mcelPopoverAnchor;anchor.remove();source.scrollTop=savedScroll;
       };
-      try{source.showPopover();track.showPopover();pane.style.visibility='visible';
+      try{source.showPopover();track.showPopover();
+        // Layout in the top layer can change the extension's intrinsic width.
+        // Finalize the content-size plan synchronously, BEFORE exposing the
+        // extension or yielding the first frame; no visible grow/shrink step.
+        const finalExtensionHeight=fullExtensionHeight();
+        if(Math.abs(finalExtensionHeight-plan.extensionHeight)>1){
+          plan=planFor(finalExtensionHeight);apply(plan);
+        }
+        pane.style.visibility='visible';
         // Trace actual browser hit-test geometry, not the style values which
         // can be displaced by UA popover centering/margins.
         const paintedRow=source.getBoundingClientRect(),paintedTrack=track.getBoundingClientRect();
@@ -507,7 +558,18 @@
       catch(error){traceHover('open-failed',source,{reason:String(error).slice(0,200)});restore();pane.remove();return {ok:false,reason:'source-top-layer-promotion-failed',message:String(error)};}
       const state={node:pane,source,anchor,track,cleanup:[restore],timer:null,kind:'unclip-top-layer',plan};active=state;
       const cleanup=fn=>state.cleanup.push(fn);
-      const handoff=createScrollHandoff(source,scrollHost,{...lifecycle,
+      // Programmatic parent handoff changes the anchor's coordinates in this
+      // very wheel event. Following it only in the next animation frame lets
+      // the source lag its anchor by a whole wheel step (100px in the trace).
+      // Commit row + rail geometry before the wheel event returns.
+      let follow=null;
+      const handoffHost={transferScroll(delta){
+        const result=scrollHost?.transferScroll?.(delta);
+        if(result?.ok && Math.abs(result.consumed||0)>0.5 && follow)
+          follow('wheel-parent-handoff');
+        return result;
+      }};
+      const handoff=createScrollHandoff(source,handoffHost,{...lifecycle,
         onDiagnostic:data=>traceHover('wheel-arbitration',source,{reason:data.reason,scrollOwner:data.owner,extra:data})});
       cleanup(()=>handoff.destroy());
       let previousScrollOwner=handoff.state.owner;
@@ -594,20 +656,27 @@
       const escape=ev=>{if(ev.key==='Escape')close('escape');};
       doc.addEventListener('keydown',escape,true);cleanup(()=>doc.removeEventListener('keydown',escape,true));
       let frame=null;
-      const follow=(reason='frame')=>{
+      follow=(reason='frame')=>{
         if(active!==state)return;
         if(!source.isConnected||!anchor.isConnected){close('source-detached');return;}
         const r=anchor.getBoundingClientRect(),changed=[];
         for(const [name,value] of [['left',r.left+'px'],['top',r.top+'px'],
           ['width',plan.width+'px'],['height',plan.height+'px'],
           ['grid-template-rows',originalTracks+' '+plan.extensionHeight+'px'],
+          ...(wideHover?[['grid-template-columns',originalColumns]]:[]),
           ['overflow-y','auto'],['overflow-x','hidden'],['scrollbar-width','none']]){
-          if(source.style.getPropertyValue(name)!==value){
-            changed.push({property:name,before:source.style.getPropertyValue(name),after:value});
+          const previous=source.style.getPropertyValue(name);
+          // CSSOM rounds fractional-pixel lengths (481.3125px is often returned
+          // as 481.312px). String comparison rewrote that same height on EVERY
+          // wheel/scroll event, provoking unnecessary layout and follow events.
+          if(['left','top','width','height'].includes(name) && previous.endsWith('px') &&
+             Math.abs(parseFloat(previous)-parseFloat(value))<0.01)continue;
+          if(previous!==value){
+            changed.push({property:name,before:previous,after:value});
             source.style.setProperty(name,value,'important');
           }
         }
-        const railX=(plan.placement==='right'?r.right:r.left-12)+'px';
+        const railX=(plan.placement==='right'?r.left+plan.width:r.left-12)+'px';
         if(track.style.left!==railX)changed.push({property:'rail.left',before:track.style.left,after:railX});
         if(track.style.top!==r.top+'px')changed.push({property:'rail.top',before:track.style.top,after:r.top+'px'});
         track.style.left=railX;track.style.top=r.top+'px';sync();

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import copy
+from contextlib import nullcontext
 import base64
 import hashlib
 import ipaddress
@@ -315,6 +316,11 @@ class _WorkerHubLiveSessionClient:
         self.close_reason = ""
         self._socket: socket.socket | None = None
         self._send_lock = threading.RLock()
+        # A/B tested on Windows: concurrent recv()/sendall() on this SSL
+        # socket loses paid Worker sessions. Serialize individual socket I/O
+        # calls (not complete WebSocket frames or the idle receive loop).
+        self._tls_io_lock = threading.RLock()
+        self.tls_io_mode = "serialized"
         self._state_lock = threading.RLock()
         self._stop_event = threading.Event()
         self._reader_thread: threading.Thread | None = None
@@ -442,9 +448,19 @@ class _WorkerHubLiveSessionClient:
         self._keepalive_thread.start()
         return self.snapshot()
 
+    def _diagnostic_transport_event(self, event: str, *, exc=None, close_code=None) -> None:
+        """Optional metadata hook. Diagnostics must never alter transport behavior."""
+        hook = getattr(self, "_record_transport_event", None)
+        if callable(hook):
+            try:
+                hook(event, exc=exc, close_code=close_code)
+            except Exception:
+                pass
+
     def close(self, reason: str = "closed_by_runtime") -> None:
         if self._stop_event.is_set():
             return
+        self._diagnostic_transport_event("explicit_close_requested")
         self._stop_event.set()
         with self._state_lock:
             self._pending_authorizations.clear()
@@ -455,15 +471,18 @@ class _WorkerHubLiveSessionClient:
             pass
         try:
             self._send_close_frame()
-        except Exception:
-            pass
+            self._diagnostic_transport_event("explicit_websocket_close_sent")
+        except Exception as exc:
+            self._diagnostic_transport_event("explicit_websocket_close_send_failed", exc=exc)
         sock = self._socket
         self._socket = None
         if sock is not None:
+            self._diagnostic_transport_event("explicit_socket_close_invoked")
             try:
-                sock.close()
-            except OSError:
-                pass
+                with self._tls_io_guard():
+                    sock.close()
+            except OSError as exc:
+                self._diagnostic_transport_event("explicit_socket_close_failed", exc=exc)
         if not self.closed_at:
             self.closed_at = datetime.now(timezone.utc).isoformat()
 
@@ -543,6 +562,7 @@ class _WorkerHubLiveSessionClient:
             try:
                 self._send_keepalive()
             except Exception as exc:
+                self._diagnostic_transport_event("keepalive_send_failed", exc=exc)
                 with self._state_lock:
                     if not self._stop_event.is_set():
                         self.last_error = f"Worker live-session keepalive failed: {exc}"
@@ -553,10 +573,12 @@ class _WorkerHubLiveSessionClient:
                 sock = self._socket
                 self._socket = None
                 if sock is not None:
+                    self._diagnostic_transport_event("keepalive_socket_close_invoked")
                     try:
-                        sock.close()
-                    except OSError:
-                        pass
+                        with self._tls_io_guard():
+                            sock.close()
+                    except OSError as close_exc:
+                        self._diagnostic_transport_event("keepalive_socket_close_failed", exc=close_exc)
                 return
 
     def _reader_loop(self) -> None:
@@ -568,6 +590,7 @@ class _WorkerHubLiveSessionClient:
                     continue
                 self._handle_hub_message(message)
         except Exception as exc:
+            self._diagnostic_transport_event("reader_exception", exc=exc)
             with self._state_lock:
                 if not self._stop_event.is_set():
                     self.last_error = str(exc)
@@ -578,10 +601,12 @@ class _WorkerHubLiveSessionClient:
             sock = self._socket
             self._socket = None
             if sock is not None:
+                self._diagnostic_transport_event("reader_socket_close_invoked")
                 try:
-                    sock.close()
-                except OSError:
-                    pass
+                    with self._tls_io_guard():
+                        sock.close()
+                except OSError as close_exc:
+                    self._diagnostic_transport_event("reader_socket_close_failed", exc=close_exc)
 
     def _handle_hub_message(self, message: dict[str, Any]) -> None:
         message_type = str(message.get("type") or "")
@@ -956,7 +981,11 @@ class _WorkerHubLiveSessionClient:
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
                 context.minimum_version = ssl.TLSVersion.TLSv1_2
-            sock: socket.socket = context.wrap_socket(raw_sock, server_hostname=parsed.hostname)
+            sock: socket.socket = context.wrap_socket(
+                raw_sock, server_hostname=parsed.hostname,
+                # Probe-only strict EOF reporting: distinguish TLS close_notify
+                # from a ragged TCP EOF. Production defaults are unchanged.
+                suppress_ragged_eofs=not bool(getattr(self, "diagnostic_strict_tls_eof", False)))
             if managed_pin and hashlib.sha256(sock.getpeercert(binary_form=True)).hexdigest() != managed_pin:
                 sock.close()
                 raise RuntimeError("SLH_TLS_PIN_MISMATCH")
@@ -1016,7 +1045,10 @@ class _WorkerHubLiveSessionClient:
                 "Hub live-session websocket upgrade response was missing valid Upgrade, "
                 "Connection, or Sec-WebSocket-Accept headers."
             )
-        sock.settimeout(1.0)
+        # Keep individual receives short enough that a writer waiting for the
+        # shared TLS lock can submit a paid result promptly. The baseline
+        # mode is only retained for controlled diagnosis/regression.
+        sock.settimeout(0.1 if self.tls_io_mode == "serialized" else 1.0)
         return sock
 
     def _websocket_request_path(self, parsed: Any) -> str:
@@ -1027,10 +1059,33 @@ class _WorkerHubLiveSessionClient:
 
     def _send_json(self, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        # Fixed labels only: no frame bodies, request IDs, tokens, or answers.
+        safe_type = payload.get('type')
+        if safe_type in {'worker.work.accepted', 'worker.work.result', 'worker.work.failed'}:
+            self._diagnostic_transport_event({
+                'worker.work.accepted': 'worker_paid_offer_ack_sending',
+                'worker.work.result': 'worker_paid_result_sending',
+                'worker.work.failed': 'worker_paid_failure_sending',
+            }[safe_type])
         self._send_frame(opcode=0x1, payload=data)
+        if safe_type in {'worker.work.accepted', 'worker.work.result', 'worker.work.failed'}:
+            self._diagnostic_transport_event({
+                'worker.work.accepted': 'worker_paid_offer_ack_sent',
+                'worker.work.result': 'worker_paid_result_sent',
+                'worker.work.failed': 'worker_paid_failure_sent',
+            }[safe_type])
 
     def _send_close_frame(self) -> None:
         self._send_frame(opcode=0x8, payload=b"")
+
+    def _tls_io_guard(self):
+        """Serialize SSL socket calls to protect the paid Worker live session.
+
+        Lock one recv/sendall/close operation at a time, not entire frames.
+        The baseline mode is an explicit diagnostic-only A/B control.
+        """
+        lock = getattr(self, "_tls_io_lock", None)
+        return lock if lock is not None and getattr(self, "tls_io_mode", "serialized") == "serialized" else nullcontext()
 
     def _send_frame(self, *, opcode: int, payload: bytes) -> None:
         sock = self._socket
@@ -1049,13 +1104,22 @@ class _WorkerHubLiveSessionClient:
         mask = os.urandom(4)
         masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
         with self._send_lock:
-            sock.sendall(bytes(header) + mask + masked)
+            try:
+                with self._tls_io_guard():
+                    sock.sendall(bytes(header) + mask + masked)
+            except (OSError, ssl.SSLError) as exc:
+                self._diagnostic_transport_event("websocket_send_failed", exc=exc)
+                raise
 
     def _recv_json(self) -> dict[str, Any]:
         while True:
             opcode, payload = self._recv_frame()
             if opcode == 0x8:
-                raise RuntimeError("Hub closed the worker live-session websocket.")
+                # WebSocket close code is safe diagnostic metadata; the close
+                # reason string may contain untrusted/private data, so omit it.
+                close_code = int.from_bytes(payload[:2], "big") if len(payload) >= 2 else None
+                self._diagnostic_transport_event("websocket_close_frame_received", close_code=close_code)
+                raise RuntimeError(f"Hub closed the worker live-session websocket (close_code={close_code}).")
             if opcode == 0x9:
                 self._send_frame(opcode=0xA, payload=payload)
                 continue
@@ -1069,25 +1133,35 @@ class _WorkerHubLiveSessionClient:
                 raise RuntimeError("Hub live-session returned non-object JSON.")
             return decoded
 
+    # A timeout is normal when waiting for the first frame byte. Once any
+    # bytes of a WebSocket frame arrive, however, restarting frame parsing on
+    # the next byte corrupts the byte stream. Keep the in-progress frame
+    # together for a bounded interval, including across its separate header,
+    # extended-length, mask, and payload reads.
+    _fragment_read_timeout_s = 15.0
+
     def _recv_frame(self) -> tuple[int, bytes]:
         sock = self._socket
         if sock is None:
             raise RuntimeError("worker live-session socket is not open.")
         header = self._read_exact(2)
+        # The frame is now in progress. Subsequent reads must not abandon
+        # it simply because the 1-second socket timeout fired without data.
+        frame_deadline = time.monotonic() + self._fragment_read_timeout_s
         opcode = header[0] & 0x0F
         length = header[1] & 0x7F
         masked = bool(header[1] & 0x80)
         if length == 126:
-            length = int.from_bytes(self._read_exact(2), "big")
+            length = int.from_bytes(self._read_exact(2, deadline=frame_deadline), "big")
         elif length == 127:
-            length = int.from_bytes(self._read_exact(8), "big")
-        mask = self._read_exact(4) if masked else b""
-        payload = self._read_exact(length) if length else b""
+            length = int.from_bytes(self._read_exact(8, deadline=frame_deadline), "big")
+        mask = self._read_exact(4, deadline=frame_deadline) if masked else b""
+        payload = self._read_exact(length, deadline=frame_deadline) if length else b""
         if masked and mask:
             payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
         return opcode, payload
 
-    def _read_exact(self, length: int) -> bytes:
+    def _read_exact(self, length: int, *, deadline: float | None = None) -> bytes:
         sock = self._socket
         if sock is None:
             raise RuntimeError("worker live-session socket is not open.")
@@ -1095,13 +1169,24 @@ class _WorkerHubLiveSessionClient:
         remaining = int(length)
         while remaining:
             try:
-                chunk = sock.recv(remaining)
+                with self._tls_io_guard():
+                    chunk = sock.recv(remaining)
             except socket.timeout as exc:
-                raise TimeoutError("Timed out waiting for Hub live-session websocket data.") from exc
+                if deadline is None and not chunks:
+                    # Idle: no bytes of the next frame have arrived.
+                    raise TimeoutError("Timed out waiting for Hub live-session websocket data.") from exc
+                if deadline is not None and time.monotonic() >= deadline:
+                    self._diagnostic_transport_event("websocket_frame_timeout", exc=exc)
+                    raise RuntimeError("Hub live-session websocket frame incomplete after bounded wait.") from exc
+                continue
             if not chunk:
+                self._diagnostic_transport_event("socket_recv_eof")
                 raise RuntimeError("Hub live-session websocket closed unexpectedly.")
             chunks.append(chunk)
             remaining -= len(chunk)
+            if deadline is None and remaining:
+                # Some bytes of the frame header are already consumed.
+                deadline = time.monotonic() + self._fragment_read_timeout_s
         return b"".join(chunks)
 
 

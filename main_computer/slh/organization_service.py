@@ -15,12 +15,14 @@ import signal
 from pathlib import Path
 import ssl
 import threading
+from urllib.parse import parse_qs, urlsplit
 
 from .api import SLHAPI
 from .authority import SLHAuthority, SLHError
-from .managed_gateway import SLHManagedGateway, transport_identity
+from .managed_gateway import SLHManagedGateway, SLHMarketplaceProxy, transport_identity
 from .organization_state import read_config
 from .storage import slh_state_dir
+from .marketplace_auto import AutomaticMarketplace, read_settings
 
 
 class OrganizationHTTPServer(ThreadingHTTPServer):
@@ -92,6 +94,71 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                                 'organization_api': 'running',
                                 'worker_listener': 'running' if self.server.workers_enabled else 'disabled'})
             return
+        # The marketplace is owned by this process, alongside the real Worker
+        # scheduler. Calls are authenticated against the SAME organizational
+        # admin identity as every other organization API. Neither the Local
+        # Service nor a lab process creates upstream public slots here.
+        if path in ('/v1/org/admin/marketplace/status',
+                    '/v1/org/admin/marketplace/reconcile',
+                    '/v1/org/admin/marketplace/config',
+                    '/v1/org/admin/marketplace/authorization',
+                    '/v1/org/admin/marketplace/connection-diagnostics'):
+            try:
+                authority.authenticate(token, admin=True)
+            except SLHError as exc:
+                self._respond(exc.status, {'error': {'code': exc.code}})
+                return
+            controller = self.server.marketplace_controller
+            if controller is None:
+                self._respond(409, {'error': {'code': 'WORKER_SERVING_DISABLED'}})
+                return
+            try:
+                if path.endswith('/connection-diagnostics') and method == 'GET':
+                    params = parse_qs(urlsplit(self.path).query)
+                    selected = None
+                    if 'device_ids' in params:
+                        raw_ids = params['device_ids'][0]
+                        selected = {value for value in raw_ids.split(',') if value}
+                        if (len(raw_ids) > 8192 or len(selected) > 64 or
+                                any(len(value) > 128 for value in selected)):
+                            self._respond(400, {'error': {'code': 'INVALID_DIAGNOSTIC_FILTER'}})
+                            return
+                    self._respond(200, self.server.gateway.connection_diagnostics(device_ids=selected))
+                    return
+                if path.endswith('/status') and method == 'GET':
+                    self._respond(200, self._marketplace_status())
+                    return
+                if path.endswith('/config') and method == 'GET':
+                    self._respond(200, controller.status())
+                    return
+                if path.endswith('/config') and method == 'PATCH':
+                    if set(body) != {'changes', 'expected_revision'}:
+                        raise SLHError('INVALID_MARKETPLACE_REQUEST')
+                    self._respond(200, controller.configure(body['changes'], body['expected_revision']))
+                    return
+                if path.endswith('/authorization') and method == 'POST':
+                    if set(body) != {'multisession_authorization'}:
+                        raise SLHError('INVALID_MARKETPLACE_REQUEST')
+                    controller.authorize(body['multisession_authorization'])
+                    self._respond(200, {'authorization_present': True})
+                    return
+                if path.endswith('/reconcile') and method == 'POST':
+                    # The manual endpoint is preserved, but never allows
+                    # bypassing disabled participation or saved Hub identity.
+                    if body:
+                        raise SLHError('INVALID_MARKETPLACE_REQUEST')
+                    result = controller.reconcile()
+                    self._respond(200, {**result, 'marketplace': self._marketplace_status()})
+                    return
+            except SLHError as exc:
+                self._respond(exc.status, {'error': {'code': exc.code}})
+                return
+            except (TypeError, ValueError, RuntimeError, OSError) as exc:
+                self._respond(422, {'error': {'code': 'MARKETPLACE_OPERATION_FAILED',
+                                              'kind': type(exc).__name__}})
+                return
+            self._respond(405, {'error': {'code': 'METHOD_NOT_ALLOWED'}})
+            return
         # All normal organizational operations use SLHAPI, sharing its
         # authentication/permissions. Never dispatch bootstrap or localhost
         # endpoints through this network-facing transport.
@@ -100,7 +167,27 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
             self._respond(404, {'error': {'code': 'ENDPOINT_NOT_FOUND'}})
             return
         status, response = self.server.api.call(method, path, body, token=token, loopback=False)
+        if status < 300 and method == 'PATCH' and path == '/v1/admin/scheduler/policy':
+            if self.server.marketplace_controller:
+                self.server.marketplace_controller.wake()
         self._respond(status, response)
+
+    def _marketplace_status(self):
+        market = self.server.marketplace
+        # Export only nonsecret status. The upstream MSK never appears in a
+        # status response, log or public identity endpoint.
+        with market._lock:
+            sessions = {
+                did: {'device_id': did,
+                      'connection_id': client.accepted.get('connection_id'),
+                      'account_id': client.accepted.get('account_id'),
+                      'connected': bool(client.is_alive)}
+                for did, client in market.sessions.items()
+            }
+        return {'schema': 'main-computer.slh-org-marketplace.v1',
+                'sessions': sessions,
+                'workers': self.server.gateway.scheduler.snapshot(),
+                'automatic': self.server.marketplace_controller.status()}
 
     def _respond(self, status, data):
         raw = json.dumps(data, sort_keys=True).encode('utf-8')
@@ -140,6 +227,9 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
     server.fingerprint = fingerprint
     server.workers_enabled = config['workers_enabled']
     server.seh_enabled = config['seh_enabled']
+    server.marketplace = None
+    server.marketplace_controller = None
+    server.gateway = None
     stop_watch = threading.Event()
     def check_controller():
         while not stop_watch.wait(2):
@@ -174,6 +264,12 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
                 time.sleep(0.03)
             if gateway._server is None:
                 raise RuntimeError('Worker listener startup timed out')
+            server.gateway = gateway
+            server.marketplace = SLHMarketplaceProxy(gateway)
+            server.marketplace_controller = AutomaticMarketplace(server.marketplace, state_dir)
+            gateway.on_worker_registered = server.marketplace_controller.wake
+            gateway.on_worker_disconnected = server.marketplace_controller.wake
+            server.marketplace_controller.start()
         print(json.dumps({'service': 'slh-organization', 'state': 'listening',
                           'host': config['host'], 'api_port': config['api_port'],
                           'worker_port': config['worker_port'] if config['workers_enabled'] else None,
@@ -183,6 +279,10 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
         stop_watch.set()
         watcher.join(timeout=3)
         server.server_close()
+        if server.marketplace_controller:
+            server.marketplace_controller.stop()
+        if server.marketplace:
+            server.marketplace.close()
         if gateway:
             gateway.stop()
     return 0

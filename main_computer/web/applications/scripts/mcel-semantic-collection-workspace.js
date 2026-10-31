@@ -609,16 +609,35 @@
       if(negotiated){
         if(rowHoverUnclip)row.dataset.mcelHoverOwner='row';
         row.setAttribute('aria-expanded','false');
-        let activation=null;
-        row.addEventListener('pointerenter',()=>{
+        let activation=null,hoverPoint=null;
+        const rememberHoverPoint=ev=>{hoverPoint={x:ev.clientX,y:ev.clientY};};
+        const hoverStillHitsOriginalRow=()=>{
+          // :hover alone may remain stale while the source list scrolls beneath
+          // an unmoving cursor. The live pointer must hit this exact row inside
+          // both its scroll viewport and the browser viewport at commit time.
+          if(!hoverPoint)return false;
+          const {x,y}=hoverPoint,r=row.getBoundingClientRect();
+          const list=collection.getBoundingClientRect();
+          if(x<0||y<0||x>=doc.defaultView.innerWidth||y>=doc.defaultView.innerHeight||
+             x<r.left||x>=r.right||y<r.top||y>=r.bottom||
+             x<list.left||x>=list.right||y<list.top||y>=list.bottom)return false;
+          const hit=doc.elementFromPoint(x,y);
+          return hit===row||row.contains(hit);
+        };
+        if(rowHoverUnclip)row.addEventListener('pointermove',rememberHoverPoint,{passive:true});
+        row.addEventListener('pointerenter',ev=>{
+          rememberHoverPoint(ev);
           if(disposed||expandedId===id||suppressedHoverId===id)return;
+          clearTimeout(activation);
           const hover=policy.events.onHover?.[0]?.lifecycle;
           activation=setTimeout(()=>{activation=null;
-            if(!disposed && row.isConnected && row.matches(':hover') && expandedId!==row.dataset.rowId &&
+            if(!disposed && row.isConnected &&
+               (rowHoverUnclip?hoverStillHitsOriginalRow():row.matches(':hover')) &&
+               expandedId!==row.dataset.rowId &&
                suppressedHoverId!==row.dataset.rowId)reveal(row.dataset.rowId,'onHover');
           },hover?.hoverActivationDelayMs??1000);
         });
-        row.addEventListener('pointerleave',()=>{clearTimeout(activation);activation=null;});
+        row.addEventListener('pointerleave',()=>{clearTimeout(activation);activation=null;hoverPoint=null;});
         if(policy.events.onFocus)row.addEventListener('focus',()=>{if(!disposed)reveal(row.dataset.rowId,'onFocus');});
       }
       row.addEventListener('click',ev=>{if(ev.target.closest?.('.mcel-semantic-collection__detail-content'))return;

@@ -7,6 +7,7 @@ upstream hub.work.authorized. TLS here uses one pinned leaf, NOT an organization
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import hashlib
@@ -77,11 +78,21 @@ class ManagedWorker:
     pending: dict[str,dict] = field(default_factory=dict)
     reservations: set[str] = field(default_factory=set)
     active: bool = True
+    audit: Any = None
 
     def send(self, frame: dict):
         with self.send_lock:
             if not self.active:raise ConnectionError('managed worker disconnected')
-            self.socket.send(json.dumps(frame,separators=(',',':')))
+            try:
+                self.socket.send(json.dumps(frame,separators=(',',':')))
+                if callable(self.audit) and frame.get('type') in {
+                        'hub.work.offer', 'hub.work.authorized'}:
+                    self.audit('gateway_paid_offer_sent' if frame['type'] == 'hub.work.offer'
+                               else 'gateway_paid_authorization_sent')
+            except Exception as exc:
+                if callable(self.audit):
+                    self.audit('gateway_worker_send_failed', exc=exc)
+                raise
 
     def receive(self, frame: dict):
         session = str(frame.get('session_id') or '')
@@ -261,6 +272,96 @@ class SLHManagedGateway:
         # in disposable lab state; normal gateways load their own state key.
         self._seh_lab_identity=seh_lab_identity
         self._seh_lab_id=seh_lab_id
+        # Only authenticated organization administrators may fetch this ring.
+        # No messages, credentials, peer IP addresses, or exception strings.
+        self._connection_events = deque(maxlen=1024)
+        self._connection_events_lock = threading.Lock()
+        self._connection_events_total = 0
+
+    def _note_connection(self, event: str, *, device_id: str = '', socket=None,
+                         phase: str = '', exc=None, peer_port=None) -> None:
+        row = {'event': event, 'device_id': device_id,
+               'unix_ns': time.time_ns(), 'monotonic_ns': time.monotonic_ns()}
+        if phase:
+            row['phase'] = phase
+        if peer_port is None and socket is not None:
+            try:
+                remote = getattr(socket, 'remote_address', None)
+            except (OSError, RuntimeError):
+                remote = None
+            if isinstance(remote, tuple) and len(remote) > 1 and isinstance(remote[1], int):
+                peer_port = remote[1]
+        if isinstance(peer_port, int):
+            row['gateway_peer_port'] = peer_port
+        if exc is not None:
+            row['exception_class'] = type(exc).__name__
+            if isinstance(getattr(exc, 'errno', None), int):
+                row['errno'] = exc.errno
+            for attr, out in (('rcvd', 'received_close_code'), ('sent', 'sent_close_code')):
+                frame = getattr(exc, attr, None)
+                code = getattr(frame, 'code', None)
+                if code is not None:
+                    try:
+                        row[out] = int(code)
+                    except (TypeError, ValueError):
+                        pass
+            direction = getattr(exc, 'rcvd_then_sent', None)
+            if isinstance(direction, bool):
+                row['received_close_before_sent'] = direction
+        if socket is not None:
+            try:
+                code = getattr(socket, 'close_code', None)
+            except (OSError, RuntimeError):
+                code = None
+            if code is not None:
+                try:
+                    row['websocket_close_code'] = int(code)
+                except (TypeError, ValueError):
+                    pass
+            # Graceful websocket iteration returns without raising a
+            # ConnectionClosed exception. Preserve the protocol's close
+            # direction in that case too, without any close-reason text.
+            protocol = getattr(socket, 'protocol', None)
+            if protocol is not None:
+                for attr, out in (('close_rcvd', 'received_close_code'),
+                                  ('close_sent', 'sent_close_code')):
+                    frame = getattr(protocol, attr, None)
+                    code = getattr(frame, 'code', None)
+                    if code is not None:
+                        try:
+                            row[out] = int(code)
+                        except (TypeError, ValueError):
+                            pass
+                direction = getattr(protocol, 'close_rcvd_then_sent', None)
+                if isinstance(direction, bool):
+                    row['received_close_before_sent'] = direction
+        with self._connection_events_lock:
+            self._connection_events_total += 1
+            self._connection_events.append(row)
+
+    def connection_diagnostics(self, *, device_ids=None) -> dict:
+        # Filter before applying the response cap: failures recorded earlier
+        # remain retrievable even if other Workers produce subsequent events.
+        with self._connection_events_lock:
+            selected = (list(self._connection_events) if device_ids is None else
+                        [r for r in self._connection_events if r.get('device_id') in device_ids])
+            response = {'schema': 'main-computer.slh-gateway-connection-audit.v1',
+                        'total_events': self._connection_events_total,
+                        'events_retained': len(self._connection_events),
+                        'events': selected[-128:]}
+        # The Org Service owns the SEH connector; the test harness must not
+        # reach into this separate process to recover its causal evidence.
+        ports = {r['gateway_peer_port'] for r in selected
+                 if isinstance(r.get('gateway_peer_port'), int)}
+        supervisor = getattr(self, 'seh_connection', None)
+        if supervisor is not None:
+            audit = supervisor.stream_diagnostics_for_gateway_ports(ports)
+            response['seh_gateway_stream_events'] = audit['events']
+            response['seh_tunnel_lifecycle'] = audit['tunnel_lifecycle']
+            response['seh_tunnel_connections'] = audit['connections']
+            response['seh_tunnel_failures'] = audit['failures']
+            response['seh_tunnel_last_error_class'] = audit['last_error_class']
+        return response
 
     def handler(self, socket):
         from websockets.exceptions import ConnectionClosed
@@ -269,6 +370,9 @@ class SLHManagedGateway:
             return
         worker=None
         token=''
+        did=''
+        phase='authentication'
+        self._note_connection('gateway_connection_accepted', socket=socket, phase=phase)
         try:
             # The identity must be registered in SLH before it is permitted to join.
             first=json.loads(socket.recv(timeout=8))
@@ -294,7 +398,11 @@ class SLHManagedGateway:
             models=[m for m in market.get('models',[]) if isinstance(m,str) and m.strip()][:32]
             if not models:raise RuntimeError('worker must advertise at least one model')
             worker=ManagedWorker(did,socket,market,models)
+            worker.audit = lambda event, exc=None: self._note_connection(
+                event, device_id=did, socket=socket, phase='send', exc=exc)
             self.scheduler.register(worker)
+            phase='live'
+            self._note_connection('gateway_worker_registered', device_id=did, socket=socket, phase=phase)
             socket.send(json.dumps({'type':'hub.auth.accepted','ok':True,
                                     'execution_protocol':'durable-authorization-v1',
                                     'device_id':did,'service':'main_computer.slh'}))
@@ -307,19 +415,34 @@ class SLHManagedGateway:
                 if kind=='worker.pong':
                     worker.send({'type':'hub.pong.accepted','ok':True})
                 elif kind in {'worker.work.accepted','worker.work.result','worker.work.failed'}:
+                    self._note_connection({
+                        'worker.work.accepted': 'gateway_paid_worker_accepted',
+                        'worker.work.result': 'gateway_paid_worker_result',
+                        'worker.work.failed': 'gateway_paid_worker_failed',
+                    }[kind], device_id=did, socket=socket, phase='live')
                     worker.receive(frame)
                 elif kind=='worker.work.delta':
                     pass  # Streaming telemetry is not yet proxied; terminal results are authoritative.
                 elif kind=='worker.close':
+                    self._note_connection('gateway_worker_close_requested', device_id=did,
+                                          socket=socket, phase=phase)
                     break
                 else:
                     worker.send({'type':'hub.error','error':'unsupported managed worker message'})
+            self._note_connection('gateway_receive_loop_finished', device_id=did,
+                                  socket=socket, phase=phase)
         except (ConnectionClosed,EOFError,TimeoutError,OSError,RuntimeError,SLHError,ValueError) as exc:
+            self._note_connection('gateway_handler_exception', device_id=did,
+                                  socket=socket, phase=phase, exc=exc)
             try:socket.send(json.dumps({'type':'hub.auth.rejected','ok':False,'reason_code':type(exc).__name__}))
             except Exception:pass
         finally:
+            self._note_connection('gateway_handler_cleanup', device_id=did,
+                                  socket=socket, phase=phase)
             if worker:
                 self.scheduler.unregister(worker)
+                self._note_connection('gateway_worker_unregistered', device_id=did,
+                                      socket=socket, phase=phase)
                 if callable(self.on_worker_disconnected):self.on_worker_disconnected(worker)
             if token:
                 try:self.authority.logout(token)
@@ -423,7 +546,7 @@ class SLHMarketplaceProxy:
             self.sessions[device_id]=client
         return {'device_id':device_id,'connected':True,'shared_wallet':auth.get('wallet_address')}
 
-    def reconcile(self, *, hub_url:str, auth:dict, now:float|None=None) -> dict:
+    def reconcile(self, *, hub_url:str, auth:dict, now:float|None=None, enabled:bool=True) -> dict:
         """Apply policy to public advertisements, never cancel an active job.
 
         Call periodically as well as on worker join/leave. Slot teardown is
@@ -432,7 +555,7 @@ class SLHMarketplaceProxy:
         """
         scheduler=self.gateway.scheduler
         plan=scheduler.plan(now=now)
-        desired=set(plan.desired)
+        desired=set(plan.desired) if enabled else set()
         opened=[];drained=[];blocked=[]
         with self._lock:
             current=dict(self.sessions)

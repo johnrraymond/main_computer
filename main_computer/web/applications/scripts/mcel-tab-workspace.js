@@ -51,22 +51,25 @@
       intentions[0].viewTransition.invalidInput === "refuse" &&
       intentions[0].viewTransition.value?.input?.ref === intentions[0].input?.[0]?.id &&
       JSON.stringify(intentions[0].input[0].schema?.enum) === JSON.stringify(ids) &&
-      !(intentions[0].writes || []).length && !(intentions[0].effectRefs || []).length &&
-      !(ir.effects || []).length && !(ir.capabilities || []).length, "UNSAFE_VIEW_TRANSITION");
+      !(intentions[0].writes || []).length && !(intentions[0].effectRefs || []).length, "UNSAFE_VIEW_TRANSITION");
+    const actionContracts = (ir.effects || []).length || (ir.capabilities || []).length ||
+      (semantic.controls || []).some(c => c.role === "capability-action") ?
+      globalThis.McelIntentEffectRuntime?.check(ir) : [];
+    requireContract(actionContracts !== undefined, "MISSING_EFFECT_EXECUTOR");
     const sources = new Map();
     for (const tab of tabs) {
       const region = regions.find(r => r.role === "notebook-data-panel" && r.selector === tab.panel);
       requireContract(typeof region.dataSource === "string" && region.dataSource.length > 0, "INVALID_DATA_SOURCE");
       sources.set(tab.id, region.dataSource);
     }
-    return {group, tabs, intent: intentions[0], selection, sources, states};
+    return {group, tabs, intent: intentions[0], selection, sources, states, actionContracts};
   }
   function mount(rootElement, ir, options = {}) {
     requireContract(rootElement && typeof rootElement.replaceChildren === "function", "MISSING_ROOT");
     const contract = check(ir);
     const transition = options.transitions || globalThis.McelViewTransition;
     requireContract(transition && typeof transition.apply === "function", "MISSING_TYPED_EXECUTOR");
-    const {group, tabs, selection, intent, sources, states} = contract;
+    const {group, tabs, selection, intent, sources, states, actionContracts} = contract;
     const doc = rootElement.ownerDocument;
     const prefix = String(options.instanceId || `mcel-tab-${Math.random().toString(36).slice(2, 9)}`);
     requireContract(/^[A-Za-z][A-Za-z0-9_-]{0,59}$/.test(prefix), "INVALID_INSTANCE_ID");
@@ -88,6 +91,39 @@
     head.append(headings);
     head.append(text("span", "Preview · No machine controls", "mcel-tab-workspace__safety"));
     app.append(head);
+    const operationButtons = new Map();
+    let unsubscribeOperations = null;
+    if (actionContracts.length && options.renderActions !== false) {
+      const bar = doc.createElement("div");
+      bar.className = "mcel-tab-workspace__operations";
+      const output = doc.createElement("p");
+      output.className = "mcel-tab-workspace__operation-receipt";
+      output.setAttribute("role", "status");
+      output.setAttribute("aria-live", "polite");
+      for (const action of actionContracts) {
+        const button = doc.createElement("button");
+        button.type = "button";
+        button.className = "mcel-tab-workspace__operation";
+        button.dataset.mcelIntent = action.id;
+        button.textContent = action.label;
+        button.disabled = !options.effectRuntime?.available(action.id);
+        button.addEventListener("click", () => {
+          if (!disposed && options.effectRuntime) void options.effectRuntime.dispatch(action.id);
+        });
+        operationButtons.set(action.id, button);bar.append(button);
+      }
+      bar.append(output);app.append(bar);
+      if (options.effectRuntime) {
+        unsubscribeOperations = options.effectRuntime.subscribe(current => {
+          if (disposed) return;
+          for (const [id, button] of operationButtons) button.disabled =
+            current.pending || !options.effectRuntime.available(id);
+          output.textContent = current.phase === "pending" ? "Refreshing process data…" :
+            current.receipt ? `Operation ${current.phase}: ${current.receipt.code}` : "";
+          output.dataset.mcelOperationPhase=current.phase;
+        });
+      }
+    }
     const tabList = doc.createElement("div");
     tabList.className = "mcel-tab-workspace__tabs";
     tabList.id = `${prefix}-tabs`;
@@ -282,6 +318,7 @@
       },
       getState() { return {selected: current[selection.id], status, streams:structuredClone(sourceStatuses), receipts:lastReceipt, effects: []}; },
       destroy() {
+        if (unsubscribeOperations) unsubscribeOperations();
         for (const mounted of collectionMounts.values()) mounted.destroy();
         collectionMounts.clear();
         disposed = true;

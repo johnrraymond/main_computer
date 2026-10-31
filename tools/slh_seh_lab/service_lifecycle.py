@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from http.client import HTTPConnection, HTTPSConnection
+import inspect
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ import socket
 import ssl
 import tempfile
 from threading import Thread
+from unittest.mock import patch
 import time
 
 from main_computer.slh.authenticator import generate_identity, sign_object
@@ -95,10 +97,25 @@ def _protect_disposable_lab_state(directory: Path) -> Path:
     return directory
 
 
+def _create_disposable_local_server(state, identities):
+    """Support older local-service factories without weakening production ACLs.
+
+    The preferred factory accepts an explicit protector.  Some installed SLH
+    versions predate that keyword; only for this disposable lab instance,
+    replace the imported protector during synchronous factory construction.
+    The replacement is restored before the server begins handling requests.
+    """
+    kwargs = {'state_dir': state, 'identity_dir': identities, 'port': 0}
+    if 'state_dir_protector' in inspect.signature(create_server).parameters:
+        return create_server(**kwargs, state_dir_protector=_protect_disposable_lab_state)
+    with patch('main_computer.slh.local_service.secure_machine_state_dir',
+               _protect_disposable_lab_state):
+        return create_server(**kwargs)
+
+
 @contextmanager
 def _local(state, identities):
-    with create_server(state_dir=state, identity_dir=identities, port=0,
-                       state_dir_protector=_protect_disposable_lab_state) as server:
+    with _create_disposable_local_server(state, identities) as server:
         thread = Thread(target=server.serve_forever, daemon=True, name='slh-lab-local')
         thread.start()
         try:

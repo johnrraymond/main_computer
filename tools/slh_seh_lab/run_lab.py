@@ -66,6 +66,9 @@ def plan(path: str | Path) -> dict:
     topology = validate_topology(path)
     return {'schema': SCHEMA, 'status': 'PLANNED_ONLY', 'topology': topology,
             'lanes': ['two_service_real_process_bootstrap_lifecycle_worker_seh',
+                      'real_organization_process_paid_work_via_seh',
+                      'automatic_marketplace_seeded_decision_stress',
+                      'integrated_network_worker_paid_stress',
                       'known_device_and_lan', 'seh_production_runtime_local_integration',
                       'stable_hub_shared_wallet_sessions', 'scheduler_reconcile_and_drain',
                       'private_authorized_execution', 'paid_requester_charge_and_wallet_earning',
@@ -355,14 +358,114 @@ def _in_memory_hub():
                          InMemoryStableWorkerSessionStore())
 
 
+def verify_integrated_network_stress(*, workers: int = 8, requests: int = 16,
+                                     concurrency: int = 4, seed: int = 1729,
+                                     trace_dir: Path | None = None,
+                                     causal_probe: bool = False,
+                                     strict_acceptance: bool = False,
+                                     capacity_probe: bool = False) -> dict:
+    """Real child + real SEH + real Hub, with multiple actual Worker sockets."""
+    from .integrated_stress import StressProfile
+    from .real_paid_service import verify_real_process_paid
+    profile = StressProfile(workers=workers, requests=requests,
+                            concurrency=concurrency, seed=seed,
+                            causal_probe=causal_probe,
+                            strict_acceptance=strict_acceptance,
+                            capacity_probe=capacity_probe)
+    server, thread = _in_memory_hub()
+    try:
+        outcome = verify_real_process_paid(
+            hub_url=f'http://127.0.0.1:{server.server_port}',
+            payout_ledger=server.payout_ledger_directory,
+            stress_profile=profile,
+            stress_trace_file=(trace_dir / 'integrated-stress-events.json') if trace_dir else None)
+        stress = outcome['integrated_stress']
+        return {'schema': SCHEMA, 'mode': 'stress-integrated',
+                'status': 'PASS' if outcome['pass'] and stress['pass'] else 'FAIL',
+                'pass': outcome['pass'] and stress['pass'],
+                'real_process_baseline': {'status':outcome['status'], 'gates':outcome['gates']},
+                'integrated_stress': stress,
+                'limitations': {'cloud_coolify': 'NOT_TESTED',
+                                'public_wss': 'NOT_TESTED',
+                                'external_bridge': 'NOT_TESTED',
+                                'settlement': 'LAB_LEDGER_ONLY'}}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def verify_paid_transport_differential(*, modes=('direct', 'seh'), cycles=8,
+                                       idle_seconds=0.5, trace_dir=None, tls_io_mode='serialized',
+                                       soak_seconds=0):
+    """Two independent, disposable one-Worker paid-job paths for fault isolation.
+
+    Both modes use the actual spawned Organization Service and actual Stable Hub.
+    Direct mode bypasses SEH completely. SEH mode uses the real local relay.
+    A failure in the first mode does not suppress the second experiment.
+    """
+    from .real_paid_service import verify_real_process_paid
+    results = {}
+    for mode in modes:
+        server, thread = _in_memory_hub()
+        try:
+            result = verify_real_process_paid(
+                hub_url=f'http://127.0.0.1:{server.server_port}',
+                payout_ledger=server.payout_ledger_directory,
+                diagnostic_mode=mode, diagnostic_cycles=cycles,
+                diagnostic_tls_io_mode=tls_io_mode,
+                diagnostic_idle_seconds=idle_seconds,
+                diagnostic_soak_seconds=soak_seconds,
+                diagnostic_trace_file=(trace_dir / f'paid-transport-{mode}.json')
+                if trace_dir is not None else None)
+            results[mode] = result
+        except Exception as exc:
+            # Setup and teardown failures are not evidence of a transport
+            # failure. Do not misclassify them as EOF, SSL or SEH faults.
+            results[mode] = {'mode': mode, 'status': 'FAIL', 'pass': False,
+                             'last_stage': 'setup_or_teardown',
+                             'failure': {'exception_class': type(exc).__name__,
+                                         'classification': 'SETUP_OR_TEARDOWN'}}
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+    complete = len(results) == len(modes) and all(result.get('pass') for result in results.values())
+    if set(modes) == {'direct', 'seh'}:
+        if complete:
+            inference = 'BOTH_PATHS_PASSED_THIS_RUN'
+        elif results['direct'].get('pass') and not results['seh'].get('pass'):
+            inference = 'SEH_PATH_FAILED_DIRECT_PASSED_THIS_RUN'
+        elif results['seh'].get('pass') and not results['direct'].get('pass'):
+            inference = 'DIRECT_PATH_FAILED_SEH_PASSED_THIS_RUN'
+        else:
+            inference = 'BOTH_PATHS_FAILED_OR_SETUP_INCOMPLETE'
+    else:
+        inference = 'SINGLE_PATH_ONLY_NO_COMPARISON'
+    return {'schema':'main-computer.slh-paid-transport-comparison.v1',
+            'mode':'diagnose-paid-transport', 'status':'PASS' if complete else 'FAIL',
+            'pass':complete, 'cycles_requested':cycles, 'idle_seconds':idle_seconds,
+            'soak_seconds_required':soak_seconds,
+            'tls_io_mode':tls_io_mode,
+            'comparison':inference, 'paths':results,
+            'limitations':{'tls_provenance':'APPLICATION_METADATA_NOT_PACKET_CAPTURE',
+                           'external_bridge':'NOT_TESTED', 'public_wss':'NOT_TESTED',
+                           'funding':'SYNTHETIC_LAB_ONLY'}}
+
+
 def verify_local() -> dict:
     from .service_lifecycle import verify_services
     services = verify_services()
-    # Keep the previously proven paid-work lane. It uses an in-process
-    # scheduler/proxy and is NOT falsely counted as paid work through the
-    # network Organization process (which lacks marketplace control APIs).
+    from .decision_stress import verify_decisions
+    decisions = verify_decisions()
+    # Keep the previously proven in-process paid-work regression lane while
+    # independently proving the real Organization Service marketplace path.
     server, thread = _in_memory_hub()
     try:
+        from .real_paid_service import verify_real_process_paid
+        real_paid = verify_real_process_paid(
+            hub_url=f'http://127.0.0.1:{server.server_port}',
+            payout_ledger=server.payout_ledger_directory)
         trial = _local_demo(f'http://127.0.0.1:{server.server_port}',
                             topology_label='in-memory-stable-hub', payout_ledger=server.payout_ledger_directory)
     finally:
@@ -370,9 +473,10 @@ def verify_local() -> dict:
         server.server_close()
         thread.join(timeout=3)
     seh = _mock_coolify_gate()
-    ok = services['pass'] and trial['pass'] and seh['status']=='PASS'
+    ok = services['pass'] and real_paid['pass'] and trial['pass'] and decisions['pass'] and seh['status']=='PASS'
     return {'schema':SCHEMA, 'mode':'verify-local', 'status':'PASS' if ok else 'FAIL',
-            'two_service_lab':services, 'slh':trial, 'seh_coolify_contract':seh, 'production_seh':'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
+            'two_service_lab':services, 'real_process_paid_work':real_paid,
+            'decision_stress':decisions, 'slh':trial, 'seh_coolify_contract':seh, 'production_seh':'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
             'paid_work_settlement':'LAB_LEDGER_SETTLED_NOT_BRIDGED'}
 
 
@@ -415,6 +519,8 @@ def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|Non
     # Always run against a disposable, real child process before the existing
     # paid Stable Hub path. Never mutate an installed organizational SLH.
     services = verify_services()
+    from .decision_stress import verify_decisions
+    decisions = verify_decisions()
     from tools.stable_hub_lab.run_lab import check_cluster, _terminate_children
     children=[];logs=[]
     try:
@@ -440,12 +546,17 @@ def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|Non
         topo=load_stable_hub_topology(topology)
         ledger=StableHubPayoutLedgerDirectory(topology=topo,hub_id=topo.hubs[2].hub_id,
             store=stable_worker_session_store_from_topology(topo))
+        from .real_paid_service import verify_real_process_paid
+        real_paid = verify_real_process_paid(hub_url=urls[2], payout_ledger=ledger,
+                                             lab_mode='three-hub-smoke-fdb')
         trial = _local_demo(urls[2],topology_label='three-hub-smoke-fdb', payout_ledger=ledger,
                             deployed=deployed)
         seh = _mock_coolify_gate() if deployed is None else {'status':'NOT_APPLICABLE_DEPLOYED'}
-        ok = services['pass'] and trial['pass'] and (deployed is not None or seh['status']=='PASS')
+        ok = (services['pass'] and decisions['pass'] and real_paid['pass'] and trial['pass']
+              and (deployed is not None or seh['status']=='PASS'))
         return {'schema':SCHEMA,'mode':'verify-deployed' if deployed else 'run', 'status':'PASS' if ok else 'FAIL',
-                'two_service_lab': services,
+                'two_service_lab': services, 'real_process_paid_work': real_paid,
+                'decision_stress': decisions,
                 'hub_cluster': {'ok':True,'ids':[x['hub_id'] for x in identities],
                                 'cluster_id':health['cluster_id']},
                 'slh':trial,'seh_coolify_contract':seh,
@@ -562,7 +673,32 @@ def verify_deployed(topology: Path, *, use_existing:bool, report_dir:Path,
 
 def main(argv=None) -> int:
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('plan','verify-services','verify-local','run','verify-deployed','prepare-local-coolify','deploy-local-coolify'))
+    p.add_argument('command',choices=('plan','verify-services','verify-local','verify-decisions','stress-decisions','stress-integrated','diagnose-paid-transport','lab-exit','run','verify-deployed','prepare-local-coolify','deploy-local-coolify'))
+    p.add_argument('--workers', type=int, default=8, help='Real connected Workers for stress-integrated')
+    p.add_argument('--requests', type=int, default=16, help='Paid requests for stress-integrated')
+    p.add_argument('--concurrency', type=int, default=4, help='Concurrent paid requests for stress-integrated')
+    p.add_argument('--seed', type=int, default=1729, help='Reproducible integrated-stress seed')
+    p.add_argument('--transport', choices=('both','direct','seh'), default='both',
+                   help='Compare direct TLS to local SEH-mediated Worker connections')
+    p.add_argument('--tls-io-mode', choices=('baseline', 'serialized'), default='serialized',
+                   help='Paid-transport experiment: production serialized I/O (default) or original baseline control')
+    p.add_argument('--cycles', type=int, default=8,
+                   help='Repeated paid jobs per transport path (0..128; 0 = idle-only)')
+    p.add_argument('--idle-seconds', type=float, default=0.5,
+                   help='Idle observation before and between paid jobs (0..60 seconds)')
+    p.add_argument('--soak-seconds', type=int, default=0,
+                   help='Keep one Worker connection running paid cycles for at least N seconds (0..7200)')
+    p.add_argument('--causal-probe', action='store_true',
+                   help='Isolate reserve-only control from post-paid reserve changes at real network scale')
+    p.add_argument('--strict-acceptance', action='store_true',
+                   help='Require every paid request to succeed and every Worker to remain connected')
+    p.add_argument('--capacity-probe', action='store_true',
+                   help='At exactly 64 Workers, require the 65th SEH client to receive close 1013')
+    p.add_argument('--exit-profile', choices=('smoke','full'), default='smoke',
+                   help='smoke checks available lanes; full runs strict repeated lab exit gates')
+    p.add_argument('--exit-repeats', type=int, default=10)
+    p.add_argument('--exit-soak-seconds', type=int, default=3600)
+    p.add_argument('--exit-continue-on-failure', action='store_true')
     p.add_argument('--topology',type=Path,default=DEFAULT_TOPOLOGY)
     p.add_argument('--use-existing-hubs',action='store_true',help='Only run on a verified, already-running smoke cluster; never stop it')
     p.add_argument('--report-dir',type=Path,default=REPORT_ROOT)
@@ -637,6 +773,29 @@ def main(argv=None) -> int:
                         report={'schema':SCHEMA, 'mode':'verify-services',
                                 'status':services['status'], 'two_service_lab':services}
                     elif a.command=='verify-local':report=verify_local()
+                    elif a.command in ('verify-decisions','stress-decisions'):
+                        from .decision_stress import verify_decisions
+                        report = verify_decisions(extended=a.command=='stress-decisions')
+                        report['mode'] = a.command
+                    elif a.command=='diagnose-paid-transport':
+                        if not 0 <= a.cycles <= 128 or not 0 <= a.idle_seconds <= 60 or not 0 <= a.soak_seconds <= 7200:
+                            raise LabRefused('cycles must be 0..128 and idle-seconds 0..60')
+                        report=verify_paid_transport_differential(
+                            modes=('direct','seh') if a.transport=='both' else (a.transport,),
+                            cycles=a.cycles, idle_seconds=a.idle_seconds, trace_dir=path,
+                            tls_io_mode=a.tls_io_mode, soak_seconds=a.soak_seconds)
+                    elif a.command=='lab-exit':
+                        from .lab_exit import run_exit
+                        report=run_exit(profile=a.exit_profile, repeats=a.exit_repeats,
+                            soak_seconds=a.exit_soak_seconds, report_dir=path/'exit-evidence',
+                            stop_on_failure=not a.exit_continue_on_failure)
+                    elif a.command=='stress-integrated':
+                        report=verify_integrated_network_stress(
+                            workers=a.workers, requests=a.requests,
+                            concurrency=a.concurrency, seed=a.seed, trace_dir=path,
+                            causal_probe=a.causal_probe,
+                            strict_acceptance=a.strict_acceptance,
+                            capacity_probe=a.capacity_probe)
                     elif a.command=='verify-deployed':
                         report=verify_deployed(a.topology,use_existing=a.use_existing_hubs,
                                                report_dir=path,org=a.org_id,slh=a.slh_id,
@@ -646,6 +805,19 @@ def main(argv=None) -> int:
     except (LabRefused, RuntimeError, OSError, ValueError, TimeoutError, ImportError) as exc:
         report={'schema':SCHEMA,'status':'FAIL', 'mode':a.command,
                 'error_type':type(exc).__name__, 'error':str(exc)[:1200]}
+    if a.command == 'stress-integrated' and report.get('status') == 'FAIL':
+        report['stress_profile'] = {'workers':a.workers, 'requests':a.requests,
+                                    'concurrency':a.concurrency, 'seed':a.seed}
+        if path:
+            trace_path = path/'integrated-stress-events.json'
+            report['event_trace_path'] = str(trace_path.resolve())
+            if trace_path.exists():
+                try:
+                    events = json.loads(trace_path.read_text(encoding='utf-8')).get('events') or []
+                    report['last_stress_event'] = events[-1] if events else None
+                    report['stress_events_recorded'] = len(events)
+                except (OSError, ValueError):
+                    report['event_trace_read_error'] = True
     if path:
         report['report_path']=str((path/'report.json').resolve())
         (path/'report.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n',encoding='utf-8')
@@ -655,6 +827,11 @@ def main(argv=None) -> int:
         if 'two_service_lab' in report:
             print('  Production two-service lifecycle:',report['two_service_lab']['status'])
             for k,v in report['two_service_lab']['gates'].items():
+                print('  ', 'PASS' if v else 'FAIL', k)
+        if 'real_process_paid_work' in report:
+            paid_process = report['real_process_paid_work']
+            print('  Real Organization Service paid work:', paid_process['status'])
+            for k,v in paid_process['gates'].items():
                 print('  ', 'PASS' if v else 'FAIL', k)
         if 'slh' in report:
             for k,v in report['slh']['gates'].items():
@@ -678,7 +855,7 @@ def main(argv=None) -> int:
             print('  SEH: deployed Coolify loopback tested; public WSS and external bridge payout NOT TESTED')
         else:
             print('  SEH: real runtime local PASS; live Coolify/public WSS NOT TESTED; external bridge payout NOT TESTED')
-    return 0 if report['status'] in {'PASS','PLANNED_ONLY'} else 1
+    return 0 if report['status'] in {'PASS','PLANNED_ONLY','ACCEPTED'} else 1
 
 
 if __name__ == '__main__':

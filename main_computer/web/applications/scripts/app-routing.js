@@ -11,8 +11,8 @@
     // Keep an explicit Task Manager lab opt-in across canonical tab routes only.
     // Never persist the flag in storage or propagate it to other applications.
     function taskManagerLabRouteSuffix() {
-      return new URLSearchParams(window.location.search).get("mcel_task_notebook") === "lab"
-        ? "?mcel_task_notebook=lab" : "";
+      const mode = new URLSearchParams(window.location.search).get("mcel_task_notebook");
+      return mode === "lab" || mode === "candidate" ? `?mcel_task_notebook=${mode}` : "";
     }
 
     function syncApplicationRoute(appName, {replace = false} = {}) {
@@ -292,7 +292,8 @@
         running = false;
         glStatus.textContent = "file explorer read-only";
         initSystemFileExplorerApp();
-        systemFileExplorerSearch.focus();
+        const generatedSearch=systemFileExplorerApp.querySelector('.mcel-file-explorer-candidate-host [data-mcel-field="query"]');
+        (generatedSearch||systemFileExplorerSearch).focus();
       } else if (isGameEditor) {
         running = false;
         glStatus.textContent = "scene builder ready";

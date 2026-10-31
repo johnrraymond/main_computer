@@ -1,0 +1,174 @@
+/* MCEL source-driven application shell. Shared with any application declaring shell regions. */
+.mcel-application-shell {--shell-bg:#0e1828;--shell-panel:#17263b;--shell-line:#344963;
+  --shell-ink:#e9f0fb;--shell-muted:#aabbd3;--shell-accent:#a5c8ff;
+  height:100%;min-height:0;min-width:0;width:100%;padding:12px;
+  overflow:auto;background:var(--shell-bg);color:var(--shell-ink);font:400 14px/1.45 system-ui,sans-serif;
+  box-sizing:border-box;}
+.mcel-application-shell * {box-sizing:border-box;}
+.mcel-application-shell__heading {display:flex;justify-content:space-between;flex-wrap:wrap;
+  align-items:center;gap:8px;margin:0 0 12px;}
+.mcel-application-shell__heading h1{margin:0;font-size:clamp(20px,2.5vw,28px);line-height:1.2;}
+.mcel-application-shell__origin {color:var(--shell-muted);font-size:11px;}
+.mcel-application-shell__layout {display:grid;grid-template-columns:minmax(225px,290px) minmax(0,1fr);
+  min-height:0;gap:12px;align-items:start;}
+.mcel-application-shell__sidebar,.mcel-application-shell__main {display:grid;gap:12px;min-width:0;min-height:0;align-content:start;}
+.mcel-application-shell__region {min-width:0;min-height:0;padding:12px;border:1px solid var(--shell-line);
+  border-radius:12px;background:var(--shell-panel);}
+.mcel-application-shell__region h2 {font-size:13px;letter-spacing:.035em;margin:0 0 12px;color:var(--shell-accent);}
+.mcel-application-shell__body {min-width:0;}
+.mcel-application-shell__facts {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px 12px;margin:0;}
+.mcel-application-shell__facts dt {font-size:12px;color:var(--shell-muted);overflow-wrap:anywhere;}
+.mcel-application-shell__facts dd {font-size:12px;margin:0;text-align:right;overflow-wrap:anywhere;}
+.mcel-application-shell__fields {display:grid;gap:10px;}
+.mcel-application-shell__field {display:grid;gap:4px;font-size:12px;color:var(--shell-muted);}
+.mcel-application-shell__field input {min-height:34px;min-width:0;width:100%;padding:7px;
+  border-radius:7px;border:1px solid var(--shell-line);background:#111e32;color:var(--shell-ink);font:inherit;}
+.mcel-application-shell__field input[type="checkbox"] {width:20px;min-height:20px;}
+.mcel-application-shell__actions {display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+.mcel-application-shell__actions button {min-height:36px;padding:7px 12px;border-radius:8px;
+  border:1px solid var(--shell-line);background:#244365;color:var(--shell-ink);cursor:pointer;}
+.mcel-application-shell__actions button:disabled {opacity:.52;cursor:not-allowed;}
+.mcel-application-shell__operation {margin:10px 0 0;min-height:1em;color:var(--shell-muted);font-size:12px;}
+.mcel-application-shell__table-scroll {overflow:auto;max-width:100%;max-height:225px;}
+.mcel-application-shell__table-scroll table{width:100%;min-width:max-content;border-collapse:collapse;font-size:12px;}
+.mcel-application-shell__table-scroll th,.mcel-application-shell__table-scroll td {padding:8px 12px;border-bottom:1px solid var(--shell-line);text-align:left;}
+.mcel-application-shell__empty {color:var(--shell-muted);font-size:12px;}
+.mcel-application-shell [data-mcel-region="notebook"] .mcel-application-shell__region {padding:0;}
+.mcel-application-shell .mcel-tab-workspace {border:0;padding:8px;background:transparent;}
+.mcel-application-shell .mcel-tab-workspace__header {margin-bottom:12px;}
+.mcel-application-shell .mcel-tab-workspace__header h1 {font-size:17px;}
+.mcel-application-shell .mcel-tab-workspace__safety {font-size:10px;}
+@media(max-width:790px){.mcel-application-shell__layout {grid-template-columns:minmax(0,1fr);}
+  .mcel-application-shell__main{grid-row:1;}.mcel-application-shell__sidebar{grid-row:2;}}
+@media(max-width:480px){.mcel-application-shell{padding:7px;}.mcel-application-shell__region{padding:9px;}
+  .mcel-application-shell__facts{grid-template-columns:minmax(0,1fr) minmax(0,1fr);}}
+/* Only the new opt-in full-app candidate conceals the intact legacy UI. */
+#task-manager-app[data-mcel-notebook-mode="application"] > .task-manager-shell[hidden] {display:none!important;}
+#task-manager-app[data-mcel-notebook-mode="application"] > .task-mcel-notebook-lab-host {width:100%;height:100%;min-height:0;}
+
+/* Patch 04: generic semantic presentation profiles.  Same IR and DOM in both modes.
+ * The compact operational console optimizes scan density; the analytical
+ * workspace optimizes inspection and reading. No application-specific selectors.
+ */
+.mcel-application-shell__heading-tools {display:flex;gap:14px;align-items:center;flex-wrap:wrap;min-width:0;}
+.mcel-application-shell__design-picker {display:flex;gap:7px;align-items:center;color:var(--shell-muted);
+  font-size:12px;min-width:0;}
+.mcel-application-shell__design-picker select {font:inherit;color:var(--shell-ink);
+  background:var(--shell-panel);border:1px solid var(--shell-line);border-radius:7px;
+  min-height:36px;max-width:100%;padding:5px 9px;}
+.mcel-application-shell :is(button,input,select):focus-visible {outline:3px solid var(--shell-accent);outline-offset:2px;}
+.mcel-application-shell__region :is(h2,dt,dd,span,p) {overflow-wrap:anywhere;}
+.mcel-application-shell__region[data-mcel-role="workspace"] {min-width:0;}
+.mcel-application-shell__region[data-mcel-prominence="primary"] {border-width:1px;}
+.mcel-application-shell[data-mcel-sidebar-width="wide"] .mcel-application-shell__layout {
+  grid-template-columns:minmax(240px,310px) minmax(0,1fr);}
+
+/* Profile A: monitoring-first operational console, retaining the original
+ * navigational model and high telemetry density. */
+.mcel-application-shell[data-mcel-presentation="operational"] {
+  --shell-bg:#0d1726;--shell-panel:#15263a;--shell-line:#3a4c65;
+  --shell-ink:#eaf2ff;--shell-muted:#b8c8df;--shell-accent:#a9d2ff;
+}
+.mcel-application-shell[data-mcel-presentation="operational"] .mcel-application-shell__region {
+  border-radius:8px;padding:10px;}
+.mcel-application-shell[data-mcel-presentation="operational"] .mcel-application-shell__region h2 {
+  text-transform:uppercase;letter-spacing:.065em;font-size:11px;margin-bottom:10px;}
+.mcel-application-shell[data-mcel-presentation="operational"] .mcel-application-shell__facts {gap:5px 10px;}
+.mcel-application-shell[data-mcel-presentation="operational"] .mcel-tab-workspace {
+  --mcel-ink:#eaf2ff;--mcel-muted:#b8c8df;--mcel-accent:#a9d2ff;
+  --mcel-ground:#0d1726;--mcel-surface:#15263a;--mcel-line:#3a4c65;}
+.mcel-application-shell[data-mcel-presentation="operational"] .mcel-tab-workspace :is(td,th) {padding:8px 12px;}
+
+/* Profile B: analytical workspace, deliberately not a recolored console.
+ * Main content precedes the auxiliary rail at wide widths, with larger
+ * reading scale, roomier cards, and summaries presented as paired insights. */
+.mcel-application-shell[data-mcel-presentation="analytical"] {
+  --shell-bg:#eff4fa;--shell-panel:#ffffff;--shell-line:#ccd8e6;
+  --shell-ink:#132942;--shell-muted:#52647a;--shell-accent:#175793;
+  background:var(--shell-bg);font-size:15px;line-height:1.55;padding:clamp(12px,2.5vw,28px);
+}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__heading {
+  padding:10px 0 15px;border-bottom:1px solid var(--shell-line);margin-bottom:18px;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__heading h1 {
+  font-size:clamp(24px,3vw,34px);letter-spacing:-.035em;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__layout {
+  grid-template-columns:minmax(0,1fr) minmax(265px,330px);gap:18px;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__main {grid-column:1;grid-row:1;gap:18px;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__sidebar {grid-column:2;grid-row:1;gap:18px;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__region {
+  padding:clamp(12px,1.7vw,23px);border-radius:16px;
+  box-shadow:0 6px 24px rgba(22,48,78,.065);}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__region h2 {
+  font-size:15px;letter-spacing:-.015em;margin-bottom:16px;color:#234d7c;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__region[data-mcel-role="workspace"] {
+  border-top:4px solid #3072b3;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__region[data-mcel-role="insight"] .mcel-application-shell__facts {
+  grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__region[data-mcel-role="insight"] dt {
+  font-size:11px;grid-row:auto;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__region[data-mcel-role="insight"] dd {
+  font-size:14px;font-weight:600;min-width:0;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__field input {
+  background:#f9fbfe;color:#132942;min-height:40px;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__actions button {
+  background:#e9f3ff;color:#164976;min-height:40px;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-tab-workspace {
+  --mcel-ink:#132942;--mcel-muted:#52647a;--mcel-accent:#175793;
+  --mcel-ground:#ffffff;--mcel-surface:#f6f9fd;--mcel-line:#ccd8e6;
+}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-tab-workspace__safety {
+  background:#e3f6eb;color:#226448;border-color:#a4d8bc;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-tab-workspace__tab[aria-selected="true"] {
+  background:#e3effc;color:#17456e;border-color:#9bbada;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-tab-workspace th {
+  background:#e8f1fa;color:#183953;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-tab-workspace td,
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-tab-workspace th {
+  border-bottom-color:#dbe6f2;padding:13px 16px;}
+.mcel-application-shell[data-mcel-presentation="analytical"] .mcel-tab-workspace tbody tr:hover {
+  background:#ebf4fd;}
+@media(max-width:790px){
+  .mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__layout,
+  .mcel-application-shell[data-mcel-sidebar-width="wide"] .mcel-application-shell__layout {
+    grid-template-columns:minmax(0,1fr);}
+  .mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__main {
+    grid-column:1;grid-row:1;}
+  .mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__sidebar {
+    grid-column:1;grid-row:2;}
+}
+@media(max-width:480px){
+  .mcel-application-shell__heading-tools {width:100%;justify-content:space-between;}
+  .mcel-application-shell__design-picker {flex-wrap:wrap;}
+  .mcel-application-shell[data-mcel-presentation="analytical"] {padding:9px;}
+  .mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__region {padding:11px;border-radius:11px;}
+  .mcel-application-shell[data-mcel-presentation="analytical"] .mcel-application-shell__layout,
+  .mcel-application-shell[data-mcel-presentation="analytical"] :is(.mcel-application-shell__sidebar,.mcel-application-shell__main) {gap:10px;}
+}
+
+/* Generic selectable collection rows for semantic navigation applications. */
+.mcel-application-shell__row-action {display:block;width:100%;min-width:0;padding:7px 9px;text-align:left;
+  border:1px solid transparent;border-radius:6px;color:var(--shell-accent);background:transparent;
+  font:inherit;cursor:pointer;overflow-wrap:anywhere;}
+.mcel-application-shell__row-action:hover {border-color:var(--shell-line);background:var(--shell-panel);}
+.mcel-application-shell__row-action:disabled {opacity:.6;cursor:not-allowed;}
+
+#file-explorer-app[data-mcel-file-explorer-mode="candidate"] .file-explorer-shell[hidden] {display:none!important;}
+#file-explorer-app > .mcel-file-explorer-candidate-host {width:100%;height:100%;min-height:0;}
+
+/* Patch 07A opt-in task-aware composition. Legacy, including the 225px
+ * collection cap and scroll ownership, is unchanged. No app-specific styles. */
+.mcel-application-shell[data-mcel-planner="task-aware"] .mcel-application-shell__region[data-mcel-plan-role="primary-collection"] {
+  min-width:0;
+}
+.mcel-application-shell[data-mcel-planner="task-aware"] .mcel-application-shell__region[data-mcel-plan-extent="expanded"] .mcel-application-shell__table-scroll {
+  max-height:var(--mcel-plan-expanded-height,360px);
+}
+.mcel-application-shell[data-mcel-planner="task-aware"] .mcel-application-shell__region[data-mcel-plan-extent="navigation"] .mcel-application-shell__table-scroll {
+  max-height:var(--mcel-plan-navigation-height,280px);
+}
+.mcel-application-shell[data-mcel-planner="task-aware"] .mcel-application-shell__region[data-mcel-plan-density="compact"] .mcel-application-shell__table-scroll :is(th,td) {
+  padding:5px 8px;line-height:1.35;
+}
+.mcel-application-shell[data-mcel-planner="task-aware"] .mcel-application-shell__region[data-mcel-plan-density="readable"] .mcel-application-shell__table-scroll td {
+  overflow-wrap:anywhere;
+}

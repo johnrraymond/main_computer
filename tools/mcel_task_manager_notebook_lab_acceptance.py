@@ -22,12 +22,12 @@ WIDTHS = (320,390,560,1100)
 
 def html_fixture() -> str:
     css = '\n'.join((STYLE / path).read_text(encoding='utf-8') for path in
-        ('task-manager.css', 'mcel-tab-workspace.css', 'mcel-semantic-collection-workspace.css', 'mcel-task-manager-notebook-lab.css'))
+        ('task-manager.css', 'mcel-tab-workspace.css', 'mcel-semantic-application-shell.css', 'mcel-semantic-collection-workspace.css', 'mcel-task-manager-notebook-lab.css'))
     js = '\n'.join('<script>\n'+(SCRIPTS / path).read_text(encoding='utf-8')+'\n</script>' for path in
         ('mcel-view-transition.js', 'mcel-element-registry.js', 'mcel-elements-core.js',
          'mcel-semantic-layout-inference.js', 'mcel-semantic-value-contract.js', 'mcel-selection-continuity.js', 'mcel-element-retirement.js', 'mcel-observation-integrity.js', 'mcel-semantic-collection-workspace.js',
-         'mcel-task-manager-process-contract.js', 'mcel-tab-workspace.js',
-         'mcel-task-manager-tab-witness.js', 'mcel-task-manager-notebook-bridge.js'))
+         'mcel-task-manager-process-contract.js', 'mcel-intent-effect-runtime.js', 'mcel-tab-workspace.js', 'mcel-semantic-application-shell.js',
+         'mcel-task-manager-tab-witness.js', 'mcel-task-manager-notebook-candidate-ir.js', 'mcel-task-manager-notebook-bridge.js'))
     return ('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
         '<style>*{box-sizing:border-box}body{margin:0;background:#050605;color:#fff}' + css +
         '\n#task-manager-app{display:block!important;visibility:visible!important;width:100%;height:760px}</style>'

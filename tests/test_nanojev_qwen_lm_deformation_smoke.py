@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from tools import nanojev_qwen_lm_deformation_smoke as m
+from tools import nanojev_qwen_lm_deformation_legacy as m
 
 
 def test_complete_signed_corpus_has_no_duplicate_nested_radii():

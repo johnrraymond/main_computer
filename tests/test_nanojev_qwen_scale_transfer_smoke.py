@@ -90,12 +90,12 @@ def test_loader_uses_baseline_frozen_and_rejects_mismatch(tmp_path,monkeypatch):
     dummy_ladder=types.ModuleType('tools.nanojev_qwen_lm_radius_ladder')
     dummy_ladder._fresh_parent=lambda args:(model,object(),'sha','fixed',[],Zero)
     dummy_smoke=types.ModuleType('tools.nanojev_qwen_lm_deformation_smoke')
-    monkeypatch.setitem(sys.modules,'tools.nanojev_qwen_lm_radius_ladder',dummy_ladder)
-    monkeypatch.setitem(sys.modules,'tools.nanojev_qwen_lm_deformation_smoke',dummy_smoke)
+    from tools import nanojev_qwen_lm_radius_ladder as actual_ladder
+    monkeypatch.setattr(actual_ladder,'_fresh_parent',dummy_ladder._fresh_parent)
     args=types.SimpleNamespace(output=str(tmp_path))
     bb,*_=m._load_model(args)
     assert float(bb.state['w'][0])==1.0
-    dummy_ladder._fresh_parent=lambda args:(model,object(),'notsha','fixed',[],Zero)
+    monkeypatch.setattr(actual_ladder,'_fresh_parent',lambda args:(model,object(),'notsha','fixed',[],Zero))
     try:m._load_model(args)
     except RuntimeError as exc:assert 'MISMATCH' in str(exc)
     else:raise AssertionError('missing expected drift protection')
@@ -121,7 +121,8 @@ def test_generation_path_gets_sources_only_and_glass_is_a_readonly_hook(monkeypa
         seen.append(('inference',len(sources)))
         return ['ANSWER: NO']*len(sources)
     ladder._greedy=greedy
-    monkeypatch.setitem(sys.modules,'tools.nanojev_qwen_lm_radius_ladder',ladder)
+    from tools import nanojev_qwen_lm_radius_ladder as actual_ladder
+    monkeypatch.setattr(actual_ladder,'_greedy',greedy)
     args=types.SimpleNamespace(device='cpu',max_tokens=128,max_new_tokens=16,
                                eval_batch=2,progress_every=0)
     rows=m.make_deck()[:3]
