@@ -18,3 +18,16 @@
 #task-manager-app[data-mcel-notebook-mode="candidate"] .task-notebook[hidden] {
   display: none !important;
 }
+
+/* Explicit host-guarded operator surface beside, not inside, read-only IR. */
+#task-manager-app[data-mcel-notebook-mode="application"] .task-mcel-operations {
+  min-width:0; padding:12px; margin:8px 0; background:var(--mc-panel, #222c39);
+  border:1px solid rgba(155,191,240,.35); border-radius:8px;
+}
+#task-manager-app[data-mcel-notebook-mode="application"] .task-mcel-operations .task-actions {
+  display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0;
+}
+#task-manager-app[data-mcel-notebook-mode="application"] .task-mcel-operations select {max-width:100%;min-width:145px;}
+#task-manager-app[data-mcel-notebook-mode="application"] [data-mcel-task-operation-status] {
+  display:block;white-space:normal;overflow-wrap:anywhere;margin:8px 0;
+}

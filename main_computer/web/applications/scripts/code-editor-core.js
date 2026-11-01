@@ -101,10 +101,33 @@
       },
       activeFile: null,
       draft: null,
+      // Each open document keeps its own immutable baseline and draft. Switching
+      // tabs must not silently discard unsaved edits or overwrite other files.
+      documents: [],
       pendingPatch: null,
       receipts: [],
       lastError: null
     });
+  }
+
+  function updateDocument(documents, activeFile, draft) {
+    const rest = (Array.isArray(documents) ? documents : []).filter(
+      (entry) => entry.path !== activeFile.path
+    );
+    return freeze([...rest, {path: activeFile.path, activeFile, draft}]);
+  }
+
+  function activateDocument(state, path) {
+    const current = state && typeof state === "object" ? state : initialState();
+    const target = normalizeProjectPath(path);
+    const document = (current.documents || []).find((entry) => entry.path === target);
+    if (!document) throw new CodeEditorPathError("document-not-open", "The requested document tab is not open.", target);
+    return freeze(Object.assign({}, current, {
+      activeFile: document.activeFile,
+      draft: document.draft,
+      lastError: null,
+      receipts: withReceipt(current, {intent: "activateDocument", path: target, mutationAllowed: false})
+    }));
   }
 
   function withReceipt(state, receipt) {
@@ -153,6 +176,10 @@
   function applyWorkspaceInspection(state, payload = {}) {
     const current = state && typeof state === "object" ? state : initialState();
     const repoDir = normalizeRepoDir(payload.repoDir || payload.repo_dir || current.repoDir);
+    if (repoDir !== current.repoDir && (current.documents || []).length) {
+      throw new CodeEditorPathError("repo-change-open-documents-refused",
+        "Close the current repository's document tabs before switching repositories.", repoDir);
+    }
     const files = normalizeFileEntries(payload.files || payload.entries || []);
     const receipt = normalizeReceipt({
       ok: true,
@@ -206,6 +233,10 @@
     return freeze(Object.assign({}, current, {
       activeFile,
       draft,
+      documents: updateDocument(current.documents, activeFile, draft),
+      // A preview applies to an exact proposed set of changes. A different
+      // active file requires a new preview before the reviewed apply boundary.
+      pendingPatch: null,
       lastError: null,
       receipts: withReceipt(current, receipt)
     }));
@@ -238,6 +269,9 @@
     });
     return freeze(Object.assign({}, current, {
       draft,
+      documents: current.activeFile
+        ? updateDocument(current.documents, current.activeFile, draft) : current.documents,
+      pendingPatch: null,
       lastError: null,
       receipts: withReceipt(current, receipt)
     }));
@@ -516,6 +550,8 @@
     return freeze(Object.assign({}, current, {
       activeFile,
       draft,
+      documents: updateDocument(current.documents, activeFile, draft),
+      pendingPatch: null,
       lastError: null,
       receipts: withReceipt(current, receipt)
     }));
@@ -533,6 +569,8 @@
     });
     return freeze(Object.assign({}, current, {
       draft,
+      documents: updateDocument(current.documents, current.activeFile, draft),
+      pendingPatch: null,
       lastError: null,
       receipts: withReceipt(current, normalizeReceipt({
         ok: true,
@@ -545,20 +583,24 @@
     }));
   }
 
-  function closeFile(state) {
+  function closeFile(state, input = {}) {
     const current = state && typeof state === "object" ? state : initialState();
     const path = current.activeFile && current.activeFile.path || "";
+    if (current.draft?.dirty && input.discard !== true) {
+      throw new CodeEditorPathError("dirty-document-close-refused",
+        "Unsaved changes require an explicit discard decision before closing the tab.", path);
+    }
+    const documents = freeze((current.documents || []).filter((entry) => entry.path !== path));
+    const next = documents.length ? documents[documents.length - 1] : null;
     return freeze(Object.assign({}, current, {
-      activeFile: null,
-      draft: null,
+      documents,
+      activeFile: next ? next.activeFile : null,
+      draft: next ? next.draft : null,
+      pendingPatch: null,
       lastError: null,
       receipts: withReceipt(current, normalizeReceipt({
-        ok: true,
-        intent: "closeFile",
-        repoDir: current.repoDir,
-        path,
-        status: "pass",
-        message: path ? `closed ${path}` : "closed active file"
+        ok: true, intent: "closeFile", repoDir: current.repoDir,
+        path, status: "pass", message: path ? `closed ${path}` : "closed active file"
       }))
     }));
   }
@@ -617,6 +659,7 @@
     initialState,
     applyWorkspaceInspection,
     applyOpenedFile,
+    activateDocument,
     applyDraftEdit,
     applySavedFile,
     discardDraft,

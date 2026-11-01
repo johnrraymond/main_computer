@@ -223,6 +223,35 @@ class ManagedScheduler:
             if not w or not w.active:raise ConnectionError('reserved local worker disconnected')
             return w
 
+    def execute_private(self, offer: dict, *, timeout: float = 120) -> dict:
+        sid=str(offer['session_id']); req=str(offer['request_id']); run=str(offer['run_id'])
+        worker=self.worker_for(sid)
+        if not self.is_authorized(worker.device_id):
+            raise PermissionError('private worker no longer authorized')
+        try:
+            worker.pending[sid]=None
+            worker.send({'type':'slh.private.work.offer','protocol':'slh-private-v1',
+                         'session_id':sid,'request_id':req,'run_id':run})
+            accepted=worker.await_message(sid,{'worker.private.work.accepted'},10)
+            if accepted.get('request_id')!=req or accepted.get('run_id')!=run:
+                raise RuntimeError('private worker offer identity mismatch')
+            if not self.is_authorized(worker.device_id):
+                raise PermissionError('private worker revoked before execution')
+            worker.pending[sid]=None
+            worker.send({'type':'slh.private.work.authorized','protocol':'slh-private-v1',
+                         'session_id':sid,'request_id':req,'run_id':run,'work':offer['work']})
+            terminal=worker.await_message(sid,{'worker.private.work.result','worker.private.work.failed'},timeout)
+            if terminal.get('request_id')!=req or terminal.get('run_id')!=run:
+                raise RuntimeError('private worker terminal identity mismatch')
+            if terminal['type']=='worker.private.work.failed':
+                raise RuntimeError('PRIVATE_WORKER_FAILED')
+            result=terminal.get('result')
+            if not isinstance(result,dict):
+                raise RuntimeError('private worker result invalid')
+            return result
+        finally:
+            worker.pending.pop(sid,None)
+
     def execute_authorized(self, offer: dict) -> dict:
         sid=str(offer['session_id']); req=str(offer['request_id']);run=str(offer['run_id'])
         worker=self.worker_for(sid)
@@ -414,6 +443,8 @@ class SLHManagedGateway:
                 kind=frame.get('type')
                 if kind=='worker.pong':
                     worker.send({'type':'hub.pong.accepted','ok':True})
+                elif kind in {'worker.private.work.accepted','worker.private.work.result','worker.private.work.failed'}:
+                    worker.receive(frame)
                 elif kind in {'worker.work.accepted','worker.work.result','worker.work.failed'}:
                     self._note_connection({
                         'worker.work.accepted': 'gateway_paid_worker_accepted',

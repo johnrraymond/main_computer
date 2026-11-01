@@ -782,8 +782,14 @@ def test_graceful_worker_close_ack_waits_for_durable_cleanup(monkeypatch) -> Non
         _ws_send_json(sock, {"type": "worker.pong", "connection_id": auth["connection_id"],
                              "ping_id": ping["ping_id"]})
         assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
+        live_before_close = server.get_live_worker_session(auth["connection_id"])
+        assert live_before_close is not None and live_before_close.is_live
         _ws_send_json(sock, {"type": "worker.close"})
         assert entered.wait(timeout=2), "Hub did not begin close cleanup"
+        assert not live_before_close.is_live
+        # Durable FDB close is deliberately blocked, but the socket must
+        # already be fenced locally so a concurrent paid request cannot use it.
+        assert server.get_live_worker_session(auth["connection_id"]) is None
         assert server.worker_session_directory.get_owner(auth["connection_id"])["status"] == "live"
         sock.settimeout(0.15)
         try:
@@ -802,34 +808,51 @@ def test_graceful_worker_close_ack_waits_for_durable_cleanup(monkeypatch) -> Non
         sock.close()
         sock = None
 
-        # A conflicted cleanup must never produce a success acknowledgment.
-        class RetriableConflict(Exception):
-            code = 1020
+        # Neither a conflict nor a timed-out FoundationDB close is durable.
+        # Both must fence the local socket and return a retryable error,
+        # never a successful close receipt.
+        for error_code in (1020, 1031):
+            class DeferredFdbError(Exception):
+                code = error_code
 
-        def deferred_close(target_server, *, worker_id, connection_id):
-            raise RetriableConflict("injected_transaction_conflict")
+            def deferred_close(target_server, *, worker_id, connection_id):
+                raise DeferredFdbError("injected_fdb_cleanup_failure")
 
-        monkeypatch.setattr(stable_hub_module, "close_worker_connection_and_settle", deferred_close)
-        sock = _ws_connect("127.0.0.1", server.server_port, "/api/hub/v1/workers/live-session")
-        _ws_send_json(sock, {
-            "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
-            "multisession_authorization": {"kind": "multisession_key",
-                                           "multisession_key_id": issued["key"]["id"]},
-            "market": {"rings": ["ring-2"], "price": {"amount": "0.05", "unit": "credit"},
-                       "capabilities": ["python"], "max_concurrency": 1},
-        })
-        deferred_auth, deferred_ping = _ws_recv_json(sock), _ws_recv_json(sock)
-        assert deferred_auth["type"] == "hub.auth.accepted"
-        _ws_send_json(sock, {"type": "worker.pong", "connection_id": deferred_auth["connection_id"],
-                             "ping_id": deferred_ping["ping_id"]})
-        assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
-        _ws_send_json(sock, {"type": "worker.close"})
-        error = _ws_recv_json(sock)
-        assert error["type"] == "hub.error"
-        assert error["error"] == "worker_close_cleanup_deferred"
-        assert error["retryable"] is True
-        assert error["connection_id"] == deferred_auth["connection_id"]
-        assert server.worker_session_directory.get_owner(deferred_auth["connection_id"])["status"] == "live"
+            monkeypatch.setattr(stable_hub_module, "close_worker_connection_and_settle", deferred_close)
+            sock = _ws_connect("127.0.0.1", server.server_port, "/api/hub/v1/workers/live-session")
+            _ws_send_json(sock, {
+                "type": "worker.auth", "execution_protocol": "durable-authorization-v1",
+                "multisession_authorization": {"kind": "multisession_key",
+                                               "multisession_key_id": issued["key"]["id"]},
+                "market": {"rings": ["ring-2"], "price": {"amount": "0.05", "unit": "credit"},
+                           "capabilities": ["python"], "max_concurrency": 1},
+            })
+            deferred_auth, deferred_ping = _ws_recv_json(sock), _ws_recv_json(sock)
+            assert deferred_auth["type"] == "hub.auth.accepted"
+            _ws_send_json(sock, {"type": "worker.pong", "connection_id": deferred_auth["connection_id"],
+                                 "ping_id": deferred_ping["ping_id"]})
+            assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
+            _ws_send_json(sock, {"type": "worker.close"})
+            error = _ws_recv_json(sock)
+            assert error["type"] == "hub.error"
+            assert error["error"] == "worker_close_cleanup_deferred"
+            assert error["retryable"] is True
+            assert error["connection_id"] == deferred_auth["connection_id"]
+            assert server.get_live_worker_session(deferred_auth["connection_id"]) is None
+            # The durable owner still awaits retry or lease recovery.
+            assert server.worker_session_directory.get_owner(deferred_auth["connection_id"])["status"] == "live"
+            # FDB becomes healthy again: the same generation can be safely
+            # reconciled without a second Worker socket or false close ACK.
+            monkeypatch.setattr(stable_hub_module, "close_worker_connection_and_settle", original_close)
+            closed_owner, settled = original_close(
+                server, worker_id=deferred_auth["connection_id"],
+                connection_id=deferred_auth["connection_id"],
+            )
+            assert closed_owner["status"] == "closed"
+            assert settled == 0
+            assert server.worker_market_directory.get_worker(deferred_auth["connection_id"])["status"] == "closed"
+            sock.close()
+            sock = None
     finally:
         release.set()
         if sock is not None:

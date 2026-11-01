@@ -44,6 +44,12 @@ For isolated continuous paid testing, use `diagnose-paid-transport --transport s
 
 Existing targeted service-restart, enrollment, and authorization tests remain useful evidence but **do not** substitute for these absent full-system scenarios. The `required_gaps` section enumerates them as `BLOCKED_UNIMPLEMENTED` until implementation. Full Windows acceptance must run on Windows; a Linux PASS does not substitute for the platform where the TLS failure occurred.
 
+## Additional mandatory Pinky Promise economic acceptance (TARGET / NOT IMPLEMENTED)
+
+The economic architecture is defined in [SLH Pinky Promise: Idle-Compute Funding and Local Secure Model Access](slh-pinky-promise-economy.md). **Marketplace earnings** fund the organization wallet; they are not charged 10% automatically. A **successfully fulfilled qualifying local secure-model request** on another organizational Worker creates an obligation of **0.1 credit**: 10% of the fixed **1-credit public-market request reference** (1,000 reference output tokens). This per-request assessment does not require a live price quote or change with intra-request output-token count. It is settled from the organization wallet to the Main Computer Reserve only after authorized delay/finality.
+
+The laboratory-exit runner does **not yet have** an implemented local-request-to-Reserve settlement lane. This is an additional explicit exit blocker, not something demonstrated by the existing public paid-work/synthetic-settlement tests. A future fail-closed gate must prove authenticated Worker and requester routing; policy version plus the fixed **1-credit reference / 0.1-credit assessment**; one successful request billed once; ten distinct completed requests assessed **1 credit** in aggregate; repeated work with different output-token counts still billed at the same per-request rate; settled organization-wallet funding; authorized periodic aggregate transfer with a Hub-ledger Reserve receipt; outstanding obligations on insufficient balance; replay/crash/retry idempotence; optional administrator opt-out affecting only future usage; and private-data nondisclosure. No reported PASS may claim this economic contract until these tests actually run. The executable runner retains P0's sixth mandatory fail-closed gate; focused P4 tests do not clear it.
+
 ## Scope and constraints
 
 The runner uses only the checked local dev/smoke three-Hub topology and synthetic requester funding. The FDB lane uses the existing smoke namespace, not production state. It cannot assert public Internet WSS, a real external bridge payment, or remote Coolify deployment. It never requests a reusable administrator secret, overwrites an established SLH identity, or deploys to the Internet. Local lab acceptance precedes those later deployment and live-bridge acceptance stages.
@@ -69,3 +75,21 @@ short-lived administrative bearer was refreshed. Authentication errors must be
 reported as control failures rather than mislabeled Worker losses. The exit
 report includes structured, redacted child failure classifications and trace
 locations even when the child process exits nonzero.
+
+## P4 periodic Reserve sweep (implementation, acceptance still blocked)
+
+The payment rule is now **one periodic batch**, not a Reserve transfer for each request. The SLH accumulates fixed 0.1-credit obligations, then uses a configured, wallet-signed Stable Hub credit-account transfer to move a batch to the Reserve-controlled Hub wallet. Insufficient balance leaves outstanding debt, and retries reuse the exact sweep ID. A local confirmed receipt establishes a Hub-ledger credit transfer, not external blockchain finality. The full exit gate remains blocked until the complete local economic cycle, crash recovery, authorization failures and persistent three-Hub deployment are tested on Windows.
+
+### Independent shared-Hub Pinky integration proof
+
+The executable real three-Hub smoke/FDB Pinky Promise lane is available via
+`python -m tools.slh_seh_lab.run_lab run --pinky-integrated --json`.
+It proves an earned organization wallet balance, two fulfilled private requests,
+the exact 0.2-credit aggregate Reserve transfer and idempotent replay using
+the same disposable organization across a supported SEH-to-direct restart.
+See [shared-Hub Pinky testing](slh-pinky-shared-hub-integration.md).
+A `verify-local` PASS must never substitute for this evidence. This integrated
+lane **does not itself remove** the full `lab_exit.py` acceptance blocker or
+claim an on-chain Reserve transaction, cross-Hub owner handoff, private-SEH
+inference, production deployment, or the remaining laboratory resilience
+requirements. Those remain separate mandatory gates.

@@ -101,6 +101,7 @@
       runtimeState: null,
       receipt: null,
       authoringHost: null,
+      documentTabs: null,
       monacoHost: null,
       monacoStatus: null
     };
@@ -175,9 +176,16 @@
       });
     }
 
+    function emitParity(phase, intentName, disposition = "") {
+      if (!dom.root || typeof root?.CustomEvent !== "function") return;
+      dom.root.dispatchEvent(new root.CustomEvent("mcel:parity-operation", {bubbles:true,
+        detail:{appId:"code-editor",intentName,phase,disposition}}));
+    }
+
     function replaceState(nextState) {
       state = nextState;
       render();
+      emitParity("state", "editor-state", state.lastError ? "failed" : "updated");
       return runtimeResult();
     }
 
@@ -309,6 +317,9 @@
       let path = "";
       try {
         path = core.normalizeProjectPath(input.path || input.filePath || input.selectedPath || selectedDomPath());
+        if (input.reload !== true && (state.documents || []).some((entry) => entry.path === path)) {
+          return replaceState(core.activateDocument(state, path));
+        }
         const authoredFile = await openFileFromAuthoredSource(path);
         if (authoredFile) {
           hydrateWorkspaceFromAuthoredSource();
@@ -382,9 +393,8 @@
     }
 
     function closeFile(input = {}) {
-      void input;
       try {
-        return replaceState(core.closeFile(state));
+        return replaceState(core.closeFile(state, input));
       } catch (error) {
         return replaceState(core.recordFailure(state, "closeFile", error));
       }
@@ -420,6 +430,7 @@
     // silently fall back to direct facade calls (especially for writes).
     // Direct invocation remains available to isolated standalone runtime tests.
     function dispatchUiIntent(intentName, input = {}) {
+      emitParity("dispatch", intentName);
       const host = root && root.McelHostBoundApplicationRuntime;
       if (host) {
         const mounted = typeof host.getMount === "function" ? host.getMount("code-editor") : null;
@@ -452,6 +463,18 @@
       bindLegacyFidelityResizeStability();
       dom.root.dataset.codeEditorRuntime = "dsl-native";
       dom.root.dataset.codeEditorRuntimeFacade = "MainComputerCodeEditorRuntime";
+      const actionBar = dom.root.querySelector(".aider-actions");
+      if (actionBar && !dom.root.querySelector("#code-editor-transaction-preview")) {
+        const preview = dom.root.ownerDocument.createElement("button");
+        preview.id = "code-editor-transaction-preview";
+        preview.textContent = "Preview source transaction";
+        preview.type = "button";
+        const apply = dom.root.ownerDocument.createElement("button");
+        apply.id = "code-editor-transaction-apply";
+        apply.textContent = "Apply reviewed transaction";
+        apply.type = "button";
+        actionBar.append(preview, apply);
+      }
       dom.authoringHost = dom.root.querySelector("#code-studio-runtime-monaco");
       dom.monacoHost = dom.authoringHost;
       dom.monacoStatus = dom.root.querySelector("#code-editor-monaco-status");
@@ -467,8 +490,8 @@
       dom.aiderOutput = dom.root.querySelector("#aider-output");
       dom.reviewedToggle = dom.root.querySelector("#aider-reviewed");
       dom.openButton = dom.root.querySelector("#file-map-apply");
-      dom.previewButton = dom.root.querySelector("#aider-preview");
-      dom.applyButton = dom.root.querySelector("#aider-run");
+      dom.previewButton = dom.root.querySelector("#code-editor-transaction-preview");
+      dom.applyButton = dom.root.querySelector("#code-editor-transaction-apply");
       dom.discardButton = dom.root.querySelector("#code-studio-restore-live-workspace");
       dom.closeButton = dom.root.querySelector("#code-studio-clear-live-workspace");
       dom.saveButtons = [
@@ -486,23 +509,100 @@
       bindButton("#code-studio-mount-runtime", () => render());
       bindButton("#code-studio-commit-runtime", () => dispatchUiIntent("saveFile", {text: domDraftText()}));
       bindButton("#code-studio-save-live-workspace", () => dispatchUiIntent("saveFile", {text: domDraftText()}));
-      bindButton("#aider-preview", () => dispatchUiIntent("previewAiderPlan", domPatchInput()));
-      bindButton("#aider-run", () => dispatchUiIntent("applyReviewedPatch", {
+      // Aider's existing natural-language prepare/run/history controls retain
+      // their own backend lane. Reviewed source transactions have distinct
+      // canonical intent buttons; never dual-dispatch one click to both lanes.
+      bindButton("#code-editor-transaction-preview", () => dispatchUiIntent("previewAiderPlan", domPatchInput()));
+      bindButton("#code-editor-transaction-apply", () => dispatchUiIntent("applyReviewedPatch", {
         reviewed: dom.reviewedToggle && dom.reviewedToggle.checked === true,
         approved: dom.reviewedToggle && dom.reviewedToggle.checked === true,
         confirmed: dom.reviewedToggle && dom.reviewedToggle.checked === true
       }));
       bindButton("#code-studio-restore-live-workspace", () => dispatchUiIntent("discardDraft"));
-      bindButton("#code-studio-clear-live-workspace", () => dispatchUiIntent("closeFile"));
+      bindButton("#code-studio-clear-live-workspace", () => dispatchUiIntent("closeFile", {
+        discard: !state.draft?.dirty || root.confirm?.(`Discard unsaved changes in ${state.activeFile?.path}?`) === true
+      }));
       bindEnter(dom.fileMapSearch, () => dispatchUiIntent("inspectWorkspace", {query: dom.fileMapSearch ? dom.fileMapSearch.value : ""}));
       bindInput(dom.sourceEditor, () => {
         if (state.activeFile) dispatchUiIntent("editDraft", {path: state.activeFile.path, text: dom.sourceEditor.value});
       });
       bindInput(dom.reviewedToggle, () => render());
       bindLegacySourceFileClicks();
+      bindDocumentTabs();
       hydrateWorkspaceFromAuthoredSource();
       render();
       return runtimeResult({mounted: true});
+    }
+
+    function ensureDocumentTabHost() {
+      const preview = dom.root && dom.root.querySelector("#code-studio-runtime-preview");
+      const frame = preview?.querySelector('[data-code-editor-runtime-monaco-frame="true"]') ||
+        dom.root?.querySelector('.mcel-code-editor-editor');
+      if (!frame) return null;
+      let tabs = frame.querySelector('[data-code-editor-document-tabs]');
+      if (!tabs) {
+        tabs = frame.ownerDocument.createElement("div");
+        tabs.className = "code-editor-document-tabs";
+        tabs.setAttribute("data-code-editor-document-tabs", "true");
+        tabs.setAttribute("role", "tablist");
+        tabs.setAttribute("aria-label", "Open source documents");
+        frame.insertBefore(tabs, frame.firstChild);
+      }
+      dom.documentTabs = tabs;
+      return tabs;
+    }
+
+    function renderDocumentTabs() {
+      const tabs = ensureDocumentTabHost();
+      if (!tabs) return;
+      tabs.textContent = "";
+      const documents = state.documents || [];
+      if (!documents.length) {
+        const empty = tabs.ownerDocument.createElement("span");
+        empty.textContent = "No document tabs";
+        empty.className = "code-editor-document-tabs-empty";
+        tabs.appendChild(empty);
+      }
+      for (const entry of documents) {
+        const item = tabs.ownerDocument.createElement("span");
+        item.className = "code-editor-document-tab";
+        const active = entry.path === state.activeFile?.path;
+        item.dataset.codeEditorDocumentPath = entry.path;
+        item.classList.toggle("active", active);
+        const switchTab = tabs.ownerDocument.createElement("button");
+        switchTab.type = "button";
+        switchTab.dataset.codeEditorDocumentActivate = entry.path;
+        switchTab.setAttribute("role", "tab");
+        switchTab.setAttribute("aria-selected", String(active));
+        switchTab.textContent = entry.path.split("/").pop() + (entry.draft?.dirty ? " ●" : "");
+        switchTab.title = entry.path + (entry.draft?.dirty ? " (unsaved)" : "");
+        const closeTab = tabs.ownerDocument.createElement("button");
+        closeTab.type = "button";
+        closeTab.dataset.codeEditorDocumentClose = entry.path;
+        closeTab.setAttribute("aria-label", "Close " + entry.path);
+        closeTab.textContent = "×";
+        item.append(switchTab, closeTab);
+        tabs.appendChild(item);
+      }
+    }
+
+    function bindDocumentTabs() {
+      if (!dom.root || dom.root.dataset.codeEditorTabsBound) return;
+      dom.root.dataset.codeEditorTabsBound = "true";
+      dom.root.addEventListener("click", (event) => {
+        const button = event.target?.closest?.("[data-code-editor-document-activate], [data-code-editor-document-close]");
+        if (!button || !dom.root.contains(button)) return;
+        event.preventDefault();
+        const path = button.dataset.codeEditorDocumentActivate || button.dataset.codeEditorDocumentClose;
+        if (!(state.documents || []).some((entry) => entry.path === path)) return;
+        if (state.activeFile?.path !== path) replaceState(core.activateDocument(state, path));
+        if (button.dataset.codeEditorDocumentClose) {
+          const dirty = state.draft?.dirty === true;
+          const discard = !dirty || root.confirm?.(`Discard unsaved changes in ${path}?`) === true;
+          if (!discard) return;
+          dispatchUiIntent("closeFile", {discard});
+        }
+      });
     }
 
     function bindLegacySourceFileClicks() {
@@ -712,6 +812,7 @@
         ].join("");
       }
       refreshRuntimeEditorRefs();
+      renderDocumentTabs();
       const frame = dom.runtimePreview.querySelector('[data-code-editor-runtime-monaco-frame="true"]');
       if (frame) {
         frame.dataset.codeEditorSelectedPath = selectedPath;
@@ -802,11 +903,9 @@
       if (dom.patchStatus) {
         dom.patchStatus.textContent = patch.statusText;
       }
-      if (dom.aiderOutput) {
-        dom.aiderOutput.textContent = state.lastError
-          ? `Runtime error: ${state.lastError.message}`
-          : [receipts.statusText, patch.statusText].filter(Boolean).join("\n");
-      }
+      // #aider-output belongs to the Aider job/history renderer, not the
+      // source-transaction receipt. Re-rendering a Monaco draft must not erase it.
+      if (dom.receipt) dom.receipt.textContent = receipts.statusText;
       if (dom.selectedFiles && state.activeFile) {
         dom.selectedFiles.value = state.activeFile.path;
       }
@@ -820,6 +919,7 @@
         dom.monacoStatus.textContent = monacoStatusText();
       }
       updateButtonStates(vm);
+      renderDocumentTabs();
       syncMonacoEditor(active);
       dom.root.dataset.codeEditorRuntime = "dsl-native";
       dom.root.dataset.codeEditorRuntimeFacade = "MainComputerCodeEditorRuntime";
@@ -1044,6 +1144,18 @@
       reviewed.innerHTML = '<input id="aider-reviewed" type="checkbox"/> reviewed patch';
       actions.appendChild(reviewed);
     }
+    if (doc && actions && !rootNode.querySelector("#code-editor-transaction-preview")) {
+      const preview = doc.createElement("button");
+      preview.id = "code-editor-transaction-preview";
+      preview.type = "button";
+      preview.textContent = "Preview source transaction";
+      preview.title = "Prepare a read-only, hash-checked transaction from the active dirty source draft";
+      const apply = doc.createElement("button");
+      apply.id = "code-editor-transaction-apply";
+      apply.type = "button";
+      apply.textContent = "Apply reviewed transaction";
+      actions.append(preview, apply);
+    }
 
     const aiderOutput = rootNode.querySelector("#aider-output");
     if (doc && aiderOutput && !rootNode.querySelector("#code-editor-patch-status")) {
@@ -1122,8 +1234,10 @@
                 '<span>I reviewed and approve the prepared patch handle.</span>',
               '</label>',
               '<div class="mcel-code-editor-patch-actions">',
-                '<button id="aider-preview" type="button" disabled>Preview command</button>',
-                '<button id="aider-run" type="button" disabled>Apply reviewed patch</button>',
+                '<button id="aider-preview" type="button" disabled>Preview Aider command</button>',
+                '<button id="aider-run" type="button" disabled>Run Aider command</button>',
+                '<button id="code-editor-transaction-preview" type="button" disabled>Preview source transaction</button>',
+                '<button id="code-editor-transaction-apply" type="button" disabled>Apply reviewed transaction</button>',
               '</div>',
               '<div id="code-editor-patch-status" class="mcel-code-editor-muted">No reviewed patch has been prepared.</div>',
               '<output id="aider-output" class="mcel-code-editor-output" aria-live="polite">No Code Editor runtime receipts yet.</output>',

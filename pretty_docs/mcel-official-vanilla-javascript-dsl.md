@@ -1,4 +1,10 @@
 # MCEL Official Vanilla-JavaScript DSL
+
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+This remains the **official JavaScript behavior DSL half** of the finished V1 two-file authoring format. Its existing `mcel.defineApp` syntax, authority and proven compiler behavior are preserved here; a separate authored `application.html` provides hierarchy and interface semantics under the V1 target. Current JS-only compilation and `hostBound` remain accurately documented as existing implementation.
+
 ## Syntax and Authoring Rules for `mcel.dsl.v1`
 
 ## Product-level design requirement
@@ -1998,3 +2004,19 @@ promotion not executed
 ### TL;DR
 
 Workbench now satisfies the documented “expressed without opaque callbacks” gate. Promotion remains a separate transaction and is not authorized by Wave 11.
+
+## 07B.1c addendum — layout-free author interface intent
+
+`dsl.surface.region(name, {children, role?, priority?, prefer?})` now retains
+role, priority and preferred side through compilation into optional
+`surfaces[].interfaceIntent` (`mcel.interface-intent.v1`). A region without a
+role retains the legacy behavior. `dsl.surface.relate(fromRegion, kind,
+toRegion)` declares a semantic relationship between named regions and is
+supplied in `dsl.surface.define(name, {root, relations?})`. The relationship
+is an author-supplied interface hint, **not evidence of a runtime state
+transition**. Unknown options on public surface constructors now fail rather
+than being silently discarded. See
+`pretty_docs/mcel-four-app-semantic-authoring-contract.md` for the finite role
+and relationship vocabulary and acceptance-status boundaries. This addendum
+does not claim that layout synthesis or the full operational public DSL is
+complete.

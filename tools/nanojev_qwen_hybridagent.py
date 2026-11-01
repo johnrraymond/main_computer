@@ -175,12 +175,30 @@ def _dtype_and_device(device: str, precision: str):
 def _register_latent_markers(tokenizer, added_token_class):
     """Register latent control tokens on both Transformers 4 and 5 tokenizers.
 
-    Transformers 5 replaced ``additional_special_tokens`` with
-    ``extra_special_tokens``.  Preserve the tokenizer's existing extra tokens
-    and their AddedToken metadata instead of replacing or de-specializing them.
+    Transformers 4 requires ``additional_special_tokens`` even when it also
+    exposes ``extra_special_tokens``. Transformers 5 accepts the latter.
+    Choose the supported registration key, preserving existing token objects,
+    order, IDs and special-token metadata without altering checkpoint format.
     """
-    key = ('extra_special_tokens' if hasattr(tokenizer, 'extra_special_tokens')
-           else 'additional_special_tokens')
+    # Transformers 4.56 may expose *both* names, but its
+    # add_special_tokens() only accepts keys in SPECIAL_TOKENS_ATTRIBUTES.
+    # An attribute's existence is therefore not evidence that it is a valid
+    # registration key (the original Intel rescore failed on precisely this).
+    allowed = tuple(getattr(tokenizer, 'SPECIAL_TOKENS_ATTRIBUTES', ()) or ())
+    if 'additional_special_tokens' in allowed:
+        key = 'additional_special_tokens'
+    elif 'extra_special_tokens' in allowed:
+        key = 'extra_special_tokens'
+    elif hasattr(tokenizer, 'additional_special_tokens'):
+        # Compatibility for tokenizer implementations without an advertised
+        # allowed-keys list, including the historical Transformers 4 API.
+        key = 'additional_special_tokens'
+    elif hasattr(tokenizer, 'extra_special_tokens'):
+        # Transformers 5 supports this key even where the allowed-keys list
+        # is augmented inside add_special_tokens() rather than on the class.
+        key = 'extra_special_tokens'
+    else:
+        raise RuntimeError('HYBRID_TOKENIZER_NO_SUPPORTED_SPECIAL_TOKEN_LIST')
     existing = list(getattr(tokenizer, key, ()) or ())
     names = {str(token) for token in existing}
     additions = [added_token_class(token, normalized=False, special=True)

@@ -1,4 +1,10 @@
 # MCEL AI Authoring Language
+
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+The finished V1 requires **two authored sources**, semantic `application.html` and official `application.js`. The examples and limitations in this executive overview concern the JavaScript authoring component/current migration challenges; they do not substitute for the [V1 paired-source contract](mcel-v1-authoring-format.md) or certify expert layout synthesis.
+
 ## Executive Overview by Example
 
 ## Main product promise

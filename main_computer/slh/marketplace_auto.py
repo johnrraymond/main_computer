@@ -116,9 +116,10 @@ def load_authorization(state_dir: Path) -> dict | None:
 
 class AutomaticMarketplace:
     """One reconciler for manual and automatic calls; owns no policy decisions."""
-    def __init__(self, market, state_dir: Path):
+    def __init__(self, market, state_dir: Path, *, wallet_service=None):
         self.market = market
         self.state_dir = Path(state_dir)
+        self.wallet_service = wallet_service
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -194,6 +195,14 @@ class AutomaticMarketplace:
                 self.consecutive_failures += 1
                 self.last_error = type(exc).__name__  # never report secrets
                 raise
+            # Read-only wallet observation. An unavailable or revoked Hub must
+            # never mutate local credits or stop an already authorized paid job.
+            if self.wallet_service is not None:
+                try:
+                    if self.wallet_service.status()['state'] != 'UNBOUND':
+                        self.wallet_service.reconcile()
+                except SLHError:
+                    pass  # Reconciliation itself marks the last observation STALE.
             self.last_result = result
             failed_slots = [x for x in result.get('blocked', []) if isinstance(x, str) and ':' in x]
             if missing_auth or failed_slots:
@@ -218,6 +227,10 @@ class AutomaticMarketplace:
     def configure(self, changes: dict, expected_revision: int) -> dict:
         with self._lock:
             previous = read_settings(self.state_dir)
+            if (self.wallet_service is not None and 'hub_url' in changes and
+                    changes['hub_url'] != previous['hub_url'] and
+                    self.wallet_service.status()['binding'] is not None):
+                raise SLHError('WALLET_MIGRATION_REQUIRED', 409)
             result = update_settings(self.state_dir, changes, expected_revision)
             if previous['hub_url'] != result['hub_url']:
                 self._restart_required = True
@@ -226,9 +239,27 @@ class AutomaticMarketplace:
 
     def authorize(self, value: dict):
         with self._lock:
+            if self.wallet_service is not None and self.wallet_service.status()['binding'] is not None:
+                settings = read_settings(self.state_dir)
+                if not isinstance(value, dict) or not isinstance(value.get('multisession_key_id'), str):
+                    raise SLHError('INVALID_MARKETPLACE_AUTHORIZATION')
+                self.wallet_service.validate_new_authorization(settings['hub_url'], value['multisession_key_id'])
             save_authorization(self.state_dir, value)
             self._restart_required = True
             self.wake()
+
+    def bind_wallet(self, request: dict) -> dict:
+        if self.wallet_service is None:
+            raise SLHError('ORG_WALLET_SERVICE_UNAVAILABLE', 503)
+        if set(request) - {'expected_revision', 'expected_hub_id',
+                           'expected_cluster_id', 'expected_chain_id', 'tls_sha256'}:
+            raise SLHError('INVALID_WALLET_REQUEST')
+        if not {'expected_revision','expected_hub_id','expected_cluster_id','expected_chain_id'} <= set(request):
+            raise SLHError('INVALID_WALLET_REQUEST')
+        with self._lock:
+            result = self.wallet_service.bind(**request)
+            self.wake()
+            return result
 
     def status(self) -> dict:
         with self._lock:
@@ -242,7 +273,8 @@ class AutomaticMarketplace:
                     'last_attempt': self.last_attempt, 'last_success': self.last_success,
                     'last_error': self.last_error, 'last_result': self.last_result,
                     'reauthorization_pending': self._restart_required,
-                    'recent_decisions': list(self.decisions[-8:])}
+                    'recent_decisions': list(self.decisions[-8:]),
+                    'organization_wallet': (self.wallet_service.status() if self.wallet_service else None)}
 
     def stop(self):
         self._stop.set()

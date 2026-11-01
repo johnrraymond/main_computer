@@ -1,5 +1,11 @@
 # MCEL DSL App Authoring Surface
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+The implementation path documented below is currently JS-only and may use host-bound compatibility. **The V1 target** is the paired `application.html` + official `application.js` source, one canonical IR and generated layout/runtime. These are different status claims; none of the current host-bound evidence proves the paired source is operational.
+
+
 ## Author-first rule
 
 The file structure below is an **implementation contract**, not the desired cognitive burden on an app author. The main promise and four design priorities live in `pretty_docs/mcel-authoring-principles.md`: minimal authoring effort, attractive default appearance, maximal sound flexibility, and correctness through composition. When this guide asks authors to repeat a mechanical relationship, bridge raw selectors, patch CSS for ordinary layout, or learn internal generated-file structure, record the step as an opportunity to improve MCEL; do not normalize it as unavoidable application work.

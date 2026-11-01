@@ -155,3 +155,49 @@ def test_real_process_policy_wait_checks_new_attempt_and_exposes_failure_reason(
     with pytest.raises(ServiceLabFailure, match='UPSTREAM_SESSION_RECONCILE_BLOCKED'):
         _await_policy_transition(failed, 'worker-1', True,
                                  earlier_attempts=5, decision=1, timeout=0.01)
+
+
+def test_wallet_binding_is_explicit_and_auto_reconciles_observations(tmp_path):
+    class ObservableWallet:
+        def __init__(self):
+            self.state = 'UNBOUND'
+            self.calls = 0
+        def status(self):
+            return {'state': self.state, 'binding': {} if self.state != 'UNBOUND' else None}
+        def bind(self, **request):
+            assert request == {'expected_revision':0,'expected_hub_id':'hub-a',
+                               'expected_cluster_id':'cluster-a','expected_chain_id':'42424242'}
+            self.state = 'CURRENT'
+            return self.status()
+        def reconcile(self):
+            self.calls += 1
+            return self.status()
+
+    w=ObservableWallet()
+    p=ControlledProxy()
+    c=AutomaticMarketplace(p,tmp_path,wallet_service=w)
+    c.authorize({'kind':'multisession_key','multisession_key_id':'do-not-expose'})
+    c.configure({'enabled':True,'hub_url':'http://127.0.0.1:8872'},0)
+    c.reconcile()
+    assert w.calls==0  # No invented binding from a saved MSK alone.
+    with pytest.raises(SLHError,match='INVALID_WALLET_REQUEST'):
+        c.bind_wallet({'expected_revision':0})
+    c.bind_wallet({'expected_revision':0,'expected_hub_id':'hub-a',
+                   'expected_cluster_id':'cluster-a','expected_chain_id':'42424242'})
+    c.reconcile()
+    assert w.calls==1
+    assert c.status()['organization_wallet']['state']=='CURRENT'
+    assert 'do-not-expose' not in str(c.status())
+
+
+def test_wallet_outage_does_not_mint_or_abort_public_sessions(tmp_path):
+    class UnavailableWallet:
+        def status(self): return {'state':'STALE', 'binding': None}
+        def reconcile(self): raise SLHError('HUB_ACCOUNT_UNAVAILABLE',503)
+
+    p=ControlledProxy()
+    c=AutomaticMarketplace(p,tmp_path,wallet_service=UnavailableWallet())
+    c.authorize({'kind':'multisession_key','multisession_key_id':'test-auth'})
+    c.configure({'enabled':True,'hub_url':'http://127.0.0.1:8872'},0)
+    assert c.reconcile()['live_public_sessions']==['worker-1']
+    assert c.status()['organization_wallet']['state']=='STALE'

@@ -165,6 +165,43 @@ class IntentHandle {
   }
 }
 
+class CapabilityHandle {
+  constructor(record) {
+    this.record = record;
+    this.id = record.id;
+    this.operations = new Map();
+  }
+  operation(name, runtimeMethod, options = {}) {
+    assert(typeof name === "string" && /^[a-z][a-z0-9-]*$/.test(name),
+      "MCEL_DSL_CAPABILITY_OPERATION_INVALID", "Capability operation requires a stable lowercase name.");
+    assert(typeof runtimeMethod === "string" && /^[A-Za-z][A-Za-z0-9_.]*$/.test(runtimeMethod),
+      "MCEL_DSL_CAPABILITY_METHOD_INVALID", "A capability operation requires a declared runtime method name.");
+    assert(!this.operations.has(name), "MCEL_DSL_CAPABILITY_OPERATION_DUPLICATE", `Duplicate operation '${name}'.`);
+    knownCapabilityOptions(options);
+    const inputs = {};
+    for (const [key, schema] of Object.entries(options.inputs || {})) {
+      assert(/^[a-z][A-Za-z0-9_]*$/.test(key) && schema instanceof SchemaBuilder,
+        "MCEL_DSL_CAPABILITY_INPUT_INVALID", "Capability inputs require named typed schemas.");
+      inputs[key] = schema.toJSON();
+    }
+    const operation = {name, runtimeMethod,
+      cancellable: options.cancellable === true,
+      risk: options.risk || this.record.risk,
+      inputs,
+      ...(options.result ? {resultSchema: normalizeSchema(options.result, `capability:${this.id}.${name}.result`)} : {})};
+    assert(operation.risk === this.record.risk,
+      "MCEL_DSL_CAPABILITY_RISK_MISMATCH", "The operation's risk cannot differ from the declared capability authority.");
+    this.record.operations.push(operation);
+    this.operations.set(name, operation);
+    return this;
+  }
+}
+function knownCapabilityOptions(options) {
+  assert(options && typeof options === "object" && !Array.isArray(options) &&
+    Object.keys(options).every(key => ["risk", "result", "cancellable", "inputs"].includes(key)),
+    "MCEL_DSL_CAPABILITY_OPTION_UNKNOWN", "Unsupported capability operation option.");
+}
+
 class SurfaceNodeHandle {
   constructor(localName, record) {
     this.localName = localName;
@@ -566,9 +603,12 @@ function createDsl(metadata, source) {
   const layouts = [];
   const scenarios = [];
   const stateById = new Map();
+  const capabilities = [];
+  const capabilityById = new Map();
 
   const field = {
     integer: () => new SchemaBuilder({kind: "integer"}),
+    number: () => new SchemaBuilder({kind: "number"}),
     text: () => new SchemaBuilder({kind: "string"}),
     boolean: () => new SchemaBuilder({kind: "boolean"}),
     record(fields) {
@@ -593,21 +633,44 @@ function createDsl(metadata, source) {
     },
   };
 
+  function stateDeclaration(authority, name, schema, options = {}) {
+    assert(schema instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", `State '${name}' requires a field schema.`, `state:${name}`);
+    assert(options && typeof options === "object" && !Array.isArray(options) &&
+      Object.keys(options).every(key => key === "initial"),
+      "MCEL_DSL_STATE_OPTION_UNKNOWN", `Unknown state option for '${name}'.`);
+    const id = semanticId("state", name);
+    assert(!stateById.has(id), "MCEL_DSL_STATE_DUPLICATE", `State '${name}' is already declared.`);
+    assert(authority !== "canonical" || Object.hasOwn(options, "initial"),
+      "MCEL_DSL_CANONICAL_INITIAL_REQUIRED", "Canonical state requires an initial value.");
+    const record = {id, kind: "state", sourceName: name, authority,
+      schema: schema.toJSON(),
+      ...(Object.hasOwn(options, "initial") ? {initial: deepClone(options.initial)} : {}),
+      source};
+    const handle = new StateHandle(record);
+    states.push(handle);
+    stateById.set(handle.id, handle);
+    return handle;
+  }
   const state = {
-    canonical(name, schema, options = {}) {
-      assert(schema instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", `Canonical state '${name}' requires a field schema.`, `state:${name}`);
-      const record = {
-        id: semanticId("state", name),
-        kind: "state",
-        sourceName: name,
-        authority: "canonical",
-        schema: schema.toJSON(),
-        initial: deepClone(options.initial),
-        source,
-      };
-      const handle = new StateHandle(record);
-      states.push(handle);
-      stateById.set(handle.id, handle);
+    canonical(name, schema, options = {}) {return stateDeclaration("canonical", name, schema, options);},
+    rendererLocal(name, schema, options = {}) {return stateDeclaration("renderer-local", name, schema, options);},
+    derived(name, schema, options = {}) {return stateDeclaration("derived", name, schema, options);},
+  };
+  const capability = {
+    external(name, options = {}) {
+      assert(options && typeof options === "object" && !Array.isArray(options) &&
+        Object.keys(options).every(key => ["risk", "description"].includes(key)),
+        "MCEL_DSL_CAPABILITY_OPTION_UNKNOWN", `Unsupported capability option for '${name}'.`);
+      const risk = options.risk;
+      assert(["external-read", "source-write", "consequential"].includes(risk),
+        "MCEL_DSL_CAPABILITY_RISK_REQUIRED", "External capability requires explicit external-read, source-write or consequential risk.");
+      const id = semanticId("capability", name);
+      assert(!capabilityById.has(id), "MCEL_DSL_CAPABILITY_DUPLICATE", `Capability '${name}' already exists.`);
+      const record = {id, kind: "capability", sourceName: name, risk,
+        description: options.description || "", operations: [], source};
+      const handle = new CapabilityHandle(record);
+      capabilities.push(handle);
+      capabilityById.set(id, handle);
       return handle;
     },
   };
@@ -697,8 +760,122 @@ function createDsl(metadata, source) {
     return handle;
   }
 
+  function buildCapabilityRequest(name, authority, options = {}) {
+    assert(authority instanceof CapabilityHandle && capabilityById.get(authority.id) === authority,
+      "MCEL_DSL_CAPABILITY_HANDLE_REQUIRED", "Capability request requires a compiler-issued declared capability.");
+    const operation = authority.operations.get(options.operation);
+    assert(operation, "MCEL_DSL_CAPABILITY_OPERATION_UNKNOWN", `Unknown capability operation '${options.operation}'.`);
+    assert(options && typeof options === "object" && !Array.isArray(options) &&
+      Object.keys(options).every(key => ["operation", "inputs", "arguments", "reads", "resultTo", "outcomes"].includes(key)),
+      "MCEL_DSL_CAPABILITY_REQUEST_OPTION_UNKNOWN", "Unsupported capability request option.");
+    const inputs = [];
+    for (const [fieldName, fieldSchema] of Object.entries(options.inputs || {})) {
+      assert(fieldSchema instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", `Capability input '${fieldName}' requires schema.`);
+      inputs.push({id: semanticId("input", `${name}.${fieldName}`), kind: "intent-input", sourceName: fieldName,
+        schema: fieldSchema.toJSON()});
+    }
+    const requestArguments = [];
+    for (const [key, value] of Object.entries(options.arguments || {})) {
+      assert(value instanceof StateHandle && stateById.get(value.id) === value,
+        "MCEL_DSL_CAPABILITY_ARGUMENT_INVALID", "Bound arguments require declared state handles.");
+      requestArguments.push({name: key, state: ref(value)});
+    }
+    const supplied = new Set([...Object.keys(options.inputs || {}), ...requestArguments.map(x => x.name)]);
+    assert(supplied.size === Object.keys(operation.inputs).length &&
+      [...supplied].every(key => Object.hasOwn(operation.inputs, key)),
+      "MCEL_DSL_CAPABILITY_INPUT_MISMATCH", "Request must bind every registered operation input exactly once.");
+    for (const [key, schema] of Object.entries(options.inputs || {})) {
+      assert(JSON.stringify(schema.toJSON()) === JSON.stringify(operation.inputs[key]),
+        "MCEL_DSL_CAPABILITY_INPUT_SCHEMA_MISMATCH", `Input '${key}' differs from the registered operation schema.`);
+    }
+    for (const item of requestArguments) {
+      assert(JSON.stringify(stateById.get(item.state.ref).record.schema) === JSON.stringify(operation.inputs[item.name]),
+        "MCEL_DSL_CAPABILITY_ARGUMENT_SCHEMA_MISMATCH", `State argument '${item.name}' differs from the registered operation schema.`);
+    }
+    const id = semanticId("intent", name);
+    const effectId = semanticId("effect", `${name}.request`);
+    const reads = (options.reads || []).map(item => {
+      assert(item instanceof StateHandle && stateById.get(item.id) === item,
+        "MCEL_DSL_READ_STATE_REQUIRED", "Capability read dependencies require declared state handles.");
+      return ref(item);
+    });
+    for (const item of requestArguments) {
+      if (!reads.some(x => x.ref === item.state.ref)) reads.push(item.state);
+    }
+    reads.sort((a, b) => a.ref.localeCompare(b.ref));
+    let resultBindings = [];
+    if (options.resultTo !== undefined) {
+      assert(options.resultTo instanceof StateHandle && stateById.get(options.resultTo.id) === options.resultTo,
+        "MCEL_DSL_RESULT_STATE_REQUIRED", "Result target must be a declared state.");
+      assert(options.resultTo.record.authority === "derived",
+        "MCEL_DSL_RESULT_AUTHORITY_INVALID", "Capability results may update only derived state; never canonical or renderer-local state.");
+      assert(operation.resultSchema && JSON.stringify(operation.resultSchema) === JSON.stringify(options.resultTo.record.schema),
+        "MCEL_DSL_RESULT_SCHEMA_MISMATCH", "Declared capability result must exactly match derived target schema.");
+      resultBindings = [{target: ref(options.resultTo), source: "capability-response", disposition: "completed"}];
+    }
+    const record = {id, kind: "intent", sourceName: name, operationKind: "capability", operation: options.operation,
+      runtimeMethod: operation.runtimeMethod, risk: authority.record.risk, cancellable: operation.cancellable,
+      input: inputs, reads, writes: [], refusals: [], invariants: [],
+      requestArguments, effectRefs: [{ref: effectId}], resultBindings,
+      outcomes: deepClone(options.outcomes || ["completed", "refused", "failed"]), source};
+    intents.push(new IntentHandle(record));
+    effects.push({id: effectId, kind: "effect", effectKind: "capability-request",
+      owner: {ref: id}, risk: authority.record.risk, target: ref(authority), authority: ref(authority),
+      cardinality: {minimum: 0, maximum: 1},
+      allowedFinalDispositions: ["completed", "refused-before-attempt", "failed", "cancelled"],
+      requiredEvidence: ["operation-receipt", "capability-response", "visible-outcome"],
+      cleanupObligations: [], source});
+    return intents[intents.length - 1];
+  }
+  function buildCollectionSelection(name, collectionState, selectedState) {
+    assert(collectionState instanceof StateHandle && stateById.get(collectionState.id) === collectionState &&
+      collectionState.record.schema.kind === "list" && collectionState.record.schema.key,
+      "MCEL_DSL_SELECTION_COLLECTION_INVALID", "Dynamic selection requires a declared keyed-list state.");
+    const keyField = collectionState.record.schema.key;
+    const keySchema = collectionState.record.schema.items?.fields?.[keyField];
+    assert(keySchema?.kind === "string", "MCEL_DSL_SELECTION_KEY_INVALID", "Selection identity must be a declared string key.");
+    assert(selectedState instanceof StateHandle && stateById.get(selectedState.id) === selectedState &&
+      selectedState.record.authority === "renderer-local" && selectedState.record.schema.kind === "string" &&
+      !selectedState.record.schema.enum,
+      "MCEL_DSL_SELECTION_STATE_INVALID", "Selection target must be a dynamic string renderer-local state.");
+    assert(selectedState.record.initial === "", "MCEL_DSL_SELECTION_EMPTY_INVALID", "Unselected state must begin as an empty string.");
+    const inputId = semanticId("input", `${name}.key`);
+    const record = {id: semanticId("intent", name), kind: "intent", sourceName: name,
+      operationKind: "interaction", risk: "local-state", lane: "local-view-state",
+      input: [{id: inputId, kind: "intent-input", sourceName: "key", schema: {kind: "string"}}],
+      reads: [ref(collectionState)], writes: [], viewWrites: [ref(selectedState)], effectRefs: [],
+      refusals: [], invariants: [], outcomes: ["selected", "refused"],
+      collectionSelection: {source: ref(collectionState), target: ref(selectedState),
+        input: {ref: inputId}, key: keyField, membership: "required", missing: "refuse", empty: "clear"},
+      source};
+    const handle = new IntentHandle(record);
+    intents.push(handle);
+    return handle;
+  }
+  function buildViewSelect(name, selectedState) {
+    assert(selectedState instanceof StateHandle && stateById.get(selectedState.id) === selectedState &&
+      selectedState.record.authority === "renderer-local" &&
+      selectedState.record.schema.kind === "string" &&
+      Array.isArray(selectedState.record.schema.enum) && selectedState.record.schema.enum.length > 0 &&
+      selectedState.record.schema.enum.includes(selectedState.record.initial),
+      "MCEL_DSL_VIEW_SELECTION_INVALID", "A view selector requires a bounded renderer-local string state with a valid initial choice.");
+    const inputId = semanticId("input", `${name}.choice`);
+    const record = {id: semanticId("intent", name), kind: "intent", sourceName: name,
+      operationKind: "interaction", risk: "local-state", lane: "local-view-state",
+      input: [{id: inputId, kind: "intent-input", sourceName: "choice", schema: deepClone(selectedState.record.schema)}],
+      reads: [], writes: [], viewWrites: [ref(selectedState)], effectRefs: [],
+      refusals: [], invariants: [], outcomes: ["completed", "refused"],
+      viewTransition: {kind: "transition.assign", target: ref(selectedState),
+        value: {kind: "input.read", input: {ref: inputId}}, invalidInput: "refuse"}, source};
+    const handle = new IntentHandle(record);
+    intents.push(handle);
+    return handle;
+  }
   const intent = {
     mutation: buildMutation,
+    capabilityRequest: buildCapabilityRequest,
+    selectFromCollection: buildCollectionSelection,
+    selectView: buildViewSelect,
     keyedCollection(name, collectionState) {
       assert(collectionState instanceof StateHandle && collectionState.record.schema.kind === "list" &&
         collectionState.record.schema.key, "MCEL_DSL_COLLECTION_STATE_REQUIRED", "Keyed collection intents require keyed list state.");
@@ -740,71 +917,294 @@ function createDsl(metadata, source) {
     return semanticId("surface-node", `${metadata.id}.${localName}`);
   }
 
+  // Interface intent is author meaning, never an executable layout. Keep the
+  // public DSL deliberately closed so a typo cannot silently discard intent.
+  const INTERFACE_ROLES = new Set([
+    "main-workarea", "navigation", "collection", "document", "inspector",
+    "commands", "results", "status", "auxiliary-workarea", "mode-selector",
+  ]);
+  const INTERFACE_PURPOSES = new Set(["monitor", "compare", "inspect", "navigate", "manage"]);
+  const INTERFACE_RELATIONSHIPS = new Set([
+    "selects", "contextual-to", "supports", "reports-for", "switches-mode-of",
+    "acts-on", "informs", "accompanies",
+  ]);
+  function knownOptions(options, keys, where) {
+    assert(options && typeof options === "object" && !Array.isArray(options),
+      "MCEL_DSL_OPTIONS_INVALID", `${where} requires an options record.`);
+    const unknown = Object.keys(options).filter(key => !keys.includes(key));
+    assert(!unknown.length, "MCEL_DSL_UNKNOWN_OPTION",
+      `${where} has unsupported option(s): ${unknown.join(", ")}`, where);
+  }
+  function intentRegionId(name) {
+    return semanticId("interface-region", `${metadata.id}.${name}`);
+  }
+  // A mode condition is an author-owned semantic state relationship, not a
+  // placement or layout declaration. Never convert it into operational authority.
+  function modeCondition(options, where) {
+    if (options.when === undefined) return {};
+    knownOptions(options.when, ["state", "equals"], where + ".when");
+    const mode=options.when.state, value=options.when.equals;
+    assert(mode instanceof StateHandle && stateById.get(mode.id) === mode &&
+      mode.record.authority === "renderer-local" && mode.record.schema.kind === "string" &&
+      Array.isArray(mode.record.schema.enum) && mode.record.schema.enum.includes(value),
+      "MCEL_DSL_VIEW_CONDITION_INVALID", "A view condition must reference a declared renderer-local enum state and one of its values.");
+    return {visibleWhen:{state:ref(mode),equals:value}};
+  }
+  const issuedSurfaceNodes = [];
+  function surfaceNode(name, record) {
+    const handle = new SurfaceNodeHandle(name, record);
+    issuedSurfaceNodes.push(handle);
+    return handle;
+  }
   const surface = {
     form(name, options = {}) {
+      knownOptions(options, ["id", "fields", "intent", "defaults", "when"], `surface.form:${name}`);
       assert(options.fields && typeof options.fields === "object", "MCEL_DSL_FORM_FIELDS_REQUIRED", "Form requires fields.");
       const fields = {};
       for (const [fieldName, schema] of Object.entries(options.fields)) {
         assert(schema instanceof SchemaBuilder, "MCEL_DSL_SCHEMA_REQUIRED", `Form field '${fieldName}' requires schema.`);
         fields[fieldName] = schema.toJSON();
       }
+      const defaults={};
+      for (const [k,v] of Object.entries(options.defaults || {})) {
+        assert(Object.prototype.hasOwnProperty.call(fields,k), "MCEL_DSL_FORM_DEFAULT_UNKNOWN", "Form default refers to an undeclared field.");
+        const schema=fields[k];
+        assert((schema.kind==="number" && typeof v==="number" && Number.isFinite(v)) ||
+               (schema.kind==="integer" && Number.isSafeInteger(v)) ||
+               (schema.kind==="string" && typeof v==="string" && (!schema.enum || schema.enum.includes(v))) ||
+               (schema.kind==="boolean" && typeof v==="boolean"),
+          "MCEL_DSL_FORM_DEFAULT_INVALID", "Form default must match its typed field.");
+        defaults[k]=v;
+      }
       if (options.intent !== undefined) assert(options.intent instanceof IntentHandle,
         "MCEL_DSL_FORM_INTENT_REQUIRED", "Bound form requires intent handle.");
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "form",
-        sourceName: name, fields, ...(options.intent ? {intent: ref(options.intent)} : {})};
-      return new SurfaceNodeHandle(name, record);
+        sourceName: name, fields, ...(Object.keys(defaults).length ? {defaults} : {}), ...(options.intent ? {intent: ref(options.intent)} : {}), ...modeCondition(options, `surface.form:${name}`)};
+      return surfaceNode(name, record);
     },
     collection(name, options = {}) {
+      knownOptions(options, ["id", "key", "fields", "state", "actions", "select", "when"], `surface.collection:${name}`);
       assert(typeof options.key === "string" && options.key, "MCEL_DSL_COLLECTION_KEY_REQUIRED", "Collection requires key.");
       assert(Array.isArray(options.fields) && options.fields.length > 0 && options.fields.every(x => typeof x === "string"),
         "MCEL_DSL_COLLECTION_FIELDS_REQUIRED", "Collection requires visible fields.");
       if (options.state !== undefined) assert(options.state instanceof StateHandle &&
         options.state.record.schema.kind === "list" && options.state.record.schema.key === options.key,
         "MCEL_DSL_COLLECTION_STATE_REQUIRED", "Surface collection state must match key.");
+      if (options.select !== undefined) {
+        assert(options.select instanceof IntentHandle && options.state instanceof StateHandle &&
+          options.select.record.collectionSelection?.source?.ref === options.state.id,
+          "MCEL_DSL_COLLECTION_SELECTION_BINDING_INVALID",
+          "Collection selection intent must select from this collection's declared state.");
+      }
       const actions = options.actions || {};
       for (const [key, value] of Object.entries(actions)) assert(["add", "update", "remove"].includes(key) && value instanceof IntentHandle,
         "MCEL_DSL_COLLECTION_ACTION_INVALID", "Collection actions must be declared intent handles.");
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "collection", sourceName: name,
         key: options.key, fields: [...options.fields],
         ...(options.state ? {state: ref(options.state)} : {}),
-        actions: Object.fromEntries(Object.entries(actions).map(([key, value]) => [key, ref(value)]))};
-      return new SurfaceNodeHandle(name, record);
+        ...(options.select ? {selectionIntent: ref(options.select)} : {}),
+        actions: Object.fromEntries(Object.entries(actions).map(([key, value]) => [key, ref(value)])),
+        ...modeCondition(options, `surface.collection:${name}`)};
+      return surfaceNode(name, record);
     },
     text(name, options = {}) {
+      knownOptions(options, ["id", "value", "when"], `surface.text:${name}`);
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "state-value",
         value: expression(options.value),
+        ...modeCondition(options, `surface.text:${name}`),
       };
-      return new SurfaceNodeHandle(name, record);
+      return surfaceNode(name, record);
     },
     action(name, options = {}) {
+      knownOptions(options, ["id", "intent"], `surface.action:${name}`);
       assert(options.intent instanceof IntentHandle, "MCEL_DSL_ACTION_INTENT_REQUIRED", `Surface action '${name}' requires an intent handle.`);
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "control", intent: ref(options.intent),
       };
-      return new SurfaceNodeHandle(name, record);
+      return surfaceNode(name, record);
+    },
+    plot(name, options = {}) {
+      knownOptions(options, ["id", "state", "x", "y"], `surface.plot:${name}`);
+      assert(options.state instanceof StateHandle && stateById.get(options.state.id) === options.state,
+        "MCEL_DSL_PLOT_STATE_INVALID", "Plot needs a declared state.");
+      const schema = options.state.record.schema;
+      assert(schema.kind === "list" && schema.items?.kind === "record" &&
+        schema.items.fields?.[options.x]?.kind === "number" &&
+        schema.items.fields?.[options.y]?.kind === "number",
+        "MCEL_DSL_PLOT_FIELDS_INVALID", "Plot needs a keyed list with numeric x and y fields.");
+      assert(options.x !== options.y, "MCEL_DSL_PLOT_AXES_INVALID", "Plot axes must be distinct.");
+      return surfaceNode(name, {id: nodeId(name, options), kind: "surface-node", nodeKind: "plot",
+        sourceName: name, state: ref(options.state), x: options.x, y: options.y});
+    },
+    documentEditor(name, options = {}) {
+      knownOptions(options, ["id", "value", "path", "draft", "loadIntent", "saveIntent"], `surface.documentEditor:${name}`);
+      for (const key of ["value", "path", "draft"]) {
+        const item=options[key];
+        assert(item instanceof StateHandle && stateById.get(item.id)===item && item.record.schema.kind==="string",
+          "MCEL_DSL_DOCUMENT_STATE_INVALID", `Document editor ${key} requires a declared string state.`);
+      }
+      assert(options.value.record.authority==="derived" && options.path.record.authority==="renderer-local" &&
+        options.draft.record.authority==="renderer-local", "MCEL_DSL_DOCUMENT_AUTHORITY_INVALID",
+        "Loaded source is derived; selected path and unsaved draft are renderer-local.");
+      assert(options.loadIntent instanceof IntentHandle && options.loadIntent.record.operationKind==="capability" &&
+        options.loadIntent.record.resultBindings?.some(x=>x.target.ref===options.value.id),
+        "MCEL_DSL_DOCUMENT_LOAD_INVALID", "Document editor load intent must populate the source state.");
+      if (options.saveIntent!==undefined) assert(options.saveIntent instanceof IntentHandle &&
+        options.saveIntent.record.operationKind==="capability" && options.saveIntent.record.risk==="source-write" &&
+        options.saveIntent.record.requestArguments?.some(x=>x.state.ref===options.draft.id) &&
+        options.saveIntent.record.requestArguments?.some(x=>x.state.ref===options.path.id),
+        "MCEL_DSL_DOCUMENT_SAVE_INVALID", "Document save must be a governed source-write of selected path and draft.");
+      return surfaceNode(name,{id:nodeId(name,options),kind:"surface-node",nodeKind:"document-editor",sourceName:name,
+        contentState:ref(options.value),path:ref(options.path),draft:ref(options.draft),loadIntent:ref(options.loadIntent),
+        ...(options.saveIntent ? {saveIntent:ref(options.saveIntent)}:{})});
     },
     receipt(name, options = {}) {
+      knownOptions(options, ["id"], `surface.receipt:${name}`);
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "operation-evidence"};
-      return new SurfaceNodeHandle(name, record);
+      return surfaceNode(name, record);
     },
     region(name, options = {}) {
-      return {kind: "dsl.surface-region", name, children: (options.children || []).flat()};
+      knownOptions(options, ["role", "priority", "prefer", "children"], `surface.region:${name}`);
+      assert(typeof name === "string" && /^[a-z][a-z0-9-]*$/.test(name),
+        "MCEL_DSL_REGION_ID_INVALID", "Region names must be stable lowercase IDs.");
+      assert(Array.isArray(options.children || []), "MCEL_DSL_REGION_CHILDREN_INVALID", "Region children must be an array.");
+      if (options.role !== undefined) {
+        assert(INTERFACE_ROLES.has(options.role), "MCEL_DSL_REGION_ROLE_INVALID", `Unknown interface role '${options.role}'.`);
+      }
+      if (options.priority !== undefined) {
+        assert(["primary", "secondary", "supporting"].includes(options.priority),
+          "MCEL_DSL_REGION_PRIORITY_INVALID", "Priority must be primary, secondary or supporting.");
+      }
+      if (options.prefer !== undefined) {
+        knownOptions(options.prefer, ["side"], `surface.region:${name}.prefer`);
+        assert(["start", "end", "top", "bottom"].includes(options.prefer.side),
+          "MCEL_DSL_REGION_PREFERENCE_INVALID", "Preferred side must be start, end, top or bottom.");
+      }
+      assert(options.role !== undefined || (options.priority === undefined && options.prefer === undefined),
+        "MCEL_DSL_REGION_ROLE_REQUIRED", "Region preferences or priority require an interface role.");
+      return {kind: "dsl.surface-region", name, id: intentRegionId(name),
+        ...(options.role ? {role: options.role} : {}),
+        ...(options.priority ? {priority: options.priority} : {}),
+        ...(options.prefer ? {prefer: deepClone(options.prefer)} : {}),
+        children: (options.children || []).flat()};
+    },
+    relate(from, kind, to) {
+      const fromId = typeof from === "string" ? intentRegionId(from) : from && from.kind === "dsl.surface-region" && from.id;
+      const toId = typeof to === "string" ? intentRegionId(to) : to && to.kind === "dsl.surface-region" && to.id;
+      assert(fromId && toId, "MCEL_DSL_RELATION_ENDPOINT_INVALID", "A semantic relationship joins two declared region IDs or handles.");
+      assert(INTERFACE_RELATIONSHIPS.has(kind), "MCEL_DSL_RELATION_KIND_INVALID", `Unknown relationship '${kind}'.`);
+      assert(fromId !== toId, "MCEL_DSL_RELATION_SELF_INVALID", "A region cannot relate to itself.");
+      return {kind: "dsl.interface-relation", from: {ref: fromId}, to: {ref: toId}, relation: kind};
+    },
+    bindHtml(name, options = {}) {
+      // The HTML file owns hierarchy and region meaning; JS binds real typed
+      // surface nodes by stable region ID, without duplicating the HTML tree.
+      knownOptions(options, ["id", "sourceName", "bindings", "relations"], `surface.bindHtml:${name}`);
+      assert(options.bindings && typeof options.bindings === "object" && !Array.isArray(options.bindings),
+        "MCEL_DSL_HTML_BINDINGS_REQUIRED", "HTML-bound surface requires a bindings map.");
+      const nodes = [], regions = [];
+      const nodesByName = new Map();
+      const seenNodes = new Set();
+      for (const [regionName, children] of Object.entries(options.bindings)) {
+        assert(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(regionName),
+          "MCEL_DSL_HTML_REGION_ID_INVALID", `Invalid HTML region ID '${regionName}'.`);
+        assert(Array.isArray(children), "MCEL_DSL_HTML_BINDING_INVALID", `Region '${regionName}' bindings must be an array.`);
+        const members = [];
+        for (const child of children) {
+          assert(child instanceof SurfaceNodeHandle, "MCEL_DSL_HTML_BINDING_INVALID", "HTML bindings must contain DSL surface node handles.");
+          assert(!seenNodes.has(child.id), "MCEL_DSL_SURFACE_NODE_DUPLICATE", `Node '${child.id}' belongs to multiple regions.`);
+          seenNodes.add(child.id);
+          nodes.push(child.record);
+          nodesByName.set(child.localName, child);
+          members.push({ref: child.id});
+        }
+        regions.push({id: intentRegionId(regionName), members});
+      }
+      const relations = options.relations || [];
+      assert(Array.isArray(relations), "MCEL_DSL_RELATIONS_INVALID", "HTML relationships must be an array.");
+      const keys = new Set();
+      for (const relation of relations) {
+        assert(relation && relation.kind === "dsl.interface-relation", "MCEL_DSL_RELATION_INVALID", "Use dsl.surface.relate to declare HTML relationships.");
+        const k = `${relation.from.ref}:${relation.relation}:${relation.to.ref}`;
+        assert(!keys.has(k), "MCEL_DSL_RELATION_DUPLICATE", "Duplicate HTML semantic relationship.");
+        keys.add(k);
+      }
+      const record = {
+        id: semanticId("surface", options.id || `${metadata.id}.${name}`),
+        kind: "surface", sourceName: options.sourceName || `${metadata.title.replace(/\s+/g, "")}Surface`,
+        nodes,
+        htmlBindings: {
+          schema: "mcel.html-bindings.v1", regions,
+          relations: relations.map(x => ({from: x.from, kind: x.relation, to: x.to})),
+        },
+        source,
+      };
+      const handle = new SurfaceHandle(record, nodesByName);
+      surfaces.push(handle);
+      return handle;
     },
     define(name, options = {}) {
+      knownOptions(options, ["id", "sourceName", "root", "relations", "purpose"], `surface.define:${name}`);
+      if (options.purpose !== undefined) assert(INTERFACE_PURPOSES.has(options.purpose),
+        "MCEL_DSL_SURFACE_PURPOSE_INVALID", "Surface purpose must be a registered semantic purpose.");
       assert(options.root && options.root.kind === "dsl.surface-region", "MCEL_DSL_SURFACE_ROOT_REQUIRED", `Surface '${name}' requires a structural root region.`);
       const nodes = [];
       const nodesByName = new Map();
-      for (const child of options.root.children) {
-        assert(child instanceof SurfaceNodeHandle, "MCEL_DSL_SURFACE_CHILD_INVALID", `Surface '${name}' contains an unsupported structural child.`);
-        nodes.push(child.record);
-        nodesByName.set(child.localName, child);
+      const regions = [];
+      const seenRegions = new Set();
+      const seenNodes = new Set();
+      function visit(region) {
+        assert(!seenRegions.has(region.id), "MCEL_DSL_REGION_DUPLICATE", `Duplicate interface region '${region.id}'.`);
+        seenRegions.add(region.id);
+        const members = [];
+        for (const child of region.children) {
+          if (child && child.kind === "dsl.surface-region") {
+            visit(child);
+          } else {
+            assert(child instanceof SurfaceNodeHandle, "MCEL_DSL_SURFACE_CHILD_INVALID", `Surface '${name}' contains an unsupported child.`);
+            assert(!seenNodes.has(child.id), "MCEL_DSL_SURFACE_NODE_DUPLICATE", `Node '${child.id}' belongs to multiple regions.`);
+            seenNodes.add(child.id);
+            nodes.push(child.record);
+            nodesByName.set(child.localName, child);
+            members.push({ref: child.id});
+          }
+        }
+        if (region.role) {
+          assert(members.length > 0, "MCEL_DSL_REGION_EMPTY", `Semantic region '${region.name}' must own at least one node.`);
+          regions.push({id: region.id, kind: "interface-region", role: region.role, source,
+            ...(region.priority ? {priority: region.priority} : {}),
+            ...(region.prefer ? {prefer: region.prefer} : {}),
+            members: members.sort((a,b) => a.ref.localeCompare(b.ref))});
+        } else {
+          assert(!members.length || !regions.length,
+            "MCEL_DSL_REGION_UNGROUPED", "An untyped root cannot mix direct nodes with semantic regions.");
+        }
+      }
+      visit(options.root);
+      const relations = options.relations || [];
+      assert(Array.isArray(relations), "MCEL_DSL_RELATIONS_INVALID", "Relations must be an array.");
+      const relKeys = new Set();
+      for (const relation of relations) {
+        assert(relation && relation.kind === "dsl.interface-relation" &&
+          seenRegions.has(relation.from.ref) && seenRegions.has(relation.to.ref),
+          "MCEL_DSL_RELATION_UNRESOLVED", "Relationships must reference regions on this surface.");
+        const key = `${relation.from.ref}:${relation.relation}:${relation.to.ref}`;
+        assert(!relKeys.has(key), "MCEL_DSL_RELATION_DUPLICATE", "Duplicate semantic relationship.");
+        relKeys.add(key);
       }
       const record = {
         id: semanticId("surface", options.id || `${metadata.id}.${name}`),
         kind: "surface",
         sourceName: options.sourceName || `${metadata.title.replace(/\s+/g, "")}Surface`,
         nodes,
+        ...(options.purpose ? {purpose: options.purpose} : {}),
+        ...(regions.length ? {interfaceIntent: {
+          schema: "mcel.interface-intent.v1",
+          regions: regions.sort((a,b) => a.id.localeCompare(b.id)),
+          relations: relations.map(x => ({from: x.from, kind: x.relation, to: x.to})).sort((a,b) =>
+            `${a.from.ref}:${a.kind}:${a.to.ref}`.localeCompare(`${b.from.ref}:${b.kind}:${b.to.ref}`)),
+        }} : {}),
         source,
       };
       const handle = new SurfaceHandle(record, nodesByName);
@@ -887,8 +1287,8 @@ function createDsl(metadata, source) {
   };
 
   return {
-    field, state, intent, invariant, surface, layout, prove, expr, ir, migration, application,
-    __collections: {states, invariants, intents, effects, surfaces, layouts, scenarios},
+    field, state, capability, intent, invariant, surface, layout, prove, expr, ir, migration, application,
+    __collections: {states, capabilities, invariants, intents, effects, surfaces, layouts, scenarios, issuedSurfaceNodes},
   };
 }
 
@@ -966,8 +1366,16 @@ function finalizeApplication(metadata, built, dsl, source, sourceHash, sourcePat
     return item.record;
   });
   const stateRecords = unwrap(built.states, StateHandle, "states");
+  const capabilityRecords = unwrap(built.capabilities, CapabilityHandle, "capabilities");
   const intentRecords = unwrap(built.intents, IntentHandle, "intents");
   const surfaceRecords = unwrap(built.surfaces, SurfaceHandle, "surfaces");
+  if (surfaceRecords.some(surface => surface.htmlBindings)) {
+    const bound = surfaceRecords.flatMap(surface => surface.nodes || []).map(node => node.id);
+    const issued = dsl.__collections.issuedSurfaceNodes.map(node => node.id);
+    assert(bound.length === issued.length && new Set(bound).size === bound.length &&
+      bound.every(id => issued.includes(id)),
+      "MCEL_DSL_UNBOUND_SURFACE_NODE", "All declared surface nodes must be bound exactly once to HTML regions.");
+  }
   const layoutRecords = unwrap(built.layouts, LayoutHandle, "layouts");
   const invariantRecords = built.proof && Array.isArray(built.proof.invariants)
     ? deepClone(built.proof.invariants)
@@ -975,7 +1383,8 @@ function finalizeApplication(metadata, built, dsl, source, sourceHash, sourcePat
 
   const allRecords = [
     {id: semanticId("app", metadata.id), source},
-    ...stateRecords, ...intentRecords, ...dsl.__collections.effects,
+    ...surfaceRecords.flatMap(surface => surface.interfaceIntent ? surface.interfaceIntent.regions : []),
+    ...stateRecords, ...capabilityRecords, ...intentRecords, ...dsl.__collections.effects,
     ...surfaceRecords, ...layoutRecords, ...scenarioRecords, ...invariantRecords,
   ];
   const nodeBindings = allRecords.map((record) => ({
@@ -998,7 +1407,7 @@ function finalizeApplication(metadata, built, dsl, source, sourceHash, sourcePat
     states: stateRecords,
     derivations: deepClone(built.derivations || []),
     intents: intentRecords,
-    capabilities: deepClone(built.capabilities || []),
+    capabilities: capabilityRecords,
     effects: deepClone(dsl.__collections.effects),
     surfaces: surfaceRecords,
     layouts: layoutRecords,

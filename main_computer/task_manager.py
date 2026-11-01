@@ -123,6 +123,7 @@ class TaskManagerService:
         pid: int | None = None,
         force: bool = False,
         confirm: bool = False,
+        expected_created_at: str | None = None,
     ) -> dict[str, Any]:
         action = str(action or "").strip()
         if action not in SERVER_ACTIONS | PROCESS_ACTIONS:
@@ -137,7 +138,8 @@ class TaskManagerService:
                 "snapshot": snapshot,
             }
         if action in PROCESS_ACTIONS:
-            return self._process_action(action=action, pid=pid, confirm=confirm)
+            return self._process_action(action=action, pid=pid, confirm=confirm,
+                                        expected_created_at=expected_created_at)
         return self._server_action(action=action, confirm=confirm)
 
     def list_schedules(self) -> dict[str, Any]:
@@ -248,11 +250,25 @@ class TaskManagerService:
             "server": self.snapshot(limit=16, include_connections=True)["server"],
         }
 
-    def _process_action(self, *, action: str, pid: int | None, confirm: bool) -> dict[str, Any]:
+    def _process_action(self, *, action: str, pid: int | None, confirm: bool,
+                        expected_created_at: str | None = None) -> dict[str, Any]:
         if pid is None or pid <= 0:
             raise ValueError("A positive pid is required.")
         if not confirm:
             return {"ok": True, "planned": True, "action": action, "message": f"Planned {action} for pid {pid}.", "pid": pid}
+        verified_created_at = None
+        if expected_created_at is not None:
+            # Semantic operations require an OS-validated creation generation at
+            # execution time. A PID alone can identify a different process later.
+            if psutil is None or not expected_created_at:
+                raise ValueError("Process generation verification unavailable.")
+            try:
+                observed = psutil.Process(pid)
+                verified_created_at = self._format_epoch(observed.create_time())
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as exc:
+                raise ValueError("Process generation unavailable before action.") from exc
+            if not verified_created_at or verified_created_at != expected_created_at:
+                raise ValueError("Process generation mismatch; action refused.")
         if action == "terminate_pid" and pid == os.getpid():
             self._launch_detached(self._deferred_kill_command(pid=pid, force=False))
             return {"ok": True, "deferred": True, "action": action, "message": f"Scheduled graceful termination for current pid {pid}.", "pid": pid}
@@ -272,7 +288,7 @@ class TaskManagerService:
                     "stderr": completed.stderr,
                 }
             raise ValueError("psutil is required for direct pid termination on this platform.")
-        proc = psutil.Process(pid)
+        proc = observed if verified_created_at is not None else psutil.Process(pid)
         if action == "kill_pid":
             proc.kill()
         else:
@@ -281,7 +297,8 @@ class TaskManagerService:
             proc.wait(timeout=5)
         except Exception:
             pass
-        return {"ok": True, "action": action, "message": f"Process {pid} handled via {action}.", "pid": pid}
+        return {"ok": True, "action": action, "message": f"Process {pid} handled via {action}.",
+                "pid": pid, **({"verified_created_at": verified_created_at} if verified_created_at else {})}
 
     def _control_script_args(self, verb: str) -> list[str]:
         return [

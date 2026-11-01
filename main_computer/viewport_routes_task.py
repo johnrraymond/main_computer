@@ -76,7 +76,14 @@ class ViewportTaskRoutesMixin:
             force = self._coerce_bool(body.get("force", False), default=False)
             confirm = self._coerce_bool(body.get("confirm", False), default=False)
             self.server.signal("api-task-action", action=action, pid=pid_value, force=force, confirm=confirm)
-            result = self.server.task_manager.perform_action(action=action, pid=pid_value, force=force, confirm=confirm)
+            semantic_guarded = body.get("mcel_semantic_guarded") is True
+            expected_created_at = body.get("expected_created_at") if semantic_guarded else None
+            if semantic_guarded and (action not in {"terminate_pid", "kill_pid"} or
+                    not isinstance(expected_created_at, str) or not expected_created_at):
+                raise ValueError("Semantic process action requires a verified generation.")
+            result = self.server.task_manager.perform_action(
+                action=action, pid=pid_value, force=force, confirm=confirm,
+                expected_created_at=expected_created_at)
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
             self._send_json(result, status=status)
         except Exception as exc:

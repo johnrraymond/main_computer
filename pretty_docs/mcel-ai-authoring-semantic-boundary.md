@@ -1,4 +1,10 @@
 # MCEL AI Authoring Language
+
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+“One official JavaScript DSL” means one authoritative **behavior/domain DSL**, not a prohibition on the separate, valid authored semantic HTML required in V1. HTML hierarchy never grants operational authority, and JavaScript effects never establish pixel geometry. The operational boundaries below remain authoritative for current proof.
+
 ## Semantic Authoring Boundary
 
 ## Authoring principles that constrain the compiler design

@@ -1,5 +1,11 @@
 # MCEL Status and Roadmap
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+**Normative V1 target:** [MCEL V1 Product Contract](mcel-v1-product-contract.md) and its [authoring](mcel-v1-authoring-format.md), [vocabulary](mcel-v1-semantic-vocabulary.md) and [four-app acceptance](mcel-v1-four-app-acceptance.md) specifications. **This status page remains the authority for current implementation/evidence**; publication of V1 target documentation does not authorize or complete any code candidate.
+
+
 This document is the canonical human-readable statement of current MCEL status for this repository snapshot. It does not replace generated registry or truth-audit output. When prose disagrees with generated evidence, the generated evidence wins.
 
 ## Authority order

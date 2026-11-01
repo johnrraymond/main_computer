@@ -1,5 +1,11 @@
 # MCEL reference app and fixture roles
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+The “canonical” single-app example in the current records below denotes implementation/evidence status, **not** exclusive authority over the V1 reference qualification suite. The finished V1 suite is File Manager, Task Manager, Code Editor and Calculator. Historical Counter, Workbench and other fixtures are not promoted by this documentation update.
+
+
 MCEL now keeps reusable mechanics in shared modules and keeps app-specific facts
 in current app declarations or current profiles. App-specific wrappers are
 compatibility entry points only when they still exist and are still referenced;

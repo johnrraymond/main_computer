@@ -1,5 +1,11 @@
 # MCEL Application Scaffolding
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+**V1 generator target:** the existing `tools/mcel_create_app.py` command must eventually generate an author-owned `application.html` and `application.js`, requirements/tests and compiler-owned output, **without an authored `layout.js`** or copied host markup. Its current explicit-package/template output and proof history described below remain accurate current implementation, not the V1 target.
+
+
 This document specifies the target MCEL application-scaffolding feature and the canonical application template that the feature must generate.
 
 It is the implementation contract for the complete feature. Waves 2 through 5A provide deterministic scaffolding, package discovery, browser-safe projection, SCM-controlled operations, and generic semantic-surface mounting. Wave 6A provides package-local acceptance discovery and app-scoped execution through the existing acceptance authority. Wave 6B provides a generic real-browser package host and operation-linked independent browser observation. Wave 7 composes those independent authorities, exact repository provenance, and `McelAppTruthGate` under an app-scoped proof command. Current implementation status remains controlled by `pretty_docs/mcel-status-and-roadmap.md` and generated repository evidence.

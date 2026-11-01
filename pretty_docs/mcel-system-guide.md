@@ -1,5 +1,11 @@
 # MCEL System Guide
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+For the **finished MCEL V1 product** start with the [normative product contract](mcel-v1-product-contract.md) and [paired authoring format](mcel-v1-authoring-format.md); the current APIs, engine mechanics, historical experiments and proof status in this guide remain descriptive of existing implementation. All four [reference applications](mcel-v1-four-app-acceptance.md) must qualify before claiming V1.
+
+
 ## Mission and design priorities
 
 **MCEL exists to help people and AIs author good-looking, correctly functioning web applications with minimal effort and maximum valid flexibility, without requiring expertise in MCEL internals.** Its parts should know their own responsibilities and composition rules so authors cannot accidentally assemble structurally unworkable patterns where MCEL can establish the conflict.

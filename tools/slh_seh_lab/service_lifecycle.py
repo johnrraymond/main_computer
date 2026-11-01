@@ -24,6 +24,7 @@ import time
 from main_computer.slh.authenticator import generate_identity, sign_object
 from main_computer.slh.local_service import create_server
 from main_computer.slh.organization_state import read_config
+from .lab_stage_diagnostics import stage as lab_stage, record as lab_record
 
 
 class ServiceLabFailure(RuntimeError):
@@ -43,10 +44,10 @@ def _ports():
     return result
 
 
-def _http(port, method, route, body=None, *, bearer='', tls=False):
+def _http(port, method, route, body=None, *, bearer='', tls=False, timeout=3):
     context = ssl._create_unverified_context() if tls else None
-    conn = (HTTPSConnection('127.0.0.1', port, timeout=3, context=context) if tls
-            else HTTPConnection('127.0.0.1', port, timeout=3))
+    conn = (HTTPSConnection('127.0.0.1', port, timeout=timeout, context=context) if tls
+            else HTTPConnection('127.0.0.1', port, timeout=timeout))
     headers = {'Authorization': 'Bearer ' + bearer} if bearer else {}
     data = None
     if body is not None:
@@ -151,30 +152,37 @@ def _fingerprint(port):
 def _managed_auth(port, device, key, *, expected_pin, via_relay=False):
     from main_computer.slh.managed_gateway import MANAGED_PATH
     from websockets.sync.client import connect
-    with connect(f'wss://127.0.0.1:{port}{MANAGED_PATH}',
-                 ssl=ssl._create_unverified_context(), open_timeout=5, close_timeout=2) as websocket:
-        peer = websocket.socket.getpeercert(binary_form=True)
-        if hashlib.sha256(peer).hexdigest() != expected_pin:
-            raise ServiceLabFailure('SLH TLS pin changed across direct/SEH route')
-        websocket.send(json.dumps({'type': 'worker.auth', 'device_id': device,
-                                   'execution_protocol': 'durable-authorization-v1',
-                                   'market': {'models': ['mock-model'], 'max_concurrency': 1}}))
-        challenge = json.loads(websocket.recv(timeout=5))
-        if challenge.get('type') != 'slh.auth.challenge':
-            raise ServiceLabFailure('Expected real gateway device challenge')
-        websocket.send(json.dumps({'type': 'slh.auth.proof', 'device_id': device,
-                                   'signature': sign_object(key, challenge['challenge'])}))
-        accepted = json.loads(websocket.recv(timeout=5))
-        if accepted.get('type') != 'hub.auth.accepted' or accepted.get('device_id') != device:
-            raise ServiceLabFailure(f'Worker login not accepted: {str(accepted)[:150]}')
-        ping = json.loads(websocket.recv(timeout=5))
-        if ping.get('type') != 'hub.ping':
-            raise ServiceLabFailure('Expected actual managed worker ping')
-        websocket.send(json.dumps({'type': 'worker.pong', 'ping_id': ping['ping_id']}))
-        reply = json.loads(websocket.recv(timeout=5))
-        if reply.get('type') != 'hub.pong.accepted':
-            raise ServiceLabFailure('Worker did not receive pong acceptance')
-        websocket.send(json.dumps({'type': 'worker.close'}))
+    transport = 'seh_relay' if via_relay else 'direct'
+    with lab_stage('preflight.worker_websocket', transport=transport, endpoint_port=port):
+        with lab_stage('preflight.worker_websocket.handshake', transport=transport, endpoint_port=port):
+            websocket = connect(f'wss://127.0.0.1:{port}{MANAGED_PATH}',
+                     ssl=ssl._create_unverified_context(), open_timeout=5, close_timeout=2)
+        with websocket:
+            with lab_stage('preflight.worker_websocket.tls_pin', transport=transport):
+                peer = websocket.socket.getpeercert(binary_form=True)
+                if hashlib.sha256(peer).hexdigest() != expected_pin:
+                    raise ServiceLabFailure('SLH TLS pin changed across direct/SEH route')
+            with lab_stage('preflight.worker_websocket.device_authorization', transport=transport):
+                websocket.send(json.dumps({'type': 'worker.auth', 'device_id': device,
+                                       'execution_protocol': 'durable-authorization-v1',
+                                       'market': {'models': ['mock-model'], 'max_concurrency': 1}}))
+                challenge = json.loads(websocket.recv(timeout=5))
+                if challenge.get('type') != 'slh.auth.challenge':
+                    raise ServiceLabFailure('Expected real gateway device challenge')
+                websocket.send(json.dumps({'type': 'slh.auth.proof', 'device_id': device,
+                                       'signature': sign_object(key, challenge['challenge'])}))
+                accepted = json.loads(websocket.recv(timeout=5))
+                if accepted.get('type') != 'hub.auth.accepted' or accepted.get('device_id') != device:
+                    raise ServiceLabFailure('Worker login not accepted: ' + str(accepted.get('type')))
+            with lab_stage('preflight.worker_websocket.heartbeat', transport=transport):
+                ping = json.loads(websocket.recv(timeout=5))
+                if ping.get('type') != 'hub.ping':
+                    raise ServiceLabFailure('Expected actual managed worker ping')
+                websocket.send(json.dumps({'type': 'worker.pong', 'ping_id': ping['ping_id']}))
+                reply = json.loads(websocket.recv(timeout=5))
+                if reply.get('type') != 'hub.pong.accepted':
+                    raise ServiceLabFailure('Worker did not receive pong acceptance')
+            websocket.send(json.dumps({'type': 'worker.close'}))
     return True
 
 

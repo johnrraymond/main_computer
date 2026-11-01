@@ -6,16 +6,45 @@ from __future__ import annotations
 
 from http.client import HTTPConnection, HTTPSConnection
 import json
+import os
+from pathlib import Path
 import socket
 import ssl
 import time
 from threading import Thread
+
+import pytest
 
 from main_computer.slh.local_service import create_server
 from main_computer.slh.organization_state import read_config
 from main_computer.slh.authenticator import generate_identity, sign_object
 from main_computer.slh.authority import SLHAuthority
 
+
+
+@pytest.fixture
+def disposable_slh_state(tmp_path, monkeypatch):
+    """Preserve the pytest runner's ability to reopen throwaway state.
+
+    Production secure_machine_state_dir() deliberately limits machine-owned
+    Windows state to SYSTEM/Administrators. Reapplying those ACLs to files under
+    the ordinary interactive pytest account on restart makes SQLite inaccessible.
+    Restrict this replacement to the current test's fresh pytest temp tree.
+    Production ACL hardening is never modified or disabled outside this fixture.
+    """
+    root = tmp_path.resolve()
+
+    def protect(directory):
+        directory = Path(directory).resolve()
+        if not directory.is_relative_to(root):
+            raise PermissionError('Test-only SLH state protector refuses non-pytest directory')
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == 'posix':
+            directory.chmod(0o700)
+        return directory
+
+    monkeypatch.setattr('main_computer.slh.local_service.secure_machine_state_dir', protect)
+    return protect
 
 def port():
     with socket.socket() as sock:
@@ -85,7 +114,7 @@ def wait_until(callback, timeout=8):
     raise AssertionError('Timed out waiting for Organization Service')
 
 
-def test_fresh_setup_activate_and_launch_separate_tls_organization(tmp_path):
+def test_fresh_setup_activate_and_launch_separate_tls_organization(tmp_path, disposable_slh_state):
     state=tmp_path/'slh'
     with create_server(state_dir=state,port=0) as local:
         thread=Thread(target=local.serve_forever,daemon=True)
@@ -144,7 +173,7 @@ def test_config_rejects_unsafe_enablement_and_bad_ports(tmp_path):
     assert not (tmp_path/'organization-service.json').exists()
 
 
-def test_enabled_service_resumes_after_local_service_restart_and_worker_bind(tmp_path):
+def test_enabled_service_resumes_after_local_service_restart_and_worker_bind(tmp_path, disposable_slh_state):
     state=tmp_path/'state'
     api_port, worker_port=port(),port()
     while api_port==worker_port:worker_port=port()

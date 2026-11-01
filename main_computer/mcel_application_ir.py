@@ -116,6 +116,7 @@ SEMANTIC_TOP_LEVEL_KEYS = (
 INCIDENTAL_SEMANTIC_KEYS = frozenset(
     {
         "source",
+        "htmlSource",
         "sourceName",
         "authoringStatus",
         "generatedAt",
@@ -148,6 +149,7 @@ PREFIX_KIND: Mapping[str, str] = {
     "effect": "effect",
     "surface": "surface",
     "surface-node": "surface-node",
+    "interface-region": "interface-region",
     "layout": "layout",
     "layout-node": "layout-node",
     "scenario": "scenario",
@@ -844,6 +846,7 @@ def _semantic_diagnostics(candidate: Mapping[str, Any], app_id: str) -> list[Com
     diagnostics.extend(_write_set_diagnostics(candidate, app_id, nodes))
     diagnostics.extend(_view_transition_diagnostics(candidate, app_id, nodes))
     diagnostics.extend(_tab_group_diagnostics(candidate, app_id, nodes))
+    diagnostics.extend(_public_operational_diagnostics(candidate, app_id, nodes))
     return diagnostics
 
 
@@ -1015,6 +1018,22 @@ def _write_set_diagnostics(
                         related_semantic_ids=(intent_id, target_id),
                     )
                 )
+    # Presentation intent is validated as a closed, source-grounded semantic
+    # contract; it does not authorize operations or constitute a layout tree.
+    from main_computer.mcel_knowledge.interface_intent import interface_intent_errors, html_interface_intent_errors, html_content_binding_errors, surface_purpose_errors
+    for surface in candidate.get("surfaces", []):
+        if not isinstance(surface, Mapping):
+            continue
+        for problem in (surface_purpose_errors(surface) + ((html_interface_intent_errors(surface) + html_content_binding_errors(surface, candidate)) if isinstance(surface.get("interfaceIntent"), Mapping) and "hierarchy" in surface["interfaceIntent"] else interface_intent_errors(surface))):
+            diagnostics.append(_diagnostic(
+                code="MCEL_IR_INTERFACE_INTENT_INVALID",
+                rule_version="mcel.interface-intent.v1",
+                stage="compile", repair_stage="surface", app_id=app_id,
+                semantic_path=str(surface.get("id") or "surface") + ".interfaceIntent",
+                summary="Semantic interface intent is invalid.",
+                problem=problem, source=_node_source(surface),
+                expected={"schema": "mcel.interface-intent.v1"},
+            ))
     for layout in candidate.get("layouts", []):
         if isinstance(layout, Mapping) and "layoutTree" in layout:
             for problem in _executable_layout_tree_errors(layout["layoutTree"]):
@@ -1160,6 +1179,158 @@ def _tab_group_diagnostics(
                 expected={"tabs": "unique", "panels": "uniquely-owned", "selection": "typed-renderer-local"},
             ))
     return result
+
+def _public_operational_diagnostics(
+    candidate: Mapping[str, Any], app_id: str, nodes: Mapping[str, Mapping[str, Any]],
+) -> list[CompilerDiagnostic]:
+    """Fail closed on public-DSL capability result binding and dynamic selection.
+
+    These declarations describe admissible behavior; they never authorize execution
+    or mutate canonical state. Runtime acceptance remains a separate gate.
+    """
+    result: list[CompilerDiagnostic] = []
+    capabilities = {c.get("id"): c for c in candidate.get("capabilities", []) if isinstance(c, Mapping)}
+    effects = {e.get("id"): e for e in candidate.get("effects", []) if isinstance(e, Mapping)}
+
+    def ref_id(value: Any) -> str | None:
+        return value.get("ref") if isinstance(value, Mapping) and isinstance(value.get("ref"), str) else None
+
+    def object_value(value: Any) -> Mapping[str, Any]:
+        return value if isinstance(value, Mapping) else {}
+
+    def bad(code: str, intent: Mapping[str, Any], problems: list[str]) -> None:
+        result.append(_diagnostic(
+            code=code, rule_version="mcel.public-operational-contract.v1",
+            stage="compile", repair_stage="intent", app_id=app_id,
+            semantic_path=str(intent.get("id") or "intent"),
+            summary="Public DSL operational contract is invalid.",
+            problem="; ".join(sorted(set(problems))), source=_node_source(intent),
+            observed={"problems": sorted(set(problems))},
+            expected={"contract": "explicit typed semantics with no authority escalation"},
+        ))
+
+    for intent in candidate.get("intents", []):
+        if not isinstance(intent, Mapping):
+            continue
+        bindings = intent.get("resultBindings", [])
+        selection = intent.get("collectionSelection")
+        # All operations with declared result bindings must be backed by exactly
+        # one explicit capability-request effect and a matching registered method.
+        if bindings or intent.get("operation") is not None:
+            problems: list[str] = []
+            refs = intent.get("effectRefs", [])
+            effect_id = refs[0].get("ref") if isinstance(refs, list) and len(refs) == 1 and isinstance(refs[0], Mapping) else None
+            effect = effects.get(effect_id)
+            capability_ref = ref_id(effect.get("target")) if isinstance(effect, Mapping) else None
+            authority_ref = ref_id(effect.get("authority")) if isinstance(effect, Mapping) else None
+            capability = capabilities.get(capability_ref)
+            if (not isinstance(effect, Mapping) or not isinstance(capability, Mapping) or
+                    authority_ref != capability_ref or effect.get("effectKind") != "capability-request" or
+                    ref_id(effect.get("owner")) != intent.get("id")):
+                problems.append("governed-capability-effect-required")
+            if intent.get("operationKind") != "capability" or intent.get("writes") or intent.get("transition") or intent.get("viewWrites"):
+                problems.append("capability-cannot-write-state-directly")
+            if isinstance(capability, Mapping):
+                op = [x for x in capability.get("operations", []) if isinstance(x, Mapping)
+                      and x.get("name") == intent.get("operation")]
+                if len(op) != 1 or not isinstance(intent.get("runtimeMethod"), str) or (op and op[0].get("runtimeMethod") != intent.get("runtimeMethod")):
+                    problems.append("registered-operation-and-method-required")
+                if capability.get("risk") != intent.get("risk") or (isinstance(effect, Mapping) and effect.get("risk") != capability.get("risk")):
+                    problems.append("risk-must-match-capability-and-effect")
+            else:
+                op = []
+            if op:
+                declared_inputs = op[0].get("inputs", {})
+                if not isinstance(declared_inputs, Mapping):
+                    problems.append("operation-input-contract-required")
+                    declared_inputs = {}
+                observed_input = {}
+                for item in intent.get("input", []):
+                    if not isinstance(item, Mapping) or not isinstance(item.get("sourceName"), str):
+                        problems.append("invalid-operation-input")
+                        continue
+                    if item["sourceName"] in observed_input:
+                        problems.append("duplicate-operation-input")
+                    observed_input[item["sourceName"]] = item.get("schema")
+                observed_reads = {r.get("ref") for r in intent.get("reads", []) if isinstance(r, Mapping)}
+                for item in intent.get("requestArguments", []):
+                    if not isinstance(item, Mapping) or not isinstance(item.get("name"), str):
+                        problems.append("invalid-state-argument")
+                        continue
+                    name = item["name"]
+                    state_id = item.get("state", {}).get("ref") if isinstance(item.get("state"), Mapping) else None
+                    state_node = nodes.get(state_id)
+                    if (not isinstance(state_node, Mapping) or state_node.get("kind") != "state" or
+                            state_id not in observed_reads or name in observed_input):
+                        problems.append("unbound-or-duplicate-state-argument")
+                    observed_input[name] = state_node.get("schema") if isinstance(state_node, Mapping) else None
+                if observed_input != declared_inputs:
+                    problems.append("capability-request-input-schema-mismatch")
+            if bindings:
+                if not isinstance(bindings, list) or len(bindings) != 1 or not isinstance(bindings[0], Mapping):
+                    problems.append("single-typed-result-binding-required")
+                else:
+                    binding = bindings[0]
+                    target = nodes.get(binding.get("target", {}).get("ref")) if isinstance(binding.get("target"), Mapping) else None
+                    if not isinstance(target, Mapping) or target.get("kind") != "state" or target.get("authority") != "derived":
+                        problems.append("result-target-must-be-derived-state")
+                    if binding.get("source") != "capability-response" or binding.get("disposition") != "completed":
+                        problems.append("result-needs-completed-capability-response")
+                    if (not op or "resultSchema" not in op[0] or not isinstance(target, Mapping) or
+                            target.get("schema") != op[0].get("resultSchema")):
+                        problems.append("result-schema-does-not-match-state")
+            if problems:
+                bad("MCEL_IR_PUBLIC_CAPABILITY_INVALID", intent, problems)
+        if selection is not None:
+            problems = []
+            if not isinstance(selection, Mapping):
+                problems.append("selection-must-be-a-record")
+                selection = {}
+            source = nodes.get(selection.get("source", {}).get("ref")) if isinstance(selection.get("source"), Mapping) else None
+            target = nodes.get(selection.get("target", {}).get("ref")) if isinstance(selection.get("target"), Mapping) else None
+            inputs = intent.get("input", [])
+            inp_id = selection.get("input", {}).get("ref") if isinstance(selection.get("input"), Mapping) else None
+            inp = next((x for x in inputs if isinstance(x, Mapping) and x.get("id") == inp_id), None)
+            source_schema = object_value(source.get("schema")) if isinstance(source, Mapping) else {}
+            target_schema = object_value(target.get("schema")) if isinstance(target, Mapping) else {}
+            item_schema = object_value(source_schema.get("items"))
+            fields = object_value(item_schema.get("fields"))
+            identity_schema = object_value(fields.get(selection.get("key")))
+            if (not isinstance(source, Mapping) or source.get("kind") != "state" or
+                    source_schema.get("kind") != "list" or not source_schema.get("key") or
+                    source_schema.get("key") != selection.get("key") or
+                    identity_schema.get("kind") != "string"):
+                problems.append("selection-source-must-be-keyed-string-identity-collection")
+            if (not isinstance(target, Mapping) or target.get("kind") != "state" or
+                    target.get("authority") != "renderer-local" or target_schema.get("kind") != "string" or
+                    target_schema.get("enum") or target.get("initial") != ""):
+                problems.append("selection-target-must-be-empty-dynamic-local-string")
+            if (not isinstance(inp, Mapping) or inp.get("schema") != {"kind": "string"} or
+                    len(inputs) != 1 or selection.get("membership") != "required" or
+                    selection.get("missing") != "refuse" or selection.get("empty") != "clear"):
+                problems.append("selection-input-must-enforce-dynamic-membership")
+            if (intent.get("reads") != [selection.get("source")] or intent.get("viewWrites") != [selection.get("target")] or
+                    intent.get("risk") != "local-state" or intent.get("lane") != "local-view-state" or
+                    intent.get("operationKind") != "interaction" or intent.get("writes") or intent.get("effectRefs") or
+                    intent.get("viewTransition")):
+                problems.append("selection-must-not-grant-canonical-or-effect-authority")
+            if problems:
+                bad("MCEL_IR_COLLECTION_SELECTION_INVALID", intent, problems)
+    for surface in candidate.get("surfaces", []):
+        if not isinstance(surface, Mapping):
+            continue
+        for node in surface.get("nodes", []):
+            if not isinstance(node, Mapping) or "selectionIntent" not in node:
+                continue
+            intent_ref = node.get("selectionIntent", {}).get("ref") if isinstance(node.get("selectionIntent"), Mapping) else None
+            selection_intent = nodes.get(intent_ref)
+            source_ref = node.get("state", {}).get("ref") if isinstance(node.get("state"), Mapping) else None
+            if (node.get("nodeKind") != "collection" or not isinstance(selection_intent, Mapping) or
+                    selection_intent.get("kind") != "intent" or
+                    ref_id(object_value(selection_intent.get("collectionSelection")).get("source")) != source_ref):
+                bad("MCEL_IR_COLLECTION_SELECTION_INVALID", node, ["collection-selection-source-does-not-match"])
+    return result
+
 
 def _collect_write_targets(expression: Any) -> set[str]:
     targets: set[str] = set()

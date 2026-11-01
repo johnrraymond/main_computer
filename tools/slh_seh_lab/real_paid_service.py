@@ -24,6 +24,7 @@ from main_computer.multisession_key_signing import private_key_to_address
 from tools.slh_authenticator_cli import save_identity, load_identity
 
 from .paid_cycle import verify_paid_cycle
+from .lab_stage_diagnostics import stage as lab_stage, record as lab_record
 from .integrated_stress import StressProfile, run_integrated_stress
 from .service_lifecycle import ServiceLabFailure, _local, _http, _ok, _await, _ports, _login, _fingerprint
 
@@ -143,11 +144,16 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                              diagnostic_idle_seconds: float = 0,
                              diagnostic_soak_seconds: int = 0,
                              diagnostic_trace_file: Path | None = None,
-                             diagnostic_tls_io_mode: str = 'serialized') -> dict:
+                             diagnostic_tls_io_mode: str = 'serialized',
+                             pinky_integrated: bool = False, reserve_wallet: str | None = None,
+                             paid_trace_file: Path | None = None) -> dict:
     """One paid request through Local -> org process -> real SEH -> Worker.
 
     No production state, Cloudflare, mainnet bridge, or external hub access.
     """
+    if pinky_integrated and (lab_mode!='three-hub-smoke-fdb' or stress_profile is not None or
+                             diagnostic_mode is not None or not reserve_wallet):
+        raise ValueError('Integrated Pinky needs verified real smoke/FDB Hubs, no diagnostic substitutions')
     if diagnostic_mode is not None and diagnostic_mode not in {'direct', 'seh'}:
         raise ValueError('Diagnostic transport must be direct or seh')
     if diagnostic_tls_io_mode not in {'baseline', 'serialized'}:
@@ -263,11 +269,13 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                 if diagnostic_mode is not None:
                     worker.diagnostic_strict_tls_eof = True
                     worker.tls_io_mode = diagnostic_tls_io_mode
-                worker.start()
+                with lab_stage('pinky.remote_worker_start', transport='seh' if relay is not None else 'direct', endpoint_port=adapter.server_address[1] if adapter is not None else worker_port):
+                    worker.start()
                 workers.append(worker)
-                _await(lambda: len(_ok(_http(api_port, 'GET',
-                   '/v1/org/admin/marketplace/status', bearer=org_token, tls=True))['workers']) == 1,
-                   'paid Worker authenticated into real child scheduler')
+                with lab_stage('pinky.remote_worker_registration', endpoint_port=api_port):
+                    _await(lambda: len(_ok(_http(api_port, 'GET',
+                       '/v1/org/admin/marketplace/status', bearer=org_token, tls=True))['workers']) == 1,
+                       'paid Worker authenticated into real child scheduler')
                 gates['real_scheduler_has_relay_worker'] = True
                 # Normal organizational scheduler API, not direct SQLite test
                 # mutation or a scheduler object in the calling lab process.
@@ -326,9 +334,10 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                         worker_account_id=next(iter(accounts)),
                         lab_mode=lab_mode, trace_file=diagnostic_trace_file)
                 forwarded_before_paid = relay.bytes_forwarded
-                paid = verify_paid_cycle(hub_url=hub_url, proxy=proxy, gateway=None,
-                                         ledger=payout_ledger, worker_account_id=next(iter(accounts)),
-                                         lab_mode=lab_mode)
+                with lab_stage('pinky.public_paid_cycle'):
+                    paid = verify_paid_cycle(hub_url=hub_url, proxy=proxy, gateway=None,
+                                             ledger=payout_ledger, worker_account_id=next(iter(accounts)),
+                                             lab_mode=lab_mode, trace_file=paid_trace_file)
                 gates.update({'paid_' + name: success for name, success in paid['gates'].items()})
                 if stress_profile is not None:
                     witness = _record_preliminary_worker_checkpoint(
@@ -403,7 +412,20 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                         adapter=adapter, relay=relay, proxy=proxy, workers=workers,
                         original_device=device, wallet_key=wallet_key,
                         upstream_auth=authorization, trace_file=stress_trace_file)
-                _ok(_http(lp, 'POST', '/v1/local/organization/disable', {}, bearer=token))
+                pinky_result = None
+                if pinky_integrated:
+                    from .pinky_integrated import verify_pinky_shared_hub
+                    with lab_stage('pinky.private_fulfillment_and_sweep'):
+                        pinky_result = verify_pinky_shared_hub(
+                            root=root, state=state, local=local, local_port=lp,
+                            local_token=token, org_id=org_id, api_port=api_port,
+                            worker_port=worker_port, hub_url=hub_url,
+                            hub_identity=identity, ledger=payout_ledger,
+                            org_wallet_private=wallet_key, org_wallet_address=wallet.address,
+                            worker=worker, reserve_wallet=reserve_wallet,
+                            market_controller=proxy)
+                else:
+                    _ok(_http(lp, 'POST', '/v1/local/organization/disable', {}, bearer=token))
                 gates['org_stops_without_stopping_local'] = (
                     local.organization_controller.status()['enabled'] is False and
                     _ok(_http(lp, 'GET', '/v1/local/status'))['local_service']['state'] == 'running')
@@ -411,6 +433,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                         'status': 'PASS' if all(gates.values()) else 'FAIL',
                         'pass': bool(gates) and all(gates.values()), 'gates': gates,
                         'paid_marketplace': paid,
+                        **({'pinky_integrated':pinky_result} if pinky_integrated else {}),
                         **({'integrated_stress': integrated_stress} if integrated_stress is not None else {}),
                         'scope': 'real-org-child-real-seh-local-hub-synthetic-ledger',
                         'limitations': {'external_bridge': 'NOT_TESTED', 'public_wss': 'NOT_TESTED',

@@ -83,14 +83,20 @@ ENDPOINTS = (
     Endpoint('POST','/v1/workers/register','stub','known','unimplemented'),
     Endpoint('POST','/v1/workers/heartbeat','stub','known','unimplemented'),
     Endpoint('GET','/v1/requesters','stub','known','unimplemented'),
-    Endpoint('POST','/v1/work','stub','known','unimplemented'),
+    Endpoint('POST','/v1/work','private_submit','known'),
+    Endpoint('GET','/v1/work/{id}','private_status','known'),
     Endpoint('POST','/v1/routes','stub','known','unimplemented'),
     Endpoint('GET','/v1/marketplace','stub','admin','unimplemented'),
     Endpoint('POST','/v1/marketplace/workers','stub','admin','unimplemented'),
-    Endpoint('GET','/v1/wallets','stub','admin','unimplemented'),
-    Endpoint('GET','/v1/credits','stub','admin','unimplemented'),
+    Endpoint('GET','/v1/wallets','org_wallets','admin'),
+    Endpoint('GET','/v1/credits','org_credits','admin'),
+    Endpoint('GET','/v1/accounting/obligations','pinky_obligations','admin'),
+    Endpoint('GET','/v1/accounting/sweeps','pinky_sweep_status','admin'),
+    Endpoint('POST','/v1/accounting/sweep','pinky_sweep_now','admin'),
+    Endpoint('GET','/v1/admin/pinky-promise/policy','pinky_policy','admin'),
+    Endpoint('PATCH','/v1/admin/pinky-promise/policy','pinky_policy_update','admin'),
     Endpoint('GET','/v1/accounting','stub','admin','unimplemented'),
-    Endpoint('POST','/v1/accounting/reconcile','stub','admin','unimplemented'),
+    Endpoint('POST','/v1/accounting/reconcile','org_reconcile','admin'),
     Endpoint('POST','/v1/auth/people/challenge','stub','known','unimplemented'),
     Endpoint('POST','/v1/auth/people/verify','stub','known','unimplemented'),
 )
@@ -104,22 +110,32 @@ def _match(pattern, path):
 
 class SLHAPI:
     def __init__(self, authority: SLHAuthority, *, control=None, local_status_provider=None,
-                 local_authenticator=None, organization_controller=None):
+                 local_authenticator=None, organization_controller=None, wallet_service=None, private_requests=None, pinky_sweeper=None):
         self.authority=authority
         self.control=control or SLHControlBackend()
         self.local_status_provider=local_status_provider
         self.local_authenticator=local_authenticator or LocalAuthenticatorAPI()
         self.organization_controller=organization_controller
+        self.wallet_service=wallet_service
+        self.private_requests=private_requests
+        self.pinky_sweeper=pinky_sweeper
 
     def openapi(self):
         paths={}
         for e in ENDPOINTS:
+            state = ('unimplemented' if self.wallet_service is None and
+                     e.handler in ('org_wallets','org_credits','org_reconcile') else
+                     'unimplemented' if self.pinky_sweeper is None and
+                     e.handler in ('pinky_sweep_status','pinky_sweep_now') else
+                     'unimplemented' if self.private_requests is None and
+                     e.handler in ('private_submit','private_status','pinky_obligations',
+                                   'pinky_policy','pinky_policy_update') else e.state)
             op={
                 'operationId':e.handler if e.handler!='stub' else (e.method+' '+e.path).replace('/','_'),
-                'summary':e.path,'x-implementation':e.state,'x-required-access':e.access,
+                'summary':e.path,'x-implementation':state,'x-required-access':e.access,
                 'responses': {'200': {'description':'JSON result', 'content':{'application/json':{
                                      'schema': KNOWN_RESPONSES.get(e.handler,{'type':'object'})}}}
-                             if e.state=='implemented' else {'description':'Not yet implemented'},
+                             if state=='implemented' else {'description':'Not yet implemented'},
                               '401': {'description':'Authentication required'},
                               '403': {'description':'Permission refused'},
                               '501': {'description':'Not implemented'}},
@@ -162,7 +178,12 @@ class SLHAPI:
             elif e.access=='known':identity=self.authority.authenticate(token)
             elif e.access=='optional_key' and not body.get('enrollment_key'):
                 identity=self.authority.authenticate(token,admin=True)
-            if e.state=='unimplemented':
+            if e.state=='unimplemented' or (self.wallet_service is None and
+                    e.handler in ('org_wallets','org_credits','org_reconcile')) or (
+                    self.pinky_sweeper is None and e.handler in ('pinky_sweep_status','pinky_sweep_now')) or (
+                    self.private_requests is None and e.handler in (
+                        'private_submit','private_status','pinky_obligations',
+                        'pinky_policy','pinky_policy_update')):
                 return 501,{'error':{'code':'NOT_IMPLEMENTED','operation':e.method+' '+e.path,'available':False}}
             result=self._invoke(e.handler,body,params,identity,token,loopback)
             status = 201 if e.handler in ('bootstrap_admin','bootstrap_begin','request_enrollment','approve_enrollment','issue_key') else 200
@@ -216,6 +237,22 @@ class SLHAPI:
                                                      enrollment_key=b.get('enrollment_key'))
         if op=='challenge':return a.challenge(b.get('device_id'))
         if op=='verify':return a.verify_login(b)
+        if op in ('private_submit','private_status'):
+            if ident['role']!='requester':raise SLHError('REQUESTER_REQUIRED',403)
+            if op=='private_submit':return self.private_requests.submit(ident,b)
+            if b:raise SLHError('INVALID_PRIVATE_STATUS_REQUEST',400)
+            return self.private_requests.get(ident,p['id'])
+        if op in ('pinky_sweep_status','pinky_sweep_now'):
+            if b:raise SLHError('INVALID_PINKY_SWEEP_REQUEST',400)
+            return self.pinky_sweeper.status() if op=='pinky_sweep_status' else self.pinky_sweeper.sweep()
+        if op in ('pinky_obligations','pinky_policy','pinky_policy_update'):
+            if op == 'pinky_obligations':
+                if b:raise SLHError('INVALID_PINKY_LEDGER_REQUEST',400)
+                return self.private_requests.obligations()
+            if op == 'pinky_policy':
+                if b:raise SLHError('INVALID_PINKY_POLICY_REQUEST',400)
+                return self.private_requests.policy()
+            return self.private_requests.update_policy(b,actor)
         if op=='session':return {'active':True,'user_id':actor,'device_id':ident['device_id'],'role':ident['role']}
         if op=='logout':return a.logout(token)
         if op=='admin_status':return {'organization':a.status(),'policies':a.policy()}
@@ -237,6 +274,20 @@ class SLHAPI:
                 raise SLHError('INVALID_POLICY')
             return a.policy(b['physical_inspection_required'],actor)
         if op=='audit':return {'events':a.audit()}
+        if op in ('org_wallets', 'org_credits', 'org_reconcile'):
+            if self.wallet_service is None:
+                raise SLHError('ORG_WALLET_SERVICE_UNAVAILABLE', 503)
+            if op == 'org_reconcile':
+                if b:
+                    raise SLHError('INVALID_WALLET_REQUEST')
+                return self.wallet_service.reconcile()
+            wallet = self.wallet_service.status()
+            if op == 'org_wallets':
+                return wallet
+            return {'schema':'main-computer.slh-org-credit-view.v1',
+                    'state':wallet['state'], 'reason':wallet.get('reason'),
+                    'binding':wallet['binding'], 'balance':wallet['balance'],
+                    'spendable_authorized':False}
         if op=='scheduler_policy':return SchedulerPolicyStore(a).get()
         if op=='set_scheduler_policy':
             return SchedulerPolicyStore(a).update(b.get('changes'),

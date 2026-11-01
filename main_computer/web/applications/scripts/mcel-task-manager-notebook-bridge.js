@@ -42,6 +42,156 @@
     return {processes: rows(snapshot.processes), all_processes: rows(snapshot.all_processes),
       connections: rows(snapshot.connections), hardware};
   }
+  // The generated notebook owns read-only views. This explicitly scoped host
+  // operations panel reconnects the existing Task Manager guarded action API;
+  // it does not pretend that the read-only notebook IR authorizes mutations.
+  function installOperationsPanel(holder, root) {
+    const doc=root.ownerDocument;
+    const panel=doc.createElement("section");
+    panel.dataset.mcelTaskOperationalBoundary="host-guarded-v1";
+    panel.className="task-card task-mcel-operations";
+    const title=doc.createElement("h2");title.textContent="Process, Server & Schedule Operations";
+    const hint=doc.createElement("p");
+    hint.textContent="Live Windows host actions. Destructive actions require a separate confirmation; displayed rows are snapshots, not authority.";
+    const status=doc.createElement("output");status.setAttribute("role","status");
+    status.setAttribute("aria-live","polite");status.dataset.mcelTaskOperationStatus="true";
+    status.textContent="No operation requested.";
+    const buttons=doc.createElement("div");buttons.className="task-actions";
+    function button(label, action, requiresConfirm=false) {
+      const node=doc.createElement("button");node.type="button";node.textContent=label;
+      node.dataset.mcelTaskAction=action;
+      node.dataset.mcelTaskConfirm=String(requiresConfirm);
+      buttons.append(node);return node;
+    }
+    button("Refresh snapshot","refresh");
+    button("Server status","server_status");
+    button("Start server","server_start",true);
+    button("Restart server","server_restart",true);
+    button("Shutdown server","server_shutdown",true);
+    const row=doc.createElement("div");row.className="task-actions";
+    const select=doc.createElement("select");select.setAttribute("aria-label","Select observed process PID");
+    select.dataset.mcelTaskSelectedPid="true";
+    row.append(select);
+    const terminate=button("Terminate selected PID","terminate_pid",true);
+    const kill=button("Force-kill selected PID","kill_pid",true);
+    // Keep the process controls next to the selected PID, not among server buttons.
+    row.append(terminate,kill);
+    const scheduleRow=doc.createElement("div");scheduleRow.className="task-actions";
+    const scheduleAction=doc.createElement("select");
+    scheduleAction.setAttribute("aria-label","Scheduled server action");
+    for(const action of ["server_status","server_start","server_restart","server_shutdown"]){
+      const option=doc.createElement("option");option.value=action;option.textContent=action.replaceAll("_"," ");
+      scheduleAction.append(option);
+    }
+    const runAt=doc.createElement("input");runAt.type="datetime-local";runAt.setAttribute("aria-label","Scheduled local date and time");
+    const note=doc.createElement("input");note.placeholder="Operator note";note.setAttribute("aria-label","Schedule note");
+    const addSchedule=doc.createElement("button");addSchedule.type="button";addSchedule.textContent="Schedule action";
+    const scheduleList=doc.createElement("div");scheduleList.dataset.mcelTaskSchedules="true";
+    scheduleRow.append(scheduleAction,runAt,note,addSchedule);
+    panel.append(title,hint,buttons,row,scheduleRow,scheduleList,status);
+    holder.append(panel);
+    let observed=new Map(),busy=false;
+    const valid=new Set(["refresh","server_status","server_start","server_restart","server_shutdown","terminate_pid","kill_pid"]);
+    async function execute(action,confirmed=false){
+      if(busy||!valid.has(action))return {ok:false,code:"not-admitted-or-busy"};
+      let pid=null,display="";
+      if(action.endsWith("_pid")){
+        pid=Number(select.value);
+        if(!Number.isSafeInteger(pid)||pid<=0||!observed.has(pid)){
+          status.textContent="Refused: select a PID from the current observed snapshot.";
+          return {ok:false,code:"stale-or-missing-pid"};
+        }
+        display=observed.get(pid);
+      }
+      const dangerous=!["refresh","server_status"].includes(action);
+      if(dangerous && !confirmed){
+        const message=action.endsWith("_pid")?
+          `Execute ${action} on observed PID ${pid} (${display})?`:
+          `Execute ${action} on the Main Computer server?`;
+        if(typeof global.confirm!=="function" || global.confirm(message)!==true){
+          status.textContent="Operation refused: confirmation not granted.";
+          return {ok:false,code:"confirmation-refused"};
+        }
+      }
+      busy=true;status.textContent=`${action} pending host receipt…`;
+      try{
+        let result;
+        if(action==="refresh"){
+          if(typeof global.refreshTaskManager!=="function")throw new Error("Host snapshot refresh unavailable");
+          await global.refreshTaskManager();
+          result={ok:true,action,code:"snapshot-delivered"};
+        }else{
+          if(typeof global.runTaskAction!=="function")throw new Error("Host action boundary unavailable");
+          result=await global.runTaskAction(action,pid?{pid}:{},dangerous);
+        }
+        if(!result || result.ok!==true)throw new Error(result?.message||"No successful host action receipt");
+        status.textContent=`${action}: host receipt received; ${result.receipt?.message||result.code||"inspect refreshed snapshot for final state"}`;
+        return result;
+      }catch(error){
+        status.textContent=`${action} failed: ${error.message||error}`;
+        return {ok:false,code:"host-action-failed",message:String(error.message||error)};
+      }finally{busy=false;}
+    }
+    panel.addEventListener("click",(event)=>{
+      const btn=event.target?.closest?.("button[data-mcel-task-action]");
+      if(btn)void execute(btn.dataset.mcelTaskAction);
+    });
+    async function scheduleRequest(endpoint,payload,label){
+      if(busy)return;
+      if(typeof global.taskManagerRequest!=="function"){
+        status.textContent="Host schedule API unavailable.";return;
+      }
+      busy=true;status.textContent=label+" pending…";
+      try{
+        const receipt=await global.taskManagerRequest(endpoint,payload);
+        if(receipt?.ok===false)throw new Error(receipt.message||"Schedule refused");
+        status.textContent=receipt.message||label+" accepted";
+        await global.refreshTaskManager?.();
+      }catch(error){status.textContent=label+" failed: "+String(error.message||error);}
+      finally{busy=false;}
+    }
+    addSchedule.addEventListener("click",()=>{
+      if(!runAt.value){status.textContent="Schedule requires a date and time.";return;}
+      const action=scheduleAction.value;
+      if(action!=="server_status" &&
+         (typeof global.confirm!=="function" || !global.confirm(`Schedule ${action} for ${runAt.value}?`)))return;
+      void scheduleRequest("/api/applications/task/schedule/create",{
+        action,run_at:runAt.value,note:note.value,payload:{}},"Schedule creation");
+    });
+    scheduleList.addEventListener("click",(event)=>{
+      const del=event.target?.closest?.("button[data-mcel-task-schedule-delete]");
+      if(!del)return;
+      const id=del.dataset.mcelTaskScheduleDelete;
+      if(typeof global.confirm!=="function"||!global.confirm(`Delete schedule ${id}?`))return;
+      void scheduleRequest("/api/applications/task/schedule/delete",{schedule_id:id},"Schedule deletion");
+    });
+    function update(snapshot){
+      if(!snapshot||typeof snapshot!=="object")return;
+      const previous=select.value;
+      observed=new Map();
+      for(const process of [...(snapshot.processes||[]),...(snapshot.all_processes||[])]){
+        const pid=Number(process?.pid);
+        if(Number.isSafeInteger(pid)&&pid>0){
+          observed.set(pid,String(process.name||process.process_name||process.command||"process"));
+        }
+      }
+      select.textContent="";
+      const placeholder=doc.createElement("option");placeholder.value="";placeholder.textContent="Select observed process…";select.append(placeholder);
+      for(const [pid,name] of observed){
+        const option=doc.createElement("option");option.value=String(pid);option.textContent=`${pid} · ${name}`;select.append(option);
+      }
+      select.value=observed.has(Number(previous))?previous:"";
+      scheduleList.textContent="";
+      for(const item of (snapshot.schedules||[])){
+        const line=doc.createElement("div");line.className="task-actions";
+        const detail=doc.createElement("span");detail.textContent=`${item.action} · ${item.run_at} · ${item.note||""}`;
+        const del=doc.createElement("button");del.type="button";del.textContent="Delete";del.dataset.mcelTaskScheduleDelete=item.id;
+        line.append(detail,del);scheduleList.append(line);
+      }
+    }
+    return {update,execute,panel};
+  }
+
   function mount({root, ir, search = "", snapshot = null} = {}) {
     const requestedMode = mode(search);
     if (!requestedMode) return refuse("not-opted-in");
@@ -80,7 +230,7 @@
     const target = root.ownerDocument.createElement("div");
     target.className = "task-mcel-notebook-lab-render-target";
     if (!fullApp) holder.append(header, target);
-    let workspace, operationRuntime, applicationShell;
+    let workspace, operationRuntime, applicationShell, operationalControls;
     // Host form controls remain the actual existing backend-request inputs.
     // The generic shell owns generated field lifecycle; this adapter only maps
     // semantic values to the existing Task Manager capability interface.
@@ -166,7 +316,9 @@
       root.removeAttribute("data-mcel-notebook-mode");
       return refuse("host-attach-failed");
     }
-    const state = {root, holder, legacy, legacyOriginal, originalShell, shellOriginal, applicationShell, mode:requestedMode,
+    if (fullApp) operationalControls=installOperationsPanel(holder,root);
+    const state = {root, holder, legacy, legacyOriginal, originalShell, shellOriginal, applicationShell,
+      operationalControls, mode:requestedMode,
       candidateMetadata: requestedMode !== "lab" ?
         {...global.McelTaskManagerNotebookCandidate.metadata} : null,
       workspace, operationRuntime, version: 0, status: "not-requested",streams:{},lastReceipt:null};
@@ -205,6 +357,7 @@
       const shellReceipt = state.applicationShell.update(shellPayload, status);
       if (!shellReceipt.ok) return fail("shell-update-refused", {cause:shellReceipt.code});
     }
+    state.operationalControls?.update(snapshot);
     state.version=next;state.status=status;state.streams={...streams};
     const partial=Object.values(streams).some(v=>v==="failed"||v==="stale");
     const response=record({ok:true,status:partial?"partial":status,version:next,build:BUILD,

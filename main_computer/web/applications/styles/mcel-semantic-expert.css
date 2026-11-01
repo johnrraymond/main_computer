@@ -1,0 +1,61 @@
+/* MCEL semantic expert presentation: generic purpose/task/priority policy.
+ * No application names, fixed region IDs or authored layout coordinates.
+ * This is a provisional design rule set, not a V1 expert-layout certificate.
+ */
+:root { color-scheme:dark; }
+*,*::before,*::after{box-sizing:border-box;}
+
+body.mcel-expert-page { max-width:1180px; margin:0 auto; padding:clamp(12px,3vw,30px); min-height:100vh; background:#10171d; color:#e8f1f4; font-family:system-ui,-apple-system,Segoe UI,sans-serif; }
+body.mcel-expert-page > header { margin:0 0 1.4rem; }
+body.mcel-expert-page > header h1 {font-size:clamp(1.5rem,3vw,2.1rem);font-weight:740;letter-spacing:-.035em;}
+body.mcel-expert-page > header p {color:#9faeb9;max-width:70ch;font-size:.9rem;}
+body.mcel-expert-page button,body.mcel-expert-page input,body.mcel-expert-page select {font:inherit;}
+[data-mcel-presentation="expert"] {--mcel-panel:#18232b;--mcel-edge:#344854;--mcel-ink:#eef5f6;--mcel-muted:#a4b6c0;--mcel-action:#70c5d4;--mcel-highlight:#d5b76f;color:var(--mcel-ink);}
+[data-mcel-presentation="expert"] [data-mcel-region] {min-width:0;}
+[data-mcel-presentation="expert"] > [data-mcel-region] {display:grid!important;grid-template-columns:minmax(0,1.2fr) minmax(16rem,.85fr);align-items:start;gap:1rem;}
+[data-mcel-presentation="expert"] [data-mcel-region]:not(:first-child) {background:var(--mcel-panel)!important;border:1px solid var(--mcel-edge)!important;border-radius:14px!important;padding:clamp(14px,2vw,23px)!important;box-shadow:0 4px 14px #050c1255;min-width:0;}
+[data-mcel-presentation="expert"] [data-mcel-region][hidden] {display:none!important;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="mode-control"] {grid-column:1 / -1;background:transparent!important;padding:0!important;border:0!important;box-shadow:none!important;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="input"][data-mcel-priority="primary"] {grid-column:1;grid-row:2 / span 2;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="results"][data-mcel-priority="primary"] {grid-column:2;grid-row:2;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="status"] {grid-column:2;grid-row:3;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="results"] {border-color:#487367!important;}
+[data-mcel-presentation="expert"] h2 {font-size:.86rem;text-transform:uppercase;letter-spacing:.11em;font-weight:780;color:var(--mcel-highlight);margin:0 0 1rem;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="results"] output {display:block;min-height:3.2rem;font-size:clamp(1.8rem,4vw,2.8rem);font-weight:760;line-height:1.2;letter-spacing:-.02em;color:#a8e9cb;text-align:right;overflow-wrap:anywhere;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="results"] output:empty::before {content:"—";color:#718c8b;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="input"] form label {display:grid;gap:.35rem;min-width:0;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="input"] form {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:1rem;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="input"] form label {color:var(--mcel-muted);font-size:.84rem;font-weight:650;}
+[data-mcel-presentation="expert"] input,[data-mcel-presentation="expert"] select {width:100%;max-width:100%;padding:.65rem .8rem;background:#0d161d!important;color:var(--mcel-ink)!important;border:1px solid #476070!important;border-radius:10px!important;min-height:44px;}
+[data-mcel-presentation="expert"] input:focus-visible,[data-mcel-presentation="expert"] button:focus-visible,[data-mcel-presentation="expert"] select:focus-visible {outline:3px solid #88d3e0;outline-offset:2px;}
+[data-mcel-presentation="expert"] button {cursor:pointer;border-radius:9px;padding:.65rem 1rem; background:#253842;color:#eef5f6;border:1px solid #486171;}
+[data-mcel-presentation="expert"] button:hover {background:#385461;filter:none;}
+[data-mcel-presentation="expert"] form button[type="submit"] {background:#b5cbd1;color:#0e1b22;font-weight:750;}
+[data-mcel-presentation="expert"] form[data-mcel-composition="expression-workbench"] > label {grid-column:1 / -1;}
+[data-mcel-presentation="expert"] form[data-mcel-composition="expression-workbench"] > label input {min-height:66px;font:600 clamp(1.3rem,2.8vw,2rem) ui-monospace,SFMono-Regular,Consolas,monospace;text-align:right;font-variant-numeric:tabular-nums;padding:12px 16px;}
+[data-mcel-presentation="expert"] form[data-mcel-composition="expression-workbench"] > button[type="submit"] {grid-column:1 / -1;grid-row:3;justify-self:stretch;min-height:44px;}
+[data-mcel-presentation="expert"] [data-mcel-expression-pad] {grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.5rem;}
+[data-mcel-presentation="expert"] [data-mcel-expression-pad] button {min-width:0;min-height:53px;padding:.4rem;font-size:1.12rem;font-variant-numeric:tabular-nums;font-weight:720;}
+[data-mcel-presentation="expert"] [data-mcel-expression-pad] button[data-pad-action="submit"] {grid-column:1 / -1;background:#4aa69b;color:#081d1c;min-height:52px;font-size:1.4rem;}
+[data-mcel-presentation="expert"] [data-mcel-expression-pad] button:is([data-pad-action="clear"],[data-pad-action="backspace"]) {color:#ffd79c;}
+[data-mcel-presentation="expert"] [data-mcel-expression-pad] button:is([data-pad-action="/"],[data-pad-action="*"],[data-pad-action="+"],[data-pad-action="-"]) {background:#375364;color:#fff;}
+[data-mcel-presentation="expert"] [data-mcel-mode-tabs] {display:flex;flex-wrap:wrap;gap:.4rem;}
+[data-mcel-presentation="expert"] [data-mcel-mode-tabs] button {padding:.7rem 1.1rem;border-radius:10px;min-height:44px;}
+[data-mcel-presentation="expert"] [data-mcel-mode-tabs] button[aria-pressed="true"] {background:#c9aa68;color:#132129;border-color:#c9aa68;font-weight:750;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="mode-control"] label {display:none;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="status"] {background:transparent!important;box-shadow:none!important;padding:10px 0!important;border:0!important;}
+[data-mcel-presentation="expert"] [data-mcel-purpose="status"] h2 {display:none;}
+[data-mcel-presentation="expert"] [data-mcel-activity] {color:var(--mcel-muted);font-size:.83rem;}
+[data-mcel-presentation="expert"] [data-mcel-activity] summary {cursor:pointer;padding:.5rem 0;}
+[data-mcel-presentation="expert"] [data-mcel-activity] ol {max-height:8rem;overflow:auto;padding-left:1.3rem;}
+[data-mcel-presentation="expert"] [data-mcel-plot] svg {display:block;width:100%;max-width:100%;height:auto;background:#0d161d;min-height:260px;}
+[data-mcel-presentation="expert"] [data-plot-range] {color:var(--mcel-muted);}
+body.mcel-expert-page > [role="status"][aria-live] {color:#90b9b9;font-size:.76rem;}
+@media(max-width:680px) {
+  [data-mcel-presentation="expert"] [data-mcel-region] {min-width:0;}
+[data-mcel-presentation="expert"] > [data-mcel-region] {grid-template-columns:minmax(0,1fr);gap:.7rem;}
+  [data-mcel-presentation="expert"] [data-mcel-region]:not(:first-child) {grid-column:1!important;grid-row:auto!important;}
+  [data-mcel-presentation="expert"] [data-mcel-purpose="mode-control"] label {display:grid;}
+  [data-mcel-presentation="expert"] [data-mcel-mode-tabs] {display:none;}
+  [data-mcel-presentation="expert"] [data-mcel-expression-pad] button {min-height:48px;}
+}

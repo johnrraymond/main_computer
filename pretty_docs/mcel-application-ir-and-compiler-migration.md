@@ -1,5 +1,11 @@
 # MCEL Application IR and Compiler Migration Model
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+**V1 target extension:** normalize authored HTML and official JS together into one Application IR, preserving stable region ID, `parentId`, meaningful ordinal/order, semantic HTML/MCEL hints, cross-source references and provenance while retaining executable authority exclusively from JS. Legacy importer/adapter evidence below remains current migration history; target hierarchy encoding is not claimed implemented.
+
+
 This document defines the stable semantic target for MCEL applications and the migration model that allows existing application definitions, scaffolded packages, and the future official vanilla-JavaScript DSL to coexist without becoming competing truths.
 
 It is a documentation specification. It does not authorize an IR implementation, a DSL compiler, or the retirement of any current application path.

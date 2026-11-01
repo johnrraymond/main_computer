@@ -1,6 +1,6 @@
 # Secure Local Hub Scheduler — Phase 2D
 
-**Status:** Backend policy and marketplace-session reconciliation implemented. This is not the SLH administration UI, private B2SelfB work submission, or verified earnings accounting.
+**Status:** Backend policy and marketplace-session reconciliation implemented. This is not the SLH administration UI, private B2SelfB work submission, verified earnings accounting, or the [Pinky Promise reserve-payment implementation](slh-pinky-promise-economy.md).
 
 ## Purpose and governing rule
 
@@ -28,6 +28,12 @@ The policy is persisted in the organization's existing SLH SQLite database, and 
 For `round_robin`, the scheduler rotates which shared worker's capacity is advertised at each interval, without interrupting a running session. Work that has already been offered and reserved stays assigned until completion/failure. The scheduler creates new Stable Hub sessions for selected workers and gracefully drains sessions removed from the desired set.
 
 The holdout is based on *healthy* workers only; disconnected and revoked workers do not count. Reservations for private workloads reduce what may be advertised. Since SLH private requester routing is not implemented, the private reservation API is currently available to backend/harness code rather than the requester UI. An idle reserve is a target; it cannot guarantee the required GPU/model capability or overcome a sudden device failure.
+
+## Pinky Promise funding objective (TARGET, not a current scheduler guarantee)
+
+The intended SLH operating policy is to make a controlled percentage of **idle** organizational Worker capacity available to the Stable Hub after authorized marketplace setup. Public paid work earns settled credits for the **organization wallet**. Separately, when a local requester receives **successful, private secure model access**, the SLH commits a fixed **0.1-credit Pinky Promise** obligation per qualifying fulfilled request, derived from 10% of the **1-credit open-market reference** (1,000 reference output tokens). This is not a 10% withholding on public job earnings, a fee for every local transaction, or a token-by-token charge. The full contract is [SLH Pinky Promise economy](slh-pinky-promise-economy.md).
+
+**The economic product default is Pinky Promise enabled and idle-capacity earning enabled *after explicit marketplace authorization and eligible-worker enrollment*.** This is a target behavior, not the existing service's setting: the current Organization marketplace controller starts **disabled**, and the 75% public maximum / 25% private holdout are limits, not a minimum allocation or automatic credit-target solver. The future scheduler may increase or decrease its eligible public allowance based on actual fulfilled-use liabilities, verified spendable wallet credits and resource protection; it may not treat pending earnings as cash, violate the private holdout, or preempt already-authorized work. An authenticated administrator may remove the Pinky Promise for future usage without erasing obligations already committed.
 
 ## Earnings cap: intentionally not yet active
 

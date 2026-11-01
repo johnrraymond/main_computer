@@ -2,7 +2,7 @@
 
 **Status:** design specification only for new network/security paths (October 28, 2026). Phase 1 supplies a connection catalog and guarded SEH Coolify control-plane operations; it does **not** supply the endpoints below. **No organizational CA, client certificates or CSRs** are part of this revised design.
 
-**Companions:** [Device Authenticator Architecture](slh-seh-device-authentication-architecture.md), [Administrator Manual](secure-local-hub-administrator-manual.md), [Secure Worker](secure-worker-managed-mode-spec.md), [SEH Harness](seh-secure-external-hub-coolify-harness.md).
+**Companions:** [SLH Pinky Promise economy (governing financial contract)](slh-pinky-promise-economy.md), [Device Authenticator Architecture](slh-seh-device-authentication-architecture.md), [Administrator Manual](secure-local-hub-administrator-manual.md), [Secure Worker](secure-worker-managed-mode-spec.md), [SEH Harness](seh-secure-external-hub-coolify-harness.md).
 
 ## 1. Non-negotiable invariants
 
@@ -12,7 +12,7 @@
 4. Local SLH admin and an equally authorized administrator's separate SLH application use **the same backend admin API**, information model and role checks. Only first-admin bootstrap and true hardware recovery must be host-local.
 5. Direct SLH and SEH-connected clients follow **identical** enrollment/auth/session/authorization APIs. The SEH is a public HTTPS/WSS relay, not an authentication server; keep E2E authenticated encryption from client to SLH.
 6. Walletless workers may be represented by many SLH-owned public wallet sessions. Public marketplace job authorization occurs before forwarding work, and physical-worker capacity is never overbooked.
-7. Private B2SelfB jobs remain private; SLH records an honest, idempotent pink-promise service charge. The public Hub cannot verify undisclosed internal work.
+7. Private B2SelfB jobs remain private. For **successfully fulfilled qualifying local secure model access**, the SLH records an honest, idempotent **Pinky Promise** obligation of **0.1 credit per request**, using a fixed **1-credit open-market reference for 1,000 output tokens**; the organization wallet later pays the Main Computer Reserve. This is not live market-price discovery or token-based intra-org billing. A route ticket alone is not chargeable fulfillment, and the public Hub cannot verify undisclosed internal work.
 
 ## 2. Principal IDs and persisted records
 
@@ -103,7 +103,7 @@ slh.private.route         (short-lived requester/worker capability, E2E authoriz
 slh.credit.write_down     (idempotent private service usage record for reconciliation)
 ```
 
-For a public paid work session, preserve Ring 2 `offer → accept/reserve → hub.work.authorized → execute → settlement`. SLH is the marketplace signer; managed physical workers have no wallet. SLH policy allocates physical resources between public and private demand with one shared capacity ledger. A private request uses an authenticated local route, does not disclose its prompt to the public Hub, and incurs the policy-defined pink-promise local fee at the documented route-commit point. The local journal is commercial trust accounting, not proof of hidden execution. Account for spendable vs earned credits and avoid double settlement.
+For a public paid work session, preserve Ring 2 `offer → accept/reserve → hub.work.authorized → execute → settlement`. SLH is the marketplace signer; managed physical workers have no wallet. SLH policy allocates physical resources between public and private demand with one shared capacity ledger. A private request uses an authenticated local route and does not disclose its prompt to the public Hub. Only eligible **secure model access** that reaches verified successful fulfillment creates the **Pinky Promise** obligation (**0.1 credit per qualifying completed request**, using versioned `fixed_per_request_v1` policy) for the organization wallet to pay to the Main Computer Reserve; it is **not assessed at route commitment**, requires no live external market quote, and does not multiply by token count. The local journal is commercial trust accounting, not proof of hidden execution. Keep wallet earnings, spendable credits, outstanding Pinky Promise obligations, and confirmed Reserve settlement separate; see [Pinky Promise specification](slh-pinky-promise-economy.md).
 
 ## 7. Harness and negative acceptance
 

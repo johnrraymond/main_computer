@@ -7,6 +7,10 @@ three-node smoke FoundationDB namespace, which is strictly validated by run_lab.
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
+from contextlib import contextmanager
+from datetime import datetime, timezone
 import secrets
 import time
 from urllib.error import HTTPError
@@ -31,6 +35,12 @@ def _json(url: str, body: dict | None = None, timeout: float = 20) -> dict:
     except HTTPError as exc:
         detail = exc.read().decode('utf-8', errors='replace')[:450]
         raise RuntimeError(f'Stable Hub HTTP {exc.code}: {detail}') from exc
+    except (OSError, TimeoutError) as exc:
+        # The real FDB lab has multiple independent network boundaries.
+        # A generic "read timed out" gives no evidence of which one failed.
+        # Report only the endpoint path (not payloads, wallet keys or tokens).
+        raise RuntimeError(f'Stable Hub {request.get_method()} '
+                           f'{urlsplit(url).path}: {type(exc).__name__}: {exc}') from exc
 
 
 def _eventually(fn, seconds=12):
@@ -42,19 +52,61 @@ def _eventually(fn, seconds=12):
     raise RuntimeError('Timed out waiting for paid Stable Hub terminal ledger transition')
 
 
+class PaidCycleDiagnostics:
+    """Best-effort, append-only stage timeline for real-Hub laboratory failures."""
+
+    def __init__(self, trace_file: Path | None, hub_url: str):
+        self.trace_file = trace_file
+        self.hub_path = urlsplit(hub_url).path or '/'
+        self.request_id = ''
+
+    @contextmanager
+    def stage(self, name: str):
+        started = time.monotonic()
+        self._emit(name, 'begin', 0)
+        try:
+            yield
+        except BaseException as exc:
+            self._emit(name, 'error', round((time.monotonic() - started) * 1000, 1),
+                       error_type=type(exc).__name__)
+            raise
+        else:
+            self._emit(name, 'ok', round((time.monotonic() - started) * 1000, 1))
+
+    def _emit(self, stage: str, status: str, duration_ms: float, **extra):
+        if self.trace_file is None:
+            return
+        row = {'schema': 'main-computer.slh-paid-cycle-diagnostic.v1',
+               'timestamp': datetime.now(timezone.utc).isoformat(),
+               'request_id': self.request_id, 'stage': stage, 'status': status,
+               'duration_ms': duration_ms, **extra}
+        line = json.dumps(row, sort_keys=True) + '\n'
+        # Diagnostic failure must never affect paid work or its accounting.
+        try:
+            with self.trace_file.open('a', encoding='utf-8') as stream:
+                stream.write(line)
+        except OSError:
+            pass
+        sys.stderr.write('slh-paid-cycle-diagnostic ' + line)
+        sys.stderr.flush()
+
+
 def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLedgerDirectory,
-                      worker_account_id: str, lab_mode: str) -> dict:
+                      worker_account_id: str, lab_mode: str,
+                      trace_file: Path | None = None) -> dict:
     """Complete a real paid request via an SLH upstream worker and settle its earning.
 
     Caller must already have verified all Hub identities/topology and started the
     managed gateway, worker sockets, and SLH public marketplace sessions.
     """
+    trace = PaidCycleDiagnostics(trace_file, hub_url)
     parsed=urlsplit(hub_url)
     if parsed.scheme!='http' or parsed.hostname!='127.0.0.1':
         raise ValueError('Paid lab refuses non-loopback or HTTPS marketplace Hub')
     if lab_mode not in {'in-memory-stable-hub','three-hub-smoke-fdb'}:
         raise ValueError('Paid lab requires disposable in-memory or validated FDB smoke mode')
-    identity=identify_hub_protocol(hub_url)
+    with trace.stage('hub_identity'):
+        identity=identify_hub_protocol(hub_url)
     if identity.get('service')!='main_computer.stable_hub':
         raise ValueError('Paid lab requires a verified Stable Hub')
     if lab_mode=='three-hub-smoke-fdb' and ('smoke' not in str(ledger.cluster_id).lower()
@@ -75,16 +127,19 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     requester_account=wallet_account_id(requester_wallet)
     if requester_account==worker_account_id:
         raise RuntimeError('Requester and worker must use distinct wallets')
-    requester_auth=issue_cli_multisession_authorization(hub_url,
-        wallet=SimpleNamespace(private_key=requester_private,address=requester_wallet),
-        stable_identity=identity)
+    with trace.stage('requester_msk'):
+        requester_auth=issue_cli_multisession_authorization(hub_url,
+            wallet=SimpleNamespace(private_key=requester_private,address=requester_wallet),
+            stable_identity=identity)
     if not requester_auth.get('multisession_key_id'):
         raise RuntimeError('Requester failed to obtain real Hub MSK')
     # Dedicated disposable account, seeded only in the checked lab namespace.
-    ledger.fund_account(account_id=requester_account,wallet_address=requester_wallet,
-                        credits='2',replace=True)
+    with trace.stage('fund_disposable_requester'):
+        ledger.fund_account(account_id=requester_account,wallet_address=requester_wallet,
+                            credits='2',replace=True)
     before_request=ledger.get_account(requester_account)
     request_id='slh-paid-'+secrets.token_hex(12)
+    trace.request_id = request_id
     marker='slh-actual-authorized-'+secrets.token_hex(10)
     work={'ring':'ring-2','max_price':{'amount':'2','unit':'compute_credit'},
           'capabilities':['chat.completions'], 'model':'mock-model',
@@ -93,7 +148,8 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
              'multisession_authorization':{'kind':'multisession_key',
                    'multisession_key_id':requester_auth['multisession_key_id']},
              'work':work}
-    accepted=_json(hub_url.rstrip('/')+'/api/hub/v1/work/requests',payload,timeout=25)
+    with trace.stage('paid_work_post'):
+        accepted=_json(hub_url.rstrip('/')+'/api/hub/v1/work/requests',payload,timeout=25)
     if accepted.get('ok') is not True or accepted.get('accepted') is not True:
         raise RuntimeError('Stable Hub refused paid request: '+str(accepted)[:700])
     session_id=str(accepted.get('session_id') or '')
@@ -106,7 +162,8 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
         if not isinstance(record,dict):return None
         if record.get('status') in {'succeeded','failed','cancelled'}:return record
         return None
-    terminal=_eventually(_terminal, seconds=18)
+    with trace.stage('paid_work_terminal'):
+        terminal=_eventually(_terminal, seconds=18)
     payout=dict(terminal.get('payout') or {})
     store_state=ledger.store.load()
     charges=[x for x in store_state.get('payout_charges',{}).values()
@@ -120,7 +177,8 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     earning_amount=int(earning.get('earned_credit_wei') or 0)
     # Replaying the same signed request must reuse its accepted session and
     # never create a second paid charge or dispatch another worker job.
-    replay=_json(hub_url.rstrip('/')+'/api/hub/v1/work/requests',payload,timeout=10)
+    with trace.stage('paid_work_replay'):
+        replay=_json(hub_url.rstrip('/')+'/api/hub/v1/work/requests',payload,timeout=10)
     replay_state=ledger.store.load()
     replay_charges=[c for c in replay_state.get('payout_charges',{}).values()
                     if c.get('session_id')==session_id and c.get('request_id')==request_id]
@@ -147,12 +205,14 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
         # Confirm the economic authority belongs to the wallet, not the worker slot.
         worker_msk=initial_sessions[0].auth_message['multisession_authorization']['multisession_key_id']
         auth={'kind':'multisession_key','multisession_key_id':worker_msk}
-        claim=_json(f'{hub_url.rstrip("/")}/api/hub/v1/workers/{quote(worker_account_id)}/payout/claim',
-                  {'multisession_authorization':auth,'earning_ids':[earning['earning_id']]},timeout=10)
-        settlement=_json(f'{hub_url.rstrip("/")}/api/hub/v1/workers/{quote(worker_account_id)}/payout/settlements',
-                       {'multisession_authorization':auth,
-                        'claim_ids':[claim['claim']['claim_id']],
-                        'settle':True,'settlement_reference':'smoke-'+request_id},timeout=10)
+        with trace.stage('worker_earning_claim'):
+            claim=_json(f'{hub_url.rstrip("/")}/api/hub/v1/workers/{quote(worker_account_id)}/payout/claim',
+                      {'multisession_authorization':auth,'earning_ids':[earning['earning_id']]},timeout=10)
+        with trace.stage('worker_earning_settle'):
+            settlement=_json(f'{hub_url.rstrip("/")}/api/hub/v1/workers/{quote(worker_account_id)}/payout/settlements',
+                           {'multisession_authorization':auth,
+                            'claim_ids':[claim['claim']['claim_id']],
+                            'settle':True,'settlement_reference':'smoke-'+request_id},timeout=10)
     gates['worker_result_matches_private_marker']=(earning.get('result') or {}).get('response',{}).get('content')==marker
     gates['wallet_authorized_claim']=claim.get('ok') is True and earning.get('earning_id') in (claim.get('claim') or {}).get('earning_ids',[])
     settlement_record=settlement.get('settlement') or {}

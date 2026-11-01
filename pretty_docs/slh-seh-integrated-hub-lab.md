@@ -235,6 +235,10 @@ The SLH Lab's `verify-services` lane proves process lifecycle through the
 localhost API; it does not claim an operating-system reboot or Windows task
 registration has been tested.
 
+## Pinky Promise economy: P2–P4 focused implementation, outside current paid-work lab
+
+The integrated lab proves real managed Worker pass-through and **synthetic** public paid-work accounting. It does not prove local secure model-access execution, durable Pinky Promise obligations, spending from a funded organization wallet, or a delayed payment to the Main Computer Reserve. In the intended product, the organization earns wallet credits by allowing eligible idle Workers to sell compute; each **successfully fulfilled qualifying local secure model request** then incurs a separate **0.1-credit** Reserve obligation (10% of a fixed **1-credit public-request reference / 1,000 reference output tokens**). No live quote is needed for v1, and one request is not multiplied by its output-token count. See [Pinky Promise economic contract](slh-pinky-promise-economy.md) and its required independent [laboratory-exit gate](slh-seh-laboratory-exit.md). Do not treat a public earnings event as the reserve-payment trigger.
+
 ## Automatic Organization marketplace participation and decision stress
 
 The real Organization Service owns the public-marketplace controller alongside
@@ -481,3 +485,17 @@ use them with the Worker last-error classification and SLH stream-close
 counters to locate the initiating path. Normal `1000` close codes alone
 never identify the initiator. The counters are process-local test evidence,
 not exposed through public administrator endpoints.
+
+## P4 aggregate sweep verification (separate from public paid-work lab)
+
+P4 provides a periodic SLH-to-Reserve Hub credit transfer using the existing Hub payout ledger. One signed sweep aggregates multiple 0.1-credit P3 obligations; duplicate deliveries cannot double debit. Public paid-job lab settlement alone does not test this. Run `python -m pytest -q tests/test_slh_pinky_periodic_sweep.py` and the combined P0–P4 harness; retain NOT_ACCEPTED for missing full-laboratory requirements. Private prompts and outputs are not included in sweep messages.
+
+
+## Real three-Hub Pinky Promise economy (explicit integrated lane)
+
+The legacy `verify-local` success does **not** prove Pinky Promise payment on
+persistent Hubs. Use `run --pinky-integrated --json` for the verified real
+three-Hub smoke/FoundationDB economic cycle: real SEH public earnings, same
+organization wallet, direct private fulfillment, two 0.1-credit obligations,
+one aggregate Hub Reserve transfer and replay safety. See
+[Shared-Hub Pinky Integration](slh-pinky-shared-hub-integration.md).

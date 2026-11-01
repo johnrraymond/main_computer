@@ -6,6 +6,15 @@ def object_schema(required=(), fields=None):
             'properties': fields or {}, 'additionalProperties': False}
 
 AUTH_REQUESTS = {
+    'private_submit': object_schema(('request_id','model','work'),
+                        {'request_id':{'type':'string','minLength':1,'maxLength':128},
+                         'model':{'type':'string','minLength':1,'maxLength':128},
+                         'work':{'type':'object'}}),
+    'pinky_policy_update': object_schema(
+        ('enabled','expected_revision','acknowledge_consequences'),
+        {'enabled':{'type':'boolean'},
+         'expected_revision':{'type':'integer','minimum':1},
+         'acknowledge_consequences':{'type':'boolean'}}),
     'bootstrap_begin': object_schema(('org_id','bootstrap_secret'),
                     {'org_id':S,'bootstrap_secret':S}),
     'bootstrap_stage_admin': object_schema(
@@ -30,6 +39,13 @@ AUTH_REQUESTS = {
 }
 
 KNOWN_RESPONSES={
+    'pinky_sweep_status': object_schema(('org_id','outstanding_credit_wei','pending_sweeps'),{}),
+    'pinky_sweep_now': object_schema(('status',),{}),
+    'pinky_policy': object_schema(('org_id','policy_id','revision','enabled','assessment_credit_wei'),{}),
+    'pinky_policy_update': object_schema(('org_id','policy_id','revision','enabled','assessment_credit_wei'),{}),
+    'pinky_obligations': object_schema(('org_id','count','assessed_total_credit_wei','obligations'),{}),
+    'private_submit': object_schema(('request_id','status','result_hash'),{}),
+    'private_status': object_schema(('request_id','status','result_hash'),{}),
     'bootstrap_begin': object_schema(('transaction_id','state','org_id','created_at','expires_at','proof_context')) ,
     'bootstrap_stage_admin': object_schema(('transaction_id','state','org_id','admin_id','device_id','fingerprint','expires_at')) ,
     'bootstrap_transaction_status': object_schema(('transaction_id','state','org_id','created_at','expires_at')) ,

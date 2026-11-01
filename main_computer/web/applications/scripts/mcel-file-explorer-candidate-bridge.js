@@ -31,12 +31,92 @@
     const host=root.ownerDocument.createElement('div');
     host.className='mcel-file-explorer-candidate-host';host.dataset.mcelFileExplorerCandidate='true';
     let version=0,disposed=false,pickedRoot=null,pickedEntry=null,query='';
+    // Source-backed directories only: no guessed descendants or synthesized
+    // paths. An expansion is a governed FileExplorerSemanticAdapter read.
+    const directoryCache=new Map(),expanded=new Set();
+    let cachedRoot="",treeBusy=false;
     let application=null,effects=null;
     const last={phase:'idle',receipt:null};
     function publish(status='available'){
       if(disposed)return;
+      const state=adapter.getState();
+      if(state.selectedRootId && cachedRoot!==state.selectedRootId){
+        cachedRoot=state.selectedRootId;directoryCache.clear();expanded.clear();
+      }
+      if(state.selectedRootId && Array.isArray(state.entries) &&
+         ["selectRoot","listDirectory","navigateUp"].includes(state.lastIntentId)){
+        directoryCache.set(state.relativePath||"",state.entries.map(entry=>({...entry})));
+        expanded.add(state.relativePath||"");
+      }
       version++;
-      application?.update(project(adapter.getState()),status);
+      application?.update(project(state),status);
+      renderHierarchy();
+    }
+    function normalizedPath(entry){return String(entry?.relative_path||"").replace(/\\/g,"/");}
+    function renderHierarchy(){
+      const region=host.querySelector('[data-mcel-region="region:entries"]');
+      if(!region)return;
+      let tree=region.querySelector('[data-mcel-file-hierarchy]');
+      if(!tree){
+        tree=root.ownerDocument.createElement("section");
+        tree.dataset.mcelFileHierarchy="true";
+        tree.setAttribute("aria-label","Expandable file hierarchy");
+        tree.style.cssText="max-height:420px;overflow:auto;border-bottom:1px solid #667085;padding:4px 0 10px";
+        const content=region.querySelector(".mcel-application-shell__body")||region;
+        content.append(tree);
+      }
+      tree.textContent="";
+      const heading=root.ownerDocument.createElement("strong");
+      heading.textContent="Directory tree (live scoped reads)";
+      tree.append(heading);
+      const state=adapter.getState();
+      if(!state.selectedRootId)return;
+      const list=root.ownerDocument.createElement("ul");
+      list.setAttribute("role","tree");
+      list.style.cssText="list-style:none;padding-left:8px;margin:4px 0";
+      tree.append(list);
+      const visited=new Set();
+      function nodes(parent,dir,depth){
+        if(depth>32||visited.has(dir))return;
+        visited.add(dir);
+        const children=directoryCache.get(dir)||[];
+        for(const entry of children){
+          const path=normalizedPath(entry);
+          if(!path||(!dir?false:!path.startsWith(dir+"/")))continue;
+          const isDir=entry.kind==="directory";
+          const li=root.ownerDocument.createElement("li");
+          li.setAttribute("role","treeitem");
+          li.setAttribute("aria-level",String(depth+1));
+          li.style.cssText="margin:2px 0;padding-left:10px";
+          const toggle=root.ownerDocument.createElement("button");
+          toggle.type="button";
+          toggle.textContent=(isDir?(expanded.has(path)?"▾ ":"▸ "):"  ")+String(entry.name||path);
+          toggle.title=path;
+          if(isDir)toggle.setAttribute("aria-expanded",String(expanded.has(path)));
+          toggle.addEventListener("click",async()=>{
+            if(!isDir){pickedEntry=entry;await execute("previewEntry",{rootId:cachedRoot,relativePath:path,entry});return;}
+            if(expanded.has(path)){expanded.delete(path);renderHierarchy();return;}
+            if(treeBusy)return;
+            if(directoryCache.has(path)){expanded.add(path);renderHierarchy();return;}
+            treeBusy=true;toggle.disabled=true;
+            try{
+              const receipt=await execute("listDirectory",{rootId:cachedRoot,relativePath:path});
+              if(receipt.ok)expanded.add(path);
+              else last.phase="failed-directory-expand";
+            }finally{treeBusy=false;renderHierarchy();}
+          });
+          li.append(toggle);
+          if(isDir&&expanded.has(path)){
+            const nested=root.ownerDocument.createElement("ul");
+            nested.setAttribute("role","group");
+            nested.style.cssText="list-style:none;padding-left:9px";
+            li.append(nested);
+            nodes(nested,path,depth+1);
+          }
+          parent.append(li);
+        }
+      }
+      nodes(list,"",0);
     }
     async function execute(intent,params={}){
       const result=await adapter.executeIntent(intent,params);

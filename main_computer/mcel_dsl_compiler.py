@@ -10,6 +10,7 @@ contracts, mutate a live application, promote a candidate, or reuse evidence.
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -101,6 +102,7 @@ def compile_dsl_application(
     source_path: Path,
     *,
     compare_ir_path: Path | None = None,
+    html_path: Path | None = None,
     write_candidate: bool = False,
     candidate_root: Path = DEFAULT_CANDIDATE_ROOT,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
@@ -116,6 +118,22 @@ def compile_dsl_application(
             "MCEL_DSL_SOURCE_UNREADABLE",
             f"Unable to read DSL source: {exc}",
         )
+
+    # application.html is automatically paired with application.js. Existing
+    # JS-only sources remain supported without introducing a second compiler.
+    if html_path is None and source_path.name == "application.js":
+        companion = source_path.with_name("application.html")
+        if companion.exists():
+            html_path = companion
+    html_text = None
+    html_source = None
+    if html_path is not None:
+        html_path = html_path.resolve()
+        html_source = _repository_relative(html_path)
+        try:
+            html_text = html_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return _failure_report(source_display, "MCEL_HTML_SOURCE_UNREADABLE", f"Cannot read semantic HTML: {exc}")
 
     node = node_executable or shutil.which("node")
     if not node:
@@ -206,7 +224,25 @@ def compile_dsl_application(
             node_version=node_version,
         )
 
-    ir_report = validate_application_ir(runtime_result.get("ir"))
+    ir_payload = runtime_result.get("ir")
+    if html_text is not None or (isinstance(ir_payload, Mapping) and any(
+        isinstance(s, Mapping) and "htmlBindings" in s for s in ir_payload.get("surfaces", [])
+    )):
+        from main_computer.mcel_semantic_html import SemanticHtmlError, parse_semantic_html
+        if html_text is None:
+            return _failure_report(source_display, "MCEL_HTML_COMPANION_REQUIRED", "HTML-bound JavaScript requires an application.html companion.")
+        try:
+            assert isinstance(ir_payload, Mapping)
+            regions = parse_semantic_html(html_text, app_id=ir_payload["application"]["appId"], source=html_source)
+            _attach_semantic_html(ir_payload, regions, html_source, html_text)
+        except SemanticHtmlError as exc:
+            diagnostic = _diagnostic(exc.code, str(exc), html_source, semantic_path=f"{html_source}:{exc.line}:{exc.column}")
+            return _html_failure(source_display, diagnostic, node, node_version)
+        except (ValueError, KeyError, TypeError) as exc:
+            diagnostic = _diagnostic("MCEL_HTML_BINDING_INVALID", str(exc), html_source, semantic_path="$html")
+            return _html_failure(source_display, diagnostic, node, node_version)
+
+    ir_report = validate_application_ir(ir_payload)
     diagnostics = tuple(item.to_dict() for item in ir_report.diagnostics)
     if not ir_report.valid or ir_report.normalized is None:
         return DSLCompilerReport(
@@ -320,6 +356,78 @@ def _repository_relative(path: Path) -> str:
         return path.relative_to(REPOSITORY_ROOT).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def _html_failure(source, diagnostic, node, node_version):
+    return DSLCompilerReport(
+        valid=False, status="invalid-html", app_id="unknown-app", source=source,
+        diagnostics=(diagnostic,), normalized_ir=None, semantic_fingerprint=None,
+        source_binding_fingerprint=None, comparison=None, candidate_directory=None,
+        candidate_ir_path=None, candidate_report_path=None,
+        node_executable=node, node_version=node_version,
+    )
+
+
+def _attach_semantic_html(ir: Mapping, regions: list[dict], source: str, html: str) -> None:
+    """Join JS node ownership and HTML hierarchy before canonical IR validation."""
+    surfaces = ir.get("surfaces", [])
+    if len(surfaces) != 1 or ir.get("layouts"):
+        raise ValueError("Paired HTML requires exactly one bound surface and no authored layout tree.")
+    surface = surfaces[0]
+    if not isinstance(surface, dict) or set(surface) & {'interfaceIntent', 'semanticSurface'}:
+        raise ValueError("Paired HTML cannot coexist with JavaScript-authored hierarchy or host-bound markup.")
+    bindings = surface.pop("htmlBindings", None)
+    if not isinstance(bindings, dict) or set(bindings) != {'schema','regions','relations'} or bindings['schema'] != 'mcel.html-bindings.v1':
+        raise ValueError("Use dsl.surface.bindHtml(...) to bind JS surface nodes to application.html.")
+    by_id = {region['id']: region for region in regions}
+    seen = set()
+    for assignment in bindings['regions']:
+        rid = assignment.get('id')
+        if rid not in by_id or rid in seen:
+            raise ValueError(f"Unknown or duplicate authored HTML binding region: {rid!r}.")
+        seen.add(rid)
+        by_id[rid]['members'] = assignment['members']
+    node_ids = {node['id'] for node in surface.get('nodes', [])}
+    all_members = [member['ref'] for region in regions for member in region['members']]
+    if len(all_members) != len(set(all_members)) or set(all_members) != node_ids:
+        raise ValueError("Every JS surface node must bind to exactly one authored HTML region.")
+    for relation in bindings['relations']:
+        if relation['from']['ref'] not in by_id or relation['to']['ref'] not in by_id:
+            raise ValueError("Semantic relationship endpoints must exist in application.html.")
+    entities = {item.get('id'):item for section in ('models','states') for item in ir.get(section, [])}
+    for region in regions:
+        content = region.get('content')
+        if content:
+            target = entities.get(content['ref'])
+            if target is None:
+                raise ValueError(f"Unresolved HTML content reference: {content['ref']}.")
+            schema = target.get('schema', {})
+            data_kind = schema.get('kind') if isinstance(schema,dict) else None
+            expected = {'collection':'list', 'scalar':('string','integer','number','boolean','text')}
+            accepted = expected.get(content['kind'])
+            if accepted and data_kind and data_kind not in (accepted if isinstance(accepted, tuple) else (accepted,)):
+                raise ValueError(f"Content kind {content['kind']} is incompatible with {content['ref']} schema kind {data_kind}.")
+    roots = [r['id'] for r in regions if r['parentId'] is None]
+    surface['interfaceIntent'] = {
+        'schema': 'mcel.interface-intent.v1',
+        'regions': regions,
+        'relations': bindings['relations'],
+        'hierarchy': {'rootId': roots[0], 'source': source},
+    }
+    ir['provenance']['frontend']['sourceFiles'].append({
+        'path': source, 'sha256': 'sha256:' + hashlib.sha256(html.encode('utf-8')).hexdigest(),
+    })
+    for region in regions:
+        ir['provenance']['nodeBindings'].append({
+            'id': 'binding:' + region['id'],
+            'semanticId': region['id'],
+            'source': {
+                'kind': 'dsl-source-binding', 'frontend':'mcel.semantic-html.v1',
+                'file': source,
+                'start': {'line':region['htmlSource']['line'], 'column':region['htmlSource']['column']},
+                'end': {'line':region['htmlSource']['line'], 'column':region['htmlSource']['column']},
+            }
+        })
 
 
 def _display_path(path: Path | None) -> str | None:

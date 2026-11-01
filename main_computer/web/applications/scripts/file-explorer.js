@@ -9,20 +9,33 @@
     let systemFileExplorerRenderToken = 0;
 
     async function systemFileExplorerApi(path, payload = {}) {
-      const semanticAdapter = window.FileExplorerSemanticAdapter;
-      if (semanticAdapter && typeof semanticAdapter.requestEndpoint === "function") {
-        return semanticAdapter.requestEndpoint(path, payload);
+      const parity=(phase,disposition="")=>{
+        document.dispatchEvent(new CustomEvent("mcel:parity-operation", {detail:{
+          appId:"file-manager", intentName:path.split("/").pop(), phase, disposition}}));
+      };
+      parity("dispatch");
+      try {
+        const semanticAdapter = window.FileExplorerSemanticAdapter;
+        if (semanticAdapter && typeof semanticAdapter.requestEndpoint === "function") {
+          const result=await semanticAdapter.requestEndpoint(path, payload);
+          parity("settled","completed");
+          return result;
+        }
+        const response = await fetch(path, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.message || data.error || `file explorer API returned ${response.status}`);
+        }
+        parity("settled","completed");
+        return data;
+      } catch(error) {
+        parity("settled","failed");
+        throw error;
       }
-      const response = await fetch(path, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload)
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.message || data.error || `file explorer API returned ${response.status}`);
-      }
-      return data;
     }
     function systemFileExplorerBadges(entry) {
       const badges = [];

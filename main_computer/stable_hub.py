@@ -354,6 +354,16 @@ class LiveWorkerSession:
                 raise ConnectionError("worker live session is closed")
             self._handler._ws_send_json(payload)
 
+    def send_close_response(self, payload: dict[str, Any]) -> None:
+        """Send the final close ACK/error after fencing this socket locally.
+
+        mark_closed() must reject new offers before slow durable cleanup, but
+        the Worker still needs its authenticated response after that cleanup.
+        Serialize that final write with any already-started send.
+        """
+        with self._send_lock:
+            self._handler._ws_send_json(payload)
+
     def record_pong(self, owner: dict[str, Any]) -> None:
         last_pong_at = str(owner.get("last_pong_at") or _utc_now())
         with self._state_condition:
@@ -1193,16 +1203,20 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         except Exception as exc:
-            if getattr(exc, "code", None) != 1020:
+            fdb_error_code = getattr(exc, "code", None)
+            if fdb_error_code not in {1020, 1031}:
                 termination_reason = f"unhandled_{exc.__class__.__name__}: {str(exc)[:240]}"
                 raise
-            termination_reason = "foundationdb_transaction_conflict"
-            # FoundationDB aborted the transaction; do not claim connection
-            # or payment acceptance. The worker can reconnect and retry.
+            termination_reason = (
+                "foundationdb_transaction_conflict" if fdb_error_code == 1020
+                else "foundationdb_transaction_timeout"
+            )
+            # An aborted transaction is not proof of an accepted payment or
+            # worker message. The Worker must reconnect after the failure.
             try:
                 sender = session.send_json if session is not None else self._ws_send_json
                 sender({"type": "hub.error", "ok": False,
-                        "error": "foundationdb_transaction_conflict",
+                        "error": termination_reason,
                         "retryable": True, "hub_id": self.server.hub.hub_id})
             except OSError:
                 pass
@@ -1217,6 +1231,13 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 f"reason={termination_reason!r}"
             )
             if worker_id and connection_id:
+                # Fence the socket in memory BEFORE accessing the shared FDB
+                # document. A delayed/aborted close must never allow another
+                # requester to offer work to this already-closed connection.
+                # This is NOT a durable close or a credit-settlement receipt.
+                if session is not None:
+                    session.mark_closed(reason="socket_closed")
+                self.server.remove_live_worker_session(connection_id)
                 abandoned_sessions = 0
                 close_committed = False
                 # Owner close, market close, and unearned-hold settlement must
@@ -1244,26 +1265,26 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                              "connection_id": connection_id}
                         )
                         try:
-                            session.send_json(response) if session is not None else self._ws_send_json(response)
+                            session.send_close_response(response) if session is not None else self._ws_send_json(response)
                         except (ConnectionError, OSError):
                             # Abrupt client EOF does not undo committed cleanup.
                             pass
                 except Exception as exc:
-                    if getattr(exc, "code", None) != 1020:
+                    if getattr(exc, "code", None) not in {1020, 1031}:
                         raise
-                    self._log_event("worker close/settlement deferred after FDB conflict")
+                    self._log_event(
+                        "worker close/settlement deferred after FDB "
+                        f"{'conflict' if getattr(exc, 'code', None) == 1020 else 'transaction timeout'} "
+                        f"connection_id={connection_id}"
+                    )
                     if graceful_close_requested:
                         try:
                             response = {"type": "hub.error", "ok": False,
                                         "error": "worker_close_cleanup_deferred",
                                         "retryable": True, "connection_id": connection_id}
-                            session.send_json(response) if session is not None else self._ws_send_json(response)
+                            session.send_close_response(response) if session is not None else self._ws_send_json(response)
                         except (ConnectionError, OSError):
                             pass
-                finally:
-                    removed = self.server.remove_live_worker_session(connection_id)
-                    if removed is not None:
-                        removed.mark_closed(reason="socket_closed")
                 if abandoned_sessions:
                     self._log_event(
                         f"settled {abandoned_sessions} abandoned accepted sessions "
@@ -1568,7 +1589,44 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "bridge_payout": payout, "hub_id": self.server.hub.hub_id, "cluster_id": self.server.topology.cluster_id})
 
 
+    def _work_diagnostic_stage(self, stage: str, **fields: Any) -> None:
+        """Opt-in, request-correlated timing; never emit request content or credentials."""
+        if not getattr(self, "_work_diagnostic_enabled", False):
+            return
+        now = time.monotonic()
+        started = self._work_diagnostic_started
+        previous = self._work_diagnostic_previous
+        self._work_diagnostic_previous = now
+        event = {
+            "stage": stage,
+            "request_id": getattr(self, "_work_diagnostic_request_id", ""),
+            "elapsed_ms": round((now - started) * 1000, 1),
+            "step_ms": round((now - previous) * 1000, 1),
+            "thread_id": threading.get_ident(),
+            **fields,
+        }
+        self._log_event("work_request_diagnostic " + json.dumps(event, sort_keys=True))
+
     def _handle_work_request(self) -> None:
+        # Enabled for the disposable three-Hub lab only; production defaults off.
+        self._work_diagnostic_enabled = os.environ.get(
+            "MAIN_COMPUTER_STABLE_HUB_TRACE_WORK_REQUESTS", ""
+        ) == "1"
+        self._work_diagnostic_started = time.monotonic()
+        self._work_diagnostic_previous = self._work_diagnostic_started
+        self._work_diagnostic_request_id = ""
+        self._work_diagnostic_stage("request.begin")
+        try:
+            self._handle_work_request_impl()
+        except Exception as exc:
+            self._work_diagnostic_stage("request.error", error_type=type(exc).__name__,
+                                        fdb_code=getattr(exc, "code", None))
+            raise
+        finally:
+            self._work_diagnostic_stage("request.end")
+            self._work_diagnostic_enabled = False
+
+    def _handle_work_request_impl(self) -> None:
         try:
             body = self._read_json()
             request_id = normalize_request_id(body.get("request_id"))
@@ -1587,9 +1645,13 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        self._work_diagnostic_request_id = request_id
+        self._work_diagnostic_stage("request.parsed")
+        self._work_diagnostic_stage("requester_auth.begin")
         validation = self.server.multisession_key_service.validate_key(
             {"multisession_authorization": body.get("multisession_authorization")}
         )
+        self._work_diagnostic_stage("requester_auth.end", valid=validation.get("valid") is True)
         if validation.get("valid") is not True:
             self._send_json(
                 401,
@@ -1606,10 +1668,12 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
 
         requester_account_id = str(validation.get("account_id") or "")
         partition = stable_partition_key_for_work(work)
+        self._work_diagnostic_stage("idempotency_lookup.begin")
         existing_session = self.server.accepted_work_session_directory.get_session_for_request(
             requester_account_id=requester_account_id,
             request_id=request_id,
         )
+        self._work_diagnostic_stage("idempotency_lookup.end", existing=existing_session is not None)
         if existing_session is not None:
             if not self._work_payloads_match(existing_session.get("work", {}), work):
                 self._send_json(
@@ -1646,14 +1710,20 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         market_record = None
 
         for selection_attempt in range(1, max_selection_attempts + 1):
+            self._work_diagnostic_stage("market_select.begin", attempt=selection_attempt)
             selected_worker = self.server.worker_market_directory.select_worker_for_work(
                 work, excluded_connections=excluded_connections,
             )
+            self._work_diagnostic_stage("market_select.end", attempt=selection_attempt,
+                                        selected=selected_worker is not None)
             if selected_worker is None:
                 break
             worker_id = normalize_worker_id(selected_worker.get("worker_id"))
             identity = worker_market_identity(selected_worker)
+            self._work_diagnostic_stage("owner_lookup.begin", attempt=selection_attempt)
             owner = self.server.worker_session_directory.get_owner(worker_id)
+            self._work_diagnostic_stage("owner_lookup.end", attempt=selection_attempt,
+                                        owner_live=bool(owner and owner.get("status") == "live"))
 
             def _reject_candidate(code: str, message: str) -> None:
                 nonlocal rejected_selection
@@ -1703,15 +1773,13 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     active = self.server.get_live_worker_session(identity[1])
                     if active is not None and active.is_live:
                         return False
-                    self.server.worker_session_directory.record_closed(
-                        worker_id=worker_id, connection_id=identity[1],
-                        reason="local_socket_missing",
+                    # Do not separately close owner and market: an abandoned
+                    # accepted session could otherwise strand an unearned hold.
+                    closed_owner, _settled = close_worker_connection_and_settle(
+                        self.server, worker_id=worker_id, connection_id=identity[1],
                     )
-                    self.server.worker_market_directory.record_worker_closed(
-                        worker_id=worker_id, connection_id=identity[1],
-                        reason="local_socket_missing",
-                    )
-                    return True
+                    return (str(closed_owner.get("status") or "") == "closed"
+                            and str(closed_owner.get("connection_id") or "") == identity[1])
 
                 store = self.server.worker_session_directory.store
                 atomic = getattr(store, "atomic", None)
@@ -1738,6 +1806,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(503, {"ok": False, "error": "temporal_unavailable", "message": str(exc)})
                     return
 
+            self._work_diagnostic_stage("capacity_reserve.begin", attempt=selection_attempt)
             try:
                 market_record = self.server.worker_market_directory.reserve_worker_capacity(
                     worker_id=worker_id,
@@ -1751,6 +1820,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     raise
                 _reject_candidate(str(exc), "Selected worker no longer has an available live capacity slot.")
                 continue
+            self._work_diagnostic_stage("capacity_reserve.end", attempt=selection_attempt)
             break
         else:
             # Even a rapidly changing market must not create an unbounded loop.
@@ -1894,6 +1964,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             # the real request from an unreserved preparation message.
             "work": {"execution_authorization_pending": True},
         }
+        self._work_diagnostic_stage("worker_offer.begin", connection_id=owner_connection_id)
         try:
             worker_acceptance = live_session.offer_work_and_wait_for_acceptance(
                 offer,
@@ -1960,6 +2031,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
+        self._work_diagnostic_stage("worker_offer.end", connection_id=owner_connection_id)
         # The worker has accepted the offer, but payment is not earned until
         # an authenticated successful result. Reserve the maximum agreed price
         # atomically with accepted-session creation; failures release the hold.
@@ -2001,6 +2073,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 },
             )
 
+        self._work_diagnostic_stage("durable_accept.begin", session_id=session_id)
         try:
             store = self.server.payout_ledger_directory.store
             atomic = getattr(store, "atomic", None)
@@ -2027,10 +2100,12 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        self._work_diagnostic_stage("durable_accept.end", session_id=session_id)
         # This is the sole execution permission. The preceding prepare frame
         # withheld the work payload and the atomic hold+accepted-session commit
         # has completed before we send it. A fast terminal can therefore always
         # find its durable session. A failed send must not strand the hold.
+        self._work_diagnostic_stage("worker_authorize.begin", session_id=session_id)
         try:
             live_session.authorize_durable_execution({
                 "type": "hub.work.authorized",
@@ -2052,11 +2127,13 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        self._work_diagnostic_stage("worker_authorize.end", session_id=session_id)
         # Capacity was reserved before the offer was sent. Terminal settlement
         # releases the slot; failed pre-authorization messages never run work.
         market_record = self.server.worker_market_directory.get_worker(worker_id) or market_record
 
         continuation_url = stable_work_session_continuation_url(owner_hub_url, session_id)
+        self._work_diagnostic_stage("response.begin", session_id=session_id)
         self._send_json(
             200,
             {
@@ -2099,6 +2176,24 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/hub/v1/credits/multisession-keys/validate":
                 self._send_json(200, self.server.multisession_key_service.validate_key(self._read_json()))
+                return
+            if path == "/api/hub/v1/credits/pinky-reserve/sweep":
+                # Only a wallet-signed, recipient-fixed aggregate transfer can
+                # move organizational credits. An MSK alone cannot authorize it.
+                from main_computer.hub_credit_models import normalize_address
+                configured = str(os.environ.get('MAIN_COMPUTER_RESERVE_WALLET_ADDRESS') or '').strip()
+                if (not __import__('re').fullmatch(r'0x[0-9a-fA-F]{40}', configured) or
+                        configured.lower()=='0x'+'0'*40):
+                    self._read_json()
+                    self._send_json(503, {'ok':False,'error':'reserve_wallet_not_configured'})
+                    return
+                body = self._read_json()
+                if set(body) != {'intent','signature'}:
+                    raise ValueError('invalid_pinky_sweep_request')
+                receipt = self.server.payout_ledger_directory.transfer_pinky_reserve(
+                    intent=body['intent'],signature=body['signature'],
+                    configured_reserve_wallet=normalize_address(configured))
+                self._send_json(200,receipt)
                 return
             if path == "/api/hub/v1/credits/wallet-funding/complete":
                 body = self._read_json()

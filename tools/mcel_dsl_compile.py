@@ -23,6 +23,7 @@ SEMANTIC_CONFLICT_EXIT = 4
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path, help="Official vanilla-JavaScript application source.")
+    parser.add_argument("--html", type=Path, help="Semantic HTML companion (automatically discovered beside application.js).")
     parser.add_argument("--compare-ir", type=Path, help="Existing IR authority to compare by exact semantic meaning.")
     parser.add_argument("--write-candidate", action="store_true", help="Stage normalized IR under compiler-candidates.")
     parser.add_argument("--candidate-root", type=Path, default=DEFAULT_CANDIDATE_ROOT)
@@ -35,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report = compile_dsl_application(
         args.input,
+        html_path=args.html,
         compare_ir_path=args.compare_ir,
         write_candidate=args.write_candidate,
         candidate_root=args.candidate_root,

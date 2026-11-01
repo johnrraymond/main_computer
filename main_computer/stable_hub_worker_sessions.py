@@ -7,6 +7,7 @@ import os
 import platform
 import secrets
 import sys
+import time
 import threading
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -513,6 +514,31 @@ def _configure_fdb_transaction_safety(tr: Any) -> None:
         set_retry_limit(retry_limit)
 
 
+def _diagnose_fdb_store_operation(
+    namespace: str, operation: str, started: float, *,
+    error: BaseException | None = None, **details: Any,
+) -> None:
+    """Slow/error-only FDB measurements; no ledger document, keys, or secrets."""
+    if os.environ.get("MAIN_COMPUTER_STABLE_HUB_FDB_DIAGNOSTICS") != "1":
+        return
+    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+    threshold = 250.0
+    if error is None and elapsed_ms < threshold:
+        return
+    row = {
+        "operation": operation, "elapsed_ms": elapsed_ms,
+        "status": "error" if error is not None else "slow",
+        "thread_id": threading.get_ident(),
+        "namespace": namespace,
+        **details,
+    }
+    if error is not None:
+        row["error_type"] = type(error).__name__
+        row["fdb_code"] = getattr(error, "code", None)
+    sys.stderr.write("stable-hub-fdb-diagnostic " + json.dumps(row, sort_keys=True) + "\n")
+    sys.stderr.flush()
+
+
 class FoundationDbStableWorkerSessionStore:
     """Shared stable Hub worker owner directory backed by FoundationDB."""
 
@@ -607,18 +633,43 @@ class FoundationDbStableWorkerSessionStore:
             finally:
                 self._transaction_local.transaction = None
 
-        return _tx(self._db)
+        started = time.monotonic()
+        error = None
+        try:
+            return _tx(self._db)
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            _diagnose_fdb_store_operation(self.namespace, "atomic", started, error=error)
 
     def _read_document(self, tr: Any, *, legacy_key: bytes, meta_key: bytes) -> dict[str, Any]:
-        meta = _json_loads(tr[meta_key].wait()) or {}
+        meta_started = time.monotonic()
+        meta_error = None
+        try:
+            meta = _json_loads(tr[meta_key].wait()) or {}
+        except BaseException as exc:
+            meta_error = exc
+            raise
+        finally:
+            _diagnose_fdb_store_operation(self.namespace, "read_meta", meta_started, error=meta_error)
         chunk_count = int(meta.get("chunk_count") or 0) if isinstance(meta, dict) else 0
         if chunk_count > 0:
             parts: list[bytes] = []
-            for index in range(chunk_count):
-                chunk = _fdb_value_bytes(tr[self._chunk_key(index)].wait())
-                if chunk is None:
-                    raise RuntimeError(f"Stable Hub FDB chunk {index} is missing.")
-                parts.append(chunk)
+            chunks_started = time.monotonic()
+            chunk_error = None
+            try:
+                for index in range(chunk_count):
+                    chunk = _fdb_value_bytes(tr[self._chunk_key(index)].wait())
+                    if chunk is None:
+                        raise RuntimeError(f"Stable Hub FDB chunk {index} is missing.")
+                    parts.append(chunk)
+            except BaseException as exc:
+                chunk_error = exc
+                raise
+            finally:
+                _diagnose_fdb_store_operation(self.namespace, "read_chunks", chunks_started,
+                                              error=chunk_error, chunk_count=chunk_count)
             payload = json.loads(b"".join(parts).decode("utf-8"))
             return _normalize_store(payload if isinstance(payload, dict) else {})
         # Existing one-key snapshots remain readable and migrate on first save.
@@ -658,14 +709,19 @@ class FoundationDbStableWorkerSessionStore:
             _configure_fdb_transaction_safety(tr)
             return self._read_document(tr, legacy_key=legacy_key, meta_key=meta_key)
 
+        started = time.monotonic()
+        load_error = None
         try:
             return _tx(self._db)
         except Exception as exc:  # pragma: no cover - depends on live FDB timing/state
+            load_error = exc
             raise RuntimeError(
                 "FoundationDB worker live-session store load failed or timed out. "
                 f"cluster_file={self.cluster_file} namespace={self.namespace} "
                 f"timeout_ms={STABLE_WORKER_SESSION_FDB_TRANSACTION_TIMEOUT_MS}"
             ) from exc
+        finally:
+            _diagnose_fdb_store_operation(self.namespace, "load", started, error=load_error)
 
     def save(self, data: dict[str, Any]) -> None:
         self._open()
@@ -1251,6 +1307,86 @@ class StableHubPayoutLedgerDirectory:
             )
             self.store.save(data)
             return dict(updated)
+
+    @_atomic_stable_store_mutation
+    def transfer_pinky_reserve(self, *, intent: dict[str, Any], signature: str,
+                               configured_reserve_wallet: str) -> dict[str, Any]:
+        """Atomically move existing Hub credits into the configured Reserve wallet.
+
+        The signed wallet intent authorizes exactly this recipient, amount and
+        sweep ID. A repeated delivery returns the original receipt without a
+        second debit. No local JSON file or SLH snapshot can create credits.
+        """
+        from main_computer.pinky_reserve_transfer import verify_sweep_signature
+        verify_sweep_signature(intent, signature)
+        source_wallet = normalize_address(intent['wallet_address'])
+        reserve_wallet = normalize_address(configured_reserve_wallet)
+        if (intent['cluster_id'] != self.cluster_id or
+                str(intent['chain_id']) != str(self.topology.network.get('chain_id') or '') or
+                intent['reserve_wallet_address'] != reserve_wallet):
+            raise StableHubWorkerSessionError('pinky_reserve_identity_mismatch')
+        amount = int(intent['credit_wei'])
+        if amount <= 0 or amount % (10**17):
+            raise StableHubWorkerSessionError('pinky_reserve_amount_invalid')
+        sender_id = wallet_account_id(source_wallet)
+        reserve_id = wallet_account_id(reserve_wallet)
+        sweep_key = f"{intent['org_id']}:{intent['sweep_id']}"
+        with self._lock:
+            data = self.store.load()
+            existing = data.setdefault('pinky_reserve_sweeps', {}).get(sweep_key)
+            if existing is not None:
+                if (existing['wallet_address'] != source_wallet or
+                        existing['reserve_wallet_address'] != reserve_wallet or
+                        existing['credit_wei'] != str(amount) or
+                        existing['cluster_id'] != intent['cluster_id'] or
+                        existing['chain_id'] != intent['chain_id']):
+                    raise StableHubWorkerSessionError('pinky_sweep_idempotency_conflict')
+                return dict(existing)
+            accounts = data.setdefault('payout_accounts', {})
+            sender = accounts.get(sender_id)
+            if (not isinstance(sender, dict) or
+                    normalize_address(sender.get('wallet_address') or '') != source_wallet):
+                raise StableHubWorkerSessionError('pinky_source_wallet_not_funded')
+            available = int(sender.get('available_credit_wei') or 0)
+            if available < amount:
+                raise StableHubWorkerSessionError('pinky_insufficient_credits')
+            recipient = self._ensure_account(data, account_id=reserve_id,
+                                              wallet_address=reserve_wallet,
+                                              default_credits=Decimal('0'))
+            accounts[sender_id] = self._account_payload(
+                account_id=sender_id, wallet_address=source_wallet,
+                available_credit_wei=available-amount,
+                held_credit_wei=sender.get('held_credit_wei',0),
+                spent_credit_wei=int(sender.get('spent_credit_wei',0))+amount,
+                earned_credit_wei=sender.get('earned_credit_wei',0),
+                bridge_completed_credit_wei=sender.get('bridge_completed_credit_wei',0),
+                created_at=str(sender.get('created_at') or ''),
+                metadata=dict(sender.get('metadata') or {}))
+            accounts[reserve_id] = self._account_payload(
+                account_id=reserve_id, wallet_address=reserve_wallet,
+                available_credit_wei=int(recipient.get('available_credit_wei',0))+amount,
+                held_credit_wei=recipient.get('held_credit_wei',0),
+                spent_credit_wei=recipient.get('spent_credit_wei',0),
+                earned_credit_wei=recipient.get('earned_credit_wei',0),
+                bridge_completed_credit_wei=recipient.get('bridge_completed_credit_wei',0),
+                created_at=str(recipient.get('created_at') or ''),
+                metadata=dict(recipient.get('metadata') or {}))
+            receipt_id=_stable_digest_id('pinkyreceipt',self.cluster_id,sweep_key)
+            meta={'sweep_id':intent['sweep_id'],'org_id':intent['org_id'],
+                  'reserve_account_id':reserve_id,'receipt_id':receipt_id}
+            self._transaction(data,transaction_type='pinky_reserve_out',account_id=sender_id,
+                              credit_wei=amount, transaction_id=receipt_id+':debit',metadata=meta)
+            self._transaction(data,transaction_type='pinky_reserve_in',account_id=reserve_id,
+                              credit_wei=amount, transaction_id=receipt_id+':credit',metadata=meta)
+            receipt={'ok':True,'status':'confirmed','receipt_id':receipt_id,
+                     'org_id':intent['org_id'],'sweep_id':intent['sweep_id'],
+                     'cluster_id':intent['cluster_id'],'chain_id':intent['chain_id'],
+                     'wallet_address':source_wallet,'reserve_wallet_address':reserve_wallet,
+                     'credit_wei':str(amount),'confirmed_at':utc_now(),
+                     'settlement_rail':'hub_internal_credit_transfer'}
+            data['pinky_reserve_sweeps'][sweep_key]=receipt
+            self.store.save(data)
+            return dict(receipt)
 
     def get_account(self, account_id: str) -> dict[str, Any] | None:
         clean_account = str(account_id or "").strip()
@@ -1918,6 +2054,32 @@ class StableHubPayoutLedgerDirectory:
             batch["settlement_reference"] = effective_reference
             batch["settlement_idempotency_key"] = effective_idempotency_key
             batches[clean_batch] = batch
+            # Wallet-backed Worker earnings become spendable at settlement.
+            # Historical worker-node IDs are not wallet addresses, and retain
+            # their existing payout semantics.
+            worker_account = str(batch.get("worker_id") or "")
+            if (len(worker_account)==42 and worker_account.startswith("0x") and
+                    all(c in "0123456789abcdef" for c in worker_account[2:])):
+                amount_wei = int(batch.get("total_credit_wei_published") or 0)
+                if amount_wei <= 0:
+                    raise StableHubWorkerSessionError("settlement_amount_invalid")
+                account = self._ensure_account(data, account_id=worker_account,
+                                               wallet_address=worker_account,
+                                               default_credits=Decimal("0"))
+                data.setdefault("payout_accounts", {})[worker_account] = self._account_payload(
+                    account_id=worker_account, wallet_address=worker_account,
+                    available_credit_wei=int(account.get("available_credit_wei") or 0)+amount_wei,
+                    held_credit_wei=account.get("held_credit_wei", 0),
+                    spent_credit_wei=account.get("spent_credit_wei", 0),
+                    earned_credit_wei=int(account.get("earned_credit_wei") or 0)+amount_wei,
+                    bridge_completed_credit_wei=account.get("bridge_completed_credit_wei", 0),
+                    created_at=str(account.get("created_at") or ""),
+                    metadata=dict(account.get("metadata") or {}))
+                self._transaction(data, transaction_type="worker_settlement_wallet_credit",
+                                  account_id=worker_account, credit_wei=amount_wei,
+                                  worker_id=worker_account, batch_id=clean_batch,
+                                  memo="settled organizational Worker earnings",
+                                  metadata={"claim_ids": batch.get("claim_ids", [])})
             for claim_id in batch.get("claim_ids", []):
                 claim = data.setdefault("worker_claims", {}).get(str(claim_id))
                 if isinstance(claim, dict):
@@ -1954,6 +2116,12 @@ class StableHubPayoutLedgerDirectory:
                 raise StableHubWorkerSessionError("worker settlement batch is not bridgeable by this worker.")
             if str(batch.get("status") or "") != "settled":
                 raise StableHubWorkerSessionError("worker settlement batch must be settled before bridge payout.")
+            # Wallet-backed settlements are already spendable Hub credits.
+            # A second legacy bridge payout for this same batch would duplicate
+            # the earnings rather than transfer them from the wallet.
+            if (len(worker_id) == 42 and worker_id.startswith("0x") and
+                    all(c in "0123456789abcdef" for c in worker_id[2:])):
+                raise StableHubWorkerSessionError("wallet_settlement_already_credited")
             amount_wei = int(batch.get("total_credit_wei_published") or credit_decimal_text_to_wei(str(batch.get("amount", "0"))))
             if amount_wei <= 0:
                 raise StableHubWorkerSessionError("worker settlement batch has no bridgeable credits.")

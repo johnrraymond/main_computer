@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from tools.slh_seh_lab.integrated_stress import StressProfile
-from tools.slh_seh_lab.lab_exit import ExitSpec, exit_specs, judge, run_exit
+from tools.slh_seh_lab.lab_exit import (
+    UNIMPLEMENTED_REQUIRED, ExitSpec, exit_specs, judge, run_exit,
+)
 
 
 def _stress_spec():
@@ -23,6 +25,25 @@ def _passing_stress():
         'events':[{'event':'complete','result':'PASS'},
                   {'event':'causal_fleet_checkpoint','missing_workers':[],
                    'unexpected_workers':[],'dead_worker_clients':[]}]}}
+
+
+# These six capabilities must remain required even if their current test lanes pass.
+EXPECTED_MISSING_CAPABILITIES = {
+    'crash_during_paid_execution',
+    'persistent_three_hub_crash_restart',
+    'cross_hub_owner_handoff',
+    'representative_compute_output',
+    'credential_rotation_live_connections',
+    'pinky_promise_economic_cycle',
+}
+
+
+def test_all_six_exit_blockers_are_declared_and_pinky_price_is_fixed():
+    assert set(UNIMPLEMENTED_REQUIRED) == EXPECTED_MISSING_CAPABILITIES
+    reason = UNIMPLEMENTED_REQUIRED['pinky_promise_economic_cycle']
+    assert '0.1-credit' in reason
+    assert 'organization wallet' in reason
+    assert 'Reserve settlement' in reason
 
 
 def test_rejects_partial_acceptance_even_with_generic_pass():
@@ -93,6 +114,69 @@ def test_full_profile_remains_unaccepted_without_missing_lanes(tmp_path,monkeypa
     assert 'crash_during_paid_execution' in report['required_gaps']
     assert 'representative_compute_output' in report['required_gaps']
     assert all(v['status']=='BLOCKED_UNIMPLEMENTED' for v in report['required_gaps'].values())
+    assert EXPECTED_MISSING_CAPABILITIES <= set(report['required_gaps'])
+    assert report['required_gaps']['pinky_promise_economic_cycle'] == {
+        'status': 'BLOCKED_UNIMPLEMENTED',
+        'reason': UNIMPLEMENTED_REQUIRED['pinky_promise_economic_cycle'],
+    }
+    recorded = json.loads((tmp_path/'exit-report.json').read_text())
+    assert recorded['status'] == 'NOT_ACCEPTED'
+    assert recorded['accepted'] is False
+    assert recorded['required_gaps']['pinky_promise_economic_cycle'] == report['required_gaps']['pinky_promise_economic_cycle']
+
+
+def test_pinky_promise_alone_blocks_forged_successful_full_exit(tmp_path, monkeypatch):
+    # Prove this gate remains decisive after the five older blockers are cleared.
+    from tools.slh_seh_lab import lab_exit, run_lab
+    monkeypatch.setattr(run_lab, 'validate_topology', lambda path: {'network_kind': 'smoke'})
+    monkeypatch.setattr(lab_exit.platform, 'system', lambda: 'Windows')
+    monkeypatch.setattr(lab_exit, 'UNIMPLEMENTED_REQUIRED', {
+        'pinky_promise_economic_cycle': UNIMPLEMENTED_REQUIRED['pinky_promise_economic_cycle'],
+    })
+
+    def forged_pass(spec, path, *, root, python):
+        return {
+            'name': spec.name,
+            'status': 'PASS',
+            'reason': 'FORGED_SUCCESS',
+            'pinky_promise_economic_cycle': {'status': 'PASS'},
+        }
+
+    report = run_exit(profile='full', report_dir=tmp_path, executor=forged_pass)
+    assert all(lane['status'] == 'PASS' for lane in report['lanes'])
+    assert len(report['lanes']) == len(exit_specs(profile='full'))
+    assert report['required_gaps'] == {
+        'pinky_promise_economic_cycle': {
+            'status': 'BLOCKED_UNIMPLEMENTED',
+            'reason': UNIMPLEMENTED_REQUIRED['pinky_promise_economic_cycle'],
+        },
+    }
+    assert report['status'] == 'NOT_ACCEPTED'
+    assert report['accepted'] is False
+    persisted = json.loads((tmp_path / 'exit-report.json').read_text())
+    assert persisted['status'] == 'NOT_ACCEPTED'
+    assert persisted['accepted'] is False
+    assert persisted['required_gaps'] == report['required_gaps']
+
+
+
+def test_full_exit_keeps_six_blockers_after_early_failure_on_non_windows(tmp_path, monkeypatch):
+    from tools.slh_seh_lab import lab_exit, run_lab
+    monkeypatch.setattr(run_lab, 'validate_topology', lambda path: {'network_kind': 'smoke'})
+    monkeypatch.setattr(lab_exit.platform, 'system', lambda: 'Linux')
+
+    def fail_first(spec, path, *, root, python):
+        return {'name': spec.name, 'status': 'FAIL', 'reason': 'INTENTIONAL'}
+
+    report = run_exit(profile='full', report_dir=tmp_path, executor=fail_first)
+    assert report['lanes'][0]['status'] == 'FAIL'
+    assert all(lane['status'] == 'NOT_RUN' for lane in report['lanes'][1:])
+    assert EXPECTED_MISSING_CAPABILITIES <= set(report['required_gaps'])
+    assert report['required_gaps']['required_windows_validation']['status'] == 'BLOCKED_UNIMPLEMENTED'
+    assert report['status'] == 'NOT_ACCEPTED'
+    recorded = json.loads((tmp_path / 'exit-report.json').read_text())
+    assert recorded['required_gaps'] == report['required_gaps']
+    assert recorded['accepted'] is False
 
 
 def test_first_failure_preserved_and_remaining_lanes_not_run(tmp_path,monkeypatch):

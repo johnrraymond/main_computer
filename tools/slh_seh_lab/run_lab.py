@@ -25,11 +25,13 @@ import socket
 import subprocess
 import sys
 import tempfile
+import traceback
 import time
 from typing import Any
 from urllib.parse import urlsplit
 
 from main_computer.stable_hub_topology import load_stable_hub_topology
+from .lab_stage_diagnostics import enable as enable_stage_trace, disable as disable_stage_trace, record as stage_record, stage as lab_stage, summarize as stage_summary
 
 DEFAULT_TOPOLOGY = Path('deploy/hub-topology/smoke-topology.json')
 REPORT_ROOT = Path('runtime/reports/slh-seh-lab')
@@ -75,7 +77,8 @@ def plan(path: str | Path) -> dict:
                       'seh_coolify_contract'],
             'limits': {'production_seh': 'LOCAL_RUNTIME_TESTED_NO_COOLIFY', 'paid_request_settlement': 'LAB_EARNINGS_SETTLEMENT',
                        'remote_coolify': 'NOT_TESTED', 'real_fdb_required_for_run': True},
-            'no_external_urls': True, 'production_mutations': False}
+            'no_external_urls': True, 'production_mutations': False,
+            'pinky_integrated': 'RUN_ONLY_WITH_--pinky-integrated_REAL_SMOKE_FDB'}
 
 
 def _wait(predicate, seconds=5):
@@ -490,7 +493,7 @@ def _ports_free(urls):
     return busy
 
 
-def _launch_cluster(topology_path, log_dir):
+def _launch_cluster(topology_path, log_dir, *, reserve_wallet=None):
     from tools.stable_hub_lab.run_lab import _child_command, check_cluster, _terminate_children
     topo = load_stable_hub_topology(topology_path)
     busy = _ports_free([h.hub_url for h in topo.hubs])
@@ -501,10 +504,17 @@ def _launch_cluster(topology_path, log_dir):
         for hub in topo.hubs:
             log_file = open(log_dir/f'{hub.hub_id}.log','w',encoding='utf-8')
             logs.append(log_file)
-            children.append(subprocess.Popen(_child_command(topology_path,hub.hub_id),
-                                             stdout=log_file,stderr=subprocess.STDOUT,
-                                             cwd=Path.cwd(), env={**os.environ,'PYTHONUNBUFFERED':'1'}))
-        health = check_cluster(topology_path=topology_path,timeout=30)
+            child = subprocess.Popen(_child_command(topology_path,hub.hub_id),
+                                     stdout=log_file,stderr=subprocess.STDOUT,
+                                     cwd=Path.cwd(), env={**os.environ,'PYTHONUNBUFFERED':'1',
+                                      **({'MAIN_COMPUTER_RESERVE_WALLET_ADDRESS':reserve_wallet} if reserve_wallet else {}),
+                                      **({'MAIN_COMPUTER_STABLE_HUB_TRACE_WORK_REQUESTS':'1',
+                                          'MAIN_COMPUTER_STABLE_HUB_FDB_DIAGNOSTICS':'1'}
+                                         if reserve_wallet else {})})
+            children.append(child)
+            stage_record('cluster.child_spawn', 'ok', hub_id=hub.hub_id, pid=child.pid)
+        with lab_stage('cluster.readiness_probe'):
+            health = check_cluster(topology_path=topology_path,timeout=30)
         if not health['ok']:
             raise LabRefused('Smoke Hub startup failed: '+str(health['checks'])[:1000])
         return children,logs,health
@@ -514,28 +524,45 @@ def _launch_cluster(topology_path, log_dir):
         raise
 
 
-def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|None=None) -> dict:
+def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|None=None,
+              pinky_integrated:bool=False, reserve_wallet:str|None=None) -> dict:
     from .service_lifecycle import verify_services
     # Always run against a disposable, real child process before the existing
     # paid Stable Hub path. Never mutate an installed organizational SLH.
-    services = verify_services()
+    with lab_stage('preflight.two_service_lifecycle'):
+        services = verify_services()
     from .decision_stress import verify_decisions
-    decisions = verify_decisions()
+    with lab_stage('preflight.scheduler_decisions'):
+        decisions = verify_decisions()
     from tools.stable_hub_lab.run_lab import check_cluster, _terminate_children
     children=[];logs=[]
+    if pinky_integrated:
+        from main_computer.multisession_key_signing import private_key_to_address
+        import re
+        if use_existing:
+            if not reserve_wallet or not re.fullmatch(r'0x[0-9a-fA-F]{40}', reserve_wallet):
+                raise LabRefused('Existing Hubs require --pinky-reserve-wallet matching their configured Reserve')
+            reserve_wallet = reserve_wallet.lower()
+        elif reserve_wallet:
+            raise LabRefused('Do not set a custom Reserve for newly launched disposable Hubs')
+        else:
+            reserve_wallet = private_key_to_address('0x'+secrets.token_hex(32))
     try:
         if use_existing:
-            health=check_cluster(topology_path=topology,timeout=4)
+            with lab_stage('cluster.existing_identity_check'):
+                health=check_cluster(topology_path=topology,timeout=4)
             if not health['ok']:
                 raise LabRefused('Existing smoke cluster does not match configured topology')
         else:
-            children,logs,health = _launch_cluster(topology,report_dir)
+            with lab_stage('cluster.launch_and_identity', count=3):
+                children,logs,health = _launch_cluster(topology,report_dir,reserve_wallet=reserve_wallet)
         # The Hub identity is verified for every node BEFORE any MSK or worker registration.
         identities = health['checks']
         if len(identities)!=3 or not all(x.get('ok') for x in identities):
             raise LabRefused('Hub identity preflight failed')
         from tools.stable_hub_lab.run_lab import require_durable_execution_cluster
-        require_durable_execution_cluster(topology_path=topology,timeout=4)
+        with lab_stage('cluster.fdb_durability_preflight'):
+            require_durable_execution_cluster(topology_path=topology,timeout=4)
         urls = [h.hub_url for h in load_stable_hub_topology(topology).hubs]
         # Issue the MSK against the entry Hub, open worker slots against the third Hub.
         # Stable Hub cluster uses FDB for multi-node key distribution. For the moment,
@@ -544,26 +571,80 @@ def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|Non
         from main_computer.stable_hub_worker_sessions import (
             stable_worker_session_store_from_topology, StableHubPayoutLedgerDirectory)
         topo=load_stable_hub_topology(topology)
-        ledger=StableHubPayoutLedgerDirectory(topology=topo,hub_id=topo.hubs[2].hub_id,
-            store=stable_worker_session_store_from_topology(topo))
+        with lab_stage('cluster.fdb_ledger_open'):
+            ledger=StableHubPayoutLedgerDirectory(topology=topo,hub_id=topo.hubs[2].hub_id,
+                store=stable_worker_session_store_from_topology(topo))
         from .real_paid_service import verify_real_process_paid
-        real_paid = verify_real_process_paid(hub_url=urls[2], payout_ledger=ledger,
-                                             lab_mode='three-hub-smoke-fdb')
-        trial = _local_demo(urls[2],topology_label='three-hub-smoke-fdb', payout_ledger=ledger,
-                            deployed=deployed)
+        with lab_stage('pinky.real_process_and_economic_cycle', target_hub=topo.hubs[2].hub_id):
+            real_paid = verify_real_process_paid(hub_url=urls[2], payout_ledger=ledger,
+                                                 lab_mode='three-hub-smoke-fdb',
+                                                 pinky_integrated=pinky_integrated, reserve_wallet=reserve_wallet,
+                                                 paid_trace_file=(report_dir/'paid-cycle-diagnostic.jsonl') if pinky_integrated else None)
+        if pinky_integrated:
+            # The real-process lane already executes public SEH paid work, a
+            # private organizational Worker, and the FDB-backed Reserve sweep.
+            # _local_demo is a *second* independent paid-work workload: running
+            # it after the Pinky proof adds no economic evidence, and its FDB
+            # worker churn can obscure a successful Pinky run with a late error.
+            # Keep the older demo in ordinary `run`, where it still belongs.
+            trial = {'status': 'NOT_RUN', 'pass': None,
+                     'reason': 'legacy_second_paid_demo_excluded_from_pinky_integration'}
+            pinky = real_paid.get('pinky_integrated') or {}
+            pinky_gates = pinky.get('gates') or {}
+            economic_verified = (
+                real_paid.get('pass') is True and real_paid.get('status') == 'PASS'
+                and pinky.get('pass') is True and pinky.get('status') == 'PASS'
+                and isinstance(pinky_gates, dict) and bool(pinky_gates)
+                and all(result is True for result in pinky_gates.values())
+                and pinky.get('hub_id') == identities[2]['hub_id']
+                and pinky.get('cluster_id') == health['cluster_id']
+                and pinky.get('namespace') == 'main-computer-hub-smoke'
+                and pinky.get('earned_credit_wei') == str(10**18)
+                and pinky.get('swept_credit_wei') == str(2 * 10**17)
+            )
+            checkpoint = {
+                'schema': 'main-computer.slh-pinky-integrated-checkpoint.v1',
+                'status': 'PASS' if economic_verified else 'FAIL',
+                'pass': economic_verified,
+                'hub_cluster': {'cluster_id': health['cluster_id'],
+                                'ids': [x['hub_id'] for x in identities]},
+                'real_process_paid_work_status': real_paid.get('status'),
+                'pinky_integrated': pinky,
+                'legacy_second_paid_demo': 'NOT_RUN',
+            }
+            # Persist an independent, inspectable Pinky result before the
+            # report writer and subsequent lab harness work. No wallet secrets,
+            # private prompts, credentials, or Worker payloads are included.
+            checkpoint_path = report_dir / 'pinky-integrated-checkpoint.json'
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = checkpoint_path.with_suffix('.json.tmp')
+            temporary.write_text(json.dumps(checkpoint, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+            os.replace(temporary, checkpoint_path)
+            stage_record('pinky.checkpoint', 'written', accepted=economic_verified)
+        else:
+            trial = _local_demo(urls[2],topology_label='three-hub-smoke-fdb', payout_ledger=ledger,
+                                deployed=deployed)
+            economic_verified = False
         seh = _mock_coolify_gate() if deployed is None else {'status':'NOT_APPLICABLE_DEPLOYED'}
-        ok = (services['pass'] and decisions['pass'] and real_paid['pass'] and trial['pass']
-              and (deployed is not None or seh['status']=='PASS'))
+        ok = (services['pass'] and decisions['pass'] and real_paid['pass']
+              and (deployed is not None or seh['status']=='PASS')
+              and (economic_verified if pinky_integrated else trial['pass']))
         return {'schema':SCHEMA,'mode':'verify-deployed' if deployed else 'run', 'status':'PASS' if ok else 'FAIL',
                 'two_service_lab': services, 'real_process_paid_work': real_paid,
                 'decision_stress': decisions,
                 'hub_cluster': {'ok':True,'ids':[x['hub_id'] for x in identities],
                                 'cluster_id':health['cluster_id']},
                 'slh':trial,'seh_coolify_contract':seh,
+                **({'pinky_integrated':real_paid.get('pinky_integrated'),
+                    'pinky_integrated_checkpoint': str(checkpoint_path),
+                    'pinky_internal_reserve_sweep': 'CONFIRMED_IN_FDB' if economic_verified else 'NOT_VERIFIED'
+                    } if pinky_integrated else {}),
                 'production_seh':'COOLIFY_MANAGED_LOCAL' if deployed else 'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
                 'paid_work_settlement':'LAB_LEDGER_SETTLED_NOT_BRIDGED'}
     finally:
-        if children:_terminate_children(children)
+        if children:
+            with lab_stage('cluster.shutdown', count=len(children)):
+                _terminate_children(children)
         for log in logs:log.close()
 
 
@@ -701,6 +782,8 @@ def main(argv=None) -> int:
     p.add_argument('--exit-continue-on-failure', action='store_true')
     p.add_argument('--topology',type=Path,default=DEFAULT_TOPOLOGY)
     p.add_argument('--use-existing-hubs',action='store_true',help='Only run on a verified, already-running smoke cluster; never stop it')
+    p.add_argument('--pinky-integrated',action='store_true',help='Prove whole paid-work/SLH wallet/private work/Reserve sweep on real smoke/FDB Hubs')
+    p.add_argument('--pinky-reserve-wallet',default=None,help='For existing smoke Hubs only: their already configured Reserve address')
     p.add_argument('--report-dir',type=Path,default=REPORT_ROOT)
     p.add_argument('--json',action='store_true')
     p.add_argument('--build-image',action='store_true')
@@ -710,6 +793,10 @@ def main(argv=None) -> int:
     p.add_argument('--local-port',type=int,default=18080)
     p.add_argument('--compose-output',type=Path,default=Path('runtime/reports/slh-seh-lab/local-coolify/compose.yml'))
     a=p.parse_args(argv)
+    if a.pinky_integrated and (a.command!='run' or a.topology != DEFAULT_TOPOLOGY):
+        p.error('--pinky-integrated requires run with the canonical isolated smoke topology')
+    if a.pinky_reserve_wallet and not (a.pinky_integrated and a.use_existing_hubs):
+        p.error('--pinky-reserve-wallet is only for the existing-Hubs Pinky run')
     if a.command not in ('run','verify-deployed') and a.use_existing_hubs:
         p.error('--use-existing-hubs requires run or verify-deployed')
     if a.command in ('prepare-local-coolify','deploy-local-coolify'):
@@ -757,6 +844,7 @@ def main(argv=None) -> int:
         p.error('--build-image/--reuse-image requires a local Coolify command')
     report = None
     path = None
+    stage_token = None
     try:
         topology=validate_topology(a.topology)
         if a.command=='plan':report=plan(a.topology)
@@ -764,6 +852,8 @@ def main(argv=None) -> int:
             run_id = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(3)
             path = a.report_dir/run_id
             path.mkdir(parents=True, exist_ok=False)
+            stage_token = enable_stage_trace(path/'lab-stage-diagnostic.jsonl') if a.pinky_integrated else None
+            stage_record('lab', 'begin', mode=a.command)
             # Keep Hub/WS request diagnostics in the run folder, not the operator's console.
             with (path/'lab-runtime.log').open('w', encoding='utf-8') as log:
                 with redirect_stdout(log), redirect_stderr(log):
@@ -800,11 +890,49 @@ def main(argv=None) -> int:
                         report=verify_deployed(a.topology,use_existing=a.use_existing_hubs,
                                                report_dir=path,org=a.org_id,slh=a.slh_id,
                                                port=a.local_port,compose_output=a.compose_output)
-                    else:report=run_smoke(a.topology,use_existing=a.use_existing_hubs,report_dir=path)
+                    else:report=run_smoke(a.topology,use_existing=a.use_existing_hubs,report_dir=path,
+                                          pinky_integrated=a.pinky_integrated, reserve_wallet=a.pinky_reserve_wallet)
             report['topology']=topology
     except (LabRefused, RuntimeError, OSError, ValueError, TimeoutError, ImportError) as exc:
         report={'schema':SCHEMA,'status':'FAIL', 'mode':a.command,
                 'error_type':type(exc).__name__, 'error':str(exc)[:1200]}
+        if a.pinky_integrated:
+            frames = traceback.extract_tb(exc.__traceback__)[-6:]
+            # Location only. Never capture stack locals or HTTP payloads.
+            report['failure_stack'] = [
+                {'file':Path(frame.filename).name, 'function':frame.name, 'line':frame.lineno}
+                for frame in frames]
+    if path and a.pinky_integrated:
+        stage_record('lab', 'error' if report.get('status') == 'FAIL' else 'ok')
+        stage_path = path/'lab-stage-diagnostic.jsonl'
+        report['lab_stage_trace_path'] = str(stage_path.resolve())
+        report['lab_runtime_log_path'] = str((path/'lab-runtime.log').resolve())
+        status = stage_summary(stage_path)
+        report['lab_stage_events_recorded'] = status['events']
+        report['last_lab_stage_event'] = status['last_event']
+        report['first_failed_lab_stage'] = status['last_failure']
+        report['unfinished_lab_stage'] = status['unfinished_stage']
+        # With --use-existing-hubs no child is launched by design. Distinguish
+        # pre-cluster errors from a failed existing-cluster identity check.
+        events = ([json.loads(line) for line in stage_path.read_text(encoding='utf-8').splitlines()
+                   if line.strip()] if stage_path.exists() else [])
+        report['failure_before_hub_launch'] = not any(
+            row.get('stage') in {'cluster.launch_and_identity', 'cluster.existing_identity_check'}
+            and row.get('state') == 'begin' for row in events)
+
+    if path and a.pinky_integrated and report.get('status') == 'FAIL':
+        trace = path/'paid-cycle-diagnostic.jsonl'
+        report['paid_cycle_trace_path'] = str(trace.resolve())
+        if trace.exists():
+            try:
+                rows = [json.loads(row) for row in trace.read_text(encoding='utf-8').splitlines()
+                        if row.strip()]
+                report['last_paid_cycle_event'] = rows[-1] if rows else None
+                report['paid_cycle_events_recorded'] = len(rows)
+            except (ValueError, OSError):
+                report['paid_cycle_trace_read_error'] = True
+        report['hub_log_paths'] = [str((path/f'smoke-hub{i}.log').resolve())
+                                   for i in (1,2,3) if (path/f'smoke-hub{i}.log').exists()]
     if a.command == 'stress-integrated' and report.get('status') == 'FAIL':
         report['stress_profile'] = {'workers':a.workers, 'requests':a.requests,
                                     'concurrency':a.concurrency, 'seed':a.seed}
@@ -855,6 +983,8 @@ def main(argv=None) -> int:
             print('  SEH: deployed Coolify loopback tested; public WSS and external bridge payout NOT TESTED')
         else:
             print('  SEH: real runtime local PASS; live Coolify/public WSS NOT TESTED; external bridge payout NOT TESTED')
+    if path and a.pinky_integrated and stage_token is not None:
+        disable_stage_trace(stage_token)
     return 0 if report['status'] in {'PASS','PLANNED_ONLY','ACCEPTED'} else 1
 
 

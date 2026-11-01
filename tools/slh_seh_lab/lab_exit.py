@@ -28,6 +28,11 @@ UNIMPLEMENTED_REQUIRED = {
     'cross_hub_owner_handoff': 'The SLH paid lane exercises one selected Hub, not cross-Hub owner handoff',
     'representative_compute_output': 'The integrated Worker uses an echo executor, not a production compute workload',
     'credential_rotation_live_connections': 'Authenticated lifecycle is tested, but live credential rotation and revocation under traffic lack an exit lane',
+    'pinky_promise_economic_cycle': (
+        'No verified end-to-end Pinky Promise cycle: organization wallet earnings, '
+        'authenticated local secure-model fulfillment, exactly-once 0.1-credit '
+        'assessment, and delayed Main Computer Reserve settlement'
+    ),
 }
 
 

@@ -24,6 +24,8 @@ class ManagedSLHWorkerClient(_WorkerHubLiveSessionClient):
         self.identity_dir=Path(identity_dir)
         self.identity_key,self.public_key=load_identity(self.identity_dir,device_id)
         super().__init__(**kwargs)
+        self._private_prepared = {}
+        self._private_lock = threading.RLock()
         self.local_adapter_port = None
         self._transport_trace_lock = threading.Lock()
         self._transport_trace = deque(maxlen=48)
@@ -74,3 +76,50 @@ class ManagedSLHWorkerClient(_WorkerHubLiveSessionClient):
     def transport_diagnostics(self):
         with self._transport_trace_lock:
             return list(self._transport_trace)
+
+    def _handle_hub_message(self, frame):
+        kind = frame.get('type')
+        if kind == 'slh.private.work.offer':
+            sid = str(frame.get('session_id') or '')
+            if not sid or not frame.get('request_id') or not frame.get('run_id') or frame.get('protocol') != 'slh-private-v1':
+                raise RuntimeError('Invalid SLH private offer')
+            with self._private_lock:
+                if sid in self._private_prepared:
+                    raise RuntimeError('Duplicate private offer')
+                self._private_prepared[sid] = dict(frame)
+            self._send_json({'type':'worker.private.work.accepted', 'session_id':sid,
+                             'request_id':frame['request_id'],'run_id':frame['run_id']})
+            return
+        if kind == 'slh.private.work.authorized':
+            sid = str(frame.get('session_id') or '')
+            with self._private_lock:
+                pending = self._private_prepared.pop(sid, None)
+            if (pending is None or frame.get('protocol')!='slh-private-v1' or
+                    pending.get('request_id')!=frame.get('request_id') or
+                    pending.get('run_id')!=frame.get('run_id') or
+                    not isinstance(frame.get('work'),dict)):
+                raise RuntimeError('Invalid SLH private authorization')
+            threading.Thread(target=self._execute_private_work,
+                             args=(dict(frame),),daemon=True,
+                             name='slh-private-compute').start()
+            return
+        return super()._handle_hub_message(frame)
+
+    def _execute_private_work(self, frame):
+        # No public Hub offer/hold is created. Never publish private work
+        # results as public worker.work.result or stream private deltas.
+        try:
+            result=self._execute_work_offer(frame)
+            if not isinstance(result,dict) or result.get('debug_echo'):
+                raise RuntimeError('Invalid or debug-only private computation')
+            output={'type':'worker.private.work.result','result':result}
+        except BaseException:
+            output={'type':'worker.private.work.failed','error_code':'PRIVATE_WORKER_FAILED'}
+        output.update({'session_id':frame['session_id'],
+                       'request_id':frame['request_id'],'run_id':frame['run_id']})
+        try:
+            self._send_json(output)
+        except (OSError,RuntimeError):
+            # A disconnected Worker cannot turn a possibly executed request
+            # into a retryable failure. SLH retains OUTCOME_UNKNOWN.
+            pass

@@ -1,5 +1,11 @@
 # MCEL Application IR Schema and Normalization Rules
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+**V1 target extension (not yet in the proven schema):** preserve semantic HTML hierarchy and meaningful child order, resolve JavaScript state/model refs, and project distinct interface intent/provenance into the canonical IR without altering operational authority. The structural shape and normalization behavior documented below remain the *currently implemented* schema, not already-certified V1 HTML+JS support.
+
+
 ## Status
 
 Wave 1 implements the structural IR validator and normalizer. Wave 2A now integrates `main_computer/mcel_constrained_expression.py` into IR validation so expression roots are checked for legal context, reference kind, operand/result compatibility, canonical write authority, and deterministic normalization without changing the IR semantic or source-binding fingerprints.

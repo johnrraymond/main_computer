@@ -1,0 +1,251 @@
+"""Fail-closed routing tests for the real three-Hub Pinky economic lane.
+
+These tests deliberately do not represent a successful FoundationDB run. The
+Windows laboratory command provides that evidence independently.
+"""
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from tools.slh_seh_lab.run_lab import LabRefused, run_smoke, DEFAULT_TOPOLOGY, plan
+from tools.slh_seh_lab.pinky_integrated import verify_pinky_shared_hub
+from tools.slh_seh_lab.service_lifecycle import ServiceLabFailure
+
+
+def test_plan_identifies_pinky_as_real_hub_only():
+    assert 'REAL_SMOKE_FDB' in plan(DEFAULT_TOPOLOGY)['pinky_integrated']
+
+
+def test_existing_cluster_requires_configured_reserve_before_touching_cluster(tmp_path):
+    with patch('tools.slh_seh_lab.service_lifecycle.verify_services',
+               return_value={'pass':True}), patch('tools.slh_seh_lab.decision_stress.verify_decisions',
+               return_value={'pass':True}), patch('tools.stable_hub_lab.run_lab.check_cluster') as checked:
+        with pytest.raises(LabRefused,match='--pinky-reserve-wallet'):
+            run_smoke(DEFAULT_TOPOLOGY,use_existing=True,report_dir=tmp_path,
+                      pinky_integrated=True)
+        checked.assert_not_called()
+
+
+def test_economic_lane_never_accepts_an_in_memory_hub():
+    from main_computer.stable_hub_worker_sessions import (
+        InMemoryStableWorkerSessionStore, StableHubPayoutLedgerDirectory)
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    topology=load_stable_hub_topology(DEFAULT_TOPOLOGY)
+    ledger=StableHubPayoutLedgerDirectory(topology=topology,
+        hub_id=topology.hubs[2].hub_id,store=InMemoryStableWorkerSessionStore())
+    with pytest.raises(ServiceLabFailure,match='actual FoundationDB'):
+        verify_pinky_shared_hub(root=Path('.'),state=Path('.'),local=None,
+           local_port=0,local_token='',org_id='lab',api_port=0,worker_port=0,
+           hub_url=topology.hubs[2].hub_url,
+           hub_identity={'hub_id':topology.hubs[2].hub_id,'cluster_id':topology.cluster_id},
+           ledger=ledger,org_wallet_private='11'*32,
+           org_wallet_address='0x'+'1'*40,worker=None,
+           reserve_wallet='0x'+'2'*40,market_controller=None)
+
+
+def test_in_memory_local_verification_does_not_claim_pinky_economic_pass():
+    from tools.slh_seh_lab.run_lab import verify_local
+    class MockHub:
+        server_port=12000
+        payout_ledger_directory=object()
+        def shutdown(self):pass
+        def server_close(self):pass
+    class MockThread:
+        def join(self,timeout):pass
+    success={'pass':True,'status':'PASS','gates':{'ok':True}}
+    with patch('tools.slh_seh_lab.service_lifecycle.verify_services',return_value=success), \
+         patch('tools.slh_seh_lab.decision_stress.verify_decisions',return_value=success), \
+         patch('tools.slh_seh_lab.run_lab._in_memory_hub',return_value=(MockHub(),MockThread())), \
+         patch('tools.slh_seh_lab.run_lab._local_demo',return_value=success), \
+         patch('tools.slh_seh_lab.run_lab._mock_coolify_gate',return_value=success), \
+         patch('tools.slh_seh_lab.real_paid_service.verify_real_process_paid',return_value=success):
+        result=verify_local()
+    assert result['status']=='PASS'
+    assert 'pinky_integrated' not in result
+
+
+def test_settled_paid_worker_earning_funds_wallet_once():
+    """One real Hub earning, not a fabricated grant, becomes spendable on settle."""
+    from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+    from main_computer.stable_hub_worker_sessions import (
+        InMemoryStableWorkerSessionStore, StableHubPayoutLedgerDirectory)
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    from main_computer.hub_credit_indexer import wallet_account_id
+    topology=load_stable_hub_topology(DEFAULT_TOPOLOGY)
+    store=InMemoryStableWorkerSessionStore()
+    ledger=StableHubPayoutLedgerDirectory(topology=topology,
+        hub_id=topology.hubs[2].hub_id,store=store)
+    source='0x'+'11'*20
+    worker='0x'+'22'*20
+    ledger.fund_account(account_id=wallet_account_id(source),wallet_address=source,
+                        credits='2',replace=True)
+    hold=ledger.create_hold(account_id=wallet_account_id(source),wallet_address=source,
+                            request_id='pinky-audit-request',session_id='sess_pinky_audit',
+                            run_id='run_pinky_audit',worker_id='wallet-backed-worker',
+                            selected_price={'amount':'1','unit':'compute_credit'},
+                            requester_max_price={'amount':'2','unit':'compute_credit'},partition='ring-2')
+    charge=ledger.spend_request_credit(
+        account_id=wallet_account_id(source),wallet_address=source,
+        request_id='pinky-audit-request',session_id='sess_pinky_audit',
+        run_id='run_pinky_audit',worker_id='wallet-backed-worker',
+        worker_account_id=worker,
+        selected_price={'amount':'1','unit':'compute_credit'},
+        requester_max_price={'amount':'2','unit':'compute_credit'},
+        partition='ring-2',hold_id=hold['hold_id'],result={'ok':True})
+    assert ledger.get_account(wallet_account_id(worker)) is None
+    claim=ledger.record_worker_claim(worker_id=worker,
+             earning_ids=[charge['worker_earning']['earning_id']],idempotency_key='lab-worker-claim')
+    batch=ledger.create_worker_settlement_batch(worker_id=worker,
+             claim_ids=[claim['claim_id']],idempotency_key='lab-worker-batch')
+    ledger.settle_worker_settlement_batch(batch_id=batch['batch_id'],settlement_reference='lab-receipt')
+    funded=ledger.get_account(wallet_account_id(worker))
+    assert int(funded['available_credit_wei'])==CREDIT_WEI_PER_CREDIT
+    assert int(funded['earned_credit_wei'])==CREDIT_WEI_PER_CREDIT
+    assert int(ledger.get_account(wallet_account_id(source))['spent_credit_wei'])==CREDIT_WEI_PER_CREDIT
+    ledger.settle_worker_settlement_batch(batch_id=batch['batch_id'],settlement_reference='lab-receipt')
+    assert ledger.get_account(wallet_account_id(worker))['available_credit_wei']==str(CREDIT_WEI_PER_CREDIT)
+    assert len([v for v in store.load()['payout_transactions'].values()
+             if v['transaction_type']=='worker_settlement_wallet_credit'])==1
+
+
+def test_wallet_settlement_cannot_also_use_legacy_bridge_payout():
+    """The Hub credit-wallet receipt and a legacy bridge payout are not two earnings."""
+    from main_computer.stable_hub_worker_sessions import (
+        InMemoryStableWorkerSessionStore, StableHubPayoutLedgerDirectory,
+        StableHubWorkerSessionError)
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    from main_computer.hub_credit_indexer import wallet_account_id
+    topo=load_stable_hub_topology(DEFAULT_TOPOLOGY)
+    ledger=StableHubPayoutLedgerDirectory(topology=topo,hub_id=topo.hubs[2].hub_id,
+                store=InMemoryStableWorkerSessionStore())
+    payer='0x'+'bb'*20
+    worker='0x'+'cc'*20
+    ledger.fund_account(account_id=payer,wallet_address=payer,credits='2',replace=True)
+    charge=ledger.spend_request_credit(account_id=payer,wallet_address=payer,
+                request_id='lab-no-double-bridge',session_id='sess_no_double_bridge',
+                run_id='run_no_double_bridge',worker_id='physical-worker',
+                worker_account_id=worker,
+                selected_price={'amount':'1','unit':'compute_credit'},
+                requester_max_price={'amount':'2','unit':'compute_credit'},
+                partition='ring-2',result={'status':'success'})
+    claim=ledger.record_worker_claim(worker_id=worker,
+             earning_ids=[charge['worker_earning']['earning_id']])
+    batch=ledger.create_worker_settlement_batch(worker_id=worker,
+             claim_ids=[claim['claim_id']])
+    ledger.settle_worker_settlement_batch(batch_id=batch['batch_id'])
+    assert ledger.get_account(wallet_account_id(worker))['available_credits_display']=='1'
+    with pytest.raises(StableHubWorkerSessionError,match='wallet_settlement_already_credited'):
+        ledger.request_bridge_payout(worker_id=worker,batch_id=batch['batch_id'])
+
+
+def test_integrated_http_timeout_reports_operation_without_request_content():
+    from tools.slh_seh_lab.pinky_integrated import _lab_http
+    with patch('tools.slh_seh_lab.pinky_integrated._http', side_effect=TimeoutError('read operation timed out')) as request:
+        with pytest.raises(ServiceLabFailure, match=r'POST /v1/accounting/sweep.*TimeoutError'):
+            _lab_http(1234, 'POST', '/v1/accounting/sweep',
+                      {'private_prompt':'never appear'}, bearer='secret', tls=True)
+        assert request.call_args.kwargs['timeout'] == 15
+
+
+def test_sweep_row_closes_sqlite_even_when_read_raises(tmp_path):
+    from tools.slh_seh_lab.pinky_integrated import _read_sweep_row
+    connection = SimpleNamespace(close=lambda: None)
+    from unittest.mock import Mock
+    connection.close = Mock()
+    connection.execute = Mock(side_effect=OSError('fake read failure'))
+    with patch('tools.slh_seh_lab.pinky_integrated.sqlite3.connect', return_value=connection):
+        with pytest.raises(OSError, match='fake read failure'):
+            _read_sweep_row(tmp_path, 'psweep-test')
+        connection.close.assert_called_once_with()
+
+
+def test_sweep_row_closes_sqlite_on_success(tmp_path):
+    import sqlite3
+    from tools.slh_seh_lab.pinky_integrated import _read_sweep_row
+    db_path = tmp_path / 'private_requests.sqlite3'
+    with sqlite3.connect(db_path) as connection:
+        connection.execute('CREATE TABLE pinky_sweeps (sweep_id TEXT PRIMARY KEY, credit_wei TEXT)')
+        connection.execute('INSERT INTO pinky_sweeps VALUES (?,?)', ('psweep-test', '200'))
+    row = _read_sweep_row(tmp_path, 'psweep-test')
+    assert row == {'sweep_id':'psweep-test','credit_wei':'200'}
+    with pytest.raises(ServiceLabFailure, match='no local batch record'):
+        _read_sweep_row(tmp_path, 'missing')
+
+
+def _exercise_smoke_report(tmp_path, *, integrated, pinky_pass=True, corrupt_pinky_evidence=False):
+    """Exercise orchestration without pretending mock Hubs prove FDB acceptance."""
+    from types import SimpleNamespace, ModuleType
+    import sys
+    fake_paid_module = ModuleType("tools.slh_seh_lab.real_paid_service")
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    topo = load_stable_hub_topology(DEFAULT_TOPOLOGY)
+    ready = {'pass': True, 'status': 'PASS', 'gates': {'test': True}}
+    pinky = {'pass': pinky_pass, 'status': 'PASS' if pinky_pass else 'FAIL',
+             'gates': {'reserve_received': pinky_pass},
+             'hub_id': topo.hubs[2].hub_id, 'cluster_id': topo.cluster_id,
+             'namespace': 'main-computer-hub-smoke',
+             'earned_credit_wei': str(10**18),
+             'swept_credit_wei': str(2 * 10**17)}
+    if corrupt_pinky_evidence:
+        pinky['earned_credit_wei'] = str(9 * 10**17)
+    real_paid = {**ready, **({'pinky_integrated': pinky} if integrated else {})}
+    fake_paid_module.verify_real_process_paid = lambda **kwargs: real_paid
+    health = {'cluster_id': topo.cluster_id, 'checks': [
+        {'ok': True, 'hub_id': hub.hub_id} for hub in topo.hubs]}
+    with patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=ready), \
+         patch('tools.slh_seh_lab.decision_stress.verify_decisions', return_value=ready), \
+         patch('tools.slh_seh_lab.run_lab._launch_cluster', return_value=([], [], health)), \
+         patch('tools.stable_hub_lab.run_lab.require_durable_execution_cluster'), \
+         patch('main_computer.stable_hub_worker_sessions.stable_worker_session_store_from_topology',return_value=object()), \
+         patch('main_computer.stable_hub_worker_sessions.StableHubPayoutLedgerDirectory', return_value=SimpleNamespace()), \
+         patch.dict(sys.modules, {'tools.slh_seh_lab.real_paid_service': fake_paid_module}), \
+         patch('tools.slh_seh_lab.run_lab._mock_coolify_gate',return_value={'status':'PASS'}), \
+         patch('tools.slh_seh_lab.run_lab._local_demo', return_value=ready) as legacy:
+        report = run_smoke(DEFAULT_TOPOLOGY, use_existing=False,
+                           report_dir=tmp_path, pinky_integrated=integrated)
+        return report, legacy.call_count
+
+
+def test_pinky_integrated_skips_second_legacy_paid_work_and_checkpoints(tmp_path):
+    import json
+    report, legacy_calls = _exercise_smoke_report(tmp_path, integrated=True)
+    assert legacy_calls == 0
+    assert report['status'] == 'PASS'
+    assert report['slh']['status'] == 'NOT_RUN'
+    assert report['pinky_internal_reserve_sweep'] == 'CONFIRMED_IN_FDB'
+    checkpoint = json.loads((tmp_path / 'pinky-integrated-checkpoint.json').read_text())
+    assert checkpoint['schema'] == 'main-computer.slh-pinky-integrated-checkpoint.v1'
+    assert checkpoint['pass'] is True
+    assert checkpoint['pinky_integrated']['swept_credit_wei'] == str(2 * 10**17)
+    assert checkpoint['legacy_second_paid_demo'] == 'NOT_RUN'
+    assert checkpoint['hub_cluster']['ids'] == ['smoke-hub1', 'smoke-hub2', 'smoke-hub3']
+
+
+def test_pinky_integrated_fails_closed_when_reserve_evidence_fails(tmp_path):
+    import json
+    report, legacy_calls = _exercise_smoke_report(tmp_path, integrated=True, pinky_pass=False)
+    assert legacy_calls == 0
+    assert report['status'] == 'FAIL'
+    assert report['pinky_internal_reserve_sweep'] == 'NOT_VERIFIED'
+    checkpoint = json.loads((tmp_path / 'pinky-integrated-checkpoint.json').read_text())
+    assert checkpoint['pass'] is False
+    assert checkpoint['pinky_integrated']['pass'] is False
+
+
+def test_ordinary_smoke_still_executes_second_legacy_paid_demo(tmp_path):
+    report, legacy_calls = _exercise_smoke_report(tmp_path, integrated=False)
+    assert legacy_calls == 1
+    assert report['status'] == 'PASS'
+    assert report['slh']['pass'] is True
+    assert 'pinky_integrated' not in report
+    assert not (tmp_path / 'pinky-integrated-checkpoint.json').exists()
+
+
+def test_pinky_integrated_refuses_forged_success_without_exact_earnings(tmp_path):
+    report, legacy_calls = _exercise_smoke_report(
+        tmp_path, integrated=True, corrupt_pinky_evidence=True)
+    assert legacy_calls == 0
+    assert report['status'] == 'FAIL'
+    assert report['pinky_internal_reserve_sweep'] == 'NOT_VERIFIED'

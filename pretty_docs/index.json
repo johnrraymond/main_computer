@@ -19,6 +19,30 @@
       "order": 16
     },
     {
+      "path": "mcel-v1-product-contract.md",
+      "title": "MCEL V1 — Product Contract",
+      "kind": "markdown",
+      "order": 17
+    },
+    {
+      "path": "mcel-v1-authoring-format.md",
+      "title": "MCEL V1 — HTML + JavaScript Authoring Format",
+      "kind": "markdown",
+      "order": 18
+    },
+    {
+      "path": "mcel-v1-semantic-vocabulary.md",
+      "title": "MCEL V1 — Semantic Interface Vocabulary",
+      "kind": "markdown",
+      "order": 19
+    },
+    {
+      "path": "mcel-v1-compiler-layout-runtime-contract.md",
+      "title": "MCEL V1 — Compiler, Layout and Runtime Contract",
+      "kind": "markdown",
+      "order": 20
+    },
+    {
       "path": "mcel-ai-authoring-language-executive-overview.md",
       "title": "MCEL AI Authoring Language Executive Overview",
       "kind": "markdown",
@@ -313,6 +337,12 @@
       "order": 68
     },
     {
+      "path": "mcel-v1-four-app-acceptance.md",
+      "title": "MCEL V1 — Four-App Qualification and Acceptance",
+      "kind": "markdown",
+      "order": 69
+    },
+    {
       "path": "game-mother-ship-design-index.md",
       "title": "Game Design Index",
       "kind": "markdown",
@@ -577,6 +607,12 @@
       "order": 111
     },
     {
+      "path": "mcel-v1-reference-authoring-examples.md",
+      "title": "MCEL V1 — Four Reference Authoring Examples",
+      "kind": "markdown",
+      "order": 112
+    },
+    {
       "path": "mcel-patch14-universal-composition-frob.md",
       "title": "Patch 14.3 — Universal Semantic Layout Composition Frob",
       "kind": "markdown",
@@ -587,6 +623,12 @@
       "title": "Secure Local Hub / Secure External Hub — Integrated Hub Lab",
       "kind": "markdown",
       "order": 370
+    },
+    {
+      "path": "slh-seh-automatic-local-coolify.md",
+      "title": "SEH — Automatic Local Coolify Deployment",
+      "kind": "markdown",
+      "order": 371
     },
     {
       "path": "mother.md",
@@ -761,12 +803,6 @@
       "title": "Secure External Hub — Real Relay Deployment and Acceptance",
       "kind": "markdown",
       "order": 1905
-    },
-    {
-      "path": "slh-seh-automatic-local-coolify.md",
-      "title": "SEH — Automatic Local Coolify Deployment",
-      "kind": "markdown",
-      "order": 371
     }
   ]
 }

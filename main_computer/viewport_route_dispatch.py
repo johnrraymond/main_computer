@@ -1839,6 +1839,43 @@ def dispatch_get(self) -> None:
     if route_path == "/api/control-panel/level-1-telemetry":
         _handle_control_panel_level1_telemetry(self)
         return
+    if route_path in (
+        "/applications/mcel-semantic-file-manager",
+        "/applications/mcel-semantic-task-manager",
+        "/applications/mcel-semantic-code-editor",
+    ):
+        # Opt-in, local-only semantic workbench candidates. Production apps untouched.
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Semantic workbench is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_semantic_other_apps_host import render_semantic_page
+        name = route_path.removeprefix("/applications/mcel-semantic-")
+        self._send_text(render_semantic_page(name), "text/html; charset=utf-8")
+        return
+    if route_path == "/applications/mcel-semantic-task-monitor-generated":
+        # P1 pure composition proof, protected by the same local-only boundary.
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "P1 semantic proof is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_semantic_generated_host import render_generated_page
+        self._send_text(render_generated_page(), "text/html; charset=utf-8")
+        return
+    if route_path == "/applications/mcel-semantic-calculator-expanded":
+        # Opt-in local-only extended semantic Calculator; live Calculator unchanged.
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Semantic Calculator is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_calculator_expanded_host import render_expanded_page
+        self._send_text(render_expanded_page(), "text/html; charset=utf-8")
+        return
+    if route_path == "/applications/mcel-semantic-calculator-candidate":
+        # Opt-in local-only computation candidate; existing app route untouched.
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "Semantic candidate is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_phase2c_candidate_host import render_candidate_page
+        self._send_text(render_candidate_page(), "text/html; charset=utf-8")
+        return
     if route_path == "/applications/spreadsheet/smoke":
         self._handle_spreadsheet_smoke_page()
         return

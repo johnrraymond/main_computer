@@ -23,6 +23,9 @@ from .managed_gateway import SLHManagedGateway, SLHMarketplaceProxy, transport_i
 from .organization_state import read_config
 from .storage import slh_state_dir
 from .marketplace_auto import AutomaticMarketplace, read_settings
+from .organization_wallet import OrganizationWallet
+from .private_requests import PrivateRequests
+from .pinky_sweep import PinkySweep
 
 
 class OrganizationHTTPServer(ThreadingHTTPServer):
@@ -102,7 +105,8 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                     '/v1/org/admin/marketplace/reconcile',
                     '/v1/org/admin/marketplace/config',
                     '/v1/org/admin/marketplace/authorization',
-                    '/v1/org/admin/marketplace/connection-diagnostics'):
+                    '/v1/org/admin/marketplace/connection-diagnostics',
+                    '/v1/org/admin/marketplace/wallet/bind'):
             try:
                 authority.authenticate(token, admin=True)
             except SLHError as exc:
@@ -142,6 +146,10 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                     controller.authorize(body['multisession_authorization'])
                     self._respond(200, {'authorization_present': True})
                     return
+                if path.endswith('/wallet/bind') and method == 'POST':
+                    result = controller.bind_wallet(body)
+                    self._respond(200, result)
+                    return
                 if path.endswith('/reconcile') and method == 'POST':
                     # The manual endpoint is preserved, but never allows
                     # bypassing disabled participation or saved Hub identity.
@@ -163,7 +171,11 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
         # authentication/permissions. Never dispatch bootstrap or localhost
         # endpoints through this network-facing transport.
         if not (path.startswith('/v1/auth/') or path.startswith('/v1/admin/')
-                or path.startswith('/v1/enrollment/')):
+                or path.startswith('/v1/enrollment/')
+                or path == '/v1/work' or path.startswith('/v1/work/')
+                or path in ('/v1/wallets', '/v1/credits', '/v1/accounting/reconcile',
+                            '/v1/accounting/obligations', '/v1/accounting/sweeps',
+                            '/v1/accounting/sweep')):
             self._respond(404, {'error': {'code': 'ENDPOINT_NOT_FOUND'}})
             return
         status, response = self.server.api.call(method, path, body, token=token, loopback=False)
@@ -223,13 +235,16 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
     server = OrganizationHTTPServer((config['host'], config['api_port']), OrganizationHTTPHandler)
     server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     server.authority = authority
-    server.api = SLHAPI(authority)
+    server.wallet_service = OrganizationWallet(state_dir, authority.org_id())
+    server.api = SLHAPI(authority, wallet_service=server.wallet_service)
     server.fingerprint = fingerprint
     server.workers_enabled = config['workers_enabled']
     server.seh_enabled = config['seh_enabled']
     server.marketplace = None
     server.marketplace_controller = None
     server.gateway = None
+    server.private_requests = None
+    server.pinky_sweeper = None
     stop_watch = threading.Event()
     def check_controller():
         while not stop_watch.wait(2):
@@ -265,8 +280,16 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
             if gateway._server is None:
                 raise RuntimeError('Worker listener startup timed out')
             server.gateway = gateway
+            # Private compute initially supports direct organization Worker paths only.
+            # SEH-private forwarding requires separately verified E2E privacy policy.
+            if not config['seh_enabled']:
+                server.private_requests = PrivateRequests(state_dir, authority, gateway)
+                server.api.private_requests = server.private_requests
+                server.pinky_sweeper = PinkySweep(server.private_requests,server.wallet_service)
+                server.api.pinky_sweeper = server.pinky_sweeper
+                server.pinky_sweeper.start()
             server.marketplace = SLHMarketplaceProxy(gateway)
-            server.marketplace_controller = AutomaticMarketplace(server.marketplace, state_dir)
+            server.marketplace_controller = AutomaticMarketplace(server.marketplace, state_dir, wallet_service=server.wallet_service)
             gateway.on_worker_registered = server.marketplace_controller.wake
             gateway.on_worker_disconnected = server.marketplace_controller.wake
             server.marketplace_controller.start()
@@ -279,6 +302,8 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
         stop_watch.set()
         watcher.join(timeout=3)
         server.server_close()
+        if server.pinky_sweeper:
+            server.pinky_sweeper.stop()
         if server.marketplace_controller:
             server.marketplace_controller.stop()
         if server.marketplace:

@@ -311,7 +311,13 @@
 
 
 
+function taskParityOperation(name, phase, disposition = "") {
+  document.dispatchEvent(new CustomEvent("mcel:parity-operation", {detail:{
+    appId:"task-manager",intentName:name,phase,disposition}}));
+}
 function taskManagerRequest(path, payload = {}) {
+  const operation="task."+path.split("/").pop();
+  taskParityOperation(operation,"dispatch");
   return fetch(path, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -322,6 +328,10 @@ function taskManagerRequest(path, payload = {}) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
     return data;
+  }).then(data=>{
+    taskParityOperation(operation,"settled","completed");return data;
+  },error=>{
+    taskParityOperation(operation,"settled","failed");throw error;
   });
 }
 
@@ -336,6 +346,8 @@ function taskHeartbeatBaseUrl() {
   return `http://${host}:${taskHeartbeatPort()}`;
 }
 function taskHeartbeatRequest(action, extra = {}) {
+  const operation="heartbeat."+String(action).replace(/[^a-z_-]/gi, "");
+  taskParityOperation(operation,"dispatch");
   return fetch(`${taskHeartbeatBaseUrl()}/api/heartbeat/control`, {
     method: "POST",
     mode: "cors",
@@ -347,6 +359,10 @@ function taskHeartbeatRequest(action, extra = {}) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
     return data;
+  }).then(data=>{
+    taskParityOperation(operation,"settled","completed");return data;
+  },error=>{
+    taskParityOperation(operation,"settled","failed");throw error;
   });
 }
 function updateTaskServerPanel(server = {}, overview = {}, headline = "") {
@@ -1002,7 +1018,7 @@ async function runTaskAction(action, extra = {}, confirmAction = false) {
       taskManagerStatus.textContent = "Heartbeat status current.";
       updateTaskServerPanel(server, taskManagerSnapshotCache?.overview || {}, "heartbeat status current");
       setApplicationWidgetTicker(taskOverviewCard, data.message || "Heartbeat status current.");
-      return;
+      return {ok: true, action, receipt: data};
     }
     if (action === "server_start") {
       const data = await taskHeartbeatRequest("start");
@@ -1018,7 +1034,7 @@ async function runTaskAction(action, extra = {}, confirmAction = false) {
       updateTaskServerPanel(server, taskManagerSnapshotCache?.overview || {}, "heartbeat start dispatched");
       setApplicationWidgetTicker(taskOverviewCard, data.message || "Viewport start requested through heartbeat.");
       await waitForTaskManagerRecovery();
-      return;
+      return {ok: true, action, receipt: data};
     }
     if (action === "server_restart") {
       stopTaskManagerAutoRefresh();
@@ -1040,7 +1056,7 @@ async function runTaskAction(action, extra = {}, confirmAction = false) {
       setApplicationWidgetTicker(taskOverviewCard, data.message || "Viewport restart requested through heartbeat.");
       await waitForTaskManagerRecovery();
       scheduleTaskManagerAutoRefresh();
-      return;
+      return {ok: true, action, receipt: data};
     }
     const payload = {action, confirm: confirmAction, ...extra};
     const data = await taskManagerRequest("/api/applications/task/action", payload);
@@ -1056,7 +1072,7 @@ async function runTaskAction(action, extra = {}, confirmAction = false) {
       updateTaskServerPanel(server, taskManagerSnapshotCache?.overview || {}, "viewport shutdown requested");
       setApplicationWidgetTicker(taskOverviewCard, "Shutdown requested | use Start Server to recover through heartbeat.");
       stopTaskManagerAutoRefresh();
-      return;
+      return {ok: true, action, receipt: data};
     }
     if (action === "server_restart") {
       taskManagerStatus.textContent = "Server restart requested.";
@@ -1064,12 +1080,14 @@ async function runTaskAction(action, extra = {}, confirmAction = false) {
       stopTaskManagerAutoRefresh();
       await waitForTaskManagerRecovery();
       scheduleTaskManagerAutoRefresh();
-      return;
+      return {ok: true, action, receipt: data};
     }
     await refreshTaskManager();
+    return {ok: data?.ok !== false, action, receipt: data};
   } catch (error) {
     taskManagerStatus.textContent = "Task action failed.";
     setApplicationWidgetTicker(taskOverviewCard, `Task action failed: ${error.message || error}`);
+    return {ok: false, action, message: String(error.message || error)};
   }
 }
 async function createTaskSchedule() {

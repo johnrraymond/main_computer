@@ -288,7 +288,7 @@ def _batch_loss(bb,tok,rows,device,max_seq):
     return result.loss
 
 
-def _greedy(bb,tok,sources,device,max_tokens,max_new_tokens):
+def _greedy(bb,tok,sources,device,max_tokens,max_new_tokens,*,return_metadata=False):
     """Greedy unassisted one-line Qwen LM-head generation, batched by length.
 
     Left-padding with attention mask avoids short inputs attending to pad tokens.
@@ -309,9 +309,14 @@ def _greedy(bb,tok,sources,device,max_tokens,max_new_tokens):
         ids[i,width-len(p):]=torch.tensor(p,device=device)
         mask[i,width-len(p):]=1
     new=[[] for _ in pieces];done=[False]*size
+    reasons=[None]*size
     eos=tok.eos_token_id
     eos_set={int(eos)} if isinstance(eos,int) else set(eos or ())
-    with torch.inference_mode():
+    # torch-directml 2.4.x cannot set version counters for inference tensors.
+    # Preserve inference_mode for the existing CPU/CUDA path.
+    no_version_tensors = getattr(device, 'type', str(device)).startswith('privateuseone')
+    context = torch.no_grad if no_version_tensors else torch.inference_mode
+    with context():
         for _ in range(max_new_tokens):
             out=decoder(input_ids=ids,attention_mask=mask,use_cache=False,return_dict=True)
             h=out.last_hidden_state[:,-1,:]
@@ -320,16 +325,20 @@ def _greedy(bb,tok,sources,device,max_tokens,max_new_tokens):
             tokens=logits.argmax(dim=-1).tolist()
             for i,token in enumerate(tokens):
                 if done[i]:continue
-                if token in eos_set:done[i]=True;continue
+                if token in eos_set:done[i]=True;reasons[i]='eos';continue
                 new[i].append(token)
                 current=tok.decode(new[i],skip_special_tokens=True)
-                if '\n' in current or '\r' in current:done[i]=True
+                if '\n' in current or '\r' in current:done[i]=True;reasons[i]='newline'
             if all(done):break
             extra=torch.tensor([[int(pad) if done[i] else int(tokens[i])] for i in range(size)],device=device)
             ids=torch.cat((ids,extra),dim=1)
             active=torch.tensor([[0 if done[i] else 1] for i in range(size)],device=device)
             mask=torch.cat((mask,active),dim=1)
-    return [tok.decode(x,skip_special_tokens=True) for x in new]
+    texts=[tok.decode(x,skip_special_tokens=True) for x in new]
+    if return_metadata:
+        return [{'text':t,'finish_reason':reasons[i] or 'length',
+                 'generated_tokens':len(new[i])} for i,t in enumerate(texts)]
+    return texts
 
 
 def _probe_rows(rows, budget=128):
@@ -2039,13 +2048,18 @@ def status(args):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--stage',choices=('preview','run','status','detect'),default='preview')
+    p.add_argument('--stage',choices=('preview','run','status','detect','repair-ab','competency','hdb-frontier','hdb-difficulty','hdb-rescore'),default='preview')
     p.add_argument('--terminal-mode',choices=('numeric','legacy'),default='numeric',
                    help='numeric: T00 emits PROBLEM: <integer>, terminal detector signals complete; '
                         'legacy: old ANSWER: targets for existing campaigns only')
     p.add_argument('--packet',help='For --stage detect: classify a complete PROBLEM packet')
     p.add_argument('--stage1-checkpoint');p.add_argument('--text-checkpoint')
-    p.add_argument('--device',choices=('cpu','cuda'),default='cuda')
+    p.add_argument('--device',choices=('cpu','cuda','dml'),default='cuda',
+                   help='dml is Intel-only, read-only HDB rescore; never uses CUDA')
+    p.add_argument('--dml-index',type=int,default=-1,
+                   help='DirectML Intel adapter (-1 selects the unique Intel adapter)')
+    p.add_argument('--intel-smoke-per-tier',type=int,default=1,
+                   help='On DML score first N frozen cases per HDB tier (1=9-case smoke, 0=full deck)')
     p.add_argument('--output',default=str(Path.home()/'NanoJev'/'runs'/'qwen_lm_radius_ladder_v1'))
     p.add_argument('--radii',default=RADII_DEFAULT,
                    help='Mutable radius acquisition schedule; may change on resume without forking')
@@ -2109,15 +2123,160 @@ def main(argv=None):
     p.add_argument('--warm-start-ladder',help='Certified previous working.pt; new output, expanded radii')
     p.add_argument('--fork-certified-zero-from',help='LEGACY only: original certified zero fork; never imports into numeric mode')
     p.add_argument('--numeric-bootstrap-from',help='NUMERIC only: old certified zero parent folder; copies LoRA seed, NOT certificates/steps; requires NEW output')
+    p.add_argument('--frontier',action='store_true',
+                   help='Aggressively expand signed-result radius in isolated LoRA workspace; no retention gate')
+    p.add_argument('--frontier-output',help='Optional dedicated workspace; default sibling of --output')
+    p.add_argument('--frontier-max-radius',type=int,default=0,
+                   help='Maximum signed-result radius (0=automatic, bounded by operand limit)')
+    p.add_argument('--frontier-steps',type=int,default=1200,
+                   help='Total aggressive optimizer steps distributed across expanding radii')
+    p.add_argument('--frontier-check-every',type=int,default=100)
+    p.add_argument('--frontier-eval-cases',type=int,default=192)
+    p.add_argument('--frontier-train-cases',type=int,default=128)
+    p.add_argument('--frontier-harvest-cases',type=int,default=48)
+    p.add_argument('--frontier-neighbor-probe-cap',type=int,default=384,
+                   help='Maximum observed arithmetic neighbors in local repair diagnostics')
+    p.add_argument('--frontier-repair-center-cap',type=int,default=256,
+                   help='Maximum accumulated and new failure candidates to recheck at stressed checkpoint')
+    p.add_argument('--frontier-repair-steps',type=int,default=150,
+                   help='Equal optimizer steps per repair branch from the identical stressed checkpoint')
+    p.add_argument('--frontier-hdb',action='store_true',
+                   help='Joint T00-T08, HDB00-HDB08, and nine mathematical task families in ONE optimizer frontier')
+    p.add_argument('--joint-output',help='Dedicated mixed T+HDB frontier workspace (never overwrites original T checkpoint)')
+    p.add_argument('--rescore-live',action='store_true',
+                   help='Rescore an immutable hardlinked snapshot while joint training continues; writes isolated reports')
+    p.add_argument('--rescore-output',
+                   help='Directory for live HDB rescore reports/snapshots; must share a filesystem with joint working.pt')
+    p.add_argument('--joint-steps',type=int,default=1200,help='Total continuing joint frontier optimizer steps')
+    p.add_argument('--focus',default=None,metavar='TARGET[=WEIGHT],...',
+        help='Mutable joint training emphasis, e.g. "[T07=6,HDB08=4,algebra:L1=5]"; '
+             'bare targets default to 4x; "none" clears it; all three families stay active')
+    p.add_argument('--joint-check-every',type=int,default=100,help='Full fixed-deck + chain audit every N joint steps (may be changed on resume)')
+    p.add_argument('--joint-heartbeat-every',type=int,default=0,
+                   help='Cheap training heartbeat every N optimizer steps (0=off; no inference or checkpoint)')
+    p.add_argument('--joint-save-every',type=int,default=0,
+                   help='Save resumable LoRA + optimizer every N steps without competency inference (0=full audits only)')
+    p.add_argument('--joint-probe-every',type=int,default=0,
+                   help='Small fixed-deck T/HDB/math probe every N optimizer steps (0=off; no chains or scheduling updates)')
+    p.add_argument('--joint-t-max-radius',type=int,default=0,help='Expanded signed-result T radius; 0 = four times prior frontier maximum, bounded by operand limit')
+    p.add_argument('--joint-t-refresh-every',type=int,default=20,help='Refresh T training population every N optimizer steps')
+    p.add_argument('--joint-t-eval-per-shell',type=int,default=72)
+    p.add_argument('--joint-t-train-cases-per-shell',type=int,default=144)
+    p.add_argument('--joint-math-levels',type=int,default=2,
+                   help='Mathematical frontier levels per existing task family (new campaign policy)')
+    p.add_argument('--joint-math-eval-per-level',type=int,default=3,
+                   help='Fixed disjoint diagnostic cases per mathematical family and level')
+    p.add_argument('--joint-hdb-min-share',type=float,default=.4)
+    p.add_argument('--joint-hdb-max-share',type=float,default=.7)
+    p.add_argument('--hdb-output',help='Isolated HDB training workspace (default sibling of frontier workspace)')
+    p.add_argument('--hdb-steps',type=int,default=900,
+                   help='Total HDB optimizer steps (all nine semantic tiers interleaved)')
+    p.add_argument('--hdb-check-every',type=int,default=100,
+                   help='Evaluate frozen HDB heldouts and T retention every N HDB steps')
+    p.add_argument('--hdb-max-offset',type=int,default=64,
+                   help='Maximum opponent-count displacement from each payoff matrix zero crossing')
+    p.add_argument('--hdb-t-replay-per-batch',type=int,default=1,
+                   help='Arithmetic replay examples mixed into each HDB minibatch; leave 3+ HDB slots')
+    p.add_argument('--hdb-max-seq',type=int,default=768,
+                   help='Extended teacher-forcing sequence length for HDB narrative prompts')
+    p.add_argument('--hdb-max-tokens',type=int,default=1024,
+                   help='Extended HDB inference context (separate from numeric T limits)')
+    p.add_argument('--hdb-max-new-tokens',type=int,default=12,
+                   help='Maximum HDB output tokens; numeric balance stage raises this to at least 48')
+    p.add_argument('--frontier-competency-every',type=int,default=0,
+                   help='Opt-in competency snapshot every N frontier checks (0=manual only); diagnostics do NOT train')
+    p.add_argument('--competency-per-rung',type=int,default=8,
+                   help='Deterministic evaluation cases per arithmetic rung and frontier family')
+    p.add_argument('--competency-chain-cases',type=int,default=6,
+                   help='Fresh complete-chain probes per starting rung T03,T05,T08')
+    p.add_argument('--competency-hdb-cases',type=int,default=9,
+                   help='Odd number of balanced +/- zero-line cases for each HDB00-HDB08 tier')
+    p.add_argument('--competency-max-tokens',type=int,default=512,
+                   help='Extended inference context limit for self-contained HDB prompts')
+    p.add_argument('--competency-max-new-tokens',type=int,default=24,
+                   help='Maximum generated answer length in competency audit')
+    p.add_argument('--competency-legacy-decode',action='store_true',
+                   help='Disable diagnostic-only KV-cache greedy decoding (slower; preserves old inference engine)')
+    p.add_argument('--competency-progress-every',type=int,default=1,
+                   help='Report completed evaluation batches every N batches (default 1)')
     p.add_argument('--seed',type=int,default=42257)
     p.add_argument('--baseline');p.add_argument('--backbone');p.add_argument('--activation');p.add_argument('--format')
     p.add_argument('--allow-model-download',action='store_true')
     args=p.parse_args(argv)
+    if args.device=='dml' and not (
+            args.stage=='hdb-rescore' and args.rescore_live and args.frontier and args.frontier_hdb):
+        raise ValueError('INTEL_DML_READONLY_LIVE_HDB_RESCORE_ONLY')
+    if args.device=='dml' and args.intel_smoke_per_tier<0:
+        raise ValueError('INTEL_DML_SMOKE_PER_TIER_MUST_BE_NONNEGATIVE')
+    if (args.rescore_live or args.rescore_output) and not (
+        args.stage=='hdb-rescore' and args.frontier and args.frontier_hdb):
+        raise ValueError('HDB_LIVE_RESCORE_REQUIRES_HDB_RESCORE_STAGE')
+    if args.rescore_output and not args.rescore_live:
+        raise ValueError('HDB_RESCORE_OUTPUT_REQUIRES_LIVE_MODE')
+    if args.focus is not None and not (
+        args.frontier and args.frontier_hdb and args.stage in ('preview','run')):
+        raise ValueError('JOINT_FOCUS_REQUIRES_JOINT_FRONTIER_RUN_OR_PREVIEW')
     if args.stage=='detect':
         if args.packet is None:raise ValueError('LADDER_DETECT_REQUIRES_PACKET')
         report={'packet':args.packet,**numerical_completion(args.packet)}
         print('QWEN_LADDER_NUMERICAL_DETECTION='+json.dumps(report,sort_keys=True),flush=True)
         return report
+    if args.frontier_hdb and args.stage in ('preview','run','status','competency','hdb-difficulty','hdb-rescore'):
+        from tools import nanojev_qwen_joint_frontier as joint
+        from tools import nanojev_qwen_lm_frontier_stress_repair as frontier
+        if not args.frontier:raise ValueError('JOINT_HDB_REQUIRES_FRONTIER_FLAG')
+        if args.stage=='preview':
+            policy=joint._policy(args)
+            focus=joint._parse_focus(args.focus,policy) or {}
+            result={'schema':joint.SCHEMA,
+                    'focus_schedule':focus,
+                    'focus_effective_targets':joint._focus_labels(policy,focus),
+                    'focus_surplus_group_weights':joint._focus_groups(policy,focus),
+                    'optimizer_populations':('T','HDB','mathematics'),
+                    'T':[f'T{i:02d}' for i in range(9)],
+                    'HDB':[f'HDB{i:02d}' for i in range(9)],
+                    'mathematical_families':policy['math_tasks'],
+                    'mathematical_levels':policy['math_levels'],
+                    'per_step_guarantee':'T + HDB + mathematical family',
+                    'checkpoint_workspace':str(joint._out(args))}
+            frontier._emit('QWEN_JOINT_FRONTIER_PREVIEW',result)
+            return result
+        if args.stage=='status':
+            result=joint._status(args)
+            frontier._emit('QWEN_JOINT_FRONTIER_STATUS',result)
+            return result
+        if args.stage=='hdb-rescore':return joint.rescore_hdb(args)
+        if args.stage=='hdb-difficulty':return joint.saved_difficulty(args)
+        if args.stage=='competency':
+            path=joint._out(args)/'joint_frontier_report.json'
+            result=joint.latest_competency(args)
+            frontier._emit('QWEN_JOINT_FRONTIER_REPORT',{'step':result['step'],
+                          'report':str(path),'t':result['t']['from_start'],
+                          'hdb':result['hdb']['from_start']['total'],
+                          'mathematics':result['mathematics']['from_baseline']['total'],
+                          'math_by_task':result['mathematics']['from_baseline']['by_task'],
+                          'focus':result.get('active_focus_schedule',{}),
+                          'focus_feedback':result.get('active_focus_feedback',{}),
+                          'chains':result['chains']['from_start']})
+            return result
+        return joint.run(args)
+    if args.stage=='hdb-difficulty':
+        from tools import nanojev_qwen_hdb_difficulty as hdb_difficulty
+        result=hdb_difficulty.read_latest(args)
+        from tools import nanojev_qwen_lm_frontier_stress_repair as _frontier_emit
+        _frontier_emit._emit('QWEN_HDB_DIFFICULTY',hdb_difficulty.quick_summary(result))
+        return result
+    if args.stage=='hdb-frontier':
+        raise ValueError('HDB_SEPARATE_STAGE_DEPRECATED_USE_STAGE_RUN_FRONTIER_FRONTIER_HDB')
+    if args.frontier or args.stage in ('repair-ab','competency'):
+        from tools import nanojev_qwen_lm_frontier_stress_repair as frontier
+        if args.stage=='repair-ab':return frontier.run_repair_ab(args)
+        if args.stage=='competency':
+            from tools import nanojev_qwen_competency_diagnostic as competency
+            return competency.run_standalone(args)
+        if args.stage=='status':return frontier.status(args)
+        if args.stage!='run':raise ValueError('FRONTIER_REQUIRES_STAGE_RUN_OR_REPAIR_AB')
+        return frontier.run_frontier(args)
     if args.stage=='status':return status(args)
     if args.stage=='preview':return preview(args)
     return run(args)

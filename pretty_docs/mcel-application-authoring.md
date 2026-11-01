@@ -1,6 +1,12 @@
 # MCEL Application Authoring
 
-## The intended authoring experience
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+The **finished V1 authoring target** is one `application.html` (valid semantic HTML hierarchy and interface meaning) and one `application.js` (the official vanilla-JS `@mcel/app` behavior DSL), compiled together. The older JS-only, host-bound, and HTML/contract/JS paths described below are **current implementation and historical design context**—not alternative equal-status V1 authored formats. The existing `tools/mcel_create_app.py` remains the deterministic canonical scaffold generator for the earlier explicit-package authoring path; its current output must not be mistaken for V1 paired-source scaffolding. The established app runtime also documents generic package mounting with semantic state/control projection; that working mechanism is not proof of V1 HTML+JS expert synthesis.
+
+
+## Current implementation and historical authoring direction
 
 The target is a library of self-governing parts, not a requirement to master the HTML/contract/JavaScript internals described in this guide. The author should decide **what** the application does and choose the meaningful parts of its appearance; MCEL should supply attractive defaults and derive ordinary layout, binding, validation, state, and lifecycle mechanics from those decisions. A correct but surprising design choice should be configurable; an impossible or unsafe composition should yield a focused diagnostic. See `pretty_docs/mcel-authoring-principles.md` for the four governing development priorities and explicit measures.
 

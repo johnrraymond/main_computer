@@ -1,5 +1,11 @@
 # Canonical MCEL app authoring
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+Calculator is the **current host-bound implementation reference** used for preservation of actual behavior and authority. It is not the finished V1 semantic two-file authoring template. The V1 suite additionally requires File Manager, Task Manager and Code Editor, all with MCEL-generated outer layout.
+
+
 ## Why this example exists
 
 Calculator is a **working host-bound implementation reference**, not the complexity target for everyday MCEL users. The intended developer experience is a much smaller semantic description yielding an attractive, functioning, flexible composition with few framework-specific decisions. Measure every necessary declaration in the example against the four principles in `pretty_docs/mcel-authoring-principles.md`.

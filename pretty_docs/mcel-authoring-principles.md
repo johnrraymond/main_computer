@@ -1,5 +1,11 @@
 # MCEL Authoring Mission and Guiding Principles
 
+> **MCEL V1 product target (normative):** [V1 Product Contract](mcel-v1-product-contract.md) · [HTML + JavaScript Authoring Format](mcel-v1-authoring-format.md) · [Semantic Vocabulary](mcel-v1-semantic-vocabulary.md) · [Compiler/Layout/Runtime](mcel-v1-compiler-layout-runtime-contract.md) · [Four-App Acceptance](mcel-v1-four-app-acceptance.md).  
+> **Implementation boundary:** This document records current/historical implementation and evidence where indicated. The paired-file V1 contract is the required finished product, **not** a claim that current source supports it.
+
+V1 authors own semantic HTML hierarchy and one JavaScript behavior DSL; MCEL owns expert composition, binding and responsive realization. The established authoring principles below remain the direction of current engineering and do not certify completed V1.
+
+
 ## Purpose and authority
 
 **MCEL's principal product promise is a library for authoring good-looking, correctly functioning web applications with minimal effort and maximal flexibility, constrained by good engineering and user-interface practices rather than by the author's knowledge of the framework's internals.**
