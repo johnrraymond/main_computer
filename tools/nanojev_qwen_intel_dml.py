@@ -6,6 +6,31 @@ Any unsupported DirectML operation fails visibly rather than routing to CUDA.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+# Scoped to read-only Intel rescoring. Never change CUDA or normal CPU loading.
+_historical_bf16_cpu_source = ContextVar('nanojev_intel_bf16_cpu_source', default=False)
+
+
+@contextmanager
+def historical_bf16_cpu_source():
+    """Load frozen BF16 tensors on CPU so checkpoint provenance stays byte-exact.
+
+    It is not permission to accept a source mismatch. The source SHA and
+    frozen-tensor SHA guards remain mandatory and fail closed.
+    """
+    token = _historical_bf16_cpu_source.set(True)
+    try:
+        yield
+    finally:
+        _historical_bf16_cpu_source.reset(token)
+
+
+def provenance_cpu_precision(device):
+    """Only CPU loads inside the Intel rescore scope use historical BF16."""
+    return 'bfloat16' if str(device) == 'cpu' and _historical_bf16_cpu_source.get() else None
+
 
 def intel_device(adapter_index: int = -1):
     try:

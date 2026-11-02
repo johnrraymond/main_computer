@@ -281,3 +281,7 @@ tools/worker_browser_acceptance/.cache/
 tools/worker_browser_acceptance/test-results/
 tools/worker_browser_acceptance/playwright-report/
 tools/worker_browser_acceptance/blob-report/
+
+# Installation-owned private SLH/Worker runtime identities and credentials
+runtime/state/slh/
+runtime/state/worker/

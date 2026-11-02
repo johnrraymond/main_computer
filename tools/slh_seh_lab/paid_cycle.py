@@ -93,13 +93,17 @@ class PaidCycleDiagnostics:
 
 def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLedgerDirectory,
                       worker_account_id: str, lab_mode: str,
-                      trace_file: Path | None = None) -> dict:
+                      trace_file: Path | None = None,
+                      market_isolation_capability: str | None = None) -> dict:
     """Complete a real paid request via an SLH upstream worker and settle its earning.
 
     Caller must already have verified all Hub identities/topology and started the
     managed gateway, worker sockets, and SLH public marketplace sessions.
     """
     trace = PaidCycleDiagnostics(trace_file, hub_url)
+    if market_isolation_capability is not None:
+        from main_computer.stable_hub_worker_sessions import _normalize_market_token
+        _normalize_market_token(market_isolation_capability, field_name='lab market isolation capability')
     parsed=urlsplit(hub_url)
     if parsed.scheme!='http' or parsed.hostname!='127.0.0.1':
         raise ValueError('Paid lab refuses non-loopback or HTTPS marketplace Hub')
@@ -117,6 +121,8 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     if not proxy.sessions:
         raise RuntimeError('SLH has no public sessions available for paid work')
     initial_sessions = list(proxy.sessions.values())
+    worker_before = ledger.get_account(worker_account_id)
+    worker_available_before = int((worker_before or {}).get('available_credit_wei') or 0)
     actual_accounts={slot.accepted.get('account_id') for slot in initial_sessions}
     if actual_accounts != {worker_account_id}:
         raise RuntimeError('Public sessions are not bound to expected SLH wallet account')
@@ -142,7 +148,7 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     trace.request_id = request_id
     marker='slh-actual-authorized-'+secrets.token_hex(10)
     work={'ring':'ring-2','max_price':{'amount':'2','unit':'compute_credit'},
-          'capabilities':['chat.completions'], 'model':'mock-model',
+          'capabilities':['chat.completions'] + ([market_isolation_capability] if market_isolation_capability else []), 'model':'mock-model',
           'input':{'kind':'echo','value':marker}}
     payload={'request_id':request_id,
              'multisession_authorization':{'kind':'multisession_key',
@@ -171,6 +177,11 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     earnings=[x for x in store_state.get('worker_earnings',{}).values()
               if x.get('session_id')==session_id and x.get('request_id')==request_id]
     after_request=ledger.get_account(requester_account)
+    market_matches = [record for record in store_state.get('market_workers', {}).values()
+                      if isinstance(record, dict) and str(record.get('connection_id') or '') == result_worker]
+    isolation_verified = (market_isolation_capability is None or
+        len(market_matches) == 1 and
+        market_isolation_capability in (market_matches[0].get('capabilities') or []))
     charge=charges[0] if len(charges)==1 else {}
     earning=earnings[0] if len(earnings)==1 else {}
     amount=int(charge.get('charged_credit_wei') or 0)
@@ -187,6 +198,7 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     # Real payouts are recorded by Stable Hub. No direct ledger spend call here.
     gates={
        'requester_msk_real': bool(requester_auth.get('multisession_key_id')),
+       'market_isolation_capability_verified': isolation_verified,
        'request_accepted_by_stable_hub':accepted.get('accepted') is True,
        'idempotent_request_not_double_charged':(replay.get('session_id')==session_id
              and len(replay_charges)==1 and len(replay_earnings)==1),
@@ -217,7 +229,34 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     gates['wallet_authorized_claim']=claim.get('ok') is True and earning.get('earning_id') in (claim.get('claim') or {}).get('earning_ids',[])
     settlement_record=settlement.get('settlement') or {}
     gates['wallet_authorized_settlement']=settlement.get('ok') is True and settlement_record.get('status')=='settled'
+    worker_after = ledger.get_account(worker_account_id)
+    buyer_spent_before = int((before_request or {}).get('spent_credit_wei') or 0)
+    buyer_spent_after = int((after_request or {}).get('spent_credit_wei') or 0)
+    worker_available_after = int((worker_after or {}).get('available_credit_wei') or 0)
+    # Evidence is read from the authoritative Hub ledger, not inferred from
+    # a successful HTTP response or the worker's emulated answer.
+    accounting = {
+        'buyer_account_id': requester_account,
+        'buyer_available_before_wei': str(int((before_request or {}).get('available_credit_wei') or 0)),
+        'buyer_available_after_wei': str(int((after_request or {}).get('available_credit_wei') or 0)),
+        'buyer_spent_before_wei': str(buyer_spent_before),
+        'buyer_spent_after_wei': str(buyer_spent_after),
+        'buyer_held_after_wei': str(int((after_request or {}).get('held_credit_wei') or 0)),
+        'buyer_spent_delta_wei': str(buyer_spent_after - buyer_spent_before),
+        'worker_account_id': worker_account_id,
+        'worker_available_before_wei': str(worker_available_before),
+        'worker_available_after_settlement_wei': str(worker_available_after),
+        'worker_earned_after_settlement_wei': str(int((worker_after or {}).get('earned_credit_wei') or 0)),
+        'charge_id': str(charge.get('charge_id') or ''),
+        'earning_id': str(earning.get('earning_id') or ''),
+        'request_id': request_id, 'session_id': session_id,
+    }
+    gates['buyer_debit_equals_charge'] = buyer_spent_after - buyer_spent_before == amount
+    gates['worker_wallet_credit_equals_earning'] = worker_available_after - worker_available_before == earning_amount
+    gates['buyer_and_worker_distinct'] = requester_account != worker_account_id
     return {'gates':gates,'pass':all(gates.values()),'request_id':request_id,
+            'market_isolation_capability': market_isolation_capability,
+            'accounting': accounting,
             'session_id':session_id,'worker_connection_id':result_worker,
             'worker_account_id':worker_account_id,
             'charge_count':len(charges),'earning_count':len(earnings),

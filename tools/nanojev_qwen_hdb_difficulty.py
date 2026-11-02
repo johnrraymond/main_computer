@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections import Counter
 import json
+import math
+from statistics import median
 from pathlib import Path
 
 from tools import nanojev_qwen_competency_diagnostic as competency
@@ -17,6 +19,169 @@ from tools import nanojev_qwen_lm_radius_ladder as ladder
 SCHEMA = 'nanojev.qwen.hdb-difficulty.v1'
 EVALUATION_ONLY = 'HELDOUT_EVALUATION_ONLY_DO_NOT_TRAIN_ON_REPORTED_CASES'
 SIDES = ('negative', 'zero', 'positive')
+BALANCE_ERROR_SCHEMA = 'hdb-approximate-balance-error.v1'
+BALANCE_TERMINAL_TIERS = ('HDB07', 'HDB08')
+
+
+def _quantile(values, fraction):
+    """Linear interpolation of ordered finite samples, with no dependencies."""
+    ordered=sorted(values)
+    if not ordered:return None
+    at=(len(ordered)-1)*fraction
+    lo=int(at);hi=min(lo+1,len(ordered)-1)
+    return ordered[lo]+(ordered[hi]-ordered[lo])*(at-lo)
+
+
+def _sign(value):
+    return (value>0)-(value<0)
+
+
+def _observed_balance(now):
+    """Never infer an answer from partial prose or incomplete expressions."""
+    value=now.get('numerical_terminal')
+    if isinstance(value,int) and not isinstance(value,bool):
+        return value
+    try:
+        return ladder.numeric_terminal(now.get('emitted',''))
+    except (ValueError,OverflowError):
+        return None
+
+
+def _balance_error_case(row,now):
+    """Residual in *one encounter offset* units, not gross million-event totals."""
+    if row.get('tier') not in BALANCE_TERMINAL_TIERS:
+        return None
+    observed=_observed_balance(now)
+    if observed is None:
+        return None
+    expected=int(row['delta'])
+    # A one-encounter displacement exchanges one Hawk for one Dove:
+    # delta changes by |hawk_coefficient|+|dove_coefficient| half-points.
+    unit=abs(int(row['hawk_coefficient']))+abs(int(row['dove_coefficient']))
+    if unit<1:raise ValueError('HDB_ERROR_INVALID_ENCOUNTER_UNIT')
+    residual=observed-expected
+    scaled=residual/unit
+    return {'expected_balance_half_units':expected,
+            'observed_balance_half_units':observed,
+            'signed_error_half_units':residual,
+            'one_encounter_offset_half_units':unit,
+            'signed_error_in_offset_units':scaled,
+            'log_signed_error_in_offset_units':math.copysign(math.log1p(abs(scaled)),scaled),
+            'correct_sign':_sign(observed)==_sign(expected),
+            'within_one_offset':abs(residual)<=unit,
+            'within_two_offsets':abs(residual)<=2*unit}
+
+
+def _summarize_balance_cases(cases,tested,exact):
+    z=[v['log_signed_error_in_offset_units'] for v in cases]
+    absolute=[abs(v['signed_error_in_offset_units']) for v in cases]
+    center=median(z) if z else None
+    mad=median([abs(v-center) for v in z]) if z else None
+    # Bimodal sign flips can produce MAD=0. IQR still exposes dispersion.
+    q25=_quantile(z,.25);q75=_quantile(z,.75)
+    robust_sigma=(q75-q25)/1.349 if q25 is not None else None
+    count=len(cases)
+    return {'tested':tested, 'numeric_outputs':count,
+            'non_numeric_outputs':tested-count,
+            'exact_correct':exact,
+            'exact_accuracy':exact/tested if tested else None,
+            'median_absolute_error_offset_units':median(absolute) if absolute else None,
+            'p90_absolute_error_offset_units':_quantile(absolute,.90),
+            'p95_absolute_error_offset_units':_quantile(absolute,.95),
+            'max_absolute_error_offset_units':max(absolute) if absolute else None,
+            'outputs_over_ten_offsets':sum(value>10 for value in absolute),
+            'median_signed_log_offset_error':center,
+            'mad_signed_log_offset_error':mad,
+            'iqr_signed_log_offset_error':q75-q25 if q25 is not None else None,
+            'robust_sigma_signed_log_offset_error':robust_sigma,
+            'robust_variance_signed_log_offset_error':robust_sigma**2 if robust_sigma is not None else None,
+            'correct_sign':sum(c['correct_sign'] for c in cases),
+            'within_one_offset':sum(c['within_one_offset'] for c in cases),
+            'within_two_offsets':sum(c['within_two_offsets'] for c in cases),
+            'correct_sign_rate_of_numeric':sum(c['correct_sign'] for c in cases)/count if count else None,
+            'within_one_offset_rate_of_all':sum(c['within_one_offset'] for c in cases)/tested if tested else None,
+            'within_two_offsets_rate_of_all':sum(c['within_two_offsets'] for c in cases)/tested if tested else None}
+
+
+def balance_error_distribution(rows,current):
+    """Robust, scale-aware *observational* error diagnostics for HDB07/08.
+
+    Strict grading is untouched. Residuals are normalized by the exact
+    one-encounter payoff difference then transformed using signed log1p.
+    IQR-based variance resists extreme scale jumps; MAD is retained as another
+    summary, and raw tail quantiles expose catastrophic outliers. Report each
+    of the positive/negative/zero sides separately to avoid masking bias.
+    """
+    buckets={tier:[] for tier in BALANCE_TERMINAL_TIERS}
+    tested={tier:0 for tier in BALANCE_TERMINAL_TIERS}
+    exact={tier:0 for tier in BALANCE_TERMINAL_TIERS}
+    sides={tier:{side:[] for side in SIDES} for tier in BALANCE_TERMINAL_TIERS}
+    side_tested={tier:{side:0 for side in SIDES} for tier in BALANCE_TERMINAL_TIERS}
+    side_exact={tier:{side:0 for side in SIDES} for tier in BALANCE_TERMINAL_TIERS}
+    for row in rows:
+        tier=row.get('tier')
+        if tier not in buckets:continue
+        side=row['zero_side']
+        tested[tier]+=1;side_tested[tier][side]+=1
+        key=competency._digest(row['source'])
+        now=current[key]
+        is_exact=int(bool(now.get('correct')))
+        exact[tier]+=is_exact;side_exact[tier][side]+=is_exact
+        record=_balance_error_case(row,now)
+        if record is not None:
+            buckets[tier].append(record)
+            sides[tier][side].append(record)
+    result={}
+    for tier,cases in buckets.items():
+        stats=_summarize_balance_cases(cases,tested[tier],exact[tier])
+        stats['by_side']={side:_summarize_balance_cases(
+            sides[tier][side],side_tested[tier][side],side_exact[tier][side])
+            for side in SIDES}
+        result[tier]=stats
+    return {'schema':BALANCE_ERROR_SCHEMA,
+        'unit':'one-encounter displacement in half-point balance units',
+        'transform':'sign(error)*ln(1+abs(error)/(abs(hawk_coefficient)+abs(dove_coefficient)))',
+        'robust_variance_definition':'((Q75-Q25)/1.349)**2 of signed transformed error; log-offset units squared; MAD is separately reported',
+        'interpretation':'Median absolute and p90 errors and robust variance should shrink; sign accuracy and tolerance rates should rise; exact grading unchanged',
+        'by_tier':result}
+
+
+def _compare_balance_record(old,now):
+    fields=('median_absolute_error_offset_units','p90_absolute_error_offset_units',
+            'robust_variance_signed_log_offset_error','correct_sign_rate_of_numeric',
+            'within_one_offset_rate_of_all','exact_accuracy')
+    if not old or old['tested']!=now['tested']:
+        return None
+    # A newly parseable/malformed answer changes the measured population.
+    # Keep such transitions visible but don't mislabel a selection change as
+    # convergence of the same numerical residual population.
+    matched_numeric=(old['numeric_outputs']==old['tested'] and
+                     now['numeric_outputs']==now['tested'])
+    return {'previous_numeric_outputs':old['numeric_outputs'],
+            'current_numeric_outputs':now['numeric_outputs'],
+            'fully_comparable_numeric_residuals':matched_numeric,
+            'deltas':{field:(now[field]-old[field] if
+                    matched_numeric and now[field] is not None and old[field] is not None
+                    else None) for field in fields},
+            'robust_spread_shrinking':(
+                now['robust_variance_signed_log_offset_error']<old['robust_variance_signed_log_offset_error']
+                if matched_numeric and now['tested'] else None),
+            'note':'Negative error/spread deltas are improvements, not proof of causal training gain; missing terminal packets disallow matched residual comparisons'}
+
+
+def compare_balance_distributions(previous,current):
+    """Compare the same fixed-deck measurement under the same scoring schema."""
+    if not previous or previous.get('schema')!=current.get('schema'):
+        return None
+    result={}
+    for tier,now in current['by_tier'].items():
+        old=previous.get('by_tier',{}).get(tier)
+        summary=_compare_balance_record(old,now)
+        if summary is None:continue
+        summary['by_side']={side:delta for side,current_side in now.get('by_side',{}).items()
+            if (delta:=_compare_balance_record(old.get('by_side',{}).get(side),current_side)) is not None}
+        result[tier]=summary
+    return result
 
 
 def _margin(offset):
@@ -119,6 +284,7 @@ def analyze_hdb(rows, baseline, current, *, interval=None, exposures=None, rates
                'output_budget':now.get('output_budget'),
                'expected_target_tokens':now.get('expected_target_tokens'),
                'exact_prefix':now.get('exact_prefix',False),
+               'balance_error':_balance_error_case(row,now),
                'baseline_correct':bool(before['correct']),
                'source':row['source'], 'evaluation_only':True})
     _finish(by_tier);_finish(by_side);_finish(by_margin);_finish(by_matrix)
@@ -161,7 +327,8 @@ def analyze_hdb(rows, baseline, current, *, interval=None, exposures=None, rates
             'by_matrix':by_matrix,'by_tier_side':by_tier_side,
             'by_tier_margin':by_tier_margin,
             'ranked_tiers':priority,'ranked_tier_side_weaknesses':weak_slices,
-            'wrong_cases':len(errors),'example_failures':errors[:18]},errors
+            'wrong_cases':len(errors),'example_failures':errors[:18],
+            'balance_error_distribution':balance_error_distribution(rows,current)},errors
 
 
 def analyze_t(rows, baseline, current):
@@ -234,6 +401,7 @@ def quick_summary(report):
             for k,v in h['by_margin'].items() if k in ('exact_zero','nearest_1_2')},
         'worst_tier_side_slices':h['ranked_tier_side_weaknesses'][:5],
         'hdb_failure_types':h['failure_types'],
+        'hdb_approximate_balance':h['balance_error_distribution']['by_tier'],
         't_retention_regressions':t['regressions'],
         'weakest_t_rungs':[{'rung':v['rung'],'wrong':v['wrong'],'lost':v['lost'],
                             'tested':v['tested']} for v in t['ranked_retention_risks'][:4]],

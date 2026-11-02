@@ -14,9 +14,10 @@ from .interface_intent import PURPOSES
 
 SCHEMA = "mcel.generated-composition.v1"
 POLICY = "mcel.semantic-structure.p1"
-RECIPES = frozenset({"root", "queries", "collection", "selection-echo", "evidence", "results", "controls", "document"})
+P3_POLICY = "mcel.semantic-structure.p3"
+RECIPES = frozenset({"root", "queries", "collection", "selection-echo", "evidence", "results", "controls", "operations", "document"})
 TAGS = {"root": "main", "queries": "section", "collection": "section", "selection-echo": "aside",
-        "evidence": "footer", "results": "section", "controls": "section", "document": "section"}
+        "evidence": "footer", "results": "section", "controls": "section", "operations": "section", "document": "section"}
 ROLE_META = {
     "queries": ("query-controls", "secondary"),
     "collection": ("workspace", "primary"),
@@ -24,6 +25,7 @@ ROLE_META = {
     "evidence": ("status", "supporting"),
     "results": ("results", "secondary"),
     "controls": ("query-controls", "secondary"),
+    "operations": ("commands", "secondary"),
     "document": ("workspace", "primary"),
 }
 
@@ -40,12 +42,14 @@ def _ref(value):
     return value.get("ref") if isinstance(value, Mapping) else None
 
 
-def synthesize_composition(ir: Mapping) -> dict:
+def synthesize_composition(ir: Mapping, *, policy: str = POLICY) -> dict:
     """Make organizational choices from purpose, node kinds and verified dataflow.
 
     Layout/visibility/scheduling is NOT inferred from labels, process names,
     descriptions or app IDs. A selected key is only an echo, not an inspector.
     """
+    if policy not in {POLICY, P3_POLICY}:
+        raise ValueError("Unknown synthesis policy")
     if ir.get("schema") != "mcel.application-ir.v1" or len(ir.get("surfaces", [])) != 1:
         raise ValueError("P1 requires one validated canonical Application IR surface")
     surface = ir["surfaces"][0]
@@ -56,10 +60,10 @@ def synthesize_composition(ir: Mapping) -> dict:
         raise ValueError("P1 requires a validated authored application purpose")
     intents = {i["id"]: i for i in ir.get("intents", [])}
     states = {s["id"]: s for s in ir.get("states", [])}
-    if any(c.get("risk") != "external-read" or
+    if policy == POLICY and (any(c.get("risk") != "external-read" or
            any(op.get("risk") != "external-read" for op in c.get("operations", []))
            for c in ir.get("capabilities", [])) or any(e.get("risk") != "external-read"
-           for e in ir.get("effects", [])):
+           for e in ir.get("effects", []))):
         raise ValueError("P1 cannot synthesize a consequential or source-write capability")
     nodes = surface.get("nodes", [])
     # A mode binding is a semantic relation between an observable surface node
@@ -80,7 +84,7 @@ def synthesize_composition(ir: Mapping) -> dict:
             raise ValueError("P2 mode binding requires a verified local view transition")
     if not nodes or len({n["id"] for n in nodes}) != len(nodes):
         raise ValueError("P1 requires uniquely identified executable nodes")
-    if any(i.get("risk") not in {"local-state", "external-read"} or
+    if policy == POLICY and any(i.get("risk") not in {"local-state", "external-read"} or
            (i.get("operationKind") == "capability" and i.get("risk") != "external-read")
            for i in intents.values()):
         raise ValueError("P1 read-only slice refuses any consequential or source-write effect")
@@ -108,13 +112,18 @@ def synthesize_composition(ir: Mapping) -> dict:
             raise ValueError("P1 unsupported semantic node kind: " + str(kind))
         if n.get("intent") and _ref(n["intent"]) not in intents:
             raise ValueError("P1 control references unavailable intent")
+        # Consequential operations are identified only through the validated
+        # referenced intent risk; labels or application names never create them.
+        if policy == P3_POLICY and kind in {"form", "control"} and (
+                intents.get(_ref(n.get("intent")), {}).get("risk") == "consequential"):
+            recipe = "operations"
         groups[recipe].append(n["id"])
         source_reasons[n["id"]] = "node-kind:" + str(kind)
     if not groups["collection"]:
         raise ValueError("P1 vertical slice requires an authentic keyed collection")
     # Application purpose controls organization, but cannot create reads, timers, or actions.
-    order = ("controls", "queries", "collection", "selection-echo", "results", "evidence") if purpose == "monitor" else (
-        "controls", "queries", "selection-echo", "collection", "results", "evidence")
+    order = ("controls", "queries", "collection", "selection-echo", "operations", "results", "evidence") if purpose == "monitor" else (
+        "controls", "queries", "selection-echo", "collection", "operations", "results", "evidence")
     root = "interface-region:generated-root"
     regions = [{"id": root, "parentId": None, "ordinal": 0, "recipe": "root", "nativeTag": "main",
                 "members": [], "priority": "primary", "purpose": "application", "tasks": [],
@@ -124,11 +133,15 @@ def synthesize_composition(ir: Mapping) -> dict:
         meaning, priority = ROLE_META[recipe]
         regions.append({"id": "interface-region:generated-" + recipe, "parentId": root,
              "ordinal": len(regions) - 1, "recipe": recipe, "nativeTag": TAGS[recipe],
-             "purpose": meaning, "priority": priority, "tasks": [],
+             "purpose": meaning, "priority": priority,
+             # Operational refresh policy is still owned by the runtime;
+             # this derived monitor task only identifies a semantic observation.
+             "tasks": ["monitor"] if policy == P3_POLICY and purpose == "monitor" and
+                        recipe in {"collection", "results"} else [],
              "members": [{"ref": ident} for ident in groups[recipe]],
              "reasons": ["purpose:" + purpose, "verified-node-kinds", *sorted(set(source_reasons[i] for i in groups[recipe]))]})
     # No generated 'inspection' role: a selected key is not a verified selected record.
-    result = {"schema": SCHEMA, "policy": POLICY,
+    result = {"schema": SCHEMA, "policy": policy,
         "sourceIrHash": ir.get("fingerprints", {}).get("semantic"),
         "purpose": purpose, "rootId": root, "regions": regions,
         "relations": [], "unresolved": [],
@@ -141,6 +154,6 @@ def synthesize_composition(ir: Mapping) -> dict:
 
 def verify_composition(ir: Mapping, plan: Mapping) -> None:
     """Reject tampered or stale composition; recompute the pure decision."""
-    expected = synthesize_composition(ir)
+    expected = synthesize_composition(ir, policy=plan.get("policy", ""))
     if plan != expected:
         raise ValueError("P1 composition differs from source-derived verified policy")

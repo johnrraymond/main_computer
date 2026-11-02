@@ -1852,6 +1852,17 @@ def dispatch_get(self) -> None:
         name = route_path.removeprefix("/applications/mcel-semantic-")
         self._send_text(render_semantic_page(name), "text/html; charset=utf-8")
         return
+    if route_path == "/api/applications/task/authority/session":
+        from main_computer.task_http_authority import issue
+        issue(self)
+        return
+    if route_path == "/applications/mcel-semantic-task-manager-generated-p3":
+        if not _hard_halt_client_is_local(self):
+            self._send_json({"ok": False, "error": "P3 candidate is local-only."}, HTTPStatus.FORBIDDEN)
+            return
+        from main_computer.mcel_semantic_generated_host import render_p3_generated_page
+        self._send_text(render_p3_generated_page(), "text/html; charset=utf-8")
+        return
     if route_path == "/applications/mcel-semantic-task-monitor-generated":
         # P1 pure composition proof, protected by the same local-only boundary.
         if not _hard_halt_client_is_local(self):
@@ -2310,6 +2321,17 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/task/overview":
         self._handle_task_overview()
+        return
+    if route_path in {"/api/applications/task/action",
+                      "/api/applications/task/schedule/create",
+                      "/api/applications/task/schedule/delete",
+                      "/api/applications/task/schedule/run",
+                      "/api/applications/task/ai"}:
+        from main_computer.task_http_authority import require
+        if not require(self):
+            return
+    if self.path == "/api/applications/task/schedule/run":
+        self._handle_task_schedule_run()
         return
     if self.path == "/api/applications/task/action":
         self._handle_task_action()

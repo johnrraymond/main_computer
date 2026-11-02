@@ -71,7 +71,7 @@
       assert(!surface.interfaceIntent?.hierarchy && !surface.htmlBindings && !(ir.layouts || []).length,
         "generated-layout-source-not-independent");
       assert(composition && composition.schema === "mcel.generated-composition.v1" &&
-        composition.policy === "mcel.semantic-structure.p1" &&
+        ["mcel.semantic-structure.p1","mcel.semantic-structure.p3"].includes(composition.policy) &&
         composition.sourceIrHash === ir.fingerprints?.semantic &&
         composition.purpose === surface.purpose &&
         Array.isArray(composition.regions) && Array.isArray(composition.variants) &&
@@ -79,7 +79,7 @@
         Array.isArray(composition.unresolved) && composition.unresolved.length === 0,
         "generated-composition-invalid");
       const tags={root:"main",queries:"section",collection:"section","selection-echo":"aside",
-        evidence:"footer",results:"section",controls:"section",document:"section"};
+        evidence:"footer",results:"section",controls:"section",operations:"section",document:"section"};
       const allowedPurposes=new Set(["monitor","compare","inspect","navigate","manage"]);
       assert(allowedPurposes.has(composition.purpose),"generated-purpose-invalid");
       const usedRecipes=new Set();
@@ -92,9 +92,12 @@
           "generated-mode-binding-invalid");
       }
       for (const r of composition.regions) {
+        const expectedTasks=composition.policy==="mcel.semantic-structure.p3" &&
+          composition.purpose==="monitor" && ["collection","results"].includes(r.recipe)
+          ? ["monitor"] : [];
         assert(r && tags[r.recipe] === r.nativeTag &&
           (!usedRecipes.has(r.recipe)) && Array.isArray(r.members) &&
-          Array.isArray(r.tasks) && r.tasks.length === 0 &&
+          Array.isArray(r.tasks) && JSON.stringify(r.tasks)===JSON.stringify(expectedTasks) &&
           Array.isArray(r.reasons) && r.reasons.length > 0 &&
           r.id === "interface-region:generated-" + r.recipe,
           "generated-region-invalid");
@@ -102,8 +105,12 @@
       }
       assert(usedRecipes.has("root") && usedRecipes.has("collection") &&
         composition.rootId === "interface-region:generated-root", "generated-root-invalid");
-      assert([...intents.values()].every(i=>["local-state","external-read"].includes(i.risk)) &&
-        [...capabilities.values()].every(c=>c.risk === "external-read"),"generated-authority-invalid");
+      const permittedRisks=composition.policy==="mcel.semantic-structure.p3"
+        ? ["local-state","external-read","consequential"] : ["local-state","external-read"];
+      const capabilityRisks=composition.policy==="mcel.semantic-structure.p3"
+        ? ["external-read","consequential"] : ["external-read"];
+      assert([...intents.values()].every(i=>permittedRisks.includes(i.risk)) &&
+        [...capabilities.values()].every(c=>capabilityRisks.includes(c.risk)),"generated-authority-invalid");
     } else {
       assert(surface.interfaceIntent?.hierarchy && Array.isArray(surface.interfaceIntent.regions), "paired-html-hierarchy-required");
     }
@@ -122,7 +129,10 @@
       for(const r of regions.values())for(const binding of r.members){
         const n=nodes.get(ref(binding));
         assert(n,"generated-member-unknown");
-        const recipe=n.nodeKind==="state-value"
+        const referenced=n.intent && intents.get(ref(n.intent));
+        const recipe=composition.policy==="mcel.semantic-structure.p3" &&
+          ["form","control"].includes(n.nodeKind) && referenced?.risk==="consequential"
+          ? "operations" : n.nodeKind==="state-value"
           ? (selected.has(ref(n.value?.state)) ? "selection-echo" : "results") : expected[n.nodeKind];
         assert(recipe===r.recipe,"generated-recipe-incompatible:"+n.id);
       }
@@ -236,6 +246,7 @@
     const taskRefreshPeriodMs = 5000;
     const collectionHosts = new Map(), plotHosts = new Map(), documentHosts = new Map(), actionButtons = [], regionHosts = new Map(), receiptHosts = [], tabSwitchers = [], current = new Map(), targetRuns = new Map(), plotVersions = new WeakMap();
     const conditionedNodes=new Map(), keyedCollectionRows=new WeakMap(), selectedRecordHosts=new Map(), typedRecordHosts=new Map();
+    const pendingConsequential=new Set();
     let serial = 0, disposed = false;
     let refreshTimer = null, refreshBusy = false, refreshEnabled = true;
     let inferredLayout=null, generatedResizeObserver=null, generatedResizeListener=null;
@@ -356,6 +367,10 @@
           fail("unsupported-interaction:"+id);
         }
         assert(intent.operationKind === "capability", "unsupported-intent:"+id);
+        if(intent.risk === "consequential") {
+          assert(!pendingConsequential.has(id),"consequential-request-already-pending");
+          pendingConsequential.add(id);
+        }
         const e = c.effects.get(ref(intent.effectRefs[0]));
         const cap = c.capabilities.get(ref(e.authority));
         const op = cap.operations.find(o => o.name === intent.operation && o.runtimeMethod === intent.runtimeMethod);
@@ -384,8 +399,8 @@
         // Never allow an old response to replace the current Monaco document.
         if ([...documentHosts.keys()].some(node=>ref(node.loadIntent)===id && read(ref(node.path))!==args.path))
           return {disposition:"superseded"};
-        if (disposed || current.get(id) !== run ||
-            (intent.resultBindings || []).some(binding=>targetRuns.get(ref(binding.target)) !== run))
+        if (intent.risk !== "consequential" && (disposed || current.get(id) !== run ||
+            (intent.resultBindings || []).some(binding=>targetRuns.get(ref(binding.target)) !== run)))
           return {disposition:"superseded"};
         if (op.resultSchema) checkSchema(op.resultSchema,value,"capability-response");
         for (const binding of intent.resultBindings || []) state.set(ref(binding.target),clone(value));
@@ -455,7 +470,12 @@
             session.status.textContent="Reviewed change applied: "+session.activePath;
           }
         }
-        notify(); return receipt(intent,"completed");
+        notify();
+        const disposition = (intent.risk === "consequential" && value && typeof value === "object" &&
+          ["accepted-deferred","command-returned","recorded","unknown","refused"].includes(value.outcome))
+          ? value.outcome : "completed";
+        return receipt(intent,disposition,
+          disposition === "completed" ? "" : String(value.message||""));
       } catch (ex) {
         for(const [node,session] of documentHosts){
           if(id===ref(node.loadIntent) && session.activePath && read(ref(node.path))!==session.activePath){
@@ -464,6 +484,8 @@
         }
         const reason = String(ex?.message || ex).replace(/^MCEL_OPERATIONAL_REFUSED:/,"");
         return receipt(intent, attempted ? "failed" : "refused-before-attempt", reason);
+      } finally {
+        pendingConsequential.delete(id);
       }
     }
     function renderInput(name,schema,displayLabel) {
@@ -644,9 +666,12 @@
         }
         form.addEventListener("submit",e=>{
           e.preventDefault();
-          if((intent.risk==="consequential" || intent.risk==="source-write") &&
-             (typeof global.confirm!=="function" || !global.confirm("Confirm authorized "+fmt(intent.sourceName || intent.id)+"?")))return;
           const input={};for(const [k,schema] of Object.entries(n.fields || {}))input[k]=parseInput(schema,controls[k]);
+          if((intent.risk==="consequential" || intent.risk==="source-write") &&
+             (typeof global.confirm!=="function" || !global.confirm(
+               "Confirm "+fmt(intent.sourceName || intent.id)+"?\n"+
+               Object.entries(input).map(([key,value])=>fmt(key)+": "+String(value)).join("\n")+
+               "\nThis action may stop a process or server. Continue?")))return;
           if((intent.resultBindings||[]).some(b=>[...c.regions.values()].some(r=>
             r.tasks?.includes("monitor") && (r.members||[]).some(m=>{
               const node=c.nodes.get(ref(m));
@@ -682,7 +707,9 @@
           button.addEventListener("click",()=>{
             if(intent.risk==="source-write" || intent.risk==="consequential"){
               if(typeof global.confirm!=="function" ||
-                !global.confirm("Confirm authorized "+fmt(intent.sourceName || intent.id)+"?"))return;
+                !global.confirm("Confirm consequential operation: "+fmt(intent.sourceName || intent.id)+
+                  (intent.requestArguments?.length ? "\nTarget: "+intent.requestArguments.map(arg=>String(read(ref(arg.state))||"unselected")).join(", ") : "")+
+                  "\nThis may stop a process or server. Continue?"))return;
             }
             void execute(intent.id);
           });holder.append(button);
@@ -1037,14 +1064,20 @@
       const visibleRegions=[...c.regions.values()].filter(r=>r.tasks?.includes("monitor") &&
         (!r.visibleWhen || read(ref(r.visibleWhen.state))===r.visibleWhen.equals));
       const targets=new Set();
+      const viewBound=[...c.intents.values()].some(i=>!!i.viewTransition);
       for(const r of visibleRegions)for(const member of r.members||[]){
         const n=c.nodes.get(ref(member));
+        // When a semantic mode selector exists, never let an always-visible
+        // schedule, receipt or AI result silently become the polling target.
+        if(viewBound && !n?.visibleWhen)continue;
+        if(n?.visibleWhen && read(ref(n.visibleWhen.state))!==n.visibleWhen.equals)continue;
         if(n?.nodeKind==="collection")targets.add(ref(n.state));
         if(n?.nodeKind==="state-value")targets.add(ref(n.value?.state));
       }
       const eligible=[...c.intents.values()].filter(i=>i.operationKind==="capability" &&
         i.risk==="external-read" && i.resultBindings?.some(b=>targets.has(ref(b.target))) &&
-        i.input?.every(p=>p.schema?.kind==="string" && p.sourceName==="query"));
+        i.input?.every(p=>p.schema?.kind==="string" &&
+          ["query","limit","includeConnections"].includes(p.sourceName)));
       return eligible.length===1?eligible[0]:null;
     }
     function installMonitorRefresh(){
@@ -1064,7 +1097,13 @@
         const intent=selectedMonitorIntent();if(!intent)return;
         refreshBusy=true;
         try{
-          const inputs=rememberedInputs.get(intent.id)||Object.fromEntries((intent.input||[]).map(p=>[p.sourceName,""]));
+          // Generate polling inputs from the *semantic form defaults* when no
+          // operator request has yet supplied remembered inputs. This works
+          // for monitoring surfaces of any application, without fixed geometry.
+          const form=[...c.nodes.values()].find(n=>n.nodeKind==="form" && ref(n.intent)===intent.id);
+          const defaults=form?.defaults||{};
+          const inputs=rememberedInputs.get(intent.id)||Object.fromEntries((intent.input||[]).map(p=>
+            [p.sourceName,String(defaults[p.sourceName]??"")]));
           const result=await execute(intent.id,inputs);
           traceOperation("monitor.auto-refresh","settled",result.disposition);
           status.textContent="Last refresh: "+result.disposition;

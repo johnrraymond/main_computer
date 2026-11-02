@@ -362,6 +362,27 @@ def _lookup(client,plan) -> tuple[str,bool]:
     return str(candidate['uuid']), True
 
 
+def _verify_existing_slh_public_key(client, application_uuid: str, expected_key: str) -> None:
+    """Refuse silent SLH trust-key rotation on an owned Coolify application.
+
+    Some Coolify installations mask env values; an opaque existing key cannot
+    be treated as permission to overwrite the service's current trust anchor.
+    No existing env row is allowed during initial configuration.
+    """
+    envs = _items(_api(client, 'GET', f'/api/v1/applications/{application_uuid}/envs'), 'envs')
+    rows = [row for row in envs if row.get('key') == 'SEH_SLH_PUBLIC_KEY_B64'
+            and row.get('is_preview') is not True]
+    if len(rows) > 1:
+        raise SEHGitError('Existing SEH has ambiguous SLH public trust identities')
+    if not rows:
+        return
+    row = rows[0]
+    actual = row.get('real_value') or row.get('value')
+    if not isinstance(actual, str) or actual != expected_key:
+        raise SEHGitError('Existing SEH SLH public trust key differs or is masked; '
+                          'refusing silent key rotation or unknown trust replacement')
+
+
 def _envs(plan):
     return {'SEH_PUBLIC_ORIGIN':plan['public_url'], 'SEH_AUDIT_MODE':'metadata_only',
             'SEH_ORGANIZATION_ID':plan['organization_id'], 'SEH_SLH_ID':plan['slh_id'],
@@ -384,6 +405,8 @@ def preflight(root: Path, network: str, seh: str, *, repo_root: Path | None = No
     if actual_place != plan['placement']:
         raise SEHGitError('Coolify placement changed since prepare')
     app, existing = _lookup(host,plan)
+    if existing:
+        _verify_existing_slh_public_key(host, app, plan['slh_public_key_b64'])
     return {'status':'EXISTING_APPLICATION_VERIFIED' if existing else 'CREATE_ELIGIBLE',
             'seh':seh,'network':network,'plan_digest':plan['plan_digest'],
             'application_uuid':app or None,'coolify_identity':plan['coolify_identity'],
@@ -406,6 +429,8 @@ def deploy(root: Path, network: str, seh: str, *, operation_id: str,
     if actual_place != plan['placement']:
         raise SEHGitError('Coolify placement changed since prepare')
     uuid, existing = _lookup(destination,plan)
+    if existing:
+        _verify_existing_slh_public_key(destination, uuid, plan['slh_public_key_b64'])
     if not uuid:
         response = _api(destination,'POST','/api/v1/applications/public',_application_payload(plan))
         uuid = str((response.get('application') or {}).get('uuid') or response.get('uuid') or '') if isinstance(response,dict) else ''
@@ -447,6 +472,35 @@ def deploy(root: Path, network: str, seh: str, *, operation_id: str,
             'project':plan['placement']['project_name'],'environment':plan['placement']['environment_name'],
             'git_revision':plan['source']['revision'], 'plan_digest':plan['plan_digest'],
             'identity_committed':True,'ready':False, 'public_wss_verified':False}
+
+
+def observed_public_origin(root: Path, network: str, seh: str, *, client=None) -> dict:
+    """Read-only discovery from the registered application, not a cached plan.
+
+    Only one domain on the exact, previously registered application with the
+    expected SEH ownership marker is acceptable. A missing/ambiguous domain
+    must be resolved by an operator-supplied --public-url; never silently use
+    the Git backend's default or an old plan's hostname.
+    """
+    from .dns_probe import domain_hosts
+
+    record, controller, _, _, _ = _selections(root, network, seh)
+    application_uuid = record['deployment'].get('application_uuid')
+    if not isinstance(application_uuid, str) or not application_uuid:
+        raise SEHGitError('SEH has no registered Coolify application UUID')
+    destination = client if client is not None else _client(controller)
+    app = _api(destination, 'GET', f'/api/v1/applications/{application_uuid}')
+    if (not isinstance(app, dict) or app.get('uuid') != application_uuid or
+            app.get('name') != f'mc-seh-{seh}' or
+            app.get('description') !=
+            f'main-computer-seh:git-v1 target={seh} org={record["organization_id"]} slh={record["slh_id"]}'):
+        raise SEHGitError('Registered SEH Coolify application ownership could not be verified')
+    hosts = domain_hosts(app)
+    if len(hosts) != 1:
+        raise SEHGitError('Registered SEH Coolify application does not have exactly one public domain; pass --public-url')
+    return {'status': 'COOLIFY_APPLICATION_DOMAIN_OBSERVED',
+            'application_uuid': application_uuid, 'public_url': 'https://' + hosts[0],
+            'remote_mutation': False, 'verified_ownership': True}
 
 
 def status(root: Path,network: str,seh: str,*,client=None, dns_resolver=None) -> dict:

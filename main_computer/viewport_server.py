@@ -224,6 +224,27 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
         workspace=config.workspace,
         pid_file=viewport_pid_file,
     )
+    # Background heartbeat recovery is owned by the viewport lifecycle, never
+    # by a Task Manager read. Stop before shutdown; bounded retry/backoff.
+    from main_computer.heartbeat import status_payload
+    _heartbeat_stop = threading.Event()
+    _heartbeat_config = HeartbeatConfig(
+        workspace=runtime_root, bind_host=host, server_port=port,
+        heartbeat_port=heartbeat_port, verbose=verbose, control_root=control_root)
+    def _heartbeat_watchdog():
+        cooldown = 15.0
+        while not _heartbeat_stop.wait(cooldown):
+            try:
+                heartbeat = status_payload(_heartbeat_config).get("heartbeat", {})
+                if not (heartbeat.get("running") or heartbeat.get("ready")) and not _heartbeat_stop.is_set():
+                    ensure_heartbeat_service(_heartbeat_config)
+                cooldown = 15.0
+            except Exception as exc:
+                server.signal("heartbeat-watchdog-error", error=exc)
+                cooldown = min(120.0, cooldown * 2.0)
+    _heartbeat_thread = threading.Thread(target=_heartbeat_watchdog,
+        name="viewport-heartbeat-watchdog", daemon=True)
+    _heartbeat_thread.start()
     server.worker_runtime_supervisor.start(wait_for_initial_reconcile=True)
     print(f"Main Computer viewport: http://{host}:{server.server_port}")
     print("Press Ctrl+C to stop.")
@@ -233,6 +254,8 @@ def serve(config: MainComputerConfig, host: str = "127.0.0.1", port: int = 8765,
         server.signal("server-interrupt")
         print("\nViewport stopped.")
     finally:
+        _heartbeat_stop.set()
+        _heartbeat_thread.join(timeout=2.0)
         tactical_ai_service = getattr(server, "tactical_ai_service", None)
         if tactical_ai_service is not None:
             try:

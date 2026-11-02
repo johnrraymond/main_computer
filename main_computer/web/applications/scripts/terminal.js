@@ -315,13 +315,28 @@ function taskParityOperation(name, phase, disposition = "") {
   document.dispatchEvent(new CustomEvent("mcel:parity-operation", {detail:{
     appId:"task-manager",intentName:name,phase,disposition}}));
 }
-function taskManagerRequest(path, payload = {}) {
+let taskManagerCsrfPromise = null;
+function taskManagerCsrf() {
+  if (!taskManagerCsrfPromise) taskManagerCsrfPromise = fetch("/api/applications/task/authority/session",
+    {credentials:"same-origin"}).then(async response=>{
+      if (!response.ok) throw Error("Task Manager local authority unavailable");
+      const data=await response.json();
+      if (typeof data.csrf !== "string") throw Error("Invalid Task Manager session");
+      return data.csrf;
+    }).catch(error=>{taskManagerCsrfPromise=null;throw error;});
+  return taskManagerCsrfPromise;
+}
+async function taskManagerRequest(path, payload = {}) {
+  const csrf = ["/api/applications/task/action","/api/applications/task/schedule/create",
+    "/api/applications/task/schedule/delete","/api/applications/task/schedule/run",
+    "/api/applications/task/ai"].includes(path) ? await taskManagerCsrf() : null;
   const operation="task."+path.split("/").pop();
   taskParityOperation(operation,"dispatch");
   return fetch(path, {
     method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(payload)
+    headers: {"Content-Type": "application/json", ...(csrf ? {"X-MCEL-Task-CSRF":csrf} : {})},
+    body: JSON.stringify(path.endsWith("/task/action") && payload.confirm && payload.action!=="server_status"
+      ? {...payload,request_id:payload.request_id||"manual_"+crypto.randomUUID().replaceAll("-","")}:payload)
   }).then(async (response) => {
     const data = await response.json();
     if (!response.ok) {
@@ -348,12 +363,19 @@ function taskHeartbeatBaseUrl() {
 function taskHeartbeatRequest(action, extra = {}) {
   const operation="heartbeat."+String(action).replace(/[^a-z_-]/gi, "");
   taskParityOperation(operation,"dispatch");
-  return fetch(`${taskHeartbeatBaseUrl()}/api/heartbeat/control`, {
-    method: "POST",
-    mode: "cors",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({action, ...extra})
+  return fetch(`${taskHeartbeatBaseUrl()}/api/heartbeat/authority/session`, {
+    method:"GET",mode:"cors",credentials:"include"
+  }).then(async auth=>{
+    if(!auth.ok)throw Error("Heartbeat local authority unavailable");
+    const issued=await auth.json();
+    if(typeof issued.csrf!=="string")throw Error("Invalid heartbeat CSRF session");
+    return fetch(`${taskHeartbeatBaseUrl()}/api/heartbeat/control`, {
+      method:"POST",mode:"cors",credentials:"include",
+      headers:{"Content-Type":"application/json","X-MCEL-Heartbeat-CSRF":issued.csrf},
+      body:JSON.stringify({action,...extra})
+    });
   }).then(async (response) => {
+
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.error || `HTTP ${response.status}`);
@@ -1094,7 +1116,7 @@ async function createTaskSchedule() {
   try {
     const data = await taskManagerRequest("/api/applications/task/schedule/create", {
       action: taskScheduleAction.value,
-      run_at: taskScheduleWhen.value,
+      run_at: new Date(taskScheduleWhen.value).toISOString(),
       note: taskScheduleNote.value || "",
       payload: {},
     });
@@ -1109,7 +1131,8 @@ async function createTaskSchedule() {
 }
 async function deleteTaskSchedule(scheduleId) {
   try {
-    const data = await taskManagerRequest("/api/applications/task/schedule/delete", {schedule_id: scheduleId});
+    const data = await taskManagerRequest("/api/applications/task/schedule/delete", {schedule_id: scheduleId,expected_revision:(taskManagerSnapshotCache?.schedules||[])
+      .find(item=>item.id===scheduleId)?.revision||""});
     taskManagerStatus.textContent = "Scheduled action deleted.";
     setApplicationWidgetTicker(taskScheduleCard, data.message || "Scheduled action deleted.");
     await refreshTaskManager();

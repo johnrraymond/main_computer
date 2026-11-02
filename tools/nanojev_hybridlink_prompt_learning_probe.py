@@ -331,8 +331,12 @@ def _source_setup(device,baseline,backbone,activation_dir,format_dir,joint_dir,i
         configs.append(('previous_joint',js['lora'],js['head']))
         source_dirs.append(joint_dir)
     fingerprints={str(p.resolve()):activation.file_hash(p) for d in source_dirs for p in d.iterdir() if p.is_file()}
+    precision='bfloat16' if device=='cuda' and torch.cuda.is_bf16_supported() else 'auto'
+    if device=='cpu':
+        from tools import nanojev_qwen_intel_dml as intel_dml
+        precision=intel_dml.provenance_cpu_precision(device) or precision
     model,tokenizer,details=hybrid.load_qwen(device=device,allow_download=allow_download,
-      precision='bfloat16' if device=='cuda' and torch.cuda.is_bf16_supported() else 'auto')
+      precision=precision)
     hybrid.load_adapter(baseline,model,details)
     assert details['base_model']==hybrid.MODEL_ID and details['revision']==hybrid.MODEL_REVISION,'HYBRID_PROBE_QWEN_MODEL_DRIFT'
     model.backbone.requires_grad_(False);model.head.requires_grad_(False)

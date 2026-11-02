@@ -12,7 +12,8 @@ from pathlib import Path
 from main_computer.container_runtime import resolve_container_runtime
 from typing import Mapping
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, HTTPCookieProcessor, build_opener
+from http.cookiejar import CookieJar
 
 from .downloads import ensure_pip_wheel
 from .install_root import copy_clean_tree, default_install_root, is_managed_install_root, safe_name
@@ -733,7 +734,16 @@ function Invoke-JsonPost {{
     )
 
     try {{
-        Invoke-RestMethod -Method POST -Uri $Uri -TimeoutSec 3 -ContentType "application/json" -Body ($Body | ConvertTo-Json -Depth 8) | Out-Null
+        # Heartbeat lifecycle requests require a short-lived, same-machine
+        # session and CSRF handshake. Never fall back to unguarded POST.
+        if ($Uri -match "/api/heartbeat/control$") {{
+            $sessionUri = $Uri -replace "/control$", "/authority/session"
+            $issuer = Invoke-RestMethod -Method GET -Uri $sessionUri -TimeoutSec 3 -SessionVariable mcHeartbeatSession
+            if (-not $issuer.ok -or -not $issuer.csrf) {{ return $false }}
+            Invoke-RestMethod -Method POST -Uri $Uri -TimeoutSec 3 -ContentType "application/json" -WebSession $mcHeartbeatSession -Headers @{{"X-MCEL-Heartbeat-CSRF" = [string]$issuer.csrf}} -Body ($Body | ConvertTo-Json -Depth 8) | Out-Null
+        }} else {{
+            Invoke-RestMethod -Method POST -Uri $Uri -TimeoutSec 3 -ContentType "application/json" -Body ($Body | ConvertTo-Json -Depth 8) | Out-Null
+        }}
         return $true
     }}
     catch {{
@@ -1842,20 +1852,24 @@ def _tcp_port_open(host: str, port: int, *, timeout_seconds: float = 0.5) -> boo
 
 
 def _post_json(url: str, payload: dict[str, object], *, timeout_seconds: float = 3.0) -> bool:
+    """Request an app action without bypassing heartbeat's CSRF boundary."""
     data = json.dumps(payload).encode("utf-8")
-    request = Request(
-        url,
-        data=data,
-        method="POST",
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-    )
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            return 200 <= int(response.status) < 500
-    except (OSError, URLError):
+        if url.endswith("/api/heartbeat/control"):
+            opener = build_opener(HTTPCookieProcessor(CookieJar()))
+            issuer_url = url.rsplit("/control", 1)[0] + "/authority/session"
+            with opener.open(Request(issuer_url, method="GET"), timeout=timeout_seconds) as session_response:
+                issued = json.loads(session_response.read())
+            if not issued.get("ok") or not isinstance(issued.get("csrf"), str):
+                return False
+            headers["X-MCEL-Heartbeat-CSRF"] = issued["csrf"]
+            with opener.open(Request(url, data=data, method="POST", headers=headers),
+                             timeout=timeout_seconds) as response:
+                return 200 <= int(response.status) < 300
+        with urlopen(Request(url, data=data, method="POST", headers=headers), timeout=timeout_seconds) as response:
+            return 200 <= int(response.status) < 300
+    except (OSError, URLError, ValueError, TypeError):
         return False
 
 

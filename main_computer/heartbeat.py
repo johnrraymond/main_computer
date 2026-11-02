@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import secrets
+import hmac
+import ipaddress
+from http.cookies import SimpleCookie
+from urllib.parse import urlsplit
 import os
 import socket
 import subprocess
@@ -484,6 +489,59 @@ class HeartbeatServer(ThreadingHTTPServer):
         thread.start()
 
 
+_HEARTBEAT_SESSION_LOCK = threading.RLock()
+_HEARTBEAT_SESSIONS: dict[str, tuple[str, float]] = {}
+_HEARTBEAT_TTL = 900.0
+
+
+def heartbeat_local_caller(handler) -> bool:
+    """Only the configured loopback heartbeat port and trusted viewport origin."""
+    try:
+        if not ipaddress.ip_address(handler.client_address[0]).is_loopback:
+            return False
+    except (ValueError, IndexError, TypeError):
+        return False
+    host = (handler.headers.get("Host") or "").lower().strip()
+    hb_port = handler.server.config.actual_heartbeat_port
+    if host not in {f"{h}:{hb_port}" for h in ("localhost", "127.0.0.1", "[::1]")}:
+        return False
+    origin = handler.headers.get("Origin")
+    if origin:
+        try:
+            parsed = urlsplit(origin)
+            if (parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+                or parsed.port != handler.server.config.server_port or parsed.path or parsed.query or parsed.fragment):
+                return False
+        except ValueError:
+            return False
+    if handler.headers.get("Sec-Fetch-Site", "").lower() not in {"", "same-site", "same-origin", "none"}:
+        return False
+    return True
+
+
+def heartbeat_valid_mutation(handler) -> bool:
+    if not heartbeat_local_caller(handler):
+        return False
+    if handler.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+        return False
+    try:
+        length = int(handler.headers.get("Content-Length", ""))
+    except ValueError:
+        return False
+    if not (0 < length <= 16384):
+        return False
+    cookies = SimpleCookie()
+    try:
+        cookies.load(handler.headers.get("Cookie", ""))
+        sid = cookies["mcel_heartbeat_session"].value if "mcel_heartbeat_session" in cookies else ""
+    except Exception:
+        return False
+    with _HEARTBEAT_SESSION_LOCK:
+        record = _HEARTBEAT_SESSIONS.get(sid)
+        return bool(record and record[1] > time.monotonic() and
+                    hmac.compare_digest(record[0], handler.headers.get("X-MCEL-Heartbeat-CSRF", "")))
+
+
 class HeartbeatHandler(BaseHTTPRequestHandler):
     server: HeartbeatServer
 
@@ -491,11 +549,36 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
         self.server.signal("http", client=self.client_address[0], message=format % args)
 
     def do_OPTIONS(self) -> None:
+        if not heartbeat_local_caller(self):
+            self._send_json({"ok": False, "error": "heartbeat-authority-required"}, status=HTTPStatus.FORBIDDEN)
+            return
         self.send_response(HTTPStatus.NO_CONTENT)
         self._cors_headers()
         self.end_headers()
 
     def do_GET(self) -> None:
+        if self.path == "/api/heartbeat/authority/session":
+            if not heartbeat_local_caller(self):
+                self._send_json({"ok": False, "error": "heartbeat-authority-required"}, status=HTTPStatus.FORBIDDEN)
+                return
+            sid = secrets.token_urlsafe(32)
+            csrf = secrets.token_urlsafe(32)
+            with _HEARTBEAT_SESSION_LOCK:
+                now = time.monotonic()
+                for key, (_, expires) in list(_HEARTBEAT_SESSIONS.items()):
+                    if expires <= now:
+                        del _HEARTBEAT_SESSIONS[key]
+                _HEARTBEAT_SESSIONS[sid] = (csrf, now + _HEARTBEAT_TTL)
+            payload = json.dumps({"ok": True, "csrf": csrf, "expires_in": int(_HEARTBEAT_TTL)}).encode()
+            self.send_response(HTTPStatus.OK)
+            self._cors_headers()
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Set-Cookie", f"mcel_heartbeat_session={sid}; HttpOnly; SameSite=Strict; Path=/api/heartbeat")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path in {"/api/heartbeat/control", "/api/heartbeat/status", "/healthz"}:
             self._send_json(status_payload(self.server.config))
             return
@@ -505,23 +588,26 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
         if self.path not in {"/api/heartbeat/control", "/api/heartbeat/status"}:
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
+        if not heartbeat_valid_mutation(self):
+            self._send_json({"ok": False, "error": "heartbeat-authority-required"}, status=HTTPStatus.FORBIDDEN)
+            return
+        length = int(self.headers["Content-Length"])
         try:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-        except ValueError:
-            length = 0
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            body = json.loads(raw.decode("utf-8") or "{}")
-        except Exception:
-            body = {}
-        action = str(body.get("action", "status") or "status").strip()
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            self._send_json({"ok": False, "error": "invalid-json"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if not isinstance(body, dict):
+            self._send_json({"ok": False, "error": "json-object-required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        action = body.get("action", "status")
         if action == "status":
             payload = status_payload(self.server.config)
             payload["message"] = "Heartbeat status current."
             self._send_json(payload)
             return
         if action == "start":
-            payload = ensure_heartbeat_service(self.server.config)
+            ensure_heartbeat_service(self.server.config)
             payload = start_viewport(self.server.config)
             payload["message"] = "Viewport start requested through heartbeat."
             self._send_json(payload)
@@ -539,12 +625,16 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
             payload["message"] = "Viewport restart requested through heartbeat."
             self._send_json(payload)
             return
-        self._send_json({"error": f"Unsupported heartbeat action: {action}"}, status=HTTPStatus.BAD_REQUEST)
+        self._send_json({"error": "Unsupported heartbeat action"}, status=HTTPStatus.BAD_REQUEST)
 
     def _cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin")
+        if origin and heartbeat_local_caller(self):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-MCEL-Heartbeat-CSRF")
 
     def _send_json(self, data: dict[str, Any], *, status: HTTPStatus = HTTPStatus.OK) -> None:
         payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")

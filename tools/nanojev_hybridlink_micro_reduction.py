@@ -228,7 +228,23 @@ def _load(args,checkpoint=None,warm_start=None):
         if ck.get('schema')!=SCHEMA or ck.get('status') not in ('MICRO_TEXT','MICRO_LINK'):
             raise RuntimeError('MICRO_CHECKPOINT_SCHEMA')
         if ck['source_sha256']!=hashes or ck['frozen_backbone_sha256']!=frozen:
-            raise RuntimeError('MICRO_SOURCE_HASH_DRIFT')
+            # Fail closed and explain whether the mismatch involves source
+            # files, frozen Qwen tensors, or both. Never skip the hash gate.
+            expected_sources=ck['source_sha256']
+            missing=sorted(set(expected_sources)-set(hashes))
+            added=sorted(set(hashes)-set(expected_sources))
+            changed=sorted(k for k in set(expected_sources)&set(hashes)
+                           if expected_sources[k]!=hashes[k])
+            diagnostic={'source_file_hashes_match':expected_sources==hashes,
+                        'frozen_backbone_hash_matches':ck['frozen_backbone_sha256']==frozen,
+                        'missing_source_paths':missing[:20],
+                        'new_source_paths':added[:20],
+                        'modified_source_paths':changed[:20],
+                        'missing_count':len(missing),'new_count':len(added),
+                        'modified_count':len(changed),
+                        'expected_frozen_sha256':ck['frozen_backbone_sha256'],
+                        'observed_frozen_sha256':frozen}
+            raise RuntimeError('MICRO_SOURCE_HASH_DRIFT: '+json.dumps(diagnostic,sort_keys=True))
         saved_config=json.loads((Path(checkpoint).parent/'run_config.json').read_text(encoding='utf8'))
         if ck['config_hash']!=base.digest(saved_config):
             raise RuntimeError('MICRO_CHECKPOINT_CONFIG_DRIFT')

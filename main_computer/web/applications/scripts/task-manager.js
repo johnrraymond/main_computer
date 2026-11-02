@@ -129,7 +129,8 @@ function initTaskManagerApp() {
         const pid = Number(button.dataset.taskPid || 0);
         if (!pid) return;
         const action = button.dataset.taskAction === "kill" ? "kill_pid" : "terminate_pid";
-        runTaskAction(action, {pid}, true);
+        runTaskAction(action, {pid,expected_created_at:(taskManagerSnapshotCache?.processes||[])
+          .find(row=>Number(row.pid)===Number(pid))?.created_at || ""}, true);
       });
     });
     taskScheduleList.addEventListener("click", (event) => {

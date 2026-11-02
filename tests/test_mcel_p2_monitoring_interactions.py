@@ -181,8 +181,19 @@ def test_genuine_task_service_snapshot_through_controlled_browser_port(browser):
     from main_computer.task_manager import TaskManagerService, psutil
     if psutil is None:
         pytest.skip('real process producer unavailable')
+    # The process endpoint intentionally caps responses at 100 rows. On Windows,
+    # Win32_Process records are sorted before that cap, so the pytest worker's
+    # PID need not be present in an otherwise valid, authentic full snapshot.
+    # Preserve the unfiltered source check and use the real PID query when the
+    # current process falls outside that bounded window.
     authentic=TaskManagerService(ROOT).snapshot(include_all=True,include_connections=True,limit=100)
-    assert os.getpid() in [r['pid'] for r in authentic['processes']]
+    assert authentic['processes'], 'Task Manager returned no operating-system processes'
+    query=''
+    if not any(row['pid']==os.getpid() for row in authentic['processes']):
+        query=str(os.getpid())
+        authentic=TaskManagerService(ROOT).snapshot(query=query,include_all=True,include_connections=True,limit=100)
+    assert os.getpid() in [r['pid'] for r in authentic['processes']], \
+        'OS process producer omitted the current PID even with an explicit PID query'
     page=browser.new_page(viewport={'width':1100,'height':800})
     try:
         page.evaluate('''(snapshot) => {
@@ -195,8 +206,10 @@ def test_genuine_task_service_snapshot_through_controlled_browser_port(browser):
         page.set_content(render_generated_page())
         assert page.locator('#mcel-workbench-status').inner_text()=='P2 generated monitor ready'
         page.locator('[data-mcel-mode-tabs] [data-value="all-processes"]').click()
+        page.locator('form[data-intent="intent:refresh-all"] [name="query"]').fill(query)
         page.locator('form[data-intent="intent:refresh-all"] button[type=submit]').click()
         page.wait_for_function('Array.isArray(window.__mcelP1?.app.readState("state:all-processes"))')
+        assert page.evaluate('window.__requests[0].body.query')==query
         rows=page.evaluate('window.__mcelP1.app.readState("state:all-processes")')
         assert rows and os.getpid() in [r['pid'] for r in rows]
         current=next(r for r in rows if r['pid']==os.getpid())

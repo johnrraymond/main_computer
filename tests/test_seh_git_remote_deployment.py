@@ -65,7 +65,8 @@ def setup(tmp_path, *, other=False):
 
 
 def prepare(root,host,**opts):
-    return g.prepare(root,'mainnet','company',client=host,source=SOURCE,public_key=publickey(),**opts)
+    opts.setdefault('public_key', publickey())
+    return g.prepare(root,'mainnet','company',client=host,source=SOURCE,**opts)
 
 
 def test_prepare_uses_selected_controller_and_never_leaks_credential(tmp_path):
@@ -95,7 +96,8 @@ def test_wrong_project_or_environment_refuses_before_mutation(tmp_path):
 def test_deploy_creates_exact_application_records_uuid_then_idempotent_reuses(tmp_path,monkeypatch):
     root,ctl=setup(tmp_path)
     host=FakeHost()
-    prepare(root,host)
+    stable_key = publickey()  # An SLH cannot silently rotate its signing identity on repeat deployment.
+    prepare(root,host,public_key=stable_key)
     monkeypatch.setattr(g.hub_coolify,'trigger_deploy', lambda client, **kwargs: {'ok':True})
     first=g.deploy(root,'mainnet','company',operation_id='git-create',client=host,source=SOURCE)
     assert first['status']=='DEPLOY_QUEUED' and first['created']
@@ -106,7 +108,7 @@ def test_deploy_creates_exact_application_records_uuid_then_idempotent_reuses(tm
     assert all('api_token' not in json.dumps(x) for x in host.envs.values())
     with pytest.raises(g.SEHGitError,match='Identity changed'):
         g.deploy(root,'mainnet','company',operation_id='no-reprepare',client=host,source=SOURCE)
-    prepare(root,host)
+    prepare(root,host,public_key=stable_key)
     second=g.deploy(root,'mainnet','company',operation_id='git-redeploy',client=host,source=SOURCE)
     assert not second['created']
     assert len([x for x in host.calls if x==('POST','/api/v1/applications/public')])==1
@@ -408,3 +410,36 @@ def test_deploy_reuses_existing_application_with_documented_coolify_response(tmp
     assert ('POST','/api/v1/applications/public') not in host.calls
     assert triggered and triggered[0]['application_uuid']=='app-one'
     assert SEHControl(root).inspect('mainnet','company')['deployment']['application_uuid']=='app-one'
+
+
+@pytest.mark.parametrize('existing_key', ['different-public-key', '********'])
+def test_existing_application_must_not_silently_replace_slh_public_key(tmp_path, existing_key):
+    root, _ = setup(tmp_path)
+    host = FakeHost()
+    prepare(root, host)
+    plan = g._loaded(root, 'mainnet', 'company')
+    host.apps.append({'uuid': 'app-one', 'name': plan['application_name'],
+                      'description': plan['ownership_marker'], 'project_uuid': 'proj-a',
+                      'server_uuid': 'server-a', 'environment_name': 'mainnet-hubs'})
+    host.envs['app-one'] = [{'key': 'SEH_SLH_PUBLIC_KEY_B64', 'value': existing_key}]
+    with pytest.raises(g.SEHGitError, match='refusing silent key rotation'):
+        g.preflight(root, 'mainnet', 'company', client=host, source=SOURCE)
+    with pytest.raises(g.SEHGitError, match='refusing silent key rotation'):
+        g.deploy(root, 'mainnet', 'company', operation_id='no-key-rotation', client=host, source=SOURCE)
+    assert all(method == 'GET' for method, _ in host.calls)
+
+
+def test_existing_application_with_same_slh_public_key_can_redeploy(tmp_path, monkeypatch):
+    root, _ = setup(tmp_path)
+    host = FakeHost()
+    prepare(root, host)
+    plan = g._loaded(root, 'mainnet', 'company')
+    host.apps.append({'uuid': 'app-one', 'name': plan['application_name'],
+                      'description': plan['ownership_marker'], 'project_uuid': 'proj-a',
+                      'server_uuid': 'server-a', 'environment_name': 'mainnet-hubs'})
+    host.envs['app-one'] = [{'key': 'SEH_SLH_PUBLIC_KEY_B64', 'value': plan['slh_public_key_b64']}]
+    assert g.preflight(root, 'mainnet', 'company', client=host, source=SOURCE)['status'] == 'EXISTING_APPLICATION_VERIFIED'
+    monkeypatch.setattr(g.hub_coolify, 'trigger_deploy', lambda client, **kwargs: {'ok': True})
+    result = g.deploy(root, 'mainnet', 'company', operation_id='same-key', client=host, source=SOURCE)
+    assert result['status'] == 'DEPLOY_QUEUED'
+    assert ('POST', '/api/v1/applications/public') not in host.calls

@@ -576,3 +576,110 @@ def test_worker_close_and_hold_release_are_one_fdb_commit_with_crash_rollback() 
         server, worker_id=worker_id, connection_id=connection_id,
     )[1] == 0
     assert ledger.get_account("account-one")["available_credit_wei"] == str(2 * 10**18)
+
+
+def test_fdb_chunk_reads_issue_all_requests_before_waiting(monkeypatch) -> None:
+    """Prevent 128 serial network waits when reading a large Hub document."""
+    from main_computer import stable_hub_worker_sessions as worker_sessions
+
+    monkeypatch.setattr(worker_sessions, 'STABLE_WORKER_SESSION_FDB_VALUE_CHUNK_BYTES', 4096)
+    db, stores, _, _ = _two_hubs()
+    store = stores[0]
+    store.atomic(lambda: store.save({'large_field': 'x' * 14500}))
+    assert json.loads(db.data[store._meta_key()])['chunk_count'] > 2
+
+    original_getitem = _FakeTransaction.__getitem__
+    pending_chunk_futures: list[bytes] = []
+    wait_reached = []
+
+    class _GuardFuture:
+        def __init__(self, key, real):
+            self.key = key
+            self.real = real
+
+        def wait(self):
+            # All chunk gets must be scheduled before the first .wait().
+            if not wait_reached:
+                wait_reached.append(True)
+                assert len(pending_chunk_futures) == json.loads(db.data[store._meta_key()])['chunk_count']
+            return self.real.wait()
+
+    def guarded_get(self, key):
+        future = original_getitem(self, key)
+        if b'"chunks"' in key and b'"meta"' not in key:
+            pending_chunk_futures.append(key)
+            return _GuardFuture(key, future)
+        return future
+
+    monkeypatch.setattr(_FakeTransaction, '__getitem__', guarded_get)
+    assert stores[1].load()['large_field'] == 'x' * 14500
+    assert wait_reached
+
+
+def test_fdb_mutation_writes_only_changed_chunks_but_always_writes_conflict_metadata(monkeypatch) -> None:
+    from main_computer import stable_hub_worker_sessions as worker_sessions
+
+    monkeypatch.setattr(worker_sessions, 'STABLE_WORKER_SESSION_FDB_VALUE_CHUNK_BYTES', 4096)
+    db, stores, _, _ = _two_hubs()
+    store = stores[0]
+    base = {'large_field': 'a' * 24000, 'last_value': 'old'}
+    store.atomic(lambda: store.save(base))
+    meta_key = store._meta_key()
+    total = json.loads(db.data[meta_key])['chunk_count']
+    assert total >= 6
+    before = dict(db.versions)
+
+    def update():
+        document = store.load()
+        document['last_value'] = 'new'
+        store.save(document)
+
+    store.atomic(update)
+    written_chunk_indices = [i for i in range(total) if db.versions.get(store._chunk_key(i)) != before.get(store._chunk_key(i))]
+    assert written_chunk_indices
+    assert len(written_chunk_indices) < total
+    assert db.versions[meta_key] != before[meta_key]
+    assert stores[1].load()['last_value'] == 'new'
+    assert stores[1].load()['large_field'] == base['large_field']
+
+
+def test_fdb_multiple_saves_in_one_atomic_callback_preserve_latest_data(monkeypatch) -> None:
+    from main_computer import stable_hub_worker_sessions as worker_sessions
+
+    monkeypatch.setattr(worker_sessions, 'STABLE_WORKER_SESSION_FDB_VALUE_CHUNK_BYTES', 4096)
+    _, stores, _, _ = _two_hubs()
+    store = stores[0]
+    store.atomic(lambda: store.save({'large_field': 'a' * 15000}))
+
+    def update_twice():
+        d = store.load()
+        d['stage'] = 'first'
+        store.save(d)
+        d = store.load()
+        assert d['stage'] == 'first'
+        d['stage'] = 'second'
+        store.save(d)
+
+    store.atomic(update_twice)
+    assert stores[1].load()['stage'] == 'second'
+
+
+def test_fdb_shorter_document_removes_orphan_chunks(monkeypatch) -> None:
+    from main_computer import stable_hub_worker_sessions as worker_sessions
+
+    monkeypatch.setattr(worker_sessions, 'STABLE_WORKER_SESSION_FDB_VALUE_CHUNK_BYTES', 4096)
+    db, stores, _, _ = _two_hubs()
+    store = stores[0]
+    store.atomic(lambda: store.save({'large_field': 'x' * 30000}))
+    old_count = json.loads(db.data[store._meta_key()])['chunk_count']
+
+    def shrink():
+        doc = store.load()
+        doc['large_field'] = 'small'
+        store.save(doc)
+
+    store.atomic(shrink)
+    new_count = json.loads(db.data[store._meta_key()])['chunk_count']
+    assert old_count > new_count
+    assert all(store._chunk_key(i) not in db.data for i in range(new_count, old_count))
+    assert stores[1].load()['large_field'] == 'small'

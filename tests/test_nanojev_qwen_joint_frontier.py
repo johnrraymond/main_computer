@@ -11,6 +11,7 @@ from tools import nanojev_qwen_hdb_frontier as legacy_hdb
 from tools import nanojev_qwen_lm_radius_ladder as ladder
 from tools import nanojev_qwen_lm_frontier_stress_repair as frontier
 from tools import nanojev_qwen_lm_frontier_tasks as math_tasks
+from tools import nanojev_qwen_shotgun as shotgun
 
 
 def args(tmp_path, **changes):
@@ -70,29 +71,31 @@ def test_every_joint_step_trains_all_mathematical_frontiers(tmp_path):
     assert {r['task'] for r in mathrows}==set(math_tasks.TASKS)
     assert {r['level'] for r in mathrows}=={0,1}
     assert len({r['source'] for r in [*trows,*hrows,*mathrows]})==len(trows)+len(hrows)+len(mathrows)
-    forbidden={r['source'] for r in [*trows,*hrows,*mathrows]}
+    shotgunrows=joint._shotgun_eval(a,p,trows,hrows,mathrows)
+    forbidden={r['source'] for r in [*trows,*hrows,*mathrows,*shotgunrows]}
     pool=joint._t_pool(a,p,0,forbidden)
     texp,hexp,mexp=joint._exposures(p)
     state={'t_exposures':texp,'h_exposures':hexp,'math_exposures':mexp,
            't_current':{'by_rung':{}},'h_current':{'by_tier':{}},
-           'math_current':{'by_task_level':{}},
-           'modes':{'hdb-major':0,'t-major':0,'math-major':0}}
+           'math_current':{'by_task_level':{}},'shotgun_exposures':shotgun.exposures(),
+           'modes':{'hdb-major':0,'t-major':0,'math-major':0,'shotgun-major':0}}
     modes=set()
     trained_math=set();hdb_sides=set()
     for step in range(160):
         rows,mode,share=joint._batch(a,p,step,state,pool,forbidden)
         assert len(rows)==4
         assert all(r['source'] not in forbidden for r in rows)
-        kinds={'hdb' if r.get('family')=='hdb' else
+        kinds={'shotgun' if r.get('family')=='shotgun' else
+               'hdb' if r.get('family')=='hdb' else
                'mathematics' if r.get('task') in math_tasks.TASKS else 't' for r in rows}
-        assert kinds=={'hdb','mathematics','t'}
+        assert kinds=={'shotgun','hdb','mathematics','t'}
         hdb_sides.update(r['zero_side'] for r in rows if r.get('family')=='hdb')
         trained_math.update(r['task'] for r in rows if r.get('task') in math_tasks.TASKS)
         assert all(r['target'].startswith('PROBLEM: ') for r in rows)
         assert .2<=share<=.7
         joint._add_exposures(state,rows)
         modes.add(mode)
-    assert modes=={'hdb-major','t-major','math-major'}
+    assert modes=={'hdb-major','t-major','math-major','shotgun-major'}
     assert hdb_sides=={'negative','positive','zero'}
     assert trained_math==set(math_tasks.TASKS)
     assert all(v['examples']>0 for v in texp.values())
@@ -141,7 +144,7 @@ def test_cli_joint_dispatch_is_not_sequential_hdb(monkeypatch,tmp_path):
     assert seen==['joint']
     preview=module.main(['--stage','preview','--frontier','--frontier-hdb',
                           '--radii','0,1,2,3,4','--frontier-max-radius','64'])
-    assert preview['optimizer_populations']==('T','HDB','mathematics')
+    assert preview['optimizer_populations']==('T','HDB','mathematics','shotgun')
     assert set(preview['mathematical_families'])==set(math_tasks.TASKS)
     with pytest.raises(ValueError,match='HDB_SEPARATE_STAGE_DEPRECATED'):
         module.main(['--stage','hdb-frontier'])
@@ -188,15 +191,17 @@ def test_focused_training_increases_direct_exposure_but_leaves_every_population_
     def trial(focus):
         t,h,m=joint._exposures(policy)
         state={'t_exposures':t,'h_exposures':h,'math_exposures':m,
+               'shotgun_exposures':shotgun.exposures(),
                't_current':{'by_rung':{}},'h_current':{'by_tier':{}},
                'math_current':{'by_task_level':{}},'focus':focus}
         modes=set()
         for step in range(280):
             rows,mode,_=joint._batch(a,policy,step,state,pool,forbidden)
             assert len(rows)==a.batch_size
-            assert {('HDB' if r.get('family')=='hdb' else
+            assert {('shotgun' if r.get('family')=='shotgun' else
+                     'HDB' if r.get('family')=='hdb' else
                      'math' if r.get('task') in math_tasks.TASKS else 'T')
-                    for r in rows}=={'T','HDB','math'}
+                    for r in rows}=={'T','HDB','math','shotgun'}
             assert all(r['source'] not in forbidden for r in rows)
             modes.add(mode)
             joint._add_exposures(state,rows)
@@ -209,7 +214,7 @@ def test_focused_training_increases_direct_exposure_but_leaves_every_population_
     assert all(v['examples']>0 for v in t.values())
     assert all(v['examples']>0 for v in h.values())
     assert all(v['examples']>0 for v in m.values())
-    assert set(modes)=={'t-major','hdb-major','math-major'}
+    assert set(modes)=={'t-major','hdb-major','math-major','shotgun-major'}
     weights=joint._focus_groups(policy,{'T07':12,'algebra:L1':10})
     assert weights['t']>weights['hdb'] and weights['mathematics']>weights['hdb']
 
@@ -224,6 +229,7 @@ def test_hdb_focus_and_larger_minibatches_do_not_drop_other_math(tmp_path):
     pool=joint._t_pool(a,p,0,forbidden)
     tx,hx,mx=joint._exposures(p)
     state={'t_exposures':tx,'h_exposures':hx,'math_exposures':mx,
+           'shotgun_exposures':shotgun.exposures(),
            't_current':{'by_rung':{}},'h_current':{'by_tier':{}},
            'math_current':{'by_task_level':{}},'focus':{'HDB08':20.}}
     for step in range(70):
@@ -300,6 +306,7 @@ def test_real_joint_training_flow_checkpoint_resume_and_reports(monkeypatch,tmp_
         good=float(bb.weight)>0
         return {frontier._key(r):{'correct':good,'emitted':r['target'] if good else 'BAD'} for r in rows}
     monkeypatch.setattr(joint,'_score_t',fake_t)
+    monkeypatch.setattr(joint,'_score_shotgun',fake_t)
     def fake_h(bb,tok,rows,args,policy):
         good=float(bb.weight)>0
         return {joint.competency._digest(r['source']):{
@@ -325,9 +332,13 @@ def test_real_joint_training_flow_checkpoint_resume_and_reports(monkeypatch,tmp_
     assert sum(v['examples'] for v in state['t_exposures'].values())>0
     assert sum(v['examples'] for v in state['h_exposures'].values())>0
     assert sum(v['examples'] for v in state['math_exposures'].values())>0
+    assert sum(v['examples'] for v in state['shotgun_exposures'].values())>0
+    assert (joint._out(a)/'shotgun_eval_deck.json').exists()
     report=json.loads((joint._out(a)/'joint_frontier_report.json').read_text())
     assert report['chains']['from_start']['strict_correct']==len(joint._eval(a,joint._policy(a))[2])
     assert 'hdb_numeric_balance_chains' in report
+    assert 'shotgun' in report
+    assert report['shotgun']['from_baseline']['total']['tested']==48
     assert report['hdb_numeric_balance_chains']['from_start']['correct']==27
     assert 'T07' in report['per_tier_learning_state']
     assert 'HDB07' in report['per_tier_learning_state']

@@ -165,6 +165,10 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
         raise ValueError('Real-process paid lab only accepts a loopback Stable Hub')
     from cryptography.hazmat.primitives import serialization
 
+    # A new emulated market capability per Pinky cycle makes an old, even
+    # incorrectly lingering, Worker advertisement ineligible for this sale.
+    # Ordinary marketplace tests retain the original unscoped capability.
+    market_isolation_capability = ('slh.lab.pinky.' + secrets.token_hex(16)) if pinky_integrated else None
     gates = {}
     with tempfile.TemporaryDirectory(prefix='mc-slh-two-service-lab-paid-') as td:
         root = Path(td)
@@ -259,7 +263,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                     tls_fingerprint=pin, hub_url=f'https://127.0.0.1:{adapter.server_address[1] if adapter is not None else worker_port}',
                     worker_id=device, auth_message={
                         'type': 'worker.auth', 'device_id': device,
-                        'market': {'rings': ['ring-2'], 'capabilities': ['chat.completions'],
+                        'market': {'rings': ['ring-2'], 'capabilities': ['chat.completions'] + ([market_isolation_capability] if market_isolation_capability else []),
                                    'models': ['mock-model'],
                                    'price': {'amount': '1', 'unit': 'compute_credit'},
                                    'max_concurrency': 1}}, work_executor=echo)
@@ -337,7 +341,8 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                 with lab_stage('pinky.public_paid_cycle'):
                     paid = verify_paid_cycle(hub_url=hub_url, proxy=proxy, gateway=None,
                                              ledger=payout_ledger, worker_account_id=next(iter(accounts)),
-                                             lab_mode=lab_mode, trace_file=paid_trace_file)
+                                             lab_mode=lab_mode, trace_file=paid_trace_file,
+                                             market_isolation_capability=market_isolation_capability)
                 gates.update({'paid_' + name: success for name, success in paid['gates'].items()})
                 if stress_profile is not None:
                     witness = _record_preliminary_worker_checkpoint(

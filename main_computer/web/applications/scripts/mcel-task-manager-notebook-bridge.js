@@ -90,7 +90,7 @@
     scheduleRow.append(scheduleAction,runAt,note,addSchedule);
     panel.append(title,hint,buttons,row,scheduleRow,scheduleList,status);
     holder.append(panel);
-    let observed=new Map(),busy=false;
+    let observed=new Map(),scheduleRevisions=new Map(),busy=false;
     const valid=new Set(["refresh","server_status","server_start","server_restart","server_shutdown","terminate_pid","kill_pid"]);
     async function execute(action,confirmed=false){
       if(busy||!valid.has(action))return {ok:false,code:"not-admitted-or-busy"};
@@ -101,7 +101,7 @@
           status.textContent="Refused: select a PID from the current observed snapshot.";
           return {ok:false,code:"stale-or-missing-pid"};
         }
-        display=observed.get(pid);
+        display=observed.get(pid).name;
       }
       const dangerous=!["refresh","server_status"].includes(action);
       if(dangerous && !confirmed){
@@ -122,7 +122,7 @@
           result={ok:true,action,code:"snapshot-delivered"};
         }else{
           if(typeof global.runTaskAction!=="function")throw new Error("Host action boundary unavailable");
-          result=await global.runTaskAction(action,pid?{pid}:{},dangerous);
+          result=await global.runTaskAction(action,pid?{pid,expected_created_at:observed.get(pid)?.createdAt||""}:{},dangerous);
         }
         if(!result || result.ok!==true)throw new Error(result?.message||"No successful host action receipt");
         status.textContent=`${action}: host receipt received; ${result.receipt?.message||result.code||"inspect refreshed snapshot for final state"}`;
@@ -156,14 +156,15 @@
       if(action!=="server_status" &&
          (typeof global.confirm!=="function" || !global.confirm(`Schedule ${action} for ${runAt.value}?`)))return;
       void scheduleRequest("/api/applications/task/schedule/create",{
-        action,run_at:runAt.value,note:note.value,payload:{}},"Schedule creation");
+        action,run_at:new Date(runAt.value).toISOString(),note:note.value,payload:{}},"Schedule creation");
     });
     scheduleList.addEventListener("click",(event)=>{
       const del=event.target?.closest?.("button[data-mcel-task-schedule-delete]");
       if(!del)return;
       const id=del.dataset.mcelTaskScheduleDelete;
       if(typeof global.confirm!=="function"||!global.confirm(`Delete schedule ${id}?`))return;
-      void scheduleRequest("/api/applications/task/schedule/delete",{schedule_id:id},"Schedule deletion");
+      void scheduleRequest("/api/applications/task/schedule/delete",{schedule_id:id,
+        expected_revision:scheduleRevisions.get(id)||""},"Schedule deletion");
     });
     function update(snapshot){
       if(!snapshot||typeof snapshot!=="object")return;
@@ -172,16 +173,17 @@
       for(const process of [...(snapshot.processes||[]),...(snapshot.all_processes||[])]){
         const pid=Number(process?.pid);
         if(Number.isSafeInteger(pid)&&pid>0){
-          observed.set(pid,String(process.name||process.process_name||process.command||"process"));
+          observed.set(pid,{name:String(process.name||process.process_name||process.command||"process"),createdAt:String(process.created_at||"")});
         }
       }
       select.textContent="";
       const placeholder=doc.createElement("option");placeholder.value="";placeholder.textContent="Select observed process…";select.append(placeholder);
-      for(const [pid,name] of observed){
-        const option=doc.createElement("option");option.value=String(pid);option.textContent=`${pid} · ${name}`;select.append(option);
+      for(const [pid,value] of observed){
+        const option=doc.createElement("option");option.value=String(pid);option.textContent=`${pid} · ${value.name}`;select.append(option);
       }
       select.value=observed.has(Number(previous))?previous:"";
       scheduleList.textContent="";
+      scheduleRevisions=new Map((snapshot.schedules||[]).map(item=>[item.id,item.revision||""]));
       for(const item of (snapshot.schedules||[])){
         const line=doc.createElement("div");line.className="task-actions";
         const detail=doc.createElement("span");detail.textContent=`${item.action} · ${item.run_at} · ${item.note||""}`;

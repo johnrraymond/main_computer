@@ -72,11 +72,12 @@ def test_live_rescore_rejects_training_root_as_report_dir(tmp_path,monkeypatch):
     assert json.loads((out/'progress.json').read_text())['step']==100
 
 
-def test_offline_rescore_keeps_prior_semantics(monkeypatch):
+def test_offline_rescore_rejects_missing_metrics(monkeypatch):
     seen=[]
     monkeypatch.setattr(joint,'_rescore_hdb_checkpoint',lambda args,**kw:seen.append(kw) or {'ok':True})
     monkeypatch.setattr(joint.frontier,'_emit',lambda *a,**kw:None)
-    assert joint.rescore_hdb(SimpleNamespace(rescore_live=False))=={'ok':True}
+    with pytest.raises(RuntimeError,match='HDB_RESCORE_MISSING_EMBEDDED_BALANCE_METRICS'):
+        joint.rescore_hdb(SimpleNamespace(rescore_live=False))
     assert seen==[{}]
 
 
@@ -129,5 +130,47 @@ def test_live_rescore_actual_report_tracks_pinned_step(tmp_path,monkeypatch):
     assert report['checkpoint_source']=='immutable_hardlink_snapshot'
     assert report['optimizer_steps_performed']==0
     assert report['model_weights_changed'] is False
+    assert report['balance_error_metrics_version']==joint.HDB_BALANCE_METRICS_REPORT_VERSION
+    assert joint._assert_hdb_rescore_metrics_contract(report)
+    for tier in ('HDB07','HDB08'):
+        assert report['balance_error_distribution']['by_tier'][tier]['tested']==1
+    assert report['balance_error_trend']['current_checkpoint_step']==100
+    assert joint._compact_hdb_balance_metrics({**report,'report':str(result['report'])})['tiers']['HDB07']['tested']==1
     assert not (out/'hdb_rescore_report.json').exists()
     assert torch.load(out/'working.pt',weights_only=True)['state']['step']==200
+
+
+def test_metrics_are_required_in_written_report(tmp_path):
+    report={'checkpoint_step':137100,'tiers':{
+      'HDB07':{'correct':0,'tested':1},'HDB08':{'correct':0,'tested':1}},
+      'balance_error_distribution':{'schema':joint.difficulty.BALANCE_ERROR_SCHEMA,
+         'by_tier':{
+            'HDB07':{'tested':1,'exact_correct':0,'numeric_outputs':1,'non_numeric_outputs':0},
+            'HDB08':{'tested':1,'exact_correct':0,'numeric_outputs':1,'non_numeric_outputs':0}}},
+      'balance_error_trend':{'current_checkpoint_step':137100}}
+    path=tmp_path/'hdb_rescore_report.json'
+    joint._commit_hdb_rescore_report(path,report)
+    assert json.loads(path.read_text())['balance_error_distribution']['by_tier']['HDB08']['numeric_outputs']==1
+    invalid={k:v for k,v in report.items() if k!='balance_error_distribution'}
+    with pytest.raises(RuntimeError,match='MISSING_EMBEDDED_BALANCE_METRICS'):
+        joint._commit_hdb_rescore_report(path,invalid)
+    assert json.loads(path.read_text())==report
+
+
+def test_metrics_consoles_are_explicit(monkeypatch):
+    events=[]
+    payload={'checkpoint_step':100,'tiers':{
+      'HDB07':{'correct':0,'tested':1},'HDB08':{'correct':0,'tested':1}},
+      'balance_error_distribution':{'schema':joint.difficulty.BALANCE_ERROR_SCHEMA,
+      'by_tier':{
+        'HDB07':{'tested':1,'exact_correct':0,'numeric_outputs':1,'non_numeric_outputs':0,
+                 'median_absolute_error_offset_units':2},
+        'HDB08':{'tested':1,'exact_correct':0,'numeric_outputs':1,'non_numeric_outputs':0,
+                 'median_absolute_error_offset_units':3}}},
+      'balance_error_trend':{'current_checkpoint_step':100}}
+    monkeypatch.setattr(joint,'_rescore_hdb_live',lambda args:payload)
+    monkeypatch.setattr(joint.frontier,'_emit',lambda name, body:events.append((name,body)))
+    assert joint.rescore_hdb(SimpleNamespace(rescore_live=True))==payload
+    assert events[0][0]=='QWEN_HDB_BALANCE_METRICS'
+    assert events[0][1]['tiers']['HDB08']['median_absolute_error_offset_units']==3
+    assert events[1][0]=='QWEN_HDB_RESCORE'

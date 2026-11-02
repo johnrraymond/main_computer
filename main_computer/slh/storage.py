@@ -1,31 +1,39 @@
-"""Canonical SLH/Worker storage ownership. Never create or rotate identities here.
+"""Canonical private SLH/Worker storage in this installation's runtime/state.
 
-Machine-owned SLH state is intentionally independent of an interactive Windows
-user's LOCALAPPDATA. Legacy per-user SLH states require an explicit offline
-migration; silently selecting a new empty state could create a second authority.
+SLH machine authority belongs to the Main Computer installation, not an
+interactive user's AppData or Windows ProgramData. Never create a replacement
+identity when legacy authority exists: migration remains explicit/offline.
 """
 from __future__ import annotations
 
+import csv
 import os
 from pathlib import Path
+import re
 import subprocess
 
 
 def machine_root() -> Path:
-    if os.name == 'nt':
-        value = os.environ.get('PROGRAMDATA')
-        if not value:
-            raise RuntimeError('PROGRAMDATA is required for machine-wide SLH state')
-        return Path(value) / 'MainComputer'
-    return Path(os.environ.get('XDG_STATE_HOME') or (Path.home() / '.local' / 'state')) / 'MainComputer'
+    """Installation-owned runtime state, stable across working directories."""
+    return Path(__file__).resolve().parents[2] / 'runtime' / 'state'
 
 
 def slh_state_dir() -> Path:
-    return machine_root() / 'SLH'
+    return machine_root() / 'slh'
 
 
 def worker_machine_dir() -> Path:
-    return machine_root() / 'Worker'
+    return machine_root() / 'worker'
+
+
+def previous_machine_slh_state_dir() -> Path:
+    """Previous ProgramData/XDG canonical path, for guarded offline migration."""
+    if os.name == 'nt':
+        value = os.environ.get('PROGRAMDATA')
+        if not value:
+            raise RuntimeError('PROGRAMDATA is required to check previous SLH state')
+        return Path(value) / 'MainComputer' / 'SLH'
+    return Path(os.environ.get('XDG_STATE_HOME') or (Path.home() / '.local' / 'state')) / 'MainComputer' / 'SLH'
 
 
 def user_root() -> Path:
@@ -65,32 +73,57 @@ def has_legacy_authority(directory: Path) -> bool:
 
 
 def guard_legacy_state(destination: Path) -> None:
-    """Refuse accidental silent rebootstrap of an existing per-user SLH."""
+    """Refuse silent rebootstrap when an earlier SLH authority exists elsewhere."""
     destination = Path(destination)
+    if destination != slh_state_dir() or has_legacy_authority(destination):
+        return
     legacy = legacy_slh_state_dir()
-    if destination == slh_state_dir() and not has_legacy_authority(destination) and has_legacy_authority(legacy):
+    previous = previous_machine_slh_state_dir()
+    sources = [root for root in (legacy, previous) if root != destination and has_legacy_authority(root)]
+    if sources:
+        locations = ', '.join(str(root) for root in sources)
         raise RuntimeError(
-            f'LEGACY_SLH_STATE_REQUIRES_OFFLINE_MIGRATION: {legacy} -> {destination}; '
+            f'LEGACY_SLH_STATE_REQUIRES_OFFLINE_MIGRATION: {locations} -> {destination}; '
             'run tools.slh_storage_migrate explicitly before starting the resident service'
         )
 
 
-def secure_machine_state_dir(directory: Path) -> Path:
-    """Create an SLH state root that cannot expose bootstrap/identity data to users.
+def _windows_caller_sid() -> str:
+    """Resolve the actual OS token SID, not spoofable USERNAME environment data."""
+    result = subprocess.run(['whoami.exe', '/user', '/fo', 'csv', '/nh'],
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise PermissionError('Cannot determine Windows SLH state owner SID')
+    records = list(csv.reader(result.stdout.splitlines()))
+    if len(records) != 1 or len(records[0]) != 2:
+        raise PermissionError('Windows SLH state owner SID lookup is ambiguous')
+    sid = records[0][1].strip()
+    if not re.fullmatch(r'S-1-\d+(?:-\d+){2,}', sid):
+        raise PermissionError('Windows SLH state owner SID is invalid')
+    return sid
 
-    A Windows service installer must run elevated. Do not silently continue with
-    permissive inherited ProgramData ACLs if the machine ACL cannot be set.
+
+def secure_machine_state_dir(directory: Path) -> Path:
+    """Protect runtime state for the actual operator, SYSTEM and Administrators.
+
+    We must not apply the old ProgramData ACL that locked the ordinary
+    interactive operator out of the repository-local runtime directory.
+    Refuse if ownership cannot be secured, rather than inheriting broad access.
     """
     directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise PermissionError('SLH state root cannot be a symlink')
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name == 'nt':
+        sid = _windows_caller_sid()
         result = subprocess.run([
             'icacls.exe', str(directory), '/inheritance:r',
-            '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F',
+            '/grant:r', f'*{sid}:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F',
+            '*S-1-5-32-544:(OI)(CI)F',
             '/remove:g', '*S-1-5-32-545', '*S-1-5-11', '*S-1-1-0', '/T',
         ], capture_output=True, text=True, check=False)
         if result.returncode:
-            raise PermissionError('SLH machine state ACL hardening failed: ' + result.stderr.strip())
+            raise PermissionError('SLH runtime state ACL hardening failed: ' + result.stderr.strip())
     else:
         directory.chmod(0o700)
     return directory

@@ -76,14 +76,20 @@ class ViewportTaskRoutesMixin:
             force = self._coerce_bool(body.get("force", False), default=False)
             confirm = self._coerce_bool(body.get("confirm", False), default=False)
             self.server.signal("api-task-action", action=action, pid=pid_value, force=force, confirm=confirm)
-            semantic_guarded = body.get("mcel_semantic_guarded") is True
-            expected_created_at = body.get("expected_created_at") if semantic_guarded else None
-            if semantic_guarded and (action not in {"terminate_pid", "kill_pid"} or
-                    not isinstance(expected_created_at, str) or not expected_created_at):
-                raise ValueError("Semantic process action requires a verified generation.")
-            result = self.server.task_manager.perform_action(
-                action=action, pid=pid_value, force=force, confirm=confirm,
-                expected_created_at=expected_created_at)
+            # The caller's legacy 'semantic guarded' marker is never authority.
+            expected_created_at = body.get("expected_created_at")
+            if action in {"terminate_pid", "kill_pid"} and confirm and (
+                not isinstance(expected_created_at, str) or not expected_created_at):
+                raise ValueError("missing-generation: destructive process action refused")
+            if confirm and action != "server_status":
+                result = self.server.task_manager.perform_action_idempotent(
+                    request_id=body.get("request_id", ""), action=action,
+                    pid=pid_value, force=force, confirm=True,
+                    expected_created_at=expected_created_at)
+            else:
+                result = self.server.task_manager.perform_action(
+                    action=action, pid=pid_value, force=force, confirm=confirm,
+                    expected_created_at=expected_created_at)
             status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
             self._send_json(result, status=status)
         except Exception as exc:
@@ -121,10 +127,26 @@ class ViewportTaskRoutesMixin:
             if not schedule_id:
                 raise ValueError("Schedule id is required.")
             self.server.signal("api-task-schedule-delete", schedule_id=schedule_id)
-            self._send_json(self.server.task_manager.delete_schedule(schedule_id=schedule_id))
+            self._send_json(self.server.task_manager.delete_schedule(schedule_id=schedule_id,
+                expected_revision=body.get("expected_revision")))
         except Exception as exc:
             self.server.signal("api-task-schedule-delete-error", error=exc)
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_task_schedule_run(self) -> None:
+        try:
+            body = self._read_json()
+            result = self.server.task_manager.run_recorded_schedule(
+                schedule_id=str(body.get("schedule_id") or ""),
+                expected_revision=str(body.get("expected_revision") or ""),
+                expected_action=str(body.get("expected_action") or ""),
+                request_id=str(body.get("request_id") or ""),
+                confirm=body.get("confirm") is True,
+            )
+            self._send_json(result)
+        except Exception as exc:
+            self.server.signal("api-task-schedule-run-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _handle_task_ai(self) -> None:
         try:

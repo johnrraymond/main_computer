@@ -1,8 +1,7 @@
-"""Offline non-destructive migration of legacy SLH state and user identity keys.
+"""Offline, non-destructive migration to this installation's runtime/state/slh.
 
-Stop existing SLH processes before migrating; this tool never deletes source
-material and refuses to overwrite any destination file. Run elevated on Windows
-when writing machine-owned ProgramData state.
+Stop all SLH processes before migrating. The selected legacy source must be the
+only existing older SLH authority; this tool refuses to merge or overwrite keys.
 
   python -m tools.slh_storage_migrate plan
   python -m tools.slh_storage_migrate slh --execute
@@ -18,7 +17,8 @@ from pathlib import Path
 import shutil
 
 from main_computer.slh.storage import (
-    slh_state_dir, legacy_slh_state_dir, user_identity_dir, legacy_authenticator_dir,
+    slh_state_dir, legacy_slh_state_dir, previous_machine_slh_state_dir,
+    has_legacy_authority, user_identity_dir, legacy_authenticator_dir,
     secure_machine_state_dir,
 )
 
@@ -37,6 +37,17 @@ def _files(root: Path) -> list[Path]:
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _slh_source(explicit: Path | None = None) -> Path:
+    if explicit is not None:
+        return Path(explicit)
+    sources = [root for root in (legacy_slh_state_dir(), previous_machine_slh_state_dir())
+               if has_legacy_authority(root)]
+    if len(sources) > 1:
+        raise ValueError('Multiple prior SLH authorities exist; specify --source only after '
+                         'verifying the correct organization identity offline')
+    return sources[0] if sources else legacy_slh_state_dir()
 
 
 def migrate(src: Path, dest: Path, *, execute: bool, machine: bool) -> dict:
@@ -77,13 +88,13 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('command', choices=('plan', 'slh', 'identity'))
     p.add_argument('--execute', action='store_true')
-    p.add_argument('--source', type=Path, help='Override legacy source (e.g. a previous Windows user profile)')
+    p.add_argument('--source', type=Path, help='Explicit older SLH source for verified recovery')
     args = p.parse_args(argv)
     if args.command == 'plan':
-        values = [migrate(legacy_slh_state_dir(), slh_state_dir(), execute=False, machine=True),
+        values = [migrate(_slh_source(args.source), slh_state_dir(), execute=False, machine=True),
                   migrate(legacy_authenticator_dir(), user_identity_dir(), execute=False, machine=False)]
     elif args.command == 'slh':
-        values = [migrate(args.source or legacy_slh_state_dir(), slh_state_dir(),
+        values = [migrate(_slh_source(args.source), slh_state_dir(),
                           execute=args.execute, machine=True)]
     else:
         values = [migrate(args.source or legacy_authenticator_dir(), user_identity_dir(),

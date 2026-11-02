@@ -12,7 +12,7 @@ const req=(app,id,cap,operation,method,args,risk='external-read')=>({appId:`sema
   operation,runtimeMethod:method,risk,arguments:args});
 const port=(app,fetch,navigate)=>{
  const ctx={crypto:webcrypto,TextEncoder,fetch:async(url,options)=>({ok:true,status:200,
-   json:async()=>fetch(url,JSON.parse(options.body||"{}"))})};
+   json:async()=>url.endsWith("/authority/session")?{ok:true,csrf:"test-session-only"}:fetch(url,JSON.parse(options.body||"{}"))})};
  ctx.globalThis=ctx;vm.runInNewContext(source,ctx);
  return ctx.McelSemanticReadPorts.create({appId:`semantic-${app}`,navigate});
 };

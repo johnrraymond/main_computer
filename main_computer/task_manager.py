@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import threading
 import os
 import re
 import shutil
@@ -8,6 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,6 +54,10 @@ class TaskManagerService:
         self.control_root = (Path(control_root_env) if control_root_env else (control_root or self.repo_root)).expanduser().resolve()
         self.data_root = self.repo_root / "tools" / "task_manager"
         self.schedule_path = self.data_root / "schedules.json"
+        self.manual_action_journal = self.data_root / "manual_schedule_requests.json"
+        self.consequential_action_journal = self.data_root / "consequential_requests.json"
+        self._schedule_lock = threading.RLock()
+        self._schedule_action_receipts: dict[str, tuple[str, dict[str, Any]]] = {}
         self.control_script = self.repo_root / "control-main-computer.ps1"
         self.pid_file = self.control_root / ".main_computer_viewport.pid"
         self.heartbeat_pid_file = self.control_root / HEARTBEAT_PID_FILENAME
@@ -86,7 +93,7 @@ class TaskManagerService:
         relevant_pids = {row["pid"] for row in processes if row.get("is_main_computer")}
         connections = self._connection_rows(relevant_pids=relevant_pids, limit=limit, include_all=include_all) if include_connections else []
         server = self._server_summary(processes=processes, connections=connections)
-        schedules = self._read_schedules().get("schedules", [])
+        schedules = self._schedules_with_revisions(self._read_schedules())
         hardware = self._hardware_snapshot()
         overview = {
             "main_computer_process_count": sum(1 for row in processes if row.get("is_main_computer")),
@@ -142,50 +149,183 @@ class TaskManagerService:
                                         expected_created_at=expected_created_at)
         return self._server_action(action=action, confirm=confirm)
 
+    def perform_action_idempotent(self, *, request_id: str, action: str, pid: int | None = None,
+                                  force: bool = False, confirm: bool = False,
+                                  expected_created_at: str | None = None) -> dict[str, Any]:
+        """Durable request identity for confirmed lifecycle/process actions.
+
+        A reservation is written before dispatch. Crashes produce an explicit
+        unknown outcome and never silently replay the effect.
+        """
+        if not confirm or action not in (SERVER_ACTIONS | PROCESS_ACTIONS) - {"server_status"}:
+            raise ValueError("Idempotent dispatch requires an admitted confirmed action.")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{12,96}", request_id):
+            raise ValueError("Confirmed actions require a valid unique request ID.")
+        key = hashlib.sha256(json.dumps({"action": action, "pid": pid,
+                "expected_created_at": expected_created_at, "force": bool(force)},
+                sort_keys=True).encode()).hexdigest()
+        with self._schedule_lock:
+            original = self.consequential_action_journal
+            try:
+                self.manual_action_journal = original
+                known = self._read_manual_journal().get(request_id)
+                if known:
+                    if known["key"] != key:
+                        raise ValueError("Request ID replay with a different action or target.")
+                    return dict(known["receipt"])
+                unknown = {"ok": False, "outcome": "unknown", "action": action,
+                    "request_id": request_id, "message": "Outcome unverified; automatic replay refused."}
+                self._store_manual_journal(request_id, key, unknown)
+                receipt = self.perform_action(action=action, pid=pid,force=force,confirm=True,
+                                               expected_created_at=expected_created_at)
+                receipt["request_id"] = request_id
+                receipt["outcome"] = "accepted-deferred" if receipt.get("deferred") else "command-returned"
+                self._store_manual_journal(request_id, key, receipt)
+                return receipt
+            finally:
+                self.manual_action_journal = original
+
     def list_schedules(self) -> dict[str, Any]:
         data = self._read_schedules()
-        return {"ok": True, **data}
+        return {"ok": True, "schedules": self._schedules_with_revisions(data)}
+
+    @staticmethod
+    def _schedule_revision(item: dict[str, Any]) -> str:
+        # Legacy entries have no revision. Derive one from the exact persisted record,
+        # so clients cannot select a previously observed version after it changes.
+        return hashlib.sha256(json.dumps({k: v for k, v in item.items() if k != "revision"},
+                                         sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def _schedules_with_revisions(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{**item, "revision": self._schedule_revision(item)} for item in data.get("schedules", [])]
 
     def create_schedule(self, *, action: str, run_at: str, note: str = "", payload: dict[str, Any] | None = None) -> dict[str, Any]:
         action = str(action or "").strip()
         if action not in SERVER_ACTIONS:
-            raise ValueError("Task schedules currently support server lifecycle actions only.")
+            raise ValueError("Task schedules support only declared server lifecycle actions.")
         run_at_text = str(run_at or "").strip()
-        if not run_at_text:
-            raise ValueError("run_at is required.")
         try:
-            run_at_dt = datetime.fromisoformat(run_at_text)
+            run_at_dt = datetime.fromisoformat(run_at_text.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise ValueError("run_at must be a valid ISO or datetime-local value.") from exc
-        if run_at_dt.tzinfo is None:
-            run_at_dt = run_at_dt.replace(tzinfo=timezone.utc)
-        payload = payload or {}
-        data = self._read_schedules()
-        item = {
-            "id": uuid.uuid4().hex[:12],
-            "action": action,
-            "run_at": run_at_dt.isoformat(),
-            "note": str(note or ""),
-            "payload": payload,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "enabled": True,
-        }
-        data.setdefault("schedules", []).append(item)
-        data["schedules"] = sorted(data["schedules"], key=lambda entry: entry.get("run_at", ""))
-        self._write_schedules(data)
-        return {"ok": True, "message": "Scheduled action recorded.", "schedule": item, "schedules": data["schedules"]}
+            raise ValueError("run_at must be a valid offset-aware ISO-8601 instant.") from exc
+        if run_at_dt.tzinfo is None or run_at_dt.utcoffset() is None:
+            raise ValueError("run_at must contain an explicit UTC offset.")
+        payload = {} if payload is None else payload
+        if not isinstance(payload, dict) or len(json.dumps(payload)) > 4096:
+            raise ValueError("Invalid bounded schedule payload.")
+        if len(str(note)) > 1024:
+            raise ValueError("Schedule note too long.")
+        with self._schedule_lock:
+            data = self._read_schedules()
+            item = {
+                "id": uuid.uuid4().hex[:12], "action": action,
+                "run_at": run_at_dt.astimezone(timezone.utc).isoformat(),
+                "note": str(note or ""), "payload": payload,
+                "created_at": datetime.now(timezone.utc).isoformat(), "enabled": True,
+            }
+            data.setdefault("schedules", []).append(item)
+            data["schedules"] = sorted(data["schedules"], key=lambda entry: entry.get("run_at", ""))
+            self._write_schedules(data)
+            return {"ok": True, "message": "Scheduled action recorded (not executed).",
+                    "schedule": {**item, "revision": self._schedule_revision(item)},
+                    "schedules": self._schedules_with_revisions(data)}
 
-    def delete_schedule(self, *, schedule_id: str) -> dict[str, Any]:
+    def delete_schedule(self, *, schedule_id: str, expected_revision: str | None = None) -> dict[str, Any]:
         schedule_id = str(schedule_id or "").strip()
-        if not schedule_id:
-            raise ValueError("schedule_id is required.")
-        data = self._read_schedules()
-        before = len(data.get("schedules", []))
-        data["schedules"] = [item for item in data.get("schedules", []) if item.get("id") != schedule_id]
-        if len(data["schedules"]) == before:
-            raise ValueError(f"Unknown schedule id: {schedule_id}")
-        self._write_schedules(data)
-        return {"ok": True, "message": "Scheduled action deleted.", "schedules": data["schedules"]}
+        if not schedule_id or not expected_revision:
+            raise ValueError("Schedule ID and observed revision are required.")
+        with self._schedule_lock:
+            data = self._read_schedules()
+            selected = next((v for v in data["schedules"] if v.get("id") == schedule_id), None)
+            if not selected:
+                raise ValueError("Unknown schedule ID.")
+            if self._schedule_revision(selected) != expected_revision:
+                raise ValueError("Schedule revision changed; deletion refused.")
+            data["schedules"] = [v for v in data["schedules"] if v.get("id") != schedule_id]
+            self._write_schedules(data)
+            return {"ok": True, "message": "Scheduled action deleted.",
+                    "schedules": self._schedules_with_revisions(data)}
+
+    def run_recorded_schedule(self, *, schedule_id: str, expected_revision: str,
+                              expected_action: str, request_id: str, confirm: bool) -> dict[str, Any]:
+        """Manually invoke the current recorded action, not a scheduler run."""
+        if not confirm:
+            raise ValueError("Manual recorded action requires confirmation.")
+        if not isinstance(request_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{12,96}", request_id):
+            raise ValueError("A unique request ID is required.")
+        with self._schedule_lock:
+            data = self._read_schedules()
+            item = next((v for v in data["schedules"] if v.get("id") == schedule_id), None)
+            if item is None or item.get("enabled") is not True:
+                raise ValueError("Recorded action is unavailable or disabled.")
+            revision = self._schedule_revision(item)
+            if revision != expected_revision or item.get("action") != expected_action:
+                raise ValueError("Recorded action changed; manual invocation refused.")
+            action = item["action"]
+            if action not in SERVER_ACTIONS:
+                raise ValueError("Recorded action is not admitted.")
+            request_key = f"{schedule_id}:{revision}:{action}"
+            existing = self._schedule_action_receipts.get(request_id)
+            if not existing:
+                stored = self._read_manual_journal().get(request_id)
+                if stored:
+                    existing = (stored["key"], stored["receipt"])
+            if existing:
+                if existing[0] != request_key:
+                    raise ValueError("Request ID replay with different target refused.")
+                return dict(existing[1])
+            # Commit an unknown-outcome record *before* dispatch. A process exit
+            # or restart cannot cause an automatic duplicate execution on retry.
+            unknown = {"ok": False, "outcome": "unknown", "request_id": request_id,
+                       "message": "Dispatch outcome not independently known; do not replay automatically."}
+            self._store_manual_journal(request_id, request_key, unknown)
+            self._schedule_action_receipts[request_id] = (request_key, unknown)
+            receipt = self.perform_action(action=action, confirm=True)
+            result = {"ok": receipt.get("ok") is True, "action": action,
+                      "schedule_id": schedule_id, "schedule_revision": revision,
+                      "request_id": request_id, "manual_invocation": True,
+                      "deferred": receipt.get("deferred") is True,
+                      "outcome": "accepted-deferred" if receipt.get("deferred") else (
+                         "command-returned" if receipt.get("ok") else "refused"),
+                      "receipt": receipt}
+            self._schedule_action_receipts[request_id] = (request_key, result)
+            self._store_manual_journal(request_id, request_key, result)
+            if len(self._schedule_action_receipts) > 512:
+                self._schedule_action_receipts.pop(next(iter(self._schedule_action_receipts)))
+            return result
+
+    def _read_manual_journal(self) -> dict[str, dict[str, Any]]:
+        if not self.manual_action_journal.exists():
+            return {}
+        try:
+            data = json.loads(self.manual_action_journal.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError("Manual action journal unreadable; replay refused.") from exc
+        if not isinstance(data, dict):
+            raise ValueError("Manual action journal invalid; replay refused.")
+        return data
+
+    def _store_manual_journal(self, request_id: str, key: str, receipt: dict[str, Any]) -> None:
+        data = self._read_manual_journal()
+        data[request_id] = {"key": key, "receipt": receipt}
+        # Deliberately bounded journal; the newest entries survive server restart.
+        if len(data) > 2048:
+            for old in list(data)[:len(data)-2048]:
+                del data[old]
+        self._atomic_json(self.manual_action_journal, data)
+
+    def _atomic_json(self, path: Path, data: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, pending = tempfile.mkstemp(prefix=".mcel-task-", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                json.dump(data, output, indent=2)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(pending, path)
+        finally:
+            if os.path.exists(pending):
+                os.unlink(pending)
 
     def ai_brief(
         self,
@@ -257,6 +397,8 @@ class TaskManagerService:
         if not confirm:
             return {"ok": True, "planned": True, "action": action, "message": f"Planned {action} for pid {pid}.", "pid": pid}
         verified_created_at = None
+        if expected_created_at is None or not isinstance(expected_created_at, str) or not expected_created_at:
+            raise ValueError("Process generation is required for destructive actions.")
         if expected_created_at is not None:
             # Semantic operations require an OS-validated creation generation at
             # execution time. A PID alone can identify a different process later.
@@ -267,27 +409,23 @@ class TaskManagerService:
                 verified_created_at = self._format_epoch(observed.create_time())
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as exc:
                 raise ValueError("Process generation unavailable before action.") from exc
-            if not verified_created_at or verified_created_at != expected_created_at:
+            try:
+                expected_time = datetime.fromisoformat(expected_created_at.replace("Z", "+00:00"))
+                if expected_time.utcoffset() is None:
+                    raise ValueError("Process generation must include a UTC offset.")
+                expected_canonical = self._format_epoch(expected_time.timestamp())
+            except (ValueError, OverflowError) as exc:
+                raise ValueError("Invalid process generation timestamp.") from exc
+            if not verified_created_at or verified_created_at != expected_canonical:
                 raise ValueError("Process generation mismatch; action refused.")
         if action == "terminate_pid" and pid == os.getpid():
             self._launch_detached(self._deferred_kill_command(pid=pid, force=False))
-            return {"ok": True, "deferred": True, "action": action, "message": f"Scheduled graceful termination for current pid {pid}.", "pid": pid}
+            return {"ok": True, "deferred": True, "action": action, "message": f"Scheduled graceful termination for current pid {pid}.", "pid": pid, "verified_created_at": verified_created_at}
         if action == "kill_pid" and pid == os.getpid():
             self._launch_detached(self._deferred_kill_command(pid=pid, force=True))
-            return {"ok": True, "deferred": True, "action": action, "message": f"Scheduled force kill for current pid {pid}.", "pid": pid}
+            return {"ok": True, "deferred": True, "action": action, "message": f"Scheduled force kill for current pid {pid}.", "pid": pid, "verified_created_at": verified_created_at}
         if psutil is None:
-            if sys.platform == "win32":
-                command = ["powershell", "-NoProfile", "-Command", "taskkill /PID {} /T{}".format(pid, " /F" if action == "kill_pid" else "")]
-                completed = subprocess.run(command, cwd=self.repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-                return {
-                    "ok": completed.returncode == 0,
-                    "action": action,
-                    "message": completed.stdout.strip() or completed.stderr.strip() or f"Process {pid} handled via {action}.",
-                    "pid": pid,
-                    "stdout": completed.stdout,
-                    "stderr": completed.stderr,
-                }
-            raise ValueError("psutil is required for direct pid termination on this platform.")
+            raise ValueError("psutil is required for generation-checked termination.")
         proc = observed if verified_created_at is not None else psutil.Process(pid)
         if action == "kill_pid":
             proc.kill()
@@ -381,29 +519,79 @@ class TaskManagerService:
     def _process_rows(self, *, query: str, limit: int, include_all: bool,
                       diagnostic: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if sys.platform == "win32":
-            return self._powershell_process_rows(query=query, limit=limit,
-                                                 include_all=include_all, diagnostic=diagnostic)
+            # CIM is the incumbent Windows producer. Its bounded subprocess may
+            # time out, fail to launch, return invalid JSON, or return no matches.
+            # Such a result must not be treated as proof that Windows has no
+            # processes. Use a second, OS-backed producer when available.
+            primary: dict[str, Any] = {}
+            rows = self._powershell_process_rows(query=query, limit=limit,
+                                                  include_all=include_all, diagnostic=primary)
+            # Numeric process searches are also used to establish a specific
+            # OS identity. A non-empty CIM answer might contain only unrelated
+            # command lines mentioning that number, or a PID without a usable
+            # generation. Neither proves the requested process identity.
+            target = int(query.strip()) if str(query or '').strip().isdecimal() else None
+            has_target_generation = target is None or any(
+                item.get('pid') == target and item.get('created_at')
+                for item in rows
+            )
+            if rows and has_target_generation:
+                if diagnostic is not None:
+                    diagnostic.update(primary)
+                return rows
+            if psutil is not None:
+                backup: dict[str, Any] = {}
+                fallback = self._psutil_process_rows(query=query, limit=limit,
+                                                     include_all=include_all, diagnostic=backup)
+                if diagnostic is not None:
+                    # Record the source that actually supplied returned rows.
+                    diagnostic.update(backup if fallback or not rows else primary)
+                    diagnostic['primarySourceKind'] = primary.get('sourceKind', 'win32-cim-creation-date')
+                    diagnostic['primaryStatus'] = primary.get('status', 'unknown')
+                    diagnostic['primaryElapsedMs'] = primary.get('elapsedMs')
+                    diagnostic['primaryMissingRequestedPid'] = bool(rows and target is not None and not has_target_generation)
+                    diagnostic['fallbackStatus'] = backup.get('status', 'unknown')
+                    diagnostic['fallbackUsed'] = True
+                    if fallback:
+                        diagnostic['sourceKind'] = 'psutil-create-time-fallback'
+                return fallback if fallback else rows
+            if diagnostic is not None:
+                diagnostic.update(primary)
+                diagnostic['fallbackUsed'] = False
+                diagnostic['fallbackReason'] = 'psutil-unavailable'
+            return rows
+        return self._psutil_process_rows(query=query, limit=limit,
+                                         include_all=include_all, diagnostic=diagnostic)
+
+    def _psutil_process_rows(self, *, query: str, limit: int, include_all: bool,
+                             diagnostic: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if diagnostic is not None:
-            diagnostic.update(sourceKind='psutil-create-time', status='ok' if psutil is not None else 'unavailable')
+            diagnostic.update(sourceKind='psutil-create-time', status='pending')
         if psutil is None:
+            if diagnostic is not None:
+                diagnostic['status'] = 'unavailable'
             return []
         query_text = str(query or "").strip().lower()
         rows: list[dict[str, Any]] = []
-        for proc in psutil.process_iter(["pid", "name", "status", "cmdline", "memory_info", "create_time"]):
-            try:
-                info = proc.info
-                pid = int(info.get("pid") or 0)
-                name = str(info.get("name") or "")
-                cmdline = " ".join(info.get("cmdline") or [])
-                is_main = self._is_main_computer_process(name=name, cmdline=cmdline)
-                if query_text and query_text not in name.lower() and query_text not in cmdline.lower() and query_text not in str(pid):
-                    continue
-                if not include_all and not is_main and self.repo_root.name.lower() not in cmdline.lower():
-                    continue
-                memory_info = info.get("memory_info")
-                memory_rss = int(memory_info.rss) if memory_info is not None and getattr(memory_info, "rss", None) is not None else None
-                rows.append(
-                    {
+        discovered = 0
+        try:
+            for proc in psutil.process_iter(["pid", "name", "status", "cmdline", "memory_info", "create_time"]):
+                try:
+                    info = proc.info
+                    pid = int(info.get("pid") or 0)
+                    if pid <= 0:
+                        continue
+                    discovered += 1
+                    name = str(info.get("name") or "")
+                    cmdline = " ".join(info.get("cmdline") or [])
+                    is_main = self._is_main_computer_process(name=name, cmdline=cmdline)
+                    if query_text and query_text not in name.lower() and query_text not in cmdline.lower() and query_text not in str(pid):
+                        continue
+                    if not include_all and not is_main and self.repo_root.name.lower() not in cmdline.lower():
+                        continue
+                    memory_info = info.get("memory_info")
+                    memory_rss = int(memory_info.rss) if memory_info is not None and getattr(memory_info, "rss", None) is not None else None
+                    rows.append({
                         "pid": pid,
                         "name": name,
                         "status": str(info.get("status") or ""),
@@ -416,11 +604,21 @@ class TaskManagerService:
                         "is_main_computer": is_main,
                         "is_current_process": pid == os.getpid(),
                         "created_at": self._format_epoch(info.get("create_time")),
-                    }
-                )
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except (OSError, RuntimeError, ValueError) as exc:
+            if diagnostic is not None:
+                diagnostic.update(status='enumeration-error', reason=type(exc).__name__,
+                                  discoveredCount=discovered, matchingCount=len(rows))
+            # Partial enumeration must never be presented as authoritative.
+            return []
         rows.sort(key=lambda item: (not item.get("is_main_computer"), -(item.get("memory_rss") or 0), item.get("pid") or 0))
+        if diagnostic is not None:
+            diagnostic.update(status='ok' if discovered else 'empty-psutil-result',
+                              discoveredCount=discovered, matchingCount=len(rows),
+                              servedCount=min(len(rows), limit),
+                              boundedByFilter=not include_all or bool(query_text))
         return rows[:limit]
 
     def _connection_rows(self, *, relevant_pids: set[int], limit: int, include_all: bool) -> list[dict[str, Any]]:
@@ -783,12 +981,6 @@ class TaskManagerService:
         )
         status = status_payload(heartbeat_config)
         heartbeat = status["heartbeat"]
-        heartbeat_missing = not bool(heartbeat.get("running") or heartbeat.get("ready"))
-        if (server_pid or listener) and heartbeat_missing:
-            # The task manager runs inside a live viewport. If the sidecar
-            # heartbeat was killed by a start/status path or stale pid cleanup,
-            # recreate it so browser controls can recover the viewport later.
-            heartbeat = ensure_heartbeat_service(heartbeat_config)["heartbeat"]
         return {
             "running": bool(server_pid),
             "pid": server_pid,
@@ -815,18 +1007,19 @@ class TaskManagerService:
             return {"schedules": []}
         try:
             data = json.loads(self.schedule_path.read_text(encoding="utf-8", errors="surrogateescape"))
-        except Exception:
-            return {"schedules": []}
+        except (OSError, ValueError) as exc:
+            raise ValueError("Schedule storage unreadable; refusing mutation or false empty list.") from exc
         if not isinstance(data, dict):
-            return {"schedules": []}
+            raise ValueError("Schedule storage must contain an object.")
         schedules = data.get("schedules")
-        if not isinstance(schedules, list):
-            schedules = []
+        if not isinstance(schedules, list) or not all(isinstance(v, dict) for v in schedules):
+            raise ValueError("Schedule storage must contain a list of records.")
         return {"schedules": schedules}
 
     def _write_schedules(self, data: dict[str, Any]) -> None:
         self.data_root.mkdir(parents=True, exist_ok=True)
-        self.schedule_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # Same-filesystem atomic replacement; lock serializes service writers.
+        self._atomic_json(self.schedule_path, data)
 
     def _detect_port(self) -> int | None:
         if not self.control_script.exists():

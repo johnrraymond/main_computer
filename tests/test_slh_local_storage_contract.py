@@ -10,18 +10,20 @@ from tools.slh_storage_migrate import migrate
 
 
 def test_canonical_paths_separate_machine_and_user(monkeypatch, tmp_path):
-    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'machine'))
+    monkeypatch.setattr(storage, 'machine_root', lambda: tmp_path / 'runtime' / 'state')
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'user'))
-    assert storage.slh_state_dir() == tmp_path / 'machine' / 'MainComputer' / 'SLH'
-    assert storage.worker_machine_dir() == tmp_path / 'machine' / 'MainComputer' / 'Worker'
+    assert storage.slh_state_dir() == tmp_path / 'runtime' / 'state' / 'slh'
+    assert storage.worker_machine_dir() == tmp_path / 'runtime' / 'state' / 'worker'
     assert storage.user_identity_dir() == tmp_path / 'user' / 'MainComputer' / 'Identity'
     assert storage.worker_user_dir() == tmp_path / 'user' / 'MainComputer' / 'Worker'
     assert storage.slh_app_user_dir() == tmp_path / 'user' / 'MainComputer' / 'SLHApp'
 
 
 def test_legacy_slh_state_never_silently_rebootstraps(monkeypatch, tmp_path):
-    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'machine'))
+    monkeypatch.setattr(storage, 'machine_root', lambda: tmp_path / 'runtime' / 'state')
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'old-machine'))
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'user'))
+    monkeypatch.setattr(storage, 'previous_machine_slh_state_dir', lambda: tmp_path / 'no-prior-machine')
     legacy = storage.legacy_slh_state_dir()
     legacy.mkdir(parents=True)
     (legacy / 'organization.sqlite3').write_bytes(b'legacy-data')
@@ -66,3 +68,37 @@ def test_non_loopback_listener_not_activated_on_first_run(tmp_path):
     with create_server(state_dir=tmp_path, port=0) as server:
         assert server.server_address[0] == '127.0.0.1'
         assert (tmp_path / 'organization-service.json').read_text().find('"enabled": false') > -1
+
+
+def test_previous_machine_root_cannot_silently_be_replaced(monkeypatch, tmp_path):
+    monkeypatch.setattr(storage, 'machine_root', lambda: tmp_path / 'runtime' / 'state')
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'previous'))
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'user'))
+    monkeypatch.setattr(storage, 'previous_machine_slh_state_dir', lambda: tmp_path / 'previous' / 'MainComputer' / 'SLH')
+    previous = storage.previous_machine_slh_state_dir()
+    previous.mkdir(parents=True)
+    (previous / 'organization.sqlite3').write_bytes(b'previous-authority')
+    with pytest.raises(RuntimeError, match='LEGACY_SLH_STATE_REQUIRES_OFFLINE_MIGRATION'):
+        storage.guard_legacy_state(storage.slh_state_dir())
+    assert not storage.slh_state_dir().exists()
+    from tools.slh_storage_migrate import _slh_source
+    assert _slh_source() == previous
+
+def test_ambiguous_older_authorities_refused(monkeypatch, tmp_path):
+    monkeypatch.setattr(storage, 'machine_root', lambda: tmp_path / 'runtime' / 'state')
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'previous'))
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'user'))
+    monkeypatch.setattr(storage, 'previous_machine_slh_state_dir', lambda: tmp_path / 'previous' / 'MainComputer' / 'SLH')
+    for root in (storage.legacy_slh_state_dir(), storage.previous_machine_slh_state_dir()):
+        root.mkdir(parents=True)
+        (root / 'organization.sqlite3').write_bytes(b'authority')
+    from tools.slh_storage_migrate import _slh_source
+    with pytest.raises(ValueError, match='Multiple prior SLH authorities'):
+        _slh_source()
+
+def test_windows_owner_sid_parser_is_not_from_username_environment(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = '\"COMPUTER\\someone\",\"S-1-5-21-100-200-300-1001\"\n'
+    monkeypatch.setattr(storage.subprocess, 'run', lambda *args, **kwargs: Result())
+    assert storage._windows_caller_sid() == 'S-1-5-21-100-200-300-1001'

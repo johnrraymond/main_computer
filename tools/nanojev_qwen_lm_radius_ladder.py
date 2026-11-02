@@ -2150,7 +2150,7 @@ def main(argv=None):
     p.add_argument('--joint-steps',type=int,default=1200,help='Total continuing joint frontier optimizer steps')
     p.add_argument('--focus',default=None,metavar='TARGET[=WEIGHT],...',
         help='Mutable joint training emphasis, e.g. "[T07=6,HDB08=4,algebra:L1=5]"; '
-             'bare targets default to 4x; "none" clears it; all three families stay active')
+             'bare targets default to 4x; "none" clears it; all four populations stay active')
     p.add_argument('--joint-check-every',type=int,default=100,help='Full fixed-deck + chain audit every N joint steps (may be changed on resume)')
     p.add_argument('--joint-heartbeat-every',type=int,default=0,
                    help='Cheap training heartbeat every N optimizer steps (0=off; no inference or checkpoint)')
@@ -2164,6 +2164,8 @@ def main(argv=None):
     p.add_argument('--joint-t-train-cases-per-shell',type=int,default=144)
     p.add_argument('--joint-math-levels',type=int,default=2,
                    help='Mathematical frontier levels per existing task family (new campaign policy)')
+    p.add_argument('--joint-shotgun-eval-per-mode',type=int,default=6,
+                   help='Frozen heldout examples per Shotgun representation (fourth joint population)')
     p.add_argument('--joint-math-eval-per-level',type=int,default=3,
                    help='Fixed disjoint diagnostic cases per mathematical family and level')
     p.add_argument('--joint-hdb-min-share',type=float,default=.4)
@@ -2232,12 +2234,14 @@ def main(argv=None):
                     'focus_schedule':focus,
                     'focus_effective_targets':joint._focus_labels(policy,focus),
                     'focus_surplus_group_weights':joint._focus_groups(policy,focus),
-                    'optimizer_populations':('T','HDB','mathematics'),
+                    'optimizer_populations':('T','HDB','mathematics','shotgun'),
                     'T':[f'T{i:02d}' for i in range(9)],
                     'HDB':[f'HDB{i:02d}' for i in range(9)],
                     'mathematical_families':policy['math_tasks'],
+                    'shotgun_modes':list(joint.shotgun.MODES),
+                    'shotgun_eval_cases':policy['shotgun_eval_per_mode']*len(joint.shotgun.MODES),
                     'mathematical_levels':policy['math_levels'],
-                    'per_step_guarantee':'T + HDB + mathematical family',
+                    'per_step_guarantee':'T + HDB + mathematical family + Shotgun',
                     'checkpoint_workspace':str(joint._out(args))}
             frontier._emit('QWEN_JOINT_FRONTIER_PREVIEW',result)
             return result

@@ -2,7 +2,8 @@
 param(
     [switch]$RealHubs,
     [switch]$UseExistingHubs,
-    [string]$ReserveWallet = ''
+    [string]$ReserveWallet = '',
+    [ValidateRange(1,10)][int]$PinkyRepeat = 3
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -16,7 +17,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Pinky shared-Hub accounting regression failed' }
     if ($RealHubs) {
         Write-Host "=== REAL three-Hub FoundationDB Pinky Promise economic cycle ==="
-        $arguments = @('-m','tools.slh_seh_lab.run_lab','run','--pinky-integrated','--json')
+        $arguments = @('-m','tools.slh_seh_lab.run_lab','run','--pinky-integrated','--pinky-repeat',[string]$PinkyRepeat,'--json')
         if ($UseExistingHubs) {
             if ([string]::IsNullOrWhiteSpace($ReserveWallet)) {
                 throw 'Existing Hubs require -ReserveWallet set to the already configured smoke Reserve address'

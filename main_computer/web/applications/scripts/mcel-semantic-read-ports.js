@@ -38,6 +38,23 @@
       "intent:delete-schedule":["task-scheduling","delete","deleteSchedule",["scheduleId"]],
       "intent:run-schedule":["task-scheduling","run","runScheduledAction",["scheduleId"]]
     }),
+    "semantic-task-manager-generated-p3":Object.freeze({
+      "intent:server-status":["monitor","server-status","readServerStatus",[]],
+      "intent:refresh":["monitor","observe","observeProcesses",["query","limit","includeConnections"]],
+      "intent:refresh-all":["monitor","all","observeAllProcesses",["query","limit","includeConnections"]],
+      "intent:refresh-connections":["monitor","connections","observeConnections",["query","limit","includeConnections"]],
+      "intent:refresh-hardware":["monitor","hardware","observeHardware",["query","limit","includeConnections"]],
+      "intent:list-schedules":["monitor","schedules","listSchedules",[]],
+      "intent:task-ai":["monitor","ai","getAiBrief",["instruction","query","view"]],
+      "intent:terminate-process":["task-control","terminate","terminateObservedProcess",["selected"]],
+      "intent:kill-process":["task-control","kill","killObservedProcess",["selected"]],
+      "intent:start-server":["task-control","start","startServer",[]],
+      "intent:restart-server":["task-control","restart","restartServer",[]],
+      "intent:shutdown-server":["task-control","shutdown","shutdownServer",[]],
+      "intent:create-schedule":["task-scheduling","create","createSchedule",["action","runAt","note"]],
+      "intent:delete-schedule":["task-scheduling","delete","deleteSchedule",["scheduleId"]],
+      "intent:run-schedule":["task-scheduling","run","runScheduledAction",["scheduleId"]]
+    }),
     "semantic-code-editor":Object.freeze({
       "intent:list-files":["source-reader","list","listSourceFiles",[]],
       "intent:open-source":["source-reader","read","readSource",["path"]],
@@ -61,7 +78,7 @@
     const consequential=new Set(["intent:terminate-process","intent:kill-process","intent:start-server",
       "intent:restart-server","intent:shutdown-server","intent:create-schedule","intent:delete-schedule","intent:run-schedule",
       "intent:run-aider","intent:archive-aider-context","intent:reset-aider-context","intent:load-aider-archive"]);
-    const expectedRisk=(req.appId==="semantic-task-manager" || req.appId==="semantic-code-editor") && consequential.has(req.intentId)?"consequential":
+    const expectedRisk=(["semantic-task-manager","semantic-task-manager-generated-p3","semantic-code-editor"].includes(req.appId)) && consequential.has(req.intentId)?"consequential":
       req.appId==="semantic-code-editor" && ["intent:save-source","intent:apply-reviewed-change"].includes(req.intentId)?"source-write":"external-read";
     if(!plain(req) || req.risk!==expectedRisk)return false;
     const spec=allow[req.appId]?.[req.intentId];
@@ -99,7 +116,10 @@
       return files;
     };
     const observedProcesses=new Map(), observedSchedules=new Map();
-    let monitorQuery="", monitoredLimit=100;
+    const p3Receipt=(outcome,message,requestId="")=>appId==="semantic-task-manager-generated-p3"
+      ? {outcome,message:String(message),requestId:String(requestId)} : String(message);
+
+    let monitorQuery="", monitoredLimit=100, monitorConnections=true;
     const validPath=path=>typeof path==="string" && !path.includes("\\") &&
       !path.startsWith("/") && !path.endsWith("/") && !path.includes("//") &&
       !path.split("/").some(part=>part==="." || part==="..");
@@ -185,13 +205,31 @@
       global.document.dispatchEvent(new global.CustomEvent("mcel:parity-transport",
         {detail:{appId,...detail}}));
     }
+    let taskCsrfPromise = null;
+    function taskCsrf(){
+      if(!taskCsrfPromise)taskCsrfPromise=fetcher("/api/applications/task/authority/session",
+        {method:"GET",credentials:"same-origin"}).then(async response=>{
+          if(!response?.ok)err("task-local-authority-unavailable");
+          const result=await response.json();
+          if(typeof result.csrf!=="string")err("invalid-task-session");
+          return result.csrf;
+        }).catch(error=>{taskCsrfPromise=null;throw error;});
+      return taskCsrfPromise;
+    }
     async function post(url,body){
       const requestId=++parityRequestId;
       const start=typeof performance!=="undefined" ? performance.now() : Date.now();
       let status=0;
       parityTransport({phase:"request",requestId,endpoint:url,method:"POST"});
       try {
-        const response=await fetcher(url,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+        const taskMutation=url.startsWith("/api/applications/task/") &&
+          ["action","schedule/create","schedule/delete","schedule/run","ai"].some(part=>url.endsWith("/"+part));
+        const csrf=taskMutation?await taskCsrf():null;
+        const sent=url.endsWith("/task/action") && body.confirm===true && body.action!=="server_status"
+          ? {...body,request_id:body.request_id || "manual_"+(global.crypto?.randomUUID?.()?.replaceAll("-","") ||
+              Date.now().toString(36)+Math.random().toString(36).slice(2,16))} : body;
+        const response=await fetcher(url,{method:"POST",credentials:"same-origin",
+          headers:{"Content-Type":"application/json",...(csrf?{"X-MCEL-Task-CSRF":csrf}:{})},body:JSON.stringify(sent)});
         status=Number(response?.status)||0;
         if(!response || !response.ok)err("backend-http-failed:"+url+":"+status);
         const payload=await response.json();
@@ -303,7 +341,16 @@
         case "intent:refresh-hardware":{
           const all=req.intentId==="intent:refresh-all";
           const needConnections=req.intentId==="intent:refresh-connections";
-          const payload=await post("/api/applications/task/overview",{query:a.query,limit:100,include_all:all||needConnections,include_connections:needConnections});
+          // P3 operator controls are semantic inputs, not layout or implied authority.
+          // P1/P2 and other installed ports retain their original request contract.
+          let limit=100,includeConnections=needConnections;
+          if(appId==="semantic-task-manager-generated-p3"){
+            if(!/^(?:[5-9]|[1-9][0-9]|100)$/.test(a.limit) ||
+                !["true","false"].includes(a.includeConnections))err("monitor-options-invalid");
+            limit=Number(a.limit);includeConnections=a.includeConnections==="true";
+            monitoredLimit=limit;monitorConnections=includeConnections;
+          }
+          const payload=await post("/api/applications/task/overview",{query:a.query,limit,include_all:all||needConnections,include_connections:includeConnections});
           if(a.query.trim() || req.intentId==="intent:refresh" || req.intentId==="intent:refresh-all")monitorQuery=a.query;
           if(needConnections){
             if(!Array.isArray(payload.connections))err("connections-missing");
@@ -350,12 +397,18 @@
           }
           return values;
         }
+        case "intent:server-status":{
+          const payload=await post("/api/applications/task/overview",{limit:16,query:"",include_all:false,include_connections:false});
+          if(!plain(payload.server))err("server-status-missing");
+          return JSON.stringify(payload.server);
+        }
         case "intent:list-schedules":{
           const payload=await post("/api/applications/task/schedules",{});
           if(!Array.isArray(payload.schedules))err("schedules-missing");
           const values=unique(payload.schedules.map(v=>{
-            if(!plain(v) || typeof v.id!=="string" || typeof v.action!=="string")err("invalid-schedule");
-            return {id:v.id,action:v.action,runAt:String(v.run_at||""),note:String(v.note||"")};
+            if(!plain(v) || typeof v.id!=="string" || typeof v.action!=="string" ||
+              typeof v.revision!=="string")err("invalid-schedule");
+            return {id:v.id,action:v.action,runAt:String(v.run_at||""),note:String(v.note||""),revision:String(v.revision||"")};
           }),"id");
           observedSchedules.clear();for(const value of values)observedSchedules.set(value.id,value);
           return values;
@@ -364,7 +417,7 @@
           if(!a.instruction.trim() || a.instruction.length>2000)err("ai-instruction-required");
           const query=a.query.trim()||monitorQuery;
           const payload=await post("/api/applications/task/ai",{instruction:a.instruction,query,limit:monitoredLimit,
-            include_all:a.view==="all-processes",include_connections:a.view==="connections" || a.view==="server-processes"});
+            include_all:a.view==="all-processes",include_connections:appId==="semantic-task-manager-generated-p3"?monitorConnections:(a.view==="connections" || a.view==="server-processes")});
           if(typeof payload.content!=="string" || payload.content.length>100000)err("ai-response-invalid");
           return payload.content;
         }
@@ -379,7 +432,8 @@
           if(payload.ok!==true || payload.planned===true || payload.action!==action ||
             payload.pid!==observed.pid || payload.verified_created_at!==observed.createdAt)err("process-receipt-invalid");
           observedProcesses.delete(a.selected);
-          return "Confirmed "+action+" on PID "+observed.pid+" ("+observed.createdAt+"): "+String(payload.message||"");
+          return p3Receipt(payload.deferred?"accepted-deferred":"command-returned",
+            "Process "+action+" PID "+observed.pid+" ("+observed.createdAt+"): "+String(payload.message||""));
         }
         case "intent:start-server":
         case "intent:restart-server":
@@ -388,7 +442,8 @@
             "intent:shutdown-server":"server_shutdown"}[req.intentId];
           const payload=await post("/api/applications/task/action",{action,confirm:true});
           if(payload.ok!==true || payload.planned===true || payload.action!==action)err("server-action-receipt-invalid");
-          return "Confirmed "+action+": "+String(payload.message||"");
+          return p3Receipt(payload.deferred?"accepted-deferred":"command-returned",
+            action+": "+String(payload.message||""));
         }
         case "intent:create-schedule":{
           const payload=await post("/api/applications/task/schedule/create",{
@@ -396,25 +451,31 @@
           if(payload.ok!==true || payload.schedule?.action!==a.action ||
             typeof payload.schedule?.id!=="string")err("schedule-create-receipt-invalid");
           observedSchedules.set(payload.schedule.id,{id:payload.schedule.id,action:a.action,
-            runAt:String(payload.schedule.run_at||""),note:a.note});
-          return "Schedule created: "+payload.schedule.id+" / "+a.action;
+            runAt:String(payload.schedule.run_at||""),note:a.note,revision:String(payload.schedule.revision||"")});
+          return p3Receipt("recorded","Schedule created: "+payload.schedule.id+" / "+a.action);
         }
         case "intent:delete-schedule":{
           if(!observedSchedules.has(a.scheduleId))err("schedule-not-observed");
-          const payload=await post("/api/applications/task/schedule/delete",{schedule_id:a.scheduleId});
+          const payload=await post("/api/applications/task/schedule/delete",{schedule_id:a.scheduleId,
+            expected_revision:observedSchedules.get(a.scheduleId)?.revision||""});
           if(payload.ok!==true || !Array.isArray(payload.schedules) ||
             payload.schedules.some(v=>v.id===a.scheduleId))err("schedule-delete-receipt-invalid");
           observedSchedules.delete(a.scheduleId);
-          return "Schedule deleted: "+a.scheduleId;
+          return p3Receipt("recorded","Schedule deleted: "+a.scheduleId);
         }
         case "intent:run-schedule":{
           const selected=observedSchedules.get(a.scheduleId);
           if(!selected || !["server_status","server_start","server_restart","server_shutdown"].includes(selected.action))
             err("scheduled-action-not-admitted");
-          const payload=await post("/api/applications/task/action",{action:selected.action,confirm:true});
-          if(payload.ok!==true || payload.action!==selected.action || payload.planned===true)
+          const requestId="manual_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,14);
+          const payload=await post("/api/applications/task/schedule/run",{
+            schedule_id:a.scheduleId,expected_revision:selected.revision,
+            expected_action:selected.action,request_id:requestId,confirm:true});
+          if(payload.ok!==true || payload.action!==selected.action ||
+             payload.schedule_revision!==selected.revision || payload.manual_invocation!==true)
             err("schedule-run-receipt-invalid");
-          return "Scheduled action executed: "+selected.action+" ("+a.scheduleId+")";
+          return p3Receipt(String(payload.outcome||"unknown"),"Recorded action "+selected.action+
+            " manually invoked: "+a.scheduleId,requestId);
         }
         case "intent:list-files":{
           const payload=await post("/api/applications/editor/files",{repo_dir:".",path:"",limit:500});

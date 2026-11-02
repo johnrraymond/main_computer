@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""One continuing optimizer: T00-T08, HDB00-HDB08, and nine mathematical families.
+"""One continuing optimizer: T, HDB, mathematics, and the Shotgun population.
 
 The stressed arithmetic checkpoint seeds a new isolated, *joint* LoRA experiment.
-Each optimizer step trains ALL THREE populations. Held-out problems determine
+Each optimizer step trains ALL FOUR populations. Held-out problems determine
 weaknesses, never become training targets. No separate mathematical task handoff.
 """
 from __future__ import annotations
@@ -23,6 +23,7 @@ from tools import nanojev_qwen_hdb_balance as hdb
 from tools import nanojev_qwen_hdb_difficulty as difficulty
 from tools import nanojev_qwen_competency_diagnostic as competency
 from tools import nanojev_qwen_lm_frontier_tasks as math_tasks
+from tools import nanojev_qwen_shotgun as shotgun
 
 SCHEMA = 'nanojev.qwen.joint-t-hdb-mathematical-frontier.v3'
 LEGACY_SCHEMA = 'nanojev.qwen.joint-t-hdb-numeric-balance-frontier.v2'
@@ -30,7 +31,7 @@ LEGACY_SCHEMA = 'nanojev.qwen.joint-t-hdb-numeric-balance-frontier.v2'
 
 
 # Focus is a mutable optimizer *schedule*, not a change in model geometry or
-# evaluation data. The three mandatory minibatch populations never disappear.
+# evaluation data. The four mandatory minibatch populations never disappear.
 FOCUS_DEFAULT_WEIGHT = 4.0
 FOCUS_MAX_WEIGHT = 20.0
 
@@ -72,14 +73,18 @@ def _parse_focus(spec, policy):
         if not math.isfinite(weight) or not 1 <= weight <= FOCUS_MAX_WEIGHT:
             raise ValueError('JOINT_FOCUS_WEIGHT_OUT_OF_RANGE:'+element)
         upper=name.upper()
-        if upper in ('T','HDB'):
-            target=upper
+        if upper in ('T','HDB','SHOTGUN'):
+            target='shotgun' if upper=='SHOTGUN' else upper
         elif upper in ('MATH','MATHEMATICS'):
             target='math'
         elif re.fullmatch(r'T(?:0[0-8])',upper):
             target=upper
         elif re.fullmatch(r'HDB(?:0[0-8])',upper):
             target=upper
+        elif name.lower().startswith('shotgun:'):
+            mode=name.lower().split(':',1)[1]
+            if mode not in shotgun.MODES:raise ValueError('JOINT_FOCUS_UNKNOWN_TARGET:'+name)
+            target='shotgun:'+mode
         else:
             normalized=name.lower().replace('-','_')
             if normalized.startswith('math:'):
@@ -104,7 +109,8 @@ def _parse_focus(spec, policy):
 
 def _focus_weight(focus,label):
     if not focus:return 1.0
-    group=('T' if label.startswith('T') else
+    group=('shotgun' if label.startswith('shotgun:') else
+           'T' if label.startswith('T') else
            'HDB' if label.startswith('HDB') else 'math')
     family=label.split(':L',1)[0] if group=='math' else group
     return max(1.0,focus.get(group,1.0),focus.get(family,1.0),
@@ -114,7 +120,8 @@ def _focus_weight(focus,label):
 def _focus_groups(policy,focus):
     labels={'t':[f'T{i:02d}' for i in range(9)],
             'hdb':[f'HDB{i:02d}' for i in range(9)],
-            'mathematics':_math_labels(policy)}
+            'mathematics':_math_labels(policy),
+            'shotgun':['shotgun:'+mode for mode in shotgun.MODES]}
     return {group:1+sum(_focus_weight(focus,label)-1 for label in members)
             for group,members in labels.items()}
 
@@ -122,7 +129,8 @@ def _focus_groups(policy,focus):
 def _focus_labels(policy,focus):
     return {label:_focus_weight(focus,label)
             for label in ([f'T{i:02d}' for i in range(9)]+
-                [f'HDB{i:02d}' for i in range(9)]+_math_labels(policy))
+                [f'HDB{i:02d}' for i in range(9)]+_math_labels(policy)+
+                 ['shotgun:'+mode for mode in shotgun.MODES])
             if _focus_weight(focus,label)>1}
 
 
@@ -130,8 +138,10 @@ def _focus_current(state):
     results={}
     for bucket,key,field in (('t_current','by_rung','correct_now'),
                              ('h_current','by_tier','correct'),
-                             ('math_current','by_task_level','correct')):
+                             ('math_current','by_task_level','correct'),
+                             ('shotgun_current','by_mode','correct')):
         for label,record in state.get(bucket,{}).get(key,{}).items():
+            if bucket=='shotgun_current':label='shotgun:'+label
             results[label]={'correct':record.get(field,record.get('correct',0)),
                             'tested':record.get('tested',0)}
     return results
@@ -140,7 +150,8 @@ def _focus_current(state):
 def _focus_exposure(state):
     return {**{k:v['examples'] for k,v in state.get('t_exposures',{}).items()},
             **{k:v['examples'] for k,v in state.get('h_exposures',{}).items()},
-            **{k:v['examples'] for k,v in state.get('math_exposures',{}).items()}}
+            **{k:v['examples'] for k,v in state.get('math_exposures',{}).items()},
+            **{'shotgun:'+k:v['examples'] for k,v in state.get('shotgun_exposures',{}).items()}}
 
 
 def _activate_focus(state,policy,focus):
@@ -152,6 +163,7 @@ def _activate_focus(state,policy,focus):
     state['focus_baseline_eval_step']=state.get('last_checked_step',0)
     state['focus_baseline']=_focus_current(state)
     state['focus_baseline_exposure']=_focus_exposure(state)
+    state['focus_baseline_balance_error']=copy.deepcopy(state.get('hdb_balance_error_current'))
     state.setdefault('focus_history',[]).append({'at_step':state['step'],
         'previous':copy.deepcopy(old),'next':copy.deepcopy(focus),
         'baseline_eval_step':state['focus_baseline_eval_step']})
@@ -170,7 +182,12 @@ def _focus_feedback(state,policy):
     exposures=_focus_exposure(state)
     base=state.get('focus_baseline',{})
     base_exp=state.get('focus_baseline_exposure',{})
-    return {'requested':focus,'effective_targets':active,
+    quality=state.get('hdb_balance_error_current')
+    quality_base=state.get('focus_baseline_balance_error')
+    quality_change=difficulty.compare_balance_distributions(quality_base,quality) if quality else None
+    return {'requested':focus,
+            'hdb_approximate_balance':{'latest':quality,
+              'focus_baseline':quality_base,'change_since_focus':quality_change},'effective_targets':active,
             'surplus_group_weights':_focus_groups(policy,focus),
             'since_optimizer_step':state.get('focus_since_step'),
             'optimizer_steps_since_focus':state['step']-state.get('focus_since_step',state['step']),
@@ -203,6 +220,7 @@ def _policy(args):
     levels = int(getattr(args, 'joint_math_levels', 2))
     eval_per_level = int(getattr(args, 'joint_math_eval_per_level', 3))
     if (levels < 1 or levels > 6 or eval_per_level < 1 or eval_per_level > 32 or
+        not 1<=int(getattr(args,'joint_shotgun_eval_per_mode',6))<=32 or
         steps < 1 or check < 1 or pool_refresh < 1 or
         not old < outer <= args.operand_limit or
         not 0.2 <= hdb_min <= hdb_max <= 0.8 or
@@ -217,7 +235,8 @@ def _policy(args):
             'arithmetic_parent_policy':frontier._policy(args),
             'math_tasks_version':math_tasks.VERSION,
             'math_tasks':list(math_tasks.TASKS),
-            'math_levels':levels,'math_eval_per_level':eval_per_level}
+            'math_levels':levels,'math_eval_per_level':eval_per_level,
+            'shotgun_version':shotgun.VERSION,'shotgun_eval_per_mode':int(getattr(args,'joint_shotgun_eval_per_mode',6))}
 
 
 def _eval(args,policy):
@@ -230,6 +249,16 @@ def _eval(args,policy):
     chain=frontier._chain_deck(trows,args.max_rung)
     return trows,hrows,chain
 
+
+def _shotgun_eval(args,policy,trows,hrows,mathrows):
+    rows=shotgun.evaluation(args.seed,policy['shotgun_eval_per_mode'])
+    forbidden={r['source'] for r in [*trows,*hrows,*mathrows]}
+    if len({r['source'] for r in rows})!=len(rows) or any(r['source'] in forbidden for r in rows):
+        raise RuntimeError('SHOTGUN_EVAL_DECK_COLLISION')
+    return rows
+
+def _shotgun_train_row(args,step,mode,forbidden):
+    return shotgun.train_case(args.seed,step,mode,forbidden)
 
 def _math_labels(policy):
     return [f'{task}:L{level}' for level in range(policy['math_levels'])
@@ -346,15 +375,17 @@ def _mode(state,policy,step,*,focus=None):
     if focus:
         weights=_focus_groups(policy,focus)
         rng=random.Random((policy['seed']<<20)^((step+1)*142867))
-        major=rng.choices(['t-major','hdb-major','math-major'],
-                    weights=[weights['t'],weights['hdb'],weights['mathematics']],k=1)[0]
+        major=rng.choices(['t-major','hdb-major','math-major','shotgun-major'],
+                    weights=[weights['t'],weights['hdb'],weights['mathematics'],weights['shotgun']],k=1)[0]
         # Reporting must distinguish the old HDB/T deficit heuristic from the
         # deliberate user-selected population weight schedule.
         return major,weights['hdb']/sum(weights.values())
     # At least one third of surplus batch slots revisit the entire older
     # mathematical task frontier, rather than only T and HDB.
-    if step%3==2:
-        return 'math-major',1/3
+    if step%4==3:
+        return 'shotgun-major',1/4
+    if step%4==2:
+        return 'math-major',1/4
     t=state.get('t_current',{}).get('by_rung',{})
     h=state.get('h_current',{}).get('by_tier',{})
     t_deficit=sum(1.0-v.get('correct',v.get('correct_now',0))/v['tested'] for v in t.values() if v['tested'])/max(1,len(t))
@@ -372,6 +403,11 @@ def _pick_t(rows,tier,rng):
 
 
 def _batch(args,policy,step,state,tpool,forbidden):
+    """Every optimizer update includes T, HDB, mathematics AND Shotgun.
+
+    The fourth mandatory sample replaces the old discretionary surplus slot.
+    Any additional samples at batch_size>4 honor focused group weights.
+    """
     rng=random.Random(args.seed ^ (step*425341))
     focus=state.get('focus',{})
     mode,share=_mode(state,policy,step,focus=focus)
@@ -380,44 +416,32 @@ def _batch(args,policy,step,state,tpool,forbidden):
     t_stats=state.get('t_current',{}).get('by_rung',{})
     h_stats=state.get('h_current',{}).get('by_tier',{})
     m_stats=state.get('math_current',{}).get('by_task_level',{})
+    s_stats={'shotgun:'+m:v for m,v in state.get('shotgun_current',{}).get('by_mode',{}).items()}
+    sexp={'shotgun:'+m:v for m,v in state.get('shotgun_exposures',shotgun.exposures()).items()}
     t_tier=priority(t_stats,[f'T{x:02d}' for x in range(9)],state['t_exposures'],step)
     h_tier=priority(h_stats,[f'HDB{x:02d}' for x in range(9)],state['h_exposures'],step)
     m_label=priority(m_stats,_math_labels(policy),state['math_exposures'],step)
-    # Never let the T/HDB competition remove the original mathematical
-    # frontier. One row of each population is present at every optimizer step.
-    rows=[_pick_t(tpool,t_tier,rng),
-          _math_train_row(args,policy,step,m_label,forbidden)]
+    s_mode=priority(s_stats,['shotgun:'+m for m in shotgun.MODES],sexp,step).split(':',1)[1]
     variant=rng.choice([(c,p,q) for c in hdb.TRAIN_COMMON
                         for p,q in hdb.TRAIN_SLOPES if not (c==1 and p==q==1)])
     margin=hdb._offset_limit(step,policy['steps'],policy['hdb']['max_offset'])
     k=rng.randint(1,margin)
-    tier=int(h_tier[3:])
-    if mode=='math-major':
-        another=priority(m_stats,_math_labels(policy),state['math_exposures'],step+4)
-        rows.append(_math_train_row(args,policy,step+17,another,forbidden))
-        rows.append(hdb._row(tier,(-k,0,k)[step%3],variant,label=f'JOINT-HDB-S{step}'))
-    elif mode=='hdb-major':
-        # Two of -k/0/+k rotate on consecutive HDB-major updates; do not
-        # misreport the two examples as a complete three-side balance test.
-        sides=[(-k,0),(0,k),(k,-k)][step%3]
-        rows.extend(hdb._row(tier,offset,variant,label=f'JOINT-HDB-S{step}')
-                    for offset in sides)
-    else:
-        rows.append(_pick_t(tpool,priority(t_stats,
-            [f'T{x:02d}' for x in range(9)],state['t_exposures'],step+rng.randint(1,10000)),rng))
-        rows.append(hdb._row(tier,(-k,0,k)[step%3],variant,label=f'JOINT-HDB-S{step}'))
+    rows=[_pick_t(tpool,t_tier,rng),
+          _math_train_row(args,policy,step,m_label,forbidden),
+          hdb._row(int(h_tier[3:]),(-k,0,k)[step%3],variant,label=f'JOINT-HDB-S{step}'),
+          _shotgun_train_row(args,step,s_mode,forbidden)]
     while len(rows)<args.batch_size:
-        # Without --focus, preserve the historical extra math behavior.
-        # With --focus, EVERY surplus slot obeys the weighted population
-        # schedule, including batches larger than four.
         slot=len(rows)
-        extra,_=_mode(state,policy,step+slot*17,focus=focus) if focus else ('math-major',None)
+        extra,_=_mode(state,policy,step+slot*17,focus=focus)
         if extra=='math-major':
             label=priority(m_stats,_math_labels(policy),state['math_exposures'],step+slot*4)
             rows.append(_math_train_row(args,policy,step+slot*10,label,forbidden))
         elif extra=='t-major':
             label=priority(t_stats,[f'T{x:02d}' for x in range(9)],state['t_exposures'],step+slot*4)
             rows.append(_pick_t(tpool,label,rng))
+        elif extra=='shotgun-major':
+            smode=priority(s_stats,['shotgun:'+m for m in shotgun.MODES],sexp,step+slot*4).split(':',1)[1]
+            rows.append(_shotgun_train_row(args,step+slot*10,smode,forbidden))
         else:
             label=priority(h_stats,[f'HDB{x:02d}' for x in range(9)],state['h_exposures'],step+slot*4)
             rows.append(hdb._row(int(label[3:]),(-k,0,k)[(step+slot)%3],variant,
@@ -438,9 +462,11 @@ def _exposures(policy=None):
 
 
 def _add_exposures(state,rows):
-    seen_t=set();seen_h=set();seen_m=set()
+    seen_t=set();seen_h=set();seen_m=set();seen_s=set()
     for row in rows:
-        if row.get('family')=='hdb':
+        if row.get('family')=='shotgun':
+            key=row['mode'];state['shotgun_exposures'][key]['examples']+=1;seen_s.add(key)
+        elif row.get('family')=='hdb':
             key=row['tier'];bucket=state['h_exposures'][key]
             bucket['examples']+=1;bucket[row['zero_side']]+=1;seen_h.add(key)
         elif row.get('task') in math_tasks.TASKS:
@@ -451,6 +477,7 @@ def _add_exposures(state,rows):
     for key in seen_t:state['t_exposures'][key]['steps']+=1
     for key in seen_h:state['h_exposures'][key]['steps']+=1
     for key in seen_m:state['math_exposures'][key]['steps']+=1
+    for key in seen_s:state['shotgun_exposures'][key]['steps']+=1
 
 
 def _score_t(bb,tok,rows,args):
@@ -512,17 +539,20 @@ def _monitor_cadence(args):
     return heartbeat,probe,save
 
 
-def _probe_deck(trows,hrows,mathrows):
+def _probe_deck(trows,hrows,mathrows,shotgunrows=None):
     """Frozen subset of the authoritative deck, with tier/side/level coverage.
 
     A probe is a warning signal, NEVER an optimizer scheduling update or
     replacement for fixed-deck full retention and chain auditing.
     """
     chosen=[]
-    for rows,key in (
+    populations=[
         (trows,lambda r:('T',r['radius'],r['rung'])),
         (hrows,lambda r:('HDB',r['tier'],r['zero_side'])),
-        (mathrows,lambda r:('math',r['task'],r['level']))):
+        (mathrows,lambda r:('math',r['task'],r['level']))]
+    if shotgunrows is not None:
+        populations.append((shotgunrows,lambda r:('shotgun',r['mode'],r['zero_side'])))
+    for rows,key in populations:
         seen=set(); group=[]
         for r in rows:
             k=key(r)
@@ -558,23 +588,26 @@ def _write_heartbeat(out,state,loss):
         'examples_seen':{
             'T':sum(v['examples'] for v in state['t_exposures'].values()),
             'HDB':sum(v['examples'] for v in state['h_exposures'].values()),
-            'mathematics':sum(v['examples'] for v in state['math_exposures'].values())}}
+            'mathematics':sum(v['examples'] for v in state['math_exposures'].values()),
+            'shotgun':sum(v['examples'] for v in state.get('shotgun_exposures',{}).values())}}
     ladder._atomic_json(out/'joint_heartbeat.json',heartbeat)
     frontier._emit('QWEN_JOINT_HEARTBEAT',heartbeat)
     return heartbeat
 
 
 def _run_probe(out,state,bb,tok,args,decks):
-    t,h,m=decks
+    t,h,m,*s=decks
     start=time.perf_counter()
     tnow=_score_t(bb,tok,t,args)
     hnow=hdb._score_hdb(bb,tok,h,args,state['policy']['hdb'])
     mnow=_score_math(bb,tok,m,args)
+    snow=_score_shotgun(bb,tok,s[0],args) if s else None
     probe={'kind':'non_authoritative_fixed_deck_probe','step':state['step'],
         'last_full_audit_step':state.get('last_checked_step',0),
         'T':_probe_metrics(t,tnow,state['t_previous'],frontier._key),
         'HDB':_probe_metrics(h,hnow,state['h_previous'],lambda r:competency._digest(r['source'])),
         'mathematics':_probe_metrics(m,mnow,state['math_previous'],frontier._key),
+        'shotgun':_probe_metrics(s[0],snow,state['shotgun_previous'],frontier._key) if s else None,
         'chain_coverage':'none; see the next authoritative full audit',
         'interpretation':'Possible regression on sampled fixed cases only; does not update training priorities',
         'evaluation_seconds':time.perf_counter()-start}
@@ -607,13 +640,16 @@ def _status(args):
             'report':str(_out(args)/'joint_frontier_report.json'),
             't_exposures':state['t_exposures'],'hdb_exposures':state['h_exposures'],
             'math_exposures':state.get('math_exposures',{}),
+            'shotgun_exposures':state.get('shotgun_exposures',{}),
+            'shotgun_current':state.get('shotgun_current'),
+            'shotgun_error_current':state.get('shotgun_error_current'),
             'focus_schedule':state.get('focus',{}),
             'focus_history':state.get('focus_history',[]),
             'focus_feedback':_focus_feedback(state,state['policy'])}
 
 
 def latest_competency(args):
-    """Read last scheduled three-population audit without loading or training Qwen.
+    """Read last scheduled four-population audit without loading or training Qwen.
 
     A legacy v2 report can temporarily coexist with a v3 migration baseline
     when no new optimizer steps have yet been authorized. Label that distinctly.
@@ -639,6 +675,11 @@ def latest_competency(args):
         report['diagnostic_state']='migration_baseline_only_no_math_training_yet'
         report['step']=state['step']
     report['active_focus_schedule']=state.get('focus',{})
+    if 'shotgun' not in report:
+        report['shotgun']={'diagnostic_state':'not_yet_audited_since_shotgun_migration',
+            'baseline_at_optimizer_step':state.get('shotgun_baseline_step')}
+        if 'shotgun_current' in state:
+            report['shotgun']['from_baseline']=state['shotgun_current']
     if 'policy' in state:
         report['active_focus_feedback']=_focus_feedback(state,state['policy'])
     report['focus_report_is_current']=(report['step']==state.get('step') and
@@ -665,6 +706,9 @@ def _compatible_policy(saved,policy,*,legacy=False):
     # geometry/deck contract. Accept rescheduling on resume, but explicitly
     # report it. Other training policy remains pinned.
     expected['check_every']=saved['check_every']
+    if 'shotgun_version' not in saved:
+        for key in ('shotgun_version','shotgun_eval_per_mode'):
+            expected.pop(key,None)
     if legacy:
         for key in ('math_tasks_version','math_tasks','math_levels','math_eval_per_level'):
             expected.pop(key)
@@ -716,6 +760,70 @@ def _training_target_integrity(tok, policy):
     if violations:
         raise RuntimeError('HDB_TRAINING_TARGET_INTEGRITY_FAILED:'+json.dumps(result,sort_keys=True))
     return result
+
+
+HDB_BALANCE_METRICS_REPORT_VERSION = 'hdb-rescore-embedded-robust-metrics.v1'
+
+
+def _assert_hdb_rescore_metrics_contract(summary):
+    """A completed HDB rescore MUST have persisted robust diagnostics.
+
+    This is a report-level invariant, including for DirectML smoke subsets.
+    A grade-only rescore must fail loudly rather than silently requiring a
+    separate backfill or leaving the operator with apparently complete data.
+    """
+    distribution=summary.get('balance_error_distribution')
+    trend=summary.get('balance_error_trend')
+    if (not isinstance(distribution,dict) or
+        distribution.get('schema')!=difficulty.BALANCE_ERROR_SCHEMA or
+        not isinstance(trend,dict) or
+        trend.get('current_checkpoint_step')!=summary.get('checkpoint_step')):
+        raise RuntimeError('HDB_RESCORE_MISSING_EMBEDDED_BALANCE_METRICS')
+    tiers=distribution.get('by_tier')
+    if not isinstance(tiers,dict):
+        raise RuntimeError('HDB_RESCORE_MISSING_BALANCE_TIERS')
+    for tier in difficulty.BALANCE_TERMINAL_TIERS:
+        details=tiers.get(tier)
+        score=summary.get('tiers',{}).get(tier)
+        if (not isinstance(details,dict) or not isinstance(score,dict) or
+            details.get('tested')!=score.get('tested') or
+            details.get('exact_correct')!=score.get('correct') or
+            details.get('numeric_outputs',-1)+details.get('non_numeric_outputs',-1)!=details.get('tested')):
+            raise RuntimeError('HDB_RESCORE_BALANCE_METRICS_TIER_MISMATCH:'+tier)
+    return True
+
+
+def _commit_hdb_rescore_report(path, summary):
+    """Fail closed if the metrics are missing either before or after writing."""
+    _assert_hdb_rescore_metrics_contract(summary)
+    ladder._atomic_json(path,summary)
+    try:
+        persisted=json.loads(Path(path).read_text(encoding='utf8'))
+        _assert_hdb_rescore_metrics_contract(persisted)
+    except (OSError,ValueError,TypeError) as exc:
+        raise RuntimeError('HDB_RESCORE_METRICS_PERSISTENCE_FAILED') from exc
+
+
+def _compact_hdb_balance_metrics(result):
+    """Short operator-visible proof that robust metrics were recorded."""
+    _assert_hdb_rescore_metrics_contract(result)
+    dist=result['balance_error_distribution']['by_tier']
+    trend=result['balance_error_trend']
+    changes=trend.get('change_since_previous_rescore') or {}
+    fields=('exact_accuracy','correct_sign_rate_of_numeric',
+            'median_absolute_error_offset_units',
+            'robust_variance_signed_log_offset_error',
+            'p90_absolute_error_offset_units')
+    return {
+        'report_metrics_version':HDB_BALANCE_METRICS_REPORT_VERSION,
+        'checkpoint_step':result['checkpoint_step'],
+        'previous_checkpoint_step':trend.get('previous_checkpoint_step'),
+        'report':result.get('report'),
+        'tiers':{tier:{**{field:dist[tier].get(field) for field in fields},
+                       'tested':dist[tier]['tested'],
+                       'numeric_outputs':dist[tier]['numeric_outputs'],
+                       'deltas':(changes.get(tier) or {}).get('deltas')}
+                 for tier in difficulty.BALANCE_TERMINAL_TIERS}}
 
 
 def _rescore_hdb_checkpoint(args, *, save=True, snapshot_path=None, report_dir=None):
@@ -771,7 +879,15 @@ def _rescore_hdb_checkpoint(args, *, save=True, snapshot_path=None, report_dir=N
     parent,parent_sha=hdb._checkpoint(load_args,policy['hdb'])
     if parent_sha!=state['parent_sha256']:
         raise RuntimeError('HDB_RESCORE_PARENT_FINGERPRINT_MISMATCH')
-    bb,tok,zero,_=hdb._model(load_args,parent)
+    if intel:
+        # Reconstruct historically BF16 Qwen on CPU for strict checkpoint
+        # fingerprint validation before converting to Intel DirectML FP32.
+        # Preserve source-file hashes, frozen tensor checks, and LoRA lineage.
+        from tools import nanojev_qwen_intel_dml as intel_dml
+        with intel_dml.historical_bf16_cpu_source():
+            bb,tok,zero,_=hdb._model(load_args,parent)
+    else:
+        bb,tok,zero,_=hdb._model(load_args,parent)
     zero.restore_lora(bb,obj['lora'])
     bb.eval()
     if intel:
@@ -818,6 +934,31 @@ def _rescore_hdb_checkpoint(args, *, save=True, snapshot_path=None, report_dir=N
                     ('now_correct' if now else ('now_wrong' if was else 'still_wrong'))]+=1
     # Baseline=current here: no fictitious learning gains from regrading alone.
     difficulty_report,errors=difficulty.analyze_hdb(rows,current,current)
+    balance_distribution=difficulty_report['balance_error_distribution']
+    previous_balance=None
+    previous_step=None
+    if report_dir is not None:
+        # Read only already committed reports from separate rescore directories;
+        # never touch the running trainer's progress or historical reports.
+        for prior_path in sorted(reports.parent.glob('rescore_*/hdb_rescore_report.json')):
+            if prior_path.parent==reports:continue
+            try:
+                prior=json.loads(prior_path.read_text(encoding='utf8'))
+            except (OSError,ValueError):
+                continue
+            other_step=prior.get('checkpoint_step')
+            if (prior.get('scoring_version')!=HDB_SCORING_VERSION or
+                prior.get('eval_deck_fingerprint')!=ladder.deck_fingerprint(rows) or
+                not isinstance(other_step,int) or other_step>=state['step'] or
+                (previous_step is not None and other_step<=previous_step)):
+                continue
+            candidate=prior.get('balance_error_distribution')
+            if candidate is None and prior.get('graded'):
+                try:candidate=difficulty.balance_error_distribution(rows,prior['graded'])
+                except (KeyError,ValueError):continue
+            if candidate and candidate.get('schema')==difficulty.BALANCE_ERROR_SCHEMA:
+                previous_balance=candidate;previous_step=other_step
+    change=difficulty.compare_balance_distributions(previous_balance,balance_distribution)
     summary={'schema':'nanojev.qwen.hdb-readonly-rescore.v1',
         'scoring_version':HDB_SCORING_VERSION,'checkpoint_step':state['step'],
         'last_training_audit_step':state.get('last_checked_step'),
@@ -841,9 +982,16 @@ def _rescore_hdb_checkpoint(args, *, save=True, snapshot_path=None, report_dir=N
         'legacy_comparison_warning':'Scores differ by evaluation method; corrections are NOT learning gains',
         'legacy_vs_new_outcomes':changes if legacy_score_available else None,
         'failure_types':difficulty_report['failure_types'],
+        'balance_error_metrics_version':HDB_BALANCE_METRICS_REPORT_VERSION,
+        'balance_error_distribution':balance_distribution,
+        'balance_error_trend':{'previous_checkpoint_step':previous_step,
+             'current_checkpoint_step':state['step'],
+             'change_since_previous_rescore':change,
+             'comparison_scope':'identical frozen deck and scoring version; evaluation only'},
         'graded':current}
+    _assert_hdb_rescore_metrics_contract(summary)
     if save:
-        ladder._atomic_json(reports/'hdb_rescore_report.json',summary)
+        _commit_hdb_rescore_report(reports/'hdb_rescore_report.json',summary)
         target=reports/'hdb_rescore_failures.jsonl';temp=target.with_name(target.name+'.tmp')
         with temp.open('w',encoding='utf8') as writer:
             for error in errors:
@@ -901,6 +1049,8 @@ def rescore_hdb(args):
         result=_rescore_hdb_live(args)
     else:
         result=_rescore_hdb_checkpoint(args)
+    # Print an explicit, compact success signal. No separate backfill stage.
+    frontier._emit('QWEN_HDB_BALANCE_METRICS',_compact_hdb_balance_metrics(result))
     frontier._emit('QWEN_HDB_RESCORE',result)
     return result
 
@@ -936,6 +1086,7 @@ def _rebase_hdb_diagnostic(out, state, bb, tok, args, hrows, hchains, policy, cp
     state['h_initial']=scores
     state['h_previous']=scores
     state['h_current']=hdb._metrics(hrows,scores,scores)
+    state['hdb_balance_error_current']=difficulty.balance_error_distribution(hrows,scores)
     # HDB chain hop budgets changed as well; compare future chains against
     # newly measured chains, not the old 48-token chain diagnostic.
     chains=hdb._score_balance_chains(bb,tok,hchains,args,policy['hdb'])
@@ -958,6 +1109,11 @@ def _score_math(bb,tok,rows,args):
     # Different task generators, identical exact textual Qwen-LM grading.
     return _score_t(bb,tok,rows,args)
 
+def _score_shotgun(bb,tok,rows,args):
+    return frontier._score(bb,tok,rows,args,greedy=competency._diagnostic_greedy(args),
+        progress=lambda done,total:frontier._emit('QWEN_SHOTGUN_PROGRESS',
+            {'done':done,'total':total}))
+
 
 def run(args):
     import torch
@@ -975,6 +1131,8 @@ def run(args):
     bb,tok,zero,ps=hdb._model(args,parent)
     trows,hrows,chains=_eval(args,policy)
     mathrows=_math_eval(args,policy,trows,hrows)
+    shotgunrows=_shotgun_eval(args,policy,trows,hrows,mathrows)
+    shotgun_sha=ladder.deck_fingerprint(shotgunrows)
     old_eval_sha=ladder.deck_fingerprint(trows)+':'+ladder.deck_fingerprint(hrows)
     eval_sha=old_eval_sha+':'+ladder.deck_fingerprint(mathrows)
     hchains=hdb._chain_deck(hrows)
@@ -1032,6 +1190,42 @@ def run(args):
                 'step':state['step'],'previous_every':previous_check_every,
                 'next_every':policy['check_every'],
                 'evaluation_decks_unchanged':True})
+        if 'shotgun_initial' not in state:
+            # In-place four-population migration: no optimizer update, no LoRA
+            # reset, no movement of the existing T/HDB/math heldout decks.
+            preserved=out/'pre_shotgun_frontier_migration.pt'
+            if not preserved.exists():
+                ladder._atomic_torch(preserved,obj)
+            bb.eval()
+            initial_shotgun=_score_shotgun(bb,tok,shotgunrows,args)
+            state.update(shotgun_initial=initial_shotgun,
+                shotgun_previous=initial_shotgun,
+                shotgun_current=shotgun.metrics(shotgunrows,initial_shotgun,initial_shotgun,frontier._key),
+                shotgun_error_current=shotgun.error_distribution(shotgunrows,initial_shotgun,frontier._key),
+                shotgun_exposures=shotgun.exposures(),
+                last_shotgun_exposures=shotgun.exposures(),
+                shotgun_baseline_step=state['step'],
+                shotgun_eval_sha256=shotgun_sha,
+                policy=policy)
+            state.setdefault('modes',{})['shotgun-major']=0
+            ladder._atomic_json(out/'shotgun_eval_deck.json',shotgunrows)
+            _save(out,state,bb,zero,opt)
+            frontier._emit('QWEN_JOINT_SHOTGUN_MIGRATION',{
+                'step':state['step'],'preserved':str(preserved),
+                'shotgun_cases':len(shotgunrows),
+                'optimizer_and_lora_preserved':True})
+        elif state.get('shotgun_eval_sha256')!=shotgun_sha:
+            raise RuntimeError('JOINT_SHOTGUN_EVAL_DECK_DRIFT')
+        else:
+            deck_path=out/'shotgun_eval_deck.json'
+            if (not deck_path.is_file() or
+                ladder.deck_fingerprint(json.loads(deck_path.read_text(encoding='utf8')))!=shotgun_sha):
+                raise RuntimeError('JOINT_SHOTGUN_SAVED_DECK_DRIFT')
+        if 'hdb_balance_error_current' not in state:
+            # Upgrade older checkpoints' observational fields only. No optimizer
+            # changes; derive from the last completed corrected heldout audit.
+            state['hdb_balance_error_current']=difficulty.balance_error_distribution(hrows,state['h_previous'])
+        state['modes'].setdefault('shotgun-major',0)
         if requested_focus is not None and requested_focus != state.get('focus',{}):
             # A mutable schedule switch is not an optimizer restart. Keep an
             # immutable copy of the full previous working checkpoint.
@@ -1052,6 +1246,7 @@ def run(args):
         first=time.perf_counter()
         t0=_score_t(bb,tok,trows,args)
         m0=_score_math(bb,tok,mathrows,args)
+        s0=_score_shotgun(bb,tok,shotgunrows,args)
         h0=hdb._score_hdb(bb,tok,hrows,args,policy['hdb'])
         frontier._emit('QWEN_JOINT_CHAIN_START',{'cases':len(chains)})
         c0=frontier._chain_score(bb,tok,chains,args,greedy=competency._diagnostic_greedy(args))
@@ -1063,13 +1258,19 @@ def run(args):
                'c_initial':c0,'c_previous':c0,'hc_initial':hc0,'hc_previous':hc0,
                't_current':frontier._transitions(t0,t0,trows),
                'h_current':hdb._metrics(hrows,h0,h0),
+               'hdb_balance_error_current':difficulty.balance_error_distribution(hrows,h0),
                't_exposures':texp,'h_exposures':hexp,'math_exposures':mexp,
                'math_initial':m0,'math_previous':m0,
+               'shotgun_initial':s0,'shotgun_previous':s0,
+               'shotgun_current':shotgun.metrics(shotgunrows,s0,s0,frontier._key),
+               'shotgun_error_current':shotgun.error_distribution(shotgunrows,s0,frontier._key),
+               'shotgun_exposures':shotgun.exposures(),
+               'shotgun_baseline_step':0,'shotgun_eval_sha256':shotgun_sha,
                'math_current':_math_metrics(mathrows,m0,m0),
                'math_baseline_step':0,
                'training_seconds':0.,'evaluation_seconds':time.perf_counter()-first,
                'last_checked_step':0,'last_training_seconds':0.,
-               'modes':{'t-major':0,'hdb-major':0,'math-major':0},
+               'modes':{'t-major':0,'hdb-major':0,'math-major':0,'shotgun-major':0},
                'focus':{},'focus_history':[],
                'hdb_scoring_version':HDB_SCORING_VERSION}
         if requested_focus:
@@ -1077,19 +1278,21 @@ def run(args):
         ladder._atomic_json(out/'t_eval_deck.json',trows)
         ladder._atomic_json(out/'hdb_eval_deck.json',hrows)
         ladder._atomic_json(out/'math_eval_deck.json',mathrows)
+        ladder._atomic_json(out/'shotgun_eval_deck.json',shotgunrows)
         _save(out,state,bb,zero,opt)
         frontier._emit('QWEN_JOINT_FRONTIER_START',{'output':str(out),
              'arithmetic_parent_step':parent['state']['phase_step'],
              't_radius_range':[policy['t_seed_radius'],policy['t_max_radius']],
              'hdb_tiers':[f'HDB{i:02d}' for i in range(9)],
-             'training':'T, HDB numeric balance, and nine mathematical task families in same optimizer steps; all active throughout',
+             'training':'T, HDB numeric balance, nine mathematical families, and Shotgun in every optimizer step',
+             'shotgun_modes':list(shotgun.MODES),
              'math_families':list(math_tasks.TASKS),
              'hdb_target_contract':'PROBLEM: signed integer; no strategy classifier'})
     if state['status']=='COMPLETE':
         frontier._emit('QWEN_JOINT_FRONTIER_DONE',{'already_complete':True,'step':state['step']})
         return state
     forbidden={r['source'] for r in [*trows,*hrows,*mathrows]}
-    probe_decks=_probe_deck(trows,hrows,mathrows) if probe_every else None
+    probe_decks=_probe_deck(trows,hrows,mathrows,shotgunrows) if probe_every else None
     pool=[];block=-1
     trainargs=copy.copy(args)
     trainargs.max_seq=policy['max_seq']
@@ -1121,10 +1324,11 @@ def run(args):
             continue
         tick=time.perf_counter()
         frontier._emit('QWEN_JOINT_EVAL_START',{'step':step+1,'t_cases':len(trows),
-                     'hdb_cases':len(hrows),'math_cases':len(mathrows),
+                     'hdb_cases':len(hrows),'math_cases':len(mathrows),'shotgun_cases':len(shotgunrows),
                      'chain_cases':len(chains)})
         tnow=_score_t(bb,tok,trows,args)
         mnow=_score_math(bb,tok,mathrows,args)
+        snow=_score_shotgun(bb,tok,shotgunrows,args)
         hnow=hdb._score_hdb(bb,tok,hrows,args,policy['hdb'])
         frontier._emit('QWEN_JOINT_CHAIN_START',{'step':step+1,'cases':len(chains)})
         cnow=frontier._chain_score(bb,tok,chains,args,
@@ -1135,6 +1339,8 @@ def run(args):
         tb,ti,hb,hi,cb,ci=_metrics(state,trows,hrows,chains,tnow,hnow,cnow)
         mb=_math_metrics(mathrows,state['math_initial'],mnow)
         mi=_math_metrics(mathrows,state['math_previous'],mnow)
+        sb=shotgun.metrics(shotgunrows,state['shotgun_initial'],snow,frontier._key)
+        si=shotgun.metrics(shotgunrows,state['shotgun_previous'],snow,frontier._key)
         hcb=hdb._chain_metrics(hchains,state['hc_initial'],hcnow)
         hci=hdb._chain_metrics(hchains,state['hc_previous'],hcnow)
         interval_steps=state['step']-state['last_checked_step']
@@ -1143,9 +1349,11 @@ def run(args):
                'hdb_net_per_100_steps':100*hi['total']['net']/interval_steps,
                'chain_net_per_100_steps':100*ci['net']/interval_steps,
                'math_net_per_100_steps':100*mi['total']['net']/interval_steps,
+               'shotgun_net_per_100_steps':100*si['total']['net']/interval_steps,
                't_net_per_training_hour':3600*ti['net']/max(elapsed,1e-9),
                'hdb_net_per_training_hour':3600*hi['total']['net']/max(elapsed,1e-9),
-               'math_net_per_training_hour':3600*mi['total']['net']/max(elapsed,1e-9)}
+               'math_net_per_training_hour':3600*mi['total']['net']/max(elapsed,1e-9),
+               'shotgun_net_per_training_hour':3600*si['total']['net']/max(elapsed,1e-9)}
         # Record per-tier exposure and acquisition rate, not just global accuracy.
         t_velocities={}
         for tier,metric in ti['by_rung'].items():
@@ -1173,6 +1381,12 @@ def run(args):
                 'net_per_100_direct_examples':100*metric['net']/max(1,cur-prev),
                 'interval_training_examples':cur-prev,
                 'cumulative_training_examples':cur}
+        shotgun_velocities={}
+        for mode_name,metric in si['by_mode'].items():
+            cur=state['shotgun_exposures'][mode_name]['examples']
+            prev=state.get('last_shotgun_exposures',{}).get(mode_name,{}).get('examples',0)
+            shotgun_velocities[mode_name]={'interval_training_examples':cur-prev,
+                'cumulative_training_examples':cur,'net_since_last_check':metric['net']}
         difficult,he,te=difficulty.summarize(hrows,trows,state['h_initial'],hnow,
             state['t_initial'],tnow,interval=hi['by_tier'],
             exposures=state['h_exposures'],rates=velocities,step=state['step'])
@@ -1192,11 +1406,26 @@ def run(args):
                 metric['tested'],metric['gained'],metric['lost'],
                 state['math_exposures'][label]['examples'],family='mathematics',
                 interval_exposure=math_velocities[label]['interval_training_examples'])
-        # Scores from all three populations drive the next training batch.
+        for mode_name,metric in si['by_mode'].items():
+            tier_learning['shotgun:'+mode_name]=_learning_state(state,'shotgun:'+mode_name,
+                metric['correct'],metric['tested'],metric['gained'],metric['lost'],
+                state['shotgun_exposures'][mode_name]['examples'],family='shotgun',
+                interval_exposure=shotgun_velocities[mode_name]['interval_training_examples'])
+        # Scores from all four populations drive the next training batch.
         state['t_current']={'by_rung':tb['by_rung']}
+        previous_balance=state.get('hdb_balance_error_current')
+        balance_distribution=difficult['hdb']['balance_error_distribution']
+        balance_change=difficulty.compare_balance_distributions(previous_balance,balance_distribution)
+        state['hdb_balance_error_current']=balance_distribution
         state['h_current']={'by_tier':hb['by_tier']}
         state['math_current']={'by_task_level':mb['by_task_level']}
+        state['shotgun_current']=sb
+        previous_shotgun_error=state.get('shotgun_error_current')
+        state['shotgun_error_current']=shotgun.error_distribution(shotgunrows,snow,frontier._key)
+        shotgun_error_change=shotgun.compare_distributions(previous_shotgun_error,
+            state['shotgun_error_current'])
         state['t_previous']=tnow;state['h_previous']=hnow;state['math_previous']=mnow
+        state['shotgun_previous']=snow
         state['c_previous']=cnow
         state['hc_previous']=hcnow
         state['last_checked_step']=state['step']
@@ -1204,9 +1433,15 @@ def run(args):
         state['last_h_exposures']=copy.deepcopy(state['h_exposures'])
         state['last_t_exposures']=copy.deepcopy(state['t_exposures'])
         state['last_math_exposures']=copy.deepcopy(state['math_exposures'])
+        state['last_shotgun_exposures']=copy.deepcopy(state['shotgun_exposures'])
         report={'schema':SCHEMA,'step':state['step'],
              't':{'from_start':tb,'interval':ti},
              'hdb':{'from_start':hb,'interval':hi},
+             'shotgun':{'from_baseline':sb,'interval':si,
+                'baseline_at_optimizer_step':state['shotgun_baseline_step'],
+                'modes':list(shotgun.MODES),'evaluation_deck_sha256':shotgun_sha,
+                'normalized_balance_error':state['shotgun_error_current'],
+                'error_change_since_previous_audit':shotgun_error_change},
              'mathematics':{'from_baseline':mb,'interval':mi,
                 'baseline_at_optimizer_step':state['math_baseline_step'],
                 'families':list(math_tasks.TASKS)},
@@ -1214,10 +1449,15 @@ def run(args):
              'hdb_numeric_balance_chains':{'from_start':hcb,'interval':hci},
              'learning_rates':rates,'t_rung_velocity':t_velocities,
              'hdb_tier_velocity':velocities,
+             'hdb_approximate_balance':{'distribution':balance_distribution,
+                'change_since_previous_audit':balance_change,
+                'previous_audit_step':state['step']-interval_steps},
              'math_task_velocity':math_velocities,
+             'shotgun_mode_velocity':shotgun_velocities,
              'per_tier_learning_state':tier_learning,
              'training_exposure':{'t':state['t_exposures'],'hdb':state['h_exposures'],
-                                  'mathematics':state['math_exposures']},
+                                  'mathematics':state['math_exposures'],
+                                  'shotgun':state['shotgun_exposures']},
              'focus_schedule':state.get('focus',{}),
              'focus_feedback':_focus_feedback(state,policy),
              'focus_history':state.get('focus_history',[]),
@@ -1245,12 +1485,20 @@ def run(args):
                 if v['classification']=='regressing'],
             'weakest_t':difficult['t_retention']['ranked_retention_risks'][:3],
             'weakest_hdb':difficult['hdb']['ranked_tiers'][:3],
+            'shotgun_balance_error':state['shotgun_error_current'],
+            'shotgun_error_change':shotgun_error_change,
+            'weakest_shotgun':sorted(sb['by_mode'].items(),
+                key=lambda item:(item[1]['accuracy'],item[0]))[:3],
             'weakest_mathematics':sorted(mb['by_task_level'].items(),
                 key=lambda item:(item[1]['accuracy'],item[0]))[:3],
             'zero_line':difficulty.quick_summary(difficult)['zero_line_accuracy'],
+            'hdb_approximate_balance':{'distribution':balance_distribution['by_tier'],
+                                      'change':balance_change},
             'report':str(out/'joint_frontier_report.json')})
         frontier._emit('QWEN_JOINT_FRONTIER_CHECK',{
           'step':state['step'],'t_net':tb['net'],'t_interval_net':ti['net'],
+          'hdb_approximate_balance':{'distribution':balance_distribution['by_tier'],
+                                     'change':balance_change},
           'hdb_net':hb['total']['net'],'hdb_interval_net':hi['total']['net'],
           'hdb_full_balance_correct':hcb['correct'],
           'hdb_full_balance_tested':hcb['tested'],
@@ -1260,6 +1508,13 @@ def run(args):
           't_examples':sum(x['examples'] for x in state['t_exposures'].values()),
           'hdb_examples':sum(x['examples'] for x in state['h_exposures'].values()),
           'math_examples':sum(x['examples'] for x in state['math_exposures'].values()),
+          'shotgun_examples':sum(x['examples'] for x in state['shotgun_exposures'].values()),
+          'shotgun_correct':sb['total']['correct'],'shotgun_tested':sb['total']['tested'],
+          'shotgun_interval_net':si['total']['net'],
+          'shotgun_balance_error':state['shotgun_error_current'],
+          'shotgun_error_change':shotgun_error_change,
+          'shotgun_weakest_modes':sorted(sb['by_mode'].items(),
+              key=lambda item:(item[1]['accuracy'],item[0]))[:3],
           'math_net':mb['total']['net'],'math_interval_net':mi['total']['net'],
           'math_correct':mb['total']['correct'],'math_tested':mb['total']['tested'],
           'training_seconds':round(state['training_seconds'],2),

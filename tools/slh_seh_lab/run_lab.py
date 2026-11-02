@@ -525,7 +525,10 @@ def _launch_cluster(topology_path, log_dir, *, reserve_wallet=None):
 
 
 def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|None=None,
-              pinky_integrated:bool=False, reserve_wallet:str|None=None) -> dict:
+              pinky_integrated:bool=False, reserve_wallet:str|None=None,
+              pinky_repeat:int=1) -> dict:
+    if not 1 <= pinky_repeat <= 10 or (not pinky_integrated and pinky_repeat != 1):
+        raise LabRefused('Pinky repetition requires --pinky-integrated and 1..10 cycles')
     from .service_lifecycle import verify_services
     # Always run against a disposable, real child process before the existing
     # paid Stable Hub path. Never mutate an installed organizational SLH.
@@ -575,53 +578,68 @@ def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|Non
             ledger=StableHubPayoutLedgerDirectory(topology=topo,hub_id=topo.hubs[2].hub_id,
                 store=stable_worker_session_store_from_topology(topo))
         from .real_paid_service import verify_real_process_paid
-        with lab_stage('pinky.real_process_and_economic_cycle', target_hub=topo.hubs[2].hub_id):
-            real_paid = verify_real_process_paid(hub_url=urls[2], payout_ledger=ledger,
-                                                 lab_mode='three-hub-smoke-fdb',
-                                                 pinky_integrated=pinky_integrated, reserve_wallet=reserve_wallet,
-                                                 paid_trace_file=(report_dir/'paid-cycle-diagnostic.jsonl') if pinky_integrated else None)
         if pinky_integrated:
-            # The real-process lane already executes public SEH paid work, a
-            # private organizational Worker, and the FDB-backed Reserve sweep.
-            # _local_demo is a *second* independent paid-work workload: running
-            # it after the Pinky proof adds no economic evidence, and its FDB
-            # worker churn can obscure a successful Pinky run with a late error.
-            # Keep the older demo in ordinary `run`, where it still belongs.
+            from .economic_reconciliation import (
+                reconcile_cycle, summarize_cycles, write_atomic_json)
+            # One real three-Hub FDB smoke cluster, but NEW disposable SLH
+            # organization, buyer MSK, worker, wallet, and request IDs in every
+            # cycle. The Reserve is deliberately shared to verify accumulation.
+            cycle_evidence = []
+            reconciliation_path = report_dir / 'pinky-economic-reconciliation.json'
+            checkpoint_path = report_dir / 'pinky-integrated-checkpoint.json'
+            real_paid = {}
+            economic_verified = False
+            # Even if the very first HTTP call fails, leave a durable,
+            # machine-readable zero-completed-cycles receipt in the run folder.
+            repeat = summarize_cycles([], requested=pinky_repeat)
+            write_atomic_json(reconciliation_path, repeat)
+            for number in range(1, pinky_repeat + 1):
+                with lab_stage('pinky.real_process_and_economic_cycle',
+                               target_hub=topo.hubs[2].hub_id, cycle=number,
+                               cycles_requested=pinky_repeat):
+                    real_paid = verify_real_process_paid(
+                        hub_url=urls[2], payout_ledger=ledger,
+                        lab_mode='three-hub-smoke-fdb',
+                        pinky_integrated=True, reserve_wallet=reserve_wallet,
+                        paid_trace_file=report_dir / 'paid-cycle-diagnostic.jsonl')
+                cycle = reconcile_cycle(real_paid, cycle=number)
+                cycle_evidence.append(cycle)
+                write_atomic_json(report_dir / f'pinky-economic-cycle-{number:02d}.json', cycle)
+                repeat = summarize_cycles(cycle_evidence, requested=pinky_repeat)
+                write_atomic_json(reconciliation_path, repeat)
+                # Persist progress after EACH verified cycle; failures in a later
+                # cycle cannot erase accepted evidence from earlier cycles.
+                checkpoint = {
+                    'schema': 'main-computer.slh-pinky-integrated-checkpoint.v1',
+                    'status': repeat['status'], 'pass': repeat['pass'],
+                    'hub_cluster': {'cluster_id': health['cluster_id'],
+                                    'ids': [x['hub_id'] for x in identities]},
+                    'real_process_paid_work_status': real_paid.get('status'),
+                    'pinky_integrated': real_paid.get('pinky_integrated') or {},
+                    'repeatability': {'status': repeat['status'],
+                                      'cycles_requested': pinky_repeat,
+                                      'cycles_completed': len(cycle_evidence),
+                                      'receipt_path': str(reconciliation_path)},
+                    'legacy_second_paid_demo': 'NOT_RUN',
+                }
+                write_atomic_json(checkpoint_path, checkpoint)
+                stage_record('pinky.cycle_checkpoint', 'written', cycle=number,
+                             accepted=cycle['pass'])
+                if (not cycle['pass'] or any(
+                        value is not True for key, value in repeat['gates'].items()
+                        if key != 'all_requested_cycles_completed')):
+                    break  # Fail closed on a cycle or cross-cycle invariant.
+            economic_verified = repeat['pass']
+            pinky = real_paid.get('pinky_integrated') or {}
             trial = {'status': 'NOT_RUN', 'pass': None,
                      'reason': 'legacy_second_paid_demo_excluded_from_pinky_integration'}
-            pinky = real_paid.get('pinky_integrated') or {}
-            pinky_gates = pinky.get('gates') or {}
-            economic_verified = (
-                real_paid.get('pass') is True and real_paid.get('status') == 'PASS'
-                and pinky.get('pass') is True and pinky.get('status') == 'PASS'
-                and isinstance(pinky_gates, dict) and bool(pinky_gates)
-                and all(result is True for result in pinky_gates.values())
-                and pinky.get('hub_id') == identities[2]['hub_id']
-                and pinky.get('cluster_id') == health['cluster_id']
-                and pinky.get('namespace') == 'main-computer-hub-smoke'
-                and pinky.get('earned_credit_wei') == str(10**18)
-                and pinky.get('swept_credit_wei') == str(2 * 10**17)
-            )
-            checkpoint = {
-                'schema': 'main-computer.slh-pinky-integrated-checkpoint.v1',
-                'status': 'PASS' if economic_verified else 'FAIL',
-                'pass': economic_verified,
-                'hub_cluster': {'cluster_id': health['cluster_id'],
-                                'ids': [x['hub_id'] for x in identities]},
-                'real_process_paid_work_status': real_paid.get('status'),
-                'pinky_integrated': pinky,
-                'legacy_second_paid_demo': 'NOT_RUN',
-            }
-            # Persist an independent, inspectable Pinky result before the
-            # report writer and subsequent lab harness work. No wallet secrets,
-            # private prompts, credentials, or Worker payloads are included.
-            checkpoint_path = report_dir / 'pinky-integrated-checkpoint.json'
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = checkpoint_path.with_suffix('.json.tmp')
-            temporary.write_text(json.dumps(checkpoint, sort_keys=True, indent=2) + '\n', encoding='utf-8')
-            os.replace(temporary, checkpoint_path)
-            stage_record('pinky.checkpoint', 'written', accepted=economic_verified)
+            stage_record('pinky.reconciliation', 'written',
+                         accepted=economic_verified, cycles_completed=len(cycle_evidence))
         else:
+            with lab_stage('pinky.real_process_and_economic_cycle', target_hub=topo.hubs[2].hub_id):
+                real_paid = verify_real_process_paid(
+                    hub_url=urls[2], payout_ledger=ledger,
+                    lab_mode='three-hub-smoke-fdb', pinky_integrated=False)
             trial = _local_demo(urls[2],topology_label='three-hub-smoke-fdb', payout_ledger=ledger,
                                 deployed=deployed)
             economic_verified = False
@@ -637,6 +655,8 @@ def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|Non
                 'slh':trial,'seh_coolify_contract':seh,
                 **({'pinky_integrated':real_paid.get('pinky_integrated'),
                     'pinky_integrated_checkpoint': str(checkpoint_path),
+                    'pinky_repeatability': repeat,
+                    'pinky_economic_reconciliation_path': str(reconciliation_path),
                     'pinky_internal_reserve_sweep': 'CONFIRMED_IN_FDB' if economic_verified else 'NOT_VERIFIED'
                     } if pinky_integrated else {}),
                 'production_seh':'COOLIFY_MANAGED_LOCAL' if deployed else 'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
@@ -784,6 +804,8 @@ def main(argv=None) -> int:
     p.add_argument('--use-existing-hubs',action='store_true',help='Only run on a verified, already-running smoke cluster; never stop it')
     p.add_argument('--pinky-integrated',action='store_true',help='Prove whole paid-work/SLH wallet/private work/Reserve sweep on real smoke/FDB Hubs')
     p.add_argument('--pinky-reserve-wallet',default=None,help='For existing smoke Hubs only: their already configured Reserve address')
+    p.add_argument('--pinky-repeat',type=int,default=None,
+                   help='Complete 1..10 independent emulated earn/spend cycles (default: 3 with --pinky-integrated)')
     p.add_argument('--report-dir',type=Path,default=REPORT_ROOT)
     p.add_argument('--json',action='store_true')
     p.add_argument('--build-image',action='store_true')
@@ -795,6 +817,8 @@ def main(argv=None) -> int:
     a=p.parse_args(argv)
     if a.pinky_integrated and (a.command!='run' or a.topology != DEFAULT_TOPOLOGY):
         p.error('--pinky-integrated requires run with the canonical isolated smoke topology')
+    if a.pinky_repeat is not None and (not a.pinky_integrated or not 1 <= a.pinky_repeat <= 10):
+        p.error('--pinky-repeat requires --pinky-integrated and must be 1..10')
     if a.pinky_reserve_wallet and not (a.pinky_integrated and a.use_existing_hubs):
         p.error('--pinky-reserve-wallet is only for the existing-Hubs Pinky run')
     if a.command not in ('run','verify-deployed') and a.use_existing_hubs:
@@ -891,7 +915,8 @@ def main(argv=None) -> int:
                                                report_dir=path,org=a.org_id,slh=a.slh_id,
                                                port=a.local_port,compose_output=a.compose_output)
                     else:report=run_smoke(a.topology,use_existing=a.use_existing_hubs,report_dir=path,
-                                          pinky_integrated=a.pinky_integrated, reserve_wallet=a.pinky_reserve_wallet)
+                                          pinky_integrated=a.pinky_integrated, reserve_wallet=a.pinky_reserve_wallet,
+                                          pinky_repeat=(a.pinky_repeat or 3) if a.pinky_integrated else 1)
             report['topology']=topology
     except (LabRefused, RuntimeError, OSError, ValueError, TimeoutError, ImportError) as exc:
         report={'schema':SCHEMA,'status':'FAIL', 'mode':a.command,
@@ -903,6 +928,15 @@ def main(argv=None) -> int:
                 {'file':Path(frame.filename).name, 'function':frame.name, 'line':frame.lineno}
                 for frame in frames]
     if path and a.pinky_integrated:
+        receipt_path = path / 'pinky-economic-reconciliation.json'
+        if receipt_path.exists():
+            report.setdefault('pinky_economic_reconciliation_path', str(receipt_path.resolve()))
+            if report.get('status') == 'FAIL' and 'pinky_repeatability' not in report:
+                try:
+                    previous = json.loads(receipt_path.read_text(encoding='utf-8'))
+                    report['pinky_repeatability'] = previous
+                except (OSError, ValueError):
+                    report['pinky_reconciliation_read_error'] = True
         stage_record('lab', 'error' if report.get('status') == 'FAIL' else 'ok')
         stage_path = path/'lab-stage-diagnostic.jsonl'
         report['lab_stage_trace_path'] = str(stage_path.resolve())
@@ -911,6 +945,8 @@ def main(argv=None) -> int:
         report['lab_stage_events_recorded'] = status['events']
         report['last_lab_stage_event'] = status['last_event']
         report['first_failed_lab_stage'] = status['last_failure']
+        report['terminal_failed_lab_stage'] = (status['fatal_failure']
+                                               if report.get('status') == 'FAIL' else None)
         report['unfinished_lab_stage'] = status['unfinished_stage']
         # With --use-existing-hubs no child is launched by design. Distinguish
         # pre-cluster errors from a failed existing-cluster identity check.

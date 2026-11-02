@@ -78,6 +78,17 @@ def summarize(path: Path) -> dict:
                 index = len(open_stages)-1-open_stages[::-1].index(name)
                 del open_stages[index]
     failures = [r for r in rows if r.get('state') == 'error']
+    # Negative TLS-pin preflight probes intentionally raise and are caught.
+    # They must not be mistaken for the fatal paid cycle in the final report.
+    last_cycle_start = max(
+        (index for index, row in enumerate(rows)
+         if row.get('stage') == 'pinky.real_process_and_economic_cycle'
+         and row.get('state') == 'begin'), default=-1)
+    cycle_failures = [row for row in rows[last_cycle_start + 1:]
+                      if row.get('state') == 'error' and row.get('stage') != 'lab']
     return {'events': len(rows), 'last_event': rows[-1] if rows else None,
             'last_failure': failures[0] if failures else None,
+            'fatal_failure': (cycle_failures[0] if cycle_failures else
+                              next((row for row in reversed(failures)
+                                    if row.get('stage') != 'lab'), None)),
             'unfinished_stage': open_stages[-1] if open_stages else None}

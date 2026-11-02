@@ -237,7 +237,25 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                 gates['next_sweep_has_no_duplicate_payment'] = nothing['status']=='NOTHING_DUE'
                 gates['requester_cannot_view_payment_ledger'] = (
                     _lab_http(api_port,'GET','/v1/accounting/sweeps',bearer=requester_token,tls=True)[0]==403)
+                accounting = {
+                    'organization_id': org_id,
+                    'organization_account_id': org_account,
+                    'wallet_after_earning_wei': str(initial_available),
+                    'wallet_after_sweep_wei': str(int(settled['available_credit_wei'])),
+                    'reserve_account_id': reserve_account,
+                    'reserve_before_wei': str(reserve_before_wei),
+                    'reserve_after_wei': str(int(reserve_after['available_credit_wei'])),
+                    'private_request_ids': request_ids,
+                    'private_succeeded_count': 2,
+                    'obligation_count_before_sweep': int(before['count']),
+                    'obligation_paid_count_after_sweep': int(after['paid_count']),
+                    'obligation_outstanding_before_wei': str(before['outstanding_credit_wei']),
+                    'obligation_outstanding_after_wei': str(after['outstanding_credit_wei']),
+                    'sweep_id': sweep['sweep_id'],
+                    'hub_receipt_id': sweep['receipt_id'],
+                }
                 return {'schema':'main-computer.slh-pinky-shared-hub.v1',
+                        'accounting': accounting,
                         'status':'PASS' if all(gates.values()) else 'FAIL','pass':all(gates.values()),
                         'gates':gates,'hub_id':hub_identity['hub_id'],
                         'cluster_id':hub_identity['cluster_id'],

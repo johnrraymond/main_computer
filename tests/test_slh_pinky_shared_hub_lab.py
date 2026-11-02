@@ -174,24 +174,76 @@ def test_sweep_row_closes_sqlite_on_success(tmp_path):
         _read_sweep_row(tmp_path, 'missing')
 
 
-def _exercise_smoke_report(tmp_path, *, integrated, pinky_pass=True, corrupt_pinky_evidence=False):
+def _fake_integrated_paid(topo, *, cycle=1, pinky_pass=True, corrupt_pinky_evidence=False):
+    # A distinct verified economic cycle for orchestration tests. Real FDB
+    # acceptance is only established by the Windows smoke lab, not this mock.
+    wei = 10**18
+    pinky_wei = 2*10**17
+    org = f'org-{cycle}'
+    wallet = f'worker-{cycle}'
+    reserve_before = (cycle-1)*pinky_wei
+    market = {'status':'PASS','pass':True, 'gates':{'paid':True, 'market_isolation_capability_verified': True},
+              'market_isolation_capability': f'slh.lab.pinky.mock-{cycle}',
+              'funding':'SYNTHETIC_LAB_ONLY',
+              'charged_credit_wei':str(wei),'earned_credit_wei':str(wei),
+              'request_id':f'paid-{cycle}','session_id':f'sess-{cycle}',
+              'accounting':{
+                  'buyer_account_id':f'buyer-{cycle}',
+                  'buyer_available_before_wei':str(2*wei),
+                  'buyer_available_after_wei':str(wei),
+                  'buyer_spent_delta_wei':str(wei),
+                  'buyer_held_after_wei':'0',
+                  'worker_available_before_wei':'0',
+                  'worker_available_after_settlement_wei':str(wei),
+                  'worker_earned_after_settlement_wei':str(wei),
+                  'worker_account_id':wallet,'charge_id':f'charge-{cycle}',
+                  'earning_id':f'earning-{cycle}',}}
+    pinky = {'pass': pinky_pass,'status':'PASS' if pinky_pass else 'FAIL',
+             'gates':{'reserve_received':pinky_pass},
+             'hub_id':topo.hubs[2].hub_id,'cluster_id':topo.cluster_id,
+             'namespace':'main-computer-hub-smoke',
+             'earned_credit_wei':str(wei if not corrupt_pinky_evidence else wei-1),
+             'assessed_credit_wei':str(pinky_wei),'swept_credit_wei':str(pinky_wei),
+             'worker_account_id':wallet,
+             'limitations':{'source_funding':'LAB_REQUESTER_SYNTHETIC'},
+             'accounting':{
+                 'organization_id':org,'organization_account_id':wallet,
+                 'wallet_after_earning_wei':str(wei),
+                 'wallet_after_sweep_wei':str(wei-pinky_wei),
+                 'reserve_account_id':'reserve',
+                 'reserve_before_wei':str(reserve_before),
+                 'reserve_after_wei':str(reserve_before+pinky_wei),
+                 'private_request_ids':[f'private-{cycle}-1',f'private-{cycle}-2'],
+                 'private_succeeded_count':2,
+                 'obligation_count_before_sweep':2,
+                 'obligation_paid_count_after_sweep':2,
+                 'obligation_outstanding_before_wei':str(pinky_wei),
+                 'obligation_outstanding_after_wei':'0',
+                 'sweep_id':f'sweep-{cycle}','hub_receipt_id':f'receipt-{cycle}',}}
+    return {'pass':True,'status':'PASS','gates':{'paid':True},
+            'paid_marketplace':market,'pinky_integrated':pinky}
+
+
+def _exercise_smoke_report(tmp_path, *, integrated, pinky_pass=True,
+                           corrupt_pinky_evidence=False, repeat=1,
+                           alter_cycle=None):
     """Exercise orchestration without pretending mock Hubs prove FDB acceptance."""
     from types import SimpleNamespace, ModuleType
     import sys
-    fake_paid_module = ModuleType("tools.slh_seh_lab.real_paid_service")
+    fake_paid_module = ModuleType('tools.slh_seh_lab.real_paid_service')
     from main_computer.stable_hub_topology import load_stable_hub_topology
     topo = load_stable_hub_topology(DEFAULT_TOPOLOGY)
     ready = {'pass': True, 'status': 'PASS', 'gates': {'test': True}}
-    pinky = {'pass': pinky_pass, 'status': 'PASS' if pinky_pass else 'FAIL',
-             'gates': {'reserve_received': pinky_pass},
-             'hub_id': topo.hubs[2].hub_id, 'cluster_id': topo.cluster_id,
-             'namespace': 'main-computer-hub-smoke',
-             'earned_credit_wei': str(10**18),
-             'swept_credit_wei': str(2 * 10**17)}
-    if corrupt_pinky_evidence:
-        pinky['earned_credit_wei'] = str(9 * 10**17)
-    real_paid = {**ready, **({'pinky_integrated': pinky} if integrated else {})}
-    fake_paid_module.verify_real_process_paid = lambda **kwargs: real_paid
+    calls = []
+    def paid_stub(**kwargs):
+        cycle=len(calls)+1
+        calls.append(kwargs)
+        result=_fake_integrated_paid(topo, cycle=cycle,
+                      pinky_pass=pinky_pass,corrupt_pinky_evidence=corrupt_pinky_evidence)
+        if alter_cycle:
+            alter_cycle(result,cycle)
+        return result if integrated else ready
+    fake_paid_module.verify_real_process_paid = paid_stub
     health = {'cluster_id': topo.cluster_id, 'checks': [
         {'ok': True, 'hub_id': hub.hub_id} for hub in topo.hubs]}
     with patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=ready), \
@@ -204,7 +256,8 @@ def _exercise_smoke_report(tmp_path, *, integrated, pinky_pass=True, corrupt_pin
          patch('tools.slh_seh_lab.run_lab._mock_coolify_gate',return_value={'status':'PASS'}), \
          patch('tools.slh_seh_lab.run_lab._local_demo', return_value=ready) as legacy:
         report = run_smoke(DEFAULT_TOPOLOGY, use_existing=False,
-                           report_dir=tmp_path, pinky_integrated=integrated)
+                           report_dir=tmp_path, pinky_integrated=integrated,
+                           pinky_repeat=repeat)
         return report, legacy.call_count
 
 
@@ -249,3 +302,130 @@ def test_pinky_integrated_refuses_forged_success_without_exact_earnings(tmp_path
     assert legacy_calls == 0
     assert report['status'] == 'FAIL'
     assert report['pinky_internal_reserve_sweep'] == 'NOT_VERIFIED'
+
+
+def test_pinky_repeated_three_cycles_have_distinct_wallets_and_cumulative_reserve(tmp_path):
+    import json
+    report, legacy = _exercise_smoke_report(tmp_path, integrated=True, repeat=3)
+    assert legacy == 0
+    assert report['status'] == 'PASS'
+    result = report['pinky_repeatability']
+    assert result['status'] == 'PASS'
+    assert result['cycles_completed'] == 3
+    assert all(result['gates'].values())
+    assert result['total_buyer_debit_wei'] == str(3*10**18)
+    assert result['total_earned_credit_wei'] == str(3*10**18)
+    assert result['total_reserve_swept_wei'] == str(6*10**17)
+    assert len({c['organization_account_id'] for c in result['cycles']}) == 3
+    assert len({c['buyer_account_id'] for c in result['cycles']}) == 3
+    assert len({c['receipt_id'] for c in result['cycles']}) == 3
+    for n in (1,2,3):
+        single=json.loads((tmp_path/f'pinky-economic-cycle-{n:02d}.json').read_text())
+        assert single['cycle']==n and single['status']=='PASS'
+    receipt=json.loads((tmp_path/'pinky-economic-reconciliation.json').read_text())
+    assert receipt['status']=='PASS'
+    checkpoint=json.loads((tmp_path/'pinky-integrated-checkpoint.json').read_text())
+    assert checkpoint['repeatability']['cycles_completed']==3
+    assert checkpoint['status']=='PASS'
+
+
+def test_pinky_repeat_fails_closed_on_duplicate_org_wallet(tmp_path):
+    def duplicate(result,n):
+        if n==2:
+            result['paid_marketplace']['accounting']['worker_account_id']='worker-1'
+            result['pinky_integrated']['accounting']['organization_account_id']='worker-1'
+            result['pinky_integrated']['worker_account_id']='worker-1'
+    report,legacy=_exercise_smoke_report(tmp_path,integrated=True,repeat=3,alter_cycle=duplicate)
+    assert report['status']=='FAIL' and legacy==0
+    assert report['pinky_repeatability']['cycles_completed']==2
+    assert report['pinky_repeatability']['gates']['unique_org_wallets'] is False
+    assert not (tmp_path/'pinky-economic-cycle-03.json').exists()
+
+
+def test_pinky_repeat_fails_closed_on_corrupt_reserve_delta(tmp_path):
+    def corrupt(result,n):
+        if n==2:
+            result['pinky_integrated']['accounting']['reserve_after_wei']=str(10**18)
+    report,_=_exercise_smoke_report(tmp_path,integrated=True,repeat=3,alter_cycle=corrupt)
+    assert report['status']=='FAIL'
+    assert report['pinky_repeatability']['cycles_completed']==2
+    assert report['pinky_repeatability']['cycles'][-1]['gates']['reserve_credited_exactly_once'] is False
+
+
+def test_pinky_repeat_rejects_invalid_counts(tmp_path):
+    from tools.slh_seh_lab.run_lab import LabRefused
+    with pytest.raises(LabRefused,match='1..10'):
+        run_smoke(DEFAULT_TOPOLOGY,use_existing=False,report_dir=tmp_path,
+                  pinky_integrated=True,pinky_repeat=11)
+
+
+def test_isolated_marketplace_sale_rejects_stale_cheaper_workers():
+    """Repetition must select its own live Worker, even when old offers linger."""
+    from main_computer.stable_hub_worker_sessions import (
+        InMemoryStableWorkerSessionStore, StableHubWorkerMarketDirectory)
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    topology = load_stable_hub_topology(DEFAULT_TOPOLOGY)
+    market = StableHubWorkerMarketDirectory(
+        topology=topology, hub_id=topology.hubs[2].hub_id,
+        store=InMemoryStableWorkerSessionStore())
+    def offer(worker_id, price, capabilities):
+        market.record_worker_live(
+            worker_id=worker_id,
+            owner={'worker_id': worker_id, 'status': 'live',
+                   'owner_hub_id': topology.hubs[2].hub_id,
+                   'owner_hub_url': topology.hubs[2].hub_url,
+                   'connection_id': 'conn-' + worker_id, 'lease_epoch': 1},
+            market_profile={'rings': ['ring-2'], 'capabilities': capabilities,
+                            'price': {'amount': price, 'unit': 'compute_credit'}},
+            worker_msk_id='msk-' + worker_id,
+            worker_wallet_address='0x' + '12'*20, worker_account_id='acct-' + worker_id)
+    offer('old-lab-worker', '0', ['chat.completions', 'slh.lab.pinky.old'])
+    offer('current-lab-worker', '1', ['chat.completions', 'slh.lab.pinky.current'])
+    assert market.select_worker_for_work({
+        'ring': 'ring-2', 'capabilities': ['chat.completions'],
+        'max_price': {'amount': '2', 'unit': 'compute_credit'},
+    })['worker_id'] == 'old-lab-worker'
+    assert market.select_worker_for_work({
+        'ring': 'ring-2', 'capabilities': ['chat.completions', 'slh.lab.pinky.current'],
+        'max_price': {'amount': '2', 'unit': 'compute_credit'},
+    })['worker_id'] == 'current-lab-worker'
+
+
+def test_reconciliation_fails_if_market_capability_not_verified():
+    from tools.slh_seh_lab.economic_reconciliation import reconcile_cycle
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    paid = _fake_integrated_paid(load_stable_hub_topology(DEFAULT_TOPOLOGY), cycle=1)
+    paid['paid_marketplace']['gates']['market_isolation_capability_verified'] = False
+    result = reconcile_cycle(paid, cycle=1)
+    assert result['pass'] is False
+    assert result['gates']['cycle_market_worker_isolated'] is False
+
+
+def test_distinct_cycle_capabilities_are_required():
+    from tools.slh_seh_lab.economic_reconciliation import summarize_cycles, reconcile_cycle
+    from main_computer.stable_hub_topology import load_stable_hub_topology
+    topology = load_stable_hub_topology(DEFAULT_TOPOLOGY)
+    first = reconcile_cycle(_fake_integrated_paid(topology, cycle=1), cycle=1)
+    second = reconcile_cycle(_fake_integrated_paid(topology, cycle=2), cycle=2)
+    second['market_isolation_capability'] = first['market_isolation_capability']
+    result = summarize_cycles([first, second], requested=2)
+    assert result['gates']['unique_market_isolation_capabilities'] is False
+    assert result['pass'] is False
+
+
+def test_terminal_stage_ignores_recovered_tls_pin_failure(tmp_path):
+    from tools.slh_seh_lab.lab_stage_diagnostics import record, enable, disable, summarize
+    path = tmp_path / 'stages.jsonl'
+    token = enable(path)
+    try:
+        record('preflight.worker_websocket.tls_pin', 'error', error_type='ServiceLabFailure')
+        record('pinky.real_process_and_economic_cycle', 'begin', cycle=2)
+        record('pinky.public_paid_cycle', 'begin')
+        record('pinky.public_paid_cycle', 'error', error_type='RuntimeError')
+        record('pinky.real_process_and_economic_cycle', 'error', cycle=2)
+        record('lab', 'error')
+    finally:
+        disable(token)
+    summary = summarize(path)
+    assert summary['last_failure']['stage'] == 'preflight.worker_websocket.tls_pin'
+    assert summary['fatal_failure']['stage'] == 'pinky.public_paid_cycle'

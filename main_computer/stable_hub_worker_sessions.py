@@ -628,9 +628,11 @@ class FoundationDbStableWorkerSessionStore:
         def _tx(tr: Any) -> Any:
             _configure_fdb_transaction_safety(tr)
             self._transaction_local.transaction = tr
+            self._transaction_local.document_chunks = None
             try:
                 return action()
             finally:
+                self._transaction_local.document_chunks = None
                 self._transaction_local.transaction = None
 
         started = time.monotonic()
@@ -659,8 +661,11 @@ class FoundationDbStableWorkerSessionStore:
             chunks_started = time.monotonic()
             chunk_error = None
             try:
-                for index in range(chunk_count):
-                    chunk = _fdb_value_bytes(tr[self._chunk_key(index)].wait())
+                # Start every FDB read before waiting for a result. Waiting inside
+                # the loop serializes network round trips for large documents.
+                futures = [tr[self._chunk_key(index)] for index in range(chunk_count)]
+                for index, future in enumerate(futures):
+                    chunk = _fdb_value_bytes(future.wait())
                     if chunk is None:
                         raise RuntimeError(f"Stable Hub FDB chunk {index} is missing.")
                     parts.append(chunk)
@@ -671,8 +676,14 @@ class FoundationDbStableWorkerSessionStore:
                 _diagnose_fdb_store_operation(self.namespace, "read_chunks", chunks_started,
                                               error=chunk_error, chunk_count=chunk_count)
             payload = json.loads(b"".join(parts).decode("utf-8"))
+            if getattr(self._transaction_local, "transaction", None) is tr:
+                # Only an active atomic mutation may use this snapshot for
+                # changed-chunk writes. Reset on every FDB transaction retry.
+                self._transaction_local.document_chunks = tuple(parts)
             return _normalize_store(payload if isinstance(payload, dict) else {})
         # Existing one-key snapshots remain readable and migrate on first save.
+        if getattr(self._transaction_local, "transaction", None) is tr:
+            self._transaction_local.document_chunks = ()
         return _normalize_store(_json_loads(tr[legacy_key].wait()) or {})
 
     def _write_document(self, tr: Any, data: dict[str, Any], *, legacy_key: bytes, meta_key: bytes) -> None:
@@ -681,8 +692,17 @@ class FoundationDbStableWorkerSessionStore:
         chunks = [encoded[index : index + chunk_size] for index in range(0, len(encoded), chunk_size)] or [b"{}"]
         previous_meta = _json_loads(tr[meta_key].wait()) or {}
         previous_count = int(previous_meta.get("chunk_count") or 0) if isinstance(previous_meta, dict) else 0
+        # Keep the metadata write on *every* save: it is the single conflict
+        # sentinel shared by all Hubs and prevents lost cross-process updates.
+        # Writing every unchanged 60 KB chunk on each heartbeat/selection was
+        # inflating FDB transactions even for a one-field change.
+        previous_chunks = (
+            getattr(self._transaction_local, "document_chunks", None)
+            if getattr(self._transaction_local, "transaction", None) is tr else None
+        )
         for index, chunk in enumerate(chunks):
-            tr[self._chunk_key(index)] = chunk
+            if previous_chunks is None or index >= len(previous_chunks) or chunk != previous_chunks[index]:
+                tr[self._chunk_key(index)] = chunk
         for index in range(len(chunks), previous_count):
             del tr[self._chunk_key(index)]
         tr[meta_key] = _json_dumps(
@@ -695,6 +715,10 @@ class FoundationDbStableWorkerSessionStore:
             }
         )
         del tr[legacy_key]
+        if getattr(self._transaction_local, "transaction", None) is tr:
+            # A second load/save within the same atomic callback must compare
+            # against its own immediately preceding writes, not stale bytes.
+            self._transaction_local.document_chunks = tuple(chunks)
 
     def load(self) -> dict[str, Any]:
         self._open()

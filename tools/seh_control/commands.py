@@ -77,6 +77,11 @@ class SEHControl:
         from .git_deployment import status
         return status(self.root, network, seh, **kwargs)
 
+    def observed_public_origin(self, network: str, seh: str, **kwargs) -> dict:
+        """Read a domain directly from the exact registered Coolify application."""
+        from .git_deployment import observed_public_origin
+        return observed_public_origin(self.root, network, seh, **kwargs)
+
     def resolved(self, network: str, seh: str):
         _, state, doc=st.read(self.root,network)
         return st.resolve(doc,network,seh,state.binding.generation)
