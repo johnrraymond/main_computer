@@ -365,9 +365,32 @@ def main(argv=None):
     org = os.getenv('SEH_ORGANIZATION_ID','')
     slh = os.getenv('SEH_SLH_ID','')
     encoded = os.getenv('SEH_SLH_PUBLIC_KEY_B64','')
-    if not org or not slh or not encoded:
-        p.error('SEH_ORGANIZATION_ID, SEH_SLH_ID and SEH_SLH_PUBLIC_KEY_B64 are required')
-    key = base64.b64decode(encoded, validate=True).decode('ascii')
+    supplied = (bool(org), bool(slh), bool(encoded))
+    if any(supplied) and not all(supplied):
+        p.error('Partial SLH binding is unsafe: all three binding variables are required')
+    if not any(supplied):
+        # Securely deployed but unbound. No SLH/client transport may be
+        # accepted until a separate, authorized enrollment configures trust.
+        from websockets.sync.server import serve
+        def reject(ws):
+            ws.close(code=1008, reason='SEH_NOT_BOUND')
+        def health(conn, request):
+            if request.path in ('/healthz', '/readyz'):
+                is_health = request.path == '/healthz'
+                return conn.respond(HTTPStatus.OK if is_health else HTTPStatus.SERVICE_UNAVAILABLE,
+                                    _frame({'service':'main_computer.seh', 'live':True,
+                                            'bound':False, 'ready':False}) + '\n')
+            return None
+        print(_frame({'event':'seh_listening_unbound', 'port':args.port,
+                      'ready':False}), flush=True)
+        with serve(reject, args.host, args.port, process_request=health,
+                   compression=None, max_size=8192) as server:
+            server.serve_forever()
+        return
+    try:
+        key = base64.b64decode(encoded, validate=True).decode('ascii')
+    except (ValueError, UnicodeDecodeError):
+        p.error('Invalid SEH_SLH_PUBLIC_KEY_B64')
     relay = SEHRelay(organization_id=org, slh_id=slh, slh_public_key=key,
                      host=args.host, port=args.port)
     print(_frame({'event':'seh_listening', 'port':args.port,'org':org}), flush=True)
