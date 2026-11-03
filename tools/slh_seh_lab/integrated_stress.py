@@ -54,7 +54,7 @@ def _policy(api_port, token, changes):
                      bearer=token, tls=True))
 
 
-def _worker(*, name, root, org_id, api_port, org_token, pin, adapter, workers, execution_delay):
+def _worker(*, name, root, api_port, org_token, pin, adapter, workers, execution_delay, audience):
     identity_dir = root / 'stress-keys'
     save_identity(identity_dir, name)
     private, public = load_identity(identity_dir, name)
@@ -62,7 +62,7 @@ def _worker(*, name, root, org_id, api_port, org_token, pin, adapter, workers, e
                'kind': 'worker', 'device_name': name, 'claimed_user': 'Lab Owner',
                'requested_role': 'worker', 'client_nonce': secrets.token_urlsafe(24)}
     proof = {**payload, 'version': 1, 'action': 'slh.device.enrollment.request',
-             'org_id': org_id}
+             'audience': audience}
     pending = _ok(_http(api_port, 'POST', '/v1/enrollment/requests',
                          {**payload, 'proof': sign_object(private, proof)}, tls=True), 201)
     _ok(_http(api_port, 'POST', '/v1/enrollment/approvals',
@@ -236,7 +236,7 @@ def _baseline_connection_evidence(*, worker_id, status, workers, adapter, api_po
 
 
 def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
-                          root: Path, org_id: str, api_port: int, org_token: str,
+                          root: Path, api_port: int, org_token: str,
                           lp: int, local_token: str, local, pin: str, adapter,
                           relay, proxy, workers: list, original_device: str,
                           wallet_key: str, upstream_auth: dict,
@@ -300,9 +300,10 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
            baseline_public=len(baseline.get('sessions') or {}))
     for i, name in enumerate(other_names, 1):
         try:
-            _worker(name=name, root=root, org_id=org_id, api_port=api_port,
+            _worker(name=name, root=root, api_port=api_port,
                     org_token=org_token, pin=pin, adapter=adapter, workers=workers,
-                    execution_delay=0.04)
+                    execution_delay=0.04,
+                    audience='slh://' + local.organization_controller.authority.service_fingerprint())
         except (OSError, TimeoutError, ValueError, RuntimeError, ssl.SSLError) as exc:
             record('worker_connect_failed', worker_index=i + 1,
                    error_type=type(exc).__name__)
@@ -375,7 +376,7 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
         capacity_error = None
         probe = None
         try:
-            probe = ws_connect(f'ws://127.0.0.1:{relay.port}/v1/seh/client/{relay.organization_id}',
+            probe = ws_connect(f'ws://127.0.0.1:{relay.port}/v1/seh/client/{relay.slh_id}',
                                open_timeout=5, close_timeout=1, ping_interval=None)
             try:
                 probe.recv(timeout=5)

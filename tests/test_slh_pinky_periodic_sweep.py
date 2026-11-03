@@ -89,7 +89,7 @@ def env():
 def test_hub_transfer_exact_debit_credit_and_retry(env):
     private,ledger,_,_=env
     amount=str(CREDIT_WEI_PER_CREDIT//10)
-    intent={'schema':SWEEP_SCHEMA,'org_id':'private-lab','sweep_id':'psweep-1',
+    intent={'schema':SWEEP_SCHEMA,'sweep_id':'psweep-1',
             'cluster_id':ledger.cluster_id,'chain_id':str(ledger.topology.network['chain_id']),
             'wallet_address':WALLET,'reserve_wallet_address':RESERVE,'credit_wei':amount}
     signature=sign_personal_message(canonical_sweep_intent(intent),KEY)
@@ -162,7 +162,7 @@ def test_configuration_missing_does_not_erase_debt(env):
 
 def test_tampered_signature_and_wrong_sender_rejected_before_debit(env):
     _,ledger,_,_=env
-    intent={'schema':SWEEP_SCHEMA,'org_id':'private-lab','sweep_id':'psweep-2',
+    intent={'schema':SWEEP_SCHEMA,'sweep_id':'psweep-2',
             'cluster_id':ledger.cluster_id,'chain_id':str(ledger.topology.network['chain_id']),
             'wallet_address':WALLET,'reserve_wallet_address':RESERVE,'credit_wei':str(10**17)}
     before=ledger.get_account(wallet_account_id(WALLET))['available_credit_wei']
@@ -184,7 +184,7 @@ def test_stable_hub_http_signed_sweep_and_replay(env):
         bind_host='127.0.0.1',bind_port=0,worker_session_store=ledger.store)
     t=threading.Thread(target=server.serve_forever,daemon=True);t.start()
     try:
-        intent={'schema':SWEEP_SCHEMA,'org_id':'private-lab','sweep_id':'psweep-http',
+        intent={'schema':SWEEP_SCHEMA,'sweep_id':'psweep-http',
             'cluster_id':ledger.cluster_id,'chain_id':str(ledger.topology.network['chain_id']),
             'wallet_address':WALLET,'reserve_wallet_address':RESERVE,'credit_wei':str(10**17)}
         payload={'intent':intent,'signature':sign_personal_message(canonical_sweep_intent(intent),KEY)}

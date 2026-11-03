@@ -25,9 +25,9 @@ def _client(tmp_path):
     return auth, signing, api, secret
 
 
-def _begin(api, secret, org_id='organization-one'):
+def _begin(api, secret):
     return api.call('POST','/v1/bootstrap/begin',
-                    {'org_id':org_id,'bootstrap_secret':secret},loopback=True)
+                    {'bootstrap_secret':secret},loopback=True)
 
 
 def _stage(signing, api, secret, begun, *, admin_id='first', key_id='first-admin'):
@@ -52,7 +52,7 @@ def test_staged_bootstrap_is_inert_and_durable(tmp_path):
     assert begun['state'] == 'PENDING'
     assert api.call('GET','/v1/bootstrap/status',loopback=True)[1]['setup_phase'] == 'PENDING'
     assert api.call('POST','/v1/bootstrap/begin',
-                    {'org_id':'another','bootstrap_secret':secret},loopback=True)[1]['error']['code'] == 'SETUP_ALREADY_PENDING'
+                    {'bootstrap_secret':secret},loopback=True)[1]['error']['code'] == 'SETUP_ALREADY_PENDING'
     assert api.call('POST','/v1/bootstrap/admin',{},loopback=False)[0] == 403
     code, staged = _stage(signing, api,secret,begun)
     assert code == 200, staged
@@ -162,7 +162,7 @@ def test_real_loopback_api_and_disabled_org_service(tmp_path):
             secret=(state/'bootstrap.secret').read_text().strip()
             assert _http(port,'GET','/v1/bootstrap/status')[1]['setup_phase'] == 'UNCONFIGURED'
             assert _http(port,'POST','/v1/local/authenticator/identities',{'device_id':'host-admin'})[0] == 201
-            code, begun = _http(port,'POST','/v1/bootstrap/begin',{'org_id':'home','bootstrap_secret':secret})
+            code, begun = _http(port,'POST','/v1/bootstrap/begin',{'bootstrap_secret':secret})
             assert code == 201
             code, identity = _http(port,'GET','/v1/local/authenticator/identities/host-admin')
             assert code == 200
@@ -187,11 +187,10 @@ def test_real_loopback_api_and_disabled_org_service(tmp_path):
 def test_existing_initialized_slhs_remain_valid(tmp_path):
     auth, signing, api, secret = _client(tmp_path)
     _, identity = signing.call('GET','/v1/local/authenticator/identities/first-admin',loopback=True)
-    statement = {'version':1,'action':'slh.admin.bootstrap','org_id':'existing-org',
-                 'admin_id':'owner','device_id':'first-admin','public_key':identity['public_key']}
+    statement = {'version':1,'action':'slh.admin.bootstrap','admin_id':'owner','device_id':'first-admin','public_key':identity['public_key']}
     _, signed = signing.call('POST','/v1/local/authenticator/identities/first-admin/sign',
                             {'challenge':statement},loopback=True)
-    body = {'org_id':'existing-org','admin_id':'owner','admin_name':'Owner',
+    body = {'admin_id':'owner','admin_name':'Owner',
             'device_id':'first-admin','public_key':identity['public_key'],
             'proof':signed['signature'],'bootstrap_secret':secret}
     assert api.call('POST','/v1/bootstrap/admin',body,loopback=True)[0] == 201
@@ -211,7 +210,7 @@ def test_competing_local_bootstrap_writers_only_one_wins(tmp_path):
     secret = (directory/'bootstrap.secret').read_text().strip()
     def begin(authority):
         return SLHAPI(authority).call('POST','/v1/bootstrap/begin',
-              {'org_id':'org-one','bootstrap_secret':secret},loopback=True)
+              {'bootstrap_secret':secret},loopback=True)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(begin, (first,second)))
     assert sorted(status for status, _ in results) == [201,409]

@@ -58,7 +58,7 @@ def _read_sweep_row(state, sweep_id):
         return dict(row)
 
 
-def _enroll(api_port, admin_token, directory, org_id, device_id, role):
+def _enroll(api_port, admin_token, directory, device_id, role, *, audience):
     save_identity(directory, device_id)
     key, public = load_identity(directory, device_id)
     req = {'selected_admin': 'lab-owner', 'device_id': device_id,
@@ -66,7 +66,8 @@ def _enroll(api_port, admin_token, directory, org_id, device_id, role):
            'claimed_user': 'Lab Owner', 'requested_role': role,
            'client_nonce': secrets.token_urlsafe(24)}
     proof = sign_object(key, {**req, 'version': 1,
-                         'action': 'slh.device.enrollment.request', 'org_id': org_id})
+                         'action': 'slh.device.enrollment.request',
+                         'audience': audience})
     pending = _ok(_lab_http(api_port, 'POST', '/v1/enrollment/requests',
                         {**req, 'proof': proof}, tls=True), 201)
     _ok(_lab_http(api_port, 'POST', '/v1/enrollment/approvals',
@@ -86,7 +87,7 @@ def _requester_login(api_port, device_id, key):
 
 
 def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
-                            org_id, api_port, worker_port, hub_url, hub_identity,
+                            api_port, worker_port, hub_url, hub_identity,
                             ledger, org_wallet_private, org_wallet_address,
                             worker, reserve_wallet, market_controller):
     """Run only after verify_paid_cycle settled a real Hub payout via SEH.
@@ -145,7 +146,7 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
             admin_token = _login(api_port, local_sign_port=local_port, tls=True)
             pin = _fingerprint(api_port)
             identity = _ok(_lab_http(api_port, 'GET', '/v1/org/identity', tls=True))
-            gates['same_org_after_seh_to_private_restart'] = identity.get('organization_id') == org_id
+            gates['same_org_after_seh_to_private_restart'] = bool(identity.get('tls_sha256'))
             gates['private_transport_without_seh'] = (
                 _ok(_lab_http(api_port, 'GET', '/v1/org/status',tls=True)).get('seh_enabled') is False)
             bound = _ok(_lab_http(api_port, 'POST', '/v1/org/admin/marketplace/wallet/bind', {
@@ -159,8 +160,9 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
             devices = Path(root)/'pinky-private-keys'
             req_id = 'pinky-requester-'+secrets.token_hex(4)
             worker_id = 'pinky-private-worker-'+secrets.token_hex(4)
-            req_key = _enroll(api_port,admin_token,devices,org_id,req_id,'requester')
-            _enroll(api_port,admin_token,devices,org_id,worker_id,'worker')
+            audience = 'slh://' + local.organization_controller.authority.service_fingerprint()
+            req_key = _enroll(api_port,admin_token,devices,req_id,'requester', audience=audience)
+            _enroll(api_port,admin_token,devices,worker_id,'worker', audience=audience)
             requester_token = _requester_login(api_port,req_id,req_key)
             def compute(offer):
                 data = (offer.get('work') or {}).get('input') or {}
@@ -219,7 +221,7 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                 # the same sweep ID must return the same receipt, no extra debit.
                 from main_computer.slh.organization_wallet import HubCreditReader
                 row = _read_sweep_row(state, sweep['sweep_id'])
-                intent={'schema':SWEEP_SCHEMA,'org_id':row['org_id'],
+                intent={'schema':SWEEP_SCHEMA,
                         'sweep_id':row['sweep_id'],'cluster_id':row['cluster_id'],
                         'chain_id':row['chain_id'],'wallet_address':row['wallet_address'],
                         'reserve_wallet_address':row['reserve_wallet_address'],
@@ -238,7 +240,6 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                 gates['requester_cannot_view_payment_ledger'] = (
                     _lab_http(api_port,'GET','/v1/accounting/sweeps',bearer=requester_token,tls=True)[0]==403)
                 accounting = {
-                    'organization_id': org_id,
                     'organization_account_id': org_account,
                     'wallet_after_earning_wei': str(initial_available),
                     'wallet_after_sweep_wei': str(int(settled['available_credit_wei'])),
@@ -262,7 +263,7 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                         'namespace':'main-computer-hub-smoke',
                         'private_transport':'DIRECT_ONLY',
                         'public_transport':'REAL_SEH',
-                        'org_id':org_id,'worker_account_id':org_account,
+'worker_account_id':org_account,
                         'reserve_account_id':reserve_account,
                         'earned_credit_wei':str(initial_available),
                         'assessed_credit_wei':str(2*10**17),

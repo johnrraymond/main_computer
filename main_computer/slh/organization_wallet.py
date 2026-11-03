@@ -131,17 +131,16 @@ class HubCreditReader:
 
 
 class OrganizationWallet:
-    def __init__(self, state_dir: Path, org_id: str, *, reader_factory=HubCreditReader, clock=time.time):
+    def __init__(self, state_dir: Path, *, reader_factory=HubCreditReader, clock=time.time):
         self.path = Path(state_dir) / DB_NAME
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.org_id = _identity(org_id, 'org_id')
         self.reader_factory = reader_factory
         self.clock = clock
         self._lock = threading.RLock()
         with self._db() as db:
             db.executescript('''
             CREATE TABLE IF NOT EXISTS binding(
-              singleton INTEGER PRIMARY KEY CHECK(singleton=1), org_id TEXT NOT NULL,
+              singleton INTEGER PRIMARY KEY CHECK(singleton=1),
               hub_url TEXT NOT NULL, cluster_id TEXT NOT NULL, hub_id TEXT NOT NULL,
               chain_id TEXT NOT NULL, wallet_address TEXT NOT NULL, account_id TEXT NOT NULL,
               msk_digest TEXT NOT NULL, tls_sha256 TEXT, trust_mode TEXT NOT NULL,
@@ -153,6 +152,12 @@ class OrganizationWallet:
               bridge_completed_credit_wei TEXT NOT NULL, hub_earned_credit_wei TEXT, proof_digest TEXT NOT NULL,
               state TEXT NOT NULL, reason TEXT NOT NULL);
             ''')
+        with self._db() as db:
+            # Existing bindings are already pinned to Hub, wallet address, and
+            # MSK digest. The old incidental field adds no authority.
+            fields = {row['name'] for row in db.execute('PRAGMA table_info(binding)')}
+            if 'org_id' in fields:
+                db.execute('ALTER TABLE binding DROP COLUMN org_id')
         if os.name == 'posix':
             os.chmod(self.path, 0o600)
 
@@ -255,7 +260,7 @@ class OrganizationWallet:
             with self._db() as db:
                 prior = self._binding(db)
                 if prior and any(prior[k] != v for k, v in (
-                        ('org_id', self.org_id), ('hub_url', hub_url),
+                        ('hub_url', hub_url),
                         ('hub_id', expected_hub_id), ('cluster_id', expected_cluster_id),
                         ('chain_id', expected_chain_id), ('wallet_address', proof['wallet_address']),
                         ('account_id', proof['account_id']))):
@@ -268,15 +273,15 @@ class OrganizationWallet:
                 if revision != expected_revision:
                     raise SLHError('WALLET_REVISION_CONFLICT', 409)
                 if current and any(current[key] != new for key, new in (
-                        ('org_id', self.org_id), ('hub_url', hub_url),
+                        ('hub_url', hub_url),
                         ('hub_id', expected_hub_id), ('cluster_id', expected_cluster_id),
                         ('chain_id', expected_chain_id), ('wallet_address', proof['wallet_address']),
                         ('account_id', proof['account_id']))):
                     # No unproved wallet rotation while obligations could exist.
                     raise SLHError('WALLET_MIGRATION_REQUIRED', 409)
                 new_revision = revision + 1
-                db.execute('INSERT OR REPLACE INTO binding VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?)',
-                           (self.org_id, hub_url, expected_cluster_id, expected_hub_id,
+                db.execute('INSERT OR REPLACE INTO binding VALUES(1,?,?,?,?,?,?,?,?,?,?,?)',
+                           (hub_url, expected_cluster_id, expected_hub_id,
                             expected_chain_id, proof['wallet_address'], proof['account_id'],
                             _digest_key(key), tls_sha256, reader.trust_mode, new_revision, now))
                 self._save_observation(db, new_revision, now, quantities, digest)
@@ -302,8 +307,7 @@ class OrganizationWallet:
                 if binding is None:
                     raise SLHError('ORG_WALLET_NOT_BOUND', 409)
                 hub_url, key = self._settings()
-                if (hub_url != binding['hub_url'] or _digest_key(key) != binding['msk_digest'] or
-                        self.org_id != binding['org_id']):
+                if (hub_url != binding['hub_url'] or _digest_key(key) != binding['msk_digest']):
                     raise SLHError('WALLET_BINDING_CHANGED', 409)
                 reader = self.reader_factory(hub_url, binding['tls_sha256'])
                 if reader.trust_mode != binding['trust_mode']:
@@ -332,7 +336,7 @@ class OrganizationWallet:
                 return {'schema':'main-computer.slh-org-wallet.v1','state':'UNBOUND',
                         'spendable_authorized':False, 'binding':None, 'balance':None}
             public = {k: binding[k] for k in (
-                'org_id','hub_url','cluster_id','hub_id','chain_id','wallet_address',
+                'hub_url','cluster_id','hub_id','chain_id','wallet_address',
                 'account_id','revision','bound_at','trust_mode')}
             state = 'STALE'
             reason = 'NO_VERIFIED_OBSERVATION'
@@ -347,8 +351,7 @@ class OrganizationWallet:
                         state, reason = 'STALE','OBSERVATION_EXPIRED'
             try:
                 hub_url, key = self._settings()
-                if (hub_url != binding['hub_url'] or _digest_key(key) != binding['msk_digest'] or
-                        self.org_id != binding['org_id']):
+                if (hub_url != binding['hub_url'] or _digest_key(key) != binding['msk_digest']):
                     state, reason = 'STALE','WALLET_BINDING_CHANGED'
             except SLHError as exc:
                 state, reason = 'STALE', exc.code

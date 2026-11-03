@@ -58,7 +58,7 @@ def setup(tmp_path):
     assert not settings['enabled']  # P1 must never opt in to marketplace silently.
     save_authorization(tmp_path, {'kind':'multisession_key','multisession_key_id':'secret-msk'})
     reader = lambda url,pin:FakeHub(url,pin,state)
-    wallet=OrganizationWallet(tmp_path,'organization-a',reader_factory=reader)
+    wallet=OrganizationWallet(tmp_path,reader_factory=reader)
     return wallet,state
 
 
@@ -84,7 +84,7 @@ def test_durable_one_wallet_and_fractional_credit(tmp_path):
     status=wallet.reconcile()
     assert status['balance']['available_credits_display']=='0.1'
     assert status['balance']['held_credits_display']=='0.1'
-    restarted=OrganizationWallet(tmp_path,'organization-a',reader_factory=wallet.reader_factory)
+    restarted=OrganizationWallet(tmp_path,reader_factory=wallet.reader_factory)
     assert restarted.status()['state']=='CURRENT'
     assert restarted.status()['balance']['available_credit_wei']==str(CREDIT_WEI_PER_CREDIT//10)
     assert (tmp_path/'organization-wallet.sqlite3').is_file()
@@ -258,7 +258,7 @@ def test_actual_http_hub_validation_and_balance_protocol(tmp_path):
         url='http://127.0.0.1:'+str(server.server_port)
         update_settings(tmp_path, {'hub_url':url}, 0)
         save_authorization(tmp_path, {'kind':'multisession_key','multisession_key_id':'production-format-key'})
-        wallet=OrganizationWallet(tmp_path,'org-a')
+        wallet=OrganizationWallet(tmp_path)
         status=bind(wallet)
         assert status['state']=='CURRENT'
         assert status['balance']['available_credit_wei']==str(CREDIT_WEI_PER_CREDIT//10)

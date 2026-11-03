@@ -21,9 +21,9 @@ class LocalCoolifyError(RuntimeError):
     pass
 
 
-def compose(*, org: str, slh: str, public_b64: str, image: str, port: int) -> str:
-    if not ID.fullmatch(org) or not ID.fullmatch(slh):
-        raise LocalCoolifyError('Invalid organization/SLH identifier')
+def compose(*, slh: str, public_b64: str, image: str, port: int) -> str:
+    if not ID.fullmatch(slh):
+        raise LocalCoolifyError('Invalid SLH identifier')
     if not IMAGE.fullmatch(image) or '@' in image:
         raise LocalCoolifyError('Invalid local image name')
     if not 1024 <= port <= 65535:
@@ -45,7 +45,6 @@ services:
     cap_drop:
       - ALL
     environment:
-      SEH_ORGANIZATION_ID: '{org}'
       SEH_SLH_ID: '{slh}'
       SEH_SLH_PUBLIC_KEY_B64: '{public_b64}'
       SEH_PORT: '8080'
@@ -62,7 +61,7 @@ services:
 '''
 
 
-def prepare(*, org: str = 'my-company', slh: str = 'my-slh',
+def prepare(*, slh: str = 'my-slh',
             image: str = 'main-computer-seh:local', port: int = 18080,
             output: Path = Path('runtime/reports/slh-seh-lab/local-coolify/compose.yml'),
             build: bool = False, root: Path = Path('.'), state: Path | None = None) -> dict:
@@ -72,8 +71,8 @@ def prepare(*, org: str = 'my-company', slh: str = 'my-slh',
     try:
         _, public_b64 = service_identity(state or default_state(), create=False)
     except FileNotFoundError as exc:
-        raise LocalCoolifyError('Run python -m tools.slh_seh_connector identity first') from exc
-    data = compose(org=org, slh=slh, public_b64=public_b64, image=image, port=port)
+        raise LocalCoolifyError('Initialize the SLH through normal setup before deploying') from exc
+    data = compose(slh=slh, public_b64=public_b64, image=image, port=port)
     image_status = 'NOT_BUILT'
     if build:
         def cmd(*args, timeout=30):
@@ -123,7 +122,7 @@ def _verify_seh_health(url: str, *, timeout: float = 3.0) -> bool:
         return False
 
 
-def find_healthy_deployed(*, org: str, slh: str, port: int,
+def find_healthy_deployed(*, slh: str, port: int,
                           root: Path = Path('.'), adapter=None) -> dict | None:
     """Read-only Coolify service discovery. Never mistake a random HTTP server
     on 18080 for a Coolify-managed SEH. An absent/old service is refreshed by
@@ -133,7 +132,7 @@ def find_healthy_deployed(*, org: str, slh: str, port: int,
     from http.client import HTTPConnection
     from urllib.parse import urlsplit
     from main_computer.publishing.local_server_prepare import _load_coolify_local_docker
-    if not ID.fullmatch(org) or not ID.fullmatch(slh) or not 1024 <= port <= 65535:
+    if not ID.fullmatch(slh) or not 1024 <= port <= 65535:
         raise LocalCoolifyError('Invalid local Coolify SEH identity/port')
     c = HTTPConnection('127.0.0.1',port,timeout=3)
     try:
@@ -155,7 +154,7 @@ def find_healthy_deployed(*, org: str, slh: str, port: int,
     ok,_,token=api.ensure_api_token(root)
     if not ok or not token:
         raise LocalCoolifyError('Local Coolify service lookup has no authorization')
-    name=f'main-computer-seh-{org.lower()}-{slh.lower()}'
+    name=f'main-computer-seh-{slh.lower()}'
     ok,_,uuid=api.find_service_uuid_via_api(root,token,name)
     if not ok or not uuid:return None
     return {'status':'DEPLOYED_VERIFIED', 'service_uuid':uuid, 'service_name':name,
@@ -164,7 +163,7 @@ def find_healthy_deployed(*, org: str, slh: str, port: int,
             'existing_service_reused':True}
 
 
-def deploy_local(*, org: str = 'my-company', slh: str = 'my-slh',
+def deploy_local(*, slh: str = 'my-slh',
                  image: str = 'main-computer-seh:local', port: int = 18080,
                  output: Path = Path('runtime/reports/slh-seh-lab/local-coolify/compose.yml'),
                  root: Path = Path('.'), state: Path | None = None,
@@ -182,7 +181,7 @@ def deploy_local(*, org: str = 'my-company', slh: str = 'my-slh',
     from main_computer.publishing.local_server_prepare import _load_coolify_local_docker
 
     root = Path(root).resolve()
-    prepared = prepare(org=org, slh=slh, image=image, port=port, output=output,
+    prepared = prepare(slh=slh, image=image, port=port, output=output,
                        root=root, state=state, build=build)
     adapter = coolify if coolify is not None else _load_coolify_local_docker(root)
     dashboard = urlsplit(adapter.dashboard_url(root))
@@ -207,14 +206,14 @@ def deploy_local(*, org: str = 'my-company', slh: str = 'my-slh',
     if not ok:
         raise LocalCoolifyError('Local Coolify environment unavailable: ' + str(detail)[-300:])
 
-    # Avoid touching Website Builder services, or a different org's SEH.
-    service_name = f'main-computer-seh-{org.lower()}-{slh.lower()}'
+    # Avoid touching Website Builder services, or a different SLH's SEH.
+    service_name = f'main-computer-seh-{slh.lower()}'
     if len(service_name) > 120:
-        raise LocalCoolifyError('Organization/SLH names yield an oversized Coolify service name')
+        raise LocalCoolifyError('SLH name yields an oversized Coolify service name')
     compose_raw = Path(prepared['compose']).read_text(encoding='utf-8')
     ok, detail, service_uuid = adapter.ensure_docker_compose_service_via_api(
         root, token, project_uuid, target, service_name=service_name,
-        description=f'Main Computer local SEH for {org}/{slh} (SLH public key only)',
+        description=f'Main Computer local SEH for {slh} (SLH public key only)',
         docker_compose_raw=compose_raw, urls=[])
     if not ok or not service_uuid:
         raise LocalCoolifyError('SEH Coolify service reconciliation failed: ' + str(detail)[-500:])

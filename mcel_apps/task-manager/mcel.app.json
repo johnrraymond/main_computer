@@ -1,0 +1,51 @@
+{
+  "appId": "task-manager",
+  "authoring": {
+    "schema": "mcel.application-authoring.v1",
+    "status": "runtime-hosted-semantic",
+    "source": "application.js"
+  },
+  "blueprint": "blueprint.json",
+  "conformance": {
+    "currentMode": "structural-only",
+    "targetMode": "semantic-runtime-proven",
+    "missingBridges": [
+      "verified-server-controller-lifecycle",
+      "live-incumbent-parity",
+      "human-approval"
+    ]
+  },
+  "contracts": {
+    "acceptance": "contracts/acceptance.js",
+    "adapter": "contracts/adapter.js",
+    "domain": "contracts/domain.js",
+    "intents": "contracts/intents.js",
+    "layout": "contracts/layout.js",
+    "observation": "contracts/observation.js",
+    "surface": "contracts/surface.js"
+  },
+  "evidence": {},
+  "projection": {
+    "mountMode": "host-bound",
+    "hostBoundRuntimeActive": false,
+    "liveRuntimeChanged": false,
+    "presentationAuthority": "generated-semantic-composition",
+    "generatedArtifactsAreDerived": true
+  },
+  "requirements": "requirements.md",
+  "schema": "mcel.application-package.v1",
+  "template": {
+    "id": "mcel.host-bound-authoritative-application",
+    "version": "0.1.0"
+  },
+  "title": "Task Manager",
+  "promotion": {
+    "promotionEligible": false,
+    "promotionExecuted": false,
+    "truthStatus": "structural-only"
+  },
+  "tests": {
+    "root": "tests",
+    "acceptanceBindings": "tests/mcel_acceptance_bindings.json"
+  }
+}

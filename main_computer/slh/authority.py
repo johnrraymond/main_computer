@@ -65,10 +65,9 @@ class SLHAuthority:
     def _initialize(self):
         with self._lock, self._db() as c:
             c.executescript('''
-            CREATE TABLE IF NOT EXISTS organization(org_id TEXT PRIMARY KEY, initialized_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS slh_setup(singleton INTEGER PRIMARY KEY CHECK(singleton=1), initialized_at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS bootstrap_transactions(
                 id TEXT PRIMARY KEY,
-                org_id TEXT NOT NULL,
                 status TEXT NOT NULL CHECK(status IN
                     ('PENDING','AWAITING_AUTHENTICATOR','EXPIRED','CANCELED','INITIALIZED')),
                 challenge_nonce TEXT NOT NULL,
@@ -103,6 +102,22 @@ class SLHAuthority:
             CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
                 actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL);
             ''')
+            # Preserve initialized status, but eliminate the legacy invented identity.
+            # Refuse an ambiguous legacy database rather than combining installations.
+            legacy = c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='organization'").fetchone()
+            if legacy is not None:
+                rows = c.execute('SELECT initialized_at FROM organization').fetchall()
+                if len(rows) > 1 or (rows and c.execute('SELECT 1 FROM slh_setup').fetchone()):
+                    raise SLHError('LEGACY_SLH_STATE_CONFLICT',409)
+                if rows:
+                    c.execute('INSERT INTO slh_setup VALUES (1,?)', (rows[0]['initialized_at'],))
+                c.execute('DROP TABLE organization')
+            # Old pending bootstrap proofs included an obsolete field. Cancel them,
+            # never reuse an old authorization statement under a new identity.
+            columns = {item['name'] for item in c.execute('PRAGMA table_info(bootstrap_transactions)')}
+            if 'org_id' in columns:
+                c.execute("UPDATE bootstrap_transactions SET status='CANCELED' WHERE status IN ('PENDING','AWAITING_AUTHENTICATOR')")
+                c.execute('ALTER TABLE bootstrap_transactions DROP COLUMN org_id')
             c.execute('INSERT OR IGNORE INTO policies(name,value) VALUES (?,?)', ('physical_inspection_required', 'false'))
         if os.name == 'posix':
             os.chmod(self.db_path, 0o600)
@@ -119,7 +134,7 @@ class SLHAuthority:
 
     def initialized(self):
         with self._db() as c:
-            return c.execute('SELECT 1 FROM organization LIMIT 1').fetchone() is not None
+            return c.execute('SELECT 1 FROM slh_setup LIMIT 1').fetchone() is not None
 
     def status(self):
         # Public status deliberately contains no pending administrator details or
@@ -134,14 +149,27 @@ class SLHAuthority:
                                 "('PENDING','AWAITING_AUTHENTICATOR') LIMIT 1").fetchone()
                 if row:
                     setup = row['status']
-        return {'initialized': initialized,
+        identity_file = self.directory / 'seh-service-signing-key.pem'
+        public_identity = self.service_fingerprint() if identity_file.is_file() else None
+        return {'initialized': initialized, 'service_fingerprint': public_identity,
                 'bootstrap': 'CLOSED' if initialized else 'LOCAL_ONLY',
-                'organization_id': self.org_id(), 'setup_phase': setup}
+                'setup_phase': setup}
 
-    def org_id(self):
-        with self._db() as c:
-            row = c.execute('SELECT org_id FROM organization LIMIT 1').fetchone()
-            return row['org_id'] if row else None
+    def service_fingerprint(self):
+        # The installed P-256 public key is the sole service identity.
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        file = self.directory / 'seh-service-signing-key.pem'
+        if file.is_symlink() or not file.is_file():
+            raise SLHError('SLH_SERVICE_IDENTITY_UNAVAILABLE',503)
+        try:
+            key = serialization.load_pem_private_key(file.read_bytes(),password=None)
+        except (ValueError,TypeError,OSError):
+            raise SLHError('SLH_SERVICE_IDENTITY_UNAVAILABLE',503) from None
+        if not isinstance(key,ec.EllipticCurvePrivateKey) or not isinstance(key.curve,ec.SECP256R1):
+            raise SLHError('SLH_SERVICE_IDENTITY_INVALID',503)
+        public = key.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo).decode('ascii')
+        return public_key_fingerprint(public)
 
     def _audit(self, c, actor, action, target, detail=''):
         c.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
@@ -174,10 +202,9 @@ class SLHAuthority:
 
     def begin_bootstrap(self, data, *, secret: str):
         self._authorize_setup(secret)
-        org_id = _required(data.get('org_id'), 'org_id')
         with self._lock, self._db() as c:
             c.execute('BEGIN IMMEDIATE')
-            if c.execute('SELECT 1 FROM organization LIMIT 1').fetchone():
+            if c.execute('SELECT 1 FROM slh_setup LIMIT 1').fetchone():
                 raise SLHError('ALREADY_INITIALIZED', 409)
             self._expire_bootstrap(c)
             active = c.execute("SELECT id FROM bootstrap_transactions WHERE status IN "
@@ -189,14 +216,14 @@ class SLHAuthority:
             nonce = secrets.token_urlsafe(32)
             expiry = now + self.SETUP_TTL_SECONDS
             c.execute('INSERT INTO bootstrap_transactions '
-                      '(id,org_id,status,challenge_nonce,created_at,expires_at) '
-                      'VALUES (?,?,?,?,?,?)',
-                      (transaction_id,org_id,'PENDING',nonce,now,expiry))
+                      '(id,status,challenge_nonce,created_at,expires_at) '
+                      'VALUES (?,?,?,?,?)',
+                      (transaction_id,'PENDING',nonce,now,expiry))
             self._audit(c, 'local-bootstrap', 'bootstrap.begin', transaction_id)
         return {'transaction_id': transaction_id, 'state': 'PENDING',
-                'org_id': org_id, 'created_at': now, 'expires_at': expiry,
+                'created_at': now, 'expires_at': expiry,
                 'proof_context': {'version': 1, 'action': 'slh.admin.bootstrap.pending',
-                                  'org_id': org_id, 'transaction_id': transaction_id,
+                                  'transaction_id': transaction_id,
                                   'nonce': nonce, 'issued_at': now, 'expires_at': expiry}}
 
     def bootstrap_transaction_status(self, transaction_id: str, *, secret: str):
@@ -206,7 +233,7 @@ class SLHAuthority:
             self._expire_bootstrap(c)
             row = self._bootstrap_transaction(c, transaction_id)
             return {'transaction_id': row['id'], 'state': row['status'],
-                    'org_id': row['org_id'], 'admin_id': row['admin_id'],
+                    'admin_id': row['admin_id'],
                     'device_id': row['device_id'], 'created_at': row['created_at'],
                     'expires_at': row['expires_at']}
 
@@ -220,14 +247,14 @@ class SLHAuthority:
             raise SLHError('INVALID_PUBLIC_KEY')
         with self._lock, self._db() as c:
             c.execute('BEGIN IMMEDIATE')
-            if c.execute('SELECT 1 FROM organization LIMIT 1').fetchone():
+            if c.execute('SELECT 1 FROM slh_setup LIMIT 1').fetchone():
                 raise SLHError('ALREADY_INITIALIZED', 409)
             self._expire_bootstrap(c)
             row = self._bootstrap_transaction(c, transaction_id)
             if row['status'] != 'PENDING':
                 raise SLHError('SETUP_NOT_PENDING', 409)
             statement = {'version': 1, 'action': 'slh.admin.bootstrap.pending',
-                         'org_id': row['org_id'], 'transaction_id': row['id'],
+                         'transaction_id': row['id'],
                          'nonce': row['challenge_nonce'], 'issued_at': row['created_at'],
                          'expires_at': row['expires_at'], 'admin_id': admin_id,
                          'device_id': device_id, 'public_key': public_key}
@@ -240,7 +267,7 @@ class SLHAuthority:
                       (admin_id,admin_name,device_id,public_key,fingerprint,int(time.time()),transaction_id))
             self._audit(c, admin_id, 'bootstrap.administrator.staged', transaction_id)
         return {'transaction_id': transaction_id, 'state': 'AWAITING_AUTHENTICATOR',
-                'org_id': row['org_id'], 'admin_id': admin_id, 'device_id': device_id,
+                'admin_id': admin_id, 'device_id': device_id,
                 'fingerprint': fingerprint, 'expires_at': row['expires_at']}
 
     def activate_bootstrap_without_totp(self, transaction_id: str, *, secret: str,
@@ -255,7 +282,7 @@ class SLHAuthority:
             raise SLHError('TOTP_DEFERRAL_ACKNOWLEDGEMENT_REQUIRED', 400)
         with self._lock, self._db() as c:
             c.execute('BEGIN IMMEDIATE')
-            if c.execute('SELECT 1 FROM organization LIMIT 1').fetchone():
+            if c.execute('SELECT 1 FROM slh_setup LIMIT 1').fetchone():
                 raise SLHError('ALREADY_INITIALIZED', 409)
             self._expire_bootstrap(c)
             row = self._bootstrap_transaction(c, transaction_id)
@@ -264,7 +291,7 @@ class SLHAuthority:
             if not all(row[k] for k in ('admin_id','admin_name','device_id','public_key','fingerprint','proof_at')):
                 raise SLHError('SETUP_NOT_READY', 409)
             now = int(time.time())
-            c.execute('INSERT INTO organization VALUES (?,?)', (row['org_id'], now))
+            c.execute('INSERT INTO slh_setup VALUES (1,?)', (now,))
             c.execute('INSERT INTO users VALUES (?,?,?,?)',
                       (row['admin_id'], row['admin_name'], 'admin', 'active'))
             c.execute('INSERT INTO devices VALUES (?,?,?,?,?,?,?,?,?)',
@@ -277,7 +304,7 @@ class SLHAuthority:
         # A committed organization closes bootstrap even if deleting the secret
         # is interrupted; initialized() is the authoritative guard.
         (self.directory / 'bootstrap.secret').unlink(missing_ok=True)
-        return {'status': 'INITIALIZED', 'org_id': row['org_id'],
+        return {'status': 'INITIALIZED',
                 'admin_id': row['admin_id'], 'device_id': row['device_id'],
                 'administrator_authentication': 'p256_device_only',
                 'totp_enrolled': False}
@@ -303,7 +330,7 @@ class SLHAuthority:
         path = self.directory / 'bootstrap.secret'
         with self._lock, self._db() as c:
             c.execute('BEGIN IMMEDIATE')
-            if c.execute('SELECT 1 FROM organization LIMIT 1').fetchone():
+            if c.execute('SELECT 1 FROM slh_setup LIMIT 1').fetchone():
                 raise SLHError('ALREADY_INITIALIZED', 409)
             self._expire_bootstrap(c)
             if c.execute("SELECT 1 FROM bootstrap_transactions WHERE status IN "
@@ -311,7 +338,6 @@ class SLHAuthority:
                 raise SLHError('SETUP_IN_PROGRESS', 409)
             if not path.exists() or not secrets.compare_digest(path.read_text().strip(), secret):
                 raise SLHError('BOOTSTRAP_DENIED', 403)
-            org_id = _required(data.get('org_id'), 'org_id')
             device_id = _required(data.get('device_id'), 'device_id')
             name = _required(data.get('admin_name'), 'admin_name')
             user_id = _required(data.get('admin_id'), 'admin_id')
@@ -319,19 +345,19 @@ class SLHAuthority:
             if not isinstance(public_key, str) or not public_key.strip() or len(public_key)>2048:
                 raise SLHError('INVALID_PUBLIC_KEY')
             proof = data.get('proof')
-            statement = {'version': 1, 'action':'slh.admin.bootstrap', 'org_id':org_id,
+            statement = {'version': 1, 'action':'slh.admin.bootstrap',
                          'admin_id':user_id, 'device_id':device_id, 'public_key':public_key}
             if not verify_object(public_key, statement, proof):
                 raise SLHError('INVALID_KEY_PROOF', 403)
             fingerprint = public_key_fingerprint(public_key)
             now = int(time.time())
-            c.execute('INSERT INTO organization VALUES (?,?)', (org_id, now))
+            c.execute('INSERT INTO slh_setup VALUES (1,?)', (now,))
             c.execute('INSERT INTO users VALUES (?,?,?,?)', (user_id,name,'admin','active'))
             c.execute('INSERT INTO devices VALUES (?,?,?,?,?,?,?,?,?)',
                       (device_id,user_id,public_key,fingerprint,'administrator',name,'','active',now))
             self._audit(c, user_id, 'bootstrap.admin', device_id)
         path.unlink(missing_ok=True)
-        return {'status':'INITIALIZED', 'org_id':org_id, 'admin_id':user_id, 'device_id':device_id}
+        return {'status':'INITIALIZED', 'admin_id':user_id, 'device_id':device_id}
 
     def admin_directory(self):
         with self._db() as c:
@@ -358,7 +384,7 @@ class SLHAuthority:
         if len(nonce) < 24:
             raise SLHError('INVALID_CLIENT_NONCE')
         statement = {k:data[k] for k in ('selected_admin','device_id','public_key','kind','device_name','claimed_user','requested_role','client_nonce')}
-        statement.update({'version':1, 'action':'slh.device.enrollment.request','org_id':self.org_id()})
+        statement.update({'version':1, 'action':'slh.device.enrollment.request','audience':'slh://'+self.service_fingerprint()})
         if not verify_object(key, statement, data.get('proof')):
             raise SLHError('INVALID_KEY_PROOF', 403)
         fingerprint = public_key_fingerprint(key)
@@ -384,8 +410,8 @@ class SLHAuthority:
             if not row or row['status']!='active' or row['user_status']!='active':
                 raise SLHError('UNKNOWN_OR_REVOKED_DEVICE', 403)
             now=int(time.time())
-            payload={'version':1,'purpose':'slh.known_device.login','org_id':self.org_id(),
-                     'audience':'slh://' + self.org_id(),'device_id':device_id,
+            payload={'version':1,'purpose':'slh.known_device.login',
+                     'audience':'slh://' + self.service_fingerprint(),'device_id':device_id,
                      'challenge_id':uuid.uuid4().hex,'nonce':secrets.token_urlsafe(32),
                      'issued_at':now,'expires_at':now+60}
             c.execute('INSERT INTO challenges(id,device_id,payload,expires_at) VALUES (?,?,?,?)',

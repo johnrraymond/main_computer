@@ -2048,7 +2048,7 @@ def status(args):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--stage',choices=('preview','run','status','detect','repair-ab','competency','hdb-frontier','hdb-difficulty','hdb-rescore'),default='preview')
+    p.add_argument('--stage',choices=('preview','run','status','detect','repair-ab','competency','hdb-frontier','hdb-difficulty','hdb-rescore','shotgun-factorial'),default='preview')
     p.add_argument('--terminal-mode',choices=('numeric','legacy'),default='numeric',
                    help='numeric: T00 emits PROBLEM: <integer>, terminal detector signals complete; '
                         'legacy: old ANSWER: targets for existing campaigns only')
@@ -2165,7 +2165,7 @@ def main(argv=None):
     p.add_argument('--joint-math-levels',type=int,default=2,
                    help='Mathematical frontier levels per existing task family (new campaign policy)')
     p.add_argument('--joint-shotgun-eval-per-mode',type=int,default=6,
-                   help='Frozen heldout examples per Shotgun representation (fourth joint population)')
+                   help='Matched HDB08 heldout offsets per payoff family and Shotgun representation (up to 9; default 6)')
     p.add_argument('--joint-math-eval-per-level',type=int,default=3,
                    help='Fixed disjoint diagnostic cases per mathematical family and level')
     p.add_argument('--joint-hdb-min-share',type=float,default=.4)
@@ -2223,7 +2223,7 @@ def main(argv=None):
         report={'packet':args.packet,**numerical_completion(args.packet)}
         print('QWEN_LADDER_NUMERICAL_DETECTION='+json.dumps(report,sort_keys=True),flush=True)
         return report
-    if args.frontier_hdb and args.stage in ('preview','run','status','competency','hdb-difficulty','hdb-rescore'):
+    if args.frontier_hdb and args.stage in ('preview','run','status','competency','hdb-difficulty','hdb-rescore','shotgun-factorial'):
         from tools import nanojev_qwen_joint_frontier as joint
         from tools import nanojev_qwen_lm_frontier_stress_repair as frontier
         if not args.frontier:raise ValueError('JOINT_HDB_REQUIRES_FRONTIER_FLAG')
@@ -2239,7 +2239,7 @@ def main(argv=None):
                     'HDB':[f'HDB{i:02d}' for i in range(9)],
                     'mathematical_families':policy['math_tasks'],
                     'shotgun_modes':list(joint.shotgun.MODES),
-                    'shotgun_eval_cases':policy['shotgun_eval_per_mode']*len(joint.shotgun.MODES),
+                    'shotgun_eval_cases':min(policy['shotgun_eval_per_mode'],len(joint.competency._hdb_offsets(policy['hdb']['hdb_eval_cases'])))*len(joint.hdb.EVAL_VARIANTS)*len(joint.shotgun.DIAGNOSTIC_MODES),
                     'mathematical_levels':policy['math_levels'],
                     'per_step_guarantee':'T + HDB + mathematical family + Shotgun',
                     'checkpoint_workspace':str(joint._out(args))}
@@ -2250,6 +2250,7 @@ def main(argv=None):
             frontier._emit('QWEN_JOINT_FRONTIER_STATUS',result)
             return result
         if args.stage=='hdb-rescore':return joint.rescore_hdb(args)
+        if args.stage=='shotgun-factorial':return joint.rescore_shotgun_factorial(args)
         if args.stage=='hdb-difficulty':return joint.saved_difficulty(args)
         if args.stage=='competency':
             path=joint._out(args)/'joint_frontier_report.json'
@@ -2259,6 +2260,10 @@ def main(argv=None):
                           'hdb':result['hdb']['from_start']['total'],
                           'mathematics':result['mathematics']['from_baseline']['total'],
                           'math_by_task':result['mathematics']['from_baseline']['by_task'],
+                          'shotgun':(result.get('shotgun',{}).get('from_baseline') or {}).get('total'),
+                          'shotgun_matched_hdb08':result.get('shotgun',{}).get('matched_hdb08_comparison'),
+                          'shotgun_diagnostic_version':result.get('shotgun',{}).get('diagnostic_version'),
+                          'shotgun_report_is_current':result.get('shotgun_report_is_current'),
                           'focus':result.get('active_focus_schedule',{}),
                           'focus_feedback':result.get('active_focus_feedback',{}),
                           'chains':result['chains']['from_start']})

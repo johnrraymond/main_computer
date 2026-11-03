@@ -120,5 +120,138 @@ def test_shotgun_preview_is_four_populations():
                         '--radii','0,1,2,3,4','--frontier-max-radius','64',
                         '--focus','shotgun:prose=12'])
     assert result['optimizer_populations']==('T','HDB','mathematics','shotgun')
-    assert result['shotgun_eval_cases']==len(shotgun.MODES)*6
+    assert result['shotgun_eval_cases']==len(shotgun.DIAGNOSTIC_MODES)*len(joint.hdb.EVAL_VARIANTS)*6
     assert result['focus_effective_targets']['shotgun:prose']==12.
+
+
+def test_matched_hdb08_diagnostic_identifies_variant_failure_without_changing_math(tmp_path):
+    a=config(tmp_path)
+    pol=joint._policy(a)
+    _,hrows,_=joint._eval(a,pol)
+    paired=shotgun.diagnostic_evaluation(hrows,per_family=6)
+    assert len(paired)%len(shotgun.DIAGNOSTIC_MODES)==0
+    scenarios={}
+    for row in paired:
+        scenarios.setdefault(row['scenario_key'],[]).append(row)
+        assert row['metadata']['expected_balance']==int(row['target'].split(': ',1)[1])
+        assert row['metadata']['expected_balance']==(
+            row['metadata']['hawk_count']*row['metadata']['hawk_coefficient']+
+            row['metadata']['dove_count']*row['metadata']['dove_coefficient'])
+        assert row['matrix_key'].split(':')[0] in ('5','7','9')
+    assert len(scenarios)==len(paired)//len(shotgun.DIAGNOSTIC_MODES)
+    assert all(r['source']==r['metadata']['expected_hdb08_source'] for r in paired if r['mode']=='prose')
+    assert all(len({r['target'] for r in rows})==1 and
+               {r['mode'] for r in rows}==set(shotgun.DIAGNOSTIC_MODES) for rows in scenarios.values())
+    # Synthetic inference: all direct products correct while all full payoff
+    # prose wrong, on EXACTLY the same original mathematics.
+    scores={}
+    for row in paired:
+        val=int(row['target'].split(': ',1)[1]);good=row['mode']!='prose'
+        scores[frontier._key(row)]={'correct':good,
+            'emitted':row['target'] if good else f'PROBLEM: {val+1}'}
+    summary=shotgun.matched_comparison(paired,scores,frontier._key)
+    assert summary['matched_scenarios']==len(scenarios)
+    assert summary['all_modes_exact']==0
+    assert summary['against_prose_payoff_matrix']['products']['mode_succeeds_hdb_style_fails']==len(scenarios)
+    assert summary['against_prose_payoff_matrix']['products']['hdb_style_succeeds_mode_fails']==0
+    assert summary['by_payoff_matrix']['5:2:3']['tested']>0
+    assert len(summary['by_offset'])>=3
+    assert shotgun.error_distribution(paired,scores,frontier._key)['by_offset']
+
+
+def test_failure_profile_guides_train_only_disjoint_neighborhood(tmp_path):
+    a=config(tmp_path)
+    pol=joint._policy(a)
+    _,hrows,_=joint._eval(a,pol)
+    diagnostic=shotgun.diagnostic_evaluation(hrows,per_family=6)
+    scores={joint.competency._digest(r['source']):{'correct':
+        r['tier']!='HDB08' or r['offset'] != -1} for r in hrows}
+    profile=shotgun.failure_profile(hrows,scores,lambda r:joint.competency._digest(r['source']))
+    assert profile['offset_failures']=={'-1':3}
+    forbidden={r['source'] for r in [*hrows,*diagnostic]}
+    outputs=[shotgun.diagnostic_train_case(17,i,shotgun.MODES[i%8],forbidden,profile)
+             for i in range(200)]
+    assert len({r['source'] for r in outputs})>190
+    assert all(r['source'] not in forbidden for r in outputs)
+    assert all(int(r['matrix_key'].split(':')[0]) in (1,2,3,4) for r in outputs)
+    assert sum(r['metadata']['offset']==-1 for r in outputs)>=120
+    assert any(abs(r['metadata']['offset'])>8 for r in outputs)
+    assert all(r['metadata']['expected_balance']==int(r['target'].split(': ',1)[1])
+               for r in outputs)
+    assert joint._compatible_policy({**pol,'shotgun_version':shotgun.VERSION},pol)
+    assert not joint._compatible_policy({**pol,'shotgun_version':'unrecognized'},pol)
+
+
+def test_operation_isolation_controls_exact_arithmetic_and_context(tmp_path):
+    a=config(tmp_path)
+    p=joint._policy(a)
+    _,hrows,_=joint._eval(a,p)
+    deck=shotgun.diagnostic_evaluation(hrows,per_family=6)
+    assert len(deck)%len(shotgun.DIAGNOSTIC_MODES)==0
+    assert set(shotgun.OPERATION_MODES).isdisjoint(shotgun.MODES)
+    assert len({r['source'] for r in deck})==len(deck)
+    scenarios={}
+    for row in deck:
+        scenarios.setdefault(row['scenario_key'],{})[row['mode']]=row
+        assert row['metadata']['is_evaluation']
+    for modes in scenarios.values():
+        assert set(modes)==set(shotgun.DIAGNOSTIC_MODES)
+        assert len({r['target'] for r in modes.values()})==1
+        direct=modes['products']['source'].split('PROBLEM: ',1)[1].split('\nReturn',1)[0]
+        assert direct in modes['products_with_matrix']['source']
+        point=modes['point_differences']['source'].split('PROBLEM: ',1)[1].split('\nReturn',1)[0]
+        assert point in modes['point_differences_with_matrix']['source']
+        assert 'Payoff matrix' in modes['products_with_matrix']['source']
+        assert 'Payoff matrix' in modes['point_differences_with_matrix']['source']
+        assert modes['prose']['source']==modes['prose']['metadata']['expected_hdb08_source']
+        assert '2*(' in modes['points_expression']['source']
+        assert 'Compute exactly 2*' in modes['payoff_subtractions']['source']
+    # Training remains restricted to the original 8 modes.
+    assert set(shotgun.exposures())==set(shotgun.MODES)
+    for row in deck:
+        if row['mode'] in shotgun.OPERATION_MODES:
+            with pytest.raises(ValueError,match='SHOTGUN_UNKNOWN_MODE'):
+                shotgun.diagnostic_train_case(21,11,row['mode'],set())
+
+
+def test_operation_boundary_statistics_and_case_trace(tmp_path):
+    a=config(tmp_path)
+    p=joint._policy(a)
+    _,hrows,_=joint._eval(a,p)
+    deck=shotgun.diagnostic_evaluation(hrows,per_family=6)
+    # Synthetic outputs demonstrate a controlled, replicated pass->fail flip
+    # that is attributed specifically to adding the payoff matrix.
+    scores={}
+    for row in deck:
+        expected=int(row['metadata']['expected_balance'])
+        good=(row['mode'] in ('contributions','products','point_differences'))
+        scores[frontier._key(row)]={'correct':good,'emitted':
+            f'PROBLEM: {expected if good else expected+1}'}
+    summary=shotgun.matched_comparison(deck,scores,frontier._key)
+    b=summary['operation_boundaries']['add-matrix-context-to-exact-expression']
+    assert b['nonzero']['left_correct_right_wrong']==len({r['scenario_key'] for r in deck if r['metadata']['offset'] != 0})
+    assert b['all']['left_correct_right_wrong']==len({r['scenario_key'] for r in deck})
+    assert b['all']['left_wrong_right_correct']==0
+    assert b['left']=='products'
+    assert b['right']=='products_with_matrix'
+    b2=summary['operation_boundaries']['add-matrix-context-to-point-differences']
+    assert b2['all']['left_correct_right_wrong']==len({r['scenario_key'] for r in deck})
+    trace=shotgun.operation_trace(deck,scores,frontier._key,step=360000)
+    assert trace['step']==360000
+    assert len(trace['scenarios'])==len({r['scenario_key'] for r in deck})
+    sample=next(iter(trace['scenarios'].values()))
+    assert set(sample['modes'])==set(shotgun.DIAGNOSTIC_MODES)
+    assert sample['modes']['products']['signed_error']==0
+    assert sample['modes']['products_with_matrix']['signed_error']==1
+    assert sample['modes']['products']['source']
+    assert sample['modes']['products_with_matrix']['emitted']
+    assert trace['scope'].endswith('never used for supervision')
+
+
+def test_v2_policy_can_migrate_but_new_unrecognized_policy_cannot(tmp_path):
+    a=config(tmp_path)
+    p=joint._policy(a)
+    assert joint._compatible_policy({**p, 'shotgun_version':
+        'nanojev.qwen.shotgun.failure-neighborhood.v2'},p)
+    assert joint._compatible_policy({**p, 'shotgun_version':shotgun.VERSION},p)
+    assert not joint._compatible_policy({**p, 'shotgun_version':'unknown'},p)

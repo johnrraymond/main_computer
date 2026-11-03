@@ -27,9 +27,8 @@ class PrivateRequests:
     def __init__(self, state_dir: Path, authority, gateway, *, execution_timeout=120):
         self.authority = authority
         self.gateway = gateway
-        self.org_id = authority.org_id()
         self.execution_timeout = execution_timeout
-        self.pinky = PinkyPromise(self.org_id)
+        self.pinky = PinkyPromise()
         self._lock = threading.RLock()
         path = Path(state_dir)
         path.mkdir(parents=True, exist_ok=True)
@@ -37,8 +36,9 @@ class PrivateRequests:
             os.chmod(path, 0o700)
         self.db_path = path / 'private_requests.sqlite3'
         with self._db() as db:
+            self._migrate_legacy(db)
             db.execute('''CREATE TABLE IF NOT EXISTS private_requests (
-                 org_id TEXT NOT NULL, requester_device_id TEXT NOT NULL,
+                 requester_device_id TEXT NOT NULL,
                  request_id TEXT NOT NULL, request_digest TEXT NOT NULL,
                  model TEXT NOT NULL, status TEXT NOT NULL,
                  worker_device_id TEXT, run_id TEXT,
@@ -46,7 +46,7 @@ class PrivateRequests:
                  admitted_at_ns INTEGER NOT NULL, updated_at_ns INTEGER NOT NULL,
                  fulfilled_at_ns INTEGER, result_hash TEXT, failure_code TEXT,
                  billing_policy_id TEXT NOT NULL DEFAULT 'p2-pre-assessment',
-                 PRIMARY KEY (org_id,requester_device_id,request_id))''')
+                 PRIMARY KEY (requester_device_id,request_id))''')
             columns = {column['name'] for column in db.execute('PRAGMA table_info(private_requests)')}
             # Existing P2 rows, including previous SUCCEEDED requests, are
             # nonbillable.  Never retroactively assess them during migration.
@@ -61,6 +61,37 @@ class PrivateRequests:
             db.execute("UPDATE private_requests SET status='OUTCOME_UNKNOWN', failure_code='INTERRUPTED_AFTER_DISPATCH', updated_at_ns=? WHERE status='DISPATCHED'", (time.time_ns(),))
         if os.name == 'posix':
             os.chmod(self.db_path, 0o600)
+
+    def _migrate_legacy(self, db):
+        # One-time, lossless removal of the obsolete scoped primary key.
+        existing = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='private_requests'").fetchone()
+        if existing is None:
+            return
+        columns = [r['name'] for r in db.execute('PRAGMA table_info(private_requests)')]
+        if 'org_id' not in columns:
+            return
+        distinct = db.execute('SELECT COUNT(DISTINCT org_id) n FROM private_requests').fetchone()['n']
+        duplicates = db.execute('''SELECT 1 FROM private_requests
+            GROUP BY requester_device_id,request_id HAVING COUNT(*)>1 LIMIT 1''').fetchone()
+        if distinct > 1 or duplicates:
+            raise SLHError('LEGACY_PRIVATE_LEDGER_SCOPE_CONFLICT',409)
+        fields = [name for name in columns if name != 'org_id']
+        definitions = {r['name']:r for r in db.execute('PRAGMA table_info(private_requests)')}
+        # The original primary key was (org_id,requester_device_id,request_id).
+        # Keep existing versioned rows and timestamps exactly; preserve all request IDs.
+        specs=[]
+        for name in fields:
+            info=definitions[name]
+            sql='"'+name+'" '+info['type']
+            if info['notnull']: sql+=' NOT NULL'
+            if info['dflt_value'] is not None: sql+=' DEFAULT '+info['dflt_value']
+            specs.append(sql)
+        specs.append('PRIMARY KEY (requester_device_id,request_id)')
+        db.execute('CREATE TABLE private_requests_no_scope ('+', '.join(specs)+')')
+        cols=', '.join('"'+name+'"' for name in fields)
+        db.execute(f'INSERT INTO private_requests_no_scope ({cols}) SELECT {cols} FROM private_requests')
+        db.execute('DROP TABLE private_requests')
+        db.execute('ALTER TABLE private_requests_no_scope RENAME TO private_requests')
 
     @contextmanager
     def _db(self):
@@ -110,18 +141,18 @@ class PrivateRequests:
         if not isinstance(request_id,str) or not _ID.fullmatch(request_id):
             raise SLHError('INVALID_PRIVATE_REQUEST_ID', 400)
         with self._db() as db:
-            row = db.execute('SELECT * FROM private_requests WHERE org_id=? AND requester_device_id=? AND request_id=?',
-                             (self.org_id,requester,request_id)).fetchone()
+            row = db.execute('SELECT * FROM private_requests WHERE requester_device_id=? AND request_id=?',
+                             (requester,request_id)).fetchone()
         if row is None:
             raise SLHError('PRIVATE_REQUEST_NOT_FOUND',404)
         return self._public(row)
 
     def _update(self, requester, req, status, *, worker=None, run_id=None, result_hash=None, failure_code=None):
         with self._lock, self._db() as db:
-            db.execute('UPDATE private_requests SET status=?, worker_device_id=COALESCE(?,worker_device_id), run_id=COALESCE(?,run_id), result_hash=?, failure_code=?, updated_at_ns=?, fulfilled_at_ns=? WHERE org_id=? AND requester_device_id=? AND request_id=?',
+            db.execute('UPDATE private_requests SET status=?, worker_device_id=COALESCE(?,worker_device_id), run_id=COALESCE(?,run_id), result_hash=?, failure_code=?, updated_at_ns=?, fulfilled_at_ns=? WHERE requester_device_id=? AND request_id=?',
                        (status,worker,run_id,result_hash,failure_code,time.time_ns(),
                         time.time_ns() if status=='SUCCEEDED' else None,
-                        self.org_id,requester,req))
+                        requester,req))
         return self.get({'role':'requester','device_id':requester},req)
 
     def _complete_success(self, requester, req, result_hash):
@@ -129,8 +160,8 @@ class PrivateRequests:
         # An exception rolls back both changes; after a crash the prior
         # DISPATCHED row becomes OUTCOME_UNKNOWN, never silently billable.
         with self._lock, self._db() as db:
-            row = db.execute('SELECT * FROM private_requests WHERE org_id=? AND requester_device_id=? AND request_id=?',
-                             (self.org_id,requester,req)).fetchone()
+            row = db.execute('SELECT * FROM private_requests WHERE requester_device_id=? AND request_id=?',
+                             (requester,req)).fetchone()
             if row is None or row['status'] != 'DISPATCHED':
                 raise SLHError('PRIVATE_FULFILLMENT_STATE_CONFLICT',409)
             now=time.time_ns()
@@ -139,9 +170,9 @@ class PrivateRequests:
             updated=db.execute('''UPDATE private_requests
                 SET status='SUCCEEDED',result_hash=?,failure_code=NULL,
                     fulfilled_at_ns=?,updated_at_ns=?
-                WHERE org_id=? AND requester_device_id=? AND request_id=?
+                WHERE requester_device_id=? AND request_id=?
                 AND status='DISPATCHED' ''',
-                (result_hash,now,now,self.org_id,requester,req))
+                (result_hash,now,now,requester,req))
             if updated.rowcount != 1:
                 raise SLHError('PRIVATE_FULFILLMENT_STATE_CONFLICT',409)
         return self.get({'role':'requester','device_id':requester},req)
@@ -174,8 +205,8 @@ class PrivateRequests:
             raise SLHError('PRIVATE_WORK_TOO_LARGE',413)
         digest = hashlib.sha256(encoded).hexdigest()
         with self._lock, self._db() as db:
-            row = db.execute('SELECT * FROM private_requests WHERE org_id=? AND requester_device_id=? AND request_id=?',
-                             (self.org_id,requester,req)).fetchone()
+            row = db.execute('SELECT * FROM private_requests WHERE requester_device_id=? AND request_id=?',
+                             (requester,req)).fetchone()
             if row:
                 if row['request_digest']!=digest:
                     raise SLHError('PRIVATE_REQUEST_ID_REUSED',409)
@@ -183,10 +214,10 @@ class PrivateRequests:
             now=time.time_ns()
             policy=self.pinky.snapshot(db)
             db.execute('''INSERT INTO private_requests
-                (org_id,requester_device_id,request_id,request_digest,model,status,
+                (requester_device_id,request_id,request_digest,model,status,
                  admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                (self.org_id,requester,req,digest,model,'ADMITTED',now,now,
+                 VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                (requester,req,digest,model,'ADMITTED',now,now,
                  POLICY_ID,policy['revision'],int(policy['enabled'])))
         # Race after auth or revocation cannot be allowed to dispatch.
         # Authentication was performed by SLHAPI, before this method is called.

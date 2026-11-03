@@ -47,6 +47,8 @@ class TestSLHCanonicalPortAndCLI(unittest.TestCase):
         state = self.directory/'state'
         identities = self.directory/'identities'
         save_identity(identities, 'admin-pc')
+        from tools.slh_seh_connector import service_identity
+        service_identity(state, create=True)
         authority = SLHAuthority(state)
         server = make_server('127.0.0.1',0,SLHAPI(authority).wsgi_app)
         port = server.server_port
@@ -54,7 +56,7 @@ class TestSLHCanonicalPortAndCLI(unittest.TestCase):
         thread.start()
         try:
             result = bootstrap_admin(port=port,state_dir=state,identity_dir=identities,device_id='admin-pc',
-                org_id='test-org',admin_id='alice',admin_name='Alice Admin')
+                admin_id='alice',admin_name='Alice Admin')
             self.assertEqual(result['status'],'INITIALIZED')
             self.assertFalse((state/'bootstrap.secret').exists())
             result = login(port=port,identity_dir=identities,device_id='admin-pc')

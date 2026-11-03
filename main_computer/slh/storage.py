@@ -103,6 +103,10 @@ def _windows_caller_sid() -> str:
     return sid
 
 
+def _windows_acl_enabled() -> bool:
+    return os.name == 'nt'
+
+
 def secure_machine_state_dir(directory: Path) -> Path:
     """Protect runtime state for the actual operator, SYSTEM and Administrators.
 
@@ -114,16 +118,44 @@ def secure_machine_state_dir(directory: Path) -> Path:
     if directory.is_symlink():
         raise PermissionError('SLH state root cannot be a symlink')
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if os.name == 'nt':
+    if _windows_acl_enabled():
         sid = _windows_caller_sid()
         result = subprocess.run([
             'icacls.exe', str(directory), '/inheritance:r',
             '/grant:r', f'*{sid}:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F',
             '*S-1-5-32-544:(OI)(CI)F',
-            '/remove:g', '*S-1-5-32-545', '*S-1-5-11', '*S-1-1-0', '/T',
+            '/remove:g', '*S-1-5-32-545', '*S-1-5-11', '*S-1-1-0',
         ], capture_output=True, text=True, check=False)
         if result.returncode:
             raise PermissionError('SLH runtime state ACL hardening failed: ' + result.stderr.strip())
     else:
         directory.chmod(0o700)
     return directory
+
+
+def secure_private_state_file(path: Path) -> Path:
+    """Harden a *newly created* private file and confirm it is readable.
+
+    This deliberately does not recurse through other files or repair an
+    existing authority. A bad ACL fails before bootstrap reports success.
+    """
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise PermissionError('SLH private state file missing or symlinked')
+    if _windows_acl_enabled():
+        sid = _windows_caller_sid()
+        result = subprocess.run([
+            'icacls.exe', str(path), '/inheritance:r',
+            '/grant:r', f'*{sid}:F', '*S-1-5-18:F', '*S-1-5-32-544:F',
+            '/remove:g', '*S-1-5-32-545', '*S-1-5-11', '*S-1-1-0',
+        ], capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise PermissionError('SLH private file ACL hardening failed: ' + result.stderr.strip())
+    else:
+        path.chmod(0o600)
+    # The old migration reported success with an unreadable file. Never do that
+    # for a new key. A failed read is a hard bootstrap failure.
+    with path.open('rb') as stream:
+        if not stream.read(1):
+            raise ValueError('SLH private state file is empty')
+    return path

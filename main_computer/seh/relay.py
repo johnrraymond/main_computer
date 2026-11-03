@@ -35,16 +35,13 @@ def _frame(obj: dict) -> str:
 
 
 class SEHRelay:
-    def __init__(self, *, organization_id: str, slh_id: str, slh_public_key: str,
+    def __init__(self, *, slh_id: str, slh_public_key: str,
                  host: str = '127.0.0.1', port: int = 8080, max_clients: int = MAX_CLIENTS):
-        if not organization_id or '/' in organization_id or len(organization_id) > 128:
-            raise ValueError('SEH organization ID invalid')
         if not slh_id or '/' in slh_id or len(slh_id) > 128:
             raise ValueError('SEH SLH ID invalid')
         load_public_key(slh_public_key)
         if not 1 <= max_clients <= MAX_CLIENTS:
             raise ValueError('SEH max_clients outside bounded range')
-        self.organization_id = organization_id
         self.slh_id = slh_id
         self.slh_public_key = slh_public_key
         self.host = host
@@ -160,7 +157,6 @@ class SEHRelay:
     def _handle_slh(self, ws, *, lab_id: str | None = None):
         nonce = secrets.token_urlsafe(32)
         statement = {'version': 1, 'action': 'seh.slh.connect',
-                     'organization_id': self.organization_id,
                      'slh_id': self.slh_id, 'nonce': nonce}
         if lab_id is not None:
             statement['lab_id'] = lab_id
@@ -187,7 +183,7 @@ class SEHRelay:
                     return
                 self._lab_slhs[lab_id] = ws
             self.authenticated_slh_count += 1
-        ws.send(_frame({'type':'seh.auth.accepted', 'organization_id': self.organization_id}))
+        ws.send(_frame({'type':'seh.auth.accepted'}))
         try:
             for raw in ws:
                 if not isinstance(raw, str):
@@ -304,15 +300,15 @@ class SEHRelay:
 
     def handler(self, ws):
         path = ws.request.path
-        if path == f'/v1/seh/slh/{self.organization_id}':
+        if path == f'/v1/seh/slh/{self.slh_id}':
             return self._handle_slh(ws)
-        if path == f'/v1/seh/client/{self.organization_id}':
+        if path == f'/v1/seh/client/{self.slh_id}':
             return self._handle_client(ws)
         # Separate disposable test channel: uses the SAME enrolled SLH public
         # key but never replaces or routes traffic into the production tunnel.
         parts = path.split('/')
         if (len(parts) == 8 and parts[:4] == ['', 'v1', 'seh', 'lab']
-                and parts[4] == self.organization_id and parts[5] in ('slh', 'client')
+                and parts[4] == self.slh_id and parts[5] in ('slh', 'client')
                 and parts[6] == 'id' and LAB_ID.fullmatch(parts[7])):
             if parts[5] == 'slh':
                 return self._handle_slh(ws, lab_id=parts[7])
@@ -362,12 +358,11 @@ def main(argv=None):
     p.add_argument('--host', default=os.getenv('SEH_HOST','0.0.0.0'))
     p.add_argument('--port', type=int, default=int(os.getenv('SEH_PORT','8080')))
     args = p.parse_args(argv)
-    org = os.getenv('SEH_ORGANIZATION_ID','')
     slh = os.getenv('SEH_SLH_ID','')
     encoded = os.getenv('SEH_SLH_PUBLIC_KEY_B64','')
-    supplied = (bool(org), bool(slh), bool(encoded))
+    supplied = (bool(slh), bool(encoded))
     if any(supplied) and not all(supplied):
-        p.error('Partial SLH binding is unsafe: all three binding variables are required')
+        p.error('Partial SLH binding is unsafe: SLH identity and public key are required')
     if not any(supplied):
         # Securely deployed but unbound. No SLH/client transport may be
         # accepted until a separate, authorized enrollment configures trust.
@@ -391,9 +386,9 @@ def main(argv=None):
         key = base64.b64decode(encoded, validate=True).decode('ascii')
     except (ValueError, UnicodeDecodeError):
         p.error('Invalid SEH_SLH_PUBLIC_KEY_B64')
-    relay = SEHRelay(organization_id=org, slh_id=slh, slh_public_key=key,
+    relay = SEHRelay(slh_id=slh, slh_public_key=key,
                      host=args.host, port=args.port)
-    print(_frame({'event':'seh_listening', 'port':args.port,'org':org}), flush=True)
+    print(_frame({'event':'seh_listening', 'port':args.port}), flush=True)
     relay.serve()
 
 

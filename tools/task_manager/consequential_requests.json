@@ -1,0 +1,46 @@
+{
+  "p36_e329c900d4e54cf18d27798c64298fe4": {
+    "key": "6f1aa5fef88195027fcfe37d339efba72b9b9bae8cd57864807e27c88003b932",
+    "receipt": {
+      "ok": false,
+      "outcome": "unknown",
+      "action": "terminate_pid",
+      "request_id": "p36_e329c900d4e54cf18d27798c64298fe4",
+      "message": "Outcome unverified; automatic replay refused."
+    }
+  },
+  "p36_c6fe447655fe45febb553e9a6e7a41c7": {
+    "key": "60afbf00195bd6212cc0dc8329e3fa1a681308313dcd2781eb91dddaa41aa270",
+    "receipt": {
+      "ok": true,
+      "action": "terminate_pid",
+      "message": "Process 48548 handled via terminate_pid.",
+      "pid": 48548,
+      "verified_created_at": "2026-11-02T19:19:40.084+00:00",
+      "request_id": "p36_c6fe447655fe45febb553e9a6e7a41c7",
+      "outcome": "command-returned"
+    }
+  },
+  "p36_f436a16c2ce84c1396ccd08a36fbccb5": {
+    "key": "bfe744f65aa4181214f2ac63638786be3ca0e07eb1d9716186967660c291ac4a",
+    "receipt": {
+      "ok": false,
+      "outcome": "unknown",
+      "action": "kill_pid",
+      "request_id": "p36_f436a16c2ce84c1396ccd08a36fbccb5",
+      "message": "Outcome unverified; automatic replay refused."
+    }
+  },
+  "p36_3b47d1621e414e02b07125b00cf5d1e2": {
+    "key": "182c9ca1f17e7746603b174bc39c2efb48b9ffda35d2c35e8b2349d18d11baa8",
+    "receipt": {
+      "ok": true,
+      "action": "kill_pid",
+      "message": "Process 50836 handled via kill_pid.",
+      "pid": 50836,
+      "verified_created_at": "2026-11-02T19:19:41.596+00:00",
+      "request_id": "p36_3b47d1621e414e02b07125b00cf5d1e2",
+      "outcome": "command-returned"
+    }
+  }
+}

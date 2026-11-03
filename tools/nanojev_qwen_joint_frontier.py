@@ -220,7 +220,7 @@ def _policy(args):
     levels = int(getattr(args, 'joint_math_levels', 2))
     eval_per_level = int(getattr(args, 'joint_math_eval_per_level', 3))
     if (levels < 1 or levels > 6 or eval_per_level < 1 or eval_per_level > 32 or
-        not 1<=int(getattr(args,'joint_shotgun_eval_per_mode',6))<=32 or
+        not 1<=int(getattr(args,'joint_shotgun_eval_per_mode',6))<=9 or
         steps < 1 or check < 1 or pool_refresh < 1 or
         not old < outer <= args.operand_limit or
         not 0.2 <= hdb_min <= hdb_max <= 0.8 or
@@ -236,7 +236,7 @@ def _policy(args):
             'math_tasks_version':math_tasks.VERSION,
             'math_tasks':list(math_tasks.TASKS),
             'math_levels':levels,'math_eval_per_level':eval_per_level,
-            'shotgun_version':shotgun.VERSION,'shotgun_eval_per_mode':int(getattr(args,'joint_shotgun_eval_per_mode',6))}
+            'shotgun_version':shotgun.DIAGNOSTIC_VERSION,'shotgun_eval_per_mode':int(getattr(args,'joint_shotgun_eval_per_mode',6))}
 
 
 def _eval(args,policy):
@@ -251,14 +251,15 @@ def _eval(args,policy):
 
 
 def _shotgun_eval(args,policy,trows,hrows,mathrows):
-    rows=shotgun.evaluation(args.seed,policy['shotgun_eval_per_mode'])
+    rows=shotgun.diagnostic_evaluation(hrows,per_family=policy['shotgun_eval_per_mode'])
     forbidden={r['source'] for r in [*trows,*hrows,*mathrows]}
-    if len({r['source'] for r in rows})!=len(rows) or any(r['source'] in forbidden for r in rows):
+    if (len({r['source'] for r in rows})!=len(rows) or
+            any(r['source'] in forbidden and r['mode']!='prose' for r in rows)):
         raise RuntimeError('SHOTGUN_EVAL_DECK_COLLISION')
     return rows
 
-def _shotgun_train_row(args,step,mode,forbidden):
-    return shotgun.train_case(args.seed,step,mode,forbidden)
+def _shotgun_train_row(args,step,mode,forbidden,profile=None):
+    return shotgun.diagnostic_train_case(args.seed,step,mode,forbidden,profile)
 
 def _math_labels(policy):
     return [f'{task}:L{level}' for level in range(policy['math_levels'])
@@ -429,7 +430,7 @@ def _batch(args,policy,step,state,tpool,forbidden):
     rows=[_pick_t(tpool,t_tier,rng),
           _math_train_row(args,policy,step,m_label,forbidden),
           hdb._row(int(h_tier[3:]),(-k,0,k)[step%3],variant,label=f'JOINT-HDB-S{step}'),
-          _shotgun_train_row(args,step,s_mode,forbidden)]
+          _shotgun_train_row(args,step,s_mode,forbidden,state.get('shotgun_failure_profile'))]
     while len(rows)<args.batch_size:
         slot=len(rows)
         extra,_=_mode(state,policy,step+slot*17,focus=focus)
@@ -441,7 +442,7 @@ def _batch(args,policy,step,state,tpool,forbidden):
             rows.append(_pick_t(tpool,label,rng))
         elif extra=='shotgun-major':
             smode=priority(s_stats,['shotgun:'+m for m in shotgun.MODES],sexp,step+slot*4).split(':',1)[1]
-            rows.append(_shotgun_train_row(args,step+slot*10,smode,forbidden))
+            rows.append(_shotgun_train_row(args,step+slot*10,smode,forbidden,state.get('shotgun_failure_profile')))
         else:
             label=priority(h_stats,[f'HDB{x:02d}' for x in range(9)],state['h_exposures'],step+slot*4)
             rows.append(hdb._row(int(label[3:]),(-k,0,k)[(step+slot)%3],variant,
@@ -675,11 +676,19 @@ def latest_competency(args):
         report['diagnostic_state']='migration_baseline_only_no_math_training_yet'
         report['step']=state['step']
     report['active_focus_schedule']=state.get('focus',{})
-    if 'shotgun' not in report:
-        report['shotgun']={'diagnostic_state':'not_yet_audited_since_shotgun_migration',
-            'baseline_at_optimizer_step':state.get('shotgun_baseline_step')}
-        if 'shotgun_current' in state:
-            report['shotgun']['from_baseline']=state['shotgun_current']
+    if (report.get('shotgun',{}).get('diagnostic_version')!=
+            state.get('shotgun_diagnostic_version')):
+        # Never show the old 48/48 as a score on the new matched deck.
+        report['shotgun']={'diagnostic_state':'operation_isolation_migration_baseline_only',
+            'baseline_at_optimizer_step':state.get('shotgun_baseline_step'),
+            'diagnostic_version':state.get('shotgun_diagnostic_version'),
+            'from_baseline':state.get('shotgun_current'),
+            'matched_hdb08_comparison':state.get('shotgun_matched_current'),
+            'targeted_failure_profile':state.get('shotgun_failure_profile'),
+            'operation_case_evidence':'shotgun_operation_cases.json'}
+        report['shotgun_report_is_current']=False
+    else:
+        report['shotgun_report_is_current']=True
     if 'policy' in state:
         report['active_focus_feedback']=_focus_feedback(state,state['policy'])
     report['focus_report_is_current']=(report['step']==state.get('step') and
@@ -709,6 +718,13 @@ def _compatible_policy(saved,policy,*,legacy=False):
     if 'shotgun_version' not in saved:
         for key in ('shotgun_version','shotgun_eval_per_mode'):
             expected.pop(key,None)
+    elif saved['shotgun_version'] in (shotgun.VERSION,
+            'nanojev.qwen.shotgun.failure-neighborhood.v2',
+            'nanojev.qwen.shotgun.operation-isolation.v3',
+            'nanojev.qwen.shotgun.rephrase-neighborhood.v5'):
+        # Permit known historical Shotgun diagnostic-only upgrades; optimizer
+        # policy remains unchanged, only the frozen evaluation deck changes.
+        expected['shotgun_version']=saved['shotgun_version']
     if legacy:
         for key in ('math_tasks_version','math_tasks','math_levels','math_eval_per_level'):
             expected.pop(key)
@@ -1190,6 +1206,74 @@ def run(args):
                 'step':state['step'],'previous_every':previous_check_every,
                 'next_every':policy['check_every'],
                 'evaluation_decks_unchanged':True})
+        if (state.get('shotgun_initial') is not None and
+                state.get('shotgun_diagnostic_version')!=shotgun.DIAGNOSTIC_VERSION):
+            # An evaluation-only expansion: never compare v2 scores with v3
+            # as though they were the same deck. Archive the old matched results
+            # and establish a new baseline from the identical learned weights.
+            old_version=state.get('shotgun_diagnostic_version')
+            old_is_v2=(old_version=='nanojev.qwen.shotgun.failure-neighborhood.v2')
+            old_is_v3=(old_version=='nanojev.qwen.shotgun.operation-isolation.v3')
+            old_is_v5=(old_version=='nanojev.qwen.shotgun.rephrase-neighborhood.v5')
+            if old_is_v5:
+                preserved=out/'pre_shotgun_ledger_context_migration.pt'
+                archive_name='shotgun_v5_archived_diagnostic.json'
+                saved_deck_name='shotgun_v5_eval_deck.json'
+            elif old_is_v3:
+                preserved=out/'pre_shotgun_rephrase_neighborhood_migration.pt'
+                archive_name='shotgun_v3_archived_diagnostic.json'
+                saved_deck_name='shotgun_v3_eval_deck.json'
+            elif old_is_v2:
+                preserved=out/'pre_shotgun_operation_isolation_migration.pt'
+                archive_name='shotgun_v2_archived_diagnostic.json'
+                saved_deck_name='shotgun_v2_eval_deck.json'
+            else:
+                preserved=out/'pre_shotgun_failure_neighborhood_migration.pt'
+                archive_name='shotgun_v1_archived_diagnostic.json'
+                saved_deck_name=None
+            if not preserved.exists():
+                ladder._atomic_torch(preserved,obj)
+            ladder._atomic_json(out/archive_name,{
+                'version':old_version,
+                'baseline_step':state.get('shotgun_baseline_step'),
+                'original_eval_sha256':state.get('shotgun_eval_sha256'),
+                'original_competency':state.get('shotgun_current'),
+                'original_errors':state.get('shotgun_error_current'),
+                'original_matched_comparison':state.get('shotgun_matched_current'),
+                'original_exposures':state.get('shotgun_exposures')})
+            if saved_deck_name is not None:
+                old_deck=out/'shotgun_eval_deck.json'
+                if (not old_deck.is_file() or
+                    ladder.deck_fingerprint(json.loads(old_deck.read_text(encoding='utf8')))
+                         !=state.get('shotgun_eval_sha256')):
+                    raise RuntimeError('SHOTGUN_ARCHIVE_SOURCE_DRIFT')
+                ladder._atomic_json(out/saved_deck_name,
+                                    json.loads(old_deck.read_text(encoding='utf8')))
+            bb.eval()
+            initial_shotgun=_score_shotgun(bb,tok,shotgunrows,args)
+            ladder._atomic_json(out/'shotgun_operation_cases.json',
+                shotgun.operation_trace(shotgunrows,initial_shotgun,frontier._key,
+                                        step=state['step']))
+            state.update(shotgun_initial=initial_shotgun,
+                shotgun_previous=initial_shotgun,
+                shotgun_current=shotgun.metrics(shotgunrows,initial_shotgun,initial_shotgun,frontier._key),
+                shotgun_error_current=shotgun.error_distribution(shotgunrows,initial_shotgun,frontier._key),
+                shotgun_matched_current=shotgun.matched_comparison(shotgunrows,initial_shotgun,frontier._key),
+                shotgun_diagnostic_version=shotgun.DIAGNOSTIC_VERSION,
+                shotgun_failure_profile=shotgun.failure_profile(hrows,state['h_previous'],lambda r:competency._digest(r['source'])),
+                shotgun_baseline_step=state['step'],
+                shotgun_eval_sha256=shotgun_sha,
+                last_shotgun_exposures=copy.deepcopy(state.get('shotgun_exposures',shotgun.exposures())),
+                policy=policy)
+            ladder._atomic_json(out/'shotgun_eval_deck.json',shotgunrows)
+            _save(out,state,bb,zero,opt)
+            frontier._emit('QWEN_JOINT_SHOTGUN_DIAGNOSTIC_MIGRATION',{
+                'step':state['step'],'old_deck_archived':True,
+                'new_matched_cases':len(shotgunrows),
+                'diagnostic_version':shotgun.DIAGNOSTIC_VERSION,
+                'operation_boundaries':state['shotgun_matched_current']['operation_boundaries'],
+                'failure_profile':state['shotgun_failure_profile'],
+                'checkpoint':str(preserved),'optimizer_and_lora_preserved':True})
         if 'shotgun_initial' not in state:
             # In-place four-population migration: no optimizer update, no LoRA
             # reset, no movement of the existing T/HDB/math heldout decks.
@@ -1206,8 +1290,14 @@ def run(args):
                 last_shotgun_exposures=shotgun.exposures(),
                 shotgun_baseline_step=state['step'],
                 shotgun_eval_sha256=shotgun_sha,
+                shotgun_diagnostic_version=shotgun.DIAGNOSTIC_VERSION,
+                shotgun_matched_current=shotgun.matched_comparison(shotgunrows,initial_shotgun,frontier._key),
+                shotgun_failure_profile=shotgun.failure_profile(hrows,state['h_previous'],lambda r:competency._digest(r['source'])),
                 policy=policy)
             state.setdefault('modes',{})['shotgun-major']=0
+            ladder._atomic_json(out/'shotgun_operation_cases.json',
+                shotgun.operation_trace(shotgunrows,initial_shotgun,frontier._key,
+                                        step=state['step']))
             ladder._atomic_json(out/'shotgun_eval_deck.json',shotgunrows)
             _save(out,state,bb,zero,opt)
             frontier._emit('QWEN_JOINT_SHOTGUN_MIGRATION',{
@@ -1266,6 +1356,9 @@ def run(args):
                'shotgun_error_current':shotgun.error_distribution(shotgunrows,s0,frontier._key),
                'shotgun_exposures':shotgun.exposures(),
                'shotgun_baseline_step':0,'shotgun_eval_sha256':shotgun_sha,
+               'shotgun_diagnostic_version':shotgun.DIAGNOSTIC_VERSION,
+               'shotgun_matched_current':shotgun.matched_comparison(shotgunrows,s0,frontier._key),
+               'shotgun_failure_profile':shotgun.failure_profile(hrows,h0,lambda r:competency._digest(r['source'])),
                'math_current':_math_metrics(mathrows,m0,m0),
                'math_baseline_step':0,
                'training_seconds':0.,'evaluation_seconds':time.perf_counter()-first,
@@ -1279,6 +1372,8 @@ def run(args):
         ladder._atomic_json(out/'hdb_eval_deck.json',hrows)
         ladder._atomic_json(out/'math_eval_deck.json',mathrows)
         ladder._atomic_json(out/'shotgun_eval_deck.json',shotgunrows)
+        ladder._atomic_json(out/'shotgun_operation_cases.json',
+            shotgun.operation_trace(shotgunrows,s0,frontier._key,step=0))
         _save(out,state,bb,zero,opt)
         frontier._emit('QWEN_JOINT_FRONTIER_START',{'output':str(out),
              'arithmetic_parent_step':parent['state']['phase_step'],
@@ -1383,6 +1478,8 @@ def run(args):
                 'cumulative_training_examples':cur}
         shotgun_velocities={}
         for mode_name,metric in si['by_mode'].items():
+            if mode_name not in shotgun.MODES:
+                continue  # diagnostic-only variants have no optimizer exposure
             cur=state['shotgun_exposures'][mode_name]['examples']
             prev=state.get('last_shotgun_exposures',{}).get(mode_name,{}).get('examples',0)
             shotgun_velocities[mode_name]={'interval_training_examples':cur-prev,
@@ -1407,6 +1504,8 @@ def run(args):
                 state['math_exposures'][label]['examples'],family='mathematics',
                 interval_exposure=math_velocities[label]['interval_training_examples'])
         for mode_name,metric in si['by_mode'].items():
+            if mode_name not in shotgun.MODES:
+                continue  # no false claims of directly trained acquisition
             tier_learning['shotgun:'+mode_name]=_learning_state(state,'shotgun:'+mode_name,
                 metric['correct'],metric['tested'],metric['gained'],metric['lost'],
                 state['shotgun_exposures'][mode_name]['examples'],family='shotgun',
@@ -1422,6 +1521,11 @@ def run(args):
         state['shotgun_current']=sb
         previous_shotgun_error=state.get('shotgun_error_current')
         state['shotgun_error_current']=shotgun.error_distribution(shotgunrows,snow,frontier._key)
+        state['shotgun_matched_current']=shotgun.matched_comparison(shotgunrows,snow,frontier._key)
+        ladder._atomic_json(out/'shotgun_operation_cases.json',
+            shotgun.operation_trace(shotgunrows,snow,frontier._key,
+                                    step=state['step']))
+        state['shotgun_failure_profile']=shotgun.failure_profile(hrows,hnow,lambda r:competency._digest(r['source']))
         shotgun_error_change=shotgun.compare_distributions(previous_shotgun_error,
             state['shotgun_error_current'])
         state['t_previous']=tnow;state['h_previous']=hnow;state['math_previous']=mnow
@@ -1439,8 +1543,14 @@ def run(args):
              'hdb':{'from_start':hb,'interval':hi},
              'shotgun':{'from_baseline':sb,'interval':si,
                 'baseline_at_optimizer_step':state['shotgun_baseline_step'],
-                'modes':list(shotgun.MODES),'evaluation_deck_sha256':shotgun_sha,
+                'modes':list(shotgun.DIAGNOSTIC_MODES),
+                'optimizer_modes':list(shotgun.MODES),
+                'operation_case_evidence':'shotgun_operation_cases.json',
+                'evaluation_deck_sha256':shotgun_sha,
                 'normalized_balance_error':state['shotgun_error_current'],
+                'matched_hdb08_comparison':state['shotgun_matched_current'],
+                'targeted_failure_profile':state['shotgun_failure_profile'],
+                'diagnostic_version':shotgun.DIAGNOSTIC_VERSION,
                 'error_change_since_previous_audit':shotgun_error_change},
              'mathematics':{'from_baseline':mb,'interval':mi,
                 'baseline_at_optimizer_step':state['math_baseline_step'],
@@ -1486,6 +1596,8 @@ def run(args):
             'weakest_t':difficult['t_retention']['ranked_retention_risks'][:3],
             'weakest_hdb':difficult['hdb']['ranked_tiers'][:3],
             'shotgun_balance_error':state['shotgun_error_current'],
+            'shotgun_matched_comparison':state['shotgun_matched_current'],
+            'shotgun_failure_profile':state['shotgun_failure_profile'],
             'shotgun_error_change':shotgun_error_change,
             'weakest_shotgun':sorted(sb['by_mode'].items(),
                 key=lambda item:(item[1]['accuracy'],item[0]))[:3],
@@ -1512,6 +1624,8 @@ def run(args):
           'shotgun_correct':sb['total']['correct'],'shotgun_tested':sb['total']['tested'],
           'shotgun_interval_net':si['total']['net'],
           'shotgun_balance_error':state['shotgun_error_current'],
+          'shotgun_matched_comparison':state['shotgun_matched_current'],
+          'shotgun_failure_profile':state['shotgun_failure_profile'],
           'shotgun_error_change':shotgun_error_change,
           'shotgun_weakest_modes':sorted(sb['by_mode'].items(),
               key=lambda item:(item[1]['accuracy'],item[0]))[:3],
@@ -1528,3 +1642,80 @@ def run(args):
     frontier._emit('QWEN_JOINT_FRONTIER_DONE',{'step':state['step'],
          'report':str(out/'joint_frontier_report.json')})
     return state
+
+
+
+def rescore_shotgun_factorial(args):
+    """One read-only factorial comparison against an immutable live checkpoint.
+
+    Never starts optimizer training, updates a checkpoint, or changes any of
+    the original fixed T/HDB/math/Shotgun decks. Hardlink pinning is required
+    to avoid racing the trainer's atomic working.pt replacement on Windows.
+    """
+    import torch
+    out=_out(args)
+    cp=out/'working.pt'
+    if not cp.is_file():
+        raise FileNotFoundError('SHOTGUN_FACTORIAL_REQUIRES_WORKING_PT')
+    report_root=out/'shotgun_factorial_rescores'
+    report_root.mkdir(parents=True,exist_ok=True)
+    reports=Path(tempfile.mkdtemp(prefix='factorial_',dir=report_root))
+    snapshot=reports/'checkpoint_snapshot.pt'
+    try:
+        try:
+            os.link(cp,snapshot)
+        except OSError as exc:
+            raise RuntimeError('SHOTGUN_FACTORIAL_REQUIRES_SAME_VOLUME_HARDLINK') from exc
+        cp_sha=frontier._sha(snapshot)
+        obj=torch.load(snapshot,map_location='cpu',weights_only=True)
+        state=obj['state']
+        if obj.get('schema')!=SCHEMA or state.get('shotgun_diagnostic_version')!=shotgun.DIAGNOSTIC_VERSION:
+            raise RuntimeError('SHOTGUN_FACTORIAL_REQUIRES_V3_CHECKPOINT')
+        path=out/'shotgun_eval_deck.json'
+        if not path.is_file():
+            raise RuntimeError('SHOTGUN_FACTORIAL_SOURCE_DECK_DRIFT')
+        original_deck=json.loads(path.read_text(encoding='utf8'))
+        if ladder.deck_fingerprint(original_deck)!=state.get('shotgun_eval_sha256'):
+            raise RuntimeError('SHOTGUN_FACTORIAL_SOURCE_DECK_DRIFT')
+        frozen=out/'hdb_eval_deck.json'
+        if not frozen.is_file():
+            raise FileNotFoundError('SHOTGUN_FACTORIAL_REQUIRES_HDB_EVAL_DECK')
+        hrows=json.loads(frozen.read_text(encoding='utf8'))
+        if len({r['source'] for r in hrows})!=len(hrows):
+            raise RuntimeError('SHOTGUN_FACTORIAL_INVALID_HELDOUT_DECK')
+        per_family=int(state['policy']['shotgun_eval_per_mode'])
+        rows=shotgun.coefficient_probe_evaluation(hrows,per_family=per_family)
+        original_sources={(r['scenario_key'],r['mode']):(r['source'],r['target'])
+            for r in original_deck if r.get('mode') in ('products','products_with_matrix')}
+        controls=[r for r in rows if r['mode'] in ('products','products_with_matrix')]
+        if (len(original_sources)!=len(controls) or
+                any(original_sources.get((r['scenario_key'],r['mode']))!=
+                    (r['source'],r['target']) for r in controls)):
+            raise RuntimeError('SHOTGUN_FACTORIAL_V3_CONTROL_DRIFT')
+        # Never silently substitute baseline model or previously loaded weights.
+        parent,parent_sha=hdb._checkpoint(args,state['policy']['hdb'])
+        if parent_sha!=state['parent_sha256']:
+            raise RuntimeError('SHOTGUN_FACTORIAL_PARENT_FINGERPRINT_MISMATCH')
+        bb,tok,zero,_=hdb._model(args,parent)
+        zero.restore_lora(bb,obj['lora'])
+        bb.eval()
+        scores=_score_shotgun(bb,tok,rows,args)
+        result=shotgun.coefficient_probe_report(rows,scores,frontier._key,
+            step=state['step'],checkpoint_sha256=cp_sha)
+        result['checkpoint_source']='immutable_hardlink_snapshot'
+        result['training_workspace_unchanged']=True
+        result['report']=str(reports/'shotgun_factorial_report.json')
+        result['checkpoint_folder']=str(out)
+        ladder._atomic_json(reports/'shotgun_factorial_report.json',result)
+        frontier._emit('QWEN_SHOTGUN_FACTORIAL',{
+            'checkpoint_step':result['checkpoint_step'],
+            'checkpoint_sha256':result['checkpoint_sha256'],
+            'evaluated_prompts':result['evaluated_prompts'],
+            'matched_scenarios':result['matched_scenarios'],
+            'contrasts':result['contrasts'],
+            'factorial_differences':result['factorial_differences'],
+            'report':result['report'],
+            'optimizer_updates':0})
+        return result
+    finally:
+        snapshot.unlink(missing_ok=True)

@@ -1,130 +1,93 @@
-# SEH operator harness — existing identity / Coolify-C
+# SEH operator harness — infrastructure deployment, independent of SLH onboarding
 
-The top-level `seh_mutate_harness.py` is the operator-facing entry point, in the
-same style as `mother_mutate_harness.py`, `fdb_mutate_harness.py`, and
-`hub_mutate_harness.py`. The existing `python -m tools.seh_harness` remains the
-low-level SEH Control interface.
+> **Historical implementation; not the intended production provisioning lifecycle.**
+> This standalone infrastructure harness may queue a Coolify deploy and leaves
+> new SEHs unbound. Its separate `bind-slh` operation does not configure the
+> SLH's resident automatic-connection supervisor or prove WSS authentication.
+> The governing design is SLH-owned provisioning and automatic reconnection.
+> Preserve registered application UUIDs, remote trust, and local keys until
+> the governed lifecycle is implemented and accepted. A queued status is not
+> operational success.
 
-## Existing `company-primary` on `coolify-c`
+`seh_mutate_harness.py` is the operator-facing entry point following the Mother,
+FDB and Hub harness pattern. It deploys the SEH *infrastructure*. Deploying an
+SEH is not the same operation as binding an organization's SLH to its relay.
 
-First inspect the already-registered, verified private identity without any
-Coolify mutation:
+## Read-only inspection of the sole registered deployment
 
-```powershell
-python .\seh_mutate_harness.py inspect --network mainnet --seh company-primary
-```
-
-A read-only intent check does not even contact Coolify:
-
-```powershell
-python .\seh_mutate_harness.py deploy-seh --network mainnet --seh company-primary --host coolify-c
-```
-
-The **operator-approved mutation** call is:
+Inspect the one existing SLH-owned SEH deployment without selecting a name:
 
 ```powershell
-python .\seh_mutate_harness.py deploy-seh --network mainnet --seh company-primary `
-  --host coolify-c --execute-mutations --yes-i-know-this-mutates-seh
+python .\seh_mutate_harness.py inspect
+python .\seh_mutate_harness.py diagnostic
 ```
 
-The existing `primary` identity, which was copied from
-`networks.mainnet.coolify.controllers.coolify-c`, is retained; the harness does
-not copy credentials again, register a new SEH, or change the current
-application UUID. An SEH's identity alias (such as `primary`) must not be
-mistaken for the name of its Coolify controller (`coolify-c`).
+These read-only commands resolve the sole legacy record from Mother's verified
+private state. No SEH alias, controller alias, SLH ID, or URL may be passed as
+a target selector. With no registration, inspection reports that plainly; a
+diagnostic refuses. Multiple registrations refuse automatic selection before
+signing-key lookup or Coolify access. Neither command changes the registry,
+signing identity, Coolify application, or running tunnel.
 
-### Public URL
+The old named registry and the infrastructure-only mutation commands still
+exist until the separate governed migration patches. **Do not use them as a
+replacement for SLH-owned provisioning.** The existing Coolify application
+UUID, public URL, and approved trust key must be preserved throughout migration.
 
-When the existing SEH has a verified `deployment.public_url`, it is reused. If
-not, the operator harness performs a **read-only** Coolify GET against the exact
-registered application UUID, checks its name and SEH ownership marker, and
-requires exactly one configured domain. The resulting hostname is used as an
-HTTPS origin. It never silently accepts the old `git-plan.json` URL or the Git
-backend default hostname. If the application has no unique configured domain,
-pass the actual approved hostname explicitly as `--public-url https://...`.
+## Canonical Mother migration (Patch 2)
 
-## New SEHs
-
-Registration of a *new* SEH must supply its organization, SLH, selected Coolify
-controller and public HTTPS origin:
+Mother's existing single named SEH registry is a legacy migration input only.
+On this patch, the operator explicitly approves the observed generation and
+migrates it to `networks.<network>.seh_deployment`. No SEH/organization alias
+or independent SLH identifier survives inside that canonical deployment record.
 
 ```powershell
-python .\seh_mutate_harness.py deploy-seh --network mainnet --seh company-secondary `
-  --host coolify-b --organization-id YOUR_ORG --slh-id YOUR_SLH `
-  --public-url https://YOUR-APPROVED-SEH-HOSTNAME `
-  --execute-mutations --yes-i-know-this-mutates-seh
+python .\seh_mutate_harness.py inspect
+python .\seh_mutate_harness.py migrate-state --approve-generation <OBSERVED_GENERATION> --execute-mutations --yes-i-know-this-mutates-seh
+python .\seh_mutate_harness.py inspect
 ```
 
-No private token, password, or private key is supplied on the command line or
-included in receipts. Credentials are resolved through the existing Mother's
-verified private state. A changed Coolify controller for an SEH with an
-already-recorded application UUID is refused.
+This is a **local Mother-state mutation**. Back up the verified private state
+through the existing Mother recovery procedure beforehand. It requires exactly
+one legacy SEH, one selected controller copy, a registered application UUID,
+matching controller origin, and a fresh generation. It preserves the Coolify
+application UUID, placement, copied controller token, and recorded public URL.
+It does not contact Coolify, modify its application metadata or signing key,
+or update any running SLH connection. Repeated migration is unchanged.
 
-## Acceptance and limits
+The prior `git.application_name` is deliberately not carried into the new
+Mother record; the old name may still exist in the live Coolify application
+until a separate guarded remote metadata reconciliation. Once migrated, legacy
+named mutation paths refuse to write a new `sehs` record. Remote deployment
+and trust diagnostics for the new schema remain blocked until the follow-up
+integration patch; do not invoke them as if they are already supported.
 
-On execution the harness orchestrates the existing SEH operations: optional
-registration, optional Coolify identity copy/selection, Git prepare, read-only
-preflight, guarded deployment, and status. It honors the existing exact Git
-revision, placement, application ownership, and identity checks. A dirty or
-unpublished SEH Git source fails closed; when the lower-level verifier emits a
-specific safe Git repair command, the operator receipt includes it.
+## Deployment safety and verification
 
-A `DEPLOY_QUEUED_NOT_VERIFIED` receipt means Coolify accepted the deployment
-trigger, **not** that public HTTPS/WSS, relay authentication, or production
-service readiness has been independently verified. No external deployment is
-performed by the patch installation or unit tests. A fresh private state and
-networked Coolify controller are required for live execution.
+The operator command verifies Mother's private-state controller selection,
+Coolify project/environment/server placement, registered application ownership,
+exact published Git revision, and deployment idempotency. The Coolify token
+is read only from the verified controller identity and never printed.
 
-## SLH public signing identity (automatic, guarded)
+When redeploying an existing application without a new explicit SLH binding,
+only infrastructure environment variables are updated. Existing SLH trust
+variables are read before and after update and must remain unchanged. A
+partial or ambiguous existing binding blocks deployment before the trigger.
 
-Git deployment includes the public P-256 signer used by the actual SLH to
-establish its outbound SEH tunnel. The private key is never copied to Coolify.
+`DEPLOY_QUEUED_NOT_VERIFIED` means Coolify accepted the deployment trigger,
+**not** that public HTTPS/WSS or SLH connectivity was verified. New unbound
+relays are expressly **not** operationally ready until enrolled. A deployment
+source with uncommitted or unpushed SEH runtime files fails closed.
 
-After the operator explicitly authorizes mutations, `deploy-seh` checks the
-installation-owned SLH state under `runtime/state/slh` for a fully initialized organization matching the
-registered SEH organization ID. It refuses if the SLH state does not exist, if
-legacy state requires migration, if the organization or configured SLH ID
-conflicts, or if the state cannot be securely accessed. Only for a matching
-local SLH does it reuse an existing signer or, if missing, create the signer
-once under the protected SLH runtime directory. Identity provisioning does not
-initialize a new SLH organization and cannot change its existing signer.
+No part of installing this patch contacts Coolify or migrates SLH state.
 
-An existing Coolify SEH application is also checked read-only for the existing
-`SEH_SLH_PUBLIC_KEY_B64` trust anchor. If it is different, ambiguous, or masked,
-the harness refuses before changing Coolify. A rotation/recovery requires a
-separate explicit identity procedure; this operator deploy command never
-silently replaces the trust anchor.
 
-Consequently, deploying from a **different operator workstation** where the
-organization SLH is not installed is not allowed to invent a local signer. Run
-from the actual SLH machine or use an explicitly authorized public-identity
-provisioning workflow. The normal operator command is otherwise unchanged.
+### Operator console next step
 
-## Legacy SLH state: explicit offline migration
-
-If `deploy-seh` refuses at `slh-identity` with
-`LEGACY_SLH_STATE_REQUIRES_OFFLINE_MIGRATION`, the machine still holds its
-organization SLH authority under the old per-user storage root. **Do not**
-provision another key, bypass the guard, or copy private material into Coolify.
-This error does not mean the existing Coolify application is invalid.
-
-Stop the running SLH processes before migrating, and inspect the non-mutating
-plan first:
-
-```powershell
-python -m tools.slh_storage_migrate plan
-```
-
-On the actual SLH host, run the explicitly requested, non-destructive migration:
-
-```powershell
-python -m tools.slh_storage_migrate slh --execute
-```
-
-The utility preserves the legacy source files, verifies the copied files by
-SHA-256, refuses symbolic links and an occupied destination, and hardens the
-private runtime state ACL. If the destination already contains files, stop and inspect
-both authorities; do not delete or merge them automatically. Resume the
-existing `company-primary` / `coolify-c` deployment command after successful
-migration. The harness formats this guard as a structured `REFUSED` receipt
-with `failed_stage: slh-identity` instead of an unhandled traceback.
+Like `hub_mutate_harness.py`, `seh_mutate_harness.py` prints a standalone,
+PowerShell-ready next command when the operator is stopped at the mutation
+approval boundary or when Git source must be committed and pushed. The JSON
+receipt remains the only content on stdout; the operator instructions appear
+on stderr, after the receipt, so JSON-processing callers remain compatible.
+The harness never automatically commits or pushes source changes, and a
+queued Coolify deployment is never reported as verified WSS readiness.

@@ -62,7 +62,7 @@ def configure_complete(c, gen, seh='company'):
 def build(tmp_path):
     root,original=fixture(tmp_path)
     c=ctrl(root)
-    assert do(c,'reserve',1,organization_id='org',slh_id='slh')['generation']==2
+    assert do(c,'reserve',1,slh_id='slh')['generation']==2
     assert do(c,'coolify-copy',2,alias='primary',source='networks.mainnet.coolify.controllers.coolify-a')['generation']==3
     return root,original,c
 
@@ -70,7 +70,7 @@ def build(tmp_path):
 def test_cas_and_unrelated_state_preserved(tmp_path):
     root,old,c=build(tmp_path)
     with pytest.raises(st.SEHIdentityError,match='generation conflict'):
-        do(c,'reserve',2,'other',organization_id='org',slh_id='slh')
+        do(c,'reserve',2,'other',slh_id='slh')
     _,res,doc=st.read(root,'mainnet')
     assert res.binding.generation==3
     assert doc['networks']['mainnet']['hubs']==old['networks']['mainnet']['hubs']
@@ -84,7 +84,7 @@ def test_cas_and_unrelated_state_preserved(tmp_path):
 
 def test_copy_independence_refresh_source_and_dest(tmp_path):
     root,_,c=build(tmp_path)
-    assert do(c,'reserve',3,'other',organization_id='org2',slh_id='slh2')['generation']==4
+    assert do(c,'reserve',3,'other',slh_id='slh2')['generation']==4
     path='networks.mainnet.sehs.company.coolify.identities.primary'
     assert do(c,'coolify-copy',4,'other',source=path,alias='copy')['generation']==5
     _,_,doc=st.read(root,'mainnet')
@@ -174,7 +174,7 @@ def test_ambiguous_remote_uuid_recovery_validates_exact_marker(tmp_path):
     configure_complete(c,3)
     fake=_FakeCoolify()
     fake.services.append({'uuid':'trusted-seh','name':'mc-seh-company',
-                          'description':'main-computer-seh:v1 target=company org=org slh=slh'})
+                          'description':'main-computer-seh:v1 target=company slh=slh'})
     result=c.recover('mainnet','company',generation=4,uuid='trusted-seh',operation_id='recover-ok',transport=fake)
     assert result['generation']==5
     assert c.resolved('mainnet','company').target.service_uuid=='trusted-seh'
@@ -211,7 +211,7 @@ def test_automatic_generation_for_state_mutations_and_optional_pin(tmp_path):
     c = ctrl(root)
     # Service and CLI callers do not need to discover or supply a generation.
     result = c.change('reserve', 'mainnet', 'company', None, 'auto-register',
-                      organization_id='org', slh_id='slh')
+                      slh_id='slh')
     assert result['status'] == 'COMMITTED' and result['generation'] == 2
     assert c.change('coolify-copy', 'mainnet', 'company', None, 'auto-copy',
                     alias='primary', source='networks.mainnet.coolify.controllers.coolify-a')['generation'] == 3
@@ -245,13 +245,13 @@ def test_automatic_generation_rejects_concurrent_write_at_commit(tmp_path, monke
         # read, but before its compare-and-swap. The old successor must NOT win.
         monkeypatch.setattr(st, 'replace_verified_private_state', original_replace)
         st.mutate(root, 'mainnet', None, 'other-writer',
-                  lambda doc, gen, base: st.reserve(doc, 'mainnet', 'other', 'org', 'slh'))
+                  lambda doc, gen, base: st.reserve(doc, 'mainnet', 'other', 'slh'))
         return original_replace(paths, closure, expected_binding, operation=operation)
 
     monkeypatch.setattr(st, 'replace_verified_private_state', concurrent_replace)
     with pytest.raises(st.SEHIdentityError, match='changed concurrently'):
         c.change('reserve', 'mainnet', 'company', None, 'stale-writer',
-                 organization_id='org', slh_id='slh')
+                 slh_id='slh')
     _, current, doc=st.read(root,'mainnet')
     assert current.binding.generation==2
     assert 'other' in doc['networks']['mainnet']['sehs']
@@ -450,7 +450,7 @@ def test_discovery_refuses_ambiguous_environment_and_multiple_images(tmp_path):
         ctl['url']='https://coolify.mock-internal.org'
         for name,digest in [('one','1'),('two','2')]:
             doc['networks']['mainnet']['sehs'][name]={
-                'schema':'main-computer.seh-identity.v1','organization_id':'org','slh_id':'slh',
+                'schema':'main-computer.seh-identity.v3','slh_id':'slh',
                 'coolify':{'active_identity':None,'identities':{}},
                 'deployment':{'enabled':True,'image':'ghcr.io/org/main-computer-seh','image_digest':'sha256:'+digest*64}}
     st.mutate(root,'mainnet',None,'ambiguous-images',change)
@@ -543,3 +543,30 @@ def test_coolify_management_client_refuses_public_http_token_transport():
         CoolifyHTTP('http://159.203.184.182:8000/', SECRET)
     assert CoolifyHTTP('https://coolify.example.com/', SECRET).origin == 'https://coolify.example.com'
     assert CoolifyHTTP('http://127.0.0.1:8000/', SECRET).origin == 'http://127.0.0.1:8000'
+
+
+def test_seh_operator_inspection_reads_verified_single_deployment_without_mutation(tmp_path):
+    from seh_mutate_harness import _parser as op_parser, run as op_run
+    root, _ = fixture(tmp_path)
+    c = ctrl(root)
+    initial = op_run(op_parser().parse_args(['inspect']), control=c)
+    assert initial['registered'] is False and initial['status'] == 'READ_ONLY'
+    assert initial['generation'] == 1
+    assert do(c, 'reserve', 1, slh_id='slh')['generation'] == 2
+    assert do(c, 'coolify-copy', 2, alias='primary',
+              source='networks.mainnet.coolify.controllers.coolify-a')['generation'] == 3
+    _, state_before, doc_before = st.read(root, 'mainnet')
+    result = op_run(op_parser().parse_args(['inspect']), control=c)
+    _, state_after, doc_after = st.read(root, 'mainnet')
+    assert result['status'] == 'READ_ONLY' and result['registered'] is True
+    assert result['generation'] == 3
+    assert result['active_identity'] == 'primary'
+    assert 'seh' not in result
+    assert state_before.binding == state_after.binding
+    assert doc_before == doc_after
+    assert SECRET not in json.dumps(result)
+    assert do(c, 'reserve', 3, 'other', slh_id='slh')['generation'] == 4
+    with pytest.raises(ValueError, match='Multiple legacy SEH records'):
+        op_run(op_parser().parse_args(['inspect']), control=c)
+    with pytest.raises(ValueError, match='Multiple legacy SEH records'):
+        op_run(op_parser().parse_args(['diagnostic']), control=c)

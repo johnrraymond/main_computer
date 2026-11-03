@@ -173,11 +173,10 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
     with tempfile.TemporaryDirectory(prefix='mc-slh-two-service-lab-paid-') as td:
         root = Path(td)
         state, identities = root / 'state', root / 'identities'
-        org_id = 'paid-org-' + secrets.token_hex(5)
         slh_id = 'paid-slh'
         api_port, worker_port = _ports()
         signer, relay_public = generate_identity()
-        relay = (SEHRelay(organization_id=org_id, slh_id=slh_id,
+        relay = (SEHRelay(slh_id=slh_id,
                          slh_public_key=relay_public, host='127.0.0.1', port=0).start()
                  if diagnostic_mode != 'direct' else None)
         adapter = None
@@ -189,7 +188,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                                     {'device_id': 'lab-owner-device', 'label': 'Lab Owner'}), 201)
                 secret = (state / 'bootstrap.secret').read_text(encoding='utf-8').strip()
                 begun = _ok(_http(lp, 'POST', '/v1/bootstrap/begin',
-                                  {'bootstrap_secret': secret, 'org_id': org_id}), 201)
+                                  {'bootstrap_secret': secret, }), 201)
                 transaction = begun['transaction_id']
                 statement = {**begun['proof_context'], 'admin_id': 'lab-owner',
                              'device_id': 'lab-owner-device', 'public_key': created['public_key']}
@@ -214,7 +213,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                     relay_key.chmod(0o600)
                     relay_url = f'ws://127.0.0.1:{relay.port}'
                     write_seh_settings(state, SEHConnectionSettings(
-                        enabled=True, seh_url=relay_url, organization_id=org_id,
+                        enabled=True, seh_url=relay_url, 
                         slh_id=slh_id, allow_loopback_lab=True, retry_seconds=0.2))
                 _ok(_http(lp, 'PATCH', '/v1/local/organization/config',
                           {'host': '127.0.0.1', 'api_port': api_port, 'worker_port': worker_port,
@@ -227,15 +226,14 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                 pin = _fingerprint(api_port)
                 org_identity = _ok(_http(api_port, 'GET', '/v1/org/identity', tls=True))
                 gates['org_identity_tls_fingerprint_pinned'] = (
-                    org_identity['tls_sha256'] == pin and
-                    org_identity['organization_id'] == org_id)
+                    org_identity['tls_sha256'] == pin)
                 gates['unauthorized_marketplace_api_denied'] = (
                     _http(api_port, 'GET', '/v1/org/admin/marketplace/status', tls=True)[0] == 401
                     and _http(api_port, 'POST', '/v1/org/admin/marketplace/reconcile',
                               {}, tls=True)[0] == 401)
                 org_token = _login(api_port, local_sign_port=lp, tls=True)
                 if relay_url is not None:
-                    adapter = SEHLocalClientAdapter(relay_url, org_id, allow_lab=True)
+                    adapter = SEHLocalClientAdapter(relay_url, slh_id, allow_lab=True)
                 # The only active managed Worker is reached through the SEH,
                 # so the Hub cannot route to an accidental direct LAN slot.
                 device = 'lab-paid-remote-worker'
@@ -246,7 +244,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                            'device_name': device, 'claimed_user': 'Lab Owner',
                            'requested_role': 'worker', 'client_nonce': secrets.token_urlsafe(24)}
                 proof_context = {**request, 'version': 1, 'action': 'slh.device.enrollment.request',
-                                 'org_id': org_id}
+                                 'audience': 'slh://' + local.organization_controller.authority.service_fingerprint()}
                 pending = _ok(_http(api_port, 'POST', '/v1/enrollment/requests',
                                      {**request, 'proof': sign_object(worker_private, proof_context)},
                                      tls=True), 201)
@@ -412,7 +410,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                 else:
                     integrated_stress = run_integrated_stress(
                         profile=stress_profile, hub_url=hub_url, ledger=payout_ledger,
-                        root=root, org_id=org_id, api_port=api_port, org_token=org_token,
+                        root=root, api_port=api_port, org_token=org_token,
                         lp=lp, local_token=token, local=local, pin=pin,
                         adapter=adapter, relay=relay, proxy=proxy, workers=workers,
                         original_device=device, wallet_key=wallet_key,
@@ -423,7 +421,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                     with lab_stage('pinky.private_fulfillment_and_sweep'):
                         pinky_result = verify_pinky_shared_hub(
                             root=root, state=state, local=local, local_port=lp,
-                            local_token=token, org_id=org_id, api_port=api_port,
+                            local_token=token, api_port=api_port,
                             worker_port=worker_port, hub_url=hub_url,
                             hub_identity=identity, ledger=payout_ledger,
                             org_wallet_private=wallet_key, org_wallet_address=wallet.address,

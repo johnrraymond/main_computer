@@ -75,12 +75,11 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
         authority = self.server.authority
         if method == 'GET' and path == '/v1/org/identity':
             self._respond(200, {'schema': 'main-computer.slh-org-identity.v1',
-                                'organization_id': authority.org_id(),
                                 'tls_sha256': self.server.fingerprint})
             return
         if method == 'GET' and path == '/v1/org/status':
             self._respond(200, {'schema': 'main-computer.slh-org-status.v1',
-                                'operational': True, 'organization_id': authority.org_id(),
+                                'operational': True,
                                 'worker_serving_enabled': self.server.workers_enabled,
                                 'seh_enabled': self.server.seh_enabled,
                                 'seh_connection_verified': False})
@@ -235,7 +234,7 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
     server = OrganizationHTTPServer((config['host'], config['api_port']), OrganizationHTTPHandler)
     server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     server.authority = authority
-    server.wallet_service = OrganizationWallet(state_dir, authority.org_id())
+    server.wallet_service = OrganizationWallet(state_dir)
     server.api = SLHAPI(authority, wallet_service=server.wallet_service)
     server.fingerprint = fingerprint
     server.workers_enabled = config['workers_enabled']

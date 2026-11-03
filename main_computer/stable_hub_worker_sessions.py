@@ -1354,9 +1354,13 @@ class StableHubPayoutLedgerDirectory:
             raise StableHubWorkerSessionError('pinky_reserve_amount_invalid')
         sender_id = wallet_account_id(source_wallet)
         reserve_id = wallet_account_id(reserve_wallet)
-        sweep_key = f"{intent['org_id']}:{intent['sweep_id']}"
+        sweep_key = intent['sweep_id']
         with self._lock:
             data = self.store.load()
+            # A historical receipt may use the old scope-prefixed key.
+            # Never replay its sweep_id under the new signature without proof.
+            if any(key.endswith(':'+sweep_key) for key in data.get('pinky_reserve_sweeps', {})):
+                raise StableHubWorkerSessionError('legacy_pinky_sweep_reconcile_required')
             existing = data.setdefault('pinky_reserve_sweeps', {}).get(sweep_key)
             if existing is not None:
                 if (existing['wallet_address'] != source_wallet or
@@ -1396,14 +1400,14 @@ class StableHubPayoutLedgerDirectory:
                 created_at=str(recipient.get('created_at') or ''),
                 metadata=dict(recipient.get('metadata') or {}))
             receipt_id=_stable_digest_id('pinkyreceipt',self.cluster_id,sweep_key)
-            meta={'sweep_id':intent['sweep_id'],'org_id':intent['org_id'],
+            meta={'sweep_id':intent['sweep_id'],
                   'reserve_account_id':reserve_id,'receipt_id':receipt_id}
             self._transaction(data,transaction_type='pinky_reserve_out',account_id=sender_id,
                               credit_wei=amount, transaction_id=receipt_id+':debit',metadata=meta)
             self._transaction(data,transaction_type='pinky_reserve_in',account_id=reserve_id,
                               credit_wei=amount, transaction_id=receipt_id+':credit',metadata=meta)
             receipt={'ok':True,'status':'confirmed','receipt_id':receipt_id,
-                     'org_id':intent['org_id'],'sweep_id':intent['sweep_id'],
+                     'sweep_id':intent['sweep_id'],
                      'cluster_id':intent['cluster_id'],'chain_id':intent['chain_id'],
                      'wallet_address':source_wallet,'reserve_wallet_address':reserve_wallet,
                      'credit_wei':str(amount),'confirmed_at':utc_now(),

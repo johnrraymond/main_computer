@@ -392,7 +392,11 @@
               statusAvailable:v.status_availability==="present" || !!v.status,
               isMainComputer:v.is_main_computer===true,isCurrentProcess:v.is_current_process===true};
           }),"processKey");
-          if(req.intentId==="intent:refresh"){
+          // Both process collections can authorize the operator's selected
+          // identity, but only after a real generation-bearing observation.
+          // Stale identities are discarded on each observation, never inferred
+          // from a PID alone. The server still verifies the process birth time.
+          if(req.intentId==="intent:refresh" || req.intentId==="intent:refresh-all"){
             observedProcesses.clear();for(const v of values)if(v.createdAt)observedProcesses.set(v.processKey,v);
           }
           return values;

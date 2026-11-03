@@ -83,7 +83,9 @@ def _trusted_origin(origin: str) -> bool:
 
 def _available_published_images(document: dict, network: str) -> set[tuple[str, str]]:
     images = set()
-    for record in (st.network_doc(document, network).get('sehs') or {}).values():
+    canonical = st.deployment_record(document, network)
+    legacy = (st.network_doc(document, network).get('sehs') or {}) if canonical is None else {}
+    for record in ([canonical] if canonical is not None else legacy.values()):
         if not isinstance(record, dict):
             continue
         deployment = record.get('deployment') or {}

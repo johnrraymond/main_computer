@@ -17,6 +17,8 @@ class TestSLHPhase2A(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path=Path(self.temp.name)
+        from tools.slh_seh_connector import service_identity
+        service_identity(self.path, create=True)
         self.auth=SLHAuthority(self.path)
         self.api=SLHAPI(self.auth)
         self.admin_key,self.admin_pub=generate_identity()
@@ -27,9 +29,9 @@ class TestSLHPhase2A(unittest.TestCase):
         return self.api.call(method,path,body or {},token=token,loopback=loopback)
 
     def bootstrap(self):
-        data={'org_id':'org-testing','admin_id':'root-admin','admin_name':'Root Administrator',
+        data={'admin_id':'root-admin','admin_name':'Root Administrator',
               'device_id':self.admin_device,'public_key':self.admin_pub,'bootstrap_secret':self.boot_token}
-        statement={k:data[k] for k in ('org_id','admin_id','device_id','public_key')}
+        statement={k:data[k] for k in ('admin_id','device_id','public_key')}
         statement.update({'version':1,'action':'slh.admin.bootstrap'})
         data['proof']=sign_object(self.admin_key,statement)
         status,body=self.call('POST','/v1/bootstrap/admin',data,loopback=True)
@@ -50,7 +52,7 @@ class TestSLHPhase2A(unittest.TestCase):
               'kind':kind,'device_name':'RTX Box','claimed_user':'Worker Operator',
               'requested_role':role,'client_nonce':secrets.token_urlsafe(32)}
         statement={**data,'version':1,'action':'slh.device.enrollment.request',
-                   'org_id':'org-testing'}
+                   'audience':'slh://' + self.auth.service_fingerprint()}
         data['proof']=sign_object(key,statement)
         status,response=self.call('POST','/v1/enrollment/requests',data)
         self.assertEqual(status,201,response)
@@ -61,7 +63,7 @@ class TestSLHPhase2A(unittest.TestCase):
         self.bootstrap()
         self.assertFalse((self.path/'bootstrap.secret').exists())
         self.assertEqual(self.call('POST','/v1/bootstrap/admin',{},loopback=True)[0],409)
-        self.assertEqual(self.auth.status()['organization_id'],'org-testing')
+        self.assertNotIn('organization_id', self.auth.status())
 
     def test_real_signature_login_and_replay(self):
         self.bootstrap()
@@ -167,7 +169,7 @@ class TestSLHPhase2A(unittest.TestCase):
     def test_cross_org_challenge_and_unauthorized_enrollment(self):
         self.bootstrap();admin,_=self.login(self.admin_device,self.admin_key)
         _,ch=self.call('POST','/v1/auth/challenge',{'device_id':self.admin_device})
-        substituted={**ch,'org_id':'different-company'}
+        substituted={**ch, 'audience':'slh://' + '0'*64}
         self.assertEqual(self.call('POST','/v1/auth/verify',{'device_id':self.admin_device,'challenge_id':ch['challenge_id'],
                                              'signature':sign_object(self.admin_key,substituted)})[0],403)
         self.assertEqual(self.call('POST','/v1/admin/enrollments/bad-id/keys',{},token='bad')[0],401)

@@ -86,7 +86,6 @@ def load_connection_profiles(
 class SEHTarget:
     """Deploy-only configuration. Never put a Coolify token or SLH secrets here."""
     target_id: str
-    organization_id: str
     slh_id: str
     public_url: str
     coolify_url: str
@@ -111,7 +110,7 @@ class SEHTarget:
             t = cls(**data)
         except TypeError as e:
             raise SLHConfigError(f"Missing/invalid target fields: {e}") from e
-        for name in ("target_id", "organization_id", "slh_id", "project_uuid", "environment_uuid", "server_uuid"):
+        for name in ("target_id", "slh_id", "project_uuid", "environment_uuid", "server_uuid"):
             if not _ID.fullmatch(str(getattr(t, name))):
                 raise SLHConfigError(f"Invalid {name}")
         if t.service_uuid is not None and not _ID.fullmatch(str(t.service_uuid)):

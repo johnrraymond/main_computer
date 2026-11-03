@@ -50,7 +50,6 @@ def reconcile_cycle(paid_process: dict, *, cycle: int) -> dict:
     private_ids = pinky.get('private_request_ids')
     private_ids = private_ids if isinstance(private_ids, list) else []
     buyer_id = buyer.get('buyer_account_id')
-    org_id = pinky.get('organization_id')
     org_account = pinky.get('organization_account_id')
     reserve_account = pinky.get('reserve_account_id')
     request_id = market.get('request_id')
@@ -91,7 +90,7 @@ def reconcile_cycle(paid_process: dict, *, cycle: int) -> dict:
         'pass': all(gates.values()), 'gates': gates,
         'hub_id': private.get('hub_id'), 'cluster_id': private.get('cluster_id'),
         'market_isolation_capability': market.get('market_isolation_capability'),
-        'buyer_account_id': buyer_id, 'org_id': org_id, 'organization_account_id': org_account,
+        'buyer_account_id': buyer_id, 'organization_account_id': org_account,
         'reserve_account_id': reserve_account, 'paid_request_id': request_id,
         'paid_session_id': session_id, 'charge_id': buyer.get('charge_id'),
         'earning_id': buyer.get('earning_id'), 'private_request_ids': private_ids,
@@ -112,7 +111,7 @@ def summarize_cycles(cycles: list[dict], *, requested: int) -> dict:
     gates = {
         'all_requested_cycles_completed': len(cycles) == requested,
         'all_individual_cycles_passed': bool(cycles) and all(x.get('pass') is True for x in cycles),
-        'unique_organizations': len({x.get('org_id') for x in cycles if x.get('org_id')}) == len(cycles),
+        'unique_wallet_accounts': len({x.get('organization_account_id') for x in cycles if x.get('organization_account_id')}) == len(cycles),
         'unique_buyers': len({x.get('buyer_account_id') for x in cycles if x.get('buyer_account_id')}) == len(cycles),
         'unique_org_wallets': len({x.get('organization_account_id') for x in cycles if x.get('organization_account_id')}) == len(cycles),
         'unique_paid_requests': len({x.get('paid_request_id') for x in cycles if x.get('paid_request_id')}) == len(cycles),

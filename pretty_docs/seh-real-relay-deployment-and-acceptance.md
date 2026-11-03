@@ -1,5 +1,11 @@
 # Secure External Hub — Real Relay Backend, Coolify Deployment, and Integrated Lab
 
+> **Historical bring-up and laboratory instructions.** Manual signing-identity
+> creation, manual remote key exchange, and launching a standalone connector
+> are not the normal SLH-owned deployment workflow. The remote harness has not
+> yet connected the complete lifecycle; do not treat its queued deployment or
+> local `/healthz` as authenticated SLH/SEH readiness.
+
 ## Status and scope
 
 This phase implements an **actual SEH WebSocket relay service**, an outbound SLH-to-SEH tunnel, and an SEH client adapter for the existing walletless Managed Worker. It does not depend on the future SLH administration UI. The SLH keeps its wallet keys, device registry, and pinned TLS private key. The SEH knows only a **public** SLH P-256 relay identity and opaque traffic frames.

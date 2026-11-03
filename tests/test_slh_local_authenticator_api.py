@@ -35,7 +35,7 @@ def _http(port, method, path, body=None):
 def _challenge(device_id, *, expires=None):
     now = int(time.time())
     return {'version': 1, 'purpose': 'slh.known_device.login',
-            'org_id': 'example-org', 'audience': 'slh://example-org',
+            'audience': 'slh://' + '0'*64,
             'device_id': device_id, 'challenge_id': 'a'*32,
             'nonce': 'n'*43, 'issued_at': now, 'expires_at': expires or now+60}
 
@@ -93,8 +93,7 @@ def test_sign_restrictions_and_bootstrap_compatibility(tmp_path):
     assert api.call('POST','/v1/local/authenticator/identities',{'device_id':'dev'},loopback=False)[0] == 403
     code, data = api.call('POST','/v1/local/authenticator/identities',{'device_id':'dev'},loopback=True)
     assert code == 201
-    statement = {'version':1,'action':'slh.admin.bootstrap','org_id':'org',
-                 'admin_id':'owner','device_id':'dev','public_key':data['public_key']}
+    statement = {'version':1,'action':'slh.admin.bootstrap','admin_id':'owner','device_id':'dev','public_key':data['public_key']}
     code, signed = api.call('POST', '/v1/local/authenticator/identities/dev/sign',
                             {'challenge':statement},loopback=True)
     assert code == 200 and verify_object(data['public_key'],statement,signed['signature'])
@@ -131,6 +130,8 @@ def test_legacy_key_is_preserved_and_cli_shares_store(tmp_path):
 
 
 def test_no_organization_api_or_admin_session_needed(tmp_path):
+    from tools.slh_seh_connector import service_identity
+    service_identity(tmp_path/'slh', create=True)
     authority = SLHAuthority(tmp_path/'slh')
     api = SLHAPI(authority,local_authenticator=LocalAuthenticatorAPI(tmp_path/'identities'))
     code, result = api.call('POST','/v1/local/authenticator/identities',
@@ -216,19 +217,20 @@ def test_first_administrator_existing_bootstrap_and_login_using_local_api(tmp_pa
 
     This is NOT the future staged/TOTP bootstrap, which belongs to later patches.
     """
+    from tools.slh_seh_connector import service_identity
+    service_identity(tmp_path/'slh', create=True)
     auth = SLHAuthority(tmp_path/'slh')
     client = LocalAuthenticatorAPI(tmp_path/'identity')
     api = SLHAPI(auth,local_authenticator=client)
     code, identity = client.call('POST','/v1/local/authenticator/identities',
                                  {'device_id':'first-admin'},loopback=True)
     assert code == 201
-    statement = {'version':1,'action':'slh.admin.bootstrap','org_id':'demo-org',
-                 'admin_id':'owner','device_id':'first-admin','public_key':identity['public_key']}
+    statement = {'version':1,'action':'slh.admin.bootstrap','admin_id':'owner','device_id':'first-admin','public_key':identity['public_key']}
     code, signed = client.call('POST',
         '/v1/local/authenticator/identities/first-admin/sign',
         {'challenge':statement},loopback=True)
     assert code == 200
-    bootstrap = {'org_id':'demo-org','admin_id':'owner','admin_name':'Owner',
+    bootstrap = {'admin_id':'owner','admin_name':'Owner',
                  'device_id':'first-admin','public_key':identity['public_key'],
                  'bootstrap_secret':(tmp_path/'slh'/'bootstrap.secret').read_text().strip(),
                  'proof':signed['signature']}

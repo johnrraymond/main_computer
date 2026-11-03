@@ -192,7 +192,7 @@ def _pending_restart_and_cancel(root):
     with _local(state, identities) as local:
         secret = (state / 'bootstrap.secret').read_text(encoding='utf-8').strip()
         begun = _ok(_http(local.server_port, 'POST', '/v1/bootstrap/begin',
-                          {'bootstrap_secret': secret, 'org_id': 'lab-pending'}), 201)
+                          {'bootstrap_secret': secret}), 201)
         transaction = begun['transaction_id']
         if local.organization_controller.status()['listening']:
             raise ServiceLabFailure('Pending initial setup started organizational serving')
@@ -206,7 +206,7 @@ def _pending_restart_and_cancel(root):
         if restarted.organization_controller.status()['listening']:
             raise ServiceLabFailure('Canceled initial setup started organizational serving')
         fresh = _ok(_http(restarted.server_port, 'POST', '/v1/bootstrap/begin',
-                          {'bootstrap_secret': secret, 'org_id': 'lab-new-pending'}), 201)
+                          {'bootstrap_secret': secret}), 201)
         return fresh['transaction_id'] != transaction
 
 
@@ -222,7 +222,6 @@ def verify_services(*, probe_relay: bool = True) -> dict:
     from main_computer.slh.seh_transport import SEHLocalClientAdapter
 
     gates = {}
-    org_id = 'slh-lab-' + secrets.token_hex(5)
     slh_id = 'lab-slh'
     with tempfile.TemporaryDirectory(prefix='mc-slh-two-service-lab-') as td:
         root = Path(td)
@@ -247,7 +246,7 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                     'PRIVATE KEY' not in json.dumps(created).upper())
                 secret = (state / 'bootstrap.secret').read_text(encoding='utf-8').strip()
                 begun = _ok(_http(lp, 'POST', '/v1/bootstrap/begin',
-                                  {'bootstrap_secret': secret, 'org_id': org_id}), 201)
+                                  {'bootstrap_secret': secret}), 201)
                 transaction = begun['transaction_id']
                 context = {**begun['proof_context'], 'admin_id': 'lab-owner',
                            'device_id': 'lab-owner-device', 'public_key': created['public_key']}
@@ -295,7 +294,7 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                 identity = _ok(_http(api_port, 'GET', '/v1/org/identity', tls=True))
                 pin = _fingerprint(api_port)
                 gates['organization_tls_identity_pinned'] = (
-                    identity['organization_id'] == org_id and identity['tls_sha256'] == pin)
+                    identity['tls_sha256'] == pin)
                 gates['org_api_no_bootstrap_or_local_routes'] = (
                     _http(api_port, 'GET', '/v1/bootstrap/status', tls=True)[0] == 404
                     and _http(api_port, 'GET', '/v1/local/status', tls=True)[0] == 404)
@@ -325,7 +324,7 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                            'device_name': 'Lab Worker', 'claimed_user': 'Lab Owner',
                            'requested_role': 'worker', 'client_nonce': secrets.token_urlsafe(24)}
                 statement = {**request, 'version': 1, 'action': 'slh.device.enrollment.request',
-                             'org_id': org_id}
+                             'audience': 'slh://' + local.organization_controller.authority.service_fingerprint()}
                 # Organization is disabled; enrollment may not be invoked over
                 # its network endpoint until explicitly started again.
                 gates['disabled_org_rejects_remote_requests'] = (
@@ -368,18 +367,18 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                     key_path.write_bytes(signer.private_bytes(serialization.Encoding.PEM,
                         serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
                     key_path.chmod(0o600)
-                    relay = SEHRelay(organization_id=org_id, slh_id=slh_id,
+                    relay = SEHRelay(slh_id=slh_id,
                                      slh_public_key=relay_public, host='127.0.0.1', port=0).start()
                     write_seh_settings(state, SEHConnectionSettings(
                         enabled=True, seh_url=f'ws://127.0.0.1:{relay.port}',
-                        organization_id=org_id, slh_id=slh_id,
+                        slh_id=slh_id,
                         allow_loopback_lab=True, retry_seconds=0.2))
                     _ok(_http(lp, 'PATCH', '/v1/local/organization/config',
                               {'seh_enabled': True}, bearer=local_token))
                     _ok(_http(lp, 'POST', '/v1/local/organization/enable', {}, bearer=local_token))
                     _await(lambda: relay.tunnel_ready, 'authenticated SEH outbound tunnel', timeout=12)
                     gates['real_org_service_seh_autoconnect'] = relay.authenticated_slh_count >= 1
-                    adapter = SEHLocalClientAdapter(f'ws://127.0.0.1:{relay.port}', org_id,
+                    adapter = SEHLocalClientAdapter(f'ws://127.0.0.1:{relay.port}', slh_id,
                                                     allow_lab=True)
                     gates['worker_tls_via_real_seh_relay'] = _managed_auth(
                         adapter.server_address[1], 'lab-worker', worker_key,
@@ -429,8 +428,7 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                 _await(lambda: resumed.organization_controller.status()['listening'],
                        'automatic restart of previously enabled Organization Service')
                 gates['enabled_choice_resumes_service'] = (
-                    _ok(_http(api_port, 'GET', '/v1/org/identity', tls=True))['organization_id']
-                    == org_id)
+                    bool(_ok(_http(api_port, 'GET', '/v1/org/identity', tls=True))['tls_sha256']))
                 token = _login(resumed.server_port, local_sign_port=resumed.server_port)
                 _ok(_http(resumed.server_port, 'POST', '/v1/local/organization/disable',
                           {}, bearer=token))

@@ -47,11 +47,24 @@ class TaskManagerService:
     AI-ready operational briefs without pretending to be a full OS supervisor.
     """
 
-    def __init__(self, repo_root: Path, *, default_port: int = 8765, control_root: Path | None = None) -> None:
+    def __init__(self, repo_root: Path, *, default_port: int = 8765, control_root: Path | None = None,
+                 isolated_server_executor=None) -> None:
+        # Test-only dependency injection. Never selected by HTTP input, environment,
+        # or production configuration. The caller must supply an isolated control
+        # root and a non-production port; otherwise refuse the executor entirely.
+        if isolated_server_executor is not None:
+            if not callable(isolated_server_executor) or int(default_port) == 8765 or control_root is None:
+                raise ValueError('Isolated server executor requires explicit isolated root and port')
+            if Path(control_root).resolve() == repo_root.resolve():
+                raise ValueError('Isolated server executor cannot share repository control root')
+        self._isolated_server_executor = isolated_server_executor
         self.repo_root = repo_root.resolve()
         self.default_port = default_port
         control_root_env = os.environ.get("MAIN_COMPUTER_CONTROL_ROOT", "").strip()
-        self.control_root = (Path(control_root_env) if control_root_env else (control_root or self.repo_root)).expanduser().resolve()
+        # An explicitly injected test controller must not inherit the production
+        # root from ambient environment configuration.
+        self.control_root = (Path(control_root) if isolated_server_executor is not None else
+                             (Path(control_root_env) if control_root_env else (control_root or self.repo_root))).expanduser().resolve()
         self.data_root = self.repo_root / "tools" / "task_manager"
         self.schedule_path = self.data_root / "schedules.json"
         self.manual_action_journal = self.data_root / "manual_schedule_requests.json"
@@ -61,10 +74,11 @@ class TaskManagerService:
         self.control_script = self.repo_root / "control-main-computer.ps1"
         self.pid_file = self.control_root / ".main_computer_viewport.pid"
         self.heartbeat_pid_file = self.control_root / HEARTBEAT_PID_FILENAME
-        env_port = _env_int("MAIN_COMPUTER_CONTROL_PORT")
-        detected_port = self._detect_port() if int(default_port) == 8765 else None
-        self.port = env_port or detected_port or default_port
-        self.heartbeat_port = _env_int("MAIN_COMPUTER_HEARTBEAT_PORT") or self.port + 1
+        env_port = None if isolated_server_executor is not None else _env_int("MAIN_COMPUTER_CONTROL_PORT")
+        detected_port = self._detect_port() if isolated_server_executor is None and int(default_port) == 8765 else None
+        self.port = int(default_port) if isolated_server_executor is not None else (env_port or detected_port or default_port)
+        self.heartbeat_port = (self.port + 1 if isolated_server_executor is not None else
+                               (_env_int("MAIN_COMPUTER_HEARTBEAT_PORT") or self.port + 1))
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -356,13 +370,21 @@ class TaskManagerService:
 
     def _server_action(self, *, action: str, confirm: bool) -> dict[str, Any]:
         verb = action.replace("server_", "")
-        plan = self._server_command(verb)
+        plan = ['isolated-lab-only', verb] if self._isolated_server_executor is not None else self._server_command(verb)
         server = self._server_summary(
             processes=self._process_rows(query="", limit=16, include_all=True),
             connections=self._connection_rows(relevant_pids=set(), limit=16, include_all=True),
         )
         if not confirm:
             return {"ok": True, "planned": True, "action": action, "message": f"Planned {verb} for the Main Computer server.", "command": plan, "server": server}
+
+        if self._isolated_server_executor is not None:
+            # The callback is supplied only from trusted Python construction,
+            # never through an HTTP body. It independently checks target ownership.
+            result = self._isolated_server_executor(verb)
+            if not isinstance(result, dict) or not isinstance(result.get('ok'), bool):
+                raise ValueError('Isolated server controller returned an invalid receipt')
+            return {'action': action, **result}
 
         if verb in {"shutdown", "restart"} and server.get("is_current_process"):
             self._launch_detached(self._deferred_server_command(verb))
@@ -413,11 +435,23 @@ class TaskManagerService:
                 expected_time = datetime.fromisoformat(expected_created_at.replace("Z", "+00:00"))
                 if expected_time.utcoffset() is None:
                     raise ValueError("Process generation must include a UTC offset.")
-                expected_canonical = self._format_epoch(expected_time.timestamp())
+                expected_epoch = expected_time.timestamp()
             except (ValueError, OverflowError) as exc:
                 raise ValueError("Invalid process generation timestamp.") from exc
-            if not verified_created_at or verified_created_at != expected_canonical:
+            # Windows PowerShell ConvertTo-Json serializes CIM CreationDate in
+            # whole milliseconds, whereas psutil exposes finer OS precision.
+            # Compare at the *reported* precision without weakening PID+birth
+            # verification to seconds or accepting arbitrary date strings.
+            precise = re.search(r"\.\d{4,}(?:[+-]\d{2}:\d{2})?$", expected_created_at)
+            max_delta = 0.000001 if precise else 0.002
+            if not verified_created_at or abs(observed.create_time() - expected_epoch) > max_delta:
                 raise ValueError("Process generation mismatch; action refused.")
+            if not precise:
+                # The verified receipt must use the generation precision that
+                # the OS-backed producer actually supplied. The shared semantic
+                # port compares it with the selected process identity exactly.
+                verified_created_at = datetime.fromtimestamp(
+                    expected_epoch, timezone.utc).isoformat(timespec="milliseconds")
         if action == "terminate_pid" and pid == os.getpid():
             self._launch_detached(self._deferred_kill_command(pid=pid, force=False))
             return {"ok": True, "deferred": True, "action": action, "message": f"Scheduled graceful termination for current pid {pid}.", "pid": pid, "verified_created_at": verified_created_at}
@@ -603,7 +637,11 @@ class TaskManagerService:
                         "status_availability": "present" if info.get("status") else "unavailable",
                         "is_main_computer": is_main,
                         "is_current_process": pid == os.getpid(),
-                        "created_at": self._format_epoch(info.get("create_time")),
+                        "created_at": (datetime.fromtimestamp(
+                            float(info.get("create_time")), tz=timezone.utc
+                        ).isoformat(timespec="milliseconds")
+                            if sys.platform == "win32" and info.get("create_time") is not None
+                            else self._format_epoch(info.get("create_time"))),
                     })
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
@@ -831,6 +869,29 @@ class TaskManagerService:
         except Exception:
             return None
 
+    def _normalize_windows_creation_date(self, value: Any) -> str:
+        """Normalize OS-supplied CIM birth evidence to offset-aware UTC ISO.
+
+        Windows PowerShell 5.1 ConvertTo-Json commonly emits
+        /Date(1793595519217)/; forwarding that raw value makes a genuine
+        PID unusable by the generation-checked action contract.
+        """
+        raw = str(value or "").strip()
+        match = re.fullmatch(r"/Date\((-?\d+)(?:[+-]\d{4})?\)/", raw)
+        if match:
+            try:
+                milliseconds = int(match.group(1))
+                return datetime.fromtimestamp(milliseconds / 1000.0, tz=timezone.utc).isoformat(timespec="milliseconds")
+            except (ValueError, OverflowError, OSError):
+                return ""
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.utcoffset() is None:
+                return ""
+            return parsed.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError):
+            return ""
+
     def _powershell_process_rows(self, *, query: str, limit: int, include_all: bool,
                                  diagnostic: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if diagnostic is not None:
@@ -874,7 +935,7 @@ class TaskManagerService:
                     "status_availability": "unavailable",
                     "is_main_computer": is_main,
                     "is_current_process": pid == os.getpid(),
-                    "created_at": str(item.get("CreationDate") or ""),
+                    "created_at": self._normalize_windows_creation_date(item.get("CreationDate")),
                 }
             )
         rows.sort(key=lambda item: (not item.get("is_main_computer"), item.get("pid") or 0))

@@ -636,6 +636,11 @@ $mainExportItems = @(
   "docker",
   "fdb_mutate_harness.py",
   "hub_mutate_harness.py",
+  "seh_mutate_harness.py",
+  # Required SEH build/test sources, explicitly scoped: never export the whole
+  # deployment directory and risk inadvertently copying a local target secret.
+  "deploy/seh/Dockerfile",
+  "deploy/seh/target.example.json",
   "deploy/local-platform",
   "deploy/scheduler-lab/docker-compose.worker-lab.yml",
   "deploy/scheduler-lab/Dockerfile.simulator",
@@ -1052,6 +1057,14 @@ function New-ComponentExportArchive {
 
   $stagedSourceCount = 0
 
+  if ($ComponentName -eq "main") {
+    foreach ($required in @("deploy/seh/Dockerfile", "deploy/seh/target.example.json")) {
+      if (-not (Test-Path -LiteralPath (Join-Path $sourceFull $required) -PathType Leaf)) {
+        throw "Required SEH repository source is missing: $required"
+      }
+    }
+  }
+
   foreach ($relative in $Items) {
     $path = Join-Path $sourceFull $relative
 
@@ -1066,6 +1079,14 @@ function New-ComponentExportArchive {
   }
 
   Assert-CleanExportStage -StageRoot $stageRoot
+
+  if ($ComponentName -eq "main") {
+    foreach ($required in @("deploy/seh/Dockerfile", "deploy/seh/target.example.json")) {
+      if (-not (Test-Path -LiteralPath (Join-Path $stageRoot $required) -PathType Leaf)) {
+        throw "Required SEH repository source was omitted from export: $required"
+      }
+    }
+  }
 
   if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force

@@ -1,0 +1,42 @@
+{
+  "appId": "task-manager",
+  "aspects": [
+    "overview",
+    "form",
+    "objects",
+    "workflows",
+    "layout",
+    "actions",
+    "capabilities",
+    "evidence",
+    "source",
+    "tests"
+  ],
+  "dominantObject": "Live process, service, schedule and operational receipts",
+  "label": "Task Manager",
+  "layoutZones": [
+    "workspace",
+    "file-tree",
+    "editor",
+    "draft-controls",
+    "aider",
+    "review",
+    "receipts",
+    "status"
+  ],
+  "presentationAuthority": {
+    "kind": "host-bound-generated-semantic",
+    "hostBoundRuntimeActive": true,
+    "runtimeFacade": "__mcelP3"
+  },
+  "purpose": "Canonical semantic Task Manager, with production route unchanged until authorized promotion.",
+  "rootSelector": "#mcel-workbench",
+  "route": "/applications/mcel-semantic-task-manager-generated-p3",
+  "schema": "mcel.application-blueprint.v1",
+  "sourceHints": [
+    "application.js"
+  ],
+  "testHints": [
+    "tests/task_manager_acceptance"
+  ]
+}

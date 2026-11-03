@@ -306,7 +306,7 @@ def main(argv=None):
                         else:
                             changes=None
                         result=control.change(a.command,a.network,a.seh,a.approve_generation,operation_id,
-                                              organization_id=a.organization_id,slh_id=a.slh_id,
+                                              slh_id=a.slh_id,
                                               source=a.source,alias=a.alias,replace_identity=a.replace,
                                               changes=changes)
                     elif a.command=='deploy':

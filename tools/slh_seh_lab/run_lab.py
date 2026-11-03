@@ -99,6 +99,7 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
     from main_computer.slh.managed_client import ManagedSLHWorkerClient
     from main_computer.slh.scheduler_policy import SchedulerPolicyStore
     from tools.slh_authenticator_cli import save_identity, load_identity
+    from tools.slh_seh_connector import service_identity
     from main_computer.hub_cli_live_session import identify_hub_protocol, issue_cli_multisession_authorization
     from main_computer.multisession_key_signing import private_key_to_address
     from types import SimpleNamespace
@@ -108,14 +109,16 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
     from .paid_cycle import verify_paid_cycle
 
     gates: dict[str, bool] = {}
-    org_id = deployed['org'] if deployed else 'slh-seh-lab'
     slh_id = deployed['slh'] if deployed else 'lab-slh'
     with tempfile.TemporaryDirectory(prefix='mc-slh-seh-lab-') as directory:
         root = Path(directory)
+        # A real SLH initializes its signing identity before authority state.
+        # This direct-authority lab must perform the same fresh-state step.
+        service_identity(root / 'state', create=True)
         auth = SLHAuthority(root / 'state')
         admin_key, admin_public = generate_identity()
         statement = {'version': 1, 'action': 'slh.admin.bootstrap',
-                     'org_id': org_id, 'admin_id': 'lab-owner',
+                     'admin_id': 'lab-owner',
                      'device_id': 'lab-admin', 'public_key': admin_public}
         auth.bootstrap({**statement, 'proof': sign_object(admin_key, statement),
                         'admin_name': 'Lab Owner',
@@ -132,7 +135,7 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
                        'claimed_user': 'Lab Owner', 'requested_role': 'worker',
                        'client_nonce': secrets.token_urlsafe(24)}
             signed = {**request, 'version': 1, 'action': 'slh.device.enrollment.request',
-                      'org_id': org_id}
+                      'audience': 'slh://' + auth.service_fingerprint()}
             pending = auth.enrollment_request({**request, 'proof': sign_object(private, signed)})
             auth.approve(pending['request_id'], admin_id='lab-owner')
         gates['four_approved_walletless_devices'] = len([x for x in auth.devices()
@@ -147,12 +150,12 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
             lab_id = deployed['lab_id']
         else:
             relay_signer, relay_public = generate_identity()
-            relay = SEHRelay(organization_id=org_id, slh_id=slh_id,
+            relay = SEHRelay(slh_id=slh_id,
                              slh_public_key=relay_public, host='127.0.0.1', port=0).start()
             uri=f'ws://127.0.0.1:{relay.port}'
             lab_id=None
         write_seh_settings(auth.directory, SEHConnectionSettings(
-            enabled=True, seh_url=uri, organization_id=org_id, slh_id=slh_id,
+            enabled=True, seh_url=uri, slh_id=slh_id,
             allow_loopback_lab=True, retry_seconds=0.2))
         gateway = SLHManagedGateway(auth, host='127.0.0.1', port=0,
                                     seh_lab_identity=relay_signer, seh_lab_id=lab_id)
@@ -163,7 +166,7 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
                          gateway.seh_connection is not None and gateway.seh_connection.connected,
                          seconds=8):
                 raise RuntimeError('Configured SLH did not automatically authenticate its SEH tunnel')
-            adapter=SEHLocalClientAdapter(uri, org_id, allow_lab=True, lab_id=lab_id)
+            adapter=SEHLocalClientAdapter(uri, slh_id, allow_lab=True, lab_id=lab_id)
             if not _wait(lambda: relay is None or relay.tunnel_ready):
                 raise RuntimeError('SEH did not observe the configured SLH tunnel')
         except BaseException:
@@ -343,7 +346,7 @@ def _mock_coolify_gate() -> dict:
     from main_computer.slh.config import SEHTarget
     from tools.seh_harness import _local_verify
     target = SEHTarget.from_dict({
-        'target_id':'slh-seh-lab', 'organization_id':'slh-seh-lab', 'slh_id':'lab-slh',
+        'target_id':'slh-seh-lab', 'slh_id':'lab-slh',
         'public_url':'https://hub.secure.example.com',
         'coolify_url':'http://127.0.0.1:38080', 'project_uuid':'mock-project',
         'environment_uuid':'mock-environment', 'server_uuid':'mock-server',
@@ -689,7 +692,7 @@ def _seh_http_identity(port: int, path: str) -> dict:
 
 
 def verify_deployed(topology: Path, *, use_existing:bool, report_dir:Path,
-                    org:str, slh:str, port:int, compose_output:Path) -> dict:
+                    slh:str, port:int, compose_output:Path) -> dict:
     """Redeploy the existing LOCAL Coolify SEH, then prove a paid job through it.
 
     No in-process relay. A random isolated channel with the existing service key
@@ -705,9 +708,9 @@ def verify_deployed(topology: Path, *, use_existing:bool, report_dir:Path,
     # lane. Observe it *before* any optional Coolify upgrade so that a tunnel
     # lost by our deployment is reported, rather than silently ignored.
     primary_before = _seh_http_identity(port, '/readyz').get('slh_connected') is True
-    deployment=find_healthy_deployed(org=org,slh=slh,port=port)
+    deployment=find_healthy_deployed(slh=slh,port=port)
     if deployment is None:
-        deployment=deploy_local(org=org,slh=slh,port=port,
+        deployment=deploy_local(slh=slh,port=port,
                                 output=compose_output,build=True)
     if deployment.get('status')!='DEPLOYED_VERIFIED' or not deployment.get('service_uuid'):
         raise LabRefused('Existing local Coolify SEH deployment not verified')
@@ -723,7 +726,7 @@ def verify_deployed(topology: Path, *, use_existing:bool, report_dir:Path,
     from main_computer.slh.seh_transport import SLHSEHConnector
     lab_id=secrets.token_hex(16)
     trial=run_smoke(topology,use_existing=use_existing,report_dir=report_dir,deployed={
-        'url':f'ws://127.0.0.1:{port}', 'org':org, 'slh':slh,
+        'url':f'ws://127.0.0.1:{port}', 'slh':slh,
         'lab_id':lab_id, 'identity_key':identity})
     # Test recovery of the disposable tunnel after the paid cycle, without
     # disconnecting or restarting the organization's primary SLH connector.
@@ -732,7 +735,7 @@ def verify_deployed(topology: Path, *, use_existing:bool, report_dir:Path,
         replay=None
         try:
             replay=SLHSEHConnector(seh_url=f'ws://127.0.0.1:{port}',
-                    organization_id=org, slh_id=slh, identity_private_key=identity,
+                    slh_id=slh, identity_private_key=identity,
                     gateway_port=1, allow_lab=True, lab_id=lab_id).connect()
             recovered=True
             break
@@ -810,7 +813,6 @@ def main(argv=None) -> int:
     p.add_argument('--json',action='store_true')
     p.add_argument('--build-image',action='store_true')
     p.add_argument('--reuse-image',action='store_true',help='Deploy previously built SEH image without rebuilding')
-    p.add_argument('--org-id',default='my-company')
     p.add_argument('--slh-id',default='my-slh')
     p.add_argument('--local-port',type=int,default=18080)
     p.add_argument('--compose-output',type=Path,default=Path('runtime/reports/slh-seh-lab/local-coolify/compose.yml'))
@@ -827,7 +829,7 @@ def main(argv=None) -> int:
         from .local_coolify import prepare, deploy_local, LocalCoolifyError
         try:
             if a.command == 'deploy-local-coolify':
-                report=deploy_local(org=a.org_id,slh=a.slh_id,port=a.local_port,
+                report=deploy_local(slh=a.slh_id,port=a.local_port,
                                     output=a.compose_output,build=not a.reuse_image)
                 # Explicit local deployment also configures the SLH service to
                 # maintain the tunnel at its next startup. Never change the
@@ -838,11 +840,11 @@ def main(argv=None) -> int:
                         SEHConnectionSettings, write_seh_settings)
                     write_seh_settings(default_state(), SEHConnectionSettings(
                         enabled=True, seh_url=f'ws://127.0.0.1:{a.local_port}',
-                        organization_id=a.org_id, slh_id=a.slh_id,
+                        slh_id=a.slh_id,
                         allow_loopback_lab=True))
                     report['slh_autoconnect_configured']=True
             else:
-                report=prepare(org=a.org_id,slh=a.slh_id,port=a.local_port,
+                report=prepare(slh=a.slh_id,port=a.local_port,
                                output=a.compose_output,build=a.build_image)
         except (LocalCoolifyError, OSError, ValueError) as exc:
             report={'status':'FAIL','error':str(exc)}
@@ -912,7 +914,7 @@ def main(argv=None) -> int:
                             capacity_probe=a.capacity_probe)
                     elif a.command=='verify-deployed':
                         report=verify_deployed(a.topology,use_existing=a.use_existing_hubs,
-                                               report_dir=path,org=a.org_id,slh=a.slh_id,
+                                               report_dir=path,slh=a.slh_id,
                                                port=a.local_port,compose_output=a.compose_output)
                     else:report=run_smoke(a.topology,use_existing=a.use_existing_hubs,report_dir=path,
                                           pinky_integrated=a.pinky_integrated, reserve_wallet=a.pinky_reserve_wallet,

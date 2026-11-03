@@ -69,13 +69,13 @@ class TestSLHSEHLab(unittest.TestCase):
             self.assertIsNone(read_seh_settings(state))
             with self.assertRaises(ValueError):
                 write_seh_settings(state,SEHConnectionSettings(
-                    True,'ws://example.com:8080','org','slh',False,2))
+                    True,'ws://example.com:8080','slh',False,2))
             with self.assertRaises(ValueError):
                 write_seh_settings(state,SEHConnectionSettings(
-                    True,'ws://127.0.0.1:18080','org','slh',False,2))
+                    True,'ws://127.0.0.1:18080','slh',False,2))
             self.assertIsNone(read_seh_settings(state))
             disabled=SEHConnectionSettings(False,'ws://127.0.0.1:18080',
-                                            'org','slh',True,0.2)
+                                            'slh',True,0.2)
             write_seh_settings(state,disabled)
             self.assertEqual(read_seh_settings(state),disabled)
             # Disabled config must not create an identity or contact an SEH.
@@ -118,11 +118,11 @@ class TestSLHSEHLab(unittest.TestCase):
              mock.patch('tools.slh_seh_lab.run_lab.run_smoke',return_value=saved) as smoke, \
              mock.patch('main_computer.slh.seh_transport.SLHSEHConnector',return_value=DummyConn()):
             result=verify_deployed(DEFAULT_TOPOLOGY,use_existing=False,
-                     report_dir=Path('runtime/reports'),org='org',slh='slh',
+                     report_dir=Path('runtime/reports'),slh='slh',
                      port=18080,compose_output=Path('runtime/reports/compose.yml'))
         deploy.assert_called_once()
         self.assertTrue(deploy.call_args.kwargs['build'])
-        self.assertEqual(smoke.call_args.kwargs['deployed']['org'],'org')
+        self.assertEqual(smoke.call_args.kwargs['deployed']['slh'],'slh')
         self.assertEqual(len(smoke.call_args.kwargs['deployed']['lab_id']),32)
         self.assertEqual(result['status'],'PASS')
         self.assertTrue(result['slh']['gates']['deployed_original_slh_tunnel_preserved'])
@@ -148,7 +148,7 @@ class TestSLHSEHLab(unittest.TestCase):
              mock.patch('tools.slh_seh_lab.run_lab.run_smoke',return_value=saved), \
              mock.patch('main_computer.slh.seh_transport.SLHSEHConnector',return_value=DummyConn()):
             result=verify_deployed(DEFAULT_TOPOLOGY,use_existing=False,
-                     report_dir=Path('runtime/reports'),org='org',slh='slh',
+                     report_dir=Path('runtime/reports'),slh='slh',
                      port=18080,compose_output=Path('runtime/reports/compose.yml'))
         deploy.assert_not_called()
         self.assertTrue(result['coolify_deployment']['existing_service_reused'])
@@ -176,7 +176,7 @@ class TestSLHSEHLab(unittest.TestCase):
              mock.patch('tools.slh_seh_lab.run_lab.run_smoke',return_value=trial) as smoke, \
              mock.patch('main_computer.slh.seh_transport.SLHSEHConnector',return_value=DummyConn()):
             result=verify_deployed(DEFAULT_TOPOLOGY,use_existing=False,
-                     report_dir=Path('runtime/reports'),org='org',slh='slh',
+                     report_dir=Path('runtime/reports'),slh='slh',
                      port=18080,compose_output=Path('runtime/reports/compose.yml'))
         smoke.assert_called_once()
         self.assertEqual(result['status'],'PASS')
@@ -208,7 +208,7 @@ class TestSLHSEHLab(unittest.TestCase):
              mock.patch('tools.slh_seh_lab.run_lab.run_smoke',return_value=trial) as smoke, \
              mock.patch('main_computer.slh.seh_transport.SLHSEHConnector',return_value=DummyConn()):
             result=verify_deployed(DEFAULT_TOPOLOGY,use_existing=False,
-                     report_dir=Path('runtime/reports'),org='org',slh='slh',
+                     report_dir=Path('runtime/reports'),slh='slh',
                      port=18080,compose_output=Path('runtime/reports/compose.yml'))
         smoke.assert_called_once()
         self.assertEqual(result['status'],'FAIL')
@@ -225,7 +225,7 @@ class TestSLHSEHLab(unittest.TestCase):
              mock.patch('tools.slh_seh_lab.run_lab.run_smoke') as smoke:
             with self.assertRaisesRegex(LabRefused,'not healthy'):
                 verify_deployed(DEFAULT_TOPOLOGY,use_existing=False,
-                     report_dir=Path('runtime/reports'),org='org',slh='slh',
+                     report_dir=Path('runtime/reports'),slh='slh',
                      port=18080,compose_output=Path('runtime/reports/compose.yml'))
             smoke.assert_not_called()
 
@@ -235,11 +235,10 @@ class TestSLHSEHLab(unittest.TestCase):
         from main_computer.seh.relay import SEHRelay
         from main_computer.slh.seh_transport import SLHSEHConnector
         signer, public = generate_identity()
-        relay = SEHRelay(organization_id='lab-organization',slh_id='my-slh',
+        relay = SEHRelay(slh_id='my-slh',
                           slh_public_key=public,host='127.0.0.1',port=0).start()
         url=f'ws://127.0.0.1:{relay.port}'
-        primary=SLHSEHConnector(seh_url=url,organization_id='lab-organization',
-                        slh_id='my-slh',identity_private_key=signer,
+        primary=SLHSEHConnector(seh_url=url,slh_id='my-slh',identity_private_key=signer,
                         gateway_port=1,allow_lab=True).connect()
         server,thread = _in_memory_hub()
         try:

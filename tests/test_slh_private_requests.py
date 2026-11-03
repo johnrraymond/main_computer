@@ -24,8 +24,7 @@ class TestPrivateRequests(unittest.TestCase):
         self.identity_dir=self.root/'client-keys'
         key,pub=generate_identity()
         self.admin_key=key  # P3 admin policy tests sign real administrator sessions
-        statement={'version':1,'action':'slh.admin.bootstrap','org_id':'private-lab',
-                   'admin_id':'admin','device_id':'admin-device','public_key':pub}
+        statement={'version':1,'action':'slh.admin.bootstrap','admin_id':'admin','device_id':'admin-device','public_key':pub}
         self.auth.bootstrap({**statement,'proof':sign_object(key,statement),
                              'admin_name':'admin','bootstrap_secret':(self.root/'state'/'bootstrap.secret').read_text().strip()},loopback=True)
         self.gateway=SLHManagedGateway(self.auth,host='127.0.0.1',port=0)
@@ -45,7 +44,7 @@ class TestPrivateRequests(unittest.TestCase):
         statement={'selected_admin':'admin','device_id':did,'public_key':pub,
                    'kind':role,'device_name':did,'claimed_user':did,
                    'requested_role':role,'client_nonce':secrets.token_urlsafe(32)}
-        signed={**statement,'version':1,'action':'slh.device.enrollment.request','org_id':'private-lab'}
+        signed={**statement,'version':1,'action':'slh.device.enrollment.request'}
         req=self.auth.enrollment_request({**statement,'proof':sign_object(key,signed)})
         self.auth.approve(req['request_id'],admin_id='admin')
         challenge=self.auth.challenge(did)

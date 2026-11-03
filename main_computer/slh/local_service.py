@@ -24,6 +24,7 @@ from main_computer.slh.organization_controller import OrganizationController
 from main_computer.slh.ports import DEFAULT_SLH_API_HOST, DEFAULT_SLH_API_PORT
 from main_computer.slh.storage import guard_legacy_state, secure_machine_state_dir, slh_state_dir
 from tools.slh_auth_harness import ExclusiveSLHServer
+from tools.slh_seh_connector import service_identity
 
 
 def local_status(authority: SLHAuthority, port: int, controller=None) -> dict:
@@ -43,7 +44,12 @@ def create_server(*, state_dir: Path, port: int = DEFAULT_SLH_API_PORT,
     """Initialize local-only state then bind; caller owns serve_forever/shutdown."""
     directory = Path(state_dir)
     guard_legacy_state(directory)
-    secure_machine_state_dir(directory)
+    # Prepare the signing identity before normal bootstrap writes config or SQL.
+    # A nonempty pre-existing state without this key is NOT a fresh SLH.
+    if not directory.exists() or not any(directory.iterdir()):
+        service_identity(directory, create=True, directory_protector=secure_machine_state_dir)
+    else:
+        secure_machine_state_dir(directory)
     initialize_disabled(directory)
     authority = authority_factory(directory)
     controller = OrganizationController(authority)

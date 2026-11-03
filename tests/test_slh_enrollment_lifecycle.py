@@ -27,13 +27,15 @@ class TestEnrollmentLifecycle(unittest.TestCase):
             root=Path(temp)
             state=root/'state'; identities=root/'keys'
             save_identity(identities,'admin-test')
+            from tools.slh_seh_connector import service_identity
+            service_identity(state, create=True)
             auth=SLHAuthority(state)
             server=make_server('127.0.0.1',0,SLHAPI(auth).wsgi_app)
             thread=threading.Thread(target=server.serve_forever,daemon=True)
             thread.start()
             try:
                 bootstrap_admin(port=server.server_port,state_dir=state,identity_dir=identities,
-                                device_id='admin-test',org_id='org-test',admin_id='owner',admin_name='Owner')
+                                device_id='admin-test',admin_id='owner',admin_name='Owner')
                 auth.policy(True,'owner')
                 with self.assertRaisesRegex(RuntimeError,'PHYSICAL_INSPECTION_REQUIRED'):
                     verify_lifecycle(port=server.server_port,identity_dir=identities,admin_device='admin-test')

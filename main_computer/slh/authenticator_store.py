@@ -186,13 +186,12 @@ class LocalIdentityStore:
         purpose = challenge.get('purpose')
         action = challenge.get('action')
         if purpose == 'slh.known_device.login':
-            expected = {'version','purpose','org_id','audience','device_id',
+            expected = {'version','purpose','audience','device_id',
                         'challenge_id','nonce','issued_at','expires_at'}
             if (set(challenge) != expected or type(challenge.get('version')) is not int
                     or challenge['version'] != 1
-                    or not isinstance(challenge.get('org_id'), str)
-                    or not challenge['org_id'] or len(challenge['org_id']) > 128
-                    or challenge.get('audience') != 'slh://' + challenge['org_id']
+                    or not isinstance(challenge.get('audience'), str)
+                    or not re.fullmatch(r'slh://[0-9a-f]{64}',challenge['audience'])
                     or not isinstance(challenge.get('challenge_id'), str)
                     or not re.fullmatch(r'[a-f0-9]{32}', challenge['challenge_id'])
                     or not isinstance(challenge.get('nonce'), str)
@@ -203,11 +202,9 @@ class LocalIdentityStore:
                     or not challenge['issued_at'] - 30 <= int(time.time()) < challenge['expires_at']):
                 raise IdentityStoreError('INVALID_CHALLENGE')
         elif action == 'slh.admin.bootstrap':
-            expected = {'version','action','org_id','admin_id','device_id','public_key'}
+            expected = {'version','action','admin_id','device_id','public_key'}
             if (set(challenge) != expected or type(challenge.get('version')) is not int
                     or challenge['version'] != 1
-                    or not isinstance(challenge.get('org_id'), str)
-                    or not 1 <= len(challenge['org_id']) <= 128
                     or not isinstance(challenge.get('admin_id'), str)
                     or not 1 <= len(challenge['admin_id']) <= 128
                     or challenge.get('public_key') != identity['public_key']):
@@ -215,13 +212,11 @@ class LocalIdentityStore:
         elif action == 'slh.admin.bootstrap.pending':
             # Bind the proof to one SLH-issued bootstrap proposal. The SLH
             # authority verifies the exact stored nonce and interval later.
-            expected = {'version','action','org_id','transaction_id','nonce',
+            expected = {'version','action','transaction_id','nonce',
                         'issued_at','expires_at','admin_id','device_id','public_key'}
             now = int(time.time())
             if (set(challenge) != expected or type(challenge.get('version')) is not int
                     or challenge['version'] != 1
-                    or not isinstance(challenge.get('org_id'), str)
-                    or not 1 <= len(challenge['org_id']) <= 160
                     or not isinstance(challenge.get('admin_id'), str)
                     or not 1 <= len(challenge['admin_id']) <= 160
                     or not isinstance(challenge.get('transaction_id'), str)

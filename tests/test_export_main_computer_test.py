@@ -64,6 +64,14 @@ class ExportMainComputerTestTests(unittest.TestCase):
 
 
 
+    def test_export_includes_required_seh_sources_without_widening_directory(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+        self.assertIn('"deploy/seh/Dockerfile"', script)
+        self.assertIn('"deploy/seh/target.example.json"', script)
+        self.assertNotIn('  "deploy/seh",', script)
+        self.assertIn('Required SEH repository source is missing:', script)
+        self.assertIn('Required SEH repository source was omitted from export:', script)
+
     def test_export_excludes_nested_node_modules_and_rejects_leaked_dependencies(self) -> None:
         script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
         copy_policy = script.split("function Test-RepoPathAllowed {", 1)[1].split(

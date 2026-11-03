@@ -918,13 +918,21 @@
     }
     function updateSelectedRecord(n,host) {
       const selected=read(ref(n.value.state));
-      const selection=[...c.intents.values()].find(i=>i.collectionSelection &&
+      const selections=[...c.intents.values()].filter(i=>i.collectionSelection &&
         ref(i.collectionSelection.target)===ref(n.value.state));
-      const source=selection?.collectionSelection;
       host.replaceChildren();
       if(!selected){host.append(elt("p",{},"Select a record to examine its available details."));return;}
-      const values=read(ref(source?.source));
-      const record=Array.isArray(values)?values.find(v=>v && String(v[source.key])===String(selected)):null;
+      // Multiple semantic collections may share the same selected identity.
+      // Never bind inspection to whichever collection intent happened to be
+      // declared first; find the actually observed identity in its source.
+      let record=null;
+      for(const selection of selections){
+        const source=selection.collectionSelection;
+        const values=read(ref(source.source));
+        if(!Array.isArray(values))continue;
+        record=values.find(v=>v && String(v[source.key])===String(selected))||null;
+        if(record)break;
+      }
       if(!record){host.append(elt("p",{"data-mcel-selection-stale":"true"},
         "Selected identity is no longer present in this observation: "+selected));return;}
       const list=elt("dl",{"data-mcel-selected-details":selected});

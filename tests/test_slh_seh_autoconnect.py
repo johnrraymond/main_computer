@@ -33,7 +33,7 @@ class TestSLHSEHAutoConnection(unittest.TestCase):
                 port=s.getsockname()[1]
             write_seh_settings(Path(td), SEHConnectionSettings(
                 enabled=True, seh_url=f'ws://127.0.0.1:{port}',
-                organization_id='lab-org', slh_id='lab-slh',
+                slh_id='lab-slh',
                 allow_loopback_lab=True,retry_seconds=.15))
             supervisor=SEHAutoConnection(Path(td),gateway_port=1,
                                          identity_private_key=signer).start()
@@ -42,7 +42,7 @@ class TestSLHSEHAutoConnection(unittest.TestCase):
                 self.assertTrue(wait(lambda: supervisor.failures >= 1),
                                 'offline SEH should produce a bounded retry')
                 self.assertFalse(supervisor.connected)
-                relay=SEHRelay(organization_id='lab-org',slh_id='lab-slh',
+                relay=SEHRelay(slh_id='lab-slh',
                                slh_public_key=public,host='127.0.0.1',port=port).start()
                 self.assertTrue(wait(lambda: supervisor.connected and relay.tunnel_ready),
                                 'supervisor must authenticate after SEH appears')
@@ -57,15 +57,14 @@ class TestSLHSEHAutoConnection(unittest.TestCase):
             root=Path(td)
             auth=SLHAuthority(root)
             signer,public=generate_identity()
-            stmt={'version':1,'action':'slh.admin.bootstrap','org_id':'lab-org',
-                  'admin_id':'owner','device_id':'admin-pc','public_key':public}
+            stmt={'version':1,'action':'slh.admin.bootstrap','admin_id':'owner','device_id':'admin-pc','public_key':public}
             auth.bootstrap({**stmt,'proof':sign_object(signer,stmt),
                             'bootstrap_secret':(root/'bootstrap.secret').read_text(),
                             'admin_name':'Lab'},loopback=True)
             for configured in (False, True):
                 if configured:
                     write_seh_settings(root,SEHConnectionSettings(
-                        False,'ws://127.0.0.1:18080','lab-org','lab-slh',True,.2))
+                        False,'ws://127.0.0.1:18080','lab-slh',True,.2))
                 gateway=SLHManagedGateway(auth,host='127.0.0.1',port=0)
                 gateway.start_background()
                 try:

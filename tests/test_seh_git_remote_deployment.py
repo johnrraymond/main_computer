@@ -47,9 +47,23 @@ class FakeHost:
             return {'uuid':obj['uuid']}
         if method=='PATCH' and path.endswith('/envs/bulk'):
             uuid=path.split('/')[-3]
-            self.envs[uuid]=[{'key':x['key'],'value':x['value']} for x in body['data']]
+            current = {r['key']: r for r in self.envs.get(uuid, [])}
+            for x in body['data']:
+                current[x['key']] = {'key': x['key'], 'value': x['value']}
+            self.envs[uuid] = list(current.values())
             return {'ok':True}
         if method=='PATCH' and path.startswith('/api/v1/applications/'):
+            uuid=path.split('/')[-1]
+            for app in self.apps:
+                if app['uuid']==uuid: app.update(body)
+            return {'ok':True}
+        if method=='DELETE' and '/envs/' in path:
+            uuid=path.split('/')[-3]
+            key=path.split('/')[-1]
+            rows=self.envs.get(uuid, [])
+            if not any(row.get('uuid') == key for row in rows):
+                raise AssertionError('Unknown env UUID')
+            self.envs[uuid] = [row for row in rows if row.get('uuid') != key]
             return {'ok':True}
         raise AssertionError((method,path))
 
@@ -57,7 +71,7 @@ class FakeHost:
 def setup(tmp_path, *, other=False):
     root,_=fixture(tmp_path)
     ctl=SEHControl(root)
-    ctl.change('reserve','mainnet','company',None,'reserve',organization_id='org',slh_id='slh')
+    ctl.change('reserve','mainnet','company',None,'reserve',slh_id='slh')
     alias='coolify-b' if other else 'coolify-a'
     ctl.change('coolify-copy','mainnet','company',None,'copy',alias='primary',
                source=f'networks.mainnet.coolify.controllers.{alias}')
@@ -443,3 +457,52 @@ def test_existing_application_with_same_slh_public_key_can_redeploy(tmp_path, mo
     result = g.deploy(root, 'mainnet', 'company', operation_id='same-key', client=host, source=SOURCE)
     assert result['status'] == 'DEPLOY_QUEUED'
     assert ('POST', '/api/v1/applications/public') not in host.calls
+
+
+def test_infrastructure_only_prepare_does_not_load_slh_signer(tmp_path, monkeypatch):
+    root, _ = setup(tmp_path)
+    host = FakeHost()
+    monkeypatch.setattr(g, '_public_key', lambda: (_ for _ in ()).throw(AssertionError('local signer read')))
+    result = g.prepare(root, 'mainnet', 'company', client=host, source=SOURCE,
+                       public_url='https://seh.example.org')
+    plan = g._loaded(root, 'mainnet', 'company')
+    assert result['status'] == 'PREPARED'
+    assert plan['slh_public_key_b64'] == ''
+    assert 'SEH_ORGANIZATION_ID' not in g._envs(plan)
+    assert 'SEH_SLH_PUBLIC_KEY_B64' not in g._envs(plan)
+
+
+def test_redeploy_preserves_existing_remote_slh_binding_without_local_key(tmp_path, monkeypatch):
+    root, _ = setup(tmp_path)
+    host = FakeHost()
+    g.prepare(root, 'mainnet', 'company', client=host, source=SOURCE,
+              public_url='https://seh.example.org')
+    plan = g._loaded(root, 'mainnet', 'company')
+    host.apps.append({'uuid': 'app-one', 'name': plan['application_name'],
+                      'description': plan['ownership_marker'], 'project_uuid': 'proj-a',
+                      'server_uuid': 'server-a', 'environment_name': 'mainnet-hubs'})
+    protected = {'SEH_ORGANIZATION_ID': 'org', 'SEH_SLH_ID': 'slh',
+                 'SEH_SLH_PUBLIC_KEY_B64': 'public-binding-preserved'}
+    host.envs['app-one'] = [{'key': k, 'value': v} for k,v in protected.items()]
+    monkeypatch.setattr(g.hub_coolify, 'trigger_deploy', lambda *a, **k: {'ok': True})
+    result = g.deploy(root,'mainnet','company',operation_id='infra-redeploy',client=host,source=SOURCE)
+    assert result['status'] == 'DEPLOY_QUEUED'
+    updated = {x['key']:x['value'] for x in host.envs['app-one']}
+    for k,v in protected.items():
+        assert updated[k] == v
+
+
+def test_unbound_new_registration_and_infrastructure_only_plan(tmp_path):
+    root, _ = fixture(tmp_path)
+    ctl = SEHControl(root)
+    ctl.change('reserve', 'mainnet', 'relay-unbound', None, 'reserve-unbound')
+    ctl.change('coolify-copy', 'mainnet', 'relay-unbound', None, 'copy-unbound',
+               alias='primary',source='networks.mainnet.coolify.controllers.coolify-a')
+    _, _, doc = st.read(root, 'mainnet')
+    rec = doc['networks']['mainnet']['sehs']['relay-unbound']
+    assert rec['schema'] == 'main-computer.seh-identity.v3'
+    assert 'organization_id' not in rec and 'slh_id' not in rec
+    host = FakeHost()
+    with pytest.raises(g.SEHGitError, match='requires registered SLH identity'):
+        g.prepare(root, 'mainnet', 'relay-unbound', client=host, source=SOURCE,
+                  public_url='https://seh.example.org')

@@ -5,7 +5,7 @@ This is for local development only, not protected production key storage.
 Do not use this key for a marketplace wallet.
 
   python -m tools.slh_authenticator_cli create --device-id admin-pc
-  python -m tools.slh_authenticator_cli bootstrap-admin --device-id admin-pc --org-id my-org --admin-id owner --admin-name "Owner"
+  python -m tools.slh_authenticator_cli bootstrap-admin --device-id admin-pc --admin-id owner --admin-name "Owner"
   python -m tools.slh_authenticator_cli login --device-id admin-pc
 """
 from __future__ import annotations
@@ -99,14 +99,14 @@ def _request(port: int, method: str, path: str, body: dict | None = None, token:
 
 
 def bootstrap_admin(*, port: int, state_dir: Path, identity_dir: Path, device_id: str,
-                    org_id: str, admin_id: str, admin_name: str):
+                    admin_id: str, admin_name: str):
     status = _request(port, 'GET', '/v1/bootstrap/status')
     if status.get('initialized'):
         raise RuntimeError('SLH already initialized: first-administrator bootstrap is closed')
     key, public_key = load_identity(identity_dir, device_id)
     secret_file = Path(state_dir) / 'bootstrap.secret'
     secret = secret_file.read_text(encoding='ascii').strip()
-    statement = {'version':1, 'action':'slh.admin.bootstrap', 'org_id':org_id,
+    statement = {'version':1, 'action':'slh.admin.bootstrap',
                  'admin_id':admin_id, 'device_id':device_id, 'public_key':public_key}
     data = {**statement, 'admin_name':admin_name, 'bootstrap_secret':secret,
             'proof':sign_object(key, statement)}
@@ -145,7 +145,6 @@ def main(argv=None):
                            help='Lab override; default is the canonical SLH loopback API port')
         if cmd == 'bootstrap-admin':
             c.add_argument('--state-dir',type=Path,default=_default_state_dir())
-            c.add_argument('--org-id',required=True)
             c.add_argument('--admin-id',required=True)
             c.add_argument('--admin-name',required=True)
     args=p.parse_args(argv)
@@ -155,7 +154,7 @@ def main(argv=None):
         elif args.command=='bootstrap-admin':
             result=bootstrap_admin(port=args.port,state_dir=args.state_dir,identity_dir=args.identity_dir,
                                    device_id=args.device_id,
-                                   org_id=args.org_id,admin_id=args.admin_id,admin_name=args.admin_name)
+                                   admin_id=args.admin_id,admin_name=args.admin_name)
         else:
             result=login(port=args.port,identity_dir=args.identity_dir,device_id=args.device_id)
     except (ValueError, RuntimeError, OSError) as exc:

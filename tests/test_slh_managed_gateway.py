@@ -22,8 +22,7 @@ class TestSLHManagedGateway(unittest.TestCase):
         self.root=Path(self.temp.name)
         self.auth=SLHAuthority(self.root/'state')
         admin_key,public=generate_identity()
-        statement={'version':1,'action':'slh.admin.bootstrap','org_id':'lab',
-                   'admin_id':'owner','device_id':'admin','public_key':public}
+        statement={'version':1,'action':'slh.admin.bootstrap','admin_id':'owner','device_id':'admin','public_key':public}
         self.auth.bootstrap({**statement,'proof':sign_object(admin_key,statement),
                              'admin_name':'owner','bootstrap_secret':(self.root/'state'/'bootstrap.secret').read_text().strip()},loopback=True)
         self.identity_dir=self.root/'auth'
@@ -34,7 +33,7 @@ class TestSLHManagedGateway(unittest.TestCase):
         statement={'selected_admin':'owner','device_id':did,'public_key':public,
                    'kind':'worker','device_name':did,'claimed_user':'test',
                    'requested_role':'worker','client_nonce':secrets.token_urlsafe(32)}
-        signed={**statement,'version':1,'action':'slh.device.enrollment.request','org_id':'lab'}
+        signed={**statement,'version':1,'action':'slh.device.enrollment.request'}
         result=self.auth.enrollment_request({**statement,'proof':sign_object(key,signed)})
         self.auth.approve(result['request_id'],admin_id='owner')
 

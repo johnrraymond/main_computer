@@ -63,6 +63,8 @@ def network_doc(document: dict, network: str) -> dict:
 def seh_doc(document: dict, network: str, seh: str) -> dict:
     ident(seh, 'seh')
     body = network_doc(document, network)
+    if body.get(CANONICAL_KEY) is not None:
+        raise SEHIdentityError('Named SEH deployment interface retired; use canonical deployment')
     record = (body.get('sehs') or {}).get(seh)
     if type(record) is not dict:
         raise SEHIdentityError('Selected SEH is not registered')
@@ -71,10 +73,23 @@ def seh_doc(document: dict, network: str, seh: str) -> dict:
 
 
 def validate_seh(record: dict) -> None:
-    if type(record) is not dict or record.get('schema') != 'main-computer.seh-identity.v1':
+    if type(record) is not dict or record.get('schema') not in ('main-computer.seh-identity.v1', 'main-computer.seh-identity.v2', 'main-computer.seh-identity.v3'):
         raise SEHIdentityError('Invalid SEH identity schema')
-    ident(record.get('organization_id'), 'organization_id')
-    ident(record.get('slh_id'), 'slh_id')
+    if record['schema'] == 'main-computer.seh-identity.v3':
+        if 'organization_id' in record:
+            raise SEHIdentityError('Unexpected legacy association in v3 identity')
+        if record.get('slh_id'):
+            ident(record['slh_id'], 'slh_id')
+    elif record['schema'] == 'main-computer.seh-identity.v1':
+        # Read-only legacy compatibility; require governed migration before writes.
+        if record.get('organization_id') is not None:
+            ident(record['organization_id'], 'legacy_organization_id')
+        ident(record.get('slh_id'), 'slh_id')
+    elif record.get('organization_id'):
+        ident(record['organization_id'], 'legacy_organization_id')
+        if record.get('slh_id'):
+            ident(record['slh_id'], 'slh_id')
+
     coolify = record.get('coolify')
     if type(coolify) is not dict or type(coolify.get('identities')) is not dict:
         raise SEHIdentityError('Invalid SEH Coolify identity registry')
@@ -110,6 +125,128 @@ def _safe_url(value: object) -> str | None:
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         return '<redacted-url>'
     return value
+
+
+
+# One SLH owns at most one SEH deployment on each network. The old named
+# registry is only a migration input, never a new source of authority.
+CANONICAL_KEY = 'seh_deployment'
+CANONICAL_SCHEMA = 'main-computer.seh-deployment.v1'
+
+
+def deployment_record(document: dict, network: str) -> dict | None:
+    """Return the single canonical record, refusing mixed or ambiguous state."""
+    body = network_doc(document, network)
+    legacy = body.get('sehs')
+    canonical = body.get(CANONICAL_KEY)
+    if legacy is not None and (type(legacy) is not dict or any(not isinstance(x, dict) for x in legacy.values())):
+        raise SEHIdentityError('Malformed legacy SEH registry')
+    if canonical is not None and legacy:
+        raise SEHIdentityError('Canonical and legacy SEH records coexist; refusing ambiguous identity')
+    if canonical is not None:
+        validate_deployment(canonical)
+    return canonical
+
+
+def validate_deployment(record: dict) -> None:
+    """Do not admit any synthetic SEH, organization or controller alias."""
+    if type(record) is not dict or record.get('schema') != CANONICAL_SCHEMA:
+        raise SEHIdentityError('Invalid canonical SEH deployment schema')
+    if set(record) != {'schema', 'coolify', 'deployment'}:
+        raise SEHIdentityError('Canonical SEH deployment contains unsupported identity fields')
+    coolify = record['coolify']
+    if type(coolify) is not dict or set(coolify) != {'controller', 'source', 'source_generation', 'copied_at'}:
+        raise SEHIdentityError('Invalid canonical Coolify controller binding')
+    source = coolify['source']
+    if type(source) is not str or not re.fullmatch(r'networks\.[A-Za-z0-9_-]+\.coolify\.controllers\.[A-Za-z0-9_.-]+', source):
+        raise SEHIdentityError('Invalid canonical Coolify controller provenance')
+    if type(coolify['source_generation']) is not int or not isinstance(coolify['copied_at'], str):
+        raise SEHIdentityError('Invalid canonical Coolify source provenance')
+    _validate_controller(coolify['controller'])
+    if type(record['deployment']) is not dict:
+        raise SEHIdentityError('Missing canonical SEH deployment configuration')
+
+
+def single_legacy(document: dict, network: str) -> tuple[str, dict] | None:
+    """Accept exactly one legacy deployment; never select one among several."""
+    body = network_doc(document, network)
+    if body.get(CANONICAL_KEY) is not None:
+        deployment_record(document, network)
+        return None
+    entries = body.get('sehs', {})
+    if type(entries) is not dict:
+        raise SEHIdentityError('Malformed legacy SEH registry')
+    if len(entries) > 1:
+        raise SEHIdentityError('Multiple legacy SEH records; cannot migrate without reconciliation')
+    if not entries:
+        return None
+    name, record = next(iter(entries.items()))
+    ident(name, 'legacy SEH registry key')
+    validate_seh(record)
+    return name, record
+
+
+def migrate_one(document: dict, network: str) -> None:
+    """Pure migration transform; no keys generated, no disk/network IO."""
+    body = network_doc(document, network)
+    if body.get(CANONICAL_KEY) is not None:
+        deployment_record(document, network)
+        return  # repeated application is idempotent
+    legacy = single_legacy(document, network)
+    if legacy is None:
+        if body.get('sehs') == {}:
+            body.pop('sehs', None)
+        return
+    _, record = legacy
+    copies = record['coolify']['identities']
+    selected = record['coolify']['active_identity']
+    if len(copies) != 1 or selected not in copies:
+        raise SEHIdentityError('Ambiguous Coolify identity copies; migration refused')
+    entry = copies[selected]
+    if not isinstance(record['deployment'].get('application_uuid'), str) or not record['deployment']['application_uuid']:
+        raise SEHIdentityError('Existing SEH application UUID missing; migration refused')
+    source = entry['copied_from']
+    parts = source.split('.')
+    if (len(parts) != 5 or parts[:3] != ['networks', network, 'coolify'] or
+            parts[3] != 'controllers' or not parts[4].startswith('coolify-')):
+        raise SEHIdentityError('Unverified copied Coolify controller origin')
+    source_values = source_controller(document, source)
+    if type(source_values) is not dict:
+        raise SEHIdentityError('Original Coolify controller is not registered')
+    def _address(ctl):
+        return next((str(ctl[k]).rstrip('/') for k in ('url', 'coolify_url', 'api_url', 'base_url') if ctl.get(k)), None)
+    if _address(source_values) != _address(entry['controller']):
+        raise SEHIdentityError('Copied Coolify controller origin differs from registered source; migration refused')
+    # Preserve the *copied* controller including its token rather than selecting
+    # a possibly rotated or changed source controller.
+    successor = {'schema': CANONICAL_SCHEMA,
+                 'coolify': {'controller': deepcopy(entry['controller']), 'source': source,
+                             'source_generation': entry['source_generation'],
+                             'copied_at': entry.get('copied_at', '')},
+                 'deployment': deepcopy(record['deployment'])}
+    # The remote application's historical display name is not an identity,
+    # and must not survive as a canonical Mother selection. Its actual UUID
+    # remains unchanged. Patch 3 reconciles the display name remotely.
+    git = successor['deployment'].get('git')
+    if isinstance(git, dict):
+        git.pop('application_name', None)
+    validate_deployment(successor)
+    body[CANONICAL_KEY] = successor
+    del body['sehs']
+
+
+def public_deployment(document: dict, network: str) -> dict | None:
+    record = deployment_record(document, network)
+    if record is None:
+        return None
+    controller = record['coolify']['controller']
+    return {'schema': record['schema'], 'network': network,
+            'coolify': {'source': record['coolify']['source'],
+                        'source_generation': record['coolify']['source_generation'],
+                        'url': _safe_url(next((controller[k] for k in
+                            ('url','base_url','coolify_url','api_url') if controller.get(k)), None)),
+                        'has_token': True},
+            'deployment': deepcopy(record['deployment'])}
 
 
 def sources(document: dict, network: str | None = None) -> list[dict]:
@@ -216,15 +353,21 @@ def mutate(root: Path, network: str, expected_generation: int | None, operation_
             'content_sha256':verified.binding.content_hash.digest}
 
 
-def reserve(document: dict, network: str, seh: str, organization_id: str, slh_id: str) -> None:
-    ident(seh,'seh');ident(organization_id,'organization_id');ident(slh_id,'slh_id')
+def reserve(document: dict, network: str, seh: str, slh_id: str = '') -> None:
+    if deployment_record(document, network) is not None:
+        raise SEHIdentityError('Named SEH registration refused after canonical migration')
+    ident(seh,'seh')
+    if slh_id:
+        ident(slh_id,'slh_id')
     body = network_doc(document, network)
     records = body.setdefault('sehs', {})
     if type(records) is not dict or seh in records:
         raise SEHIdentityError('SEH identity already exists or registry is invalid')
-    records[seh] = {'schema':'main-computer.seh-identity.v1', 'organization_id':organization_id,
-                    'slh_id':slh_id, 'coolify':{'active_identity':None,'identities':{}},
+    records[seh] = {'schema':'main-computer.seh-identity.v3',
+                    'coolify':{'active_identity':None,'identities':{}},
                     'deployment':{'enabled':False}}
+    if slh_id:
+        records[seh]['slh_id'] = slh_id
 
 
 def copy_identity(document: dict, network: str, seh: str, alias: str, source: str,
@@ -289,8 +432,9 @@ def resolve(document: dict, network: str, seh: str, generation: int = 0) -> Reso
         data.pop(key, None)
     def present(key):
         return next((ctl[k] for k in (key,) if ctl.get(k)),None)
-    data.update({'target_id':seh, 'organization_id':record['organization_id'],
-                 'slh_id':record['slh_id'],
+    if not record.get('slh_id'):
+        raise SEHIdentityError('Unbound SEH cannot be resolved for SLH access')
+    data.update({'target_id':seh, 'slh_id':record['slh_id'],
                  'coolify_url':next((ctl[k] for k in ('url','coolify_url','api_url','base_url') if ctl.get(k)),None),
                  'project_uuid':data.get('project_uuid') or present('project_uuid'),
                  'server_uuid':data.get('server_uuid') or present('server_uuid')})
@@ -303,7 +447,7 @@ def public_inspect(document: dict, network: str, seh: str) -> dict:
     entry = seh_doc(document,network,seh)
     coolify = entry['coolify']
     return {'schema':entry['schema'], 'seh':seh,'network':network,
-            'organization_id':entry['organization_id'], 'slh_id':entry['slh_id'],
+            'slh_id':entry.get('slh_id'),
             'active_identity':coolify['active_identity'],
             'identities':{name:{'copied_from':value['copied_from'],
                                 'source_generation':value['source_generation'],

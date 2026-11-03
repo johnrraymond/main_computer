@@ -31,8 +31,7 @@ class Control:
     def change(self, command, network, seh, generation, operation_id, **kwargs):
         self.calls.append(command)
         if command == 'reserve':
-            self.items[seh] = {'seh': seh, 'organization_id': kwargs['organization_id'],
-                               'slh_id': kwargs['slh_id'], 'active_identity': None,
+            self.items[seh] = {'seh': seh, 'slh_id': kwargs['slh_id'], 'active_identity': None,
                                'identities': {}, 'deployment': {}}
         elif command == 'coolify-copy':
             self.items[seh]['identities'][kwargs['alias']] = {'copied_from': kwargs['source']}
@@ -66,7 +65,7 @@ class Control:
 
 def args(*extra):
     return _parser().parse_args(['deploy-seh', '--seh', 'company-secondary', '--host', 'coolify-b',
-        '--organization-id', 'org', '--slh-id', 'slh', '--public-url', 'https://seh.example.org',
+        '--slh-id', 'slh', '--public-url', 'https://seh.example.org',
         *extra])
 
 
@@ -104,7 +103,7 @@ def test_repeat_same_identity_does_not_reserve_or_copy_again():
 def test_existing_deployed_controller_change_is_refused_before_remote_mutation():
     control = Control()
     control.items['company-secondary'] = {
-        'seh': 'company-secondary', 'organization_id': 'org', 'slh_id': 'slh',
+        'seh': 'company-secondary', 'slh_id': 'slh',
         'active_identity': 'coolify-c',
         'identities': {'coolify-c': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
         'deployment': {'application_uuid': 'existing-service'},
@@ -124,25 +123,29 @@ def test_preflight_blocks_remote_deploy_and_reports_stage():
     assert 'status' not in control.calls
 
 
-def test_missing_public_url_rejected_before_mutation():
+def test_new_seh_gets_default_https_origin_without_explicit_url():
+    from tools.seh_control.git_deployment import DEFAULT_PUBLIC_URL
     control = Control()
     a = _parser().parse_args(['deploy-seh', '--seh', 'secondary', '--host', 'coolify-b',
-                             '--organization-id', 'org', '--slh-id', 'slh',
+                             '--slh-id', 'slh',
                              '--execute-mutations', '--yes-i-know-this-mutates-seh'])
-    with pytest.raises(ValueError, match='public-url'):
-        run(a, control=control)
-    assert control.calls == ['list']  # A read-only state lookup is permitted.
+    result = run(a, control=control)
+    assert result['status'] == 'DEPLOY_QUEUED_NOT_VERIFIED'
+    assert result['public_url'] == DEFAULT_PUBLIC_URL
+    assert result['ready'] is False
+    assert control.calls == ['list', 'reserve', 'list', 'coolify-copy', 'list',
+                             'prepare', 'preflight', 'deploy', 'status']
 
 
 def test_existing_identity_mismatch_rejected_before_mutation():
     control = Control()
     control.items['company-secondary'] = {
-        'seh': 'company-secondary', 'organization_id': 'other', 'slh_id': 'slh',
+        'seh': 'company-secondary', 'slh_id': 'other',
         'active_identity': 'coolify-b',
         'identities': {'coolify-b': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-b'}},
         'deployment': {},
     }
-    with pytest.raises(ValueError, match='organization_id differs'):
+    with pytest.raises(ValueError, match='slh_id differs'):
         run(args('--execute-mutations', '--yes-i-know-this-mutates-seh'), control=control)
     assert control.calls == ['list']
 
@@ -150,7 +153,7 @@ def test_existing_identity_mismatch_rejected_before_mutation():
 def test_alias_collision_refused_without_identity_replacement():
     control = Control()
     control.items['company-secondary'] = {
-        'seh': 'company-secondary', 'organization_id': 'org', 'slh_id': 'slh',
+        'seh': 'company-secondary', 'slh_id': 'slh',
         'active_identity': 'coolify-b',
         'identities': {'coolify-b': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-a'}},
         'deployment': {},
@@ -163,7 +166,7 @@ def test_alias_collision_refused_without_identity_replacement():
 def test_existing_primary_alias_same_host_preserved_without_copy_or_switch():
     control = Control()
     control.items['company-secondary'] = {
-        'seh': 'company-secondary', 'organization_id': 'org', 'slh_id': 'slh',
+        'seh': 'company-secondary', 'slh_id': 'slh',
         'active_identity': 'primary',
         'identities': {'primary': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-b'}},
         'deployment': {},
@@ -186,7 +189,7 @@ def test_existing_company_primary_on_coolify_c_needs_no_registration_copy_or_pub
 
     control = ExistingCoolify()
     control.items['company-primary'] = {
-        'seh': 'company-primary', 'organization_id': 'my-company', 'slh_id': 'my-slh',
+        'seh': 'company-primary', 'slh_id': 'my-slh',
         'active_identity': 'primary',
         'identities': {'primary': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
         'deployment': {'enabled': False, 'application_uuid': control.next_application, 'git': {'enabled': True}},
@@ -209,7 +212,7 @@ def test_existing_company_primary_on_coolify_c_needs_no_registration_copy_or_pub
 def test_existing_company_primary_auto_selects_its_verified_controller():
     control = Control()
     control.items['company-primary'] = {
-        'seh': 'company-primary', 'organization_id': 'my-company', 'slh_id': 'my-slh',
+        'seh': 'company-primary', 'slh_id': 'my-slh',
         'active_identity': 'primary',
         'identities': {'primary': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
         'deployment': {'public_url': 'https://seh.example.org', 'application_uuid': 'seh-app-uuid'},
@@ -229,7 +232,7 @@ def test_no_url_and_ambiguous_remote_identity_fails_before_any_mutation():
             return {'application_uuid': self.next_application, 'public_url': 'https://seh.example.org'}
     control = WrongRemote()
     control.items['company-primary'] = {
-        'seh': 'company-primary', 'organization_id': 'my-company', 'slh_id': 'my-slh',
+        'seh': 'company-primary', 'slh_id': 'my-slh',
         'active_identity': 'primary',
         'identities': {'primary': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
         'deployment': {'application_uuid': 'app-original'},
@@ -245,7 +248,7 @@ def test_no_url_and_ambiguous_remote_identity_fails_before_any_mutation():
 def test_read_only_plan_existing_url_not_known_does_not_contact_coolify():
     control = Control()
     control.items['company-primary'] = {
-        'seh': 'company-primary', 'organization_id': 'my-company', 'slh_id': 'my-slh',
+        'seh': 'company-primary', 'slh_id': 'my-slh',
         'active_identity': 'primary',
         'identities': {'primary': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
         'deployment': {'application_uuid': 'seh-app-uuid'},
@@ -260,7 +263,7 @@ def test_read_only_plan_existing_url_not_known_does_not_contact_coolify():
 def test_refuse_explicit_controller_change_before_url_lookup():
     control = Control()
     control.items['company-primary'] = {
-        'seh': 'company-primary', 'organization_id': 'my-company', 'slh_id': 'my-slh',
+        'seh': 'company-primary', 'slh_id': 'my-slh',
         'active_identity': 'primary',
         'identities': {'primary': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
         'deployment': {'application_uuid': 'seh-app-uuid'},
@@ -276,7 +279,7 @@ def test_refuse_explicit_controller_change_before_url_lookup():
 def test_domain_discovery_reads_remote_application_not_cached_plan(monkeypatch):
     from tools.seh_control import git_deployment as g
     record = {'deployment': {'application_uuid': 'known-app'},
-              'organization_id': 'my-company', 'slh_id': 'my-slh'}
+              'slh_id': 'my-slh'}
     monkeypatch.setattr(g, '_selections', lambda *a: (record, {'enabled': True}, {}, 8, 'hash'))
     class AppClient:
         def __init__(self, domains, name='mc-seh-company-primary'):
@@ -286,7 +289,7 @@ def test_domain_discovery_reads_remote_application_not_cached_plan(monkeypatch):
         def request(self, method, path, body=None):
             self.calls.append((method, path))
             return {'uuid': 'known-app', 'name': self.name,
-                    'description': 'main-computer-seh:git-v1 target=company-primary org=my-company slh=my-slh',
+                    'description': 'main-computer-seh:git-v3 target=company-primary slh=my-slh',
                     'domains': self.domains}
     client = AppClient('https://seh.example.org:8080')
     r = g.observed_public_origin('/tmp/not-used', 'mainnet', 'company-primary', client=client)
@@ -301,140 +304,221 @@ def test_domain_discovery_reads_remote_application_not_cached_plan(monkeypatch):
                                  client=AppClient('https://seh.example.org', name='foreign-app'))
 
 
-# Actual local SLH signer provisioning contract (no Coolify mutation required).
-def test_local_signing_identity_requires_existing_matching_organization(tmp_path, monkeypatch):
-    import sqlite3
+# Deployment is exclusively an infrastructure mutation. No SQL, SLH key,
+# or resident organization state may be touched by the operator command.
+def test_existing_deploy_does_not_access_local_slh_or_its_sqlite(tmp_path, monkeypatch):
     from pathlib import Path
-    from seh_mutate_harness import _verified_slh_public_key, HarnessError
-    from tools import slh_seh_connector
-    import main_computer.slh.storage as storage
-
-    local = tmp_path / 'slh'
-    monkeypatch.setattr(slh_seh_connector, 'default_state', lambda: local)
-    monkeypatch.setattr(storage, 'legacy_slh_state_dir', lambda: tmp_path / 'no-legacy')
-    with pytest.raises(HarnessError, match='no initialized SLH authority'):
-        _verified_slh_public_key(organization_id='my-company', slh_id='my-slh')
-    assert not local.exists()
-
-    local.mkdir()
-    with sqlite3.connect(local / 'organization.sqlite3') as conn:
-        conn.execute('CREATE TABLE organization (org_id TEXT PRIMARY KEY)')
-        conn.execute('INSERT INTO organization VALUES (?)', ('different-company',))
-    with pytest.raises(HarnessError, match='organization does not match'):
-        _verified_slh_public_key(organization_id='my-company', slh_id='my-slh')
-    assert not (local / 'seh-service-signing-key.pem').exists()
-
-
-def test_local_signing_identity_creates_once_on_matched_slh(tmp_path, monkeypatch):
-    import base64
     import sqlite3
-    from pathlib import Path
-    from seh_mutate_harness import _verified_slh_public_key
-    from tools import slh_seh_connector
-    import main_computer.slh.storage as storage
-
-    local = tmp_path / 'slh'
-    local.mkdir()
-    with sqlite3.connect(local / 'organization.sqlite3') as conn:
-        conn.execute('CREATE TABLE organization (org_id TEXT PRIMARY KEY)')
-        conn.execute('INSERT INTO organization VALUES (?)', ('my-company',))
-    monkeypatch.setattr(slh_seh_connector, 'default_state', lambda: local)
-    monkeypatch.setattr(storage, 'legacy_slh_state_dir', lambda: tmp_path / 'no-legacy')
-    public_one = _verified_slh_public_key(organization_id='my-company', slh_id='my-slh')
-    private_path = local / 'seh-service-signing-key.pem'
-    private_one = private_path.read_bytes()
-    assert b'PRIVATE KEY' in private_one
-    assert b'PUBLIC KEY' in base64.b64decode(public_one)
-    public_two = _verified_slh_public_key(organization_id='my-company', slh_id='my-slh')
-    assert public_one == public_two
-    assert private_path.read_bytes() == private_one
-    assert private_one.decode() not in public_one
-
-
-def test_local_signing_identity_rejects_wrong_slh_binding(tmp_path, monkeypatch):
-    import sqlite3
-    import json
-    from seh_mutate_harness import _verified_slh_public_key, HarnessError
-    from tools import slh_seh_connector
-    import main_computer.slh.storage as storage
-
-    local = tmp_path / 'slh'
-    local.mkdir()
-    with sqlite3.connect(local / 'organization.sqlite3') as conn:
-        conn.execute('CREATE TABLE organization (org_id TEXT PRIMARY KEY)')
-        conn.execute('INSERT INTO organization VALUES (?)', ('my-company',))
-    (local / 'seh-connection.json').write_text(json.dumps({
-        'enabled': False, 'seh_url': 'wss://external.greatlibrary.io',
-        'organization_id': 'my-company', 'slh_id': 'another-slh',
-        'allow_loopback_lab': False, 'retry_seconds': 2.0,
-    }))
-    monkeypatch.setattr(slh_seh_connector, 'default_state', lambda: local)
-    monkeypatch.setattr(storage, 'legacy_slh_state_dir', lambda: tmp_path / 'no-legacy')
-    with pytest.raises(HarnessError, match='differs from the registered SEH'):
-        _verified_slh_public_key(organization_id='my-company', slh_id='my-slh')
-    assert not (local / 'seh-service-signing-key.pem').exists()
-
-
-def test_remote_operator_not_allowed_to_create_slh_authority(tmp_path, monkeypatch):
-    from seh_mutate_harness import _verified_slh_public_key, HarnessError
-    from tools import slh_seh_connector
-    import main_computer.slh.storage as storage
-
-    local = tmp_path / 'slh'
-    monkeypatch.setattr(slh_seh_connector, 'default_state', lambda: local)
-    monkeypatch.setattr(storage, 'legacy_slh_state_dir', lambda: tmp_path / 'no-legacy')
-    with pytest.raises(HarnessError, match='actual organization SLH host'):
-        _verified_slh_public_key(organization_id='my-company', slh_id='my-slh')
-    assert not (local / 'organization.sqlite3').exists()
-
-
-def test_existing_coolify_c_legacy_slh_refuses_with_migration_steps_and_no_mutation(tmp_path, monkeypatch):
-    """A real legacy identity must neither be re-created nor produce a traceback."""
-    import main_computer.slh.storage as storage
-
-    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'user'))
-    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'machine'))
-    monkeypatch.setattr(storage, 'machine_root', lambda: tmp_path / 'runtime' / 'state')
-    monkeypatch.setattr(storage, 'previous_machine_slh_state_dir', lambda: tmp_path / 'no-prior-machine')
-    legacy = storage.legacy_slh_state_dir()
-    legacy.mkdir(parents=True)
-    (legacy / 'organization.sqlite3').write_bytes(b'keep-this-legacy-identity')
-    destination = storage.slh_state_dir()
-
     control = Control()
     control.items['company-primary'] = {
-        'seh': 'company-primary', 'organization_id': 'my-company', 'slh_id': 'my-slh',
+        'seh': 'company-primary', 'slh_id': 'my-slh',
         'active_identity': 'primary',
-        'identities': {'primary': {
-            'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
+        'identities': {'primary': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
         'deployment': {'public_url': 'https://external.greatlibrary.io',
                        'application_uuid': 'existing-app-uuid'},
     }
-    arguments = _parser().parse_args([
+    def forbidden(*a, **k):
+        raise AssertionError('Deploy must not inspect or modify local SLH state')
+    monkeypatch.setattr(sqlite3, 'connect', forbidden)
+    from tools import slh_seh_connector
+    monkeypatch.setattr(slh_seh_connector, 'default_state', forbidden)
+    result = _run(_parser().parse_args([
         'deploy-seh', '--network', 'mainnet', '--seh', 'company-primary',
         '--host', 'coolify-c', '--execute-mutations',
         '--yes-i-know-this-mutates-seh',
+    ]), control=control)
+    assert result['status'] == 'DEPLOY_QUEUED_NOT_VERIFIED'
+    assert 'slh-identity' not in [row['stage'] for row in result['steps']]
+    assert control.calls == ['list', 'prepare', 'preflight', 'deploy', 'status']
+
+
+def test_new_seh_deploy_requires_no_organization_or_slh_name():
+    control = Control()
+    result = _run(_parser().parse_args([
+        'deploy-seh', '--seh', 'unbound-relay', '--host', 'coolify-b',
+        '--public-url', 'https://seh.example.org',
+        '--execute-mutations', '--yes-i-know-this-mutates-seh',
+    ]), control=control)
+    assert result['status'] == 'DEPLOY_QUEUED_NOT_VERIFIED'
+    assert 'organization_id' not in control.items['unbound-relay']
+    assert control.items['unbound-relay']['slh_id'] is None
+
+
+def test_missing_organization_does_not_block_new_seh_registration():
+    control = Control()
+    a = _parser().parse_args([
+        'deploy-seh', '--seh', 'unbound-relay', '--host', 'coolify-b',
+        '--public-url', 'https://seh.example.org',
+        '--execute-mutations', '--yes-i-know-this-mutates-seh',
     ])
-    result = _run(arguments, control=control)
-    assert result['status'] == 'REFUSED'
-    assert result['failed_stage'] == 'slh-identity'
-    assert result['error_type'] == 'HarnessError'
-    assert 'LEGACY_SLH_STATE_REQUIRES_OFFLINE_MIGRATION' in result['reason']
-    assert 'python -m tools.slh_storage_migrate plan' in result['reason']
-    assert 'python -m tools.slh_storage_migrate slh --execute' in result['reason']
+    result = _run(a, control=control)
+    assert result['status'] == 'DEPLOY_QUEUED_NOT_VERIFIED'
+    assert 'organization_id' not in control.items['unbound-relay']
+
+
+# The Hub harness prints a standalone command on a dry-run boundary. The SEH
+# operator should get the same copy/paste affordance without corrupting JSON.
+def test_git_refusal_prints_repair_and_retry_as_separate_powershell_commands(monkeypatch, capsys):
+    import seh_mutate_harness as seh_harness
+
+    git_command = (
+        "git add -- 'main_computer/seh/relay.py'; "
+        "if ($LASTEXITCODE -eq 0) { git push origin HEAD }"
+    )
+    monkeypatch.setattr(seh_harness, 'run', lambda _args: {
+        'status': 'REFUSED', 'failed_stage': 'prepare',
+        'git_repair_command': git_command,
+    })
+    result = seh_harness.main([
+        'deploy-seh', '--network', 'mainnet', '--seh', 'company-primary',
+        '--host', 'coolify-c', '--execute-mutations', '--yes-i-know-this-mutates-seh',
+    ])
+    captured = capsys.readouterr()
+    assert result == 2
+    assert json.loads(captured.out)['git_repair_command'] == git_command
+    assert captured.out.rstrip().endswith('}')  # stdout remains machine-readable JSON
+    assert '\n=== Next SEH command (PowerShell) ===' in captured.err
+    assert git_command in captured.err
+    assert captured.err.rstrip().endswith(git_command)
+    assert (
+        'python .\\seh_mutate_harness.py deploy-seh --network mainnet '
+        '--seh company-primary --host coolify-c --execute-mutations '
+        '--yes-i-know-this-mutates-seh'
+    ) in captured.err
+
+
+def test_plan_only_shows_full_copyable_command_without_mutating(monkeypatch, capsys):
+    import seh_mutate_harness as seh_harness
+
+    monkeypatch.setattr(seh_harness, 'run', lambda _args: {'status': 'PLAN_ONLY'})
+    assert seh_harness.main([
+        'deploy-seh', '--seh', 'my-seh', '--host', 'coolify-b',
+        '--public-url', 'https://seh.example.org',
+    ]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)['status'] == 'PLAN_ONLY'
+    assert '--public-url https://seh.example.org' in captured.err
+    assert captured.err.endswith('--yes-i-know-this-mutates-seh\n')
+
+
+def test_power_shell_retry_quotes_literal_with_spaces_and_apostrophe():
+    from seh_mutate_harness import _deploy_retry_command, _parser
+
+    args = _parser().parse_args([
+        'deploy-seh', '--seh', 'company-primary', '--host', 'coolify-c',
+        '--runtime-state-root', "C:/Main Computer/John's runtime/state",
+    ])
+    command = _deploy_retry_command(args)
+    assert "--runtime-state-root 'C:/Main Computer/John''s runtime/state'" in command
+
+
+def test_queued_deploy_returns_nonzero_and_does_not_print_second_command(monkeypatch, capsys):
+    import seh_mutate_harness as seh_harness
+
+    monkeypatch.setattr(seh_harness, 'run', lambda _args: {
+        'status': 'DEPLOY_QUEUED_NOT_VERIFIED', 'ready': False,
+    })
+    assert seh_harness.main(['deploy-seh', '--seh', 'company-primary']) == 3
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)['ready'] is False
+    assert captured.err == ''
+
+
+def test_trust_redeploy_is_incomplete_and_never_prints_manual_connector(monkeypatch, capsys):
+    import seh_mutate_harness as harness
+    monkeypatch.setattr(harness, 'run', lambda _args: {
+        'status': 'TRUST_DEPLOY_QUEUED_NOT_VERIFIED',
+        'ready': False, 'public_wss_verified': False,
+        'slh_id': 'slh',
+        'public_url': 'https://seh.example.org',
+    })
+    assert harness.main(['bind-slh', '--seh', 'company-primary']) == 3
+    report = capsys.readouterr()
+    assert json.loads(report.out)['ready'] is False
+    assert 'operational acceptance remains incomplete' in report.err
+    assert 'tools.slh_seh_connector run' not in report.err
+
+# Patch 1: read-only operations may resolve a sole legacy record, but no longer
+# accept a user-selected SEH identity. No registration or remote mutation.
+def test_inspect_without_alias_reports_absent_deployment_read_only():
+    control = Control()
+    result = run(_parser().parse_args(['inspect']), control=control)
+    assert result['status'] == 'READ_ONLY'
+    assert result['registered'] is False
+    assert result['deployment'] is None
+    assert 'seh' not in result
     assert control.calls == ['list']
-    assert not destination.exists()
-    assert (legacy / 'organization.sqlite3').read_bytes() == b'keep-this-legacy-identity'
 
 
-def test_unexpected_storage_guard_failure_is_still_fail_closed(tmp_path, monkeypatch):
-    from seh_mutate_harness import HarnessError, _verified_slh_public_key
-    from tools import slh_seh_connector
-    import main_computer.slh.storage as storage
+def test_inspect_without_alias_reads_only_sole_existing_record():
+    control = Control()
+    control.items['obsolete-name'] = {
+        'seh': 'obsolete-name', 'schema': 'main-computer.seh-identity.v3',
+        'slh_id': 'slh', 'active_identity': 'primary',
+        'identities': {'primary': {'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
+        'deployment': {'application_uuid': 'existing-coolify-uuid'},
+    }
+    original = json.dumps(control.items, sort_keys=True)
+    result = run(_parser().parse_args(['inspect']), control=control)
+    assert result['registered'] is True
+    assert result['deployment']['application_uuid'] == 'existing-coolify-uuid'
+    assert 'seh' not in result
+    assert json.dumps(control.items, sort_keys=True) == original
+    assert control.calls == ['list']
 
-    monkeypatch.setattr(slh_seh_connector, 'default_state', lambda: tmp_path / 'slh')
-    monkeypatch.setattr(storage, 'guard_legacy_state',
-                        lambda directory: (_ for _ in ()).throw(RuntimeError('unknown')))
-    with pytest.raises(HarnessError, match='SLH storage guard failed'):
-        _verified_slh_public_key(organization_id='my-company', slh_id='my-slh')
-    assert not (tmp_path / 'slh').exists()
+
+@pytest.mark.parametrize('operation', ('inspect', 'diagnostic'))
+def test_read_only_rejects_ambiguous_legacy_registrations_before_key_or_coolify(operation):
+    control = Control()
+    control.items['obsolete-one'] = {'seh': 'obsolete-one'}
+    control.items['obsolete-two'] = {'seh': 'obsolete-two'}
+    with pytest.raises(ValueError, match='Multiple legacy SEH records'):
+        run(_parser().parse_args([operation]), control=control,
+            slh_public_key_provider=lambda **_: (_ for _ in ()).throw(
+                AssertionError('must not load signing identity on ambiguous state')))
+    assert control.calls == ['list']
+
+
+@pytest.mark.parametrize('operation', ('inspect', 'diagnostic'))
+@pytest.mark.parametrize('flags', (('--seh', 'obsolete'), ('--host', 'coolify-c'),
+                                    ('--slh-id', 'slh'), ('--public-url', 'https://seh.example.org')))
+def test_read_only_rejects_target_selection_flags(operation, flags):
+    control = Control()
+    with pytest.raises(ValueError, match='omit target-selection flags'):
+        run(_parser().parse_args([operation, *flags]), control=control)
+    assert control.calls == []
+
+
+def test_diagnostic_without_registration_refuses_without_key_or_remote_access():
+    control = Control()
+    result = run(_parser().parse_args(['diagnostic']), control=control,
+                 slh_public_key_provider=lambda **_: (_ for _ in ()).throw(
+                     AssertionError('no key lookup for absent deployment')))
+    assert result['status'] == 'REFUSED'
+    assert result['mutation_performed'] is False
+    assert 'seh' not in result
+    assert control.calls == ['list']
+
+
+def test_diagnostic_without_alias_uses_single_verified_controller_and_app():
+    class DiagnosticControl(Control):
+        def diagnostic_slh_trust(self, network, seh, **kwargs):
+            self.calls.append('diagnostic')
+            assert (network, seh) == ('mainnet', 'legacy-obsolete')
+            assert kwargs == {'slh_id': 'slh', 'public_key_b64': 'test-public-key'}
+            return {'status': 'READ_ONLY', 'seh': seh, 'application_uuid': 'stable-uuid',
+                    'issues': [], 'mutation_performed': False}
+    control = DiagnosticControl()
+    control.items['legacy-obsolete'] = {
+        'seh': 'legacy-obsolete', 'slh_id': 'slh', 'active_identity': 'old-alias',
+        'identities': {'old-alias': {
+            'copied_from': 'networks.mainnet.coolify.controllers.coolify-c'}},
+        'deployment': {'application_uuid': 'stable-uuid', 'public_url': 'https://external.greatlibrary.io'},
+    }
+    result = run(_parser().parse_args(['diagnostic']), control=control,
+                 slh_public_key_provider=lambda **_: 'test-public-key')
+    assert result['status'] == 'READ_ONLY'
+    assert result['controller'] == 'coolify-c'
+    assert result['application_uuid'] == 'stable-uuid'
+    assert 'seh' not in result
+    assert control.calls == ['list', 'diagnostic']

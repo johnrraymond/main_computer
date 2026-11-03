@@ -37,7 +37,7 @@ def test_economic_lane_never_accepts_an_in_memory_hub():
         hub_id=topology.hubs[2].hub_id,store=InMemoryStableWorkerSessionStore())
     with pytest.raises(ServiceLabFailure,match='actual FoundationDB'):
         verify_pinky_shared_hub(root=Path('.'),state=Path('.'),local=None,
-           local_port=0,local_token='',org_id='lab',api_port=0,worker_port=0,
+           local_port=0,local_token='',api_port=0,worker_port=0,
            hub_url=topology.hubs[2].hub_url,
            hub_identity={'hub_id':topology.hubs[2].hub_id,'cluster_id':topology.cluster_id},
            ledger=ledger,org_wallet_private='11'*32,

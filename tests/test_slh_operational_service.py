@@ -73,7 +73,7 @@ def request(portnum, method, path, payload=None, *, token=None, tls=False):
 def provision(portnum, directory):
     secret=(directory/'bootstrap.secret').read_text().strip()
     code,begun=request(portnum,'POST','/v1/bootstrap/begin',
-                       {'bootstrap_secret':secret,'org_id':'our-org'})
+                       {'bootstrap_secret':secret})
     assert code==201, begun
     key,public=generate_identity()
     statement={**begun['proof_context'], 'admin_id':'owner', 'device_id':'owner-device',

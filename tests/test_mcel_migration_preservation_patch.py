@@ -1,6 +1,8 @@
 """Patch preservation gates that do not require a running Windows Main Computer."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import json
 import shutil
 import subprocess
@@ -55,5 +57,10 @@ def test_generation_mismatch_blocks_process_termination(tmp_path):
         result = service.perform_action(action="terminate_pid", pid=24001, confirm=True,
                                         expected_created_at=correct)
     fake_process.terminate.assert_called_once_with()
-    assert result["verified_created_at"] == correct
+    # The service returns the verified OS generation at the canonical
+    # millisecond precision expected by the semantic capability port.
+    assert datetime.fromisoformat(result["verified_created_at"]).timestamp() == (
+        datetime.fromisoformat(correct).timestamp())
+    assert result["verified_created_at"] == datetime.fromtimestamp(
+        1000.0, timezone.utc).isoformat(timespec="milliseconds")
     assert result["pid"] == 24001

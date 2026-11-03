@@ -7,13 +7,18 @@ existing SEH Control stages; it never manages Coolify API tokens itself.
 
 Examples:
     python seh_mutate_harness.py list --network mainnet
-    python seh_mutate_harness.py inspect --network mainnet --seh company-primary
+    python seh_mutate_harness.py inspect
+    python seh_mutate_harness.py diagnostic
     python seh_mutate_harness.py deploy-seh --network mainnet --seh company-primary \
         --host coolify-c --execute-mutations --yes-i-know-this-mutates-seh
 
-    Existing deployments may omit --public-url only when the registered
-    application has a single verifiable public HTTPS origin. New SEHs must
-    supply --public-url and their organization/SLH identifiers.
+    This retained command provisions SEH infrastructure ONLY. It is not the
+    SLH-owned provisioning lifecycle: it neither configures the resident SLH
+    connection supervisor nor verifies an authenticated tunnel. New relays
+    remain unbound. Do not treat a queued deployment as operational readiness.
+
+    New SEHs use https://external.greatlibrary.io by default. An already
+    registered SEH retains its verified public origin and Coolify identity.
 
 A Coolify deploy trigger is QUEUED, not proof of public HTTPS/WSS readiness.
 No mutation occurs without both approval switches.
@@ -22,14 +27,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
+import re
+import sys
 import uuid
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 from tools.seh_control.commands import SEHControl
 from tools.seh_control.identity import SEHIdentityError, ident
-from tools.seh_control.git_deployment import SEHGitError
+from tools.seh_control.git_deployment import DEFAULT_PUBLIC_URL, SEHGitError
 
 
 class HarnessError(ValueError):
@@ -38,17 +44,21 @@ class HarnessError(ValueError):
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    p.add_argument('operation', choices=('list', 'inspect', 'deploy-seh'))
+    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic'))
+    p.add_argument('--approve-generation', type=int, help='Exact Mother generation for local migration')
     p.add_argument('--network', choices=('mainnet', 'testnet', 'test', 'dev'), default='mainnet')
-    p.add_argument('--seh', help='Logical SEH identity')
+    p.add_argument('--seh', help='Legacy SEH selection (mutation operations only; never inspect/diagnostic)')
     p.add_argument('--host', help='Verified Coolify controller; optional for an existing active SEH identity')
-    p.add_argument('--organization-id', help='Required only to register a new SEH')
-    p.add_argument('--slh-id', help='Required only to register a new SEH')
-    p.add_argument('--public-url', help='Exact HTTPS origin; optional only if discoverable from an existing SEH')
+    p.add_argument('--slh-id', help='Optional SLH association metadata; not required for deployment')
+    p.add_argument('--public-url', help='Public HTTPS origin; defaults for a new SEH only')
     p.add_argument('--project-name', default='My first project')
     p.add_argument('--environment-name', help='Defaults to <network>-hubs')
     p.add_argument('--runtime-state-root', type=Path, default=Path('runtime/state'))
     p.add_argument('--report', type=Path, help='Optional JSON receipt path')
+    p.add_argument('--replace-existing-trust', action='store_true',
+                   help='Explicitly authorize replacing the key already trusted by this SEH')
+    p.add_argument('--slh-state-dir', type=Path,
+                   help='Location of the existing local SLH signing key; never creates one')
     p.add_argument('--execute-mutations', action='store_true')
     p.add_argument('--yes-i-know-this-mutates-seh', action='store_true')
     return p
@@ -71,6 +81,28 @@ def _existing(control: SEHControl, network: str, seh: str) -> dict | None:
     return next((row for row in rows if row.get('seh') == seh), None)
 
 
+def _single_read_only_target(control: SEHControl, network: str) -> tuple[dict | None, dict]:
+    """Resolve zero or one *legacy* SEH from a verified, read-only Mother view.
+
+    Do not choose a name, pick the first item, read keys, or mutate private
+    state. The named registry is only a migration input until Patch 2.
+    """
+    listing = control.list(network)
+    if listing.get('status') == 'READ_ONLY' and 'deployment' in listing:
+        canonical = listing['deployment']
+        if not isinstance(canonical, dict):
+            raise HarnessError('Invalid canonical deployment')
+        return canonical, listing
+    rows = listing.get('sehs')
+    if listing.get('status') != 'READ_ONLY' or not isinstance(rows, list):
+        raise HarnessError('Verified SEH registry inspection was unavailable')
+    if len(rows) > 1:
+        raise HarnessError('Multiple legacy SEH records exist; refuse automatic selection until reconciled')
+    if rows and (not isinstance(rows[0], dict) or not isinstance(rows[0].get('seh'), str)):
+        raise HarnessError('Legacy SEH registration is malformed; refusing selection')
+    return (rows[0] if rows else None), listing
+
+
 def _record_step(events: list[dict], stage: str, status: str, detail: dict | None = None) -> None:
     item = {'stage': stage, 'status': status}
     if detail:
@@ -82,71 +114,6 @@ def _record_step(events: list[dict], stage: str, status: str, detail: dict | Non
     events.append(item)
 
 
-def _verified_slh_public_key(*, organization_id: str, slh_id: str) -> str:
-    """Use/create ONLY this host's existing, matching SLH signing identity.
-
-    A Mother SEH registration is not authority to bootstrap a separate SLH on
-    an operator's workstation. The SLH's machine-owned state must exist and
-    contain the registered organization before a signing key may be created.
-    """
-    from main_computer.slh.seh_autoconnect import read_seh_settings
-    from main_computer.slh.storage import (guard_legacy_state,
-                                           secure_machine_state_dir)
-    from tools.slh_seh_connector import default_state, service_identity
-
-    directory = Path(default_state())
-    if directory.is_symlink():
-        raise HarnessError('SLH state directory is a symlink; refusing identity provisioning')
-    try:
-        guard_legacy_state(directory)
-    except RuntimeError as exc:
-        if str(exc).startswith('LEGACY_SLH_STATE_REQUIRES_OFFLINE_MIGRATION:'):
-            raise HarnessError(
-                'LEGACY_SLH_STATE_REQUIRES_OFFLINE_MIGRATION: The existing SLH '
-                'identity is stored outside runtime/state/slh. Stop running '
-                'SLH processes, run `python -m tools.slh_storage_migrate plan`, '
-                'then run '
-                '`python -m tools.slh_storage_migrate slh --execute`. '
-                'Preserve the source directory; the migration refuses to '
-                'overwrite an occupied destination. Retry deploy-seh only '
-                'after the migration succeeds.'
-            ) from None
-        raise HarnessError('SLH storage guard failed: RuntimeError') from None
-    database = directory / 'organization.sqlite3'
-    if not database.is_file() or database.is_symlink():
-        raise HarnessError('SLH public relay identity missing or unverified: no initialized '
-                           'SLH authority on this machine. Run deployment from the actual '
-                           'organization SLH host; do not generate a relay key on this operator host.')
-    try:
-        # Read-only: do not construct SLHAuthority, which can create a second
-        # organization and bootstrap secret when state is absent.
-        uri = 'file:' + quote(database.resolve().as_posix(), safe='/:') + '?mode=ro'
-        with sqlite3.connect(uri, uri=True, timeout=3) as conn:
-            row = conn.execute('SELECT org_id FROM organization LIMIT 1').fetchone()
-    except sqlite3.Error:
-        raise HarnessError('Existing local SLH authority could not be verified read-only') from None
-    if row is None or row[0] != organization_id:
-        raise HarnessError('Local SLH organization does not match registered SEH organization; '
-                           'refusing to create or use an unrelated signing identity')
-    try:
-        settings = read_seh_settings(directory)
-    except (OSError, ValueError, TypeError):
-        raise HarnessError('Local SLH SEH connection settings are invalid') from None
-    if settings is not None and (settings.organization_id, settings.slh_id) != (organization_id, slh_id):
-        raise HarnessError('Local SLH SEH connection identity differs from the registered SEH')
-    # Correctly harden ProgramData on Windows before creating private material.
-    # This is the same protection used by the resident SLH Local Service.
-    try:
-        secure_machine_state_dir(directory)
-        key_file = directory / 'seh-service-signing-key.pem'
-        if key_file.is_symlink():
-            raise HarnessError('SLH signing key is a symlink; refusing identity provisioning')
-        _, public_key = service_identity(directory, create=True)
-    except (OSError, PermissionError, ValueError) as exc:
-        raise HarnessError('SLH relay identity could not be verified or securely created: '
-                           + type(exc).__name__) from None
-    return public_key
-
 
 def run(args: argparse.Namespace, *, control: SEHControl | None = None,
         slh_public_key_provider=None) -> dict:
@@ -154,12 +121,54 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
     network = args.network
     if args.operation == 'list':
         return control.list(network)
-    if not args.seh:
-        raise HarnessError('--seh is required')
-    seh = ident(args.seh, 'seh')
-    if args.operation == 'inspect':
-        return control.inspect(network, seh)
-    existing = _existing(control, network, seh)
+    if args.operation == 'reconcile-metadata':
+        # Patch 3 is a UUID-bound metadata reconciliation, not an SEH deploy.
+        if any((args.seh, args.host, args.slh_id, args.public_url,
+                args.replace_existing_trust, args.slh_state_dir)):
+            raise HarnessError('Metadata reconciliation accepts no SEH name, host or identity input')
+        if args.execute_mutations != args.yes_i_know_this_mutates_seh:
+            raise HarnessError('Both mutation approvals are required together')
+        from tools.seh_control.git_deployment import reconcile_metadata
+        return reconcile_metadata(control.root, network,
+                 execute=bool(args.execute_mutations and args.yes_i_know_this_mutates_seh))
+    if args.operation == 'migrate-state':
+        if any((args.seh, args.host, args.slh_id, args.public_url,
+                args.replace_existing_trust, args.slh_state_dir)):
+            raise HarnessError('Local Mother migration accepts no SEH name, host, or SLH key input')
+        if not (args.execute_mutations and args.yes_i_know_this_mutates_seh):
+            raise HarnessError('Mother migration requires both explicit mutation approvals')
+        if args.approve_generation is None:
+            raise HarnessError('Mother migration requires --approve-generation from inspect')
+        return control.migrate_single(network, args.approve_generation,
+                                      'seh-single-migration-' + uuid.uuid4().hex[:18])
+    if args.operation in ('inspect', 'diagnostic'):
+        if args.seh or args.host or args.slh_id or args.public_url:
+            raise HarnessError('inspect and diagnostic use the verified SLH deployment; omit target-selection flags')
+        existing, listing = _single_read_only_target(control, network)
+        if args.operation == 'inspect':
+            if existing is None:
+                return {'status': 'READ_ONLY', 'network': network,
+                        'generation': listing.get('generation'), 'registered': False,
+                        'deployment': None}
+            # The obsolete registry key is needed internally until migration,
+            # but is not a new operator-visible identity.
+            return {'status': 'READ_ONLY', 'network': network,
+                    'generation': listing.get('generation'), 'registered': True,
+                    **{key: value for key, value in existing.items() if key != 'seh'}}
+        if existing is None:
+            return {'status': 'REFUSED', 'operation': 'diagnostic', 'network': network,
+                    'reason': 'No SEH deployment is registered for this SLH',
+                    'mutation_performed': False}
+        if 'seh' not in existing:
+            return {'status': 'REFUSED', 'operation': 'diagnostic', 'network': network,
+                    'reason': 'Canonical deployment requires the updated Coolify trust diagnostic (Patch 3)',
+                    'mutation_performed': False}
+        seh = ident(existing['seh'], 'legacy SEH registry key')
+    else:
+        if not args.seh:
+            raise HarnessError('--seh remains required for legacy mutation operations')
+        seh = ident(args.seh, 'seh')
+        existing = _existing(control, network, seh)
     active = (existing or {}).get('active_identity')
     identities = (existing or {}).get('identities') or {}
     active_source = (identities.get(active) or {}).get('copied_from')
@@ -176,7 +185,7 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
         raise HarnessError('--host must name an existing coolify-* controller')
     source = f'networks.{network}.coolify.controllers.{host}'
     if existing:
-        for field, selected in (('organization_id', args.organization_id), ('slh_id', args.slh_id)):
+        for field, selected in (('slh_id', args.slh_id),):
             if selected and selected != existing.get(field):
                 raise HarnessError(f'Existing SEH {field} differs from explicit request')
         deployment = existing.get('deployment') or {}
@@ -188,10 +197,8 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
                                                              deployment.get('service_uuid')):
             raise HarnessError('Deployed SEH has no verified controller binding; recovery is required')
     else:
-        if not args.organization_id or not args.slh_id:
-            raise HarnessError('New SEH requires --organization-id and --slh-id')
-        ident(args.organization_id, 'organization_id')
-        ident(args.slh_id, 'slh_id')
+        if args.slh_id:
+            ident(args.slh_id, 'slh_id')
     prior_url = ((existing or {}).get('deployment') or {}).get('public_url')
     if args.public_url:
         public_url = _origin(args.public_url)
@@ -200,9 +207,60 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
     elif prior_url:
         public_url = _origin(prior_url)
     else:
-        public_url = None
-    if not public_url and not existing:
-        raise HarnessError('New SEH requires --public-url; no hostname is assumed')
+        # Never override the existing application's verified domain with the
+        # default; a missing existing URL requires read-only discovery.
+        public_url = None if existing else _origin(DEFAULT_PUBLIC_URL)
+    if args.operation == 'diagnostic':
+        if not existing or not (existing.get('deployment') or {}).get('application_uuid'):
+            raise HarnessError('Trust diagnostic requires an existing registered SEH application')
+        # A diagnostic never creates a signing identity and never needs the
+        # private key when it is unavailable. It can still report remote IDs.
+        local_key = None
+        local_key_state = 'UNAVAILABLE'
+        try:
+            if slh_public_key_provider is not None:
+                local_key = slh_public_key_provider(slh_id=existing.get('slh_id'))
+            else:
+                from tools.slh_seh_connector import default_state, service_identity
+                _, local_key = service_identity(args.slh_state_dir or default_state(), create=False)
+            local_key_state = 'READABLE' if isinstance(local_key, str) and bool(local_key) else 'UNAVAILABLE'
+        except (OSError, ValueError, RuntimeError):
+            pass
+        try:
+            result = control.diagnostic_slh_trust(
+                network, seh, slh_id=existing.get('slh_id'), public_key_b64=local_key)
+            return {'controller': host, 'local_key_state': local_key_state,
+                    **{key: value for key, value in result.items() if key != 'seh'}}
+        except (SEHIdentityError, SEHGitError, HarnessError) as exc:
+            return {'status': 'REFUSED', 'operation': 'diagnostic', 'network': network,
+                    'controller': host, 'error_type': type(exc).__name__,
+                    'reason': str(exc), 'mutation_performed': False}
+
+    if args.operation == 'bind-slh':
+        if not existing or not (existing.get('deployment') or {}).get('application_uuid'):
+            raise HarnessError('Bind requires an existing registered SEH application')
+        slh = args.slh_id or existing.get('slh_id')
+        if not slh:
+            raise HarnessError('Bind requires an approved SLH signing identity')
+        if existing.get('slh_id') and slh != existing['slh_id']:
+            raise HarnessError('SLH binding differs from existing Mother SEH association')
+        stage = 'slh-trust-binding'
+        try:
+            if slh_public_key_provider is not None:
+                public_key = slh_public_key_provider(slh_id=slh)
+            else:
+                from tools.slh_seh_connector import default_state, service_identity
+                _, public_key = service_identity(args.slh_state_dir or default_state(), create=False)
+            receipt = control.bind_slh(network, seh, slh_id=slh,
+                                       public_key_b64=public_key,
+                                       replace_existing=args.replace_existing_trust,
+                                       execute=bool(args.execute_mutations and args.yes_i_know_this_mutates_seh))
+            return {'controller': host, 'operation': 'bind-slh', **receipt}
+        except (SEHIdentityError, SEHGitError, HarnessError, OSError, ValueError) as exc:
+            return {'status': 'REFUSED', 'network': network, 'seh': seh, 'controller': host,
+                    'failed_stage': stage, 'error_type': type(exc).__name__,
+                    'reason': str(exc) if isinstance(exc, (SEHIdentityError, SEHGitError, HarnessError))
+                    else type(exc).__name__, 'ready': False, 'public_wss_verified': False}
 
     if not (args.execute_mutations and args.yes_i_know_this_mutates_seh):
         return {'status': 'PLAN_ONLY', 'network': network, 'seh': seh, 'controller': host,
@@ -237,7 +295,7 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
         stage = 'registration'
         if not existing:
             receipt = control.change('reserve', network, seh, None, op + '-reserve',
-                                     organization_id=args.organization_id, slh_id=args.slh_id)
+                                     slh_id=args.slh_id)
             _record_step(events, 'reserve', 'COMPLETED', receipt)
             existing = _existing(control, network, seh)
             if not existing:
@@ -261,14 +319,12 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
             _record_step(events, 'coolify-select', 'COMPLETED', receipt)
         else:
             _record_step(events, 'coolify-select', 'ALREADY_SELECTED')
-        stage = 'slh-identity'
-        provider = slh_public_key_provider or _verified_slh_public_key
-        public_key = provider(organization_id=existing['organization_id'], slh_id=existing['slh_id'])
-        _record_step(events, 'slh-identity', 'LOCAL_AUTHORITY_MATCHED')
+        # Provision the Coolify infrastructure independently of any SLH state.
+        # Existing remote SLH trust is left untouched. A new relay is unbound
+        # and refuses all tunnels until a separate, authenticated binding step.
         stage = 'prepare'
         prepared = control.prepare_git(network, seh, project_name=args.project_name,
-                                       environment_name=args.environment_name, public_url=public_url,
-                                       public_key=public_key)
+                                       environment_name=args.environment_name, public_url=public_url)
         if prepared.get('status') != 'PREPARED':
             raise HarnessError('SEH Git deployment did not produce a prepared plan')
         _record_step(events, 'prepare', 'COMPLETED', prepared)
@@ -306,6 +362,73 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
     return result
 
 
+
+def _powershell_argument(value: object) -> str:
+    """Quote an operator-supplied CLI value as one literal PowerShell argument."""
+    raw = str(value)
+    if re.fullmatch(r'[A-Za-z0-9_./:\\-]+', raw):
+        return raw
+    return "'" + raw.replace("'", "''") + "'"
+
+
+def _deploy_retry_command(args: argparse.Namespace, *, require_replace: bool = False) -> str:
+    """Reconstruct the original logical target without copying credentials."""
+    tokens = ['python', r'.\seh_mutate_harness.py', args.operation]
+    for attr, flag in (
+        ('network', '--network'),
+        ('seh', '--seh'),
+        ('host', '--host'),
+        ('slh_id', '--slh-id'),
+        ('public_url', '--public-url'),
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            tokens.extend((flag, _powershell_argument(value)))
+    for attr, flag, default in (
+        ('project_name', '--project-name', 'My first project'),
+        ('environment_name', '--environment-name', None),
+        ('runtime_state_root', '--runtime-state-root', Path('runtime/state')),
+    ):
+        value = getattr(args, attr, None)
+        if value is not None and value != default:
+            tokens.extend((flag, _powershell_argument(value)))
+    if args.operation == 'bind-slh':
+        if args.replace_existing_trust or require_replace:
+            tokens.append('--replace-existing-trust')
+        if args.slh_state_dir:
+            tokens.extend(('--slh-state-dir', _powershell_argument(args.slh_state_dir)))
+    tokens.extend(('--execute-mutations', '--yes-i-know-this-mutates-seh'))
+    return ' '.join(tokens)
+
+
+def _print_next_operator_command(args: argparse.Namespace, result: dict) -> None:
+    """Show the Hub-style, copyable next step without breaking JSON stdout."""
+    if args.operation == 'diagnostic' and result.get('issues'):
+        print('\nSEH trust diagnostic findings (read-only):', file=sys.stderr)
+        for issue in result['issues']:
+            print('  ' + issue, file=sys.stderr)
+        return
+    if args.operation not in ('deploy-seh', 'bind-slh'):
+        return
+    git_command = result.get('git_repair_command')
+    if result.get('status') == 'REFUSED' and isinstance(git_command, str) and git_command.strip():
+        print('\n=== Next SEH command (PowerShell) ===', file=sys.stderr)
+        print('After publishing the SEH source, rerun:', file=sys.stderr)
+        print(_deploy_retry_command(args), file=sys.stderr)
+        print('\nRequired Git publication command (PowerShell; copy and paste):', file=sys.stderr)
+        print(git_command.strip(), file=sys.stderr, flush=True)
+    elif result.get('status') == 'PLAN_ONLY':
+        print('\n=== Next SEH command (PowerShell) ===', file=sys.stderr)
+        print('Stopping before live mutation. Rerun with mutation authorization:', file=sys.stderr)
+        print(_deploy_retry_command(args, require_replace=result.get('replacement_requires_ack', False)),
+              file=sys.stderr, flush=True)
+    elif args.operation == 'bind-slh' and result.get('status') == 'TRUST_DEPLOY_QUEUED_NOT_VERIFIED':
+        # This legacy operator does not activate the resident SLH supervisor.
+        # Never prescribe a second, standalone connector as if it completed deployment.
+        print('SEH trust redeploy queued, not verified. Resident SLH auto-connection '
+              'is not configured here; operational acceptance remains incomplete.',
+              file=sys.stderr, flush=True)
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -319,8 +442,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 2 if result.get('status') in ('REFUSED', 'INCOMPLETE') else 0
+    print(json.dumps(result, indent=2, sort_keys=True), flush=True)
+    _print_next_operator_command(args, result)
+    status = result.get('status')
+    if status in ('REFUSED', 'INCOMPLETE'):
+        return 2
+    # Nonzero until the requested live operation is fully verified. Scripts
+    # must not equate an accepted Coolify deploy with an authenticated tunnel.
+    if status in ('DEPLOY_QUEUED_NOT_VERIFIED', 'TRUST_DEPLOY_QUEUED_NOT_VERIFIED'):
+        return 3
+    return 0
 
 
 if __name__ == '__main__':

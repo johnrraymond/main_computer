@@ -29,7 +29,6 @@ _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
 class SEHConnectionSettings:
     enabled: bool
     seh_url: str
-    organization_id: str
     slh_id: str
     allow_loopback_lab: bool = False
     retry_seconds: float = 2.0
@@ -37,13 +36,13 @@ class SEHConnectionSettings:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> 'SEHConnectionSettings':
         if not isinstance(value, dict) or set(value) != {
-            'enabled', 'seh_url', 'organization_id', 'slh_id',
+            'enabled', 'seh_url', 'slh_id',
             'allow_loopback_lab', 'retry_seconds',
         }:
             raise ValueError('Invalid SLH SEH connection configuration')
         if type(value['enabled']) is not bool or type(value['allow_loopback_lab']) is not bool:
             raise ValueError('SEH enabled and allow_loopback_lab must be booleans')
-        for key in ('organization_id', 'slh_id'):
+        for key in ('slh_id',):
             if not isinstance(value[key], str) or not _ID.fullmatch(value[key]):
                 raise ValueError(f'Invalid SEH {key}')
         if not isinstance(value['seh_url'], str):
@@ -58,7 +57,16 @@ def read_seh_settings(state_dir: Path) -> SEHConnectionSettings | None:
     path = Path(state_dir) / _FILENAME
     if not path.exists():
         return None
-    return SEHConnectionSettings.from_dict(json.loads(path.read_text(encoding='utf-8')))
+    data = json.loads(path.read_text(encoding='utf-8'))
+    # One-way removal of the former, non-authoritative organization label.
+    # Validate the *entire* remaining configuration before rewriting it.
+    if isinstance(data, dict) and 'organization_id' in data:
+        updated = dict(data)
+        updated.pop('organization_id')
+        settings = SEHConnectionSettings.from_dict(updated)
+        write_seh_settings(state_dir, settings)
+        return settings
+    return SEHConnectionSettings.from_dict(data)
 
 
 def write_seh_settings(state_dir: Path, settings: SEHConnectionSettings) -> Path:
@@ -160,7 +168,7 @@ class SEHAutoConnection:
             conn = None
             try:
                 conn = SLHSEHConnector(
-                    seh_url=s.seh_url, organization_id=s.organization_id,
+                    seh_url=s.seh_url,
                     slh_id=s.slh_id, identity_private_key=self.signer,
                     gateway_port=self.gateway_port, allow_lab=s.allow_loopback_lab,
                     lab_id=self.lab_id).connect()

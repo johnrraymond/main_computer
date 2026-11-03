@@ -40,8 +40,19 @@ class PinkySweep:
         self.last_attempt_ns=None
         self.last_error=None
         with self.private._lock, self.private._db() as db:
+            # An uncertain pending legacy payment cannot be safely retried with
+            # a different canonical signed message. Refuse before any migration.
+            legacy = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pinky_sweeps'").fetchone()
+            if legacy is not None:
+                fields = {row['name'] for row in db.execute('PRAGMA table_info(pinky_sweeps)')}
+                if 'org_id' in fields:
+                    if db.execute("SELECT 1 FROM pinky_sweeps WHERE status='PENDING' LIMIT 1").fetchone():
+                        raise SLHError('LEGACY_PENDING_SWEEP_REQUIRES_RECONCILIATION',409)
+                    if db.execute('SELECT COUNT(DISTINCT org_id) n FROM pinky_sweeps').fetchone()['n'] > 1:
+                        raise SLHError('LEGACY_SWEEP_SCOPE_CONFLICT',409)
+                    db.execute('ALTER TABLE pinky_sweeps DROP COLUMN org_id')
             db.execute('''CREATE TABLE IF NOT EXISTS pinky_sweeps (
-                sweep_id TEXT PRIMARY KEY, org_id TEXT NOT NULL,
+                sweep_id TEXT PRIMARY KEY,
                 wallet_address TEXT NOT NULL, reserve_wallet_address TEXT NOT NULL,
                 cluster_id TEXT NOT NULL, chain_id TEXT NOT NULL,
                 credit_wei TEXT NOT NULL, status TEXT NOT NULL
@@ -101,15 +112,13 @@ class PinkySweep:
 
     def status(self):
         with self.private._lock,self.private._db() as db:
-            count=db.execute("SELECT COUNT(*) n FROM pinky_obligations WHERE org_id=?",
-                (self.private.org_id,)).fetchone()['n']
+            count=db.execute("SELECT COUNT(*) n FROM pinky_obligations").fetchone()['n']
             paid=db.execute('''SELECT COUNT(*) n FROM pinky_sweep_items i
                 JOIN pinky_sweeps s ON i.sweep_id=s.sweep_id
-                WHERE s.org_id=? AND s.status='CONFIRMED' ''',(self.private.org_id,)).fetchone()['n']
-            pending=db.execute("SELECT COUNT(*) n FROM pinky_sweeps WHERE org_id=? AND status='PENDING'",
-                (self.private.org_id,)).fetchone()['n']
+                WHERE s.status='CONFIRMED' ''').fetchone()['n']
+            pending=db.execute("SELECT COUNT(*) n FROM pinky_sweeps WHERE status='PENDING'").fetchone()['n']
             return {'schema':'main-computer.slh-pinky-sweeps.v1',
-                    'org_id':self.private.org_id,'assessed_count':count,
+                    'assessed_count':count,
                     'paid_count':paid,'outstanding_count':count-paid,
                     'outstanding_credit_wei':str((count-paid)*ASSESSMENT_WEI),
                     'outstanding_credits':credit_wei_to_decimal_text((count-paid)*ASSESSMENT_WEI),
@@ -120,8 +129,8 @@ class PinkySweep:
 
     def _last_confirmed(self,db):
         row=db.execute('''SELECT sweep_id,credit_wei,receipt_id,confirmed_at_ns
-            FROM pinky_sweeps WHERE org_id=? AND status='CONFIRMED'
-            ORDER BY confirmed_at_ns DESC LIMIT 1''',(self.private.org_id,)).fetchone()
+            FROM pinky_sweeps WHERE status='CONFIRMED'
+            ORDER BY confirmed_at_ns DESC LIMIT 1''').fetchone()
         return dict(row) if row else None
 
     def sweep(self):
@@ -136,8 +145,7 @@ class PinkySweep:
                 raise SLHError('PINKY_SIGNER_WALLET_MISMATCH',409)
             available=int(current['balance']['available_credit_wei'])
             with self.private._lock,self.private._db() as db:
-                prepared=db.execute("SELECT * FROM pinky_sweeps WHERE org_id=? AND status='PENDING' ORDER BY created_at_ns LIMIT 1",
-                                   (self.private.org_id,)).fetchone()
+                prepared=db.execute("SELECT * FROM pinky_sweeps WHERE status='PENDING' ORDER BY created_at_ns LIMIT 1").fetchone()
                 if prepared is None:
                     # A batch comprises whole 0.1-credit obligations. No
                     # locally initiated transfer exceeds fresh Hub availability.
@@ -148,17 +156,17 @@ class PinkySweep:
                     ids=[row['obligation_id'] for row in db.execute('''
                         SELECT o.obligation_id FROM pinky_obligations o
                         LEFT JOIN pinky_sweep_items i ON i.obligation_id=o.obligation_id
-                        WHERE o.org_id=? AND i.obligation_id IS NULL
+                        WHERE i.obligation_id IS NULL
                         ORDER BY o.assessed_at_ns,o.obligation_id LIMIT ?''',
-                        (self.private.org_id,min(limit,1000))).fetchall()]
+                        (min(limit,1000),)).fetchall()]
                     if not ids:
                         return {'status':'NOTHING_DUE',**self.status()}
                     sweep_id='psweep-'+uuid.uuid4().hex
                     credit_wei=len(ids)*ASSESSMENT_WEI
                     db.execute('''INSERT INTO pinky_sweeps
-                        (sweep_id,org_id,wallet_address,reserve_wallet_address,cluster_id,chain_id,
-                         credit_wei,status,created_at_ns) VALUES (?,?,?,?,?,?,?,?,?)''',
-                        (sweep_id,self.private.org_id,signer,reserve,binding['cluster_id'],
+                        (sweep_id,wallet_address,reserve_wallet_address,cluster_id,chain_id,
+                         credit_wei,status,created_at_ns) VALUES (?,?,?,?,?,?,?,?)''',
+                        (sweep_id,signer,reserve,binding['cluster_id'],
                          binding['chain_id'],str(credit_wei),'PENDING',time.time_ns()))
                     db.executemany('INSERT INTO pinky_sweep_items VALUES (?,?)',[(oid,sweep_id) for oid in ids])
                     prepared=db.execute('SELECT * FROM pinky_sweeps WHERE sweep_id=?',(sweep_id,)).fetchone()
@@ -167,7 +175,7 @@ class PinkySweep:
                     prepared['cluster_id']!=binding['cluster_id'] or prepared['chain_id']!=binding['chain_id']):
                     raise SLHError('PINKY_PENDING_SWEEP_BINDING_MISMATCH',409)
                 sweep=dict(prepared)
-            intent={'schema':SWEEP_SCHEMA,'org_id':sweep['org_id'],
+            intent={'schema':SWEEP_SCHEMA,
                     'sweep_id':sweep['sweep_id'],'cluster_id':sweep['cluster_id'],
                     'chain_id':sweep['chain_id'],'wallet_address':signer,
                     'reserve_wallet_address':reserve,'credit_wei':sweep['credit_wei']}
@@ -175,7 +183,7 @@ class PinkySweep:
             reader=self.reader_factory(binding['hub_url'],binding.get('tls_sha256'))
             receipt=reader.request('POST','/api/hub/v1/credits/pinky-reserve/sweep',
                                    {'intent':intent,'signature':sig})
-            for key,value in (('org_id',sweep['org_id']),('sweep_id',sweep['sweep_id']),
+            for key,value in (('sweep_id',sweep['sweep_id']),
                               ('wallet_address',signer),('reserve_wallet_address',reserve),
                               ('cluster_id',sweep['cluster_id']),('chain_id',sweep['chain_id']),
                               ('credit_wei',sweep['credit_wei'])):

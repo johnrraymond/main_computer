@@ -35,7 +35,7 @@ def _endpoint(uri: str, *, allow_lab: bool):
 
 class SLHSEHConnector:
     """Authenticates using a dedicated SLH P-256 key, then tunnels to its local TLS service."""
-    def __init__(self, *, seh_url: str, organization_id: str, slh_id: str,
+    def __init__(self, *, seh_url: str, slh_id: str,
                  identity_private_key, gateway_port: int, allow_lab: bool=False,
                  lab_id: str | None = None):
         _endpoint(seh_url,allow_lab=allow_lab)
@@ -43,7 +43,6 @@ class SLHSEHConnector:
             raise ValueError('Invalid isolated SEH lab identifier')
         self.lab_id = lab_id
         self.seh_url = seh_url.rstrip('/')
-        self.organization_id=organization_id
         self.slh_id=slh_id
         self.identity_private_key=identity_private_key
         self.gateway_port=gateway_port
@@ -203,14 +202,13 @@ class SLHSEHConnector:
 
     def connect(self):
         from websockets.sync.client import connect
-        path=(f'{self.seh_url}/v1/seh/lab/{self.organization_id}/slh/id/{self.lab_id}'
-              if self.lab_id else f'{self.seh_url}/v1/seh/slh/{self.organization_id}')
+        path=(f'{self.seh_url}/v1/seh/lab/{self.slh_id}/slh/id/{self.lab_id}'
+              if self.lab_id else f'{self.seh_url}/v1/seh/slh/{self.slh_id}')
         ws=connect(path,open_timeout=8,max_size=MAX_FRAME*2+8192,compression=None)
         try:
             request=json.loads(ws.recv(timeout=8))
             statement=request.get('statement') or {}
             if (request.get('type')!='seh.auth.challenge' or
-                statement.get('organization_id')!=self.organization_id or
                 statement.get('slh_id')!=self.slh_id or
                 statement.get('lab_id')!=self.lab_id or
                 statement.get('action')!='seh.slh.connect' or
@@ -218,7 +216,7 @@ class SLHSEHConnector:
                 raise RuntimeError('SEH challenge invalid')
             ws.send(json.dumps({'type':'seh.auth.proof','signature':sign_object(self.identity_private_key,statement)}))
             accepted=json.loads(ws.recv(timeout=8))
-            if accepted.get('type')!='seh.auth.accepted' or accepted.get('organization_id')!=self.organization_id:
+            if accepted.get('type')!='seh.auth.accepted':
                 raise RuntimeError('SEH did not accept SLH identity')
         except BaseException:
             ws.close()
@@ -255,8 +253,8 @@ class _LocalAdapterHandler(socketserver.BaseRequestHandler):
     def handle(self):
         adapter=self.server
         from websockets.sync.client import connect
-        uri=(f'{adapter.seh_url}/v1/seh/lab/{adapter.organization_id}/client/id/{adapter.lab_id}'
-             if adapter.lab_id else f'{adapter.seh_url}/v1/seh/client/{adapter.organization_id}')
+        uri=(f'{adapter.seh_url}/v1/seh/lab/{adapter.slh_id}/client/id/{adapter.lab_id}'
+             if adapter.lab_id else f'{adapter.seh_url}/v1/seh/client/{adapter.slh_id}')
         first_lock=threading.Lock()
         first=[None]
         # Port is the Worker side's ephemeral loopback port, and is NOT a
@@ -355,13 +353,13 @@ class SEHLocalClientAdapter(socketserver.ThreadingTCPServer):
     allow_reuse_address=False
     daemon_threads=True
 
-    def __init__(self, seh_url: str, organization_id: str, *, allow_lab=False, lab_id=None):
+    def __init__(self, seh_url: str, slh_id: str, *, allow_lab=False, lab_id=None):
         _endpoint(seh_url,allow_lab=allow_lab)
         if lab_id is not None and not LAB_ID.fullmatch(lab_id):
             raise ValueError('Invalid isolated SEH lab identifier')
         self.lab_id=lab_id
+        self.slh_id=slh_id
         self.seh_url=seh_url.rstrip('/')
-        self.organization_id=organization_id
         self.stats_lock=threading.Lock()
         self.bytes_forwarded=0
         # Counts of first close observations, not inferred remote causes.

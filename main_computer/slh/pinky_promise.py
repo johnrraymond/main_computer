@@ -19,31 +19,63 @@ ASSESSMENT_WEI = CREDIT_WEI_PER_CREDIT // 10
 
 
 class PinkyPromise:
-    def __init__(self, org_id: str):
-        self.org_id = org_id
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def _migrate_legacy(db):
+        # Migration is performed by the PrivateRequests database transaction.
+        # Stable obligation_id and sweep_id values are NOT recalculated.
+        for table in ('pinky_policy','pinky_policy_history','pinky_obligations'):
+            if db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone() is None:
+                continue
+            columns = list(db.execute('PRAGMA table_info('+table+')'))
+            if 'org_id' not in {row['name'] for row in columns}:
+                continue
+            if db.execute('SELECT COUNT(DISTINCT org_id) n FROM '+table).fetchone()['n'] > 1:
+                raise SLHError('LEGACY_PINKY_LEDGER_SCOPE_CONFLICT',409)
+            names = [row['name'] for row in columns if row['name'] != 'org_id']
+            fields=[]
+            for row in columns:
+                if row['name']=='org_id':continue
+                field='"'+row['name']+'" '+row['type']
+                if row['notnull']:field+=' NOT NULL'
+                if row['dflt_value'] is not None:field+=' DEFAULT '+row['dflt_value']
+                fields.append(field)
+            if table=='pinky_policy': fields.append('PRIMARY KEY (singleton)')
+            elif table=='pinky_policy_history': fields.append('PRIMARY KEY (revision)')
+            else:
+                fields.append('PRIMARY KEY (obligation_id)')
+                fields.append('UNIQUE (requester_device_id,request_id)')
+            db.execute('CREATE TABLE '+table+'_no_scope ('+', '.join(fields)+')')
+            cols=', '.join('"'+name+'"' for name in names)
+            db.execute('INSERT INTO '+table+'_no_scope ('+cols+') SELECT '+cols+' FROM '+table)
+            db.execute('DROP TABLE '+table)
+            db.execute('ALTER TABLE '+table+'_no_scope RENAME TO '+table)
 
     def initialize(self, db):
+        self._migrate_legacy(db)
         db.execute('''CREATE TABLE IF NOT EXISTS pinky_policy (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-            org_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision >= 1),
+            revision INTEGER NOT NULL CHECK(revision >= 1),
             enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
             changed_at_ns INTEGER NOT NULL, changed_by TEXT NOT NULL)''')
         db.execute('''CREATE TABLE IF NOT EXISTS pinky_policy_history (
-            org_id TEXT NOT NULL, revision INTEGER NOT NULL,
+            revision INTEGER NOT NULL,
             enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
             changed_at_ns INTEGER NOT NULL, changed_by TEXT NOT NULL,
-            PRIMARY KEY(org_id,revision))''')
+            PRIMARY KEY(revision))''')
         db.execute('''CREATE TABLE IF NOT EXISTS pinky_obligations (
             obligation_id TEXT PRIMARY KEY,
-            org_id TEXT NOT NULL, requester_device_id TEXT NOT NULL,
+            requester_device_id TEXT NOT NULL,
             request_id TEXT NOT NULL, run_id TEXT NOT NULL,
             model TEXT NOT NULL, result_hash TEXT NOT NULL,
             policy_id TEXT NOT NULL, policy_revision INTEGER NOT NULL,
             reference_credit_wei TEXT NOT NULL, amount_credit_wei TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status='ASSESSED'),
             assessed_at_ns INTEGER NOT NULL,
-            UNIQUE(org_id,requester_device_id,request_id))''')
-        row = db.execute('SELECT org_id,revision,enabled FROM pinky_policy WHERE singleton=1').fetchone()
+            UNIQUE(requester_device_id,request_id))''')
+        row = db.execute('SELECT revision,enabled FROM pinky_policy WHERE singleton=1').fetchone()
         if row is None:
             # A previously initialized policy must never be silently reset to
             # enabled after deletion/corruption of the singleton row.
@@ -51,25 +83,23 @@ class PinkyPromise:
             if old:
                 raise SLHError('PINKY_POLICY_HISTORY_MISMATCH',503)
             now = time.time_ns()
-            db.execute('INSERT INTO pinky_policy VALUES(1,?,?,?,?,?)',
-                       (self.org_id,1,1,now,'system-default'))
-            db.execute('INSERT INTO pinky_policy_history VALUES(?,?,?,?,?)',
-                       (self.org_id,1,1,now,'system-default'))
-        elif row['org_id'] != self.org_id:
-            raise SLHError('PINKY_ORG_MISMATCH',409)
+            db.execute('INSERT INTO pinky_policy VALUES(1,?,?,?,?)',
+                       (1,1,now,'system-default'))
+            db.execute('INSERT INTO pinky_policy_history VALUES(?,?,?,?)',
+                       (1,1,now,'system-default'))
         else:
             expected = db.execute('''SELECT enabled FROM pinky_policy_history
-                WHERE org_id=? AND revision=?''',
-                (self.org_id,row['revision'])).fetchone()
+                WHERE revision=?''',
+                (row['revision'],)).fetchone()
             if expected is None or expected['enabled'] != row['enabled']:
                 raise SLHError('PINKY_POLICY_HISTORY_MISMATCH',503)
 
     def snapshot(self, db):
         row = db.execute('SELECT * FROM pinky_policy WHERE singleton=1').fetchone()
-        if row is None or row['org_id'] != self.org_id:
+        if row is None:
             raise SLHError('PINKY_POLICY_UNAVAILABLE',503)
         return {'schema':'main-computer.slh-pinky-policy.v1',
-                'org_id':self.org_id,'policy_id':POLICY_ID,
+                'policy_id':POLICY_ID,
                 'revision':row['revision'],'enabled':bool(row['enabled']),
                 'reference_credit_wei':str(REFERENCE_WEI),
                 'assessment_credit_wei':str(ASSESSMENT_WEI),
@@ -91,32 +121,32 @@ class PinkyPromise:
             return current
         new_revision = revision + 1
         now=time.time_ns()
-        db.execute('UPDATE pinky_policy SET enabled=?,revision=?,changed_at_ns=?,changed_by=? WHERE singleton=1 AND org_id=?',
-                   (int(enabled),new_revision,now,actor,self.org_id))
-        db.execute('INSERT INTO pinky_policy_history VALUES(?,?,?,?,?)',
-                   (self.org_id,new_revision,int(enabled),now,actor))
+        db.execute('UPDATE pinky_policy SET enabled=?,revision=?,changed_at_ns=?,changed_by=? WHERE singleton=1',
+                   (int(enabled),new_revision,now,actor))
+        db.execute('INSERT INTO pinky_policy_history VALUES(?,?,?,?)',
+                   (new_revision,int(enabled),now,actor))
         return self.snapshot(db)
 
     @staticmethod
-    def obligation_id(org_id, requester, request_id):
-        canonical = json.dumps([org_id,requester,request_id],separators=(',',':'),ensure_ascii=True)
-        return 'pinky:v1:' + hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+    def obligation_id(requester, request_id):
+        canonical = json.dumps([requester,request_id],separators=(',',':'),ensure_ascii=True)
+        return 'pinky:v2:' + hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
     def record(self, db, row, result_hash, now_ns):
         """Insert in the SAME SQLite transaction as the success transition."""
-        if row['org_id'] != self.org_id or not row['pinky_enabled']:
+        if not row['pinky_enabled']:
             raise SLHError('PINKY_ASSESSMENT_INVARIANT',500)
         if row['billing_policy_id'] != POLICY_ID or row['pinky_policy_revision'] < 1:
             raise SLHError('PINKY_ASSESSMENT_INVARIANT',500)
         if not row['run_id'] or not result_hash or len(result_hash)!=64:
             raise SLHError('PINKY_FULFILLMENT_PROOF_REQUIRED',500)
-        oid = self.obligation_id(row['org_id'],row['requester_device_id'],row['request_id'])
+        oid = self.obligation_id(row['requester_device_id'],row['request_id'])
         db.execute('''INSERT INTO pinky_obligations
-            (obligation_id,org_id,requester_device_id,request_id,run_id,model,
+            (obligation_id,requester_device_id,request_id,run_id,model,
              result_hash,policy_id,policy_revision,reference_credit_wei,
              amount_credit_wei,status,assessed_at_ns)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (oid,self.org_id,row['requester_device_id'],row['request_id'],row['run_id'],
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (oid,row['requester_device_id'],row['request_id'],row['run_id'],
              row['model'],result_hash,POLICY_ID,row['pinky_policy_revision'],
              str(REFERENCE_WEI),str(ASSESSMENT_WEI),'ASSESSED',now_ns))
 
@@ -124,14 +154,11 @@ class PinkyPromise:
         rows = db.execute('''SELECT obligation_id,request_id,requester_device_id,run_id,
                 model,result_hash,policy_id,policy_revision,reference_credit_wei,
                 amount_credit_wei,status,assessed_at_ns
-                FROM pinky_obligations WHERE org_id=? ORDER BY assessed_at_ns,obligation_id LIMIT 100''',
-                (self.org_id,)).fetchall()
+                FROM pinky_obligations ORDER BY assessed_at_ns,obligation_id LIMIT 100''').fetchall()
         # Assessments never imply payment; P4 provides a separate receipt-backed sweep journal.
-        count=db.execute('SELECT COUNT(*) AS n FROM pinky_obligations WHERE org_id=?',
-                         (self.org_id,)).fetchone()['n']
+        count=db.execute('SELECT COUNT(*) AS n FROM pinky_obligations').fetchone()['n']
         should_be = db.execute('''SELECT COUNT(*) AS n FROM private_requests
-            WHERE org_id=? AND status='SUCCEEDED' AND pinky_enabled=1''',
-            (self.org_id,)).fetchone()['n']
+            WHERE status='SUCCEEDED' AND pinky_enabled=1''').fetchone()['n']
         if count != should_be:
             raise SLHError('PINKY_LEDGER_INCONSISTENT',500)
         has_sweeps=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pinky_sweeps'").fetchone() is not None
@@ -139,11 +166,11 @@ class PinkyPromise:
         if has_sweeps:
             paid=db.execute('''SELECT COUNT(*) n FROM pinky_sweep_items i
                 JOIN pinky_sweeps s ON i.sweep_id=s.sweep_id
-                WHERE s.org_id=? AND s.status='CONFIRMED' ''',(self.org_id,)).fetchone()['n']
+                WHERE s.status='CONFIRMED' ''').fetchone()['n']
         return {'schema':'main-computer.slh-pinky-obligations.v1','paid_count':paid,
                 'paid_total_credit_wei':str(paid*ASSESSMENT_WEI),
                 'outstanding_credit_wei':str((count-paid)*ASSESSMENT_WEI),
-                'org_id':self.org_id, 'count':count,
+                'count':count,
                 'assessed_total_credit_wei':str(count * ASSESSMENT_WEI),
                 'assessed_total_credits':credit_wei_to_decimal_text(count * ASSESSMENT_WEI),
                 'settlement_state':'P4_PERIODIC_SWEEP' if has_sweeps else 'NOT_IMPLEMENTED_P4',

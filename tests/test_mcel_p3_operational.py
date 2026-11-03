@@ -39,7 +39,10 @@ def test_generation_required_in_service_even_without_http_marker(tmp_path, monke
     assert events==[]
     generation=svc._format_epoch(created)
     r=svc.perform_action(action="terminate_pid",pid=500,confirm=True,expected_created_at=generation)
-    assert r["verified_created_at"]==generation
+    # The generation is OS-verified and normalized to the millisecond precision
+    # used by Windows CIM; raw ISO string spelling is not the identity.
+    assert r["verified_created_at"] == datetime.fromtimestamp(
+        created, timezone.utc).isoformat(timespec="milliseconds")
     assert events==["terminate"]
     with pytest.raises(ValueError,match="Invalid process generation"):
         svc.perform_action(action="kill_pid",pid=500,confirm=True,expected_created_at="2024-10-27T00:00:00")
@@ -122,7 +125,7 @@ def test_local_operator_csrf_guard():
 def test_p3_source_derived_from_ir_and_p2_read_only():
     ir,plan=compile_p3_generated_candidate()
     verify_composition(ir,plan)
-    assert len(ir['intents'])==17
+    assert len(ir['intents'])==19
     assert len(ir['capabilities'])==3
     assert {c['risk'] for c in ir['capabilities']}=={'external-read','consequential'}
     assert plan['policy']=='mcel.semantic-structure.p3'

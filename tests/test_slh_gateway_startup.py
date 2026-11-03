@@ -57,7 +57,7 @@ def test_real_local_service_bootstrap_does_not_start_organization(tmp_path: Path
         try:
             result = bootstrap_admin(port=server.server_port, state_dir=tmp_path,
                                      identity_dir=identity_dir, device_id='first-admin-device',
-                                     org_id='example-org', admin_id='owner', admin_name='Owner')
+                                     admin_id='owner', admin_name='Owner')
             assert result['status'] == 'INITIALIZED'
             status, data = _read_local(server.server_port)
             assert status == 200

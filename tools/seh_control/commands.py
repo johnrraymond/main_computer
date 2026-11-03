@@ -16,9 +16,31 @@ class SEHControl:
 
     def list(self, network: str) -> dict:
         _, binding, doc = st.read(self.root, network)
-        ids = (st.network_doc(doc,network).get('sehs') or {})
-        return {'status':'READ_ONLY','network':network,'generation':binding.binding.generation,
-                'sehs':[st.public_inspect(doc,network,s) for s in sorted(ids)]}
+        canonical = st.public_deployment(doc, network)
+        if canonical is not None:
+            return {'status': 'READ_ONLY', 'network': network,
+                    'generation': binding.binding.generation, 'deployment': canonical}
+        records = st.network_doc(doc,network).get('sehs') or {}
+        if type(records) is not dict:
+            raise st.SEHIdentityError('Malformed legacy SEH registry')
+        return {'status': 'READ_ONLY', 'network': network,
+                'generation': binding.binding.generation,
+                'sehs': [st.public_inspect(doc, network, name) for name in sorted(records)]}
+
+    def migrate_single(self, network: str, expected_generation: int, operation_id: str) -> dict:
+        if type(expected_generation) is not int:
+            raise st.SEHIdentityError('Migration requires an explicit observed Mother generation')
+        result = st.mutate(self.root, network, expected_generation, operation_id,
+                           lambda doc, gen, base: st.migrate_one(doc, network))
+        _, current, doc = st.read(self.root, network)
+        canonical = st.public_deployment(doc, network)
+        if canonical is None and st.single_legacy(doc, network) is None:
+            return {'status': 'NO_DEPLOYMENT', 'network': network,
+                    'generation': current.binding.generation, 'remote_mutation': False}
+        if canonical is None:
+            raise st.SEHIdentityError('Canonical deployment migration did not persist')
+        return {**result, 'network': network, 'deployment': canonical,
+                'remote_mutation': False}
 
     def sources(self, network: str | None = None) -> dict:
         lookup = network or 'mainnet'
@@ -26,17 +48,28 @@ class SEHControl:
         return {'status':'READ_ONLY','generation':state.binding.generation,
                 'sources':st.sources(doc, network)}
 
-    def inspect(self, network: str, seh: str) -> dict:
-        _,state,doc=st.read(self.root,network)
-        return {'status':'READ_ONLY','generation':state.binding.generation,
-                **st.public_inspect(doc,network,seh)}
+    def inspect(self, network: str, seh: str | None = None) -> dict:
+        listing = self.list(network)
+        if 'deployment' in listing:
+            if seh:
+                raise st.SEHIdentityError('SEH name selection is retired')
+            return {'status': 'READ_ONLY', 'network': network,
+                    'generation': listing['generation'], 'registered': True,
+                    **listing['deployment']}
+        legacy = listing.get('sehs', [])
+        selected = ([row for row in legacy if row['seh'] == seh] if seh else legacy)
+        if len(selected) != 1:
+            raise st.SEHIdentityError('Legacy SEH selection missing or ambiguous')
+        return {'status':'READ_ONLY', 'generation': listing['generation'], **selected[0]}
 
     def change(self, command: str, network: str, seh: str, generation: int | None, operation_id: str,
-               *, organization_id: str = '', slh_id: str = '', source: str = '', alias: str = '',
+               *, slh_id: str = '', source: str = '', alias: str = '',
                replace_identity: bool = False, changes: dict | None = None, service_uuid: str = '') -> dict:
         def update(doc, old_generation, base_dir):
+            if st.deployment_record(doc, network) is not None:
+                raise st.SEHIdentityError('Legacy named SEH mutation refused after canonical migration')
             if command=='reserve':
-                st.reserve(doc,network,seh,organization_id,slh_id)
+                st.reserve(doc,network,seh,slh_id)
             elif command=='coolify-copy':
                 st.copy_identity(doc,network,seh,alias,source,old_generation,base_dir,replace=replace_identity)
             elif command=='coolify-refresh':
@@ -76,6 +109,14 @@ class SEHControl:
     def status_git(self, network: str, seh: str, **kwargs) -> dict:
         from .git_deployment import status
         return status(self.root, network, seh, **kwargs)
+
+    def bind_slh(self, network: str, seh: str, **kwargs) -> dict:
+        from .git_deployment import bind_slh
+        return bind_slh(self.root, network, seh, **kwargs)
+
+    def diagnostic_slh_trust(self, network: str, seh: str, **kwargs) -> dict:
+        from .git_deployment import diagnostic_slh_trust
+        return diagnostic_slh_trust(self.root, network, seh, **kwargs)
 
     def observed_public_origin(self, network: str, seh: str, **kwargs) -> dict:
         """Read a domain directly from the exact registered Coolify application."""

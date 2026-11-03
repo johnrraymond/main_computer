@@ -338,7 +338,8 @@ def test_real_joint_training_flow_checkpoint_resume_and_reports(monkeypatch,tmp_
     assert report['chains']['from_start']['strict_correct']==len(joint._eval(a,joint._policy(a))[2])
     assert 'hdb_numeric_balance_chains' in report
     assert 'shotgun' in report
-    assert report['shotgun']['from_baseline']['total']['tested']==48
+    assert report['shotgun']['from_baseline']['total']['tested']==len(json.loads((joint._out(a)/'shotgun_eval_deck.json').read_text()))
+    assert report['shotgun']['matched_hdb08_comparison']['matched_scenarios']*len(shotgun.DIAGNOSTIC_MODES)==report['shotgun']['from_baseline']['total']['tested']
     assert report['hdb_numeric_balance_chains']['from_start']['correct']==27
     assert 'T07' in report['per_tier_learning_state']
     assert 'HDB07' in report['per_tier_learning_state']
@@ -355,6 +356,68 @@ def test_real_joint_training_flow_checkpoint_resume_and_reports(monkeypatch,tmp_
                         joint_t_eval_per_shell=36))
     assert extended['step']==3
     assert extended['math_exposures']
+    # Simulate migration from the ACTUAL v2 matched HDB08 diagnostic,
+    # with a consistent v2 deck SHA and untouched optimizer/LoRA.
+    checkpoint_before_v2=torch.load(joint._out(a)/'working.pt',map_location='cpu',weights_only=True)
+    v2_model=checkpoint_before_v2['lora']['weight'].clone()
+    v2_optimizer=checkpoint_before_v2['optimizer']
+    deck_path=joint._out(a)/'shotgun_eval_deck.json'
+    full_deck=json.loads(deck_path.read_text())
+    v2_deck=[r for r in full_deck if r['mode'] in shotgun.MODES]
+    assert len(v2_deck)*len(shotgun.DIAGNOSTIC_MODES)==len(full_deck)*len(shotgun.MODES)
+    ladder._atomic_json(deck_path,v2_deck)
+    v2_checkpoint=checkpoint_before_v2
+    v2_checkpoint['state']['policy']['shotgun_version']='nanojev.qwen.shotgun.failure-neighborhood.v2'
+    v2_checkpoint['state']['shotgun_diagnostic_version']='nanojev.qwen.shotgun.failure-neighborhood.v2'
+    v2_checkpoint['state']['shotgun_eval_sha256']=ladder.deck_fingerprint(v2_deck)
+    ladder._atomic_torch(joint._out(a)/'working.pt',v2_checkpoint)
+    v2_report_path=joint._out(a)/'joint_frontier_report.json'
+    v2_report=json.loads(v2_report_path.read_text())
+    v2_report['shotgun']['diagnostic_version']='nanojev.qwen.shotgun.failure-neighborhood.v2'
+    ladder._atomic_json(v2_report_path,v2_report)
+    migrated_v2=joint.run(args(tmp_path,joint_steps=3,joint_check_every=1,
+                               joint_t_eval_per_shell=36))
+    assert migrated_v2['step']==3
+    assert migrated_v2['shotgun_diagnostic_version']==shotgun.DIAGNOSTIC_VERSION
+    assert migrated_v2['shotgun_matched_current']['operation_boundaries']
+    assert (joint._out(a)/'shotgun_v2_eval_deck.json').is_file()
+    assert json.loads((joint._out(a)/'shotgun_v2_eval_deck.json').read_text())==v2_deck
+    assert (joint._out(a)/'shotgun_v2_archived_diagnostic.json').is_file()
+    snapshot=torch.load(joint._out(a)/'pre_shotgun_operation_isolation_migration.pt',
+                        map_location='cpu',weights_only=True)
+    assert torch.equal(snapshot['lora']['weight'],v2_model)
+    assert snapshot['optimizer']==v2_optimizer
+    observed=json.loads((joint._out(a)/'shotgun_operation_cases.json').read_text())
+    assert observed['step']==3 and len(observed['scenarios'])>0
+    assert not joint.latest_competency(a)['shotgun_report_is_current']
+    # Simulate the actual v1 -> matched HDB08 Shotgun upgrade, with a complete
+    # optimizer state. It must rebase ONLY Shotgun's diagnostic baseline.
+    old_checkpoint=torch.load(joint._out(a)/'working.pt',map_location='cpu',weights_only=True)
+    preserved_weight=old_checkpoint['lora']['weight'].clone()
+    old_checkpoint['state']['policy']['shotgun_version']=joint.shotgun.VERSION
+    old_checkpoint['state'].pop('shotgun_diagnostic_version')
+    old_checkpoint['state']['shotgun_eval_sha256']='old-v1-48-case-deck'
+    prior_report_path=joint._out(a)/'joint_frontier_report.json'
+    prior_report=json.loads(prior_report_path.read_text())
+    prior_report['shotgun'].pop('diagnostic_version',None)
+    ladder._atomic_json(prior_report_path,prior_report)
+    ladder._atomic_torch(joint._out(a)/'working.pt',old_checkpoint)
+    migrated_shotgun=joint.run(args(tmp_path,joint_steps=3,joint_check_every=1,
+                                    joint_t_eval_per_shell=36))
+    assert migrated_shotgun['step']==3
+    assert migrated_shotgun['shotgun_diagnostic_version']==joint.shotgun.DIAGNOSTIC_VERSION
+    assert migrated_shotgun['shotgun_baseline_step']==3
+    assert migrated_shotgun['shotgun_matched_current']['matched_scenarios']>0
+    archive=joint._out(a)/'shotgun_v1_archived_diagnostic.json'
+    assert archive.is_file()
+    assert json.loads(archive.read_text())['original_eval_sha256']=='old-v1-48-case-deck'
+    snap=torch.load(joint._out(a)/'pre_shotgun_failure_neighborhood_migration.pt',
+                    map_location='cpu',weights_only=True)
+    assert torch.equal(snap['lora']['weight'],preserved_weight)
+    assert snap['optimizer']==old_checkpoint['optimizer']
+    latest=joint.latest_competency(a)
+    assert not latest['shotgun_report_is_current']
+    assert latest['shotgun']['diagnostic_state']=='operation_isolation_migration_baseline_only'
     # Simulate an authentic v2 T/HDB-only checkpoint, retaining every learned
     # LoRA tensor and the optimizer. Migration must not reinitialize either.
     workspace=joint._out(a)

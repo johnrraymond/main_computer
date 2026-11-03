@@ -30,10 +30,11 @@ class FakeUpstream:
 class TestSLHSchedulerPolicy(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        from tools.slh_seh_connector import service_identity
+        service_identity(Path(self.temp.name), create=True)
         self.authority=SLHAuthority(Path(self.temp.name))
         key,public=generate_identity()
-        payload={'version':1,'action':'slh.admin.bootstrap','org_id':'test-org',
-                 'admin_id':'owner','device_id':'admin-pc','public_key':public}
+        payload={'version':1,'action':'slh.admin.bootstrap','admin_id':'owner','device_id':'admin-pc','public_key':public}
         self.admin_key=key
         self.authority.bootstrap({**payload,'admin_name':'Owner',
             'bootstrap_secret':(Path(self.temp.name)/'bootstrap.secret').read_text().strip(),

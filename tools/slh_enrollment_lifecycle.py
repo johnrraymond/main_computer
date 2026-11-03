@@ -55,7 +55,7 @@ def _open_authenticated_session(port, identity_dir, device_id):
     return token, _request(port, 'GET', '/v1/auth/session', token=token)
 
 
-def _submit_worker(port, identity_dir, org_id, selected_admin, label):
+def _submit_worker(port, identity_dir, selected_admin, label):
     device_id = 'slh-test-' + label + '-' + secrets.token_hex(5)
     saved = save_identity(identity_dir, device_id)
     key, public = load_identity(identity_dir, device_id)
@@ -66,8 +66,10 @@ def _submit_worker(port, identity_dir, org_id, selected_admin, label):
         'claimed_user': 'SLH Lifecycle Test', 'requested_role': 'worker',
         'client_nonce': secrets.token_urlsafe(32),
     }
+    fingerprint = _request(port, 'GET', '/v1/bootstrap/status')['service_fingerprint']
+    if not fingerprint: raise RuntimeError('SLH service identity not ready')
     statement = {**body, 'version': 1,
-                 'action': 'slh.device.enrollment.request', 'org_id': org_id}
+                 'action': 'slh.device.enrollment.request', 'audience':'slh://' + fingerprint}
     body['proof'] = sign_object(key, statement)
     response = _request(port, 'POST', '/v1/enrollment/requests', body)
     return {'device_id': device_id, 'request_id': response['request_id'],
@@ -91,10 +93,9 @@ def verify_lifecycle(*, port, identity_dir, admin_device, retain_devices=False):
         if policy['physical_inspection_required']:
             raise RuntimeError('PHYSICAL_INSPECTION_REQUIRED: refusing automated live enrollment; '
                                'an administrator must inspect and attest each device')
-        org_id = _request(port, 'GET', '/v1/bootstrap/status')['organization_id']
 
         for mode in ('queue', 'key'):
-            record = _submit_worker(port, identity_dir, org_id, admin_id, mode)
+            record = _submit_worker(port, identity_dir, admin_id, mode)
             local_key_paths.append(record['key_path'])
             requests.append(record['request_id'])
             rid, device_id = record['request_id'], record['device_id']
@@ -142,7 +143,7 @@ def verify_lifecycle(*, port, identity_dir, admin_device, retain_devices=False):
         result = {
             'schema': 'main-computer.slh-enrollment-lifecycle.v1',
             'status': 'PASS', 'mode': 'live-http',
-            'org_id': org_id, 'administrator': admin_id,
+            'administrator': admin_id,
             'single_approval_endpoint': '/v1/enrollment/approvals',
             'devices': outcomes,
             'cleanup': 'retained' if retain_devices else 'pending_verification',
@@ -193,13 +194,15 @@ def verify_isolated():
         identities=directory/'identities'
         state=directory/'server'
         save_identity(identities,'admin-test')
+        from tools.slh_seh_connector import service_identity
+        service_identity(state, create=True)
         server = make_server('127.0.0.1', 0, SLHAPI(SLHAuthority(state)).wsgi_app)
         thread=threading.Thread(target=server.serve_forever,daemon=True)
         thread.start()
         try:
             boot = bootstrap_admin(port=server.server_port, state_dir=state,
                                    identity_dir=identities, device_id='admin-test',
-                                   org_id='slh-isolated-test', admin_id='test-admin',
+                                   admin_id='test-admin',
                                    admin_name='Test Administrator')
             _check(boot['status']=='INITIALIZED','bootstrap')
             result=verify_lifecycle(port=server.server_port,identity_dir=identities,

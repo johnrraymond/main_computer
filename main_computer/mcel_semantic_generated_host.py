@@ -119,7 +119,7 @@ status.textContent='P2 generated monitor ready';
 
 # P3 uses the same generic source→IR→composition→renderer path as P2.
 # Unlike P2, it explicitly admits reviewed consequential capability declarations.
-P3_SOURCE = Path("tools/fixtures/mcel_p3_task_manager/application.js")
+P3_SOURCE = Path("mcel_apps/task-manager/application.js")
 P3_APP_ID = "semantic-task-manager-generated-p3"
 
 
@@ -142,7 +142,7 @@ def compile_p3_generated_candidate(repo: Path = ROOT) -> tuple[dict, dict]:
         surfaces[0].get("htmlBindings") or surfaces[0].get("interfaceIntent") or ir.get("layouts")):
         raise GeneratedHostRefusal("P3 source must be layout-free and exact-app-scoped")
     expected = {
-        "refresh", "refresh-all", "refresh-connections", "refresh-hardware", "choose-process", "switch-view",
+        "refresh", "refresh-all", "refresh-connections", "refresh-hardware", "choose-process", "choose-all-process", "choose-schedule", "switch-view",
         "list-schedules", "server-status", "task-ai", "terminate-process", "kill-process", "start-server",
         "restart-server", "shutdown-server", "create-schedule", "delete-schedule", "run-schedule",
     }

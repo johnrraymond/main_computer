@@ -12,17 +12,17 @@ import re
 from main_computer.hub_credit_models import normalize_address
 from main_computer.multisession_key_signing import recover_personal_sign_address
 
-SWEEP_SCHEMA = 'main-computer.pinky-reserve-sweep.v1'
+SWEEP_SCHEMA = 'main-computer.pinky-reserve-sweep.v2'
 _ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
 _POSITIVE = re.compile(r'^[1-9][0-9]{0,76}$')
 
 
 def canonical_sweep_intent(intent):
-    keys = {'schema','org_id','sweep_id','cluster_id','chain_id',
+    keys = {'schema','sweep_id','cluster_id','chain_id',
             'wallet_address','reserve_wallet_address','credit_wei'}
     if not isinstance(intent,dict) or set(intent)!=keys:
         raise ValueError('invalid_pinky_sweep_intent')
-    for field in ('org_id','sweep_id','cluster_id','chain_id'):
+    for field in ('sweep_id','cluster_id','chain_id'):
         if not isinstance(intent[field],str) or not _ID.fullmatch(intent[field]):
             raise ValueError('invalid_pinky_sweep_identity')
     if intent['schema'] != SWEEP_SCHEMA:

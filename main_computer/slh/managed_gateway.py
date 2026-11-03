@@ -489,8 +489,6 @@ class SLHManagedGateway:
             from main_computer.slh.seh_autoconnect import read_seh_settings, SEHAutoConnection
             settings=read_seh_settings(self.authority.directory)
             if self.allow_seh and settings is not None and settings.enabled:
-                if settings.organization_id != self.authority.org_id():
-                    raise RuntimeError('Configured SEH organization differs from initialized SLH')
                 self.seh_connection=SEHAutoConnection(
                     self.authority.directory, gateway_port=self.port,
                     identity_private_key=self._seh_lab_identity, lab_id=self._seh_lab_id).start()
