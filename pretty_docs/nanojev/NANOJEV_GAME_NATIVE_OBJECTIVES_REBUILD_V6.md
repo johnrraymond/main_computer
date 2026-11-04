@@ -1,3 +1,5 @@
+> **Gamer v1 training cutover (2026-11-03, revised):** Historical technical reference only. Governing Gamer v1 plan: [training cutover](GAMER_V1_TRAINING_CUTOVER.md), [stage contracts](GAMER_V1_STAGE_CONTRACTS.md), [*08 prompt-to-math curriculum](GAMER_V1_PROMPT_TO_MATH_CURRICULUM.md), and [release gates](GAMER_V1_RELEASE_GATES.md). **Stage 1 now trains human-readable *08 game prompts into canonical uncomputed mathematical prompts (NOT direct numerical answers); Stage 2 Wide computes numerical results later. Gamer v1 remains NOT RELEASED.**
+
 # NanoJev game-native mathematical ladders and full source rebuild (v6)
 
 ## Scope and corrected semantics

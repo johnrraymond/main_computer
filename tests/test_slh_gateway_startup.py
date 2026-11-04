@@ -109,3 +109,120 @@ def test_launcher_still_supervises_slh_without_rebinding_local_boot_task():
     assert '"tools.slh_managed_gateway"' in stop_ps
     assert 'New-ScheduledTaskTrigger -AtStartup' in boot
     assert 'main_computer.slh.local_service' in (root / 'scripts/slh-local-service-boot.ps1').read_text()
+
+
+def test_start_only_refreshes_windows_slh_boot_owner_for_plain_start():
+    """--no-dev-hub must not restart the boot task or launch the SLH child."""
+    script = (Path(__file__).resolve().parents[1] / 'scripts/main-computer-start-stop.ps1').read_text(encoding='utf-8-sig')
+    start = script[script.index('function Start-MainComputer('):script.index('function Start-MainComputerDevHubOnly')]
+    assert 'if (-not $NoDevHubRequested) {\n    # Check ownership BEFORE' in start
+    assert 'Get-MainComputerSLHBootTask $RootPath' in start
+    assert start.index('Get-MainComputerSLHBootTask $RootPath') < start.index('Stop-MainComputer $RootPath $true')
+    assert 'if (-not $NoDevHubRequested) {\n    $slhBootRestart = Restart-MainComputerSLHBootTask' in start
+    assert start.index('Stop-MainComputer $RootPath $true') < start.index('Restart-MainComputerSLHBootTask $RootPath $slhBootTask')
+    assert start.index('Restart-MainComputerSLHBootTask $RootPath $slhBootTask') < start.index('Start-Process `')
+    assert 'SLH startup skipped by --no-dev-hub' in start
+    assert 'Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_SUPERVISE_SLH" $(if ($NoDevHubRequested) { "0" } else { "1" })' in start
+    assert start.index('MAIN_COMPUTER_SUPERVISE_SLH') < start.index('Set-MainComputerLaunchEnvironment $launchContext')
+    assert 'run start.bat --no-dev-hub in an elevated terminal' not in script
+    # start.bat forwards the flag through the existing batch launcher, while
+    # plain start.bat omits the flag and chooses normal SLH startup.
+    starter = (Path(__file__).resolve().parents[1] / 'start_v2.bat').read_text(encoding='utf-8')
+    assert 'if /I "%~1"=="--no-dev-hub" goto mc_disable_dev_hub' in starter
+    assert 'set "MC_NO_DEV_HUB=0"' in starter
+    assert '-Action start -Root "%MC_ROOT%" -StartedBy "start_v2.bat" -NoDevHub' in starter
+
+
+def test_boot_task_restart_verifies_exact_checkout_and_only_owns_local_api():
+    script = (Path(__file__).resolve().parents[1] / 'scripts/main-computer-start-stop.ps1').read_text(encoding='utf-8-sig')
+    identity = script[script.index('function Get-MainComputerSLHBootTask('):script.index('function Get-MainComputerSLHListenerPid')]
+    restart = script[script.index('function Restart-MainComputerSLHBootTask('):script.index('function Start-MainComputer(')]
+    assert '"MainComputer-SLH-Local"' in identity
+    assert 'scripts\\slh-local-service-boot.ps1' in identity
+    assert '-Root\\s+' in identity and '-File\\s+' in identity and '-Python\\s+' in identity
+    assert 'OrdinalIgnoreCase' in identity and 'different installation' in identity
+    assert 'Stop-ScheduledTask' not in identity
+    assert 'Get-NetstatListenRows -Ports @(8897)' in script
+    assert 'supervisor-will-own-listener' in restart
+    assert 'Refusing to attach stale or foreign code' in restart
+    assert restart.index('Stop-ScheduledTask') < restart.index('Start-ScheduledTask')
+    assert 'if (-not $released)' in restart
+    assert 'main-computer.slh-local-status.v1' in restart
+    assert 'boot-task-restarted' in restart
+    assert 'throw "SLH boot task did not start a fresh' in restart
+    # Normal application startup has no role in the public Coolify deployment.
+    assert 'coolify' not in restart.lower()
+
+
+def test_windows_boot_task_restart_isolated_mock(tmp_path):
+    """On Windows, execute the handoff logic with mocked Task Scheduler and port calls."""
+    import os
+    import shutil
+    import subprocess
+    import pytest
+
+    powershell = shutil.which('powershell.exe') if os.name == 'nt' else None
+    if not powershell:
+        pytest.skip('Windows PowerShell is required for the isolated Task Scheduler mock')
+    script = (Path(__file__).resolve().parents[1] / 'scripts/main-computer-start-stop.ps1').read_text(encoding='utf-8-sig')
+    get_task = script[script.index('function Get-MainComputerSLHBootTask('):script.index('function Get-MainComputerSLHListenerPid')]
+    restart = script[script.index('function Restart-MainComputerSLHBootTask('):script.index('function Start-MainComputer(')]
+    # The restart function uses the genuine helper, with all external calls mocked.
+    get_listener = script[script.index('function Get-MainComputerSLHListenerPid'):script.index('function Restart-MainComputerSLHBootTask(')]
+    root = str(tmp_path)
+    (tmp_path / 'python.exe').write_bytes(b'placeholder executable - never launched')
+
+    def quote(s):
+        return "'" + s.replace("'", "''") + "'"
+
+    body = f'''
+$ErrorActionPreference = 'Stop'
+$script:listenerPid = 101
+$script:stops = 0
+$script:starts = 0
+$script:taskArgs = {quote('-NoProfile -NonInteractive -File "' + str(tmp_path / 'scripts' / 'slh-local-service-boot.ps1') + '" -Root "' + root + '" -Python "' + str(tmp_path / 'python.exe') + '"')}
+function Get-ScheduledTask {{
+  param($TaskName, $ErrorAction)
+  return [pscustomobject]@{{ State = 'Running'; Actions = @([pscustomobject]@{{ Execute = 'powershell.exe'; Arguments = $script:taskArgs }}) }}
+}}
+function Get-NetstatListenRows {{
+  param([int[]]$Ports)
+  if ($script:listenerPid -ne 0) {{ return [pscustomobject]@{{ OwningProcess = $script:listenerPid; LocalPort = 8897 }} }}
+}}
+function Stop-ScheduledTask {{
+  param($TaskName, $ErrorAction)
+  $script:stops += 1
+  $script:listenerPid = 0
+}}
+function Start-ScheduledTask {{
+  param($TaskName, $ErrorAction)
+  $script:starts += 1
+  $script:listenerPid = 202
+}}
+function Invoke-RestMethod {{
+  param($Method, $Uri, $TimeoutSec, $ErrorAction)
+  return [pscustomobject]@{{ schema='main-computer.slh-local-status.v1'; local_service=[pscustomobject]@{{ binding='loopback' }} }}
+}}
+{get_task}
+{get_listener}
+{restart}
+$task = Get-MainComputerSLHBootTask {quote(root)}
+$result = Restart-MainComputerSLHBootTask {quote(root)} $task
+if ($result.state -ne 'boot-task-restarted' -or $result.old_pid -ne 101 -or $result.new_pid -ne 202) {{ throw 'Wrong restart receipt' }}
+if ($script:stops -ne 1 -or $script:starts -ne 1) {{ throw 'Wrong task action count' }}
+# Wrong installation MUST refuse before calling Stop-ScheduledTask.
+try {{
+  [void](Get-MainComputerSLHBootTask {quote(str(tmp_path / 'different'))})
+  throw 'Different installation was accepted'
+}} catch {{
+  if ($_.Exception.Message -notlike '*different installation*') {{ throw }}
+}}
+if ($script:stops -ne 1) {{ throw 'An unowned task was stopped' }}
+Write-Output 'MOCKED_SLH_RESTART_PASS'
+'''
+    result = subprocess.run(
+        [powershell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', body],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + '\n' + result.stderr
+    assert 'MOCKED_SLH_RESTART_PASS' in result.stdout

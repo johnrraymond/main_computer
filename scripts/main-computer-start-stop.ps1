@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
   [ValidateSet("start", "stop", "status", "dev-hub-start")]
@@ -2910,13 +2910,142 @@ function Invoke-MainComputerOnlyOfficeControl {
   }
 }
 
+# The optional Windows boot task owns the same 127.0.0.1:8897 SLH API as
+# the supervisor child. A child started with --attach-existing only follows it;
+# restarting the supervisor alone does not reload a boot-task-owned API.
+function Get-MainComputerSLHBootTask([string]$RootPath) {
+  if ($env:OS -ne "Windows_NT") {
+    return $null
+  }
+  $taskName = "MainComputer-SLH-Local"
+  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+  if ($null -eq $task) {
+    return $null
+  }
+
+  $actions = @($task.Actions)
+  if ($actions.Count -ne 1) {
+    throw "SLH boot task has an unexpected action count. Refusing to restart an unverified task."
+  }
+  $action = $actions[0]
+  $executable = [System.IO.Path]::GetFileName([string]$action.Execute)
+  if ($executable -notin @("powershell.exe", "pwsh.exe")) {
+    throw "SLH boot task uses an unexpected executable; refusing to alter it."
+  }
+  $arguments = [string]$action.Arguments
+  $rootMatch = [regex]::Match($arguments, '(?i)(?:^|\s)-Root\s+"([^"]+)"(?:\s|$)')
+  $scriptMatch = [regex]::Match($arguments, '(?i)(?:^|\s)-File\s+"([^"]+)"(?:\s|$)')
+  $pythonMatch = [regex]::Match($arguments, '(?i)(?:^|\s)-Python\s+"([^"]+)"(?:\s|$)')
+  if (-not $rootMatch.Success -or -not $scriptMatch.Success -or -not $pythonMatch.Success) {
+    throw "SLH boot task arguments do not match the registered SLH boot launcher; refusing to alter it."
+  }
+  $expectedScript = Join-Path $RootPath "scripts\slh-local-service-boot.ps1"
+  $taskRoot = [System.IO.Path]::GetFullPath($rootMatch.Groups[1].Value).TrimEnd([char[]]@('\', '/'))
+  $taskScript = [System.IO.Path]::GetFullPath($scriptMatch.Groups[1].Value).TrimEnd([char[]]@('\', '/'))
+  $expectedRoot = [System.IO.Path]::GetFullPath($RootPath).TrimEnd([char[]]@('\', '/'))
+  $expectedScript = [System.IO.Path]::GetFullPath($expectedScript).TrimEnd([char[]]@('\', '/'))
+  if (-not [string]::Equals($taskRoot, $expectedRoot, [StringComparison]::OrdinalIgnoreCase) -or
+      -not [string]::Equals($taskScript, $expectedScript, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "SLH boot task belongs to a different installation; refusing to stop or adopt its listener."
+  }
+  if (-not (Test-Path -LiteralPath $pythonMatch.Groups[1].Value -PathType Leaf)) {
+    throw "SLH boot task Python executable is missing; update its registration before starting."
+  }
+  return $task
+}
+
+function Get-MainComputerSLHListenerPid {
+  $rows = @(Get-NetstatListenRows -Ports @(8897))
+  $ids = @($rows | ForEach-Object { [int]$_.OwningProcess } | Select-Object -Unique)
+  if ($ids.Count -gt 1) {
+    throw "Multiple processes listen on SLH port 8897; refusing automatic SLH takeover."
+  }
+  if ($ids.Count -eq 1) {
+    return [int]$ids[0]
+  }
+  return 0
+}
+
+function Restart-MainComputerSLHBootTask([string]$RootPath, [object]$VerifiedTask) {
+  $taskName = "MainComputer-SLH-Local"
+  $oldPid = Get-MainComputerSLHListenerPid
+  if ($null -eq $VerifiedTask) {
+    if ($oldPid -gt 0) {
+      throw "SLH port 8897 is occupied (PID $oldPid) without a verified local boot task. Refusing to attach stale or foreign code."
+    }
+    return [ordered]@{ state = "supervisor-will-own-listener"; port = 8897 }
+  }
+
+  # Stop the separately owned boot instance *after* the main supervisor's
+  # children have stopped, and before the new supervisor can attach to it.
+  if ([string]$VerifiedTask.State -eq "Running" -or $oldPid -gt 0) {
+    try {
+      Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    } catch {
+      throw "Cannot stop the installed SLH boot task. Restart requires Task Scheduler permission (run start.bat in an elevated terminal if necessary). Original error: $($_.Exception.Message)"
+    }
+  }
+  $released = $false
+  for ($attempt = 0; $attempt -lt 80; $attempt++) {
+    if ((Get-MainComputerSLHListenerPid) -eq 0) {
+      $released = $true
+      break
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  if (-not $released) {
+    throw "SLH boot-task restart refused: old listener on 8897 did not release its port."
+  }
+
+  try {
+    Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+  } catch {
+    throw "Cannot restart the installed SLH boot task. The old listener was stopped; Task Scheduler permission may be required. Original error: $($_.Exception.Message)"
+  }
+  for ($attempt = 0; $attempt -lt 120; $attempt++) {
+    $newPid = Get-MainComputerSLHListenerPid
+    if ($newPid -gt 0 -and ($oldPid -eq 0 -or $newPid -ne $oldPid)) {
+      try {
+        $status = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8897/v1/local/status" -TimeoutSec 2 -ErrorAction Stop
+        if ($status.schema -eq "main-computer.slh-local-status.v1" -and
+            $status.local_service.binding -eq "loopback") {
+          return [ordered]@{ state = "boot-task-restarted"; port = 8897; old_pid = $oldPid; new_pid = $newPid }
+        }
+      } catch {
+        # The new process may not yet have finished loading its API.
+      }
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  throw "SLH boot task did not start a fresh, verified localhost API on port 8897."
+}
+
 function Start-MainComputer([string]$RootPath, [string]$StartedByName, [bool]$NoDevHubRequested, [bool]$NanoJevManagedRequested, [int]$NanoJevIdleSecondsRequested) {
   $callerContainerRuntimeOverride = Get-MainComputerCallerContainerRuntimeOverride
 
+  # --no-dev-hub also opts out of this launcher's SLH startup. Do not even
+  # inspect/restart the separate Windows boot task in that mode. A service
+  # already owned by Windows stays untouched; the supervisor must not launch
+  # another SLH child to replace it.
+  $slhBootTask = $null
+  if (-not $NoDevHubRequested) {
+    # Check ownership BEFORE stopping Main Computer processes. Never take over
+    # a Windows task registered by a different checkout.
+    $slhBootTask = Get-MainComputerSLHBootTask $RootPath
+  }
   Write-Host "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone..."
   Stop-MainComputer $RootPath $true | Out-Null
+  if (-not $NoDevHubRequested) {
+    $slhBootRestart = Restart-MainComputerSLHBootTask $RootPath $slhBootTask
+    Write-Host ("SLH local listener: " + [string]$slhBootRestart.state)
+  } else {
+    Write-Host "SLH startup skipped by --no-dev-hub; separately owned SLH services are untouched."
+  }
 
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
+  # The supervisor normally launches an SLH child even without a Windows boot
+  # task. Explicitly suppress that child for --no-dev-hub as well.
+  Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_SUPERVISE_SLH" $(if ($NoDevHubRequested) { "0" } else { "1" })
   if ($NanoJevManagedRequested) {
     $idleSeconds = [Math]::Max(0, $NanoJevIdleSecondsRequested)
     Set-MainComputerLaunchEnvironmentValue $launchContext "MAIN_COMPUTER_NANOJEV_MANAGED" "1"

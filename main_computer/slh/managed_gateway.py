@@ -296,6 +296,7 @@ class SLHManagedGateway:
         self.on_worker_registered=None
         self.on_worker_disconnected=None
         self.seh_connection=None
+        self._seh_start_lock=threading.RLock()
         self.allow_seh=allow_seh
         # Lab-only key injection avoids persisting the real organization's key
         # in disposable lab state; normal gateways load their own state key.
@@ -489,14 +490,46 @@ class SLHManagedGateway:
             from main_computer.slh.seh_autoconnect import read_seh_settings, SEHAutoConnection
             settings=read_seh_settings(self.authority.directory)
             if self.allow_seh and settings is not None and settings.enabled:
+                # Explicit local lab configuration remains authoritative.
                 self.seh_connection=SEHAutoConnection(
                     self.authority.directory, gateway_port=self.port,
                     identity_private_key=self._seh_lab_identity, lab_id=self._seh_lab_id).start()
+            elif (self.allow_seh and settings is None and
+                  (self.authority.directory / 'seh-service-signing-key.pem').is_file()):
+                # An enabled resident service automatically resolves the ONE
+                # registered Mother deployment. No connector command, SEH
+                # selector, copied identity, or local configuration write.
+                from main_computer.slh.seh_canonical_connection import resolve_canonical_connection
+                self.seh_connection=SEHAutoConnection(
+                    self.authority.directory, gateway_port=self.port,
+                    settings_resolver=resolve_canonical_connection).start()
             try:
                 server.serve_forever()
             finally:
                 if self.seh_connection is not None:
                     self.seh_connection.stop()
+
+    def start_canonical_seh(self):
+        """Enable the sole canonical outbound tunnel on the running gateway.
+
+        Called only by the authenticated organization-service control endpoint.
+        No standalone connector, local Worker listener restart, or SLH key write.
+        """
+        with self._seh_start_lock:
+            if self._server is None or not self.allow_seh:
+                raise RuntimeError('Resident managed-worker gateway is not ready for SEH')
+            if self.seh_connection is not None:
+                return self.seh_connection
+            from main_computer.slh.seh_autoconnect import read_seh_settings, SEHAutoConnection
+            if read_seh_settings(self.authority.directory) is not None:
+                raise RuntimeError('Legacy SEH connection configuration is not canonical')
+            from main_computer.slh.seh_canonical_connection import resolve_canonical_connection
+            # Validate Mother and remote trust before starting retry supervision.
+            resolve_canonical_connection(self.authority.directory)
+            self.seh_connection = SEHAutoConnection(
+                self.authority.directory, gateway_port=self.port,
+                settings_resolver=resolve_canonical_connection).start()
+            return self.seh_connection
 
     def start_background(self):
         thread=threading.Thread(target=self.serve,daemon=True,name='slh-managed-gateway')

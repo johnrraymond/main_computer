@@ -14,8 +14,8 @@ from main_computer.mcel_phase2c_candidate_host import ROOT, CandidateHostError
 APPS = {
     "file-manager": ("semantic-file-manager", {"load-roots", "choose-root", "browse", "enter-directory", "search", "choose-entry", "preview-entry", "open-with"},
                      {"filesystem-read", "application-navigation"}),
-    "task-manager": ("semantic-task-manager", {"refresh", "choose-process", "switch-view", "refresh-all", "refresh-connections", "refresh-hardware", "list-schedules", "task-ai", "terminate-process", "kill-process", "start-server", "restart-server", "shutdown-server", "create-schedule", "delete-schedule", "run-schedule"}, {"monitor", "task-control", "task-scheduling"}),
-    "code-editor": ("semantic-code-editor", {"list-files", "select-file", "open-source", "browse-directory", "save-source", "prepare-reviewed-change", "apply-reviewed-change", "preview-aider-plan", "aider-context", "aider-jobs", "run-aider", "archive-aider-context", "reset-aider-context", "load-aider-archive"}, {"source-reader", "source-writer", "reviewer", "review-applier", "aider-preview", "aider-context", "aider-control"}),
+    "task-manager": ("semantic-task-manager", {"refresh", "choose-process", "choose-all-process", "choose-schedule", "server-status", "switch-view", "refresh-all", "refresh-connections", "refresh-hardware", "list-schedules", "task-ai", "terminate-process", "kill-process", "start-server", "restart-server", "shutdown-server", "create-schedule", "delete-schedule", "run-schedule"}, {"monitor", "task-control", "task-scheduling"}),
+    "code-editor": ("semantic-code-editor", {"list-files", "select-file", "open-source", "browse-directory", "save-source", "prepare-reviewed-change", "apply-reviewed-change", "preview-aider-plan", "aider-context", "aider-jobs", "run-aider", "archive-aider-context", "reset-aider-context", "load-aider-archive", "list-component-docs", "choose-component-doc", "read-component-doc", "read-component-doc-viewport-config", "run-component-doc-script", "inspect-scm-component-contract", "inspect-scm-route-contract", "check-studio-draft", "preview-studio-serialization", "studio-runtime-mount", "studio-runtime-validate", "studio-runtime-serialize", "studio-runtime-repair", "studio-runtime-stage", "studio-runtime-commit", "studio-runtime-route-enter", "studio-runtime-route-leave", "studio-runtime-evidence", "studio-runtime-replay"}, {"source-reader", "source-writer", "reviewer", "review-applier", "aider-preview", "aider-context", "aider-control", "component-docs", "sandboxed-viewport", "scm-definition", "studio-source-tools", "scm-runtime"}),
 }
 ROUTE_PREFIX = "/applications/mcel-semantic-"
 SOURCE_ROOT = Path("tools/fixtures/mcel_semantic_other_apps")
@@ -87,7 +87,8 @@ def render_semantic_page(name: str, repo: Path = ROOT) -> str:
     if "</style" in style.lower():
         raise CandidateHostError("Unsafe style asset")
     title = {"file-manager":"File Manager", "task-manager":"Task Manager", "code-editor":"Code Editor"}[name]
-    scripts = "\n".join(script(x) for x in (*DIAGNOSTIC_ASSETS, *ASSETS))
+    assets = (*DIAGNOSTIC_ASSETS, *ASSETS, *(("main_computer/web/applications/scripts/mcel-scm.js", "main_computer/web/applications/scripts/code-editor-scm-manifest.js", "main_computer/web/applications/scripts/mcel-sandboxed-viewport.js") if name == "code-editor" else ()))
+    scripts = "\n".join(script(x) for x in assets)
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MCEL Semantic {title}</title><style>{style}</style></head><body class="mcel-workbench-page">
 <header><h1>Semantic {title}</h1><p>Semantic candidate · Original application unchanged</p></header>

@@ -34,6 +34,8 @@ ENDPOINTS = (
     Endpoint('POST','/v1/local/organization/enable','local_org_enable','admin'),
     Endpoint('POST','/v1/local/organization/disable','local_org_disable','admin'),
     Endpoint('POST','/v1/local/organization/restart','local_org_restart','admin'),
+    Endpoint('POST','/v1/local/seh/activate','local_seh_activate','admin'),
+    Endpoint('GET','/v1/local/seh/status','local_seh_status','admin'),
     Endpoint('GET','/v1/local/authenticator/status','local_authenticator_status','local_identity'),
     Endpoint('GET','/v1/local/authenticator/identities','local_authenticator_list','local_identity'),
     Endpoint('POST','/v1/local/authenticator/identities','local_authenticator_create','local_identity'),
@@ -192,6 +194,18 @@ class SLHAPI:
             return exc.status,{'error':{'code':exc.code}}
         except (ValueError,TypeError,KeyError):
             return 400,{'error':{'code':'INVALID_REQUEST'}}
+        except Exception as exc:
+            if method=='POST' and path=='/v1/local/seh/activate':
+                # The deleted-application path can make remote changes before
+                # an unexpected exception. Do not emit WSGI's non-JSON 500 page
+                # or claim REFUSED/no mutation. Expose only a safe class name:
+                # exception text may include a Coolify bearer credential.
+                return 500,{'status':'INCOMPLETE',
+                            'failed_stage':'resident_activation_unhandled',
+                            'error_type':type(exc).__name__,
+                            'remote_mutation':'UNKNOWN',
+                            'outbound_tunnel_authenticated':False}
+            raise
 
     def _invoke(self,op,b,p,ident,token,loopback):
         a=self.authority
@@ -214,7 +228,7 @@ class SLHAPI:
         if op=='bootstrap_activate_p256':
             return a.activate_bootstrap_without_totp(p['id'], secret=b.get('bootstrap_secret') or token,
                                                     explicit_defer=b.get('defer_totp') is True)
-        if op.startswith('local_org_') or op=='local_services':
+        if op.startswith('local_org_') or op.startswith('local_seh_') or op=='local_services':
             if self.organization_controller is None:
                 raise SLHError('ORGANIZATION_CONTROLLER_UNAVAILABLE', 503)
             c=self.organization_controller
@@ -224,6 +238,10 @@ class SLHAPI:
             if op=='local_org_enable':return c.enable()
             if op=='local_org_disable':return c.disable()
             if op=='local_org_restart':return c.restart()
+            if op=='local_seh_activate':return c.activate_seh(
+                execute=b.get('execute') is True,
+                expected_generation=b.get('approve_generation'), token=token)
+            if op=='local_seh_status':return c.seh_status()
         if op=='bootstrap_admin':return a.bootstrap(b,loopback=loopback)
         if op=='capabilities':return {'schema':'main-computer.slh-capabilities.v1','operations':[
             {'method':e.method,'path':e.path,'status':e.state,'access':e.access} for e in ENDPOINTS]}
@@ -326,7 +344,7 @@ class SLHAPI:
                 token=auth[7:] if auth.startswith('Bearer ') else ''
                 status,result=self.call(method,environ.get('PATH_INFO',''),body,token=token,loopback=True)
         raw=json.dumps(result,sort_keys=True).encode('utf-8')
-        reasons={200:'OK',201:'Created',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',409:'Conflict',413:'Content Too Large',415:'Unsupported Media Type',501:'Not Implemented',503:'Service Unavailable'}
+        reasons={200:'OK',201:'Created',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',409:'Conflict',413:'Content Too Large',415:'Unsupported Media Type',500:'Internal Server Error',501:'Not Implemented',503:'Service Unavailable'}
         start_response(f'{status} {reasons.get(status,"Error")}',
                        [('Content-Type','application/json; charset=utf-8'),('Content-Length',str(len(raw))),
                         ('Cache-Control','no-store'),('X-Content-Type-Options','nosniff')])

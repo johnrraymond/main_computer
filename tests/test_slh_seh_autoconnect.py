@@ -42,14 +42,22 @@ class TestSLHSEHAutoConnection(unittest.TestCase):
                 self.assertTrue(wait(lambda: supervisor.failures >= 1),
                                 'offline SEH should produce a bounded retry')
                 self.assertFalse(supervisor.connected)
+                diag=supervisor.connection_diagnostics()
+                self.assertGreaterEqual(diag['attempts'], 1)
+                self.assertGreaterEqual(diag['failures'], 1)
+                self.assertIsInstance(diag['last_error_class'], str)
+                self.assertIn(diag['phase'], {'RETRYING_AFTER_FAILURE', 'CONNECTING_OUTBOUND_WSS', 'RESOLVING_CONFIGURATION'})
                 relay=SEHRelay(slh_id='lab-slh',
                                slh_public_key=public,host='127.0.0.1',port=port).start()
                 self.assertTrue(wait(lambda: supervisor.connected and relay.tunnel_ready),
                                 'supervisor must authenticate after SEH appears')
+                self.assertEqual(supervisor.connection_diagnostics()['phase'], 'AUTHENTICATED')
+                self.assertIsNone(supervisor.connection_diagnostics()['last_error_class'])
             finally:
                 supervisor.stop()
                 if relay is not None:relay.stop()
             self.assertFalse(supervisor.connected)
+            self.assertEqual(supervisor.connection_diagnostics()['phase'], 'STOPPED')
 
     def test_no_config_and_disabled_config_do_not_autostart(self):
         from main_computer.slh.authenticator import generate_identity

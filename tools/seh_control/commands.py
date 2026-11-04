@@ -8,6 +8,7 @@ from typing import Any
 from main_computer.slh import SLHControlBackend
 from main_computer.slh.coolify import CoolifyHTTP, SEHDeploymentError
 from . import identity as st
+from . import deployment_state as ds
 
 
 class SEHControl:
@@ -18,6 +19,8 @@ class SEHControl:
         _, binding, doc = st.read(self.root, network)
         canonical = st.public_deployment(doc, network)
         if canonical is not None:
+            identity_record = st.deployment_record(doc, network)
+            canonical['deployment'] = ds.selected(self.root, network, identity_record)['deployment']
             return {'status': 'READ_ONLY', 'network': network,
                     'generation': binding.binding.generation, 'deployment': canonical}
         records = st.network_doc(doc,network).get('sehs') or {}
@@ -25,7 +28,9 @@ class SEHControl:
             raise st.SEHIdentityError('Malformed legacy SEH registry')
         return {'status': 'READ_ONLY', 'network': network,
                 'generation': binding.binding.generation,
-                'sehs': [st.public_inspect(doc, network, name) for name in sorted(records)]}
+                'sehs': [{**st.public_inspect(doc, network, name),
+                          'deployment': ds.selected(self.root, network, records[name])['deployment']}
+                         for name in sorted(records)]}
 
     def migrate_single(self, network: str, expected_generation: int, operation_id: str) -> dict:
         if type(expected_generation) is not int:

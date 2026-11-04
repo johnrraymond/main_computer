@@ -84,6 +84,62 @@ def test_supervisor_starts_app_executor_applications_and_blockchain_with_python_
     assert load_service_supervisor_state(repo)["ok"] is True
 
 
+def test_no_dev_hub_policy_never_launches_slh_child(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAIN_COMPUTER_SUPERVISE_SLH", "0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    starts: list[list[str]] = []
+
+    def factory(command: list[str], cwd: Path, stdout: Path, stderr: Path) -> FakeProcess:
+        starts.append(command)
+        return FakeProcess([None])
+
+    supervisor = ServiceSupervisor(
+        root=repo,
+        python_command="python",
+        sleep_func=lambda _: None,
+        output_func=None,
+        process_factory=factory,
+    )
+    state = supervisor.supervise(max_loops=2)
+    assert state["ok"] is True
+    assert state["slh_supervised"] is False
+    assert "slh" not in state["children"]
+    assert not any("main_computer.slh.gateway_service" in command for command in starts)
+    assert state["children"]["app"]["state"] == "running"
+    assert state["children"]["executor"]["state"] == "running"
+    refusal = supervisor._restart_child("slh", source="test")
+    assert refusal["state"] == "disabled-by-startup-policy"
+    assert "slh" not in state["children"]
+    restarted = supervisor._restart_all_children(source="test")
+    assert restarted["ok"] is True
+    assert "slh" not in {item["child"] for item in restarted["results"]}
+    assert not any("main_computer.slh.gateway_service" in command for command in starts)
+
+
+def test_plain_start_policy_supervises_slh(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAIN_COMPUTER_SUPERVISE_SLH", "1")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    starts: list[list[str]] = []
+
+    def factory(command: list[str], cwd: Path, stdout: Path, stderr: Path) -> FakeProcess:
+        starts.append(command)
+        return FakeProcess([None])
+
+    supervisor = ServiceSupervisor(
+        root=repo,
+        python_command="python",
+        sleep_func=lambda _: None,
+        output_func=None,
+        process_factory=factory,
+    )
+    state = supervisor.supervise(max_loops=1)
+    assert state["slh_supervised"] is True
+    assert state["children"]["slh"]["state"] == "running"
+    assert any("main_computer.slh.gateway_service" in command for command in starts)
+
+
 def test_supervisor_restarts_child_process_when_it_exits(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

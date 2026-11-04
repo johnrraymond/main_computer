@@ -98,14 +98,17 @@ def _load_service_signer(state_dir: Path):
 class SEHAutoConnection:
     """Reopens an authenticated tunnel whenever its configured SEH is available."""
     def __init__(self, state_dir: Path, *, gateway_port: int,
-                 identity_private_key=None, lab_id: str | None = None):
+                 identity_private_key=None, lab_id: str | None = None,
+                 settings_resolver=None):
         self.state_dir = Path(state_dir)
-        self.settings = read_seh_settings(self.state_dir)
-        if self.settings is None or not self.settings.enabled:
+        self.settings = read_seh_settings(self.state_dir) if settings_resolver is None else None
+        self._settings_resolver = settings_resolver
+        if settings_resolver is None and (self.settings is None or not self.settings.enabled):
             raise ValueError('SLH SEH autoconnection requires an enabled configuration')
         if lab_id is not None and not LAB_ID.fullmatch(lab_id):
             raise ValueError('Invalid isolated lab ID')
-        if identity_private_key is not None and not self.settings.allow_loopback_lab:
+        if identity_private_key is not None and (
+                self.settings is None or not self.settings.allow_loopback_lab):
             raise ValueError('Injected identity is allowed only in a loopback lab')
         self.signer = identity_private_key or _load_service_signer(self.state_dir)
         self.lab_id = lab_id
@@ -117,6 +120,10 @@ class SEHAutoConnection:
         self.connections = 0
         self.failures = 0
         self.last_error = None
+        # Diagnostic state only. Never record credentials, URLs or exception messages.
+        self._connection_attempts = 0
+        self._phase = 'NOT_STARTED'
+        self._last_http_status = None
         self._retired_stream_events = deque(maxlen=4096)
         self._tunnel_lifecycle = deque(maxlen=256)
 
@@ -141,6 +148,16 @@ class SEHAutoConnection:
                 'connections': attempts, 'failures': failures,
                 'last_error_class': last_error}
 
+    def connection_diagnostics(self) -> dict:
+        """Nonsecret snapshot of resident outbound-supervisor progress."""
+        with self._lock:
+            connected = self._current is not None and self._current._running.is_set()
+            return {'phase': self._phase, 'connected': connected,
+                    'attempts': self._connection_attempts,
+                    'connections': self.connections, 'failures': self.failures,
+                    'last_error_class': self.last_error,
+                    'last_http_status': self._last_http_status}
+
     @property
     def connected(self) -> bool:
         with self._lock:
@@ -148,7 +165,7 @@ class SEHAutoConnection:
 
     def drop_for_test(self) -> None:
         """For disposable lab instances only; never expose as an admin operation."""
-        if not self.settings.allow_loopback_lab:
+        if self.settings is None or not self.settings.allow_loopback_lab:
             raise ValueError('Cannot interrupt production SEH connection for a test')
         with self._lock:
             current = self._current
@@ -158,15 +175,26 @@ class SEHAutoConnection:
     def start(self):
         if self._thread is not None:
             raise RuntimeError('SEH connection supervisor already started')
+        with self._lock:
+            self._phase = 'STARTING'
         self._thread = threading.Thread(target=self._run, name='slh-seh-autoconnect', daemon=True)
         self._thread.start()
         return self
 
     def _run(self):
-        s = self.settings
         while not self._stop.is_set():
+            s = self.settings
             conn = None
             try:
+                with self._lock:
+                    self._phase = 'RESOLVING_CONFIGURATION'
+                if self._settings_resolver is not None:
+                    s = self._settings_resolver(self.state_dir)
+                    if not isinstance(s, SEHConnectionSettings) or not s.enabled:
+                        raise ValueError('Canonical SEH is not enabled')
+                with self._lock:
+                    self._phase = 'CONNECTING_OUTBOUND_WSS'
+                    self._connection_attempts += 1
                 conn = SLHSEHConnector(
                     seh_url=s.seh_url,
                     slh_id=s.slh_id, identity_private_key=self.signer,
@@ -176,6 +204,8 @@ class SEHAutoConnection:
                     self._current = conn
                     self.connections += 1
                     self.last_error = None
+                    self._last_http_status = None
+                    self._phase = 'AUTHENTICATED'
                     self._tunnel_lifecycle.append({'event': 'seh_tunnel_connected',
                                                    'unix_ns': time.time_ns(),
                                                    'monotonic_ns': time.monotonic_ns()})
@@ -185,6 +215,11 @@ class SEHAutoConnection:
                 with self._lock:
                     self.failures += 1
                     self.last_error = type(exc).__name__
+                    self._phase = 'RETRYING_AFTER_FAILURE'
+                    response = getattr(exc, 'response', None)
+                    status = getattr(response, 'status_code', None)
+                    self._last_http_status = (status if type(status) is int and 100 <= status <= 599
+                                              else None)
                     self._tunnel_lifecycle.append({'event': 'seh_tunnel_connect_failed',
                                                    'exception_class': type(exc).__name__,
                                                    'unix_ns': time.time_ns(),
@@ -199,13 +234,17 @@ class SEHAutoConnection:
                         retired = list(conn._stream_events)
                     with self._lock:
                         self._retired_stream_events.extend(retired)
+                        if not self._stop.is_set():
+                            self._phase = 'RETRYING_AFTER_DISCONNECT'
+                        if conn.last_error:
+                            self.last_error = conn.last_error
                         self._tunnel_lifecycle.append({
                             'event': 'seh_tunnel_disconnected',
                             'error_class': conn.last_error,
                             'unix_ns': time.time_ns(),
                             'monotonic_ns': time.monotonic_ns()})
                     conn.stop()
-            self._stop.wait(s.retry_seconds)
+            self._stop.wait(s.retry_seconds if s is not None else 2.0)
 
     def stop(self):
         self._stop.set()
@@ -215,3 +254,5 @@ class SEHAutoConnection:
             conn.stop()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=12)
+        with self._lock:
+            self._phase = 'STOPPED'

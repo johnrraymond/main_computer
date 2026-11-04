@@ -1,6 +1,7 @@
 """Opt-in expanded Calculator: real deterministic core and optional governed APIs."""
 from __future__ import annotations
 import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -115,7 +116,7 @@ def test_optional_services_use_real_endpoints_and_result_question_context(browse
         p.locator('[data-state="state:qa-result"]').get_by_text('The result follows the arithmetic expression.').wait_for()
         calls=p.evaluate('window.__requests')
         assert [x['path'] for x in calls]==['/api/applications/calculator/mathics/evaluate','/api/chat','/api/applications/calculator/qa']
-        assert calls[-1]['payload']['context']==''
+        assert json.loads(calls[-1]['payload']['context']) == {'symbolic_result': '4'}
     finally:p.close()
 
 def test_unavailable_optional_endpoint_fails_not_fake_result(browser):

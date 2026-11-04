@@ -9,13 +9,12 @@ Examples:
     python seh_mutate_harness.py list --network mainnet
     python seh_mutate_harness.py inspect
     python seh_mutate_harness.py diagnostic
-    python seh_mutate_harness.py deploy-seh --network mainnet --seh company-primary \
-        --host coolify-c --execute-mutations --yes-i-know-this-mutates-seh
+    python seh_mutate_harness.py activate-seh --execute-mutations --yes-i-know-this-mutates-seh
 
-    This retained command provisions SEH infrastructure ONLY. It is not the
-    SLH-owned provisioning lifecycle: it neither configures the resident SLH
-    connection supervisor nor verifies an authenticated tunnel. New relays
-    remain unbound. Do not treat a queued deployment as operational readiness.
+    The canonical activation command is SLH-owned. It enables the existing
+    deployment and the resident SLH outbound supervisor, and verifies the
+    authenticated tunnel. Legacy name-based deployment commands remain for
+    historical compatibility only; they do not complete activation.
 
     New SEHs use https://external.greatlibrary.io by default. An already
     registered SEH retains its verified public origin and Coolify identity.
@@ -44,8 +43,11 @@ class HarnessError(ValueError):
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic'))
-    p.add_argument('--approve-generation', type=int, help='Exact Mother generation for local migration')
+    p.add_argument('operation', choices=('list', 'inspect', 'migrate-state', 'reconcile-metadata', 'deploy-seh', 'bind-slh', 'diagnostic', 'activate-seh', 'recover-runtime'))
+    p.add_argument('--approve-generation', type=int, help='Exact Mother generation, optional for activation')
+    p.add_argument('--admin-device', help='Existing local administrator device (required if more than one local identity)')
+    p.add_argument('--local-port', type=int, default=8897, help='Resident SLH loopback port')
+    p.add_argument('--activation-timeout', type=float, default=45.0, help='Maximum seconds to verify resident connectivity')
     p.add_argument('--network', choices=('mainnet', 'testnet', 'test', 'dev'), default='mainnet')
     p.add_argument('--seh', help='Legacy SEH selection (mutation operations only; never inspect/diagnostic)')
     p.add_argument('--host', help='Verified Coolify controller; optional for an existing active SEH identity')
@@ -115,12 +117,201 @@ def _record_step(events: list[dict], stage: str, status: str, detail: dict | Non
 
 
 
+def _activate_via_resident_slh(args: argparse.Namespace) -> dict:
+    """One signed-admin invocation; only the resident SLH mutates its service.
+
+    Authenticates to the resident SLH and never handles its signing key,
+    Mother writes, Coolify mutations, or a standalone connector directly.
+    """
+    from http.client import HTTPConnection
+    import time
+    from main_computer.slh.authenticator_store import LocalIdentityStore, IdentityStoreError
+    from main_computer.slh.ports import DEFAULT_SLH_API_HOST
+
+    if any((args.seh, args.host, args.slh_id, args.public_url,
+            args.slh_state_dir, args.replace_existing_trust)):
+        raise HarnessError('SEH activation uses the sole canonical SLH deployment; no target or key options')
+    if args.network != 'mainnet':
+        raise HarnessError('Resident SEH activation currently supports the verified mainnet deployment only')
+    if args.execute_mutations != args.yes_i_know_this_mutates_seh:
+        raise HarnessError('Both mutation approvals are required together')
+    if not 1 <= args.local_port <= 65535 or not 0 < args.activation_timeout <= 180:
+        raise HarnessError('Invalid local port or activation timeout')
+
+    store = LocalIdentityStore()
+    device = args.admin_device
+    if not device:
+        entries = store.list()
+        usable = entries['identities']
+        if len(usable) != 1 or entries['invalid_identities']:
+            raise HarnessError('Administrator device selection is ambiguous; pass --admin-device for an existing key')
+        device = usable[0]['device_id']
+    # This request uses the pinned loopback address, no proxy or redirects.
+    # API tokens only exist in memory for this command and are logged out.
+    def request(method, path, body=None, token=None):
+        payload = None if body is None else json.dumps(body).encode('utf-8')
+        headers = {'Content-Type': 'application/json', 'Host': '127.0.0.1'}
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
+        connection = HTTPConnection(DEFAULT_SLH_API_HOST, args.local_port, timeout=40)
+        try:
+            connection.request(method, path, body=payload, headers=headers)
+            response = connection.getresponse()
+            # Read the complete response up to an explicit limit. The former
+            # read(16384) silently truncated longer JSON receipts and made a
+            # valid response indistinguishable from a server-side exception.
+            raw = response.read(65537)
+            content_type = (response.getheader('Content-Type', '')
+                            if hasattr(response, 'getheader') else '')
+            if 300 <= response.status < 400:
+                raise HarnessError('SLH local service redirected the request; refusing')
+            is_mutating_activation = (method == 'POST' and path == '/v1/local/seh/activate'
+                                      and isinstance(body, dict) and body.get('execute') is True)
+            if len(raw) > 65536:
+                if is_mutating_activation:
+                    return {'status': 'INCOMPLETE', 'failed_stage': 'resident_response_oversized',
+                            'resident_http_status': response.status, 'remote_mutation': 'UNKNOWN'}
+                raise HarnessError('SLH local service response exceeds 65536 bytes'
+                                   f' (HTTP {response.status})')
+            try:
+                result = json.loads(raw)
+            except (UnicodeDecodeError, ValueError):
+                if is_mutating_activation:
+                    return {'status': 'INCOMPLETE', 'failed_stage': 'resident_non_json_response',
+                            'resident_http_status': response.status,
+                            'resident_response_kind': ('HTML' if 'html' in content_type.lower()
+                                                       else 'NON_JSON'),
+                            'remote_mutation': 'UNKNOWN'}
+                raise HarnessError('SLH local service returned non-JSON response'
+                                   f' (HTTP {response.status})') from None
+            if not isinstance(result, dict):
+                if is_mutating_activation:
+                    return {'status': 'INCOMPLETE', 'failed_stage': 'resident_invalid_response',
+                            'resident_http_status': response.status,
+                            'remote_mutation': 'UNKNOWN'}
+                raise HarnessError('SLH local service returned an invalid response')
+            if response.status >= 400:
+                # A failed mutating request may already have created a Coolify
+                # application. Preserve the server's structured uncertainty;
+                # never turn it into a preflight refusal inviting blind retry.
+                if (is_mutating_activation and result.get('status') == 'INCOMPLETE'
+                        and isinstance(result.get('failed_stage'), str)):
+                    return {**result, 'resident_http_status': response.status}
+                error = result.get('error') or {}
+                code = error.get('code') if isinstance(error, dict) else None
+                raise HarnessError('Resident SLH refused activation: ' +
+                                   (code if isinstance(code, str) else f'HTTP_{response.status}'))
+            return result
+        except OSError as exc:
+            raise HarnessError('Resident SLH localhost service is unavailable: ' + type(exc).__name__) from None
+        finally:
+            connection.close()
+
+    token = None
+    try:
+        challenge = request('POST', '/v1/auth/challenge', {'device_id': device})
+        signed = store.sign(device, challenge)
+        session = request('POST', '/v1/auth/verify', {
+            'device_id': device, 'challenge_id': challenge['challenge_id'],
+            'signature': signed['signature']})
+        token = session.get('access_token')
+        if not isinstance(token, str) or not token:
+            raise HarnessError('SLH admin session could not be established')
+        result = request('POST', '/v1/local/seh/activate', {
+            'execute': bool(args.execute_mutations),
+            'approve_generation': args.approve_generation}, token=token)
+        if result.get('status') != 'ACTIVATION_STARTED':
+            return result
+        deadline = time.monotonic() + args.activation_timeout
+        runtime_checked = result.get('remote_recovery') == 'REPLACEMENT_QUEUED_NOT_VERIFIED'
+        runtime_recovery_evidence = None
+        while True:
+            try:
+                observed = request('GET', '/v1/local/seh/status', token=token)
+            except HarnessError:
+                # Mother may already be committed. A lost local readback is
+                # incomplete activation, never a clean preflight refusal.
+                return {**result, 'status': 'INCOMPLETE',
+                        'failed_stage': 'resident_status_unavailable',
+                        'outbound_tunnel_authenticated': False}
+            if (observed.get('status') == 'CONNECTED_VERIFIED' and
+                    observed.get('outbound_tunnel_authenticated') is True and
+                    observed.get('private_requests_available') is True and
+                    observed.get('pinky_sweeper_available') is True):
+                return {**result, 'status': 'CONNECTED_VERIFIED',
+                        'outbound_tunnel_authenticated': True,
+                        'private_requests_available': True,
+                        'pinky_sweeper_available': True}
+            # The signed administrator has already authorized activation.
+            # Check missing remote runtime once; when Docker was deliberately
+            # removed, recover the same verified Coolify UUID, never create an
+            # SEH or change its signing-key trust. A queued rebuild is NOT a
+            # verified resident connection.
+            if not runtime_checked and args.execute_mutations:
+                runtime_checked = True
+                from tools.seh_control.git_deployment import recover_canonical_runtime
+                try:
+                    runtime_recovery_evidence = recover_canonical_runtime(
+                        args.runtime_state_root, args.network, execute=True)
+                except (SEHGitError, OSError, ValueError) as exc:
+                    # The resident supervisor may still connect independently;
+                    # do not replace its real WSS outcome with a guess from the
+                    # Coolify management plane.
+                    runtime_recovery_evidence = {
+                        'status': 'PREFLIGHT_UNVERIFIED',
+                        'error_class': type(exc).__name__}
+                if runtime_recovery_evidence.get('status') in (
+                        'REPLACEMENT_QUEUED_NOT_VERIFIED', 'DEPLOYMENT_IN_PROGRESS',
+                        'INCOMPLETE'):
+                    return {**result, 'status': 'INCOMPLETE',
+                            'failed_stage': 'coolify_runtime_recovery',
+                            'remote_recovery': runtime_recovery_evidence.get('status'),
+                            'runtime_observation': runtime_recovery_evidence.get('runtime_observation'),
+                            'remote_mutation': runtime_recovery_evidence.get('remote_mutation', False),
+                            'outbound_tunnel_authenticated': False}
+            if time.monotonic() >= deadline:
+                return {**result, 'status': 'INCOMPLETE',
+                        'failed_stage': 'resident_outbound_wss_verification',
+                        'outbound_tunnel_authenticated': False,
+                        'resident_status': observed.get('status', 'UNAVAILABLE'),
+                        'resident_activation_error': observed.get('resident_activation_error'),
+                        'resident_child_observed': observed.get('resident_child_observed'),
+                        'resident_outbound_phase': observed.get('resident_outbound_phase'),
+                        'resident_outbound_attempts': observed.get('resident_outbound_attempts'),
+                        'resident_outbound_connections': observed.get('resident_outbound_connections'),
+                        'resident_outbound_failures': observed.get('resident_outbound_failures'),
+                        'resident_outbound_last_error_class': observed.get('resident_outbound_last_error_class'),
+                        'resident_outbound_last_http_status': observed.get('resident_outbound_last_http_status'),
+                        'runtime_recovery_status': (runtime_recovery_evidence or {}).get('status'),
+                        'runtime_recovery_error_class': (runtime_recovery_evidence or {}).get('error_class')}
+            time.sleep(0.3)
+    finally:
+        if token:
+            try:
+                request('POST', '/v1/auth/logout', {}, token=token)
+            except HarnessError:
+                pass
+
+
 def run(args: argparse.Namespace, *, control: SEHControl | None = None,
         slh_public_key_provider=None) -> dict:
+    if args.operation == 'activate-seh':
+        return _activate_via_resident_slh(args)
     control = control or SEHControl(args.runtime_state_root)
     network = args.network
     if args.operation == 'list':
         return control.list(network)
+    if args.operation == 'recover-runtime':
+        # A missing Docker container is NOT an unregistered SEH. Recover only
+        # the already-registered Coolify application, never a name or alias.
+        if any((args.seh, args.host, args.slh_id, args.public_url,
+                args.replace_existing_trust, args.slh_state_dir)):
+            raise HarnessError('Runtime recovery accepts no SEH name, controller or identity override')
+        if args.execute_mutations != args.yes_i_know_this_mutates_seh:
+            raise HarnessError('Both mutation approvals are required together')
+        from tools.seh_control.git_deployment import recover_canonical_runtime
+        return recover_canonical_runtime(control.root, network,
+                execute=bool(args.execute_mutations and args.yes_i_know_this_mutates_seh))
     if args.operation == 'reconcile-metadata':
         # Patch 3 is a UUID-bound metadata reconciliation, not an SEH deploy.
         if any((args.seh, args.host, args.slh_id, args.public_url,
@@ -160,9 +351,34 @@ def run(args: argparse.Namespace, *, control: SEHControl | None = None,
                     'reason': 'No SEH deployment is registered for this SLH',
                     'mutation_performed': False}
         if 'seh' not in existing:
-            return {'status': 'REFUSED', 'operation': 'diagnostic', 'network': network,
-                    'reason': 'Canonical deployment requires the updated Coolify trust diagnostic (Patch 3)',
-                    'mutation_performed': False}
+            # Canonical SLH-owned connection diagnostic: no name, key creation,
+            # state writes or Coolify mutation. A successful resolution proves
+            # target/trust inputs, NOT that the resident WSS tunnel is online.
+            from main_computer.slh.storage import slh_state_dir
+            from main_computer.slh.seh_canonical_connection import (
+                resolve_canonical_connection, SEHConnectionResolutionError)
+            try:
+                resolved = resolve_canonical_connection(
+                    args.slh_state_dir or slh_state_dir(),
+                    mother_root=control.root, network=network,
+                    require_enabled=False)
+            except (SEHConnectionResolutionError, SEHGitError, SEHIdentityError,
+                    OSError, ValueError) as exc:
+                return {'status': 'REFUSED', 'operation': 'diagnostic',
+                        'network': network, 'remote_mutation': False,
+                        'mutation_performed': False,
+                        'error_type': type(exc).__name__,
+                        'reason': str(exc) if isinstance(exc, (
+                            SEHConnectionResolutionError, SEHGitError, SEHIdentityError))
+                        else type(exc).__name__}
+            return {'status': 'READ_ONLY', 'operation': 'diagnostic',
+                    'network': network, 'remote_mutation': False,
+                    'mutation_performed': False,
+                    'application_uuid': existing['deployment']['application_uuid'],
+                    'deployment_enabled': existing['deployment'].get('enabled') is True,
+                    'seh_url': resolved.seh_url,
+                    'signing_key_trust': 'MATCHED',
+                    'resident_tunnel': 'NOT_OBSERVED_BY_THIS_DIAGNOSTIC'}
         seh = ident(existing['seh'], 'legacy SEH registry key')
     else:
         if not args.seh:
@@ -408,6 +624,27 @@ def _print_next_operator_command(args: argparse.Namespace, result: dict) -> None
         for issue in result['issues']:
             print('  ' + issue, file=sys.stderr)
         return
+    if args.operation == 'activate-seh':
+        reason = result.get('git_source_reason')
+        if isinstance(reason, str) and reason.strip():
+            print('\nSEH Git source preflight: ' + reason.strip(), file=sys.stderr)
+        git_command = result.get('git_repair_command')
+        if isinstance(git_command, str) and git_command.strip():
+            print('\nVerified Git publication command (PowerShell; copy and paste):',
+                  file=sys.stderr)
+            print(git_command.strip(), file=sys.stderr, flush=True)
+        return
+    if args.operation == 'recover-runtime':
+        if result.get('status') == 'PLAN_ONLY':
+            print('\nRuntime unavailable. To request a replacement of the existing UUID:',
+                  file=sys.stderr)
+            print(r'python .\seh_mutate_harness.py recover-runtime '
+                  '--execute-mutations --yes-i-know-this-mutates-seh',
+                  file=sys.stderr, flush=True)
+        elif result.get('status') == 'REPLACEMENT_QUEUED_NOT_VERIFIED':
+            print('Coolify replacement queued. The SLH reconnects outbound automatically; '
+                  'queued is not connected.', file=sys.stderr, flush=True)
+        return
     if args.operation not in ('deploy-seh', 'bind-slh'):
         return
     git_command = result.get('git_repair_command')
@@ -449,7 +686,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     # Nonzero until the requested live operation is fully verified. Scripts
     # must not equate an accepted Coolify deploy with an authenticated tunnel.
-    if status in ('DEPLOY_QUEUED_NOT_VERIFIED', 'TRUST_DEPLOY_QUEUED_NOT_VERIFIED'):
+    if status in ('DEPLOY_QUEUED_NOT_VERIFIED', 'TRUST_DEPLOY_QUEUED_NOT_VERIFIED',
+                  'REPLACEMENT_QUEUED_NOT_VERIFIED', 'DEPLOYMENT_IN_PROGRESS'):
         return 3
     return 0
 

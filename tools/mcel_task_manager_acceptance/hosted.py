@@ -336,305 +336,524 @@ def _pointer_click_with_evidence(page, locator, *, label: str, output: Path):
         return diagnostic
 
 
-def _observe_inspection(legacy, generated, host, rows, output):
-    '''Exercise real collection actions; a mere process table is not inspection parity.'''
-    generated.bring_to_front()
-    generated.locator('[data-mcel-mode-tabs] [data-value="server-processes"]').click(timeout=6500)
-    legacy.bring_to_front()
-    legacy.locator('[data-task-tab="server-processes"]').click(timeout=6500)
-    common = generated.locator('[data-record-key]')
-    old_rows = legacy.locator('#task-process-table tbody tr')
-    if not common.count() or not old_rows.count():
-        _parity_result(rows, 'inspection', 'BLOCKED',
-                       reason='Neither interface exposed comparable live process rows')
-        return
-    first = common.first
-    key = first.get_attribute('data-record-key')
-    button = first.locator('button[data-select-key]')
+def _stable_process_identity(before, after, *, producer_rows=None):
+    """Pin a PID plus *creation timestamp*, never just an unstable row index.
+
+    Producer correlation is mandatory for a newly queried all-process list.
+    No candidate substitution is allowed after selecting a key.
+    """
+    seen=set(after)
+    valid=[]
+    for key in before:
+        if not isinstance(key,str) or key not in seen:
+            continue
+        raw_pid,sep,created_at=key.partition(':')
+        if not sep or not raw_pid.isdecimal() or not created_at or created_at=='unknown':
+            continue
+        pid=int(raw_pid)
+        if producer_rows is not None and not any(
+            isinstance(item,dict) and item.get('pid')==pid and
+            str(item.get('created_at') or '')==created_at for item in producer_rows
+        ):
+            continue
+        valid.append(key)
+    return valid[0] if valid else None
+
+
+def _visible_process_keys(page):
+    return page.locator('[data-record-key]:visible').evaluate_all(
+        '(nodes) => nodes.map(node => node.getAttribute("data-record-key"))')
+
+
+def _pin_visible_process(page, *, producer_rows=None):
+    """Two genuine DOM observations; do not click a different process on retry."""
+    before=_visible_process_keys(page)
+    page.wait_for_timeout(180)
+    after=_visible_process_keys(page)
+    return _stable_process_identity(before,after,producer_rows=producer_rows)
+
+
+def _inspection_selection(page, key, *, label, output):
+    """Use a key-specific locator, preserving failure if the process disappeared."""
+    row=page.locator('[data-record-key='+json.dumps(key)+']:visible').first
+    button=row.locator('button[data-select-key='+json.dumps(key)+']')
     if not button.count():
-        _parity_result(rows, 'inspection', 'FAIL', reason='Generated server process is not selectable')
-        return
-    diagnostic=_pointer_click_with_evidence(generated,button,
-        label='generated-server-process-select',output=output)
+        return {'step':label,'errorType':'MissingSelectionButton','processKey':key}
+    diagnostic=_pointer_click_with_evidence(page,button,label=label,output=output)
     if diagnostic:
-        _parity_result(rows,'inspection','BLOCKED',
-            reason='Pointer selection blocked for generated server process',
-            evidence=[diagnostic['screenshot']] if diagnostic.get('screenshot') else [],
-            observations={'pointer':diagnostic,'serverKey':key})
-        return
-    generated.locator('[data-mcel-selected-details="'+key+'"]:visible').wait_for(timeout=5000)
-    details = generated.locator('[data-mcel-selected-details="'+key+'"]')
-    first.locator('details summary').click()
-    if not first.locator('details').get_attribute('open') == '':
-        _parity_result(rows, 'inspection', 'FAIL', reason='Inline process details did not open')
-        return
-    # The all-process collection is a separate intent/source and must actually be
-    # selectable. Do not infer PASS from the server-process selection.
-    generated.locator('[data-mcel-mode-tabs] [data-value="all-processes"]').click()
-    legacy.locator('[data-task-tab="all-processes"]').click()
-    all_form=generated.locator('form[data-intent="intent:refresh-all"]')
-    all_form.locator('[name="query"]').fill('python')
-    all_form.locator('[name="limit"]').fill('24')
-    with generated.expect_response(
-        lambda r:_overview_response(r,host,query='python',limit=24,include_all=True),
-        timeout=15000) as all_response:
-        all_form.locator('button[type="submit"]').click()
-    if all_response.value.status!=200:
-        _parity_result(rows,'inspection','FAIL',reason='All-process refresh returned non-200')
-        return
-    all_rows = generated.locator('[data-record-key]')
-    legacy_all = legacy.locator('#task-all-process-table tbody tr')
-    if not all_rows.count() or not legacy_all.count():
-        _parity_result(rows, 'inspection', 'BLOCKED',
-                       reason='No authentic all-process rows exposed in both interfaces')
-        return
-    all_button = all_rows.first.locator('button[data-select-key]')
-    if not all_button.count():
-        _parity_result(rows, 'inspection', 'FAIL',
-                       reason='Generated all-process collection lacks an operator selection action',
-                       observations={'serverSelectionKey': key,
-                                     'generatedAllRows': all_rows.count(),
-                                     'legacyAllRows': legacy_all.count()})
-        return
-    selected_key = all_rows.first.get_attribute('data-record-key')
-    diagnostic=_pointer_click_with_evidence(generated,all_button,
-        label='generated-all-process-select',output=output)
-    if diagnostic:
-        _parity_result(rows,'inspection','BLOCKED',
-            reason='Pointer selection blocked for generated all-process collection',
-            evidence=[diagnostic['screenshot']] if diagnostic.get('screenshot') else [],
-            observations={'pointer':diagnostic,'allKey':selected_key})
-        return
-    if not generated.locator('[data-mcel-selected-details="'+selected_key+'"]:visible').count():
-        _parity_result(rows, 'inspection', 'FAIL',
-                       reason='All-process selection does not resolve to identity details')
-        return
-    _parity_result(rows, 'inspection', 'PASS',
-                   evidence=['Server process and all-process collection selected through real UI',
-                             'Selected identity has matching visible detail panel'],
-                   observations={'serverKey':key, 'allKey':selected_key})
+        diagnostic['processKey']=key
+    return diagnostic
+
+
+def _observe_inspection(legacy, generated, host, rows, output):
+    """Real, generation-pinned pointer selection with both monitoring timers paused."""
+    legacy_auto=legacy.locator('#task-auto-refresh')
+    generated_auto=generated.locator('[data-mcel-refresh-toggle]')
+    legacy_original=legacy_auto.is_checked()
+    generated_original=generated_auto.get_attribute('aria-pressed')=='true'
+    observations={'refreshPaused':False}
+    try:
+        # Pausing the timers is part of the operator-visible UI contract, not
+        # a DOM mutation or an application-level shortcut.
+        legacy.bring_to_front()
+        if legacy_original:legacy_auto.uncheck()
+        generated.bring_to_front()
+        if generated_original:generated_auto.click(timeout=6500)
+        if legacy_auto.is_checked() or generated_auto.get_attribute('aria-pressed')!='false':
+            _parity_result(rows,'inspection','BLOCKED',reason='Could not pause automatic monitoring for identity inspection')
+            return
+        observations['refreshPaused']=True
+        generated.locator('[data-mcel-mode-tabs] [data-value="server-processes"]').click(timeout=6500)
+        legacy.locator('[data-task-tab="server-processes"]').click(timeout=6500)
+        # A fresh workflow page does not inherit the overview queries made by
+        # other scenarios. Acquire its own authentic server-process evidence.
+        server_form=generated.locator('form[data-intent="intent:refresh"]')
+        server_form.locator('[name="query"]').fill('')
+        server_form.locator('[name="limit"]').fill('100')
+        with generated.expect_response(
+            lambda r:_overview_response(r,host,query='',limit=100,include_all=False),
+            timeout=15000) as server_pending:
+            server_form.locator('button[type="submit"]').click(timeout=6500)
+        if server_pending.value.status!=200:
+            _parity_result(rows,'inspection','FAIL',reason='Server-process refresh returned non-200',observations=observations)
+            return
+        legacy.locator('#task-query').fill('')
+        legacy.locator('#task-limit').fill('100')
+        with legacy.expect_response(
+            lambda r:_overview_response(r,host,query='',limit=100,include_all=False),
+            timeout=15000) as legacy_pending:
+            legacy.locator('#task-refresh').click(timeout=6500)
+        if legacy_pending.value.status!=200:
+            _parity_result(rows,'inspection','FAIL',reason='Legacy server-process refresh returned non-200',observations=observations)
+            return
+        generated.locator('[data-record-key]:visible').first.wait_for(state='visible',timeout=6500)
+        if not legacy.locator('#task-process-table tbody tr').count():
+            _parity_result(rows,'inspection','BLOCKED',reason='Legacy server process list unavailable',observations=observations)
+            return
+        key=_pin_visible_process(generated)
+        if key is None:
+            _parity_result(rows,'inspection','BLOCKED',reason='Stable PID-and-creation-time server row unavailable',observations=observations)
+            return
+        observations['serverKey']=key
+        diagnostic=_inspection_selection(generated,key,label='generated-server-process-select',output=output)
+        if diagnostic:
+            _parity_result(rows,'inspection','BLOCKED',reason='Pointer selection blocked for pinned server process',
+                evidence=[diagnostic['screenshot']] if diagnostic.get('screenshot') else [],
+                observations={**observations,'pointer':diagnostic})
+            return
+        details=generated.locator('[data-mcel-selected-details='+json.dumps(key)+']:visible').first
+        details.wait_for(state='visible',timeout=5000)
+        server_row=generated.locator('[data-record-key='+json.dumps(key)+']:visible').first
+        server_row.locator('details summary').click(timeout=6500)
+        if server_row.locator('details').get_attribute('open')!='':
+            _parity_result(rows,'inspection','FAIL',reason='Inline server process details did not open',observations=observations)
+            return
+        generated.locator('[data-mcel-mode-tabs] [data-value="all-processes"]').click(timeout=6500)
+        legacy.locator('[data-task-tab="all-processes"]').click(timeout=6500)
+        all_form=generated.locator('form[data-intent="intent:refresh-all"]')
+        all_form.locator('[name="query"]').fill('python')
+        all_form.locator('[name="limit"]').fill('24')
+        with generated.expect_response(
+            lambda r:_overview_response(r,host,query='python',limit=24,include_all=True),
+            timeout=15000) as pending:
+            all_form.locator('button[type="submit"]').click(timeout=6500)
+        source=pending.value
+        if source.status!=200:
+            _parity_result(rows,'inspection','FAIL',reason='All-process refresh returned non-200',observations=observations)
+            return
+        payload=source.json()
+        producer_rows=payload.get('processes') if isinstance(payload,dict) else None
+        if not isinstance(producer_rows,list):
+            _parity_result(rows,'inspection','BLOCKED',reason='All-process producer identity unavailable',observations=observations)
+            return
+        if not legacy.locator('#task-all-process-table tbody tr').count():
+            _parity_result(rows,'inspection','BLOCKED',reason='Legacy all-process rows unavailable',observations=observations)
+            return
+        all_key=_pin_visible_process(generated,producer_rows=producer_rows)
+        if all_key is None:
+            _parity_result(rows,'inspection','BLOCKED',reason='Stable, producer-verified all-process identity unavailable',observations=observations)
+            return
+        observations['allKey']=all_key
+        diagnostic=_inspection_selection(generated,all_key,label='generated-all-process-select',output=output)
+        if diagnostic:
+            _parity_result(rows,'inspection','BLOCKED',reason='Pointer selection blocked for pinned all-process identity',
+                evidence=[diagnostic['screenshot']] if diagnostic.get('screenshot') else [],
+                observations={**observations,'pointer':diagnostic})
+            return
+        selected=generated.locator('[data-mcel-selected-details='+json.dumps(all_key)+']:visible').first
+        selected.wait_for(state='visible',timeout=5000)
+        # The visible detail must describe the same PID and birth timestamp
+        # whose producer row authenticated the selected collection record.
+        pid,birth=all_key.split(':',1)
+        visible_details=selected.inner_text(timeout=5000)
+        if pid not in visible_details or birth not in visible_details:
+            _parity_result(rows,'inspection','FAIL',reason='Selected details do not reflect pinned PID and creation time',observations=observations)
+            return
+        _parity_result(rows,'inspection','PASS',
+            evidence=['Real pointer selections on stable PID-and-creation-time records',
+                      'All-process row independently correlated with live overview response'],
+            observations=observations)
+    finally:
+        # Leave the UI as it was. Fresh pages are also closed by the caller.
+        try:
+            if legacy_original and not legacy_auto.is_checked():legacy_auto.check(timeout=6500)
+            if generated_original and generated_auto.get_attribute('aria-pressed')=='false':
+                generated_auto.click(timeout=6500)
+        except Exception:
+            # Do not conceal the original result; independent pages are closed.
+            pass
+
+
+def _legacy_refresh_probe(page, action):
+    """Observe the legacy refresh gate without issuing any application request.
+
+    The temporary wrapper forwards original arguments, receiver, and returned
+    Promise unchanged; its purpose is to observe coalesced invocations that
+    cannot produce a second HTTP request. It is removed in `restore`.
+    """
+    if action not in ('install','paused','resumed','transition','snapshot','restore'):
+        raise ValueError('invalid-refresh-probe-action')
+    return page.evaluate("""() => {
+        const action = ACTION_TOKEN;
+        const key = '__mcelParityRefreshObservation';
+        let probe = window[key];
+        if(action === 'install' && !probe) {
+            const original = window.refreshTaskManager;
+            probe = {phase:'transition',calls:{paused:0,resumed:0,transition:0},
+                     supported:typeof original==='function',original};
+            if(probe.supported) {
+                const wrapped=function(...args) {
+                    if(probe.calls[probe.phase]!==undefined)probe.calls[probe.phase]++;
+                    return Reflect.apply(original,this,args);
+                };
+                window.refreshTaskManager=wrapped;
+                probe.wrapped=wrapped;
+            }
+            window[key]=probe;
+        }
+        if(!probe)return {supported:false,reason:'probe-not-installed'};
+        if(['paused','resumed','transition'].includes(action))probe.phase=action;
+        // Resolve global lexical `let` declarations in the page's main
+        // world. Indirect window.eval cannot reliably see these bindings.
+        const result={supported:probe.supported,phase:probe.phase,
+            calls:{...probe.calls},
+            timerArmed:typeof taskManagerAutoTimer!=='undefined' && !!taskManagerAutoTimer,
+            inFlight:typeof taskManagerRefreshPromise!=='undefined' && !!taskManagerRefreshPromise,
+            queued:typeof taskManagerRefreshQueued!=='undefined' && taskManagerRefreshQueued===true,
+            activeApp:typeof currentApp!=='undefined' ? currentApp : null,
+            autoChecked:document.querySelector('#task-auto-refresh')?.checked??null,
+            visibility:document.visibilityState};
+        if(action==='restore') {
+            if(probe.supported && window.refreshTaskManager===probe.wrapped)
+                window.refreshTaskManager=probe.original;
+            delete window[key];
+        }
+        return result;
+    }""".replace('ACTION_TOKEN',json.dumps(action)))
+
+
+def _legacy_refresh_classification(observations):
+    """Explain missing HTTP activity without equating invocation with delivery."""
+    if observations['resumedRequests']['legacy']:
+        return 'http-request-observed'
+    samples=observations.get('legacyTimer',{})
+    before=samples.get('beforeResumed') or {}
+    after=samples.get('afterResumed') or {}
+    if after.get('activeApp')!='task-manager':
+        return 'legacy-app-not-active'
+    if after.get('autoChecked') is False or after.get('timerArmed') is False:
+        return 'legacy-auto-timer-not-armed'
+    if after.get('supported') and after.get('calls',{}).get('resumed',0)>0:
+        if before.get('inFlight') or after.get('inFlight') or before.get('queued') or after.get('queued'):
+            return 'legacy-refresh-invoked-but-coalesced'
+        return 'legacy-refresh-invoked-without-correlated-http'
+    if before.get('inFlight') or after.get('inFlight') or before.get('queued') or after.get('queued'):
+        return 'legacy-refresh-pending-or-queued'
+    if after.get('supported'):
+        return 'legacy-refresh-function-not-invoked'
+    return 'legacy-timer-instrumentation-unavailable'
+
+
+def _legacy_refresh_manual_drain(page):
+    """Establish a quiet legacy request boundary before testing automatic pause.
+
+    The two manual clicks can overlap the legacy application's two-stage
+    overview fetch and leave a coalesced refresh queued. Count neither the
+    pending manual request nor its delayed replay as an automatic timer tick.
+    An undrained request is a BLOCKED precondition, never a refresh PASS.
+    """
+    page.bring_to_front()
+    idle = """() =>
+        (typeof taskManagerRefreshPromise === 'undefined' || !taskManagerRefreshPromise) &&
+        (typeof taskManagerRefreshQueued === 'undefined' || !taskManagerRefreshQueued)
+    """
+    try:
+        page.wait_for_function(idle, timeout=18000, polling=100)
+        # The legacy coalescer posts a zero-delay callback after clearing its
+        # Promise. Permit that callback to run before testing a second boundary.
+        page.wait_for_timeout(300)
+        page.wait_for_function(idle, timeout=7000, polling=100)
+        observation = page.evaluate("""() => ({
+            inFlight: typeof taskManagerRefreshPromise !== 'undefined' && !!taskManagerRefreshPromise,
+            queued: typeof taskManagerRefreshQueued !== 'undefined' && taskManagerRefreshQueued === true,
+            autoChecked: document.querySelector('#task-auto-refresh')?.checked ?? null
+        })""")
+        observation['settled'] = (observation.get('autoChecked') is False
+                                  and not observation.get('inFlight')
+                                  and not observation.get('queued'))
+        return observation
+    except Exception as exc:
+        return {'settled': False, 'errorType': type(exc).__name__,
+                'error': str(exc)[:500]}
 
 
 def _observe_refresh(legacy, generated, host, rows):
-    '''Observe two real manual refreshes, then auto-refresh pause and resume.'''
+    """Real manual and timer-driven HTTP, with independent pause and coalescing evidence."""
     q='python'
+    legacy.bring_to_front()
     legacy.locator('[data-task-tab="server-processes"]').click()
+    generated.bring_to_front()
     generated.locator('[data-mcel-mode-tabs] [data-value="server-processes"]').click()
     legacy.locator('#task-query').fill(q)
     legacy.locator('#task-limit').fill('24')
-    form = generated.locator('form[data-intent="intent:refresh"]')
+    form=generated.locator('form[data-intent="intent:refresh"]')
     form.locator('[name="query"]').fill(q)
     form.locator('[name="limit"]').fill('24')
     observations={}
+    # Disable the automatic timers BEFORE testing manual refresh. Otherwise
+    # manual clicks can coalesce with timer traffic and dispatch their queued
+    # replay during the subsequent pause window, producing a false failure.
+    generated_auto=generated.locator('[data-mcel-refresh-toggle]')
+    legacy.bring_to_front()
+    legacy.locator('#task-auto-refresh').uncheck()
+    generated.bring_to_front()
+    if generated_auto.get_attribute('aria-pressed')=='true': generated_auto.click()
+    if (legacy.locator('#task-auto-refresh').is_checked() or
+            generated_auto.get_attribute('aria-pressed')!='false'):
+        _parity_result(rows,'refresh','FAIL',
+            reason='Automatic refresh controls did not pause',observations=observations)
+        return
     for tag,page,control in (('legacy',legacy,legacy.locator('#task-refresh')),
                              ('generated',generated,form.locator('button[type="submit"]'))):
         count=0
         for _ in range(2):
-            with page.expect_response(lambda r: _overview_response(r,host,query=q,limit=24,
-                                            include_all=False),timeout=15000) as waiting:
+            with page.expect_response(lambda r:_overview_response(
+                    r,host,query=q,limit=24,include_all=False),timeout=15000) as pending:
                 control.click()
-            response=waiting.value
+            response=pending.value
             if response.status!=200:
                 _parity_result(rows,'refresh','FAIL',reason=tag+' refresh returned HTTP '+str(response.status))
                 return
             count+=1
         observations[tag+'ManualRequests']=count
-    # Observe *initiated* requests, not only responses. A request launched just
-    # before unchecking may finish after pause; that is not timer activity while
-    # paused. Register both event kinds before changing the controls so an
-    # unrelated response cannot be reclassified as a newly sent request.
-    initiated={'paused':{'legacy':0,'generated':0},
-               'resumed':{'legacy':0,'generated':0}}
-    completed={'paused':{'legacy':0,'generated':0},
-               'resumed':{'legacy':0,'generated':0}}
+    # The legacy refresh fetches two overviews, and a second manual click can
+    # queue a third refresh. A successful first HTTP response does not mean
+    # the request Promise or queued replay is complete. Test a clean window.
+    observations['manualDrain']=_legacy_refresh_manual_drain(legacy)
+    if not observations['manualDrain'].get('settled'):
+        _parity_result(rows,'refresh','BLOCKED',
+            reason='Legacy manual refresh still in flight or queued before pause window',
+            observations=observations)
+        return
+    initiated={'paused':{'legacy':0,'generated':0},'resumed':{'legacy':0,'generated':0}}
+    completed={'paused':{'legacy':0,'generated':0},'resumed':{'legacy':0,'generated':0}}
+    outstanding={tag:set() for tag in ('legacy','generated')}
     phase={'value':'transition'}
     def request_watcher(tag):
         def callback(request):
+            if not _overview_request(request,host,query=q,limit=24,include_all=False):return
+            outstanding[tag].add(id(request))
             state=phase['value']
-            if state in initiated and _overview_request(request,host,query=q,limit=24,include_all=False):
-                initiated[state][tag]+=1
+            if state in initiated:initiated[state][tag]+=1
         return callback
     def response_watcher(tag):
         def callback(response):
+            if not _overview_response(response,host,query=q,limit=24,include_all=False):return
+            outstanding[tag].discard(id(response.request))
             state=phase['value']
-            if state in completed and _overview_response(response,host,query=q,limit=24,include_all=False):
-                completed[state][tag]+=1
+            if state in completed:completed[state][tag]+=1
         return callback
     request_watchers={tag:request_watcher(tag) for tag in ('legacy','generated')}
     response_watchers={tag:response_watcher(tag) for tag in ('legacy','generated')}
     pages={'legacy':legacy,'generated':generated}
+    legacy_timer={}
     for tag,page in pages.items():
         page.on('request',request_watchers[tag])
         page.on('response',response_watchers[tag])
-    generated_auto=generated.locator('[data-mcel-refresh-toggle]')
     try:
-        legacy.locator('#task-auto-refresh').uncheck()
-        if generated_auto.get_attribute('aria-pressed')=='true':
-            generated_auto.click()
-        if legacy.locator('#task-auto-refresh').is_checked() or generated_auto.get_attribute('aria-pressed')!='false':
-            _parity_result(rows,'refresh','FAIL',reason='Automatic refresh pause control did not disable both timers',
-                           observations=observations)
-            return
-        # Start the full paused observation window immediately once both
-        # controls confirm pause. Prior in-flight responses remain diagnostic
-        # only; only *new* request events can fail this gate.
+        legacy_timer['installed']=_legacy_refresh_probe(legacy,'install')
+        # Both timers were paused before the manual tests, and the legacy
+        # manual queue was drained before installing request listeners.
+        # Start counting only after this verified quiescent boundary.
         phase['value']='paused'
+        legacy_timer['beforePaused']=_legacy_refresh_probe(legacy,'paused')
         legacy.bring_to_front()
         legacy.wait_for_timeout(5600)
         phase['value']='transition'
+        legacy_timer['afterPaused']=_legacy_refresh_probe(legacy,'transition')
         paused=dict(initiated['paused'])
+        legacy.bring_to_front()
         legacy.locator('#task-auto-refresh').check()
+        generated.bring_to_front()
         generated_auto.click()
         if not legacy.locator('#task-auto-refresh').is_checked() or generated_auto.get_attribute('aria-pressed')!='true':
-            _parity_result(rows,'refresh','FAIL',reason='Periodic refresh controls would not resume',
-                           observations=observations)
+            _parity_result(rows,'refresh','FAIL',reason='Periodic refresh controls would not resume',observations=observations)
             return
-        # Chromium may throttle five-second timers on background tabs. Each UI
-        # needs its own foreground window; a background-tab timeout is not a
-        # demonstrated application parity failure. Keep actual network events
-        # and do not synthesize refresh requests or manipulate application state.
         foreground={}
         phase['value']='resumed'
-        for tag, page in pages.items():
+        legacy_timer['beforeResumed']=_legacy_refresh_probe(legacy,'resumed')
+        for tag,page in pages.items():
             page.bring_to_front()
             foreground[tag]=page.evaluate("""() => ({
-                visibility: document.visibilityState,
-                activeApp: document.body.dataset.activeApp || null
+                visibility:document.visibilityState,
+                activeApp:document.body.dataset.activeApp || null
             })""")
-            if foreground[tag]['visibility'] != 'visible':
-                # If foreground is unavailable, retain BLOCKED evidence rather
-                # than counting an inactive-tab timer as broken.
-                continue
+            if foreground[tag]['visibility']!='visible':continue
             page.wait_for_timeout(6500)
+            if tag=='legacy':legacy_timer['afterResumed']=_legacy_refresh_probe(legacy,'snapshot')
+        # If the real legacy refresh was invoked but could not start a request
+        # because another one is active, allow one additional timer window.
+        # No tick or coalesced Promise is ever counted as a successful HTTP.
+        if initiated['resumed']['legacy']==0 and _legacy_refresh_classification({
+                'resumedRequests':initiated['resumed'],'legacyTimer':legacy_timer
+            }) in ('legacy-refresh-invoked-but-coalesced','legacy-refresh-pending-or-queued'):
+            legacy.bring_to_front()
+            legacy.wait_for_timeout(5600)
+            legacy_timer['afterExtendedWindow']=_legacy_refresh_probe(legacy,'snapshot')
         phase['value']='transition'
+        legacy_timer['afterResumed']=_legacy_refresh_probe(legacy,'transition')
         active=dict(initiated['resumed'])
         observations['foreground']=foreground
+        observations['outstandingCorrelatedRequests']={tag:len(outstanding[tag]) for tag in pages}
     finally:
         phase['value']='transition'
+        try:legacy_timer['restored']=_legacy_refresh_probe(legacy,'restore')
+        except Exception as exc:legacy_timer['restoreError']=type(exc).__name__
         for tag,page in pages.items():
             page.remove_listener('request',request_watchers[tag])
             page.remove_listener('response',response_watchers[tag])
     observations.update({'pausedRequests':paused,'resumedRequests':active,
                          'pausedCompletedResponses':dict(completed['paused']),
                          'resumedCompletedResponses':dict(completed['resumed']),
-                         'refreshPeriodSeconds':5,'counting':'correlated-http-request-initiation'})
+                         'refreshPeriodSeconds':5,'counting':'correlated-http-request-initiation',
+                         'legacyTimer':legacy_timer})
+    observations['legacyResumeClassification']=_legacy_refresh_classification(observations)
     if any(v>0 for v in paused.values()):
-        _parity_result(rows,'refresh','FAIL',reason='Automatic refresh request initiated while paused',
-                       observations=observations)
+        _parity_result(rows,'refresh','FAIL',reason='Automatic refresh request initiated while paused',observations=observations)
     elif all(v>0 for v in active.values()) and all(
             observations.get('foreground',{}).get(tag,{}).get('visibility')=='visible'
             for tag in ('legacy','generated')):
         _parity_result(rows,'refresh','PASS',
-                       evidence=['Two correlated manual requests per UI',
-                                 'No new matching requests initiated while paused',
-                                 'A new matching periodic request initiated per UI after resume'],
-                       observations=observations)
+            evidence=['Two correlated manual requests per UI',
+                      'No new matching requests initiated while paused',
+                      'A genuine periodic HTTP request initiated per UI after resume'],
+            observations=observations)
     else:
         _parity_result(rows,'refresh','BLOCKED',
-                       reason='Foreground timer request unobserved; inspect activeApp and visibility diagnostics',
-                       evidence=['Two correlated manual requests per UI'],observations=observations)
+            reason='Periodic HTTP unverified: '+observations['legacyResumeClassification'],
+            evidence=['Two correlated manual requests per UI'],observations=observations)
 
 
 def _observe_responsive(legacy, generated, rows, output):
-    """Independently exercise pointer navigation, focus and overflow at five widths.
+    """Evaluate generated usability independently; never conceal legacy defects.
 
-    A blocked legacy click must not suppress the generated UI's measurements.
-    Pointer obstruction never becomes a PASS and is never bypassed with a
-    forced click or programmatic tab activation.
+    A comparison may be incomplete even when the generated application meets
+    all five functional acceptance widths. The two statuses remain explicit.
     """
-    observations = []
+    observations=[]
     for width in WIDTHS:
-        one = {'width': width}
-        for tag, page, tab in (
-            ('legacy', legacy, '[data-task-tab="all-processes"]'),
-            ('generated', generated, '[data-mcel-mode-tabs] [data-value="all-processes"]'),
+        one={'width':width}
+        for tag,page,all_selector in (
+            ('legacy',legacy,'[data-task-tab="all-processes"]'),
+            ('generated',generated,'[data-mcel-mode-tabs] [data-value="all-processes"]'),
         ):
             page.bring_to_front()
-            page.set_viewport_size({'width': width, 'height': 800})
-            button = page.locator(tab)
+            page.set_viewport_size({'width':width,'height':800})
+            server_selector=('[data-task-tab="server-processes"]' if tag=='legacy'
+                             else '[data-mcel-mode-tabs] [data-value="server-processes"]')
+            step='server-processes'; selector=server_selector
+            target=page.locator(selector)
             try:
-                # The inspection scenario can leave all-processes selected.
-                # Make an actual round trip via the server-processes control.
-                server_tab = ('[data-task-tab="server-processes"]' if tag == 'legacy'
-                              else '[data-mcel-mode-tabs] [data-value="server-processes"]')
-                back = page.locator(server_tab)
-                back.scroll_into_view_if_needed(timeout=6000)
-                back.click(timeout=6000)
-                button.scroll_into_view_if_needed(timeout=6000)
-                button.click(timeout=6000)
-                button.focus()
-                focus = button.evaluate('(n)=>document.activeElement===n')
-                selected = button.get_attribute(
-                    'aria-selected' if tag == 'legacy' else 'aria-pressed') == 'true'
-                horizontal = page.evaluate(
-                    """() => Math.max(0, document.documentElement.scrollWidth-innerWidth)""")
-                one[tag] = {'focus': focus, 'selected': selected, 'overflowPx': horizontal,
-                            'tabVisible': button.is_visible(),
-                            'visibility': page.evaluate('() => document.visibilityState')}
-                page.screenshot(path=str(output / (tag + '-' + str(width) + '.png')),
-                                full_page=True, animations='disabled')
+                for step,selector in (('server-processes',server_selector),
+                                      ('all-processes',all_selector)):
+                    target=page.locator(selector)
+                    target.scroll_into_view_if_needed(timeout=6000)
+                    target.click(timeout=6000)
+                    attribute='aria-selected' if tag=='legacy' else 'aria-pressed'
+                    if target.get_attribute(attribute)!='true':
+                        raise RuntimeError('clicked-tab-not-selected:'+step)
+                target.focus()
+                focus=target.evaluate('(n)=>document.activeElement===n')
+                selected=target.get_attribute(attribute)=='true'
+                horizontal=page.evaluate(
+                    '() => Math.max(0,document.documentElement.scrollWidth-innerWidth)')
+                one[tag]={'focus':focus,'selected':selected,'overflowPx':horizontal,
+                          'tabVisible':target.is_visible(),
+                          'visibility':page.evaluate('() => document.visibilityState'),
+                          'completedSteps':['server-processes','all-processes']}
+                filename=tag+'-'+str(width)+'.png'
+                page.screenshot(path=str(output/filename),full_page=True,animations='disabled')
             except Exception as exc:
-                diagnostic = {'errorType': type(exc).__name__, 'error': str(exc)[:550]}
+                diagnostic={'errorType':type(exc).__name__,'error':str(exc)[:1100],
+                            'failedStep':step,'failedSelector':selector}
+                try:diagnostic['visibility']=page.evaluate('() => document.visibilityState')
+                except Exception as inner:diagnostic['visibilityError']=type(inner).__name__
                 try:
-                    diagnostic['visibility'] = page.evaluate('() => document.visibilityState')
-                except Exception as diag_exc:
-                    diagnostic['visibilityError'] = str(diag_exc)[:180]
-                try:
-                    diagnostic['tabBox'] = button.bounding_box(timeout=1500)
-                    diagnostic['tabVisible'] = button.is_visible(timeout=1500)
-                    diagnostic['tabSelected'] = button.get_attribute(
-                        'aria-selected' if tag == 'legacy' else 'aria-pressed', timeout=1500)
-                    diagnostic['hitTarget'] = button.evaluate("""n => {
-                        const r=n.getBoundingClientRect();
+                    diagnostic['tabBox']=target.bounding_box(timeout=1500)
+                    diagnostic['tabVisible']=target.is_visible(timeout=1500)
+                    diagnostic['tabSelected']=target.get_attribute(
+                        'aria-selected' if tag=='legacy' else 'aria-pressed',timeout=1500)
+                    diagnostic['hitTarget']=target.evaluate("""node => {
+                        const r=node.getBoundingClientRect();
                         const x=Math.max(0,Math.min(innerWidth-1,r.left+r.width/2));
                         const y=Math.max(0,Math.min(innerHeight-1,r.top+r.height/2));
                         const hit=document.elementFromPoint(x,y);
                         return {point:[x,y],element:hit?.tagName||null,
                             id:hit?.id||null,className:String(hit?.className||'').slice(0,160),
-                            targetContainsHit:n.contains(hit)};
+                            targetContainsHit:node.contains(hit)};
                     }""")
-                except Exception as diag_exc:
-                    diagnostic['diagnosticError'] = str(diag_exc)[:180]
+                except Exception as inner:diagnostic['diagnosticError']=str(inner)[:250]
                 try:
-                    page.screenshot(path=str(output / (tag + '-' + str(width) + '-blocked.png')),
-                                    animations='disabled', timeout=4000)
-                    diagnostic['screenshot'] = tag + '-' + str(width) + '-blocked.png'
-                except Exception:
-                    pass
-                one[tag] = diagnostic
-                # Do not stop here: the other interface and other widths still
-                # provide independently valuable acceptance evidence.
+                    filename=tag+'-'+str(width)+'-blocked.png'
+                    page.screenshot(path=str(output/filename),animations='disabled',timeout=4000)
+                    diagnostic['screenshot']=filename
+                except Exception:pass
+                one[tag]=diagnostic
         observations.append(one)
-
-    blockers = {tag: [row['width'] for row in observations
-                     if 'errorType' in row[tag]] for tag in ('legacy', 'generated')}
-    completed = {tag: [row['width'] for row in observations
-                       if 'errorType' not in row[tag]] for tag in ('legacy', 'generated')}
-    evidence = [row[tag]['screenshot'] for row in observations
-                for tag in ('legacy', 'generated') if row[tag].get('screenshot')]
-    evidence += [tag + '-' + str(width) + '.png'
-                 for row in observations for width in (row['width'],)
-                 for tag in ('legacy', 'generated') if 'errorType' not in row[tag]]
-    details = {'viewports': observations, 'completedWidths': completed,
-               'obstructedWidths': blockers}
-    if blockers['legacy'] or blockers['generated']:
-        issue = [tag + ':' + ','.join(str(w) + 'px' for w in blockers[tag])
-                 for tag in ('legacy', 'generated') if blockers[tag]]
-        _parity_result(rows, 'responsive', 'BLOCKED',
-                       reason='Pointer navigation obstructed (' + '; '.join(issue) +
-                       '); both interfaces examined independently',
-                       evidence=evidence, observations=details)
-        return
-    if any(not row[tag]['focus'] or not row[tag]['selected'] or not row[tag]['tabVisible']
-           or row[tag]['overflowPx'] > 2 or row[tag]['visibility'] != 'visible'
-           for row in observations for tag in ('legacy', 'generated')):
-        _parity_result(rows, 'responsive', 'FAIL',
-                       reason='Tab selection, focus, visibility or horizontal overflow failed',
-                       evidence=evidence, observations=details)
+    blocked={tag:[row['width'] for row in observations if 'errorType' in row[tag]]
+             for tag in ('legacy','generated')}
+    completed={tag:[row['width'] for row in observations if 'errorType' not in row[tag]]
+               for tag in ('legacy','generated')}
+    evidence=[row[tag]['screenshot'] for row in observations
+              for tag in ('legacy','generated') if row[tag].get('screenshot')]
+    evidence += [tag+'-'+str(row['width'])+'.png' for row in observations
+                 for tag in ('legacy','generated') if 'errorType' not in row[tag]]
+    def passes(tag):
+        return not blocked[tag] and all(
+            row[tag].get('focus') and row[tag].get('selected') and
+            row[tag].get('tabVisible') and row[tag].get('overflowPx',float('inf'))<=2 and
+            row[tag].get('visibility')=='visible'
+            for row in observations)
+    generated_status=('BLOCKED' if blocked['generated'] else
+                      'PASS' if passes('generated') else 'FAIL')
+    legacy_status=('BLOCKED' if blocked['legacy'] else
+                   'PASS' if passes('legacy') else 'FAIL')
+    details={'viewports':observations,'completedWidths':completed,'obstructedWidths':blocked,
+             'generatedAcceptance':generated_status,'legacyComparison':legacy_status,
+             'comparisonComplete':generated_status=='PASS' and legacy_status=='PASS'}
+    if generated_status!='PASS':
+        _parity_result(rows,'responsive',generated_status,
+            reason='Generated responsive navigation '+generated_status.lower()+
+                   '; legacy comparison '+legacy_status.lower(),
+            evidence=evidence,observations=details)
     else:
-        _parity_result(rows, 'responsive', 'PASS',
-                       reason='Pointer navigation, focus and overflow passed at five widths; human review still required',
-                       evidence=evidence, observations=details)
+        # This is generated *functional* acceptance, not a claim that the
+        # legacy comparison completed. Record the independent legacy gate.
+        reason=('Generated responsive functional acceptance passed at all five widths; '
+                'legacy comparison '+('passed' if legacy_status=='PASS' else
+                                      'incomplete ('+legacy_status.lower()+')'))
+        _parity_result(rows,'responsive','PASS',reason=reason,
+            evidence=evidence,observations=details)
 
 
 def live_readonly_parity(host_url: str, output: Path):
@@ -724,12 +943,39 @@ def live_readonly_parity(host_url: str, output: Path):
                           'generated':generated.locator('[data-mcel-mode-tabs] [data-value="'+name+'"]').get_attribute('aria-pressed')=='true'})
                     _parity_result(rows,'four-views','PASS' if all(v['legacy'] and v['generated'] for v in views) else 'FAIL',
                         evidence=['Real notebook controls selected all four modes'],observations={'views':views})
-                    for name,fn in (('refresh',lambda:_observe_refresh(legacy,generated,host,rows)),
-                                    ('inspection',lambda:_observe_inspection(legacy,generated,host,rows,output)),
-                                    ('responsive',lambda:_observe_responsive(legacy,generated,rows,output))):
-                        try:fn()
+                    # Do not leave the two initial pages polling in the background
+                    # during isolated read-only scenarios.
+                    legacy.close()
+                    generated.close()
+                    # A previously executed workflow must never leave a tab,
+                    # pending process refresh, or timer phase in the next one.
+                    # Reopen the *actual* hosted pages; do not mock any route.
+                    for name in ('refresh','inspection','responsive'):
+                        pair=[]
+                        try:
+                            for tag,route in (('legacy',LEGACY_ROUTE),('generated',ROUTE)):
+                                page=browser.new_page(viewport={'width':1100,'height':800})
+                                pair.append(page)
+                                response=page.goto(host+route,wait_until='load',timeout=20000)
+                                if response is None or response.status!=200:
+                                    raise RuntimeError(tag+'-isolated-route-not-200')
+                                if tag=='generated' and hashlib.sha256(response.body()).hexdigest()!=expected:
+                                    raise RuntimeError('generated-isolated-host-source-mismatch')
+                                ready='#task-manager-app' if tag=='legacy' else '#mcel-workbench'
+                                if not page.locator(ready).count():
+                                    raise RuntimeError(tag+'-isolated-app-not-mounted')
+                            standalone_legacy,standalone_generated=pair
+                            if name=='refresh':
+                                _observe_refresh(standalone_legacy,standalone_generated,host,rows)
+                            elif name=='inspection':
+                                _observe_inspection(standalone_legacy,standalone_generated,host,rows,output)
+                            else:
+                                _observe_responsive(standalone_legacy,standalone_generated,rows,output)
                         except Exception as exc:
                             _parity_result(rows,name,'BLOCKED',reason='Scenario could not complete: '+type(exc).__name__+': '+str(exc)[:2500])
+                        finally:
+                            for page in pair:
+                                page.close()
                     result['reason']='Read-only UI comparison complete. Consequential workflows require a verified lab host; AI requires explicit operator authorization.'
             finally:browser.close()
     except Exception as exc:

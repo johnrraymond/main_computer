@@ -142,6 +142,9 @@ def eval_heads(torch,network,x,y,mean,scale,device,batch):
 
 
 def run(args):
+    if args.zero_line_hard_train:
+        from tools.nanojev_qwen_c0_zero_line import run_zero_line
+        return run_zero_line(args)
     import torch
     from transformers import AutoTokenizer,AutoModelForCausalLM
     if args.device.startswith('cuda') and not torch.cuda.is_available():
@@ -334,6 +337,64 @@ def main():
     ap.add_argument('--balance-deltas',default=','.join(map(str,DEFAULT_DELTAS)))
     ap.add_argument('--balance-magnitudes',default=','.join(map(str,DEFAULT_MAGNITUDES)))
     ap.add_argument('--balance-samples-per-cell',type=int,default=8)
+    ap.add_argument('--zero-line-hard-train',action='store_true',
+                    help='opt-in hard acquisition: zero, +/-1, +/-2, +/-4... with gated radius and retention')
+    ap.add_argument('--zero-line-max-radius',type=int,default=1024)
+    ap.add_argument('--zero-line-init-dir',default='',
+                    help='optional previous C0 scale directory holding <variant>/encoder.pt')
+    ap.add_argument('--zero-line-steps',type=int,default=3000,
+                    help='steps per zero-line radius and per additional repair attempt')
+    ap.add_argument('--zero-line-max-repairs',type=int,default=2)
+    ap.add_argument('--zero-line-exact-threshold',type=float,default=.95,
+                    help='minimum exact rounded fraction in EACH delta/magnitude development cell')
+    ap.add_argument('--zero-line-train-samples-per-cell',type=int,default=32)
+    ap.add_argument('--zero-line-gate-samples-per-cell',type=int,default=8)
+    ap.add_argument('--zero-line-audit-samples-per-cell',type=int,default=8)
+    ap.add_argument('--zero-line-replay-per-shell',type=int,default=64)
+    ap.add_argument('--zero-line-ordinary-fraction',type=float,default=.20)
+    ap.add_argument('--zero-line-ordinary-pool',type=int,default=4096)
+    ap.add_argument('--zero-line-mixture',action='store_true',
+                    help='opt-in paired P0-P7 arithmetic/natural-language training mixture with explicit weighted sampling')
+    ap.add_argument('--zero-line-program-weights',default='',
+                    help='overrides P0:weight,...,P7:weight (all default 1); 0 disables a rung')
+    ap.add_argument('--zero-line-form-weights',default='',
+                    help='arithmetic:weight,natural:weight (both default 1)')
+    ap.add_argument('--zero-line-delta-weights',default='',
+                    help='zero:weight,near:weight,outer:weight (all default 1)')
+    ap.add_argument('--zero-line-magnitude-weights',default='',
+                    help='operand magnitude:weight, e.g. 100:1,1000000:4 (all default 1)')
+    ap.add_argument('--zero-line-nonzero-lookahead',type=int,default=2,
+                    help='train from this many future signed delta shells without advancing acceptance gates')
+    ap.add_argument('--zero-line-mixture-per-cell',type=int,default=4,
+                    help='max source prompts per (delta/sign,magnitude,shell) for paired prompt capture')
+    ap.add_argument('--zero-line-adaptive',action='store_true',
+                    help='opt-in failure-driven mixture and independently gated magnitude/delta acquisition')
+    ap.add_argument('--zero-line-repair-boost',type=float,default=4.,
+                    help='maximum extra sampling multiplier for failing strata')
+    ap.add_argument('--zero-line-repair-fraction',type=float,default=.40,
+                    help='fraction of focus samples preferentially drawn from failing strata')
+    ap.add_argument('--zero-line-retention-fraction',type=float,default=.30,
+                    help='fraction of focus samples replaying previously acquired cells')
+    ap.add_argument('--zero-line-repair-lr-factor',type=float,default=.25,
+                    help='learning rate factor for subsequent repair rounds')
+    ap.add_argument('--zero-line-report-worst',type=int,default=10,
+                    help='number of failing program/form/delta/magnitude cells printed')
+    ap.add_argument('--zero-line-lazy-capture',action=argparse.BooleanOptionalAction,default=None,
+                    help='capture features on demand (automatic in adaptive mode)')
+    ap.add_argument('--zero-line-backbone-phase',action='store_true',
+                    help='opt-in LoRA arithmetic adaptation before frozen C0 capture/training')
+    ap.add_argument('--zero-line-backbone-steps',type=int,default=2000)
+    ap.add_argument('--zero-line-backbone-rank',type=int,default=16)
+    ap.add_argument('--zero-line-backbone-lr',type=float,default=1e-4)
+    ap.add_argument('--zero-line-backbone-batch',type=int,default=2)
+    ap.add_argument('--zero-line-backbone-accum',type=int,default=4)
+    ap.add_argument('--zero-line-backbone-eval-every',type=int,default=200)
+    ap.add_argument('--zero-line-backbone-eval-cases',type=int,default=64)
+    ap.add_argument('--zero-line-backbone-train-cap',type=int,default=4096)
+    ap.add_argument('--zero-line-backbone-min-improvement',type=float,default=.02)
+    ap.add_argument('--zero-line-advance-on-fail',action='store_true',
+                    help='research only: continue expanding even if exactness/retention gate fails')
+
     ap.add_argument('--seed',type=int,default=47);ap.add_argument('--output',default='runtime/reports/qwen-c0-multi-frontier')
     args=ap.parse_args()
     if any((args.batch_size<1,args.capture_batch<1,args.steps_per_radius<1,args.eval_every<1,
@@ -351,6 +412,13 @@ def main():
     except ValueError as error: ap.error(str(error))
     try: resolve_variants(args.variants)
     except ValueError as error: ap.error(str(error))
+    if args.zero_line_hard_train:
+        from tools.nanojev_qwen_c0_zero_line import validate_stage_args
+        try:validate_stage_args(args)
+        except ValueError as error:ap.error(str(error))
+    from tools.nanojev_qwen_c0_backbone_phase import validate_backbone_args
+    try:validate_backbone_args(args)
+    except ValueError as error:ap.error(str(error))
     run(args)
 
 if __name__=='__main__':main()

@@ -117,10 +117,11 @@ def test_deploy_creates_exact_application_records_uuid_then_idempotent_reuses(tm
     assert first['status']=='DEPLOY_QUEUED' and first['created']
     assert first['application_uuid']=='app-one'
     _,_,doc=st.read(root,'mainnet')
-    assert doc['networks']['mainnet']['sehs']['company']['deployment']['application_uuid']=='app-one'
+    assert 'application_uuid' not in doc['networks']['mainnet']['sehs']['company']['deployment']
+    assert g._selections(root,'mainnet','company')[0]['deployment']['application_uuid']=='app-one'
     assert len([x for x in host.calls if x==('POST','/api/v1/applications/public')])==1
     assert all('api_token' not in json.dumps(x) for x in host.envs.values())
-    with pytest.raises(g.SEHGitError,match='Identity changed'):
+    with pytest.raises(g.SEHGitError,match='SEH deployment changed'):
         g.deploy(root,'mainnet','company',operation_id='no-reprepare',client=host,source=SOURCE)
     prepare(root,host,public_key=stable_key)
     second=g.deploy(root,'mainnet','company',operation_id='git-redeploy',client=host,source=SOURCE)
@@ -248,12 +249,12 @@ def test_git_source_requires_exact_pushed_revision_and_clean_deployed_inputs(tmp
     assert dirty.value.git_command == (
         "git add -- 'main_computer/seh/relay.py'; "
         "if ($LASTEXITCODE -eq 0) { git commit --only -m 'Update SEH deployment source' -- 'main_computer/seh/relay.py' }; "
-        "if ($LASTEXITCODE -eq 0) { git push origin HEAD }")
+        "if ($LASTEXITCODE -eq 0) { git push origin HEAD:refs/heads/main }")
     git('add','.')
     git('commit','-m','unpushed change')
-    with pytest.raises(g.SEHGitError,match='not the pushed') as unpushed:
+    with pytest.raises(g.SEHGitError,match='committed locally but not published') as unpushed:
         g.git_source(repo)
-    assert unpushed.value.git_command == 'git push origin HEAD'
+    assert unpushed.value.git_command == 'git push origin HEAD:refs/heads/main'
 
 
 def test_preflight_read_only_and_status_before_create(tmp_path):

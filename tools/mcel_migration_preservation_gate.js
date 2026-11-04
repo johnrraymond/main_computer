@@ -99,11 +99,11 @@ async function taskControls(){
        gpu:{available:true,overall_percent:33,devices:[{index:0,name:'GPU',utilization_percent:33,memory_used_mb:10}]}}};
    if(url.endsWith('/action'))return {ok:true,action:a.action,pid:a.pid,
      verified_created_at:a.expected_created_at,message:'mocked only'};
-   if(url.endsWith('/schedules'))return {schedules:[{id:'s1',action:'server_status'}]};
+   if(url.endsWith('/schedules'))return {schedules:[{id:'s1',action:'server_status',revision:'observed-revision'}]};
    if(url.endsWith('/ai'))return {content:'mocked AI'};
    throw Error(url);
  });
- const refresh=req('task-manager','refresh','monitor','observe','observeProcesses',{query:'worker'});
+ const refresh=req('task-manager','refresh','monitor','observe','observeProcesses',{query:'worker',limit:'100',includeConnections:'true'});
  const rows=await p.invoke(refresh);
  assert.equal(rows[0].createdAt,'2026-10-31T10:00:00+00:00');
  const bad=req('task-manager','kill-process','task-control','kill','killObservedProcess',
@@ -115,13 +115,18 @@ async function taskControls(){
  const terminate=req('task-manager','terminate-process','task-control','terminate','terminateObservedProcess',
    {selected:rows[0].processKey},'consequential');
  assert.equal(await p.authorize(terminate),true);
- await p.invoke(terminate);
+ const receipt=await p.invoke(terminate);
+ assert.equal(receipt.outcome,'command-returned');
+ assert.match(receipt.message,/Process terminate_pid PID 10/);
+ assert.equal(receipt.requestId,'');
  const sent=calls.find(c=>c.url.endsWith('/action'))?.a;
  assert.equal(sent.expected_created_at,rows[0].createdAt);
  assert.equal(sent.mcel_semantic_guarded,true);
  assert.equal(sent.pid,10);
- const hw=await p.invoke(req('task-manager','refresh-hardware','monitor','hardware','observeHardware',{query:''}));
+ const hw=await p.invoke(req('task-manager','refresh-hardware','monitor','hardware','observeHardware',{query:'',limit:'100',includeConnections:'true'}));
  assert.equal(hw.cpuCores[0].percent,20);assert.equal(hw.gpuDevices[0].utilization,33);
+ assert.equal(await p.authorize(req('task-manager','refresh','monitor','observe','observeProcesses',{query:'worker'})),false,
+   'old query-only monitor requests must not bypass the converged contract');
  await p.invoke(req('task-manager','task-ai','monitor','ai','getAiBrief',
    {instruction:'Analyze',query:'',view:'all-processes'}));
  const ai=calls.find(c=>c.url.endsWith('/ai'))?.a;
@@ -130,14 +135,14 @@ async function taskControls(){
 }
 async function aiderControls(){
  const calls=[],content='function one(){return 1;}';
- let stale=false;
+ let stale=false,jobFinished=false;
  const p=port('code-editor',async(url,a)=>{
    calls.push({url,a});
    if(url.endsWith('/files'))return {entries:[{path:'one.js',name:'one.js',kind:'file'}]};
    if(url.endsWith('/read'))return {files:a.files.map(file=>({path:file,content:stale?'altered':content}))};
    if(url.endsWith('/context'))return {ok:true,active:{id:'a',repo_dir:'.'},
      archives:[{id:'old',repo_dir:'.'}],activities:[]};
-   if(url.endsWith('/jobs'))return {ok:true,activities:[{id:'job1',status:'running'}]};
+   if(url.endsWith('/jobs'))return {ok:true,activities:[{id:'job1',status:jobFinished?'complete':'running'}]};
    if(url.endsWith('/run'))return {ok:true,accepted:true,job:{id:'job1'}};
    if(url.endsWith('/reset'))return {ok:true,active:{id:'b'},archives:[]};
    if(url.endsWith('/load'))return {ok:true,active:{id:'c'},archives:[]};
@@ -163,7 +168,11 @@ async function aiderControls(){
  stale=false;
  const accepted=await p.invoke(run);
  assert.match(accepted,/accepted \(not completed\): job1/);
- assert.equal(await p.authorize(run),false,'new source read required after Aider acceptance');
+ assert.equal(await p.authorize(run),false,'Aider job is pending');
+ assert.equal(await p.authorize(read),false,'pending job cannot be reopened');
+ jobFinished=true;
+ await p.invoke(r('aider-jobs','aider-context','jobs','readJobs',{}));
+ assert.equal(await p.authorize(read),true,'terminal job status permits fresh source read');
  await p.invoke(read);
  assert.equal(await p.authorize(run),true);
  return 'aider-governed-session-and-job';

@@ -46,6 +46,7 @@ class FakeCoolify:
         ]
         self.calls = []
         self.application_mutations = []
+        self.environment_deletions = []
 
     def request(self, method, path, body=None):
         self.calls.append((method, path))
@@ -55,6 +56,13 @@ class FakeCoolify:
             return [{'uuid': ENV, 'name': 'mainnet-hubs'}]
         if method == 'GET' and path == f'/api/v1/applications/{APP}/envs':
             return deepcopy(self.trust)
+        if method == 'DELETE' and path.startswith(f'/api/v1/applications/{APP}/envs/'):
+            uuid = path.rsplit('/', 1)[-1]
+            matches = [row for row in self.trust if row.get('uuid') == uuid]
+            assert len(matches) == 1
+            self.trust.remove(matches[0])
+            self.environment_deletions.append(uuid)
+            return {'ok': True}
         if method == 'PATCH' and path == f'/api/v1/applications/{APP}':
             assert set(body) == {'name', 'description'}
             self.application_mutations.append(deepcopy(body))
@@ -146,7 +154,7 @@ def test_duplicate_trust_field_refuses_before_patch(tmp_path):
     assert remote.application_mutations == []
 
 
-def test_generation_change_during_read_refuses_before_patch(tmp_path):
+def test_unrelated_mother_generation_does_not_gate_metadata_reconciliation(tmp_path):
     root = installed(tmp_path)
     class MovingRemote(FakeCoolify):
         def request(self, method, path, body=None):
@@ -156,9 +164,9 @@ def test_generation_change_during_read_refuses_before_patch(tmp_path):
                           lambda doc, gen, base: doc['networks']['mainnet'].update(test_marker=True))
             return super().request(method, path, body)
     remote = MovingRemote()
-    with pytest.raises(g.SEHGitError, match='Mother generation changed'):
-        g.reconcile_metadata(root, 'mainnet', execute=True, client=remote)
-    assert remote.application_mutations == []
+    result = g.reconcile_metadata(root, 'mainnet', execute=True, client=remote)
+    assert result['status'] == 'METADATA_RECONCILED'
+    assert len(remote.application_mutations) == 1
 
 
 def test_cli_reconcile_metadata_refuses_alias_and_requires_both_approvals(tmp_path, monkeypatch):
@@ -277,3 +285,84 @@ def test_conflicting_git_full_url_refuses_even_when_primary_repo_matches(tmp_pat
     with pytest.raises(g.SEHGitError, match='git_full_url identifies github.com/untrusted/repository'):
         g.reconcile_metadata(root, 'mainnet', execute=True, client=remote)
     assert remote.application_mutations == []
+
+
+def test_canonical_metadata_reconcile_removes_only_legacy_env_with_matched_signing_key(tmp_path, monkeypatch):
+    from tools.slh_seh_connector import service_identity
+    from main_computer.slh import storage
+    root = installed(tmp_path)
+    slh = tmp_path / 'slh'
+    _, public = service_identity(slh, create=True)
+    monkeypatch.setattr(storage, 'slh_state_dir', lambda: slh)
+    remote = FakeCoolify()
+    remote.app.update(name=g.CANONICAL_APPLICATION_NAME, description=g.CANONICAL_DESCRIPTION)
+    remote.trust[0]['value'] = public
+    remote.trust.append({'uuid': 'legacy-env-1', 'key': 'SEH_ORGANIZATION_ID', 'value': 'obsolete'})
+    before_trust = deepcopy(remote.trust[:2])
+    _, state, before_doc = st.read(root, 'mainnet')
+    planned = g.reconcile_metadata(root, 'mainnet', client=remote)
+    assert planned['status'] == 'PLAN_ONLY'
+    assert planned['legacy_organization_env'] == 'PRESENT'
+    assert all(method == 'GET' for method, _ in remote.calls)
+    applied = g.reconcile_metadata(root, 'mainnet', execute=True, client=remote)
+    assert applied['status'] == 'LEGACY_ENV_REMOVED'
+    assert applied['legacy_organization_env'] == 'REMOVED'
+    assert applied['signing_key_untouched'] and applied['application_uuid'] == APP
+    assert remote.environment_deletions == ['legacy-env-1']
+    assert remote.trust == before_trust
+    assert remote.application_mutations == []
+    assert all(method in ('GET', 'DELETE') for method, _ in remote.calls)
+    assert st.read(root, 'mainnet')[1].binding == state.binding
+    assert st.read(root, 'mainnet')[2] == before_doc
+    assert g.reconcile_metadata(root, 'mainnet', execute=True, client=remote)['status'] == 'UNCHANGED'
+    assert remote.environment_deletions == ['legacy-env-1']
+
+
+@pytest.mark.parametrize('corrupt', ['wrong-key', 'missing-key', 'missing-route', 'missing-env-uuid',
+                                     'duplicate-legacy', 'wrong-application'])
+def test_canonical_legacy_cleanup_refuses_without_remote_mutation(tmp_path, monkeypatch, corrupt):
+    from tools.slh_seh_connector import service_identity
+    from main_computer.slh import storage
+    root = installed(tmp_path)
+    slh = tmp_path / 'slh'
+    _, public = service_identity(slh, create=True)
+    monkeypatch.setattr(storage, 'slh_state_dir', lambda: slh)
+    remote = FakeCoolify()
+    remote.app.update(name=g.CANONICAL_APPLICATION_NAME, description=g.CANONICAL_DESCRIPTION)
+    remote.trust[0]['value'] = public
+    remote.trust.append({'uuid': 'legacy-env-1', 'key': 'SEH_ORGANIZATION_ID', 'value': 'obsolete'})
+    if corrupt == 'wrong-key': remote.trust[0]['value'] = 'different-key'
+    if corrupt == 'missing-key': remote.trust.pop(0)
+    if corrupt == 'missing-route': remote.trust.pop(1)
+    if corrupt == 'missing-env-uuid': remote.trust[-1].pop('uuid')
+    if corrupt == 'duplicate-legacy': remote.trust.append(deepcopy(remote.trust[-1]))
+    if corrupt == 'wrong-application': remote.app['uuid'] = 'unrelated'
+    with pytest.raises(g.SEHGitError):
+        g.reconcile_metadata(root, 'mainnet', execute=True, client=remote)
+    assert remote.application_mutations == []
+    assert remote.environment_deletions == []
+    assert all(method == 'GET' for method, _ in remote.calls)
+
+
+def test_canonical_legacy_env_cleanup_refuses_stale_mother_without_delete(tmp_path, monkeypatch):
+    from tools.slh_seh_connector import service_identity
+    from main_computer.slh import storage
+    root = installed(tmp_path)
+    slh = tmp_path / 'slh'
+    _, public = service_identity(slh, create=True)
+    monkeypatch.setattr(storage, 'slh_state_dir', lambda: slh)
+    class ChangingMother(FakeCoolify):
+        def request(self, method, path, body=None):
+            if method == 'GET' and path.endswith('/envs') and not getattr(self, 'moved', False):
+                self.moved = True
+                st.mutate(root, 'mainnet', None, 'state-changed',
+                          lambda doc, gen, base: doc['networks']['mainnet']['seh_deployment']['coolify']['controller']
+                          .__setitem__('url', 'https://new-controller.example.org/'))
+            return super().request(method, path, body)
+    remote = ChangingMother()
+    remote.app.update(name=g.CANONICAL_APPLICATION_NAME, description=g.CANONICAL_DESCRIPTION)
+    remote.trust[0]['value'] = public
+    remote.trust.append({'uuid': 'legacy-env-1', 'key': 'SEH_ORGANIZATION_ID', 'value': 'obsolete'})
+    with pytest.raises(g.SEHGitError, match='SEH identity or deployment changed'):
+        g.reconcile_metadata(root, 'mainnet', execute=True, client=remote)
+    assert remote.environment_deletions == []

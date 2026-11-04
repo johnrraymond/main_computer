@@ -378,6 +378,24 @@ def verify_services(*, probe_relay: bool = True) -> dict:
                     _ok(_http(lp, 'POST', '/v1/local/organization/enable', {}, bearer=local_token))
                     _await(lambda: relay.tunnel_ready, 'authenticated SEH outbound tunnel', timeout=12)
                     gates['real_org_service_seh_autoconnect'] = relay.authenticated_slh_count >= 1
+                    # The SEH tunnel must not disable local private work or
+                    # Pinky Promise sweeps. Check the actual child API, not
+                    # an in-process mock or a reported configuration flag.
+                    seh_org_token = _login(api_port, local_sign_port=lp, tls=True)
+                    private_code, private_status = _http(
+                        api_port, 'GET', '/v1/accounting/obligations',
+                        bearer=seh_org_token, tls=True)
+                    sweep_code, sweep_status = _http(
+                        api_port, 'GET', '/v1/accounting/sweeps',
+                        bearer=seh_org_token, tls=True)
+                    gates['seh_keeps_private_ledger_available'] = (
+                        private_code == 200 and isinstance(private_status, dict)
+                        and private_status.get('schema') is not None)
+                    gates['seh_keeps_pinky_sweeper_available'] = (
+                        sweep_code == 200 and isinstance(sweep_status, dict)
+                        and sweep_status.get('schema') == 'main-computer.slh-pinky-sweeps.v1')
+                    gates['seh_private_accounting_still_requires_admin'] = (
+                        _http(api_port, 'GET', '/v1/accounting/sweeps', tls=True)[0] == 401)
                     adapter = SEHLocalClientAdapter(f'ws://127.0.0.1:{relay.port}', slh_id,
                                                     allow_lab=True)
                     gates['worker_tls_via_real_seh_relay'] = _managed_auth(

@@ -123,12 +123,25 @@ class _RefreshTestPage:
         self.clock=clock
         self.watchers={'request':[],'response':[]}
         self.paused=False
+        self.drain_waited=False
     def locator(self,selector):
         return _RefreshTestControl(self, selector)
     def bring_to_front(self):
         self.clock['foreground']=self.tag
     def evaluate(self,expression):
+        if 'autoChecked: document.querySelector' in expression:
+            return {'inFlight':False,'queued':False,'autoChecked':not self.paused}
         return {'visibility':'visible','activeApp':'task-manager'}
+    def wait_for_function(self,expression,*,timeout,polling):
+        assert self.paused, 'automatic refresh must be disabled before the manual drain'
+        if self.clock.get('never_drain'):
+            raise TimeoutError('manual-refresh-not-drained')
+        if self.clock.get('manual_queue_pending') and not self.drain_waited:
+            # One earlier manual replay is initiated as it drains, prior to
+            # the pause-window listeners. It is not an automatic timer tick.
+            self.emit('request')
+            self.emit('response')
+        self.drain_waited=True
     def on(self,event,callback):
         self.watchers[event].append(callback)
     def remove_listener(self,event,callback):
@@ -144,6 +157,7 @@ class _RefreshTestPage:
     def expect_response(self, predicate, timeout):
         from types import SimpleNamespace
         page=self
+        assert self.paused, 'manual refresh must be tested with auto timer paused'
         class Pending:
             def __enter__(self):return self
             def __exit__(self,*args):
@@ -197,11 +211,40 @@ def test_refresh_parity_distinguishes_delayed_response_from_new_paused_request(
     assert entry['status']==expected_status,entry
     assert entry['observations']['legacyManualRequests']==2
     assert entry['observations']['generatedManualRequests']==2
+    assert entry['observations']['manualDrain']['settled'] is True
+    assert legacy.drain_waited
     assert entry['observations']['pausedCompletedResponses']['legacy']>=1
     assert entry['observations']['pausedRequests']['legacy']==int(new_request_while_paused)
     assert entry['observations']['pausedRequests']['generated']==0
     assert entry['observations']['resumedRequests']=={'legacy':1,'generated':1}
     assert entry['observations']['counting']=='correlated-http-request-initiation'
+
+
+def test_queued_manual_replay_drains_before_pause_measurement():
+    from tools.mcel_task_manager_acceptance.hosted import _observe_refresh
+    host='http://127.0.0.1:8765'
+    clock={'manual_queue_pending':True}
+    legacy=_RefreshTestPage('legacy',host,clock)
+    generated=_RefreshTestPage('generated',host,clock)
+    rows={'refresh':{'status':'UNVERIFIED'}}
+    _observe_refresh(legacy,generated,host,rows)
+    assert rows['refresh']['status']=='PASS', rows['refresh']
+    assert legacy.drain_waited
+    assert rows['refresh']['observations']['manualDrain']['settled'] is True
+    assert rows['refresh']['observations']['pausedRequests']=={'legacy':0,'generated':0}
+
+
+def test_manual_refresh_still_queued_blocks_before_measuring_timer_pause():
+    from tools.mcel_task_manager_acceptance.hosted import _observe_refresh
+    host='http://127.0.0.1:8765'
+    clock={'never_drain':True}
+    legacy=_RefreshTestPage('legacy',host,clock)
+    generated=_RefreshTestPage('generated',host,clock)
+    rows={'refresh':{'status':'UNVERIFIED'}}
+    _observe_refresh(legacy,generated,host,rows)
+    assert rows['refresh']['status']=='BLOCKED'
+    assert 'still in flight or queued' in rows['refresh']['reason']
+    assert rows['refresh']['observations']['manualDrain']['errorType']=='TimeoutError'
 
 
 def test_parity_console_summary_accounts_for_blocked_workflows():
@@ -346,13 +389,16 @@ def test_responsive_legacy_obstruction_does_not_skip_generated_or_later_widths(t
     rows={'responsive':{'status':'UNVERIFIED'}}
     hosted._observe_responsive(legacy,generated,rows,tmp_path)
     entry=rows['responsive']
-    assert entry['status']=='BLOCKED' and entry['reason'].startswith('Pointer navigation obstructed (legacy:320px)')
+    assert entry['status']=='PASS' and entry['reason'].startswith('Generated responsive functional acceptance passed')
     obs=entry['observations']
     assert obs['obstructedWidths']=={'legacy':[320],'generated':[]}
     assert obs['completedWidths']=={'legacy':[390,560,1100,1272],
                                     'generated':[320,390,560,1100,1272]}
     assert legacy.visited==generated.visited==[320,390,560,1100,1272]
     assert obs['viewports'][0]['legacy']['hitTarget']['id']=='overlay'
+    assert obs['generatedAcceptance']=='PASS'
+    assert obs['legacyComparison']=='BLOCKED'
+    assert obs['comparisonComplete'] is False
     assert obs['viewports'][0]['generated']['selected'] is True
     assert (tmp_path/'legacy-320-blocked.png').exists()
     assert (tmp_path/'generated-320.png').exists()
@@ -369,6 +415,7 @@ def test_responsive_generated_obstruction_is_never_accepted_as_pass(tmp_path,mon
     assert rows['responsive']['status']=='BLOCKED'
     assert rows['responsive']['observations']['obstructedWidths']=={'legacy':[], 'generated':[320]}
     assert legacy.visited==generated.visited==[320,390]
+    assert rows['responsive']['observations']['generatedAcceptance']=='BLOCKED'
 
 
 def test_responsive_both_interfaces_are_fully_measured_before_pass(tmp_path,monkeypatch):
@@ -381,3 +428,107 @@ def test_responsive_both_interfaces_are_fully_measured_before_pass(tmp_path,monk
     assert rows['responsive']['status']=='PASS'
     assert len(rows['responsive']['observations']['viewports'])==5
     assert len(rows['responsive']['evidence'])==10
+    assert rows['responsive']['observations']['comparisonComplete'] is True
+
+
+def test_responsive_records_actual_failed_first_tab_not_the_other_tab(tmp_path,monkeypatch):
+    from tools.mcel_task_manager_acceptance import hosted
+    monkeypatch.setattr(hosted,'WIDTHS',(320,))
+    class FirstTabLocator(_ResponsiveTestLocator):
+        def click(self,**kwargs):
+            if self.page.tag=='legacy' and 'server-processes' in self.selector:
+                raise TimeoutError('server-process tab obstructed')
+    class FirstTabPage(_ResponsiveTestPage):
+        def locator(self, selector):return FirstTabLocator(self,selector)
+    legacy=FirstTabPage('legacy',set())
+    generated=FirstTabPage('generated',set())
+    rows={'responsive':{'status':'UNVERIFIED'}}
+    hosted._observe_responsive(legacy,generated,rows,tmp_path)
+    entry=rows['responsive']
+    assert entry['status']=='PASS'
+    legacy_obstruction=entry['observations']['viewports'][0]['legacy']
+    assert legacy_obstruction['failedStep']=='server-processes'
+    assert legacy_obstruction['failedSelector']=='[data-task-tab="server-processes"]'
+    assert 'server-process tab obstructed' in legacy_obstruction['error']
+    assert entry['observations']['generatedAcceptance']=='PASS'
+
+
+@pytest.mark.parametrize('before,after,source,expected',[
+    (['4460:2026-11-02T22:50:46.355+00:00'],
+     ['4460:2026-11-02T22:50:46.355+00:00'],
+     [{'pid':4460,'created_at':'2026-11-02T22:50:46.355+00:00'}],
+     '4460:2026-11-02T22:50:46.355+00:00'),
+    (['4460:2026-11-02T22:50:46.355+00:00'],
+     ['4460:2026-11-02T22:50:47.355+00:00'],
+     None,None),
+    (['4460:unknown'],['4460:unknown'],None,None),
+    (['4460:2026-11-02T22:50:46.355+00:00'],
+     ['4460:2026-11-02T22:50:46.355+00:00'],
+     [{'pid':4460,'created_at':'2026-11-02T22:50:47.355+00:00'}],None),
+])
+def test_inspection_identity_requires_stable_generation_and_live_producer(before,after,source,expected):
+    from tools.mcel_task_manager_acceptance.hosted import _stable_process_identity
+    assert _stable_process_identity(before,after,producer_rows=source)==expected
+
+
+def test_inspection_selection_does_not_fallback_to_different_row(monkeypatch,tmp_path):
+    from tools.mcel_task_manager_acceptance import hosted
+    class Row:
+        def __init__(self,selector):self.selector=selector
+        @property
+        def first(self):return self
+        def locator(self,selector):
+            assert '4460:birth-one' in self.selector
+            assert '4460:birth-one' in selector
+            return Row(selector)
+        def count(self):return 1
+    class Page:
+        def locator(self,selector):return Row(selector)
+    clicked=[]
+    monkeypatch.setattr(hosted,'_pointer_click_with_evidence',
+                        lambda page,locator,**kw:clicked.append(locator.selector) or None)
+    assert hosted._inspection_selection(Page(),'4460:birth-one',label='pin',output=tmp_path) is None
+    assert clicked==['button[data-select-key="4460:birth-one"]']
+
+
+def test_legacy_timer_classification_distinguishes_coalescing_and_no_tick():
+    from tools.mcel_task_manager_acceptance.hosted import _legacy_refresh_classification
+    base={'resumedRequests':{'legacy':0,'generated':2},
+          'legacyTimer':{'beforeResumed':{'inFlight':True},
+                         'afterResumed':{'activeApp':'task-manager','autoChecked':True,
+                                         'timerArmed':True,'supported':True,
+                                         'calls':{'resumed':1},'queued':True}}}
+    assert _legacy_refresh_classification(base)=='legacy-refresh-invoked-but-coalesced'
+    base['legacyTimer']['beforeResumed']={'inFlight':False}
+    base['legacyTimer']['afterResumed'].update({'inFlight':False,'queued':False,'calls':{'resumed':0}})
+    assert _legacy_refresh_classification(base)=='legacy-refresh-function-not-invoked'
+    base['legacyTimer']['afterResumed']['timerArmed']=False
+    assert _legacy_refresh_classification(base)=='legacy-auto-timer-not-armed'
+    base['resumedRequests']['legacy']=1
+    assert _legacy_refresh_classification(base)=='http-request-observed'
+
+
+def test_acceptance_source_opens_fresh_browser_pair_per_workflow():
+    import inspect
+    from tools.mcel_task_manager_acceptance.hosted import live_readonly_parity
+    source=inspect.getsource(live_readonly_parity)
+    assert "for name in ('refresh','inspection','responsive'):" in source
+    assert 'browser.new_page' in source
+    assert 'page.close()' in source
+    assert 'generated-isolated-host-source-mismatch' in source
+
+
+def test_legacy_timer_probe_uses_global_lexicals_and_restores_wrapper():
+    from tools.mcel_task_manager_acceptance.hosted import _legacy_refresh_probe
+    class Page:
+        def evaluate(self,script):return script
+    install=_legacy_refresh_probe(Page(),'install')
+    restore=_legacy_refresh_probe(Page(),'restore')
+    assert 'typeof taskManagerAutoTimer' in install
+    assert 'typeof taskManagerRefreshPromise' in install
+    assert 'typeof taskManagerRefreshQueued' in install
+    assert 'typeof currentApp' in install
+    assert 'window.eval(' not in install
+    assert 'Reflect.apply(original,this,args)' in install
+    assert 'window.refreshTaskManager=probe.original' in restore
+    assert "delete window[key]" in restore

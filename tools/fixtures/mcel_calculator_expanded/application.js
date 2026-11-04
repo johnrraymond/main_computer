@@ -7,7 +7,7 @@ module.exports=mcel.defineApp({id:"semantic-calculator-expanded",title:"Semantic
   const points=dsl.field.list(point,{key:"id"});
   const mode=dsl.state.rendererLocal("mode",text.oneOf(["basic","graphing","symbolic","help"]),{initial:"basic"});
   const arithmeticResult=dsl.state.derived("arithmetic-result",text,{initial:""});
-  const graphPoints=dsl.state.derived("graph-points",points);
+  const graphPoints=dsl.state.derived("graph-points",points,{initial:[]});
   const symbolicResult=dsl.state.derived("symbolic-result",text,{initial:""});
   const helperResult=dsl.state.derived("helper-result",text,{initial:""});
   const qaResult=dsl.state.derived("qa-result",text,{initial:""});
@@ -19,14 +19,15 @@ module.exports=mcel.defineApp({id:"semantic-calculator-expanded",title:"Semantic
   service.operation("mathics-ask","askMathicsModel",{inputs:{prompt:text},result:text});
   service.operation("arithmetic-ask","askArithmeticModel",{inputs:{prompt:text},result:text});
   service.operation("graph-ask","askGraphModel",{inputs:{prompt:text},result:text});
-  service.operation("question","askResultQuestion",{inputs:{question:text,context:text},result:text});
+  // Q&A draws on typed, already-evaluated evidence, never invented model math.
+  service.operation("question","askResultQuestion",{inputs:{question:text,arithmeticResult:text,symbolicResult:text,graphPoints:points},result:text});
   const evaluate=dsl.intent.capabilityRequest("evaluate",core,{operation:"evaluate",inputs:{expression:text},resultTo:arithmeticResult});
   const graph=dsl.intent.capabilityRequest("draw-graph",core,{operation:"graph",inputs:{expression:text,xMin:number,xMax:number,yMin:number,yMax:number},resultTo:graphPoints});
   const mathics=dsl.intent.capabilityRequest("evaluate-symbolic",service,{operation:"mathics",inputs:{expression:text},resultTo:symbolicResult});
   const askMathics=dsl.intent.capabilityRequest("ask-symbolic-model",service,{operation:"mathics-ask",inputs:{prompt:text},resultTo:helperResult});
   const askArithmetic=dsl.intent.capabilityRequest("ask-arithmetic-model",service,{operation:"arithmetic-ask",inputs:{prompt:text},resultTo:helperResult});
   const askGraph=dsl.intent.capabilityRequest("ask-graph-model",service,{operation:"graph-ask",inputs:{prompt:text},resultTo:helperResult});
-  const question=dsl.intent.capabilityRequest("ask-result-question",service,{operation:"question",inputs:{question:text},arguments:{context:arithmeticResult},resultTo:qaResult});
+  const question=dsl.intent.capabilityRequest("ask-result-question",service,{operation:"question",inputs:{question:text},arguments:{arithmeticResult:arithmeticResult,symbolicResult:symbolicResult,graphPoints:graphPoints},resultTo:qaResult});
   const switchMode=dsl.intent.selectView("switch-mode",mode);
   const surface=dsl.surface.bindHtml("application",{bindings:{
     mode:[dsl.surface.action("choose-mode",{intent:switchMode})],

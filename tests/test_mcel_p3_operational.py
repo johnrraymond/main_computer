@@ -279,3 +279,468 @@ def test_bootstrap_shutdown_uses_heartbeat_session(tmp_path, monkeypatch):
     script = path.read_text(encoding='utf-8')
     assert 'SessionVariable mcHeartbeatSession' in script
     assert 'X-MCEL-Heartbeat-CSRF' in script
+
+# MCEL interface-replacement acceptance: the real generated JS capability port,
+# real viewport Task Manager HTTP route methods and real TaskManagerService are
+# connected through loopback HTTP. Only OS process mutation, Windows controller
+# execution and the paid AI provider are replaced by explicitly test-owned
+# boundaries. This does NOT assert Windows-controller or real-provider fidelity.
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.client
+import threading
+
+# Loading viewport_state eagerly pulls in unrelated game-project assets that are
+# absent from source-only exports. Load the actual, unmodified route module with
+# its common HTTPStatus namespace supplied, without loading the full viewport.
+# The task route methods themselves are imported unchanged from the source file.
+import importlib.util
+import sys
+from unittest.mock import patch as _mock_patch
+from types import ModuleType
+
+
+def _load_bounded_task_routes():
+    path = Path(__file__).resolve().parents[1] / 'main_computer/viewport_routes_task.py'
+    spec = importlib.util.spec_from_file_location('_mcel_bounded_viewport_task_routes', path)
+    module = importlib.util.module_from_spec(spec)
+    shim = ModuleType('main_computer.viewport_state')
+    shim.HTTPStatus = HTTPStatus
+    with _mock_patch.dict(sys.modules, {'main_computer.viewport_state': shim}):
+        spec.loader.exec_module(module)
+    return module.ViewportTaskRoutesMixin
+
+
+ViewportTaskRoutesMixin = _load_bounded_task_routes()
+
+_INTEGRATION_PID = 64251  # synthetic identity, never passed to the host OS
+_INTEGRATION_BIRTH = '2026-11-02T22:50:46.355+00:00'
+
+
+class _TaskIntegrationHandler(ViewportTaskRoutesMixin, BaseHTTPRequestHandler):
+    """Real route mixin on a test-only HTTP transport; no production dispatch."""
+    def log_message(self, *args):
+        pass
+
+    def _read_json(self):
+        size = int(self.headers.get('Content-Length', '0'))
+        if not 0 < size <= 16384:
+            raise ValueError('Invalid bounded task request length')
+        value = json.loads(self.rfile.read(size))
+        if not isinstance(value, dict):
+            raise ValueError('Task request must be an object')
+        # Record non-secret request bodies for deterministic contract assertions.
+        self.server.requests.append((self.path, value))
+        return value
+
+    @staticmethod
+    def _coerce_bool(value, *, default=False):
+        if isinstance(value, bool):
+            return value
+        if value in ('true', '1', 1):
+            return True
+        if value in ('false', '0', 0):
+            return False
+        return default
+
+    def _send_json(self, payload, status=HTTPStatus.OK):
+        value = json.dumps(payload).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(value)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(value)
+
+    def do_GET(self):
+        if self.path == '/applications/mcel-semantic-task-manager-generated-p3':
+            value = render_p3_generated_page().encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(value)))
+            self.end_headers()
+            self.wfile.write(value)
+        elif self.path == '/api/applications/task/authority/session':
+            authority.issue(self)
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        commands = {
+            '/api/applications/task/overview': self._handle_task_overview,
+            '/api/applications/task/action': self._handle_task_action,
+            '/api/applications/task/schedules': self._handle_task_schedules,
+            '/api/applications/task/schedule/create': self._handle_task_schedule_create,
+            '/api/applications/task/schedule/delete': self._handle_task_schedule_delete,
+            '/api/applications/task/schedule/run': self._handle_task_schedule_run,
+            '/api/applications/task/ai': self._handle_task_ai,
+        }
+        action = commands.get(self.path)
+        if action is None:
+            self.send_error(404)
+            return
+        # Same authenticated mutation allowlist as viewport_route_dispatch.py.
+        if self.path in {
+            '/api/applications/task/action',
+            '/api/applications/task/schedule/create',
+            '/api/applications/task/schedule/delete',
+            '/api/applications/task/schedule/run',
+            '/api/applications/task/ai',
+        } and not authority.require(self):
+            return
+        action()
+
+
+@pytest.fixture
+def isolated_task_http(tmp_path, monkeypatch):
+    """Never spawns a host process, invokes PowerShell or loads prod state."""
+    repo = tmp_path / 'disposable-repo'
+    repo.mkdir()
+    control = tmp_path / 'disposable-controller'
+    control.mkdir()
+    effects = []
+    server = ThreadingHTTPServer(('127.0.0.1', 0), _TaskIntegrationHandler)
+    assert server.server_port != 8765
+    service = TaskManagerService(repo, default_port=server.server_port,
+        control_root=control, isolated_server_executor=lambda verb:
+            (effects.append(('controller', verb)) or
+             {'ok': True, 'deferred': verb in ('restart', 'shutdown'),
+              'message': 'bounded isolated executor'}))
+    assert service.control_root == control.resolve()
+    assert service.data_root.is_relative_to(tmp_path)
+    process_time = datetime.fromisoformat(_INTEGRATION_BIRTH).timestamp()
+    generation = {'epoch': process_time}
+
+    class _OnlyTestProcess:
+        def __init__(self, pid):
+            if pid != _INTEGRATION_PID:
+                raise AssertionError('Non-disposable process accessed')
+        def create_time(self):
+            return generation['epoch']
+        def terminate(self):
+            effects.append(('process', 'terminate', _INTEGRATION_PID))
+        def kill(self):
+            effects.append(('process', 'kill', _INTEGRATION_PID))
+        def wait(self, timeout):
+            return 0
+
+    monkeypatch.setattr('main_computer.task_manager.psutil', SimpleNamespace(
+        Process=_OnlyTestProcess, NoSuchProcess=LookupError,
+        AccessDenied=PermissionError, ZombieProcess=RuntimeError))
+    monkeypatch.setattr(service, '_process_rows', lambda **kw: [{
+        'pid': _INTEGRATION_PID, 'name': 'disposable-contract-target',
+        'status': 'running', 'memory_human': '1 MB',
+        'memory_rss': 1024, 'created_at': _INTEGRATION_BIRTH,
+        'is_current_process': False, 'is_main_computer': True,
+        'command_preview': 'bounded test only',
+    }])
+    monkeypatch.setattr(service, '_connection_rows', lambda **kw: [])
+    monkeypatch.setattr(service, '_server_summary', lambda **kw: {
+        'running': False, 'pid': None, 'is_current_process': False,
+    })
+    monkeypatch.setattr(service, '_hardware_snapshot', lambda: {
+        'summary': 'bounded telemetry',
+        'cpu': {'available': False, 'overall_percent': None, 'per_core': []},
+        'gpu': {'available': False, 'overall_percent': None, 'devices': []},
+    })
+    class _Provider:
+        fail = False
+        def chat(self, prompt):
+            effects.append(('ai-provider-contract', prompt))
+            if self.fail:
+                raise RuntimeError('Isolated model provider deliberately unavailable')
+            return SimpleNamespace(content='Bounded AI contract result',
+                                   provider='test-boundary', model='non-production')
+    server.task_manager = service
+    server.computer = _Provider()
+    server.signal = lambda *a, **kw: None
+    server.requests = []
+    runner = threading.Thread(target=server.serve_forever, daemon=True)
+    runner.start()
+    try:
+        yield SimpleNamespace(url=f'http://127.0.0.1:{server.server_port}',
+                              service=service, requests=server.requests, effects=effects,
+                              cookie='', cookie_flags='', generation=generation,
+                              ai_provider=server.computer, accept_dialog=True)
+    finally:
+        server.shutdown()
+        server.server_close()
+        runner.join(timeout=5)
+
+
+def _task_http_transport_bridge(lab, uri, options):
+    """Proxy fetch across CI's denied browser loopback to real HTTP methods.
+
+    Browser-to-Python is a test transport; Python-to-task-route is genuine HTTP.
+    The cookie is held only in the Python transport and never available to JS.
+    """
+    if not isinstance(uri, str) or not uri.startswith('/api/applications/task/'):
+        raise AssertionError('Task transport escaped the isolated HTTP allowlist')
+    opts = options or {}
+    method = str(opts.get('method') or 'GET').upper()
+    if method not in ('GET', 'POST'):
+        raise AssertionError('Unexpected task HTTP method')
+    from urllib.parse import urlsplit
+    address = urlsplit(lab.url)
+    conn = http.client.HTTPConnection(address.hostname, address.port, timeout=12)
+    headers = {'Host': address.netloc, 'Origin': lab.url,
+               'Sec-Fetch-Site': 'same-origin'}
+    headers.update(opts.get('headers') or {})
+    if lab.cookie:
+        headers['Cookie'] = lab.cookie
+    if method == 'POST':
+        assert opts.get('credentials') == 'same-origin'
+    try:
+        conn.request(method, uri, body=opts.get('body'), headers=headers)
+        response = conn.getresponse()
+        data = response.read()
+        set_cookie = response.getheader('Set-Cookie')
+        if set_cookie:
+            assert 'HttpOnly' in set_cookie and 'SameSite=Strict' in set_cookie
+            lab.cookie = set_cookie.split(';', 1)[0]
+            lab.cookie_flags = set_cookie
+        return {'status': response.status,
+                'payload': json.loads(data), 'ok': 200 <= response.status < 300}
+    finally:
+        conn.close()
+
+
+def _task_page(browser, lab):
+    page = browser.new_page(viewport={'width': 1100, 'height': 800})
+    page.on('dialog', lambda dialog: dialog.accept() if lab.accept_dialog else dialog.dismiss())
+    page.expose_binding('__taskContractHttp',
+                        lambda source, uri, opts: _task_http_transport_bridge(lab, uri, opts))
+    page.evaluate("""() => { window.fetch=async(uri, opts={}) => {
+      const r=await window.__taskContractHttp(String(uri),opts);
+      return {ok:r.ok,status:r.status,json:async()=>r.payload};
+    }; }""")
+    page.set_content(render_p3_generated_page())
+    page.locator('#mcel-workbench-status').wait_for(timeout=9000)
+    assert 'mounted' in page.locator('#mcel-workbench-status').inner_text()
+    return page
+
+
+def _contract_receipt(page, intent, expected):
+    page.locator(f'li[data-intent="intent:{intent}"][data-disposition="{expected}"]').first.wait_for(state="attached", timeout=9000)
+
+
+def _task_refresh_and_select(page):
+    page.locator('form[data-intent="intent:refresh"] button[type=submit]').click()
+    key = f'{_INTEGRATION_PID}:{_INTEGRATION_BIRTH}'
+    row = page.locator(f'[data-record-key="{key}"]').first
+    row.locator('button[data-select-key]').click()
+    page.locator(f'[data-mcel-selected-details="{key}"]:visible').first.wait_for(timeout=9000)
+
+
+def _test_request(url, path, payload, *, cookie='', csrf=''):
+    from urllib.parse import urlsplit
+    host = urlsplit(url)
+    conn = http.client.HTTPConnection(host.hostname, host.port, timeout=5)
+    headers = {'Content-Type': 'application/json', 'Origin': url}
+    if cookie:
+        headers['Cookie'] = cookie
+    if csrf:
+        headers['X-MCEL-Task-CSRF'] = csrf
+    try:
+        conn.request('POST', path, json.dumps(payload), headers=headers)
+        response = conn.getresponse()
+        return response.status, json.loads(response.read())
+    finally:
+        conn.close()
+
+
+def test_p3_real_http_process_buttons_bounded(browser, isolated_task_http):
+    lab = isolated_task_http
+    page = _task_page(browser, lab)
+    try:
+        _task_refresh_and_select(page)
+        for intent, verb in (('terminate-process', 'terminate'), ('kill-process', 'kill')):
+            page.locator(f'button[data-intent="intent:{intent}"]').click()
+            _contract_receipt(page, intent, 'command-returned')
+            action = [body for path, body in lab.requests if path.endswith('/task/action')][-1]
+            assert action['action'] == ('terminate_pid' if verb == 'terminate' else 'kill_pid')
+            assert action['pid'] == _INTEGRATION_PID
+            assert action['expected_created_at'] == _INTEGRATION_BIRTH
+            assert action['confirm'] is True and len(action['request_id']) >= 12
+            assert ('process', verb, _INTEGRATION_PID) in lab.effects
+            if verb == 'terminate':
+                _task_refresh_and_select(page)
+        assert len([e for e in lab.effects if e[0] == 'process']) == 2
+        assert len([v for v in lab.requests if v[0].endswith('/authority/session')]) == 0  # GET, not a mutation
+    finally:
+        page.close()
+
+
+def test_p3_real_http_server_buttons_and_cancellation(browser, isolated_task_http):
+    lab = isolated_task_http
+    page = _task_page(browser, lab)
+    try:
+        lab.accept_dialog=False
+        page.locator('button[data-intent="intent:shutdown-server"]').click()
+        page.wait_for_timeout(100)
+        assert not any(x[0] == 'controller' for x in lab.effects)
+        lab.accept_dialog=True
+        for intent, verb in (('start-server', 'start'), ('restart-server', 'restart'),
+                             ('shutdown-server', 'shutdown')):
+            page.locator(f'button[data-intent="intent:{intent}"]').click()
+            _contract_receipt(page, intent, 'accepted-deferred' if verb != 'start' else 'command-returned')
+            assert ('controller', verb) in lab.effects
+        server_actions = [r[1] for r in lab.requests if r[0].endswith('/task/action')]
+        assert [a['action'] for a in server_actions] == ['server_start', 'server_restart', 'server_shutdown']
+        assert all(a['confirm'] is True and len(a['request_id']) >= 12 for a in server_actions)
+        assert all(a.get('request_id') for a in server_actions)
+    finally:
+        page.close()
+
+
+def test_p3_real_http_schedule_crud_and_run(browser, isolated_task_http):
+    lab = isolated_task_http
+    page = _task_page(browser, lab)
+    try:
+        form = page.locator('form[data-intent="intent:create-schedule"]')
+        form.locator('[name="action"]').fill('server_restart')
+        form.locator('[name="runAt"]').fill('2026-11-04T12:00:00+00:00')
+        form.locator('[name="note"]').fill('bounded contract')
+        form.locator('button[type=submit]').click()
+        _contract_receipt(page, 'create-schedule', 'recorded')
+        records = lab.service.list_schedules()['schedules']
+        assert len(records) == 1 and records[0]['action'] == 'server_restart'
+        page.locator('button[data-intent="intent:list-schedules"]').click()
+        schedule = page.locator(f'[data-record-key="{records[0]["id"]}"]')
+        schedule.locator('button[data-select-key]').click()
+        page.locator('button[data-intent="intent:run-schedule"]').click()
+        _contract_receipt(page, 'run-schedule', 'accepted-deferred')
+        assert ('controller', 'restart') in lab.effects
+        run = next(body for path, body in lab.requests if path.endswith('/schedule/run'))
+        assert run['expected_revision'] == records[0]['revision']
+        assert run['expected_action'] == records[0]['action']
+        assert run['request_id'].startswith('manual_') and run['confirm'] is True
+        page.locator('button[data-intent="intent:delete-schedule"]').click()
+        _contract_receipt(page, 'delete-schedule', 'recorded')
+        assert lab.service.list_schedules()['schedules'] == []
+        assert not any(path.endswith('/schedule/run') and body['schedule_id'] != records[0]['id']
+                       for path, body in lab.requests)
+    finally:
+        page.close()
+
+
+def test_p3_real_http_ai_contract_provider_boundary(browser, isolated_task_http):
+    lab = isolated_task_http
+    page = _task_page(browser, lab)
+    try:
+        form = page.locator('form[data-intent="intent:task-ai"]')
+        form.locator('[name="instruction"]').fill('Summarize the disposable process only')
+        form.locator('[name="query"]').fill('disposable')
+        form.locator('button[type=submit]').click()
+        _contract_receipt(page, 'task-ai', 'completed')
+        assert any(e[0] == 'ai-provider-contract' and 'Summarize the disposable process only' in e[1]
+                   for e in lab.effects)
+        assert 'Bounded AI contract result' in page.locator('body').inner_text()
+        request = next(body for path, body in lab.requests if path.endswith('/task/ai'))
+        assert request['instruction'] == 'Summarize the disposable process only'
+        assert request['query'] == 'disposable'
+    finally:
+        page.close()
+
+
+def test_p3_real_http_negative_contracts_and_idempotent_receipts(browser, isolated_task_http):
+    lab = isolated_task_http
+    page = _task_page(browser, lab)
+    try:
+        _task_refresh_and_select(page)
+        unauthorized, unauthorized_body = _test_request(lab.url, '/api/applications/task/action',
+            {'action': 'server_shutdown', 'confirm': True, 'request_id': 'unauthorized_123456'})
+        assert unauthorized == 403 and unauthorized_body['error'] == 'task-session-required'
+        assert not lab.effects
+
+        # The real CSRF issuer is exercised below. Its HttpOnly cookie stays
+        # inside the Python HTTP bridge, never exposed to page JavaScript.
+        # A real browser request with an intentionally stale target is refused.
+        stale = page.evaluate('''async() => {
+          const session=await fetch('/api/applications/task/authority/session').then(r=>r.json());
+          const r=await fetch('/api/applications/task/action', {method:'POST', credentials:'same-origin',
+            headers:{'Content-Type':'application/json','X-MCEL-Task-CSRF':session.csrf},
+            body:JSON.stringify({action:'terminate_pid',pid:64251,confirm:true,
+              expected_created_at:'2026-11-01T22:50:46.355+00:00',request_id:'stale_generation_1234'})});
+          return {status:r.status,payload:await r.json()};
+        }''')
+        assert lab.cookie and 'HttpOnly' in lab.cookie_flags
+        assert stale['status'] == 400 and 'generation mismatch' in stale['payload']['error'].lower()
+        assert not lab.effects
+
+        # A real service and route refuse timezone-naive schedule values.
+        invalid = page.evaluate('''async() => {
+          const session=await fetch('/api/applications/task/authority/session').then(r=>r.json());
+          const r=await fetch('/api/applications/task/schedule/create',{method:'POST',credentials:'same-origin',
+            headers:{'Content-Type':'application/json','X-MCEL-Task-CSRF':session.csrf},
+            body:JSON.stringify({action:'server_restart',run_at:'2026-11-04T12:00',note:'no-zone',payload:{}})});
+          return {status:r.status,payload:await r.json()};
+        }''')
+        assert invalid['status'] == 400 and 'offset' in invalid['payload']['error'].lower()
+        assert lab.service.list_schedules()['schedules'] == []
+
+        # Identical retries return a durable prior receipt without dispatching twice.
+        args = {'action':'server_start','confirm':True,'request_id':'replay_contract_123456'}
+        replay = page.evaluate('''async args => {
+          const session=await fetch('/api/applications/task/authority/session').then(r=>r.json());
+          const headers={'Content-Type':'application/json','X-MCEL-Task-CSRF':session.csrf};
+          const act=()=>fetch('/api/applications/task/action',{method:'POST',credentials:'same-origin',
+            headers,body:JSON.stringify(args)}).then(r=>r.json());
+          return [await act(),await act()];
+        }''', args)
+        assert replay[0] == replay[1] and replay[0]['ok'] is True
+        assert lab.effects == [('controller', 'start')]
+
+        # A generated UI click with a stale-but-previously-observed process
+        # generation must receive failure; the synthetic OS boundary is never called.
+        _task_refresh_and_select(page)
+        lab.generation['epoch'] += 3600
+        page.locator('button[data-intent="intent:terminate-process"]').click()
+        _contract_receipt(page, 'terminate-process', 'failed')
+        assert lab.effects == [('controller', 'start')]
+
+        # The client currently accepts Date.parse() on naive local dates, while
+        # the real service requires an offset. Verify this mismatch refuses at
+        # the backend and the generated activity reports failure, not success.
+        form=page.locator('form[data-intent="intent:create-schedule"]')
+        form.locator('[name="action"]').fill('server_restart')
+        form.locator('[name="runAt"]').fill('2026-11-04T12:00')
+        form.locator('[name="note"]').fill('must-refuse-naive-time')
+        form.locator('button[type=submit]').click()
+        _contract_receipt(page, 'create-schedule', 'failed')
+        assert lab.service.list_schedules()['schedules'] == []
+
+        # Provider failures propagate as failed activity, never a fabricated
+        # AI brief or a completed receipt.
+        lab.ai_provider.fail = True
+        ai=page.locator('form[data-intent="intent:task-ai"]')
+        ai.locator('[name="instruction"]').fill('Deliberately fail')
+        ai.locator('[name="query"]').fill('disposable')
+        ai.locator('button[type=submit]').click()
+        _contract_receipt(page, 'task-ai', 'failed')
+        assert 'Bounded AI contract result' not in page.locator('body').inner_text()
+
+        # On execution uncertainty, the journal preserves an unknown receipt
+        # and will not re-dispatch an identical request ID after the exception.
+        attempted=[]
+        def failed_control(verb):
+            attempted.append(verb)
+            raise RuntimeError('Deliberate isolated executor interruption')
+        lab.service._isolated_server_executor=failed_control
+        uncertain={'action':'server_start','confirm':True,'request_id':'unknown_contract_12345'}
+        outcomes=page.evaluate('''async args => {
+          const session=await fetch('/api/applications/task/authority/session').then(r=>r.json());
+          const headers={'Content-Type':'application/json','X-MCEL-Task-CSRF':session.csrf};
+          const act=async()=>{const r=await fetch('/api/applications/task/action',
+            {method:'POST',credentials:'same-origin',headers,body:JSON.stringify(args)});
+            return {status:r.status,payload:await r.json()};};
+          return [await act(),await act()];
+        }''', uncertain)
+        assert outcomes[0]['status']==400
+        assert outcomes[1]['status']==400
+        assert outcomes[1]['payload']['outcome']=='unknown'
+        assert attempted==['start']
+        assert [entry for entry in lab.effects if entry[0]=='controller']==[('controller','start')]
+        assert len([entry for entry in lab.effects if entry[0]=='ai-provider-contract'])==1
+    finally:
+        page.close()

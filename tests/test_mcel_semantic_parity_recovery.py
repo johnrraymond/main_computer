@@ -144,8 +144,17 @@ def test_editor_refuses_forged_applied_receipt_and_preserves_dirty_draft():
         page.on('dialog',lambda d:d.accept())
         page.locator('[data-mcel-document-save]').click()
         page.wait_for_function('window.__mcelWorkbench.app.receipts().some(r=>r.intentId==="intent:save-source"&&r.disposition==="failed")')
-        assert page.locator('[data-mcel-document-save]').is_enabled()
+        # A forged receipt may conceal a real server mutation. Keep the draft,
+        # but revoke the old write baseline until an explicit source reread.
+        assert page.locator('[data-mcel-document-save]').is_disabled()
         assert page.locator('[data-mcel-document-dirty="true"]').count()==1
+        assert page.evaluate('window.__mcelWorkbench.app.readState("state:draft")') == '# modified'
+        assert 'Source write authority was revoked' in page.locator('[data-mcel-document-dirty]').inner_text()
+        previous=page.evaluate('window.__mcelWorkbench.app.receipts().filter(r=>r.intentId==="intent:open-source").length')
+        page.get_by_role('button',name='Open Source').click()
+        page.wait_for_function("""count => window.__mcelWorkbench.app.receipts().filter(r => r.intentId === 'intent:open-source').length > count""", arg=previous)
+        page.wait_for_function("""() => !document.querySelector('[data-mcel-document-save]').disabled""")
+        assert page.evaluate('window.__mcelWorkbench.app.readState("state:draft")') == '# modified'
         page.close()
       finally:browser.close()
 

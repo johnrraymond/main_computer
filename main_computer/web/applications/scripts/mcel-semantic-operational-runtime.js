@@ -271,7 +271,26 @@
       for (const [n, host] of typedRecordHosts) updateTypedRecord(n,host);
       for (const [id, elements] of displays) for (const el of elements) {
         const value = read(id);
-        el.textContent = value === undefined ? "" : (value !== null && typeof value === "object" ? JSON.stringify(value,null,2) : String(value));
+        // A bounded, inert image result is a generic semantic visualization.
+        // Never insert returned HTML or execute result-owned scripts.
+        let viewport=null;
+        if(typeof value==="string" && value.length<2500000 && value.startsWith('{"kind":"mcel.sandboxed-viewport-result.v1"')){
+          try{viewport=JSON.parse(value);}catch{}
+        }
+        if(viewport && viewport.kind==="mcel.sandboxed-viewport-result.v1" &&
+            ["completed","script-error"].includes(viewport.status) &&
+            Number.isInteger(viewport.width) && Number.isInteger(viewport.height) &&
+            viewport.width>=1 && viewport.height>=1 && viewport.width<=1024 && viewport.height<=1024 &&
+            typeof viewport.png==="string" && viewport.png.length<=2400000 &&
+            /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(viewport.png) &&
+            Array.isArray(viewport.logs) && viewport.logs.length<=80){
+          const img=elt("img",{alt:"Sandboxed pixel viewport result","data-mcel-sandboxed-image":""});
+          img.src=viewport.png;img.style.maxWidth="100%";img.style.height="auto";
+          const caption=elt("p",{"role":"status"},viewport.status+" · "+viewport.width+"×"+viewport.height);
+          const log=elt("pre",{"data-mcel-sandboxed-log":""});
+          log.textContent=viewport.logs.join("\n");
+          el.replaceChildren(img,caption,log);
+        }else el.textContent = value === undefined ? "" : (value !== null && typeof value === "object" ? JSON.stringify(value,null,2) : String(value));
       }
       for (const view of tabSwitchers) {
         const selected=read(view.stateId);
@@ -339,10 +358,33 @@
             const selected = input[(intent.input || []).find(p => p.id === ref(sel.input))?.sourceName];
             assert(source.some(row => row && String(row[sel.key]) === String(selected)),"selection-not-in-collection");
             state.set(ref(sel.target),clone(selected));
-            // Root transitions invalidate the cached folder hierarchy.
+            // A new root invalidates both the visible hierarchy and every
+            // derived result scoped to the old root, including file previews.
+            // Do not leave selectable stale rows while a new root loads.
             for(const [node,tree] of folderTrees){
               if(ref(sel.target)===tree.rootState && tree.root!==String(selected)){
-                tree.root=String(selected);tree.paths.clear();tree.current="";
+                tree.root=String(selected);tree.paths.clear();tree.current="";tree.searchResults=false;
+                const invalidated=new Set();
+                for(const dependent of c.intents.values()){
+                  if(dependent.operationKind!=="capability" ||
+                      !(dependent.requestArguments||[]).some(arg=>ref(arg.state)===tree.rootState))continue;
+                  for(const binding of dependent.resultBindings||[]){
+                    const target=ref(binding.target);
+                    if(c.states.get(target)?.authority==="derived"){
+                      invalidated.add(target);state.delete(target);
+                    }
+                  }
+                }
+                for(const dependent of c.intents.values()){
+                  if(dependent.collectionSelection && invalidated.has(ref(dependent.collectionSelection.source))){
+                    const target=ref(dependent.collectionSelection.target), schema=c.states.get(target)?.schema;
+                    if(schema?.kind==="string")state.set(target,"");
+                    else state.delete(target);
+                  }
+                }
+                for(const nav of directoryForms){
+                  nav.input.value="";nav.current="";nav.up.disabled=true;nav.path.textContent="/";
+                }
               }
             }
             notify();
@@ -386,6 +428,32 @@
           checkSchema(schema,args[name],"operation."+name);
         }
         assert(Object.keys(args).length === Object.keys(op.inputs || {}).length,"undeclared-operation-argument");
+        // The renderer owns drafts, while the port owns source authority.
+        // Verify both before permitting a document mutation or an Aider job.
+        if(id==="intent:run-aider"){
+          const files=String(args.files||"").trim()
+            ? String(args.files).split(/[\n,]+/).map(x=>x.trim()).filter(Boolean)
+            : [args.path];
+          assert(files.includes(args.path),"aider-current-file-required");
+          for(const [,session] of documentHosts){
+            assert(!session.savePending,"source-write-in-progress");
+            for(const file of files){
+              const tab=session.tabs.get(file);
+              if(tab)assert(!tab.dirty && !tab.conflict && !tab.aiderPending,
+                "aider-file-has-unsaved-or-conflicted-draft:"+file);
+            }
+          }
+        }
+        if(intent.risk==="source-write"){
+          for(const [node,session] of documentHosts){
+            if(ref(node.path)!==ref((intent.requestArguments||[]).find(x=>x.name==="path")?.state))continue;
+            const tab=session.tabs.get(args.path);
+            assert(tab && session.activePath===args.path && !tab.conflict && !tab.aiderPending &&
+              tab.editable && tab.draft===args.text &&
+              (!session.savePending || id===ref(node.saveIntent)),
+              "source-write-document-not-current");
+          }
+        }
         const request = Object.freeze({appId:ir.application.appId,intentId:id,effectId:e.id,
           capabilityId:cap.id,operation:op.name,runtimeMethod:op.runtimeMethod,risk:e.risk,arguments:clone(args)});
         assert(typeof port.authorize === "function" && typeof port.invoke === "function", "capability-port-not-installed");
@@ -395,6 +463,21 @@
         for (const binding of intent.resultBindings || []) targetRuns.set(ref(binding.target),run);
         attempted = true;
         const value = await port.invoke(request);
+        // A root-scoped read belongs to the exact selected root that issued it.
+        // A late response from a previous root must never repopulate a new
+        // root's collection, inspection, or navigation authority.
+        const rootScoped=(intent.requestArguments||[]).some(item=>
+          [...folderTrees.values()].some(tree=>ref(item.state)===tree.rootState));
+        if(rootScoped && (intent.requestArguments||[]).some(item=>
+          JSON.stringify(read(ref(item.state)))!==JSON.stringify(args[item.name])))
+          return {disposition:"superseded"};
+        // For external reads, a response scoped to selected local state must
+        // not overwrite the visible result after that selection changes. This
+        // generalizes the same freshness rule used for root and editor reads,
+        // without changing any consequential action/receipt lifecycle.
+        if(intent.risk==="external-read" && (intent.requestArguments||[]).some(item=>
+          JSON.stringify(read(ref(item.state)))!==JSON.stringify(args[item.name])))
+          return {disposition:"superseded"};
         // A source request can finish after a different file was selected.
         // Never allow an old response to replace the current Monaco document.
         if ([...documentHosts.keys()].some(node=>ref(node.loadIntent)===id && read(ref(node.path))!==args.path))
@@ -423,6 +506,16 @@
             session.mountedPath="";
             session.dirty=tab.dirty;
             state.set(ref(node.draft),tab.draft);
+          } else if(id==="intent:run-aider"){
+            for(const [path,tab] of session.tabs){
+              if(port.documentWriteStatus?.(path)!=="aider-pending")continue;
+              tab.aiderPending=true;tab.editable=false;
+              if(session.activePath===path){
+                session.editable=false;
+                session.status.textContent="Aider accepted; job still running. Refresh Aider jobs before reopening source.";
+                global.MainComputerMonacoAdapter?.setModel?.({path,value:tab.draft,readOnly:true});
+              }
+            }
           } else if(ref(node.saveIntent)===id){
             const tab=session.tabs.get(args.path);
             if(tab){
@@ -444,22 +537,37 @@
             if(intent.resultBindings?.some(b=>ref(b.target)===ref(node.state)))tree.searchResults=true;
           }
         }
-        if (id === "intent:enter-directory" || id === "intent:browse") {
-          const entered = id === "intent:browse" ? "" : args.relativePath;
-          for(const [node,tree] of folderTrees){
-            if(!intent.resultBindings?.some(b=>ref(b.target)===ref(node.state)))continue;
-            const selectedRoot=read(tree.rootState);
-            if(tree.root!==selectedRoot){tree.paths.clear();tree.root=selectedRoot;}
-            if(id==="intent:browse")tree.paths.clear();
-            tree.searchResults=false;
-            tree.paths.set(entered,clone(value));tree.current=entered;
+        // Retain previously visited branches for every semantic directory
+        // collection. A fresh parent listing prunes absent child directories.
+        // Cached file rows are only navigation hints: selection re-lists the
+        // parent through the original capability before granting file access.
+        let enteredDirectory=null;
+        for(const [node,tree] of folderTrees){
+          if(!intent.resultBindings?.some(b=>ref(b.target)===ref(node.state)))continue;
+          const isRoot=tree.rootListingIntent===id || (id==="intent:browse" && tree.pathParameter==="relativePath");
+          if(!isRoot && tree.intent.id!==id)continue;
+          const entered=isRoot?"":args[tree.pathParameter];
+          const selectedRoot=tree.rootState?read(tree.rootState):"";
+          if(tree.root!==selectedRoot){tree.paths.clear();tree.root=selectedRoot;}
+          if(isRoot && tree.rootState)tree.paths.clear();
+          tree.searchResults=false;
+          const children=new Set(value.filter(row=>row && (row.kind==="directory" || row.kind==="dir"))
+            .map(row=>String(row[node.key])));
+          const previous=tree.paths.get(entered)||[];
+          for(const old of previous){
+            const path=String(old[node.key]);
+            if((old.kind!=="directory" && old.kind!=="dir") || children.has(path))continue;
+            for(const cached of [...tree.paths.keys()])
+              if(cached===path || cached.startsWith(path+"/"))tree.paths.delete(cached);
           }
-          for (const item of directoryForms) {
-            item.input.value=entered;
-            item.current=entered;
-            item.up.disabled=!entered;
-            item.path.textContent=entered ? "/"+entered : "/";
-          }
+          tree.paths.set(entered,clone(value));tree.current=entered;
+          enteredDirectory=entered;
+        }
+        if(enteredDirectory!==null)for(const item of directoryForms){
+          item.input.value=enteredDirectory;
+          item.current=enteredDirectory;
+          item.up.disabled=!enteredDirectory;
+          item.path.textContent=enteredDirectory?"/"+enteredDirectory:"/";
         }
         if (intent.risk==="source-write" && id!=="intent:save-source" && args.review?.path) {
           for(const [node,session] of documentHosts) {
@@ -471,12 +579,36 @@
           }
         }
         notify();
-        const disposition = (intent.risk === "consequential" && value && typeof value === "object" &&
+        // On a terminal Aider job receipt, reread the current affected file
+        // through the original port. Never assume job acceptance means success.
+        if(id==="intent:aider-jobs")for(const [node,session] of documentHosts){
+          const path=session.activePath,tab=session.tabs.get(path);
+          if(tab?.aiderPending && port.documentWriteStatus?.(path)!=="aider-pending" &&
+             read(ref(node.path))===path){
+            tab.aiderPending=false;session.mountedPath="";
+            void execute(ref(node.loadIntent));
+          }
+        }
+        const disposition = id==="intent:run-aider" && typeof value==="string" &&
+          value.startsWith("Aider job accepted (not completed): ")?"accepted-deferred":
+          (intent.risk === "consequential" && value && typeof value === "object" &&
           ["accepted-deferred","command-returned","recorded","unknown","refused"].includes(value.outcome))
           ? value.outcome : "completed";
         return receipt(intent,disposition,
-          disposition === "completed" ? "" : String(value.message||""));
+          disposition === "completed" ? "" :
+            (typeof value==="string" ? value : String(value.message||"")));
       } catch (ex) {
+        if(id==="intent:run-aider")for(const [node,session] of documentHosts){
+          for(const [path,tab] of session.tabs){
+            if(port.documentWriteStatus?.(path)!=="aider-outcome-unverified")continue;
+            tab.aiderPending=true;tab.editable=false;
+            if(session.activePath===path){
+              session.editable=false;
+              global.MainComputerMonacoAdapter?.setModel?.({path,value:tab.draft,readOnly:true});
+            }
+          }
+          updateDocument(node,session);
+        }
         for(const [node,session] of documentHosts){
           if(id===ref(node.loadIntent) && session.activePath && read(ref(node.path))!==session.activePath){
             state.set(ref(node.path),session.activePath);
@@ -496,6 +628,7 @@
         for (const choice of schema.enum) input.append(elt("option",{value:choice},fmt(choice)));
       } else if (schema.kind === "boolean") input=elt("input",{name,type:"checkbox"});
       else if (schema.kind === "integer" || schema.kind === "number") input=elt("input",{name,type:"number",step:schema.kind === "integer" ? "1" : "any"});
+      else if(["script","code"].includes(name))input=elt("textarea",{name,rows:"8",spellcheck:"false"});
       else input=elt("input",{name,type:"text"});
       wrap.append(input);return {wrap,input};
     }
@@ -520,13 +653,22 @@
         } else {holder.append(ol);receiptHosts.push(ol);}
       } else if (n.nodeKind === "collection") {
         const list=elt("div",{"data-collection":n.id});holder.append(list); collectionHosts.set(n,list);
-        if(region?.tasks?.includes("browse") && n.fields?.includes("kind")){
+        // Any semantic navigation collection backed by a one-path directory
+        // read can retain a hierarchy. The rule is based on the region and IR,
+        // never on an application ID or a authored layout.
+        if((region?.tasks?.includes("browse") || region?.purpose==="navigation") && n.fields?.includes("kind")){
           const directoryIntent=[...c.intents.values()].find(i=>i.operationKind==="capability" &&
-            i.input?.some(p=>p.sourceName==="relativePath") &&
+            i.input?.some(p=>["relativePath","path"].includes(p.sourceName)) &&
             i.resultBindings?.some(b=>ref(b.target)===ref(n.state)));
+          const pathParameter=directoryIntent?.input?.find(p=>["relativePath","path"].includes(p.sourceName))?.sourceName;
           const rootArg=directoryIntent?.requestArguments?.find(a=>a.name==="rootId");
-          if(directoryIntent && rootArg)
-            folderTrees.set(n,{paths:new Map(),current:"",root:"",searchResults:false,rootState:ref(rootArg.state),intent:directoryIntent});
+          const rootListing=[...c.intents.values()].find(i=>i.operationKind==="capability" &&
+            !(i.input||[]).length && !i.requestArguments?.length &&
+            i.resultBindings?.some(b=>ref(b.target)===ref(n.state)));
+          if(directoryIntent && pathParameter)
+            folderTrees.set(n,{paths:new Map(),current:"",root:"",searchResults:false,
+              rootState:rootArg?ref(rootArg.state):null,intent:directoryIntent,pathParameter,
+              rootListingIntent:rootListing?.id||null});
         }
       } else if (n.nodeKind === "document-editor") {
         const outer=elt("div",{"data-mcel-document-editor":n.id});
@@ -551,10 +693,12 @@
               !global.confirm("Discard unsaved changes and close "+path+"?"))return;
           const closingActive=session.activePath===path;
           session.tabs.delete(path);
+          // Every tab closure revokes its underlying document authority, even
+          // when a different document owns the visible Monaco surface.
+          port.closeDocument?.(path);
           traceOperation("editor.document.close","settled","closed");
           if(closingActive){
             global.MainComputerMonacoAdapter?.dispose?.("document-close");
-            port.closeDocument?.(path);
             session.activePath="";session.mountedPath="";session.loadedValue="";
             session.dirty=false;session.editable=false;session.conflict=false;session.starting=false;
             session.surface.replaceChildren();
@@ -569,7 +713,9 @@
         close.addEventListener("click",()=>closeDocument(session.activePath));
         session.closeDocument=closeDocument;
         save.addEventListener("click",async()=>{
-          if(!session.activePath || !session.editable || session.conflict || !session.dirty || read(ref(n.path))!==session.activePath)return;
+          if(!session.activePath || !session.editable || session.conflict || !session.dirty ||
+             read(ref(n.path))!==session.activePath ||
+             (port.documentWriteStatus && port.documentWriteStatus(session.activePath)!=="ready"))return;
           if(typeof global.confirm==="function" && !global.confirm("Save changes to "+session.activePath+"?"))return;
           session.savePending=true;updateDocument(n,session);
           try{
@@ -603,6 +749,32 @@
       } else if (n.nodeKind === "form") {
         const intent=c.intents.get(ref(n.intent)),form=elt("form",{"data-intent":intent.id});
         const controls={};
+        // An edited compute input makes the previous derived answer obsolete.
+        // Supersede an in-flight result as well, so a late response cannot
+        // present a calculation for an expression the user has since changed.
+        // This is driven by semantic compute tasks, never by an app identity.
+        const isComputeInput=!!region?.tasks?.includes("compute");
+        function supersedeComputeRequest(clearResult=false) {
+          if (!isComputeInput) return;
+          // Editing supersedes an in-flight response without discarding the
+          // last successfully computed result. Only an explicit Clear/Reset
+          // action revokes that result, preserving established Calculator
+          // behavior when a replacement expression fails validation.
+          const run=++serial;
+          current.set(intent.id,run);
+          for (const binding of intent.resultBindings || []) {
+            const id=ref(binding.target), descriptor=c.states.get(id);
+            if (descriptor?.authority !== "derived") continue;
+            targetRuns.set(id,run);
+            if (clearResult) {
+              if (own(descriptor,"initial")) state.set(id,clone(descriptor.initial));
+              else state.delete(id);
+            }
+          }
+          if (clearResult) notify();
+        }
+        form.addEventListener("input",()=>supersedeComputeRequest());
+        form.addEventListener("reset",()=>supersedeComputeRequest(true));
         const formFieldNames=Object.keys(n.fields || {});
         // Keep the domain's canonical inputs together; pair range bounds as
         // X Min / X Max and Y Min / Y Max rather than alphabetical X Max / X Min.
@@ -627,13 +799,15 @@
         if (n.defaults && Object.keys(n.defaults).length) form.append(elt("button",{type:"reset"},"Reset inputs"));
         // A semantic directory-navigation form may expose a parent action.
         // The host port must still authorize the target directory.
-        if (own(n.fields||{},"relativePath") && Object.keys(n.fields||{}).length===1 && region?.tasks?.includes("browse")) {
-          const input=controls.relativePath, path=elt("span",{"data-mcel-current-directory":""},"/");
+        const directoryParameter=Object.keys(n.fields||{}).length===1 &&
+          (own(n.fields||{},"relativePath")?"relativePath":own(n.fields||{},"path")?"path":null);
+        if(directoryParameter && (region?.tasks?.includes("browse") || region?.purpose==="navigation")) {
+          const input=controls[directoryParameter], path=elt("span",{"data-mcel-current-directory":""},"/");
           const up=elt("button",{type:"button","data-mcel-parent-directory":""},"Parent directory");up.disabled=true;
           const nav={input,path,up,current:""};directoryForms.add(nav);
           up.addEventListener("click",()=>{
             const parts=nav.current.split("/").filter(Boolean);parts.pop();
-            void execute(intent.id,{relativePath:parts.join("/")});
+            void execute(intent.id,{[directoryParameter]:parts.join("/")});
           });form.append(up,path);
         }
         // A general compute task with a single textual expression gets a
@@ -654,7 +828,7 @@
             key.addEventListener("click",()=>{
               if (action === "submit") {form.requestSubmit();return;}
               const from=field.selectionStart ?? field.value.length, to=field.selectionEnd ?? from;
-              if (action === "clear") field.value="";
+              if (action === "clear") {field.value="";supersedeComputeRequest(true);}
               else if (action === "backspace") {
                 const start=from === to ? Math.max(0,from-1):from;
                 field.setRangeText("",start,to,"end");
@@ -741,8 +915,22 @@
       const py=y=>270-(y-y0)/(y1-y0)*240;
       if(x0<=0 && x1>=0) add("line",{x1:px(0),x2:px(0),y1:25,y2:270,stroke:"currentColor","stroke-opacity":0.32});
       if(y0<=0 && y1>=0) add("line",{x1:40,x2:620,y1:py(0),y2:py(0),stroke:"currentColor","stroke-opacity":0.32});
+      // Do not interpolate across missing or clipped samples (for example,
+      // across a pole). Use the typical positive spacing of the source series
+      // to recognize a gap; arbitrary domain-specific identities are not needed.
+      const strides=[];
+      for(let i=1;i<samples.length;i++) {
+        const distance=Math.abs(samples[i][n.x]-samples[i-1][n.x]);
+        if(distance>0 && Number.isFinite(distance))strides.push(distance);
+      }
+      strides.sort((a,b)=>a-b);
+      const typical=strides.length ? strides[Math.floor((strides.length-1)/2)] : 0;
       let d="";
-      for(const value of samples) d+=(d?" L":"M")+px(value[n.x]).toFixed(2)+" "+py(value[n.y]).toFixed(2);
+      for(let i=0;i<samples.length;i++) {
+        const value=samples[i],gap=i>0 && typical>0 &&
+          Math.abs(value[n.x]-samples[i-1][n.x])>typical*1.5;
+        d+=(i===0 || gap?"M":" L")+px(value[n.x]).toFixed(2)+" "+py(value[n.y]).toFixed(2);
+      }
       add("path",{d,fill:"none",stroke:"#267db9","stroke-width":2.5,"stroke-linejoin":"round"});
       holder.append(svg,elt("p",{"data-plot-range":""},
         `${n.x}: ${x0.toPrecision(4)} to ${x1.toPrecision(4)} · ${n.y}: ${y0.toPrecision(4)} to ${y1.toPrecision(4)} · ${samples.length} points`));
@@ -769,12 +957,21 @@
       const selectedMismatch=path && session.activePath && path!==session.activePath;
       session.label.textContent=session.activePath || "No document opened";
       session.close.disabled=!session.activePath || session.savePending;
-      session.save.disabled=!session.editable || session.savePending || session.conflict || !session.dirty || !session.activePath || selectedMismatch;
+      const aiderStatus=session.activePath && port.documentWriteStatus?.(session.activePath);
+      const pendingAider=aiderStatus==="aider-pending" || aiderStatus==="aider-outcome-unverified";
+      const lostAuthority=aiderStatus==="reopen-required" && session.tabs.has(session.activePath);
+      session.save.disabled=!session.editable || session.savePending || session.conflict || pendingAider || lostAuthority || !session.dirty || !session.activePath || selectedMismatch;
       session.discard.disabled=session.savePending || !session.dirty || !session.activePath || selectedMismatch;
       updateDocumentTabs(n,session);
       session.status.dataset.mcelDocumentDirty=String(session.dirty);
-      if(session.conflict){
+      if(pendingAider){
+        session.status.textContent=aiderStatus==="aider-outcome-unverified"
+          ? "Aider submission outcome unverified. Source writes are blocked for this session."
+          : "Aider job pending. Refresh Aider jobs before reopening source; saving is blocked.";
+      }else if(session.conflict){
         session.status.textContent="Source changed outside this tab. Copy your draft before closing; saving is blocked.";
+      }else if(lostAuthority){
+        session.status.textContent="Source write authority was revoked. Reopen and verify this file before saving.";
       }
       if(selectedMismatch){session.status.textContent="Different file selected. Opening it…";return;}
       if(!session.activePath || session.mountedPath===session.activePath || session.starting)return;
@@ -788,14 +985,15 @@
       const openingPath=session.activePath;
       session.status.textContent="Opening Monaco: "+openingPath;
       traceOperation("editor.monaco.mount","dispatch","");
-      adapter.mount({host:session.surface,path:openingPath,value:session.tabs.get(openingPath)?.draft ?? session.loadedValue,readOnly:!session.editable,
+      adapter.mount({host:session.surface,path:openingPath,value:session.tabs.get(openingPath)?.draft ?? session.loadedValue,readOnly:!session.editable || pendingAider,
         onReceipt:receipt=>{
           if(receipt?.effect==="editor.monaco.load")
             traceOperation("editor.monaco.load","settled",receipt.externalOutcome||"unknown");
         },
         onChange:content=>{
           if(session.starting)return;
-          if(session.activePath!==openingPath || session.conflict)return;
+          if(session.activePath!==openingPath || session.conflict ||
+             ["aider-pending","aider-outcome-unverified"].includes(port.documentWriteStatus?.(openingPath)))return;
           state.set(ref(n.draft),content);session.dirty=content!==session.loadedValue;
           const tab=session.tabs.get(openingPath);
           if(tab){tab.draft=content;tab.dirty=session.dirty;}
@@ -803,14 +1001,17 @@
           updateDocumentTabs(n,session);
           session.status.dataset.mcelDocumentDirty=String(session.dirty);
           session.close.disabled=!session.activePath || session.savePending;
-          session.save.disabled=!session.editable || session.conflict || !session.dirty || read(ref(n.path))!==session.activePath;
+          session.save.disabled=!session.editable || session.conflict || session.savePending ||
+            (port.documentWriteStatus && port.documentWriteStatus(openingPath)!=="ready") ||
+            !session.dirty || read(ref(n.path))!==session.activePath;
           session.discard.disabled=!session.dirty || read(ref(n.path))!==session.activePath;
         }
       }).then(receipt=>{
         session.starting=false;
         if(disposed)return;
         if(session.activePath!==openingPath){
-          adapter.dispose?.("superseded-document-mount");
+          // A superseded completion must never dispose the newer editor.
+          // The adapter itself rejects stale asynchronous mounts.
           traceOperation("editor.monaco.mount","settled","superseded");
           if(session.activePath)updateDocument(n,session);
           else session.surface.replaceChildren();
@@ -833,7 +1034,7 @@
     }
     function updateFolderTree(n,holder,tree){
       const layer=elt("div",{"data-mcel-folder-tree":"","role":"tree","aria-label":"Folder hierarchy"});
-      const selectedRoot=read(tree.rootState);
+      const selectedRoot=tree.rootState?read(tree.rootState):"";
       if(tree.root!==selectedRoot){tree.root=selectedRoot;tree.paths.clear();tree.current="";}
       const select=n.selectionIntent && c.intents.get(ref(n.selectionIntent));
       const parameter=select?.input?.find(p=>p.id===ref(select.collectionSelection?.input));
@@ -851,10 +1052,22 @@
           const label=elt("span",{"data-record-field":"name"},String(item.name||id));
           const button=elt("button",{type:"button","data-select-key":id},directory?"Open folder":"Select");
           if(directory){
-            button.addEventListener("click",()=>void execute(tree.intent.id,{relativePath:id}));
+            button.addEventListener("click",()=>void execute(tree.intent.id,{[tree.pathParameter]:id}));
           }else if(path===tree.current && select && parameter){
             button.addEventListener("click",()=>void execute(select.id,{[parameter.sourceName]:item[n.key]}));
-          }else{button.disabled=true;button.title="Open this folder to select its files";}
+          }else if(select && parameter){
+            // A cached branch is a navigation affordance, not current file
+            // authority. Reopen its parent through the declared capability;
+            // select only if the fresh listing still contains this exact key.
+            button.title="Reopen this folder and select the file";
+            button.addEventListener("click",async()=>{
+              const reopened=await execute(tree.intent.id,{[tree.pathParameter]:path});
+              const fresh=read(ref(n.state));
+              if(reopened.disposition!=="completed" || !Array.isArray(fresh) ||
+                  !fresh.some(row=>row && String(row[n.key])===id))return;
+              await execute(select.id,{[parameter.sourceName]:item[n.key]});
+            });
+          }else{button.disabled=true;}
           row.append(label,button);group.append(row);
           if(directory && tree.paths.has(id))branchInto(id,depth+1,group);
         }
@@ -1075,9 +1288,11 @@
       const viewBound=[...c.intents.values()].some(i=>!!i.viewTransition);
       for(const r of visibleRegions)for(const member of r.members||[]){
         const n=c.nodes.get(ref(member));
-        // When a semantic mode selector exists, never let an always-visible
-        // schedule, receipt or AI result silently become the polling target.
-        if(viewBound && !n?.visibleWhen)continue;
+        // A selected monitor region is sufficient visibility evidence even
+        // when its children do not duplicate the region's visibility rule.
+        // Still refuse an unscoped/always-visible result as an implicit poll
+        // target when the app has an explicit mode selector.
+        if(viewBound && !n?.visibleWhen && !r.visibleWhen)continue;
         if(n?.visibleWhen && read(ref(n.visibleWhen.state))!==n.visibleWhen.equals)continue;
         if(n?.nodeKind==="collection")targets.add(ref(n.state));
         if(n?.nodeKind==="state-value")targets.add(ref(n.value?.state));

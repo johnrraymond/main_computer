@@ -169,6 +169,235 @@ class OrganizationController:
             self._launch()
             return self.status()
 
+    def _seh_child_request(self, method: str, path: str, *, token: str | None = None) -> dict | None:
+        """Read or authorize the resident child only over its pinned TLS socket."""
+        cfg = read_config(self.directory)
+        if not cfg['enabled'] or self._process is None or self._process.poll() is not None:
+            return None
+        cert_path = self.directory / 'managed-tls-cert.pem'
+        if not cert_path.is_file():
+            return None
+        try:
+            expected = hashlib.sha256(ssl.PEM_cert_to_DER_cert(
+                cert_path.read_text(encoding='ascii'))).digest()
+            host = '127.0.0.1' if cfg['host'] == '0.0.0.0' else cfg['host']
+            with socket.create_connection((host, cfg['api_port']), timeout=2) as sock:
+                # A governed POST verifies remote Coolify trust inside the child;
+                # it may take longer than a status read, but remains bounded.
+                if token is not None:
+                    sock.settimeout(30)
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with ctx.wrap_socket(sock, server_hostname='localhost') as tls:
+                    if hashlib.sha256(tls.getpeercert(binary_form=True)).digest() != expected:
+                        return None
+                    headers = f'{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n'
+                    if token is not None:
+                        headers += f'Authorization: Bearer {token}\r\n'
+                        headers += 'Content-Type: application/json\r\nContent-Length: 2\r\n'
+                    body = '{}' if token is not None else ''
+                    tls.sendall((headers + '\r\n' + body).encode('ascii'))
+                    response = http.client.HTTPResponse(tls)
+                    response.begin()
+                    if response.status != 200:
+                        return None
+                    data = json.loads(response.read(4096))
+                    return data if isinstance(data, dict) else None
+        except (OSError, ssl.SSLError, ValueError, TypeError, http.client.HTTPException):
+            return None
+
+    def _seh_child_status(self) -> dict | None:
+        data = self._seh_child_request('GET', '/v1/org/status')
+        if not data or data.get('schema') != 'main-computer.slh-org-status.v1':
+            return None
+        return data
+
+    def seh_status(self) -> dict:
+        """Observes resident SLH -> SEH connectivity; never contacts Coolify."""
+        with self._lock:
+            cfg = self.config()
+            child = self._seh_child_status()
+            verified = bool(cfg['enabled'] and cfg['seh_enabled'] and child and
+                            child.get('seh_enabled') is True and
+                            child.get('seh_connection_verified') is True and
+                            child.get('private_requests_available') is True and
+                            child.get('pinky_sweeper_available') is True and
+                            child.get('worker_serving_enabled') is True)
+            return {'status': 'CONNECTED_VERIFIED' if verified else 'NOT_CONNECTED',
+                    'outbound_tunnel_authenticated': verified,
+                    'organization_enabled': cfg['enabled'],
+                    'seh_enabled': cfg['seh_enabled'],
+                    'workers_enabled': cfg['workers_enabled'],
+                    'private_requests_available': bool(child and child.get('private_requests_available')),
+                    'pinky_sweeper_available': bool(child and child.get('pinky_sweeper_available')),
+                    'resident_child_observed': child is not None,
+                    'resident_activation_error': (child.get('seh_activation_error')
+                                                  if child else None),
+                    'resident_outbound_phase': (child.get('seh_outbound_phase')
+                                                if child else None),
+                    'resident_outbound_attempts': (child.get('seh_outbound_attempts')
+                                                   if child else None),
+                    'resident_outbound_connections': (child.get('seh_outbound_connections')
+                                                      if child else None),
+                    'resident_outbound_failures': (child.get('seh_outbound_failures')
+                                                   if child else None),
+                    'resident_outbound_last_error_class': (child.get('seh_outbound_last_error_class')
+                                                          if child else None),
+                    'resident_outbound_last_http_status': (child.get('seh_outbound_last_http_status')
+                                                           if child else None)}
+
+    def activate_seh(self, *, execute: bool, expected_generation: int | None = None,
+                     token: str | None = None) -> dict:
+        """Governed one-SLH/one-SEH enablement; recover deleted app when verified.
+
+        Preflight precedes any mutation. Mother supplies identity only; SEH
+        owns Coolify lifecycle and SLH owns the enabled outbound connection.
+        """
+        from main_computer.slh.storage import machine_root
+        from main_computer.slh.seh_canonical_connection import (
+            resolve_canonical_connection, SEHApplicationDeleted)
+        from tools.seh_control.git_deployment import (
+            SEHGitError, SEHGitPublicationError, restore_deleted_canonical_application,
+            reconcile_pending_recovery, _canonical_selection)
+        from main_computer.slh.seh_autoconnect import read_seh_settings
+
+        if execute and not token:
+            raise SLHError('ADMIN_SESSION_REQUIRED', 403)
+        with self._lock:
+            cfg = self.config()
+            if not self.authority.initialized():
+                raise SLHError('SLH_ADMIN_INITIALIZATION_REQUIRED', 409)
+            # Activation includes provisioning the resident Worker gateway.
+            # The outbound SEH supervisor is owned by that gateway; a fresh
+            # administrator bootstrap deliberately does not start it by itself.
+            # A never-configured listener is confined to loopback, not a
+            # surprise LAN-facing socket. Existing explicit bindings survive.
+            needs_worker_setup = not cfg['configured'] or not cfg['workers_enabled']
+            if read_seh_settings(self.directory) is not None:
+                raise SLHError('SEH_LEGACY_LOCAL_SETTINGS_REQUIRE_RECONCILIATION', 409)
+            root = machine_root()
+            try:
+                record, _, generation, _ = _canonical_selection(root, 'mainnet')
+            except (ValueError, OSError, RuntimeError):
+                raise SLHError('SEH_IDENTITY_OR_DEPLOYMENT_STATE_UNVERIFIED', 409) from None
+            if expected_generation is not None and (type(expected_generation) is not int or
+                                                     expected_generation != generation):
+                raise SLHError('IDENTITY_SNAPSHOT_CHANGED', 409)
+            existing_uuid = record['deployment']['application_uuid']
+            # All remote probes are read-only. This verifies the existing UUID,
+            # origin, Coolify placement, signing-key trust and Mother binding.
+            recovery = None
+            try:
+                # Reconcile the exact previously-created UUID and any forced
+                # build receipt before local activation. Never CREATE twice.
+                pending = reconcile_pending_recovery(root, 'mainnet',
+                                                     state_dir=self.directory, execute=execute)
+                if pending is not None:
+                    if pending['status'] == 'PLAN_ONLY':
+                        return pending
+                    if pending['status'] != 'REPLACEMENT_QUEUED_NOT_VERIFIED':
+                        return {**pending, 'status': 'INCOMPLETE',
+                                'failed_stage': pending.get('failed_stage', 'recovery_build_reconciliation')}
+                    recovery = pending
+                settings = resolve_canonical_connection(
+                    self.directory, mother_root=root, require_enabled=False)
+            except SEHApplicationDeleted:
+                # This is not a signing-key mismatch. Coolify returned an
+                # explicit 404 for the recorded UUID. The signed administrator
+                # can recover its one application in the same activation.
+                try:
+                    restored = restore_deleted_canonical_application(
+                        root, 'mainnet', execute=execute, state_dir=self.directory)
+                except SEHGitError as exc:
+                    if str(exc).startswith('Missing SEH Git build source: '):
+                        # The snapshot/export may omit deploy/seh/Dockerfile.
+                        # Show the missing build input, never fabricate it.
+                        return {'status': 'INCOMPLETE', 'failed_stage': 'git_build_source_missing',
+                                'required_source': str(exc).split(': ', 1)[1],
+                                'mother_generation': generation, 'remote_mutation': False}
+                    if isinstance(exc, SEHGitPublicationError):
+                        return {'status': 'INCOMPLETE', 'failed_stage': 'git_source_publication',
+                                'git_source_reason': str(exc),
+                                **({'git_repair_command': exc.git_command} if exc.git_command else {}),
+                                'mother_generation': generation, 'remote_mutation': False}
+                    raise SLHError('SEH_REMOTE_APPLICATION_RECOVERY_REFUSED', 409) from None
+                except Exception as exc:
+                    # Unexpected Coolify recovery errors may follow a successful
+                    # create request. Never claim a clean refusal or silently
+                    # retry creation: inventory must be re-observed first.
+                    # Exception text may contain credentials; report class only.
+                    return {'status': 'INCOMPLETE',
+                            'failed_stage': 'coolify_deleted_application_recovery_unhandled',
+                            'error_type': type(exc).__name__,
+                            'mother_generation': generation,
+                            'remote_mutation': 'UNKNOWN',
+                            'outbound_tunnel_authenticated': False}
+                if restored['status'] == 'PLAN_ONLY':
+                    return restored
+                if restored['status'] != 'REPLACEMENT_QUEUED_NOT_VERIFIED':
+                    return {**restored, 'status': 'INCOMPLETE',
+                            'failed_stage': restored.get('failed_stage', 'coolify_application_recovery'),
+                            'remote_recovery': restored['status']}
+                # The replacement was verified and committed to SEH state.
+                # Continue the SAME authorized call
+                # through normal local activation, then let the CLI wait for
+                # authenticated WSS. Never count Coolify's queue as success.
+                recovery = restored
+                generation = restored['mother_generation']
+                existing_uuid = restored['application_uuid']
+                try:
+                    settings = resolve_canonical_connection(
+                        self.directory, mother_root=root, require_enabled=False)
+                except (ValueError, RuntimeError, OSError):
+                    return {**restored, 'status': 'INCOMPLETE',
+                            'failed_stage': 'new_application_trust_readback'}
+            except (ValueError, RuntimeError, OSError):
+                raise SLHError('SEH_REMOTE_TRUST_PREFLIGHT_REFUSED', 409) from None
+            if not settings.seh_url.startswith('wss://'):
+                raise SLHError('SEH_PUBLIC_WSS_UNVERIFIED', 409)
+            result = {'application_uuid': existing_uuid, 'network': 'mainnet',
+                      'seh_url': settings.seh_url, 'mother_generation': generation,
+                      'remote_mutation': recovery.get('remote_mutation', False) if recovery else False,
+                      **({'former_application_uuid': recovery['former_application_uuid'],
+                          'remote_recovery': recovery['status']} if recovery else {}),
+                      'worker_service_setup': ('REQUIRED' if needs_worker_setup
+                                               else 'ALREADY_CONFIGURED'),
+                      'worker_bind_policy': ('LOOPBACK_DEFAULT' if not cfg['configured']
+                                             else 'PRESERVE_EXISTING')}
+            if not execute:
+                return {'status': 'PLAN_ONLY', **result}
+
+            result['mother_mutation'] = 'UNCHANGED'
+            try:
+                updated = self.config()
+                if not updated['configured'] or not updated['workers_enabled']:
+                    # A child that has no Worker listener cannot host an SEH
+                    # supervisor. It has no local Worker jobs to interrupt;
+                    # restart only that child if it was enabled without Workers.
+                    if updated['enabled']:
+                        self.disable()
+                    changes = {'workers_enabled': True, 'seh_enabled': True}
+                    if not updated['configured']:
+                        changes['host'] = '127.0.0.1'
+                    self.configure(changes)
+                    self.enable()
+                else:
+                    if not updated['seh_enabled']:
+                        save_config(self.directory, {**updated, 'seh_enabled': True})
+                    # The child owns its outbound supervisor. Its existing
+                    # parent-watch loop observes this administrator-approved
+                    # local configuration change and starts the supervisor in
+                    # process, without restarting or rebinding active Workers.
+                    # Never forward a Local Service bearer session into the
+                    # child: sessions are process-local to each SLHAuthority.
+                    if not updated['enabled']:
+                        self.enable()
+            except (OSError, RuntimeError, SLHError, OrganizationConfigError) as exc:
+                return {'status': 'INCOMPLETE', 'failed_stage': 'resident_service_activation',
+                        'error_type': type(exc).__name__, **result}
+            return {'status': 'ACTIVATION_STARTED', **result}
+
     def _terminate(self):
         proc, self._process = self._process, None
         if proc is not None and proc.poll() is None:

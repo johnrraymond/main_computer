@@ -361,6 +361,9 @@ class ServiceSupervisor:
         self.process_command_reader = process_command_reader or _read_process_command_line_default
         self.process_terminator = process_terminator or _terminate_process_default
         self.process_factory = process_factory
+        # The normal launcher passes an explicit startup policy. --no-dev-hub
+        # must not start SLH indirectly through the resident supervisor.
+        self.supervise_slh = os.environ.get("MAIN_COMPUTER_SUPERVISE_SLH", "1") != "0"
 
         self.runtime_dir = self.root / "runtime" / "service_supervisor"
         self.state_path = self.runtime_dir / "state.json"
@@ -469,6 +472,7 @@ class ServiceSupervisor:
                 enumerate(CHILD_SPECS),
                 key=lambda item: (item[1].start_priority, item[0]),
             )
+            if self.supervise_slh or spec.name != "slh"
         ]
 
     def _stop_ordered_children(self) -> list[tuple[str, ChildRuntime]]:
@@ -701,6 +705,13 @@ class ServiceSupervisor:
         }
 
     def _restart_child(self, name: str, *, source: str = "", parameters: dict[str, Any] | None = None) -> dict[str, Any]:
+        if name == "slh" and not self.supervise_slh:
+            return {
+                "ok": False,
+                "state": "disabled-by-startup-policy",
+                "message": "SLH startup is disabled by --no-dev-hub",
+                "child": name,
+            }
         spec = next((candidate for candidate in CHILD_SPECS if candidate.name == name), None)
         if spec is None:
             return {
@@ -1120,6 +1131,7 @@ class ServiceSupervisor:
                 "pid_claim": pid_claim,
             },
             "children": child_states,
+            "slh_supervised": self.supervise_slh,
             "control": control_status(self.root),
         }
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -1532,7 +1544,7 @@ def print_service_supervisor_summary(
             and bool(children.get("executor"))
             and bool(children.get("applications"))
             and bool(children.get("blockchain"))
-            and bool(children.get("slh"))
+            and (not state.get("slh_supervised", True) or bool(children.get("slh")))
         )
         if state.get("ok") and has_children:
             break

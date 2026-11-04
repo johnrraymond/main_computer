@@ -10,7 +10,7 @@
     "intent:ask-symbolic-model": {cap:"capability:calculator-service",op:"mathics-ask",method:"askMathicsModel",keys:["prompt"]},
     "intent:ask-arithmetic-model": {cap:"capability:calculator-service",op:"arithmetic-ask",method:"askArithmeticModel",keys:["prompt"]},
     "intent:ask-graph-model": {cap:"capability:calculator-service",op:"graph-ask",method:"askGraphModel",keys:["prompt"]},
-    "intent:ask-result-question": {cap:"capability:calculator-service",op:"question",method:"askResultQuestion",keys:["question","context"]}
+    "intent:ask-result-question": {cap:"capability:calculator-service",op:"question",method:"askResultQuestion",keys:["question","arithmeticResult","symbolicResult","graphPoints"]}
   });
   function create(options={}) {
     const core=options.core || global.MainComputerCalculatorCore;
@@ -30,7 +30,17 @@
       if(spec.op==="graph")return text(req.arguments.expression) &&
         ["xMin","xMax","yMin","yMax"].every(k=>Number.isFinite(req.arguments[k])) &&
         req.arguments.xMin<req.arguments.xMax && req.arguments.yMin<req.arguments.yMax;
-      return spec.keys.every(k=>k==="context" ? typeof req.arguments[k]==="string" && req.arguments[k].length<=4096 : text(req.arguments[k]));
+      if(spec.op==="question") {
+        const a=req.arguments;
+        return text(a.question) && [a.arithmeticResult,a.symbolicResult].every(v=>
+          typeof v==="string" && v.length<=4096) && Array.isArray(a.graphPoints) &&
+          a.graphPoints.length<=513 && a.graphPoints.every(p=>p &&
+            typeof p==="object" && !Array.isArray(p) &&
+            Object.keys(p).sort().join(",")==="id,x,y" &&
+            typeof p.id==="string" && p.id.length<=64 &&
+            Number.isFinite(p.x) && Number.isFinite(p.y));
+      }
+      return spec.keys.every(k=>text(req.arguments[k]));
     }
     const boundOutput=v=>{
       if(typeof v!=="string" || v.length>100000)throw Error("MCEL_CALC_EXPANDED:invalid-service-result");
@@ -76,7 +86,20 @@
         }
         case "question": {
           if(!services || typeof services.askResultQuestion!=="function")throw Error("MCEL_CALC_EXPANDED:qa-unavailable");
-          const out=await services.askResultQuestion(a.question,a.context,serviceOptions());
+          // Share only verified, bounded computational evidence with the
+          // optional explanation provider. No assistant computation is allowed
+          // to overwrite the deterministic result states.
+          const context={};
+          if(a.arithmeticResult)context.arithmetic_result=a.arithmeticResult;
+          if(a.symbolicResult)context.symbolic_result=a.symbolicResult;
+          if(a.graphPoints.length){
+            const xs=a.graphPoints.map(p=>p.x),ys=a.graphPoints.map(p=>p.y);
+            context.graph={sample_count:a.graphPoints.length,
+              x_min:Math.min(...xs),x_max:Math.max(...xs),
+              visible_y_min:Math.min(...ys),visible_y_max:Math.max(...ys)};
+          }
+          const out=await services.askResultQuestion(a.question,Object.keys(context).length?
+            JSON.stringify(context):"",serviceOptions());
           return boundOutput(out.answer);
         }
         default:throw Error("MCEL_CALC_EXPANDED:unknown-operation");

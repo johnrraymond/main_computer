@@ -246,3 +246,21 @@ def test_workflow_results_cannot_convert_blockers_to_pass():
     assert total['fail']==['inspection']
     assert total['blocked']==['scheduling']
     assert total['pass']==['refresh']
+
+
+def test_bounded_integration_command_fails_closed_and_never_promotes(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from tools.mcel_task_manager_acceptance.__main__ import integration_main
+    import tools.mcel_task_manager_acceptance.__main__ as runner
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *args, **kw:
+        SimpleNamespace(returncode=0, stdout='4 passed, 1 skipped in 1.0s', stderr=''))
+    rc=integration_main(['--report-dir', str(tmp_path / 'skip')])
+    report=json.loads((tmp_path/'skip'/'report.json').read_text())
+    assert rc==1 and report['status']=='FAIL_OR_UNVERIFIED'
+    assert report['promotionAuthorized'] is False
+    assert 'real Windows PowerShell controller fidelity' in report['notCertified']
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *args, **kw:
+        SimpleNamespace(returncode=1, stdout='4 passed, 1 failed', stderr=''))
+    rc=integration_main(['--report-dir', str(tmp_path / 'failure')])
+    assert rc==1
+    assert json.loads((tmp_path/'failure'/'report.json').read_text())['status']=='FAIL_OR_UNVERIFIED'

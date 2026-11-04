@@ -87,6 +87,9 @@ def bounded_main(argv=None):
                      'P3_GENERATED_BROWSER','P2_PRESERVATION'):
                 statuses[k]='PASS_BOUNDED'
             statuses['P3_BASELINE']='PASS_SNAPSHOT_ONLY'
+            evidence['boundedGeneratedUiHttpIntegration']={'scenarios':['process-effects','server-lifecycle','scheduling','ai-brief','failure-lifecycle'],
+                'execution':'Task Manager route methods + service; controlled OS/Windows/provider boundaries',
+                'productionEffectsCertified':False}
             ret=0
         else:
             statuses['P3_BASELINE']='FAIL_BOUNDED' if run_failed else 'INCOMPLETE_BOUNDED'
@@ -97,7 +100,7 @@ def bounded_main(argv=None):
         statuses['P3_AUTHORING']='FAIL' if statuses['P3_AUTHORING']!='PASS' else 'PASS'
     evidence['knownBlockers']=[
         'No real Windows-host acceptance against the active checkout',
-        'No isolated real server lifecycle effect trace or production/P3 operation equivalence',
+        'Bounded generated UI HTTP integration is tested, but production PowerShell controller fidelity and paired consequential OS effects remain unverified',
         'No independently approved human usability/design review',
         'Task Manager legacy hosted suite in export cannot collect without game_projects/webgl-demo/game.json',
         'Multi-process schedule-store locking and OS-user authentication are not certified',
@@ -425,14 +428,75 @@ def _parity_console_summary(result, report_path):
                               for name in groups['blocked']},
             'reason':result.get('reason','')}
 
+def integration_main(argv=None):
+    """Run the source-based, bounded generated-UI operational HTTP contracts.
+
+    This is interface integration evidence only. It must not open a production
+    viewport, dispatch a Windows PowerShell action or promote an app.
+    """
+    ap=argparse.ArgumentParser(description='Bounded generated Task Manager operational integration')
+    ap.add_argument('--report-dir',type=Path)
+    ap.add_argument('--timeout',type=int,default=180)
+    args=ap.parse_args(argv)
+    if not 20 <= args.timeout <= 900:
+        ap.error('timeout must be 20–900 seconds')
+    output=(args.report_dir or DEFAULT/('integration-'+uuid.uuid4().hex)).resolve()
+    if (output/'report.json').exists():
+        raise ValueError('Existing integration report is immutable')
+    output.mkdir(parents=True, exist_ok=True)
+    selected=('tests/test_mcel_p3_operational.py',)
+    command=[sys.executable,'-m','pytest','--confcutdir=tests','-q',
+             *selected,'-k','test_p3_real_http_']
+    reason=''
+    try:
+        proc=subprocess.run(command,cwd=ROOT,text=True,capture_output=True,timeout=args.timeout)
+        logs=proc.stdout+'\n'+proc.stderr
+        # Zero return code is insufficient if tests were deselected or skipped.
+        verified=(proc.returncode==0 and '5 passed' in proc.stdout and
+                  'skipped' not in proc.stdout and 'xfailed' not in proc.stdout)
+        status='PASS_BOUNDED_INTEGRATION' if verified else 'FAIL_OR_UNVERIFIED'
+        reason='Five browser/HTTP/service contract tests passed' if verified else 'Integration tests failed or were not all executed'
+        returncode=proc.returncode
+    except (subprocess.TimeoutExpired,OSError) as exc:
+        status='BLOCKED'
+        reason='Integration test execution unavailable: '+str(exc)[:300]
+        logs=str(exc)
+        returncode=None
+    (output/'pytest-output.txt').write_text(logs,encoding='utf-8')
+    report={'schema':'mcel.task-manager-bounded-integration.v1',
+            'status':status,'reason':reason,'pytestReturnCode':returncode,
+            'tests':'tests/test_mcel_p3_operational.py -k test_p3_real_http_',
+            'scenarios':['process-effects','server-lifecycle','scheduling','ai-brief','failure-lifecycle'],
+            'executionBoundary':'real generated JS + isolated HTTP Task Manager route methods + TaskManagerService; test-owned OS/controller/provider adapters',
+            'browserTransport':'Python HTTP forwarding for CI browser loopback restrictions; no simulated backend response',
+            'notCertified':['real Windows PowerShell controller fidelity','live AI provider',
+                            'unrestricted OS processes','human design approval','production replacement'],
+            'promotionAuthorized':False,
+            'sourceHashes':{rel:digest(ROOT/rel) for rel in (
+                'tests/test_mcel_p3_operational.py',
+                'main_computer/task_manager.py','main_computer/viewport_routes_task.py',
+                'main_computer/task_http_authority.py',
+                'mcel_apps/task-manager/application.js',
+                'main_computer/web/applications/scripts/mcel-semantic-read-ports.js',
+                'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js')},
+            'pytestOutputSha256':digest(output/'pytest-output.txt')}
+    safe_json(output/'report.json',report)
+    print(json.dumps({'status':status,'report':str(output/'report.json'),
+                      'reason':reason,'scenarios':report['scenarios'],
+                      'notCertified':report['notCertified'],
+                      'promotionAuthorized':False},indent=2))
+    return 0 if status=='PASS_BOUNDED_INTEGRATION' else 1
+
+
 def main(argv=None):
     """Single stable CLI. Each mode has independent evidence, never auto-promotes."""
     arguments=list(sys.argv[1:] if argv is None else argv)
     parser=argparse.ArgumentParser(description='Canonical Task Manager acceptance')
-    parser.add_argument('command',choices=('bounded','observe','effects','lifecycle','parity','certify','diagnose'))
+    parser.add_argument('command',choices=('bounded','integration','observe','effects','lifecycle','parity','certify','diagnose'))
     known,_=parser.parse_known_args(arguments[:1])
     rest=arguments[1:]
     if known.command=='bounded':return bounded_main(rest)
+    if known.command=='integration':return integration_main(rest)
     if known.command=='diagnose':
         if rest:raise ValueError('diagnose takes no arguments')
         from .lab import diagnose

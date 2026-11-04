@@ -7,6 +7,7 @@
 
   let loadPromise = null;
   let activeSession = null;
+  let mountGeneration = 0;
 
   function scheduleLayout(editor) {
     if (!editor) return;
@@ -261,6 +262,7 @@
   }
 
   function mount(options = {}) {
+    const token = ++mountGeneration;
     const host = options.host;
     const onReceipt = options.onReceipt;
 
@@ -288,6 +290,10 @@
         nextAction: loaded.ok ? "mount editor model" : "inspect Monaco loader"
       });
 
+      if (token !== mountGeneration) {
+        return emitReceipt(onReceipt, {effect: "editor.monaco.mount",ok:false,
+          actionOutcome:"blocked",externalOutcome:"superseded-mount"});
+      }
       if (!loaded.ok) {
         host.dataset.monacoOutcome = loaded.actionOutcome || "blocked";
         host.textContent = `Monaco unavailable (${loaded.externalOutcome || "blocked"}). The selected-file editor requires Monaco.`;
@@ -391,6 +397,7 @@
         externalOutcome: "not-mounted"
       };
     }
+    ++mountGeneration;
     const path = String(options.path || activeSession.path || "untitled.txt");
     const language = normalizeLanguage(options.language, path);
     const value = String(options.value ?? "");
@@ -483,6 +490,7 @@
   }
 
   function dispose(reason = "manual") {
+    ++mountGeneration;
     return disposeActive(reason);
   }
 

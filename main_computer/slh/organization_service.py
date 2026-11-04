@@ -78,11 +78,47 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                                 'tls_sha256': self.server.fingerprint})
             return
         if method == 'GET' and path == '/v1/org/status':
+            supervisor = (self.server.gateway.seh_connection
+                          if self.server.gateway else None)
+            inspect_supervisor = getattr(supervisor, 'connection_diagnostics', None)
+            diagnostics = inspect_supervisor() if callable(inspect_supervisor) else {}
             self._respond(200, {'schema': 'main-computer.slh-org-status.v1',
                                 'operational': True,
                                 'worker_serving_enabled': self.server.workers_enabled,
                                 'seh_enabled': self.server.seh_enabled,
-                                'seh_connection_verified': False})
+                                'seh_connection_verified': bool(self.server.gateway and
+                                    self.server.gateway.seh_connection and
+                                    self.server.gateway.seh_connection.connected),
+                                'private_requests_available': self.server.private_requests is not None,
+                                'pinky_sweeper_available': self.server.pinky_sweeper is not None,
+                                'seh_activation_error': getattr(self.server, 'seh_activation_error', None),
+                                'seh_outbound_phase': diagnostics.get('phase', 'NOT_STARTED'),
+                                'seh_outbound_attempts': diagnostics.get('attempts', 0),
+                                'seh_outbound_connections': diagnostics.get('connections', 0),
+                                'seh_outbound_failures': diagnostics.get('failures', 0),
+                                'seh_outbound_last_error_class': diagnostics.get('last_error_class'),
+                                'seh_outbound_last_http_status': diagnostics.get('last_http_status')})
+            return
+        if method == 'POST' and path == '/v1/org/admin/seh/activate':
+            try:
+                authority.authenticate(token, admin=True)
+            except SLHError as exc:
+                self._respond(exc.status, {'error': {'code': exc.code}})
+                return
+            cfg = read_config(self.server.state_dir)
+            if not cfg['seh_enabled'] or not self.server.workers_enabled or not self.server.gateway:
+                self._respond(409, {'error': {'code': 'SEH_RESIDENT_GATEWAY_NOT_ENABLED'}})
+                return
+            try:
+                self.server.gateway.allow_seh = True
+                self.server.gateway.start_canonical_seh()
+            except (RuntimeError, ValueError, OSError) as exc:
+                self._respond(409, {'error': {'code': 'SEH_CANONICAL_CONNECTION_REFUSED',
+                                              'error_type': type(exc).__name__}})
+                return
+            self.server.seh_enabled = True
+            self._respond(200, {'status': 'ACTIVATION_STARTED',
+                                'outbound_connection_owner': 'resident-slh'})
             return
         if method == 'GET' and path == '/v1/org/admin/services':
             try:
@@ -211,6 +247,32 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
 
+def _refresh_outbound_seh(server) -> None:
+    """Honor Local Service-approved SEH enablement in the existing child.
+
+    Both processes read the same protected organization configuration, but
+    they DO NOT share bearer sessions. The Worker gateway owns connection
+    startup and supervision; this function never authenticates a new device,
+    creates a credential, or rebinds the Worker listener.
+    """
+    if server.gateway is None or not server.workers_enabled:
+        return
+    try:
+        cfg = read_config(server.state_dir)
+        if not cfg['seh_enabled']:
+            return
+        if server.gateway.seh_connection is None:
+            server.gateway.allow_seh = True
+            server.gateway.start_canonical_seh()
+        server.seh_enabled = True
+        server.seh_activation_error = None
+    except (RuntimeError, ValueError, OSError) as exc:
+        # Keep the resident child and existing Worker services running. The
+        # supervisor will try again on the next parent-watch iteration.
+        # Expose only the exception class, never remote keys or credentials.
+        server.seh_activation_error = type(exc).__name__
+
+
 def _assert_controller_alive(parent_pid: int, parent_created: float) -> None:
     if parent_pid <= 0 or parent_created <= 0:
         raise RuntimeError('Organization Service requires controlling Local Service')
@@ -234,11 +296,13 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
     server = OrganizationHTTPServer((config['host'], config['api_port']), OrganizationHTTPHandler)
     server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     server.authority = authority
+    server.state_dir = Path(state_dir)
     server.wallet_service = OrganizationWallet(state_dir)
     server.api = SLHAPI(authority, wallet_service=server.wallet_service)
     server.fingerprint = fingerprint
     server.workers_enabled = config['workers_enabled']
     server.seh_enabled = config['seh_enabled']
+    server.seh_activation_error = None
     server.marketplace = None
     server.marketplace_controller = None
     server.gateway = None
@@ -252,6 +316,7 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
             except RuntimeError:
                 server.shutdown()
                 return
+            _refresh_outbound_seh(server)
     watcher = threading.Thread(target=check_controller, daemon=True,
                                name='slh-local-parent-watch')
     watcher.start()
@@ -279,14 +344,16 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
             if gateway._server is None:
                 raise RuntimeError('Worker listener startup timed out')
             server.gateway = gateway
-            # Private compute initially supports direct organization Worker paths only.
-            # SEH-private forwarding requires separately verified E2E privacy policy.
-            if not config['seh_enabled']:
-                server.private_requests = PrivateRequests(state_dir, authority, gateway)
-                server.api.private_requests = server.private_requests
-                server.pinky_sweeper = PinkySweep(server.private_requests,server.wallet_service)
-                server.api.pinky_sweeper = server.pinky_sweeper
-                server.pinky_sweeper.start()
+            # Private work remains on the authenticated local managed-worker
+            # scheduler, whether or not the SEH outbound tunnel is enabled.
+            # Do not route private payloads through the public SEH marketplace.
+            # The private ledger and periodic Reserve sweeper must remain live
+            # while the existing public relay is connected.
+            server.private_requests = PrivateRequests(state_dir, authority, gateway)
+            server.api.private_requests = server.private_requests
+            server.pinky_sweeper = PinkySweep(server.private_requests, server.wallet_service)
+            server.api.pinky_sweeper = server.pinky_sweeper
+            server.pinky_sweeper.start()
             server.marketplace = SLHMarketplaceProxy(gateway)
             server.marketplace_controller = AutomaticMarketplace(server.marketplace, state_dir, wallet_service=server.wallet_service)
             gateway.on_worker_registered = server.marketplace_controller.wake
