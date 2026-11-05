@@ -45,6 +45,7 @@ from main_computer.stable_hub_topology import (
 )
 from main_computer.stable_hub_recovery import recover_expired_worker_leases
 from main_computer.stable_hub_worker_sessions import (
+    normalize_request_market_constraints,
     StableHubAcceptedWorkSessionDirectory,
     StableHubPayoutLedgerDirectory,
     StableHubWorkerMarketDirectory,
@@ -889,48 +890,57 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
 
         if message_type == "worker.work.result":
             result_payload = message.get("result")
-            if not isinstance(result_payload, dict):
-                result_payload = {"value": result_payload}
-
-            def _record_success() -> dict[str, Any]:
-                _assert_active_generation()
-                final_payout = dict(payout)
-                if hold_id:
-                    payment = self.server.payout_ledger_directory.spend_request_credit(
-                        account_id=str(accepted_session.get("requester_account_id") or ""),
-                        wallet_address=str(accepted_session.get("requester_wallet_address") or ""),
-                        request_id=request_id, session_id=session_id,
-                        run_id=str(accepted_session.get("run_id") or ""),
-                        worker_id=worker_id,
-                        worker_account_id=str(payout.get("worker_account_id") or ""),
-                        selected_price=dict(payout.get("selected_price") or {}),
-                        requester_max_price=(accepted_session.get("work") or {}).get("max_price"),
-                        partition=str(accepted_session.get("partition") or ""),
-                        hold_id=hold_id, result=result_payload,
-                        metadata={"pricing_mode": "stable_market_price", "hub_id": self.server.hub.hub_id},
-                    )
-                    charge = dict(payment.get("charge") or {})
-                    earning = dict(payment.get("worker_earning") or {})
-                    final_payout.update({
-                        "hold_status": "charged", "charge_id": charge.get("charge_id", ""),
-                        "worker_earning_id": earning.get("earning_id", ""),
-                        "charged_credits": str(charge.get("amount") or "0"),
-                        "payment_status": "charged", "settlement_status": "earned",
-                        "direct_spend": False, "released_credits": "0",
-                    })
-                return self.server.accepted_work_session_directory.record_succeeded(
-                    session_id=session_id, worker_connection_id=connection_id,
-                    worker_result={"type": message_type, "result": result_payload}, payout=final_payout,
-                )
-
-            updated = _atomic_terminal(_record_success)
-            self.server.worker_market_directory.record_session_finished(
-                worker_id=worker_id, connection_id=connection_id,
+            from main_computer.model_execution_contract import (
+                ModelContractError, verify_execution_result,
             )
-            session.send_json({"type": "hub.work.result.accepted", "ok": True,
-                               "session_id": session_id, "request_id": request_id,
-                               "status": updated.get("status"), "payout": updated.get("payout", {})})
-            return
+            try:
+                verify_execution_result(accepted_session.get("work"), result_payload)
+            except ModelContractError:
+                # Never settle earnings for an unproved or substituted model.
+                # Use the existing atomic failure/hold-release transaction.
+                message_type = "worker.work.failed"
+                message = {**message, "type": message_type,
+                           "error": {"error": "worker_model_execution_mismatch"}}
+            else:
+                def _record_success() -> dict[str, Any]:
+                    _assert_active_generation()
+                    final_payout = dict(payout)
+                    if hold_id:
+                        payment = self.server.payout_ledger_directory.spend_request_credit(
+                            account_id=str(accepted_session.get("requester_account_id") or ""),
+                            wallet_address=str(accepted_session.get("requester_wallet_address") or ""),
+                            request_id=request_id, session_id=session_id,
+                            run_id=str(accepted_session.get("run_id") or ""),
+                            worker_id=worker_id,
+                            worker_account_id=str(payout.get("worker_account_id") or ""),
+                            selected_price=dict(payout.get("selected_price") or {}),
+                            requester_max_price=(accepted_session.get("work") or {}).get("max_price"),
+                            partition=str(accepted_session.get("partition") or ""),
+                            hold_id=hold_id, result=result_payload,
+                            metadata={"pricing_mode": "stable_market_price", "hub_id": self.server.hub.hub_id},
+                        )
+                        charge = dict(payment.get("charge") or {})
+                        earning = dict(payment.get("worker_earning") or {})
+                        final_payout.update({
+                            "hold_status": "charged", "charge_id": charge.get("charge_id", ""),
+                            "worker_earning_id": earning.get("earning_id", ""),
+                            "charged_credits": str(charge.get("amount") or "0"),
+                            "payment_status": "charged", "settlement_status": "earned",
+                            "direct_spend": False, "released_credits": "0",
+                        })
+                    return self.server.accepted_work_session_directory.record_succeeded(
+                        session_id=session_id, worker_connection_id=connection_id,
+                        worker_result={"type": message_type, "result": result_payload}, payout=final_payout,
+                    )
+
+                updated = _atomic_terminal(_record_success)
+                self.server.worker_market_directory.record_session_finished(
+                    worker_id=worker_id, connection_id=connection_id,
+                )
+                session.send_json({"type": "hub.work.result.accepted", "ok": True,
+                                   "session_id": session_id, "request_id": request_id,
+                                   "status": updated.get("status"), "payout": updated.get("payout", {})})
+                return
 
         if message_type == "worker.work.failed":
             failure_payload = message.get("error")
@@ -1633,6 +1643,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             work = body.get("work")
             if not isinstance(work, dict):
                 raise StableHubWorkerSessionError("work object is required.")
+            # Reject incomplete model/operation contracts before MSK spending,
+            # marketplace selection, acceptance or any credit commitment.
+            partition = stable_partition_key_for_work(work)
         except (StableHubMultiSessionKeyError, StableHubWorkerSessionError, ValueError) as exc:
             self._send_json(
                 400,
@@ -1667,7 +1680,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             return
 
         requester_account_id = str(validation.get("account_id") or "")
-        partition = stable_partition_key_for_work(work)
         self._work_diagnostic_stage("idempotency_lookup.begin")
         existing_session = self.server.accepted_work_session_directory.get_session_for_request(
             requester_account_id=requester_account_id,
@@ -1962,7 +1974,12 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             # Work payload is deliberately withheld until AFTER the atomic hold
             # and accepted-session commit. A buggy/legacy Worker cannot compute
             # the real request from an unreserved preparation message.
-            "work": {"execution_authorization_pending": True},
+            "work": {
+                "execution_authorization_pending": True,
+                "model": work["model"],
+                "operation": normalize_request_market_constraints(work)["operation"],
+                "capabilities": normalize_request_market_constraints(work)["required_operations"],
+            },
         }
         self._work_diagnostic_stage("worker_offer.begin", connection_id=owner_connection_id)
         try:

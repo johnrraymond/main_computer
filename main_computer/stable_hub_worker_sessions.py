@@ -21,6 +21,10 @@ from main_computer.credit_units import (
     credit_wei_to_decimal_text,
     credit_wei_to_whole_credits_floor,
 )
+from main_computer.model_execution_contract import (
+    ModelContractError, advertised_models, advertised_operations, request_contract,
+    market_supports,
+)
 from main_computer.hub_credit_models import make_worker_commitment, normalize_address, stable_id
 from main_computer.hub_credit_indexer import wallet_account_id
 
@@ -258,7 +262,11 @@ def normalize_worker_market_profile(value: Any | None) -> dict[str, Any]:
     if not rings:
         rings = ["ring-1"]
     capabilities = _normalize_market_tokens(profile.get("capabilities", []), field_name="worker capability")
-    models = _normalize_market_tokens(profile.get("models", profile.get("model", [])), field_name="worker model")
+    try:
+        models = advertised_models(profile)
+        advertised_operations({"capabilities": capabilities})
+    except ModelContractError as exc:
+        raise StableHubWorkerSessionError(str(exc)) from exc
     raw_max_concurrency = profile.get("max_concurrency", 1)
     max_concurrency = int(raw_max_concurrency if raw_max_concurrency is not None else 1)
     if max_concurrency < 1:
@@ -292,12 +300,19 @@ def normalize_request_market_constraints(work: Any) -> dict[str, Any]:
         request.get("capabilities", request.get("required_capabilities", [])),
         field_name="request capability",
     )
+    try:
+        model, operation, required_operations = request_contract(request)
+    except ModelContractError as exc:
+        raise StableHubWorkerSessionError(str(exc)) from exc
     max_price_raw = request.get("max_price")
     max_price = normalize_price(max_price_raw, field_name="request max_price") if max_price_raw is not None else None
     return {
         "ring": ring,
         "partition": ring,
         "capabilities": capabilities,
+        "model": model,
+        "operation": operation,
+        "required_operations": list(required_operations),
         "max_price": max_price,
     }
 
@@ -2488,6 +2503,8 @@ class StableHubWorkerMarketDirectory:
                 "rings": list(profile["rings"]),
                 "partitions": list(profile["partitions"]),
                 "capabilities": list(profile["capabilities"]),
+                "models": list(profile["models"]),
+                "model": profile["model"],
                 "price": dict(profile["price"]),
                 "max_concurrency": int(profile["max_concurrency"]),
                 "active_sessions": active_sessions,
@@ -2656,6 +2673,8 @@ class StableHubWorkerMarketDirectory:
         required_ring = str(constraints["ring"])
         required_capabilities = set(str(value) for value in constraints["capabilities"])
         max_price = constraints.get("max_price")
+        required_model = constraints["model"]
+        required_operations = set(constraints["required_operations"])
         candidates: list[dict[str, Any]] = []
         for record in self.list_workers():
             if worker_market_identity(record) in excluded:
@@ -2666,6 +2685,12 @@ class StableHubWorkerMarketDirectory:
                 continue
             worker_capabilities = set(str(value) for value in record.get("capabilities", []))
             if not required_capabilities.issubset(worker_capabilities):
+                continue
+            # Old directory rows lacking models fail closed instead of silently
+            # restoring market eligibility after a database upgrade.
+            if required_model not in record.get("models", []):
+                continue
+            if not required_operations.issubset(worker_capabilities):
                 continue
             max_concurrency = int(record.get("max_concurrency") or 1)
             active_sessions = int(record.get("active_sessions") or 0)
@@ -2684,6 +2709,8 @@ class StableHubWorkerMarketDirectory:
                 "mode": "deterministic-price-worker-id",
                 "partition": required_ring,
                 "required_capabilities": sorted(required_capabilities),
+                "model": required_model,
+                "operation": constraints["operation"],
             }
             candidates.append(candidate)
 
