@@ -17,16 +17,20 @@ import time
 import uuid
 
 from .authority import SLHError
-from .pinky_promise import PinkyPromise, POLICY_ID
+from .pinky_promise import PinkyPromise, POLICY_ID, ASSESSMENT_WEI, LEGACY_POLICY_ID, LEGACY_ASSESSMENT_WEI
 
 _ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
 _MODEL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$')
 
 
 class PrivateRequests:
-    def __init__(self, state_dir: Path, authority, gateway, *, execution_timeout=120):
+    def __init__(self, state_dir: Path, authority, gateway, *, execution_timeout=120, wallet_service=None):
         self.authority = authority
         self.gateway = gateway
+        # Set by the Organization Service after the automatic marketplace is
+        # constructed. Never construct a second upstream reconciler here.
+        self.marketplace_controller = None
+        self.wallet_service = wallet_service
         self.execution_timeout = execution_timeout
         self.pinky = PinkyPromise()
         self._lock = threading.RLock()
@@ -46,6 +50,7 @@ class PrivateRequests:
                  admitted_at_ns INTEGER NOT NULL, updated_at_ns INTEGER NOT NULL,
                  fulfilled_at_ns INTEGER, result_hash TEXT, failure_code TEXT,
                  billing_policy_id TEXT NOT NULL DEFAULT 'p2-pre-assessment',
+                 reference_credit_wei TEXT, assessment_credit_wei TEXT,
                  PRIMARY KEY (requester_device_id,request_id))''')
             columns = {column['name'] for column in db.execute('PRAGMA table_info(private_requests)')}
             # Existing P2 rows, including previous SUCCEEDED requests, are
@@ -54,6 +59,10 @@ class PrivateRequests:
                 db.execute('ALTER TABLE private_requests ADD COLUMN pinky_policy_revision INTEGER NOT NULL DEFAULT 0')
             if 'pinky_enabled' not in columns:
                 db.execute('ALTER TABLE private_requests ADD COLUMN pinky_enabled INTEGER NOT NULL DEFAULT 0')
+            if 'reference_credit_wei' not in columns:
+                db.execute('ALTER TABLE private_requests ADD COLUMN reference_credit_wei TEXT')
+            if 'assessment_credit_wei' not in columns:
+                db.execute('ALTER TABLE private_requests ADD COLUMN assessment_credit_wei TEXT')
             self.pinky.initialize(db)
             # A crash between admission and dispatch cannot have executed work.
             # A crash after DISPATCHED might have executed and must not replay.
@@ -177,6 +186,54 @@ class PrivateRequests:
                 raise SLHError('PRIVATE_FULFILLMENT_STATE_CONFLICT',409)
         return self.get({'role':'requester','device_id':requester},req)
 
+    def _verified_credits(self) -> int|None:
+        # The Hub owns the wallet. A stale/unbound snapshot never authorizes
+        # local execution; this read does not claim a Hub-level credit hold.
+        if self.wallet_service is None:return None
+        try:
+            status=self.wallet_service.reconcile()
+            if status.get('state')!='CURRENT' or not status.get('balance'):
+                return None
+            available=int(status['balance']['available_credit_wei'])
+            return available if available>=0 else None
+        except (SLHError, OSError, KeyError, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _encumbered_wei(db) -> int:
+        # Existing unpaid assessments and admitted/uncertain executions are
+        # commitments against the same Hub balance. Already confirmed sweeps
+        # have been debited by the Hub and must not be counted again.
+        debt=sum(int(row['amount_credit_wei']) for row in db.execute('''
+            SELECT o.amount_credit_wei FROM pinky_obligations o
+            LEFT JOIN pinky_sweep_items i ON i.obligation_id=o.obligation_id
+            LEFT JOIN pinky_sweeps s ON s.sweep_id=i.sweep_id
+            WHERE s.status IS NULL OR s.status!='CONFIRMED' ''')) if db.execute(
+                "SELECT name FROM sqlite_master WHERE name='pinky_sweep_items'").fetchone() else sum(
+                int(row['amount_credit_wei']) for row in db.execute(
+                    'SELECT amount_credit_wei FROM pinky_obligations'))
+        for row in db.execute('''SELECT billing_policy_id,assessment_credit_wei
+            FROM private_requests WHERE pinky_enabled=1
+            AND status IN ('ADMITTED','DISPATCHED','OUTCOME_UNKNOWN')'''):
+            debt += (int(row['assessment_credit_wei']) if row['assessment_credit_wei'] is not None
+                     else LEGACY_ASSESSMENT_WEI if row['billing_policy_id']==LEGACY_POLICY_ID
+                     else ASSESSMENT_WEI)
+        return debt
+
+    def net_credit_status(self):
+        '''Net verified Hub observation, less unpaid local commitments.
+
+        A scheduler signal, not authority to debit the remote Hub wallet.
+        '''
+        if self.wallet_service is None:return {'state':'UNBOUND','balance':None}
+        status=self.wallet_service.status()
+        if status.get('state')!='CURRENT' or not status.get('balance'):
+            return status
+        with self._lock,self._db() as db:
+            committed=self._encumbered_wei(db)
+        available=max(0,int(status['balance']['available_credit_wei'])-committed)
+        return {**status,'balance':{**status['balance'],'available_credit_wei':str(available)}}
+
     def submit(self, identity, body):
         requester = self._requester(identity)
         if set(body) != {'request_id','model','work'}:
@@ -204,6 +261,8 @@ class PrivateRequests:
         if len(encoded)>65536:
             raise SLHError('PRIVATE_WORK_TOO_LARGE',413)
         digest = hashlib.sha256(encoded).hexdigest()
+        quote=self.gateway.scheduler.private_quote(model=model)
+        verified_credits=self._verified_credits() if quote else None
         with self._lock, self._db() as db:
             row = db.execute('SELECT * FROM private_requests WHERE requester_device_id=? AND request_id=?',
                              (requester,req)).fetchone()
@@ -213,12 +272,32 @@ class PrivateRequests:
                 return self._public(row)  # never reexecute on replay
             now=time.time_ns()
             policy=self.pinky.snapshot(db)
+            if quote is None:
+                failure='NO_ELIGIBLE_WORKER'
+            elif not policy['enabled']:
+                failure='LOCAL_ASSESSMENT_DISABLED'
+            elif verified_credits is None:
+                failure='LOCAL_CREDIT_BALANCE_UNVERIFIED'
+            elif min(verified_credits,
+                     int(self.wallet_service.status()['balance']['available_credit_wei'])
+                     if self.wallet_service.status().get('state')=='CURRENT' else 0
+                     )-self._encumbered_wei(db)<quote['assessment_credit_wei']:
+                failure='INSUFFICIENT_LOCAL_CREDITS'
+            else:
+                failure=None
             db.execute('''INSERT INTO private_requests
                 (requester_device_id,request_id,request_digest,model,status,
-                 admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled)
-                 VALUES (?,?,?,?,?,?,?,?,?,?)''',
-                (requester,req,digest,model,'ADMITTED',now,now,
-                 POLICY_ID,policy['revision'],int(policy['enabled'])))
+                 admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled,
+                 failure_code,reference_credit_wei,assessment_credit_wei)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (requester,req,digest,model,'FAILED' if failure else 'ADMITTED',now,now,
+                 POLICY_ID,policy['revision'],int(policy['enabled']),failure,
+                 str(quote['reference_credit_wei']) if quote else None,
+                 str(quote['assessment_credit_wei']) if quote else None))
+            if failure:
+                row=db.execute('SELECT * FROM private_requests WHERE requester_device_id=? AND request_id=?',
+                               (requester,req)).fetchone()
+                return self._public(row)
         # Race after auth or revocation cannot be allowed to dispatch.
         # Authentication was performed by SLHAPI, before this method is called.
         sid='private:'+uuid.uuid4().hex
@@ -227,9 +306,44 @@ class PrivateRequests:
                    for d in self.authority.devices()):
             return self._update(requester,req,'FAILED',failure_code='REQUESTER_REVOKED')
         try:
-            worker=self.gateway.scheduler.reserve_private(sid,model=model)
+            worker=self.gateway.scheduler.reserve_private(sid,model=model,
+                device_id=quote['device_id'],generation=quote['generation'])
         except RuntimeError:
-            return self._update(requester,req,'FAILED',failure_code='NO_ELIGIBLE_WORKER')
+            pending=self.gateway.scheduler.request_private_capacity(model=model,
+                device_id=quote['device_id'],generation=quote['generation'])
+            controller=self.marketplace_controller
+            if not pending or controller is None:
+                if pending:
+                    self.gateway.scheduler.cancel_private_capacity(
+                        pending, generation=quote['generation'])
+                return self._update(requester,req,'FAILED',
+                    failure_code=('PUBLIC_WITHDRAWAL_REQUIRED' if pending
+                                  else 'NO_ELIGIBLE_WORKER'))
+            # A synchronous bounded handoff: no local dispatch while the Hub
+            # may still offer the Worker paid work. The same durable request
+            # remains ADMITTED, encumbering credits, until dispatch or refusal.
+            deadline=time.monotonic()+min(max(float(self.execution_timeout),0.1),30.0)
+            worker=None
+            try:
+                while time.monotonic()<deadline:
+                    try:
+                        controller.reconcile()
+                    except (RuntimeError, ValueError, OSError, ConnectionError, SLHError):
+                        # An uncertain Hub retirement is never local capacity.
+                        break
+                    try:
+                        worker=self.gateway.scheduler.reserve_private(sid,model=model,
+                            device_id=quote['device_id'],generation=quote['generation'])
+                        break
+                    except RuntimeError:
+                        time.sleep(0.1)
+            finally:
+                if worker is None:
+                    self.gateway.scheduler.cancel_private_capacity(
+                        pending,generation=quote['generation'])
+            if worker is None:
+                return self._update(requester,req,'FAILED',
+                                    failure_code='PUBLIC_WITHDRAWAL_PENDING')
         try:
             if worker.device_id == requester or not self.gateway.scheduler.is_authorized(worker.device_id):
                 return self._update(requester,req,'FAILED',failure_code='WORKER_UNAUTHORIZED')

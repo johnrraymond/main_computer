@@ -83,11 +83,8 @@ def create_parent(tmp_path,*,final=False):
 def deck():
     cases=[{'game_id':'hawk_dove','prompt_08':'train named','math_prompt':'math','split':'train'},
            {'game_id':'hawk_dove','prompt_08':'train named2','math_prompt':'math','split':'train'},
-           {'game_id':'hawk_dove','prompt_08':'train blind','math_prompt':'math','split':'train',
-            'blind_matrix':True,'blind_matrix_regime':'exact_tie'},
            {'game_id':'hawk_dove','prompt_08':'dev named','math_prompt':'math','split':'dev'},
-           {'game_id':'hawk_dove','prompt_08':'dev blind','math_prompt':'math','split':'dev',
-            'blind_matrix':True,'blind_matrix_regime':'exact_tie'}]
+           {'game_id':'arms_race','prompt_08':'dev named 2','math_prompt':'math','split':'dev'}]
     manifest={'dataset_sha256':'b'*64,'original_prompt_corpus_sha256':'c'*64,
               'provenance':'source_recomputed'}
     return cases,manifest
@@ -158,7 +155,7 @@ def test_transferred_run_resumes_after_optimizer_interrupt(tmp_path,monkeypatch)
         gamer.train_lora(args,cases,manifest)
     state=torch.load(tmp_path/'transferred'/'lora'/'latest.pt',weights_only=True)
     assert state['step']==1 and state['baseline']['total']==0
-    assert sum(state['sampling_counts'].values())==2
+    assert state['sampling_counts']['named_replay']==2 and 'blind_matrix' not in state['sampling_counts']
     assert float(state['adapter']['value'][0])!=pytest.approx(.125)
     monkeypatch.setattr(gamer,'save_training_state',real)
     args.resume=True
@@ -168,28 +165,22 @@ def test_transferred_run_resumes_after_optimizer_interrupt(tmp_path,monkeypatch)
     assert report['handoff_eligible'] is False
     assert report['retention_certification']=='NOT_AUDITED'
     assert report['evaluation_scope']=='BOUNDED_PROBE_NOT_FULL_AUDIT'
-    assert sum(report['sampling_counts'].values())==4
+    assert report['sampling_counts']['named_replay']==4 and 'blind_matrix' not in report['sampling_counts']
     assert tracker['generations']==2  # only two selected dev prompts at step 2
     assert max(tracker['gen_limits']) < args.max_new_tokens
 
 
 def test_probe_fixed_anchor_and_rotating_coverage_all_games():
     games=sorted(gamer.registry_ids())
-    regimes=('anti_coordination','coordination','exact_tie','independent',
-             'large_cancellation','positive_affine','signed_neighbor','symmetric','zero_sum')
     dev=[{'game_id':g,'prompt_08':g,'math_prompt':'math'} for g in games]
-    dev += [{'game_id':'hawk_dove','prompt_08':'blind'+g,'math_prompt':'math',
-             'blind_matrix':True,'blind_matrix_regime':g} for g in regimes]
-    all_named=set();all_blind=set();fixed=None
+    all_named=set();fixed=None
     for i in range(5):
-        deck,anchor=gamer.fast_probe_deck(dev,budget=17,evaluation_index=i)
-        assert len(deck)==17 and len({r['prompt_08'] for r in deck})==17
-        if fixed is None:fixed=[r['prompt_08'] for r in deck[:anchor]]
-        else:assert [r['prompt_08'] for r in deck[:anchor]]==fixed
-        all_named.update(r['game_id'] for r in deck if not r.get('blind_matrix'))
-        all_blind.update(r['blind_matrix_regime'] for r in deck if r.get('blind_matrix'))
+        sampled,anchor=gamer.fast_probe_deck(dev,budget=17,evaluation_index=i)
+        assert len(sampled)==17 and len({r['prompt_08'] for r in sampled})==17
+        if fixed is None:fixed=[r['prompt_08'] for r in sampled[:anchor]]
+        else:assert [r['prompt_08'] for r in sampled[:anchor]]==fixed
+        all_named.update(r['game_id'] for r in sampled)
     assert all_named==set(games)
-    assert all_blind==set(regimes)
 
 
 def test_old_v8_lora_hyperparameters_unchanged():

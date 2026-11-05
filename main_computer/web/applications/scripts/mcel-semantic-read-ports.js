@@ -88,7 +88,12 @@
       "intent:studio-runtime-route-enter":["scm-runtime","route-enter","enterStudioRoute",["path","text"]],
       "intent:studio-runtime-route-leave":["scm-runtime","route-leave","leaveStudioRoute",["path","text"]],
       "intent:studio-runtime-evidence":["scm-runtime","evidence","readStudioRuntimeEvidence",["path","text"]],
-      "intent:studio-runtime-replay":["scm-runtime","replay","replayStudioRuntime",["path","text"]]
+      "intent:studio-runtime-replay":["scm-runtime","replay","replayStudioRuntime",["path","text"]],
+      "intent:studio-proof-list":["scm-proof","index","listStudioProofEvidence",["path","text"]],
+      "intent:studio-proof-inspect":["scm-proof","inspect","inspectStudioProofEvidence",["path","text","filter","key"]],
+      "intent:studio-proof-export":["scm-proof","packet","exportStudioProofPacket",["path","text","filter","key"]],
+      "intent:studio-regression-run":["scm-proof","regress","runStudioKernelRegressions",["path","text"]],
+      "intent:studio-repair-packet":["scm-proof","repair-packet","buildStudioAiRepairPacket",["path","text","filter","key"]]
     })
   });
   const err=s=>{throw Error("MCEL_READ_PORT:"+s);};
@@ -112,7 +117,9 @@
           Object.values(req.arguments[k]).every(v=>requiredText(v,100000))
         :requiredText(req.arguments[k],k==="text" && ["intent:save-source","intent:prepare-reviewed-change","intent:apply-reviewed-change","intent:check-studio-draft","intent:preview-studio-serialization",
           "intent:studio-runtime-mount","intent:studio-runtime-validate","intent:studio-runtime-serialize",
-          "intent:studio-runtime-repair","intent:studio-runtime-stage","intent:studio-runtime-commit","intent:studio-runtime-route-enter","intent:studio-runtime-route-leave","intent:studio-runtime-evidence","intent:studio-runtime-replay"].includes(req.intentId) ? 20000000:4096));
+          "intent:studio-runtime-repair","intent:studio-runtime-stage","intent:studio-runtime-commit","intent:studio-runtime-route-enter","intent:studio-runtime-route-leave","intent:studio-runtime-evidence","intent:studio-runtime-replay",
+          "intent:studio-proof-list","intent:studio-proof-inspect","intent:studio-proof-export",
+          "intent:studio-regression-run","intent:studio-repair-packet"].includes(req.intentId) ? 20000000:4096));
   }
   function create(options={}){
     const appId=options.appId;
@@ -151,6 +158,8 @@
     let studioSession=null;
     const studioIntent=name=>"intent:studio-runtime-"+name;
     const studioIntentNames=new Set(["mount","validate","serialize","repair","stage","commit","route-enter","route-leave","evidence","replay"].map(studioIntent));
+    const proofIntentNames=new Set(["studio-proof-list","studio-proof-inspect","studio-proof-export",
+      "studio-regression-run","studio-repair-packet"].map(name=>"intent:"+name));
     function scmForDocument(path,text){
       const scm=global.McelLabScm,manifest=global.McelCodeStudioScm;
       if(!scm || !manifest || manifest.componentName!=="CodeStudio" ||
@@ -213,6 +222,138 @@
       return encoded;
     }
 
+    // Current document's actual SCM evidence, with stable selection keys. No
+    // legacy Studio DOM or artificial proof specimens are imported.
+    const proofFilters=new Set(["all","component","route","violations","blocking","effects"]);
+    function boundProofSession(a){
+      const session=studioSession;
+      if(!session || session.path!==a.path || session.text!==a.text ||
+         session.baseline!==editorBaseline(a.path) || session.epoch!==editorReadEpochs.get(a.path))
+        err("studio-proof-session-stale");
+      return session;
+    }
+    function proofObserved(session){
+      const component=session.scm.exportEvidence(session.instance);
+      const route=session.route ? session.scm.exportRouteEvidence(session.route) : null;
+      if(!Array.isArray(component?.evidence) || component.evidence.length>128 ||
+         (route && (!Array.isArray(route.evidence) || route.evidence.length>128)))
+        err("scm-proof-evidence-invalid");
+      const records=[];
+      for(const [scope,packet] of [["component",component],["route",route]]){
+        (packet?.evidence||[]).forEach((e,i)=>{
+          if(!plain(e))err("scm-proof-record-invalid");
+          records.push({id:scope+":"+i,scope,phase:String(e.phase||""),
+            code:String(e.code||""),ok:e.ok!==false,raw:e});
+        });
+      }
+      return {component,route,records};
+    }
+    function proofMatches(record,filter){
+      if(filter==="component" || filter==="route")return record.scope===filter;
+      if(filter==="violations" || filter==="blocking")
+        return record.ok===false || /VIOLATION|REFUS|BLOCK|ERROR|FAIL/i.test(record.code);
+      if(filter==="effects")return /effect/i.test(record.phase);
+      return true;
+    }
+    function makeProofPacket(session,filter,key){
+      if(!proofFilters.has(filter))err("scm-proof-filter-invalid");
+      const observed=proofObserved(session);
+      const selected=key ? observed.records.find(r=>r.id===key) : null;
+      if(key && !selected)err("scm-proof-selection-not-observed");
+      if(selected && !proofMatches(selected,filter))err("scm-proof-selection-not-in-filter");
+      const visible=observed.records.filter(e=>proofMatches(e,filter));
+      const violations=observed.records.filter(e=>proofMatches(e,"violations"));
+      const packet={kind:"mcel-semantic-scm-proof-packet",version:"v1",origin:"actual-scm-kernel",
+        path:session.path,sourceBaseline:session.baseline.hash,readEpoch:session.epoch,
+        sourceAuthority:"opened-document",sourceMutation:"none",providerMutation:"none",
+        filter,selectedKey:key||"",selectedEvidence:selected?selected.raw:null,
+        contracts:{component:observed.component.contractVersion,
+          route:observed.route?.contractVersion||null},
+        counts:{all:observed.records.length,visible:visible.length,violations:violations.length},
+        evidence:visible.map(e=>({id:e.id,scope:e.scope,phase:e.phase,code:e.code,ok:e.ok,
+          detail:e.raw})),
+        violations:violations.map(e=>({id:e.id,scope:e.scope,phase:e.phase,code:e.code,detail:e.raw})),
+        lastKernelRegressions:session.lastKernelRegressions||null,
+        liveHostGates:"unverified",legacyDomRegressionFixtures:"not-executed",
+        activeSession:studioSession===session};
+      return packet;
+    }
+    function encodeProof(value){
+      const encoded=JSON.stringify(value);
+      if(!requiredText(encoded,500000))err("scm-proof-packet-too-large");
+      return encoded;
+    }
+    async function kernelRegressionFixtures(session){
+      // Only the real SCM kernel runs. Every case gets fresh, isolated state;
+      // legacy Monaco/DOM-dependent scenarios remain explicitly unverified.
+      const scenarios=[
+        {id:"kernel.validation",actions:["validate"],expected:"PASS"},
+        {id:"kernel.serialization",actions:["serialize"],expected:"PASS"},
+        {id:"kernel.repair",actions:["repair"],expected:"PASS"},
+        {id:"kernel.draft-route",actions:["route-enter","stage","commit","route-leave"],expected:"PASS"},
+        {id:"kernel.unstaged-commit",actions:["commit"],expected:"BLOCKED"}
+      ];
+      const results=[];
+      for(const spec of scenarios){
+        const execute=async()=>{
+          const fresh=scmForDocument(session.path,session.text);
+          const copy={...fresh,path:session.path,text:session.text,staged:false,committed:false};
+          const originalInput=JSON.stringify(copy.source);
+          let blocked="",failure="",exception="";
+          const events=[];
+          for(const action of spec.actions){
+            try{
+              const result=await scmRun(copy,action);
+              events.push({action,ok:result?.ok===true,blocked:result?.blocked===true});
+              if(result?.ok!==true){
+                if(result?.blocked===true)blocked=String(result?.code||"scm-refused");
+                else failure=String(result?.code||"scm-failed");
+                break;
+              }
+              if(action==="stage")copy.staged=true;
+              if(action==="commit"){copy.staged=false;copy.committed=true;}
+            }catch(e){
+              const message=String(e?.message||e).slice(0,160);
+              // The one expected denial exercises the port's explicit
+              // stage-before-commit invariant; other exceptions are failures.
+              if(spec.id==="kernel.unstaged-commit" && message.includes("studio-draft-not-staged"))
+                blocked=message;
+              else exception=message;
+              break;
+            }
+          }
+          return {events,blocked,failure,exception,inputUnchanged:originalInput===JSON.stringify(fresh.source),
+            // Exclude operation identifiers/timestamps and evidence: those are
+            // intentionally non-deterministic audit metadata.
+            stableState:JSON.stringify({source:copy.instance.source,state:copy.instance.state,
+              shell:copy.instance.runtime?.workbench?.shell,
+              validation:copy.instance.runtime?.validationReport,
+              serialized:copy.instance.runtime?.serializedOutput})};
+        };
+        const first=await execute(),second=await execute();
+        const observed=first.exception?"EXCEPTION":first.failure?"FAIL":first.blocked?"BLOCKED":
+          first.events.length===spec.actions.length && first.events.every(e=>e.ok)?"PASS":"FAIL";
+        const deterministic=first.stableState===second.stableState && first.blocked===second.blocked &&
+          first.failure===second.failure && first.exception===second.exception;
+        const noUnexpectedMutation=first.inputUnchanged && second.inputUnchanged;
+        const mismatches=[];
+        if(observed!==spec.expected)mismatches.push("expected "+spec.expected+" but observed "+observed);
+        if(!deterministic)mismatches.push("kernel deterministic replay diverged");
+        if(!noUnexpectedMutation)mismatches.push("authoring input changed outside permitted SCM transition");
+        const disposition=mismatches.length?"MISMATCH":observed;
+        results.push({id:spec.id,expectedDisposition:spec.expected,observedDisposition:observed,
+          disposition,ok:!mismatches.length,deterministic,noUnexpectedMutation,
+          evidence:{events:first.events,blocked:first.blocked,failure:first.failure,exception:first.exception},
+          mismatches});
+      }
+      const failed=results.filter(r=>!r.ok);
+      return {kind:"mcel-semantic-scm-isolated-kernel-regressions",version:"v1",
+        scope:"isolated-in-memory-kernel",path:session.path,
+        passed:results.length-failed.length,failed:failed.length,ok:!failed.length,
+        dispositions:results.reduce((out,r)=>(out[r.disposition]=(out[r.disposition]||0)+1,out),{}),
+        results,liveMonacoFixtures:"unverified",legacyDomFixtures:"not-executed",
+        productionSideEffects:"none"};
+    }
     const selectedAiderFiles=(path,raw)=>{
       const files=raw.trim()?raw.split(/[\n,]+/).map(x=>x.trim()).filter(Boolean):[path];
       if(!files.length || files.length>32 || !files.includes(path) || new Set(files).size!==files.length)return null;
@@ -296,6 +437,17 @@
            !requiredText(a.text,2000000))return false;
         return req.intentId===studioIntent("mount") ||
           !!studioSession && studioSession.path===a.path && studioSession.text===a.text &&
+          studioSession.baseline===editorBaseline(a.path) &&
+          studioSession.epoch===editorReadEpochs.get(a.path);
+      }
+      if(proofIntentNames.has(req.intentId)){
+        if(!editorBaseline(a.path)?.hash || !validPath(a.path) || !a.path ||
+           !requiredText(a.text,2000000) || busyEditors.has(a.path) ||
+           pendingAiderFiles.has(a.path) || uncertainAiderFiles.has(a.path) ||
+           editorBaseline(a.path).truncated)return false;
+        if(req.intentId!=="intent:studio-proof-list" && req.intentId!=="intent:studio-regression-run" &&
+           (!proofFilters.has(a.filter) || !requiredText(a.key,256)))return false;
+        return !!studioSession && studioSession.path===a.path && studioSession.text===a.text &&
           studioSession.baseline===editorBaseline(a.path) &&
           studioSession.epoch===editorReadEpochs.get(a.path);
       }
@@ -732,6 +884,44 @@
           // The generic semantic text surface intentionally never inserts
           // returned HTML as trusted DOM or executes documentation scripts.
           return payload.content;
+        }
+        case "intent:studio-proof-list":{
+          const session=boundProofSession(a);
+          return proofObserved(session).records.map(e=>({id:e.id,scope:e.scope,
+            phase:e.phase.slice(0,128),code:e.code.slice(0,128)}));
+        }
+        case "intent:studio-proof-inspect":{
+          const session=boundProofSession(a),packet=makeProofPacket(session,a.filter,a.key);
+          return encodeProof({kind:"mcel-semantic-scm-proof-inspection",path:a.path,
+            selectedKey:a.key||"",selectedEvidence:packet.selectedEvidence,
+            counts:packet.counts,visibleEvidence:packet.evidence});
+        }
+        case "intent:studio-proof-export":{
+          return encodeProof(makeProofPacket(boundProofSession(a),a.filter,a.key));
+        }
+        case "intent:studio-regression-run":{
+          const session=boundProofSession(a);
+          const report=await kernelRegressionFixtures(session);
+          if(studioSession!==session || session.baseline!==editorBaseline(a.path) ||
+             session.epoch!==editorReadEpochs.get(a.path))err("studio-proof-session-superseded");
+          session.lastKernelRegressions=report;
+          return encodeProof(report);
+        }
+        case "intent:studio-repair-packet":{
+          const session=boundProofSession(a),packet=makeProofPacket(session,a.filter,a.key);
+          const proposal={kind:"mcel-semantic-scm-ai-repair-proposal",version:"v1",
+            execution:"NOT_EXECUTED",aiProviderCalled:false,sourceMutation:"none",
+            evidenceGrounding:"actual-scm-kernel",path:a.path,
+            prompt:["MCEL Code Studio evidence-grounded repair request",
+              "Propose only the smallest source change supported by the enclosed actual SCM evidence.",
+              "Do not claim that the repair ran. Do not alter source, runtime, services or capabilities.",
+              "Do not treat unverified legacy DOM, layout or Monaco gates as passed.",
+              "Require existing guarded source-save and reviewed-change authorization before applying any proposal.",
+              packet.counts.violations ? "Investigate the documented contract violations only." :
+                "No verified SCM violation is present; do not invent or execute a repair.",
+              JSON.stringify(packet)].join("\n"),
+            packet};
+          return encodeProof(proposal);
         }
         case "intent:studio-runtime-mount":{
           const created=scmForDocument(a.path,a.text);

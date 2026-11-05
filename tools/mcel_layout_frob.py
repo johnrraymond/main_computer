@@ -4,6 +4,7 @@ Usage:
  python tools/mcel_layout_frob.py --mode smoke
  python tools/mcel_layout_frob.py --mode sweep --widths 320,390,768,1440 --fixtures normal,long_text,stale
  python tools/mcel_layout_frob.py --mode sweep --no-browser   # planning only; no browser PASS
+ python tools/mcel_layout_frob.py --mode paired-workspace  # test the built-in isolated compositor candidate
 
 Runs production MCEL workspace inference, canonical layout tree and adaptive control
 contract where appropriate. New graded-hint / bounded-constraint planners consume
@@ -481,9 +482,600 @@ def write_gallery(report, output):
                    provenance=report.get('provenance', {}))
 
 
+# MCEL paired-workspace preintegration mode. This code is inserted into the
+# existing layout frob; it does not modify any application or runtime file.
+PAIRED_APPS = ('file-manager', 'task-manager', 'code-editor', 'calculator')
+PAIRED_WIDTHS = (320, 390, 560, 1100, 1272)
+PAIRED_CANDIDATE = ROOT / "tools/fixtures/mcel_paired_workspace_candidate"
+
+
+def _paired_baseline_pages(apps):
+    from main_computer.mcel_semantic_other_apps_host import compile_semantic_app, render_semantic_page
+    from main_computer.mcel_calculator_expanded_host import compile_expanded, render_expanded_page
+    pages = {}
+    for app in apps:
+        if app == 'calculator':
+            ir, markup = compile_expanded(), render_expanded_page()
+        else:
+            ir, markup = compile_semantic_app(app), render_semantic_page(app)
+        pages[app] = {'ir': ir, 'html': markup}
+    return pages
+
+
+def _paired_stage(root, destination, patch):
+    """Stage candidate code away from the user's repository and its services."""
+    import zipfile
+    from pathlib import PurePosixPath
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(root/'main_computer', destination/'main_computer',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    for fixture in ('mcel_semantic_other_apps', 'mcel_calculator_expanded'):
+        source = root/'tools'/'fixtures'/fixture
+        shutil.copytree(source, destination/'tools'/'fixtures'/fixture)
+    changed = []
+    # Both inputs stage EXACT repository-relative source files into the same
+    # isolated checkout. The built-in source tree is the normal development
+    # path; the optional ZIP is retained for independent candidate review.
+    def add(path, data):
+        parts = PurePosixPath(path).parts
+        if (not parts or path.startswith('/') or '.' in parts or '..' in parts or
+            '\x00' in path or parts[0] != 'main_computer' or
+            path.startswith('main_computer/web/applications/fixtures/')):
+            raise ValueError('Unsafe or non-root-relative candidate source: '+path)
+        target = destination/path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        changed.append(path)
+    if patch.is_dir():
+        # An editable, inspectable, permanent candidate in the existing Frob.
+        # Never execute or follow symlinked files from a candidate tree.
+        for src in sorted(patch.rglob('*')):
+            if src.is_symlink():
+                raise ValueError('Unsafe candidate symlink: '+str(src))
+            if src.is_dir():
+                continue
+            if '__pycache__' in src.relative_to(patch).parts or src.suffix in ('.pyc','.pyo'):
+                continue
+            if not src.is_file():
+                raise ValueError('Unsupported candidate source: '+str(src))
+            add(src.relative_to(patch).as_posix(), src.read_bytes())
+    else:
+        with zipfile.ZipFile(patch) as archive:
+            names = set()
+            for member in archive.infolist():
+                path = member.filename.replace('\\', '/')
+                parts = PurePosixPath(path).parts
+                if (member.is_dir() or not parts or path.startswith('/') or
+                    '.' in parts or '..' in parts or '\x00' in path or
+                    path in names or parts[0] not in ('main_computer', 'tools', 'tests')):
+                    raise ValueError('Unsafe or non-root-relative candidate ZIP entry: '+path)
+                names.add(path)
+                if parts[0] == 'tests' or parts[:2] == ('tools', 'mcel_workspace_plan_probe.py'):
+                    continue
+                if parts[0] == 'tools' and parts[:2] != ('tools', 'fixtures'):
+                    continue
+                if path.startswith(('tools/fixtures/mcel_semantic_other_apps/',
+                                    'tools/fixtures/mcel_calculator_expanded/')):
+                    raise ValueError('Candidate cannot rewrite semantic application sources: '+path)
+                add(path, archive.read(member))
+    if not changed:
+        raise ValueError('Candidate ZIP contains no staged application changes')
+    return changed
+
+
+def _paired_candidate_pages(stage, apps):
+    """Compile inside the scratch source tree; never import staged modules into the Frob."""
+    import tempfile
+    expression = '''import json,sys
+from pathlib import Path
+from main_computer.mcel_semantic_other_apps_host import compile_semantic_app,render_semantic_page
+from main_computer.mcel_calculator_expanded_host import compile_expanded,render_expanded_page
+apps=json.loads(sys.argv[1]);target=Path(sys.argv[2]);pages={}
+for app in apps:
+ if app=='calculator': ir,markup=compile_expanded(),render_expanded_page()
+ else: ir,markup=compile_semantic_app(app),render_semantic_page(app)
+ pages[app]={'ir':ir,'html':markup}
+target.write_text(json.dumps(pages,ensure_ascii=False),encoding='utf-8')
+'''
+    path = stage/'frob-pages.json'
+    env = os.environ.copy()
+    env['PYTHONPATH'] = str(stage)
+    process = subprocess.run([sys.executable, '-c', expression, json.dumps(list(apps)), str(path)],
+                             cwd=stage, env=env, capture_output=True, text=True, timeout=90)
+    if process.returncode != 0:
+        raise RuntimeError('Staged candidate compilation refused: '+process.stderr[-1500:])
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+# Same deterministic read-port doubles already exercised by the paired-app tests.
+# All non-loopback requests and unrecognized operations are blocked.
+_PAIRED_MOCK = r'''() => {
+ window.__pairedCalls=[];
+ window.fetch=async (url,options) => {
+   const path=String(url).split('/api/applications/')[1];
+   window.__pairedCalls.push({path,method:String(options?.method||'GET')});
+   let data;
+   if(path==='file-explorer/roots') data={ok:true,roots:[{id:'workspace',label:'Workspace'}]};
+   else if(path==='file-explorer/list')data={ok:true,entries:[{relative_path:'README.md',name:'README.md',kind:'file'},{relative_path:'src',name:'src',kind:'directory'}]};
+   else if(path==='file-explorer/read')data={ok:true,readable:true,content:'Project documentation'};
+   else if(path==='task/overview')data={processes:[{pid:123,name:'server',status:'running',created_at:'2026-10-31T12:00',memory_human:'34 MB'}]};
+   else if(path==='editor/files')data={entries:[{path:'README.md',name:'README.md',kind:'file'}]};
+   else if(path==='editor/read')data={ok:true,files:[{path:'README.md',content:'# Sample project'}]};
+   else return {ok:false,status:404,json:async()=>({error:'mock-blocked'})};
+   return {ok:true,status:200,json:async()=>data};
+ };
+}'''
+
+
+_PAIRED_MEASURE = '''() => {
+ const root=document.querySelector('[data-mcel-presentation]');
+ const r=(el)=>{const a=el?.getBoundingClientRect();return a?{x:a.x,y:a.y,width:a.width,height:a.height}:null};
+ const anchor=document.querySelector('[data-mcel-zone="workspace"]') ||
+   document.querySelector('[data-mcel-priority="primary"][data-mcel-region]');
+ const layout=document.querySelector('[data-mcel-workspace-layout]');
+ const zones=Object.fromEntries([...document.querySelectorAll('[data-mcel-zone]')]
+   .map(el=>[el.getAttribute('data-mcel-zone'),r(el)]));
+ return {ready:(document.querySelector('#mcel-workbench-status')?.textContent ||
+                 document.querySelector('#mcel-expanded-diagnostic')?.textContent || '').trim(),
+   refused:!!document.querySelector('[data-error="true"]'),
+   appId:window.__mcelWorkbench?.appId||window.__mcelExpanded?.appId||null,
+   regions:[...(root?.querySelectorAll('[data-mcel-region]')||[])].map(el=>el.getAttribute('data-mcel-region')),
+   buttons:[...(root?.querySelectorAll('button')||[])].map(b=>b.textContent.trim()),
+   anchor:r(anchor),zones,layout:!!layout,rung:layout?.dataset.mcelLayoutRung||null,
+   tabs:document.querySelectorAll('[data-mcel-tool-tabs] [role="tab"]').length,
+   hiddenToolPanels:document.querySelectorAll('[data-mcel-tool-panel][hidden]').length,
+   horizontalOverflow:document.documentElement.scrollWidth>innerWidth+1,
+   scrollHeight:document.documentElement.scrollHeight,viewport:innerWidth,
+   mainHeight:innerHeight,screenWidth:document.documentElement.scrollWidth,
+   uncaught:(window.__pairedErrors||[]).slice()};
+}'''
+
+
+def _paired_browser_page(browser, markup, width):
+    page = browser.new_page(viewport={'width':width,'height':900}, device_scale_factor=1)
+    page.route('**/*', lambda route: route.abort())
+    page.evaluate(_PAIRED_MOCK)
+    page.evaluate('window.__pairedErrors=[];window.addEventListener("error",e=>window.__pairedErrors.push(String(e.message)));')
+    try:
+        page.set_content(markup, wait_until='load', timeout=15000)
+        return page
+    except Exception:
+        page.close()
+        raise
+
+
+def _paired_observe(browser, markup, width, output=None):
+    page=_paired_browser_page(browser,markup,width)
+    try:
+        observed=page.evaluate(_PAIRED_MEASURE)
+        if output is not None:
+            page.screenshot(path=str(output), full_page=True, timeout=12000)
+            observed['screenshot']=output.name
+            observed['screenshot_sha256']=hashlib.sha256(output.read_bytes()).hexdigest()
+        return observed
+    finally:
+        page.close()
+
+
+def _paired_plan_variant(markup, zone_id, rung, new_placement):
+    """Produce a correctly rehashed plan variant to detect silently ignored decisions."""
+    import re
+    rx=r'(<script[^>]*id="mcel-workbench-plan"[^>]*>)(.*?)(</script>)'
+    match=re.search(rx,markup,re.DOTALL)
+    if not match:
+        raise ValueError('Candidate does not embed a workspace plan')
+    plan=json.loads(match.group(2))
+    if not isinstance(plan,dict) or plan.get('schema')!='mcel.workspace-plan.v1':
+        raise ValueError('Candidate has no validated workspace-plan.v1')
+    zone=next((z for z in plan['zones'] if z['id']==zone_id),None)
+    if not zone or rung not in zone.get('ladder',{}):
+        raise ValueError('Candidate lacks required zone ladder')
+    original=zone['ladder'][rung]
+    if original==new_placement:
+        raise ValueError('Plan variant has no semantic difference')
+    zone['ladder'][rung]=new_placement
+    plan.pop('fingerprint',None)
+    plan['fingerprint']='sha256:'+sha(plan)
+    replacement=json.dumps(plan,ensure_ascii=False,separators=(',',':')).replace('<','\\u003c')
+    return markup[:match.start(2)]+replacement+markup[match.end(2):],original
+
+
+def _paired_sensitivity(browser, candidate_html, width):
+    """A plan instruction must change geometry, never be silently ignored."""
+    variant, original = _paired_plan_variant(candidate_html,'tools','wide','dock-bottom')
+    baseline = _paired_observe(browser,candidate_html,width)
+    changed = _paired_observe(browser,variant,width)
+    a=baseline['zones'].get('tools');b=changed['zones'].get('tools')
+    if changed['refused']:
+        return {'status':'UNVERIFIED','reason':'Valid plan variant was refused; compositor placement sensitivity not demonstrated',
+                'originalPlacement':original,'candidateRefusal':changed['ready']}
+    moved=bool(a and b and (abs(a['x']-b['x'])>8 or abs(a['y']-b['y'])>8))
+    return {'status':'PASS' if moved else 'FAIL',
+            'reason':'Zone visibly moved' if moved else 'Verified plan ladder decision was silently ignored',
+            'originalPlacement':original,'requestedPlacement':'dock-bottom',
+            'originalZone':a,'changedZone':b}
+
+
+def _paired_browser_interaction(browser, markup, width):
+    """Code Editor read-only workflow, tab reachability, node identity and resize."""
+    page=_paired_browser_page(browser,markup,width)
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+        if page.locator('[data-mcel-workspace-layout]').count()!=1:
+            return {'status':'FAIL','reason':'Candidate did not mount a planned workspace'}
+        page.evaluate('''() => {window.__frobEditor=document.querySelector('[data-mcel-document-surface]');}''')
+        if not page.evaluate('Boolean(window.__frobEditor)'):
+            return {'status':'FAIL','reason':'Document editor surface missing'}
+        tabs=page.locator('[data-mcel-tool-tabs] [role="tab"]')
+        if tabs.count()<2:
+            return {'status':'FAIL','reason':'Supporting tools not grouped into navigable tabs'}
+        active=page.locator('[data-mcel-tool-panel]:not([hidden])')
+        input_box=active.locator('input').first
+        if input_box.count():
+            input_box.fill('frob-retained-input')
+        tabs.nth(1).click(timeout=5000)
+        if page.locator('[data-mcel-tool-panel]:not([hidden])').count()!=1:
+            return {'status':'FAIL','reason':'Tool selection did not isolate one active panel'}
+        page.set_viewport_size({'width':320,'height':900})
+        page.wait_for_timeout(80)
+        retained=page.evaluate('window.__frobEditor === document.querySelector("[data-mcel-document-surface]")')
+        page.set_viewport_size({'width':width,'height':900})
+        page.wait_for_timeout(80)
+        retained=retained and page.evaluate('window.__frobEditor === document.querySelector("[data-mcel-document-surface]")')
+        tabs.nth(0).click(timeout=5000)
+        if input_box.count() and input_box.input_value()!='frob-retained-input':
+            return {'status':'FAIL','reason':'Tab switch lost authored form input'}
+        if not retained:
+            return {'status':'FAIL','reason':'Resize or tab switch replaced editor DOM node'}
+        # The same actual read-only selection path as the existing four-app tests.
+        page.get_by_role('button',name='List Files').click(timeout=5000)
+        page.locator('[data-record-key="README.md"] button').click(timeout=5000)
+        page.wait_for_function('window.__mcelWorkbench.app.readState("state:source") === "# Sample project"',timeout=5000)
+        calls=page.evaluate('window.__pairedCalls')
+        if [x['path'] for x in calls]!=['editor/files','editor/read']:
+            return {'status':'FAIL','reason':'Unexpected mock operations','calls':calls}
+        return {'status':'PASS','documentNodeRetained':True,'formInputRetained':True,
+                'readOnlyCalls':[x['path'] for x in calls]}
+    except Exception as exc:
+        return {'status':'FAIL','reason':f'{type(exc).__name__}: {exc}'[:350]}
+    finally:
+        page.close()
+
+
+# Current Calculator semantic oracle. This is a test expectation, not a
+# compositor decision: changing a planner's emitted pairs must NOT also change
+# what the acceptance gate expects to see in the browser.
+CALCULATOR_ORACLE = {
+    'basic': (('arithmetic','answer'),),
+    'graphing': (('graph-input','graph-output'),),
+    'symbolic': (('mathics-input','mathics-output'),),
+    'help': (('helpers','helper-output'),('qa','qa-output')),
+}
+
+
+def _paired_plan_present(markup):
+    import re
+    for match in re.finditer(r'<script[^>]*id="(?:mcel-workbench-plan|mcel-expanded-plan)"[^>]*>(.*?)</script>',
+                             markup, re.DOTALL):
+        if match.group(1).strip() not in ('null',''):
+            return True
+    return False
+
+
+def _paired_calculator_pair_checks(observed, width):
+    """Independent, geometry-based oracle, never driven by the workspace plan."""
+    findings=[]
+    wide=width>680
+    for pair in observed['pairs']:
+        src, result=pair['input'],pair['output']
+        failures=[]
+        if not pair['sameContainer']:
+            failures.append('pair-not-co-located')
+        if not pair['visible'] or not src or not result or min(src['w'],src['h'],result['w'],result['h'])<=0:
+            failures.append('pair-not-visible')
+        else:
+            dx=result['x']-(src['x']+src['w'])
+            dy=result['y']-(src['y']+src['h'])
+            overlap_x=min(src['x']+src['w'],result['x']+result['w'])-max(src['x'],result['x'])
+            overlap_y=min(src['y']+src['h'],result['y']+result['h'])-max(src['y'],result['y'])
+            if wide:
+                if not (0<=dx<=36 and abs(result['y']-src['y'])<=18 and overlap_x<=1):
+                    failures.append('expected-adjacent-horizontal-input-result')
+            elif not (0<=dy<=36 and abs(result['x']-src['x'])<=5 and abs(result['w']-src['w'])<=5):
+                failures.append('expected-adjacent-vertical-input-result')
+            if overlap_x>1 and overlap_y>1:
+                failures.append('input-output-overlap')
+        findings.append({'mode':observed['mode'],'input':pair['inputId'],'output':pair['outputId'],
+                         'inputRect':src,'outputRect':result,'failures':failures})
+    all_ok=(observed['layout'] and observed['rung']==('wide' if width>=980 else 'medium' if width>=680 else 'narrow')
+            and observed['visibleRegionIds']==observed['expectedRegionIds']
+            and not observed['horizontalOverflow']
+            and not observed['errors'] and all(not x['failures'] for x in findings))
+    return {'status':'PASS' if all_ok else 'FAIL','mode':observed['mode'],
+            'geometry':findings,'rung':observed['rung'],
+            'visibleRegionIds':observed['visibleRegionIds'],
+            'expectedRegionIds':observed['expectedRegionIds'],
+            'horizontalOverflow':observed['horizontalOverflow'],
+            'errors':observed['errors'],
+            'reason':'Input/result pairing verified from browser geometry' if all_ok else 'Calculator semantic-layout oracle mismatch'}
+
+
+def _paired_calculator_oracle(browser, markup, width):
+    """Exercise actual mode controls and assert every input/result pair."""
+    page=_paired_browser_page(browser,markup,width)
+    cases={}
+    try:
+        if page.locator('#mcel-expanded-diagnostic').inner_text()!='Semantic Calculator ready':
+            return {'status':'FAIL','reason':page.locator('#mcel-expanded-diagnostic').inner_text()}
+        for mode, pairs in CALCULATOR_ORACLE.items():
+            if mode!='basic':
+                tab=page.locator(f'[data-mcel-mode-tabs] button[data-value="{mode}"]')
+                if tab.is_visible():tab.click(timeout=5000)
+                else:page.locator('select[data-intent="intent:switch-mode"]').select_option(mode)
+                page.wait_for_function('(m)=>window.__mcelExpanded.app.readState("state:mode")===m',arg=mode)
+            source_ids=['interface-region:semantic-calculator-expanded.'+rid for pair in pairs for rid in pair]
+            measured=page.evaluate('''(args)=>{
+              const {mode,pairs,expectedIds}=args;
+              const rect=el=>{if(!el)return null;const r=el.getBoundingClientRect();
+                return {x:r.x,y:r.y,w:r.width,h:r.height};};
+              const visible=el=>!!el && !el.hidden && el.getClientRects().length>0;
+              const all=[...document.querySelectorAll('[data-mcel-region]')];
+              const active=all.filter(el=>el.getAttribute('data-mcel-region')!==
+                'interface-region:semantic-calculator-expanded.application' &&
+                ['input','results','assistance'].includes(el.getAttribute('data-mcel-purpose')) && visible(el));
+              const zone=document.querySelector('[data-mcel-workspace-layout]');
+              const errors=window.__pairedErrors||[];
+              return {mode,layout:!!zone,rung:zone?.getAttribute('data-mcel-layout-rung')||null,
+               visibleRegionIds:active.map(el=>el.getAttribute('data-mcel-region')).sort(),
+               expectedRegionIds:[...expectedIds].sort(),
+               horizontalOverflow:document.documentElement.scrollWidth>innerWidth+1,errors,
+               pairs:pairs.map(([inputId,outputId])=>{
+                 const a=document.querySelector('[data-mcel-region="'+inputId+'"]');
+                 const b=document.querySelector('[data-mcel-region="'+outputId+'"]');
+                 return {inputId,outputId,input:rect(a),output:rect(b),visible:visible(a)&&visible(b),
+                   sameContainer:!!a?.parentElement && a.parentElement===b?.parentElement &&
+                    a.parentElement.hasAttribute('data-mcel-input-result-pair')};
+               })};
+            }''',{'mode':mode,'pairs':[(source_ids[i],source_ids[i+1]) for i in range(0,len(source_ids),2)],
+                  'expectedIds':source_ids})
+            cases[mode]=_paired_calculator_pair_checks(measured,width)
+        return {'status':'PASS' if all(c['status']=='PASS' for c in cases.values()) else 'FAIL',
+                'modes':cases,'reason':'All Calculator modes meet the independent pair oracle' if
+                all(c['status']=='PASS' for c in cases.values()) else 'One or more mode pairings failed'}
+    except Exception as exc:
+        return {'status':'FAIL','reason':f'{type(exc).__name__}: {exc}'[:500], 'modes':cases}
+    finally:
+        page.close()
+
+
+def _paired_plan_contract(markup, ir):
+    """Independently check the embedded plan's source binding and complete coverage."""
+    import re
+    match=re.search(r'<script[^>]*id="(?:mcel-workbench-plan|mcel-expanded-plan)"[^>]*>(.*?)</script>',markup,re.DOTALL)
+    if not match:
+        return {'status':'FAIL','reason':'Candidate did not embed a workspace plan'}
+    try:
+        plan=json.loads(match.group(1))
+        ir_regions=ir['surfaces'][0]['interfaceIntent']['regions']
+        all_ids={r['id'] for r in ir_regions}
+        assigned=[rid for z in plan['zones'] for rid in z['members']]
+        signed=dict(plan);fingerprint=signed.pop('fingerprint',None)
+        checks={
+          'schema':plan.get('schema')=='mcel.workspace-plan.v1' and plan.get('runtimeEnabled') is True,
+          'sourceBinding':plan.get('sourceIrHash')==ir['fingerprints']['semantic'],
+          'planFingerprint':fingerprint=='sha256:'+sha(signed),
+          'exactRegionCoverage':len(assigned)==len(set(assigned)) and set(assigned)==all_ids-{plan['rootId']},
+          'responsiveLadders':all(set(z.get('ladder',{}))=={'wide','medium','narrow'} for z in plan['zones']),
+        }
+        return {'status':'PASS' if all(checks.values()) else 'FAIL','checks':checks,
+                'reason':'Source-verified, complete plan' if all(checks.values()) else 'Plan contract incomplete'}
+    except (KeyError,TypeError,ValueError) as exc:
+        return {'status':'FAIL','reason':'Invalid embedded plan: '+str(exc)[:240]}
+
+
+def _paired_populated_interaction(browser, markup, app, width, screenshot=None):
+    """Existing mock transport, actual rendered controls, no consequential requests."""
+    page=_paired_browser_page(browser,markup,width)
+    try:
+        if app=='file-manager':
+            page.get_by_role('button',name='Load Roots').click(timeout=5000)
+            page.locator('[data-record-key="workspace"] button').click(timeout=5000)
+            page.get_by_role('button',name='Browse').click(timeout=5000)
+            page.locator('[data-record-key="README.md"] button').click(timeout=5000)
+            page.get_by_role('button',name='Preview Entry').click(timeout=5000)
+            page.locator('[data-state="state:preview"]').get_by_text('Project documentation').wait_for(timeout=5000)
+            expected=['file-explorer/roots','file-explorer/list','file-explorer/read']
+        elif app=='task-manager':
+            page.locator('form[data-intent="intent:refresh"] input[name="query"]').fill('server')
+            page.locator('form[data-intent="intent:refresh"] button[type="submit"]').click(timeout=5000)
+            page.locator('[data-record-key="123:2026-10-31T12:00"] button').click(timeout=5000)
+            if page.evaluate('window.__mcelWorkbench.app.readState("state:selected")')!='123:2026-10-31T12:00':
+                return {'status':'FAIL','reason':'Selection state was not preserved'}
+            expected=['task/overview']
+        elif app=='calculator':
+            pad=page.locator('[data-mcel-expression-pad]')
+            for value in ('7','+','8','submit'):
+                pad.locator(f'button[data-pad-action="{value}"]').click(timeout=5000)
+            page.locator('[data-state="state:arithmetic-result"]').get_by_text('15').wait_for(timeout=5000)
+            expected=[]
+        elif app=='code-editor':
+            page.get_by_role('button',name='List Files').click(timeout=5000)
+            page.locator('[data-record-key="README.md"] button').click(timeout=5000)
+            page.wait_for_function('window.__mcelWorkbench.app.readState("state:source") === "# Sample project"',timeout=5000)
+            expected=['editor/files','editor/read']
+        else:
+            raise ValueError('Unknown paired app')
+        calls=page.evaluate('window.__pairedCalls')
+        if [x['path'] for x in calls]!=expected:
+            return {'status':'FAIL','reason':'Unexpected request sequence','calls':calls}
+        if page.evaluate('document.documentElement.scrollWidth > innerWidth+1'):
+            return {'status':'FAIL','reason':'Populated view overflows viewport'}
+        if screenshot is not None:
+            page.screenshot(path=str(screenshot),full_page=True,timeout=12000)
+        return {'status':'PASS','mockCalls':calls,'populatedScreenshot':screenshot.name if screenshot else None}
+    except Exception as exc:
+        return {'status':'FAIL','reason':f'{type(exc).__name__}: {exc}'[:350]}
+    finally:
+        page.close()
+
+
+def _paired_unplanned_html(markup):
+    """Compare against the same paired application with composition disabled.
+
+    This is the fallback-renderer baseline for an already staged composer; it
+    never changes the semantic IR, actions, source files, or persistent state.
+    """
+    import re
+    return re.sub(r'(<script[^>]*id="(?:mcel-workbench-plan|mcel-expanded-plan)"[^>]*>).*?(</script>)',
+                  lambda m: m.group(1)+'null'+m.group(2), markup,
+                  count=1, flags=re.DOTALL)
+
+
+def paired_workspace_frob(*, candidate_zip=None, apps=PAIRED_APPS, widths=PAIRED_WIDTHS,
+                          output=DEFAULT_OUTPUT/'paired-workspace', chromium_executable=None):
+    """Read-only gate for an isolated, permanent source candidate.
+
+    If no candidate exists, report INCOMPLETE rather than certifying the base renderer.
+    """
+    from collections import Counter
+    from tempfile import TemporaryDirectory
+    apps=tuple(apps);widths=tuple(widths)
+    if not apps or set(apps)-set(PAIRED_APPS) or not widths or any(w<320 or w>4000 for w in widths):
+        raise ValueError('Invalid paired-workspace app or viewport selection')
+    patch=(Path(candidate_zip).resolve() if candidate_zip is not None else
+           (PAIRED_CANDIDATE if PAIRED_CANDIDATE.is_dir() else None))
+    if patch is not None and not (patch.is_file() or patch.is_dir()):
+        raise FileNotFoundError(patch)
+    output=Path(output).resolve();output.mkdir(parents=True,exist_ok=True)
+    # A planned checkout must be compared with its own unplanned fallback, not
+    # against the identical composed page (which could conceal lost controls).
+    baseline=_paired_baseline_pages(apps)
+    baseline={app:{'ir':page['ir'],'html':_paired_unplanned_html(page['html'])}
+              for app,page in baseline.items()}
+    report={'schema':'mcel.layout-frob.paired-workspace.v1',
+            'scope':'isolated-candidate-read-only' if patch else 'current-checkout-read-only',
+            'candidateSource':('source-tree' if patch.is_dir() else 'zip') if patch else 'checkout',
+            'status':'UNVERIFIED',
+            'candidateZipSha256':hashlib.sha256(patch.read_bytes()).hexdigest() if patch and patch.is_file() else None,
+            'apps':list(apps),'widths':list(widths),'checks':{},'cases':[],
+            'notCertified':['live operations','human design approval','production promotion']}
+    with TemporaryDirectory(prefix='mcel-paired-candidate-') as scratch:
+        if patch:
+            stage=Path(scratch)/'repo'
+            report['stagedFiles']=_paired_stage(ROOT,stage,patch)
+            report['stagedSha256']={name:hashlib.sha256((stage/name).read_bytes()).hexdigest()
+                                    for name in report['stagedFiles']}
+            candidate=_paired_candidate_pages(stage,apps)
+        else:
+            report['stagedFiles']=[]
+            candidate=_paired_baseline_pages(apps)
+        planned_apps=[app for app in apps if _paired_plan_present(candidate[app]['html'])]
+        if not planned_apps:
+            # An unmodified checkout is a valid object to inspect, but never
+            # evidence that an unapplied compositor passes integration gates.
+            report['status']='INCOMPLETE'
+            report['checks']['compositionCandidatePresent']={
+                'status':'UNVERIFIED',
+                'reason':'No workspace compositor is installed in this checkout/candidate; '+
+                         'the paired-workspace integration gate cannot certify absent code'}
+            report_path=output/'report.json'
+            report_path.write_text(json.dumps(report,indent=2,ensure_ascii=False,sort_keys=True),encoding='utf-8')
+            print('MCEL_LAYOUT_FROB_PAIRED_WORKSPACE INCOMPLETE',flush=True)
+            print('  No workspace compositor found; existing application code was not changed.',flush=True)
+            print('  report: '+str(report_path),flush=True)
+            return 1
+        for app in apps:
+            original,c=baseline[app],candidate[app]
+            for key in ('fingerprints','intents','effects','capabilities','states','surfaces'):
+                # Only semantic source authority is immutable; layout planning may add host metadata.
+                if original['ir'].get(key)!=c['ir'].get(key):
+                    raise ValueError(f'Staged candidate changes immutable {app} IR {key}')
+        report['sourceIrHashes']={app:baseline[app]['ir']['fingerprints']['semantic'] for app in apps}
+        from playwright.sync_api import sync_playwright
+        from tools.mcel_phase2b_browser import launch_semantic_browser
+        with sync_playwright() as pw:
+            if chromium_executable:
+                b=pw.chromium.launch(executable_path=chromium_executable,headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+            else:
+                b,env=launch_semantic_browser(pw)
+            report['browser']={'version':b.version,'engine':'chromium'}
+            try:
+                for app in apps:
+                    ir=baseline[app]['ir']
+                    expected_regions={r['id'] for r in ir['surfaces'][0]['interfaceIntent']['regions']}
+                    for width in widths:
+                        case={'app':app,'width':width,'status':'UNVERIFIED','checks':{}}
+                        try:
+                            base_path=output/f'{app}-baseline-{width}.png'
+                            cand_path=output/f'{app}-candidate-{width}.png'
+                            old=_paired_observe(b,baseline[app]['html'],width,base_path)
+                            new=_paired_observe(b,candidate[app]['html'],width,cand_path)
+                            case['baseline']=old;case['candidate']=new
+                            checks=case['checks']
+                            checks['mount']=bool(not new['refused'] and new['ready'].endswith('ready'))
+                            checks['regionCoverage']=set(new['regions'])==expected_regions and len(new['regions'])==len(expected_regions)
+                            checks['authoredControls']=not (Counter(old['buttons'])-Counter(new['buttons']))
+                            checks['noHorizontalOverflow']=not new['horizontalOverflow']
+                            checks['anchorAboveFold']=bool(new['anchor'] and new['anchor']['y']<new['mainHeight'])
+                            if app=='calculator':
+                                checks['workspacePlanConsumed']=bool(new['layout'] and new['zones'].get('workspace'))
+                                oracle=_paired_calculator_oracle(b,candidate[app]['html'],width)
+                                case['calculatorOracle']=oracle
+                                checks['calculatorOracle']=oracle['status']=='PASS'
+                            if app=='code-editor':
+                                checks['workspacePlanConsumed']=bool(new['layout'] and new['zones'].get('workspace') and new['tabs']>=2)
+                                checks['anchorCapacity']=bool(new['anchor'] and (
+                                    (new['anchor']['width']>=520 and new['anchor']['width']/width>=.5 and new['scrollHeight']<=1600)
+                                    if width>=1100 else
+                                    (new['anchor']['width']/width>=.90 and new['scrollHeight']<=2600)
+                                    if width<=390 else
+                                    new['anchor']['width']>=.55*width))
+                            case['status']='PASS' if all(checks.values()) else 'FAIL'
+                        except Exception as exc:
+                            case['status']='FAIL';case['error']=f'{type(exc).__name__}: {exc}'[:500]
+                        report['cases'].append(case)
+                # An unchanged baseline cannot earn a workspace-composition PASS.
+                planned_apps = []
+                for app in apps:
+                    has_plan = _paired_plan_present(candidate[app]['html'])
+                    if has_plan:
+                        planned_apps.append(app)
+                        report['checks'][app+'PlanContract']=_paired_plan_contract(candidate[app]['html'],candidate[app]['ir'])
+                    elif app in ('code-editor','calculator'):
+                        report['checks'][app+'PlanContract']={'status':'FAIL','reason':app+' candidate lacks a workspace plan'}
+                    else:
+                        report['checks'][app+'PlanContract']={'status':'PASS','reason':'Unplanned reference application (regression comparison only)'}
+                    screenshot=output/f'{app}-populated-{max(widths)}.png'
+                    report['checks'][app+'PopulatedWorkflow']=_paired_populated_interaction(b,candidate[app]['html'],app,max(widths),screenshot)
+                report['checks']['compositionCandidatePresent']={
+                    'status':'PASS' if planned_apps else 'FAIL',
+                    'reason':('Planned candidates: '+', '.join(planned_apps)) if planned_apps else 'No staged application uses a workspace plan'}
+                if 'code-editor' in apps:
+                    if 1272 in widths:
+                        report['checks']['codeEditorPlanSensitivity']=_paired_sensitivity(b,candidate['code-editor']['html'],1272)
+                    else:
+                        report['checks']['codeEditorPlanSensitivity']={'status':'UNVERIFIED','reason':'1272 viewport required for wide ladder sensitivity'}
+                    report['checks']['codeEditorInteraction']=_paired_browser_interaction(b,candidate['code-editor']['html'],1272)
+                report['status']='PASS' if (all(x['status']=='PASS' for x in report['cases']) and
+                  report['checks'] and all(x['status']=='PASS' for x in report['checks'].values())) else 'FAIL'
+            finally:
+                b.close()
+    report_path=output/'report.json'
+    report_path.write_text(json.dumps(report,indent=2,ensure_ascii=False,sort_keys=True),encoding='utf-8')
+    print('MCEL_LAYOUT_FROB_PAIRED_WORKSPACE '+report['status'],flush=True)
+    print('  cases: '+str(sum(x['status']=='PASS' for x in report['cases']))+'/'+str(len(report['cases'])),flush=True)
+    for key,val in report['checks'].items():print('  '+key+': '+val['status']+' — '+val.get('reason',''),flush=True)
+    for case in report['cases']:
+        if case['status']!='PASS':print(f"  FAIL {case['app']} {case['width']}: {case['checks']} {case.get('error','')}",flush=True)
+    print('  report: '+str(report_path),flush=True)
+    return 0 if report['status']=='PASS' else 1
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=['smoke','sweep','plan','semantic','semantic-compare','design-review','design-quality','design-quality-stress'],default='smoke')
+    parser.add_argument('--mode',choices=['smoke','sweep','plan','semantic','semantic-compare','design-review','design-quality','design-quality-stress','paired-workspace'],default='smoke')
+    parser.add_argument('--candidate-zip',type=Path,help='Optional alternate isolated archive; by default use the bundled Frob compositor candidate')
+    parser.add_argument('--apps',default=','.join(PAIRED_APPS),help='Paired applications to inspect')
     parser.add_argument('--design',type=Path,default=DESIGN)
     parser.add_argument('--contract',type=Path,default=CONTRACT)
     parser.add_argument('--output',type=Path,default=DEFAULT_OUTPUT)
@@ -494,6 +1086,11 @@ def main(argv=None):
     parser.add_argument('--chromium-executable')
     parser.add_argument('--max-cases',type=int,default=128,help='Sweep scenarios (0 = entire cross product; smoke ignores budget)')
     args=parser.parse_args(argv)
+    if args.mode=='paired-workspace':
+        if args.no_browser:parser.error('paired-workspace cannot claim a PASS with --no-browser')
+        widths=tuple(int(w) for w in (args.widths or ','.join(map(str,PAIRED_WIDTHS))).split(','))
+        return paired_workspace_frob(candidate_zip=args.candidate_zip,apps=tuple(args.apps.split(',')),
+                  widths=widths,output=args.output/'paired-workspace',chromium_executable=args.chromium_executable)
     if args.mode=='design-quality-stress':
         from tools import mcel_design_quality_stress
         stress_args=['--mode','run','--design',str(args.design.resolve()),

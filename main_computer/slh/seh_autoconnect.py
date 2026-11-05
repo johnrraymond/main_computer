@@ -126,6 +126,35 @@ class SEHAutoConnection:
         self._last_http_status = None
         self._retired_stream_events = deque(maxlen=4096)
         self._tunnel_lifecycle = deque(maxlen=256)
+        self._last_strict_settings = None
+        self._last_verified_binding = None
+        self._fallback_started_at = None
+
+    def _local_canonical_binding(self):
+        """Read local authority afresh; no Coolify or network access."""
+        from .storage import machine_root
+        from .organization_state import read_config
+        from tools.seh_control.git_deployment import _canonical_selection, _operational_binding
+        if read_config(self.state_dir).get('seh_enabled') is not True:
+            raise ValueError('Canonical SEH was disabled')
+        record, controller, _, _ = _canonical_selection(machine_root(), 'mainnet')
+        if record['deployment'].get('enabled') is not True or controller.get('enabled') is False:
+            raise ValueError('Canonical SEH deployment was disabled')
+        # A changed key file is not equivalent to the loaded signer in memory.
+        current_key = _load_service_signer(self.state_dir)
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+        loaded = self.signer.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+        disk = current_key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+        if loaded != disk:
+            raise ValueError('Local SEH signing identity changed')
+        return (record['deployment']['application_uuid'], *_operational_binding(record), loaded)
+
+    def mark_worker_authenticated(self, gateway_peer_port: int) -> bool:
+        with self._lock:
+            current = self._current
+        if current is None:
+            return False
+        return current.mark_worker_authenticated(gateway_peer_port)
 
     def stream_diagnostics_for_gateway_ports(self, ports):
         selected = set(ports)
@@ -188,8 +217,21 @@ class SEHAutoConnection:
             try:
                 with self._lock:
                     self._phase = 'RESOLVING_CONFIGURATION'
+                fallback = False
                 if self._settings_resolver is not None:
-                    s = self._settings_resolver(self.state_dir)
+                    from tools.seh_control.git_deployment import SEHRemoteUnreachable
+                    try:
+                        s = self._settings_resolver(self.state_dir)
+                    except SEHRemoteUnreachable:
+                        now = time.monotonic()
+                        if self._fallback_started_at is None:
+                            self._fallback_started_at = now
+                        if (self._last_strict_settings is None or
+                                now - self._fallback_started_at >= 300 or
+                                self._local_canonical_binding() != self._last_verified_binding):
+                            raise
+                        s = self._last_strict_settings
+                        fallback = True
                     if not isinstance(s, SEHConnectionSettings) or not s.enabled:
                         raise ValueError('Canonical SEH is not enabled')
                 with self._lock:
@@ -200,12 +242,20 @@ class SEHAutoConnection:
                     slh_id=s.slh_id, identity_private_key=self.signer,
                     gateway_port=self.gateway_port, allow_lab=s.allow_loopback_lab,
                     lab_id=self.lab_id).connect()
+                if self._settings_resolver is not None and not fallback and not s.allow_loopback_lab:
+                    # Cache only AFTER a strict Coolify check and authenticated
+                    # P-256 tunnel have both succeeded.
+                    verified_binding = self._local_canonical_binding()
                 with self._lock:
+                    if self._settings_resolver is not None and not fallback and not s.allow_loopback_lab:
+                        self._last_strict_settings = s
+                        self._last_verified_binding = verified_binding
+                        self._fallback_started_at = None
                     self._current = conn
                     self.connections += 1
                     self.last_error = None
                     self._last_http_status = None
-                    self._phase = 'AUTHENTICATED'
+                    self._phase = ('LAST_VERIFIED_BINDING_FALLBACK' if fallback else 'AUTHENTICATED')
                     self._tunnel_lifecycle.append({'event': 'seh_tunnel_connected',
                                                    'unix_ns': time.time_ns(),
                                                    'monotonic_ns': time.monotonic_ns()})
@@ -256,3 +306,6 @@ class SEHAutoConnection:
             self._thread.join(timeout=12)
         with self._lock:
             self._phase = 'STOPPED'
+            self._last_strict_settings = None
+            self._last_verified_binding = None
+            self._fallback_started_at = None

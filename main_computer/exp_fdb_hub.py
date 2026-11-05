@@ -2390,6 +2390,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         worker_id = ""
         connection_id = ""
         session: LiveWorkerSession | None = None
+        graceful_close_requested = False
         try:
             auth_message = self._ws_read_json_message()
             if auth_message.get("type") != "worker.auth":
@@ -2560,6 +2561,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                         )
                     continue
                 if message_type == "worker.close":
+                    graceful_close_requested = True
                     break
                 session.send_json(
                     {
@@ -2595,34 +2597,56 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 pass
         finally:
             if worker_id and connection_id:
-                self._exp_fail_open_live_sessions_for_connection(
-                    worker_id=worker_id,
-                    connection_id=connection_id,
-                    error=f"worker live-session connection {connection_id} closed before returning a terminal result",
-                    terminal_reason="worker_connection_closed",
-                )
-                def _close_worker_records():
-                    self.server.stable_worker_session_directory.record_closed(
-                        worker_id=worker_id, connection_id=connection_id,
-                    )
-                    self.server.stable_worker_market_directory.record_worker_closed(
-                        worker_id=worker_id, connection_id=connection_id,
-                    )
-
-                store = self.server.stable_worker_session_directory.store
-                atomic = getattr(store, "atomic", None)
+                # Fence selection first; a new offer must not race the worker's
+                # retirement or the Hub's durable market/owner cleanup.
+                if session is not None:
+                    session.mark_closed(reason="socket_closed")
+                self.server.remove_live_worker_session(connection_id)
                 try:
+                    failed_sessions = self._exp_fail_open_live_sessions_for_connection(
+                        worker_id=worker_id,
+                        connection_id=connection_id,
+                        error=f"worker live-session connection {connection_id} closed before returning a terminal result",
+                        terminal_reason="worker_connection_closed",
+                    )
+                    def _close_worker_records():
+                        self.server.stable_worker_session_directory.record_closed(
+                            worker_id=worker_id, connection_id=connection_id,
+                        )
+                        self.server.stable_worker_market_directory.record_worker_closed(
+                            worker_id=worker_id, connection_id=connection_id,
+                        )
+
+                    store = self.server.stable_worker_session_directory.store
+                    atomic = getattr(store, "atomic", None)
                     if callable(atomic):
                         atomic(_close_worker_records)
                     else:
                         _close_worker_records()
-                finally:
-                    removed = self.server.remove_live_worker_session(connection_id)
-                    if removed is not None:
-                        removed.mark_closed(
-                            reason="socket_closed",
-                            closed_at=datetime.now(timezone.utc).isoformat(),
+                    if graceful_close_requested:
+                        owner = self.server.stable_worker_session_directory.get_owner(worker_id)
+                        market = self.server.stable_worker_market_directory.get_worker(worker_id)
+                        pending = self.server.exp_accepted_work_session_directory.list_open_sessions_for_worker_connection(
+                            worker_id=worker_id, connection_id=connection_id,
                         )
+                        committed = (isinstance(owner, dict) and owner.get('status') == 'closed'
+                                     and str(owner.get('connection_id') or '') == connection_id
+                                     and isinstance(market, dict) and market.get('status') == 'closed'
+                                     and not pending)
+                        response = ({'type': 'hub.worker.closed', 'ok': True,
+                                     'settled_sessions': len(failed_sessions)}
+                                    if committed else
+                                    {'type': 'hub.error', 'ok': False,
+                                     'error': 'worker_close_cleanup_unconfirmed'})
+                        try:
+                            session.send_close_response(response) if session is not None else self._ws_send_json(response)
+                        except (OSError, ConnectionError):
+                            # A lost ACK never substitutes for confirmed close
+                            # at the SLH. The Hub's committed state remains.
+                            pass
+                finally:
+                    if session is not None and session.is_live:
+                        session.mark_closed(reason="socket_closed")
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)

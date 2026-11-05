@@ -69,16 +69,73 @@ def plan(path: str | Path) -> dict:
     return {'schema': SCHEMA, 'status': 'PLANNED_ONLY', 'topology': topology,
             'lanes': ['two_service_real_process_bootstrap_lifecycle_worker_seh',
                       'real_organization_process_paid_work_via_seh',
+                      'credit_aware_worker_bank_real_process_one_and_two_workers',
                       'automatic_marketplace_seeded_decision_stress',
                       'integrated_network_worker_paid_stress',
                       'known_device_and_lan', 'seh_production_runtime_local_integration',
                       'stable_hub_shared_wallet_sessions', 'scheduler_reconcile_and_drain',
                       'private_authorized_execution', 'paid_requester_charge_and_wallet_earning',
-                      'seh_coolify_contract'],
+                      'seh_coolify_contract', 'four_issue_hardening_regressions'],
             'limits': {'production_seh': 'LOCAL_RUNTIME_TESTED_NO_COOLIFY', 'paid_request_settlement': 'LAB_EARNINGS_SETTLEMENT',
                        'remote_coolify': 'NOT_TESTED', 'real_fdb_required_for_run': True},
             'no_external_urls': True, 'production_mutations': False,
             'pinky_integrated': 'RUN_ONLY_WITH_--pinky-integrated_REAL_SMOKE_FDB'}
+
+
+
+def _verify_four_issue_hardening() -> dict:
+    """Run the permanent no-production SLH/SEH hardening regressions."""
+    root = Path(__file__).resolve().parents[2]
+    test = root / 'tests' / 'test_slh_seh_four_issue_hardening.py'
+    # An absent suite is an acceptance failure, never a skipped security gate.
+    if not test.is_file():
+        return {'status': 'FAIL', 'pass': False, 'reason': 'HARDENING_SUITE_MISSING'}
+    try:
+        result = subprocess.run(
+            [sys.executable, '-m', 'pytest', '-q', str(test)],
+            cwd=root, capture_output=True, text=True, timeout=90, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return {'status': 'FAIL', 'pass': False, 'reason': 'HARDENING_SUITE_UNAVAILABLE'}
+    # Do not claim the suite passed from process exit alone: prove collection
+    # and completion of its expected fixed acceptance cases.
+    import re
+    match = re.search(r'(\d+) passed', result.stdout)
+    count = int(match.group(1)) if match else 0
+    passed = result.returncode == 0 and count >= 18
+    return {'status': 'PASS' if passed else 'FAIL', 'pass': passed,
+            'cases_passed': count, 'expected_minimum': 18,
+            'scope': 'disposable-localhost-no-production',
+            **({'reason': 'HARDENING_REGRESSION_FAILED'} if not passed else {})}
+
+def _credit_edge_regressions() -> dict:
+    """Mandatory fault gates not reproducible reliably by live networking alone."""
+    root = Path(__file__).resolve().parents[2]
+    tests = root / 'tests' / 'test_slh_private_requests.py'
+    cases = (
+        'test_credit_admission_and_net_recovery_with_one_worker',
+        'test_private_admission_fails_closed_on_unverified_wallet',
+        'test_local_charge_tracks_worker_market_price_not_fixed_credit',
+        'test_live_hub_single_worker_credit_recovery_reclaims_for_affordable_local_request',
+        'test_live_hub_missing_ack_never_frees_worker_for_private_execution',
+        'test_live_hub_two_workers_reclaim_one_without_disturbing_other_public_slot',
+    )
+    if not tests.is_file():
+        return {'status':'FAIL', 'pass':False, 'reason':'CREDIT_EDGE_TEST_FILE_MISSING'}
+    try:
+        result = subprocess.run([sys.executable, '-m', 'pytest', '-q',
+                                 *(str(tests)+'::'+case for case in cases)],
+                                cwd=root, capture_output=True, text=True,
+                                timeout=90, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return {'status':'FAIL', 'pass':False, 'reason':'CREDIT_EDGE_TEST_UNAVAILABLE'}
+    import re
+    found = re.search(r'(\d+) passed', result.stdout)
+    count = int(found.group(1)) if found else 0
+    success = result.returncode == 0 and count == len(cases)
+    return {'status':'PASS' if success else 'FAIL', 'pass':success,
+            'cases_passed':count, 'cases_required':len(cases),
+            'scope':'disposable-localhost-real-hub-plus-credit-failure-injection',
+            **({'reason':'CREDIT_EDGE_REGRESSIONS_FAILED'} if not success else {})}
 
 
 def _wait(predicate, seconds=5):
@@ -203,6 +260,11 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
             if not _wait(lambda: len(gateway.scheduler.snapshot()) == 4):
                 raise RuntimeError('workers did not register')
             gates['four_real_managed_ws_sessions'] = len(gateway.scheduler.snapshot()) == 4
+            if relay is not None:
+                # All registered Workers must have released their pending
+                # pre-authentication occupancy in the real local relay.
+                gates['seh_authenticated_worker_releases_preauth_slot'] = _wait(
+                    lambda: not relay._pending_clients, seconds=3)
             gates['seh_test_relay_keeps_slh_tls_pin'] = relay_traffic() > 0 and adapter.bytes_forwarded > 0
             gates['seh_authenticated_slh_outbound'] = gateway.seh_connection.connected and (
                 relay is None or relay.authenticated_slh_count == 1)
@@ -288,6 +350,23 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
                 if not second['live_public_sessions']:break
                 time.sleep(.05)
             gates['drained_public_slots'] = not second['live_public_sessions'] and len(set(drained))==2
+            # A public slot counts as drained only when the real Hub replied
+            # hub.worker.closed after durable cleanup; socket EOF is not enough.
+            # Prove the formerly public Worker can now be reserved locally.
+            gates['hub_acknowledged_individual_withdrawals'] = (
+                len(set(drained)) == 2 and
+                not any(item['public_advertised'] for item in gateway.scheduler.snapshot()))
+            post_ack_sid = 'lab-post-ack-' + secrets.token_hex(8)
+            try:
+                post_ack_worker = gateway.scheduler.reserve_private(
+                    post_ack_sid, model='mock-model', device_id=sorted(set(drained))[0])
+                gates['hub_ack_precedes_private_reassignment'] = (
+                    post_ack_worker.device_id in drained and
+                    post_ack_worker.device_id not in proxy.sessions)
+            except (RuntimeError, IndexError):
+                gates['hub_ack_precedes_private_reassignment'] = False
+            finally:
+                gateway.scheduler.release(post_ack_sid)
             gates['private_reserve_preserved'] = first.get('reserve_satisfied') is True
             # Prove the session on the test relay was TLS-end-to-end, with a deliberately incorrect pin.
             wrong = ManagedSLHWorkerClient(
@@ -403,7 +482,7 @@ def verify_integrated_network_stress(*, workers: int = 8, requests: int = 16,
 
 def verify_paid_transport_differential(*, modes=('direct', 'seh'), cycles=8,
                                        idle_seconds=0.5, trace_dir=None, tls_io_mode='serialized',
-                                       soak_seconds=0):
+                                       soak_seconds=0, acceptance=False):
     """Two independent, disposable one-Worker paid-job paths for fault isolation.
 
     Both modes use the actual spawned Organization Service and actual Stable Hub.
@@ -419,6 +498,7 @@ def verify_paid_transport_differential(*, modes=('direct', 'seh'), cycles=8,
                 hub_url=f'http://127.0.0.1:{server.server_port}',
                 payout_ledger=server.payout_ledger_directory,
                 diagnostic_mode=mode, diagnostic_cycles=cycles,
+                worker_requester_acceptance=acceptance,
                 diagnostic_tls_io_mode=tls_io_mode,
                 diagnostic_idle_seconds=idle_seconds,
                 diagnostic_soak_seconds=soak_seconds,
@@ -459,7 +539,39 @@ def verify_paid_transport_differential(*, modes=('direct', 'seh'), cycles=8,
                            'funding':'SYNTHETIC_LAB_ONLY'}}
 
 
+def verify_worker_requester(*, worker_connection: str, trace_dir: Path | None = None) -> dict:
+    """One paid Worker/requester round trip on one disposable transport path.
+
+    The direct test never starts SEH. The relay test requires actual SEH
+    bytes during the paid job. Both use a fresh loopback Hub and synthetic
+    buyer credit; production Mother, identities, and deployments are untouched.
+    """
+    if worker_connection not in ('slh', 'seh'):
+        raise ValueError('worker-connection must be slh or seh')
+    mode = 'direct' if worker_connection == 'slh' else 'seh'
+    comparison = verify_paid_transport_differential(
+        modes=(mode,), cycles=1, idle_seconds=0, trace_dir=trace_dir,
+        acceptance=True)
+    observed = comparison['paths'][mode]
+    proof = observed.get('acceptance') or {}
+    verified = bool(observed.get('pass') and proof and
+                    proof.get('gates') and all(proof['gates'].values()))
+    return {'schema': 'main-computer.slh-worker-requester-acceptance.v1',
+            'mode': 'verify-worker-requester', 'worker_connection': worker_connection,
+            'status': 'PASS' if verified else 'FAIL', 'pass': verified,
+            'worker': proof.get('worker'), 'requester': proof.get('requester'),
+            'transport': proof.get('transport'), 'payment': proof.get('payment'),
+            'gates': proof.get('gates'),
+            'failure': observed.get('failure') if not verified else None,
+            'last_stage': observed.get('last_stage'),
+            'limitations': {'public_wss': 'NOT_TESTED', 'cloud_coolify': 'NOT_TESTED',
+                            'external_bridge': 'NOT_TESTED', 'funding': 'SYNTHETIC_LAB_ONLY',
+                            'hub': 'ISOLATED_IN_MEMORY', 'worker': 'DETERMINISTIC_ECHO'}}
+
+
 def verify_local() -> dict:
+    hardening = _verify_four_issue_hardening()
+    edge = _credit_edge_regressions()
     from .service_lifecycle import verify_services
     services = verify_services()
     from .decision_stress import verify_decisions
@@ -472,6 +584,14 @@ def verify_local() -> dict:
         real_paid = verify_real_process_paid(
             hub_url=f'http://127.0.0.1:{server.server_port}',
             payout_ledger=server.payout_ledger_directory)
+        # A separate fresh Organization Service must prove the actual paid
+        # credit -> Worker withdrawal -> local admission cycle. No simulated
+        # upstream acknowledgments may satisfy this gate.
+        recovery = verify_real_process_paid(
+            hub_url=f'http://127.0.0.1:{server.server_port}',
+            payout_ledger=server.payout_ledger_directory,
+            credit_recovery_acceptance=True,
+            hub_session_directory=server.worker_session_directory)
         trial = _local_demo(f'http://127.0.0.1:{server.server_port}',
                             topology_label='in-memory-stable-hub', payout_ledger=server.payout_ledger_directory)
     finally:
@@ -479,10 +599,15 @@ def verify_local() -> dict:
         server.server_close()
         thread.join(timeout=3)
     seh = _mock_coolify_gate()
-    ok = services['pass'] and real_paid['pass'] and trial['pass'] and decisions['pass'] and seh['status']=='PASS'
+    from .credit_recovery_acceptance import accepted as recovery_accepted
+    ok = (hardening['pass'] and edge['pass'] and services['pass'] and real_paid['pass']
+          and recovery['pass'] and recovery_accepted(recovery.get('credit_recovery'))
+          and trial['pass'] and decisions['pass'] and seh['status']=='PASS')
     return {'schema':SCHEMA, 'mode':'verify-local', 'status':'PASS' if ok else 'FAIL',
             'two_service_lab':services, 'real_process_paid_work':real_paid,
-            'decision_stress':decisions, 'slh':trial, 'seh_coolify_contract':seh, 'production_seh':'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
+            'real_process_credit_recovery':recovery,
+            'decision_stress':decisions, 'slh':trial, 'seh_coolify_contract':seh,
+            'slh_seh_hardening':hardening, 'credit_edge_regressions':edge, 'production_seh':'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED',
             'paid_work_settlement':'LAB_LEDGER_SETTLED_NOT_BRIDGED'}
 
 
@@ -540,6 +665,8 @@ def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|Non
     from .decision_stress import verify_decisions
     with lab_stage('preflight.scheduler_decisions'):
         decisions = verify_decisions()
+    with lab_stage('preflight.four_issue_hardening'):
+        hardening = _verify_four_issue_hardening()
     from tools.stable_hub_lab.run_lab import check_cluster, _terminate_children
     children=[];logs=[]
     if pinky_integrated:
@@ -647,12 +774,12 @@ def run_smoke(topology, *, use_existing:bool, report_dir:Path, deployed:dict|Non
                                 deployed=deployed)
             economic_verified = False
         seh = _mock_coolify_gate() if deployed is None else {'status':'NOT_APPLICABLE_DEPLOYED'}
-        ok = (services['pass'] and decisions['pass'] and real_paid['pass']
+        ok = (hardening['pass'] and services['pass'] and decisions['pass'] and real_paid['pass']
               and (deployed is not None or seh['status']=='PASS')
               and (economic_verified if pinky_integrated else trial['pass']))
         return {'schema':SCHEMA,'mode':'verify-deployed' if deployed else 'run', 'status':'PASS' if ok else 'FAIL',
                 'two_service_lab': services, 'real_process_paid_work': real_paid,
-                'decision_stress': decisions,
+                'decision_stress': decisions, 'slh_seh_hardening': hardening,
                 'hub_cluster': {'ok':True,'ids':[x['hub_id'] for x in identities],
                                 'cluster_id':health['cluster_id']},
                 'slh':trial,'seh_coolify_contract':seh,
@@ -777,7 +904,9 @@ def verify_deployed(topology: Path, *, use_existing:bool, report_dir:Path,
 
 def main(argv=None) -> int:
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=('plan','verify-services','verify-local','verify-decisions','stress-decisions','stress-integrated','diagnose-paid-transport','lab-exit','run','verify-deployed','prepare-local-coolify','deploy-local-coolify'))
+    p.add_argument('command',choices=('plan','verify-services','verify-local','verify-decisions','stress-decisions','stress-integrated','diagnose-paid-transport','verify-worker-requester','lab-exit','run','verify-deployed','prepare-local-coolify','deploy-local-coolify'))
+    p.add_argument('--worker-connection', choices=('slh', 'seh'), default=None,
+                   help='Required for verify-worker-requester: direct SLH or real local SEH relay')
     p.add_argument('--workers', type=int, default=8, help='Real connected Workers for stress-integrated')
     p.add_argument('--requests', type=int, default=16, help='Paid requests for stress-integrated')
     p.add_argument('--concurrency', type=int, default=4, help='Concurrent paid requests for stress-integrated')
@@ -817,6 +946,10 @@ def main(argv=None) -> int:
     p.add_argument('--local-port',type=int,default=18080)
     p.add_argument('--compose-output',type=Path,default=Path('runtime/reports/slh-seh-lab/local-coolify/compose.yml'))
     a=p.parse_args(argv)
+    if a.command == 'verify-worker-requester' and a.worker_connection is None:
+        p.error('verify-worker-requester requires --worker-connection slh or seh')
+    if a.command != 'verify-worker-requester' and a.worker_connection is not None:
+        p.error('--worker-connection is only valid for verify-worker-requester')
     if a.pinky_integrated and (a.command!='run' or a.topology != DEFAULT_TOPOLOGY):
         p.error('--pinky-integrated requires run with the canonical isolated smoke topology')
     if a.pinky_repeat is not None and (not a.pinky_integrated or not 1 <= a.pinky_repeat <= 10):
@@ -893,6 +1026,8 @@ def main(argv=None) -> int:
                         from .decision_stress import verify_decisions
                         report = verify_decisions(extended=a.command=='stress-decisions')
                         report['mode'] = a.command
+                    elif a.command=='verify-worker-requester':
+                        report=verify_worker_requester(worker_connection=a.worker_connection, trace_dir=path)
                     elif a.command=='diagnose-paid-transport':
                         if not 0 <= a.cycles <= 128 or not 0 <= a.idle_seconds <= 60 or not 0 <= a.soak_seconds <= 7200:
                             raise LabRefused('cycles must be 0..128 and idle-seconds 0..60')

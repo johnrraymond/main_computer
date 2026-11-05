@@ -224,13 +224,20 @@ class OrganizationController:
                             child.get('private_requests_available') is True and
                             child.get('pinky_sweeper_available') is True and
                             child.get('worker_serving_enabled') is True)
+            authenticated = bool(cfg['enabled'] and cfg['seh_enabled'] and child and
+                                 child.get('seh_enabled') is True and
+                                 child.get('seh_connection_verified') is True)
             return {'status': 'CONNECTED_VERIFIED' if verified else 'NOT_CONNECTED',
-                    'outbound_tunnel_authenticated': verified,
+                    'outbound_tunnel_authenticated': authenticated,
                     'organization_enabled': cfg['enabled'],
                     'seh_enabled': cfg['seh_enabled'],
                     'workers_enabled': cfg['workers_enabled'],
                     'private_requests_available': bool(child and child.get('private_requests_available')),
                     'pinky_sweeper_available': bool(child and child.get('pinky_sweeper_available')),
+                    'pinky_sweeper_running': bool(child and child.get('pinky_sweeper_running')),
+                    'pinky_sweep_last_attempt_ns': (child.get('pinky_sweep_last_attempt_ns') if child else None),
+                    'pinky_sweep_last_error': (child.get('pinky_sweep_last_error') if child else None),
+                    'pinky_sweep_last_confirmed': bool(child and child.get('pinky_sweep_last_confirmed')),
                     'resident_child_observed': child is not None,
                     'resident_activation_error': (child.get('seh_activation_error')
                                                   if child else None),

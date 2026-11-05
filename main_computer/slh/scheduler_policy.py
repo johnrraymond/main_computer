@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from math import ceil, floor
+from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
 import json
 import sqlite3
 import time
@@ -18,8 +19,10 @@ from .authority import SLHAuthority, SLHError
 
 DEFAULT_POLICY = {
     'mode': 'private_first',
-    'max_public_percent': 75,
-    'min_private_idle_percent': 25,
+    'max_public_percent': 80,
+    'min_organization_percent': 20,
+    'min_private_idle_percent': 0,
+    'local_credit_reserve_credits': '1',
     'dedicated_public': [],
     'dedicated_private': [],
     'rotation_seconds': 300,
@@ -36,11 +39,18 @@ def normalize_policy(data: dict) -> dict:
     policy = {**DEFAULT_POLICY, **data}
     if policy['mode'] not in MODES:
         raise SLHError('INVALID_SCHEDULER_MODE')
-    for name in ('max_public_percent', 'min_private_idle_percent'):
+    for name in ('max_public_percent', 'min_organization_percent', 'min_private_idle_percent'):
         value = policy[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
             raise SLHError('INVALID_SCHEDULER_PERCENT')
         policy[name] = float(value)
+    try:
+        reserve = Decimal(str(policy['local_credit_reserve_credits']))
+    except (InvalidOperation, ValueError, TypeError):
+        raise SLHError('INVALID_LOCAL_CREDIT_RESERVE')
+    if not reserve.is_finite() or reserve < 0 or reserve > Decimal('1000000000000000000'):
+        raise SLHError('INVALID_LOCAL_CREDIT_RESERVE')
+    policy['local_credit_reserve_credits'] = format(reserve, 'f')
     for name in ('dedicated_public', 'dedicated_private'):
         values = policy[name]
         if (not isinstance(values, list) or len(values) != len(set(map(str, values)))
@@ -79,6 +89,16 @@ class SchedulerPolicyStore:
                          'payload TEXT NOT NULL, updated_at INTEGER NOT NULL)')
             conn.execute('INSERT OR IGNORE INTO scheduler_settings(id,revision,payload,updated_at) '
                          'VALUES(1,0,?,?)',(json.dumps(DEFAULT_POLICY,sort_keys=True),int(time.time())))
+            # Migrate only the exact untouched pre-bank default; edited policy
+            # settings remain administrator-owned and retain their revision.
+            old = {'mode':'private_first','max_public_percent':75,
+                   'min_private_idle_percent':25,'dedicated_public':[],
+                   'dedicated_private':[],'rotation_seconds':300,
+                   'credit_cap':None,'credit_period':'day'}
+            row=conn.execute('SELECT revision,payload FROM scheduler_settings WHERE id=1').fetchone()
+            if row['revision']==0 and json.loads(row['payload'])==old:
+                conn.execute('UPDATE scheduler_settings SET payload=?,updated_at=? WHERE id=1',
+                             (json.dumps(DEFAULT_POLICY,sort_keys=True),int(time.time())))
 
     def get(self) -> dict:
         with self.authority._db() as conn:
@@ -150,58 +170,77 @@ class SchedulerPlan:
 
 
 def compute_plan(policy:dict, workers:list[dict], current_public:set[str], *, now:float|None=None,
-                 credit_meter:dict|None=None) -> SchedulerPlan:
-    """Pure scheduling plan. Sessions with active jobs remain until terminal.
+                 credit_meter:dict|None=None, withdrawal_requested:set[str]|None=None) -> SchedulerPlan:
+    """Plan Worker *ownership*, never infer that an upstream socket has closed.
 
-    `credit_meter` is reserved for future authoritative marketplace earnings.
-    No fabricated input is interpreted as verified accounting.
+    A missing/stale wallet observation activates credit recovery (public idle
+    capacity), but does NOT grant permission to execute private work. An
+    optional explicit public cap of zero always disables new advertisements.
     """
-    p = normalize_policy(policy)
+    p=normalize_policy(policy)
     now=time.time() if now is None else now
-    available = {w['device_id']:w for w in workers if w.get('active',True) and w.get('authorized',True)}
-    healthy=set(available)
-    busy_private={d for d,w in available.items() if w.get('busy_private',False)}
-    busy_public={d for d,w in available.items() if w.get('busy_public',False)}
-    active_public=set(current_public)&healthy
-    # The target is based on the currently healthy pool; a failed computer
-    # cannot count as a ready private reserve.
-    reserve_target=ceil(len(healthy)*p['min_private_idle_percent']/100)
-    private_dedicated=set(p['dedicated_private'])&healthy
-    eligible=healthy-private_dedicated-busy_private
-    if p['mode']=='dedicated':eligible &= set(p['dedicated_public'])
-    max_fraction=floor(len(healthy)*p['max_public_percent']/100)
-    max_by_reserve=max(0,len(healthy)-reserve_target-len(busy_private))
-    max_slots=min(max_fraction,max_by_reserve,len(eligible))
-    reason='policy'
+    healthy={w['device_id']:w for w in workers if w.get('active',True) and w.get('authorized',True)}
+    ids=set(healthy)
+    busy_private={d for d,w in healthy.items() if w.get('busy_private')}
+    busy_public={d for d,w in healthy.items() if w.get('busy_public')}
+    current=set(current_public)&ids
+    withdrawing=set(withdrawal_requested or ())&current
+    # Only verified, fresh Hub balance counts for deciding to retain standby
+    # capacity. Neither stale accounting nor guessed earnings can fund work.
+    try:
+        balance=int(credit_meter['available_credit_wei']) if credit_meter and credit_meter.get('state')=='CURRENT' else -1
+        if balance < 0:raise ValueError
+    except (KeyError, ValueError, TypeError, OverflowError):
+        balance=-1
+    reserve_wei=int(Decimal(p['local_credit_reserve_credits'])*CREDIT_WEI_PER_CREDIT)
+    funded=balance>=reserve_wei
+    dedicated_private=set(p['dedicated_private'])&ids
+    eligible=ids-busy_private-dedicated_private-withdrawing
+    if p['mode']=='dedicated':
+        eligible &= set(p['dedicated_public'])
+    # Organization share is capacity (including busy organization Workers),
+    # not an extra idle quota. The legacy optional idle floor remains explicit.
+    org_target=ceil(len(ids)*p['min_organization_percent']/100) if funded else 0
+    idle_target=ceil(len(ids)*p['min_private_idle_percent']/100) if funded else 0
+    reserved=max(org_target, len(busy_private|dedicated_private))
+    if funded:
+        maximum=min(floor(len(ids)*p['max_public_percent']/100),
+                    max(0,len(ids)-reserved),
+                    max(0,len(ids)-len(busy_private)-idle_target))
+    else:
+        # Recovery is not constrained by normal 80/20 standby allocation.
+        # Recovery overrides only the standard 80% ceiling. A customized
+        # administrator public cap (including zero) remains authoritative.
+        recovery_ceiling=(len(ids) if p['max_public_percent']==DEFAULT_POLICY['max_public_percent']
+                          else floor(len(ids)*p['max_public_percent']/100))
+        maximum=min(recovery_ceiling,len(ids)-len(busy_private|dedicated_private))
+    maximum=max(0,min(maximum,len(eligible)))
+    reason='policy' if funded else 'CREDIT_RECOVERY'
     if p['credit_cap'] is not None:
-        # No authoritative earning feed exists yet. A cap cannot honestly be
-        # enforced by counting jobs or inventing a guessed reward per request.
-        # Fail closed, preserve currently executing work, and report the gate.
-        max_slots=0
-        reason='CREDIT_CAP_REQUIRES_VERIFIED_METER'
+        maximum=0;reason='CREDIT_CAP_REQUIRES_VERIFIED_METER'
+    preferred=set(p['dedicated_public'])&eligible
+    if len(preferred)>maximum and p['credit_cap'] is None:
+        maximum=0;reason='DEDICATED_PUBLIC_EXCEEDS_AVAILABLE_CAPACITY'
     order=sorted(eligible)
-    preferred=set(p['dedicated_public']) & eligible
-    if len(preferred)>max_slots and p['credit_cap'] is None:
-        max_slots=0
-        reason='DEDICATED_PUBLIC_EXCEEDS_AVAILABLE_CAPACITY'
     if p['mode']=='round_robin' and order:
-        shift=int(now//p['rotation_seconds']) % len(order)
+        shift=int(now//p['rotation_seconds'])%len(order)
         order=order[shift:]+order[:shift]
-    order.sort(key=lambda d:(0 if d in preferred else 1, 0 if d in active_public else 1)) if p['mode']!='round_robin' else None
-    # Busy public jobs must never be cancelled to satisfy a policy update.
-    busy_kept=active_public & busy_public
+    else:
+        # Stable existing sessions stay public until there is a reason to
+        # change allocation; avoid churn on joins or credit observations.
+        order.sort(key=lambda d:(0 if d in preferred else 1,
+                                  0 if d in current else 1, d))
+    busy_kept=current&busy_public
     desired=set(busy_kept)
     for did in order:
-        if reason=='DEDICATED_PUBLIC_EXCEEDS_AVAILABLE_CAPACITY':break
-        if len(desired)>=max_slots:break
-        if did not in desired:desired.add(did)
-    # Keep the remaining public connections available for draining, but do not
-    # count them as idle capacity the organization can immediately use.
-    drain=active_public-desired
-    # Report what is currently truly ready, not capacity that may become
-    # ready after a public slot drains asynchronously.
-    private_ready=len(healthy-busy_private-busy_public-active_public)
-    return SchedulerPlan(tuple(sorted(desired)),tuple(sorted(drain)),tuple(sorted(busy_kept)),
-                         private_ready,reserve_target,private_ready>=reserve_target,
-                         max_slots,reason)
-
+        if len(desired)>=maximum or reason=='DEDICATED_PUBLIC_EXCEEDS_AVAILABLE_CAPACITY':break
+        desired.add(did)
+    # Keep occupied sessions even if an administrator lowers public capacity;
+    # they are drained after the already authorized work completes.
+    draining=current-desired
+    ready=len(ids-busy_private-busy_public-current)
+    # Pending withdrawals cannot yet count as privately available.
+    return SchedulerPlan(tuple(sorted(desired)),tuple(sorted(draining)),
+                         tuple(sorted(busy_kept)),ready,
+                         org_target,ready>=org_target,
+                         maximum,reason)

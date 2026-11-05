@@ -241,7 +241,11 @@ def _activate_via_resident_slh(args: argparse.Namespace) -> dict:
                 return {**result, 'status': 'CONNECTED_VERIFIED',
                         'outbound_tunnel_authenticated': True,
                         'private_requests_available': True,
-                        'pinky_sweeper_available': True}
+                        'pinky_sweeper_available': True,
+                        'pinky_sweeper_running': observed.get('pinky_sweeper_running', False),
+                        'pinky_sweep_last_attempt_ns': observed.get('pinky_sweep_last_attempt_ns'),
+                        'pinky_sweep_last_error': observed.get('pinky_sweep_last_error'),
+                        'pinky_sweep_last_confirmed': observed.get('pinky_sweep_last_confirmed', False)}
             # The signed administrator has already authorized activation.
             # Check missing remote runtime once; when Docker was deliberately
             # removed, recover the same verified Coolify UUID, never create an
@@ -630,7 +634,7 @@ def _print_next_operator_command(args: argparse.Namespace, result: dict) -> None
             print('\nSEH Git source preflight: ' + reason.strip(), file=sys.stderr)
         git_command = result.get('git_repair_command')
         if isinstance(git_command, str) and git_command.strip():
-            print('\nVerified Git publication command (PowerShell; copy and paste):',
+            print('\nSEH_GIT_COMMIT_PUSH_COMMAND: (PowerShell; copy and paste)',
                   file=sys.stderr)
             print(git_command.strip(), file=sys.stderr, flush=True)
         return
@@ -652,7 +656,8 @@ def _print_next_operator_command(args: argparse.Namespace, result: dict) -> None
         print('\n=== Next SEH command (PowerShell) ===', file=sys.stderr)
         print('After publishing the SEH source, rerun:', file=sys.stderr)
         print(_deploy_retry_command(args), file=sys.stderr)
-        print('\nRequired Git publication command (PowerShell; copy and paste):', file=sys.stderr)
+        print('\nSEH_GIT_COMMIT_PUSH_COMMAND: (PowerShell; copy and paste)',
+              file=sys.stderr)
         print(git_command.strip(), file=sys.stderr, flush=True)
     elif result.get('status') == 'PLAN_ONLY':
         print('\n=== Next SEH command (PowerShell) ===', file=sys.stderr)

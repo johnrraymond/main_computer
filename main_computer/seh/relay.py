@@ -26,6 +26,8 @@ from .stream_writer import StreamWriter
 
 MAX_FRAME = 1024 * 1024
 MAX_CLIENTS = 64
+MAX_PENDING_CLIENTS = 16
+PREAUTH_DEADLINE_SECONDS = 30
 LAB_ID = re.compile(r"[a-f0-9]{32}\Z")
 MAX_LAB_TUNNELS = 2
 
@@ -53,6 +55,8 @@ class SEHRelay:
         self._clients: dict[str, Any] = {}
         self._lab_slhs: dict[str, Any] = {}
         self._lab_clients: dict[tuple[str, str], Any] = {}
+        # One bounded, nonrenewable timer per unauthenticated Worker stream.
+        self._pending_clients: dict[tuple[str | None, str], threading.Timer] = {}
         self._server = None
         self._thread = None
         self.bytes_forwarded = 0
@@ -141,6 +145,23 @@ class SEHRelay:
 
         threading.Thread(target=close_one, name='seh-client-close', daemon=True).start()
 
+    def _retire_pending(self, key):
+        with self._lock:
+            timer = self._pending_clients.pop(key, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _expire_pending(self, key):
+        lab_id, sid = key
+        with self._lock:
+            if self._pending_clients.pop(key, None) is None:
+                return
+            client = (self._lab_clients.get((lab_id, sid)) if lab_id
+                      else self._clients.get(sid))
+        if client is not None:
+            self._stream_event('relay_pre_auth_expired', sid, ws=client)
+            self._schedule_client_close(client, code=1008, reason='AUTH_TIMEOUT')
+
     @property
     def tunnel_ready(self):
         with self._lock:
@@ -197,6 +218,11 @@ class SEHRelay:
                 if client is None:
                     continue
                 op = msg.get('op')
+                if op == 'authenticated':
+                    # Only an authenticated SLH tunnel can attest to its own
+                    # end-to-end TLS and managed device-proof success.
+                    self._retire_pending((lab_id, sid))
+                    continue
                 if op == 'data':
                     encoded = msg.get('data')
                     if not isinstance(encoded, str) or len(encoded) > MAX_FRAME * 2:
@@ -247,16 +273,26 @@ class SEHRelay:
                                if channel == lab_id]
                 else:
                     clients = []
+            with self._lock:
+                keys = [key for key in self._pending_clients if key[0] == lab_id]
+            for key in keys:
+                self._retire_pending(key)
             for client in clients:
                 self._schedule_client_close(client, code=1012, reason='SLH_DISCONNECTED')
 
     def _handle_client(self, ws, *, lab_id: str | None = None):
         with self._lock:
             tunnel = self._lab_slhs.get(lab_id) if lab_id else self._slh
-            if tunnel is None or len(self._clients) + len(self._lab_clients) >= self.max_clients:
+            if (tunnel is None or len(self._clients) + len(self._lab_clients) >= self.max_clients
+                    or len(self._pending_clients) >= min(MAX_PENDING_CLIENTS, self.max_clients)):
                 ws.close(code=1013, reason='SLH_UNAVAILABLE_OR_BUSY')
                 return
             sid = secrets.token_urlsafe(18)
+            pending_key = (lab_id, sid)
+            deadline = threading.Timer(PREAUTH_DEADLINE_SECONDS,
+                                       self._expire_pending, args=(pending_key,))
+            deadline.daemon = True
+            self._pending_clients[pending_key] = deadline
             self._stream_event('relay_client_accepted', sid, ws=ws)
             if lab_id:self._lab_clients[(lab_id, sid)] = ws
             else:self._clients[sid] = ws
@@ -268,6 +304,7 @@ class SEHRelay:
                 send_client,
                 lambda: self._schedule_client_close(ws, code=1011, reason='STREAM_WRITE_FAILED'),
                 name='seh-client-stream-writer')
+        deadline.start()
         try:
             self._send_slh({'op':'open', 'id':sid}, lab_id=lab_id)
             for raw in ws:
@@ -286,6 +323,7 @@ class SEHRelay:
             except (AttributeError, RuntimeError):
                 code = None
             label = str(code) if code is not None else 'unknown'
+            self._retire_pending((lab_id, sid))
             with self._lock:
                 writer = self._client_writers.pop((lab_id, sid), None)
                 if writer is not None:
@@ -347,6 +385,10 @@ class SEHRelay:
         return self
 
     def stop(self):
+        with self._lock:
+            keys = list(self._pending_clients)
+        for key in keys:
+            self._retire_pending(key)
         if self._server is not None:
             self._server.shutdown()
         if self._thread is not None:

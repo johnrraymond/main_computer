@@ -30,7 +30,7 @@ UNIMPLEMENTED_REQUIRED = {
     'credential_rotation_live_connections': 'Authenticated lifecycle is tested, but live credential rotation and revocation under traffic lack an exit lane',
     'pinky_promise_economic_cycle': (
         'No verified end-to-end Pinky Promise cycle: organization wallet earnings, '
-        'authenticated local secure-model fulfillment, exactly-once 0.1-credit '
+        'authenticated local secure-model fulfillment, exactly-once 20%-of-market-price '
         'assessment, and delayed Main Computer Reserve settlement'
     ),
 }
@@ -178,9 +178,16 @@ def judge(spec: ExitSpec, report: dict, *, returncode: int) -> tuple[bool, str]:
                 'THREE_HUB_SMOKE_VERIFIED' if cluster.get('ok') and len(cluster.get('ids') or ()) == 3
                 else 'THREE_HUB_WITNESS_MISSING')
     if spec.kind == 'local':
-        required=('two_service_lab','real_process_paid_work','decision_stress','slh')
+        required=('two_service_lab','real_process_paid_work','real_process_credit_recovery','decision_stress','slh')
         if any(report.get(k, {}).get('pass') is not True for k in required):
             return False, 'LOCAL_REQUIRED_SUBSUITE_MISSING'
+        from .credit_recovery_acceptance import accepted as recovery_accepted
+        recovery = (report.get('real_process_credit_recovery') or {}).get('credit_recovery')
+        if not recovery_accepted(recovery):
+            return False, 'REAL_CREDIT_RECOVERY_EVIDENCE_MISSING'
+        edge = report.get('credit_edge_regressions') or {}
+        if edge.get('pass') is not True or edge.get('cases_passed') != 6:
+            return False, 'CREDIT_EDGE_REGRESSIONS_MISSING'
         return True, 'LOCAL_SUBSUITES_VERIFIED'
     return False, 'UNKNOWN_LANE'
 

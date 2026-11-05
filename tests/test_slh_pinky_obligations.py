@@ -30,7 +30,7 @@ class TestPinkyObligations(unittest.TestCase):
         return self.f.private.obligations()
 
     def test_success_fixed_fraction_same_transaction_and_replay(self):
-        self.assertEqual(ASSESSMENT_WEI, CREDIT_WEI_PER_CREDIT // 10)
+        self.assertEqual(ASSESSMENT_WEI, CREDIT_WEI_PER_CREDIT // 5)
         self.f.worker()
         status, result=self.f.submit(self.requester,self.f.req('one'))
         self.assertEqual(status,200,result)
@@ -38,7 +38,7 @@ class TestPinkyObligations(unittest.TestCase):
         entries=self.ledger()
         self.assertEqual(entries['count'],1)
         self.assertEqual(entries['assessed_total_credit_wei'],str(ASSESSMENT_WEI))
-        self.assertEqual(entries['assessed_total_credits'],'0.1')
+        self.assertEqual(entries['assessed_total_credits'],'0.2')
         self.assertEqual(entries['settlement_state'],'NOT_IMPLEMENTED_P4')
         item=entries['obligations'][0]
         self.assertEqual(item['reference_credit_wei'],str(CREDIT_WEI_PER_CREDIT))
@@ -47,7 +47,7 @@ class TestPinkyObligations(unittest.TestCase):
         self.assertEqual(item['policy_id'],POLICY_ID)
         self.assertEqual(item['policy_revision'],1)
         self.assertEqual(item['status'],'ASSESSED')
-        self.assertEqual(item['obligation_id'],PinkyPromise.obligation_id('private-lab','req-1','one'))
+        self.assertEqual(item['obligation_id'],PinkyPromise.obligation_id('req-1','one'))
         self.assertEqual(self.f.submit(self.requester,self.f.req('one'))[1]['status'],'SUCCEEDED')
         after=PrivateRequests(self.f.root/'state',self.f.auth,self.f.gateway)
         self.assertEqual(after.obligations(),entries)
@@ -60,15 +60,16 @@ class TestPinkyObligations(unittest.TestCase):
         with self.f.private._db() as db:
             for requester in ('req-1','req-2'):
                 db.execute('''INSERT INTO private_requests
-                    (org_id,requester_device_id,request_id,request_digest,model,status,
-                     run_id,admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
-                    ('private-lab',requester,'same','digest','mock-model','DISPATCHED',
-                     'run-'+requester,1,1,POLICY_ID,1,1))
+                    (requester_device_id,request_id,request_digest,model,status,
+                     run_id,admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled,
+                     reference_credit_wei,assessment_credit_wei)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (requester,'same','digest','mock-model','DISPATCHED',
+                     'run-'+requester,1,1,POLICY_ID,1,1,str(10**18),str(2*10**17)))
         for requester in ('req-1','req-2'):
             self.f.private._complete_success(requester,'same','a'*64)
         self.assertEqual(self.ledger()['count'],2)
-        self.assertEqual(self.ledger()['assessed_total_credits'],'0.2')
+        self.assertEqual(self.ledger()['assessed_total_credits'],'0.4')
         self.assertEqual(len({v['obligation_id'] for v in self.ledger()['obligations']}),2)
 
     def test_admin_policy_disables_future_eligible_requests_only(self):
@@ -90,7 +91,8 @@ class TestPinkyObligations(unittest.TestCase):
         self.assertFalse(changed['enabled'])
         self.assertEqual(self.f.api.call('PATCH',uri,payload,token=admin)[1]['error']['code'],
                          'PINKY_POLICY_REVISION_CONFLICT')
-        self.assertEqual(self.f.submit(self.requester,self.f.req('after'))[1]['status'],'SUCCEEDED')
+        self.assertEqual(self.f.submit(self.requester,self.f.req('after'))[1]['failure_code'],
+                         'LOCAL_ASSESSMENT_DISABLED')
         self.assertEqual(self.ledger()['count'],1)
         self.assertEqual(self.ledger()['obligations'][0]['request_id'],'before')
         after=PrivateRequests(self.f.root/'state',self.f.auth,self.f.gateway)
@@ -114,11 +116,12 @@ class TestPinkyObligations(unittest.TestCase):
         with f.private._lock, f.private._db() as db:
             p=f.private.pinky.snapshot(db)
             db.execute('''INSERT INTO private_requests
-               (org_id,requester_device_id,request_id,request_digest,model,status,
-                run_id,admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
-               ('private-lab','req-1','in-flight','digest','mock-model','DISPATCHED',
-                'run-1',1,1,POLICY_ID,p['revision'],int(p['enabled'])))
+               (requester_device_id,request_id,request_digest,model,status,
+                run_id,admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled,
+                reference_credit_wei,assessment_credit_wei)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+               ('req-1','in-flight','digest','mock-model','DISPATCHED',
+                'run-1',1,1,POLICY_ID,p['revision'],int(p['enabled']),str(10**18),str(2*10**17)))
         self.f.api.call('PATCH','/v1/admin/pinky-promise/policy',
             {'enabled':False,'expected_revision':1,'acknowledge_consequences':True},token=admin)
         f.private._complete_success('req-1','in-flight','a'*64)
@@ -130,11 +133,12 @@ class TestPinkyObligations(unittest.TestCase):
         self.assertEqual(self.f.submit(self.requester,{'bogus':'request'})[0],400)
         with self.f.private._db() as db:
             db.execute('''INSERT INTO private_requests
-               (org_id,requester_device_id,request_id,request_digest,model,status,
-                run_id,admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
-               ('private-lab','req-1','unknown','digest','mock-model','DISPATCHED',
-                'run',1,1,POLICY_ID,1,1))
+               (requester_device_id,request_id,request_digest,model,status,
+                run_id,admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled,
+                reference_credit_wei,assessment_credit_wei)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+               ('req-1','unknown','digest','mock-model','DISPATCHED',
+                'run',1,1,POLICY_ID,1,1,str(10**18),str(2*10**17)))
         recovered=PrivateRequests(self.f.root/'state',self.f.auth,self.f.gateway)
         self.assertEqual(recovered.get({'role':'requester','device_id':'req-1'},'unknown')['status'],'OUTCOME_UNKNOWN')
         self.assertEqual(recovered.obligations()['count'],0)
@@ -142,11 +146,12 @@ class TestPinkyObligations(unittest.TestCase):
     def test_atomic_rollback_if_assessment_insert_fails(self):
         with self.f.private._db() as db:
             db.execute('''INSERT INTO private_requests
-               (org_id,requester_device_id,request_id,request_digest,model,status,
-                run_id,admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
-               ('private-lab','req-1','rollback','digest','mock-model','DISPATCHED',
-                'run',1,1,POLICY_ID,1,1))
+               (requester_device_id,request_id,request_digest,model,status,
+                run_id,admitted_at_ns,updated_at_ns,billing_policy_id,pinky_policy_revision,pinky_enabled,
+                reference_credit_wei,assessment_credit_wei)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+               ('req-1','rollback','digest','mock-model','DISPATCHED',
+                'run',1,1,POLICY_ID,1,1,str(10**18),str(2*10**17)))
         with patch.object(self.f.private.pinky,'record',side_effect=RuntimeError('failed write')):
             with self.assertRaises(RuntimeError):
                 self.f.private._complete_success('req-1','rollback','a'*64)
@@ -161,10 +166,10 @@ class TestPinkyObligations(unittest.TestCase):
     def test_legacy_p2_success_does_not_gain_retroactive_assessment(self):
         with self.f.private._db() as db:
             db.execute('''INSERT INTO private_requests
-                (org_id,requester_device_id,request_id,request_digest,model,status,
+                (requester_device_id,request_id,request_digest,model,status,
                  run_id,admitted_at_ns,updated_at_ns,fulfilled_at_ns,result_hash)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
-                ('private-lab','req-1','legacy','d','mock-model','SUCCEEDED','run',1,1,1,'b'*64))
+                VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                ('req-1','legacy','d','mock-model','SUCCEEDED','run',1,1,1,'b'*64))
         reopened=PrivateRequests(self.f.root/'state',self.f.auth,self.f.gateway)
         self.assertEqual(reopened.get({'role':'requester','device_id':'req-1'},'legacy')['billing_policy_id'],
                          'p2-pre-assessment')
@@ -192,7 +197,7 @@ class TestPinkyObligations(unittest.TestCase):
         self.assertEqual(migrated.obligations()['count'],0)
         self.assertEqual(migrated.get({'role':'requester','device_id':'req-1'},'old-success')['status'],
                          'SUCCEEDED')
-        self.assertEqual(migrated.policy()['assessment_credits'],'0.1')
+        self.assertEqual(migrated.policy()['assessment_credits'],'0.2')
 
     def test_missing_policy_row_cannot_silently_restore_default(self):
         with self.f.private._db() as db:
@@ -231,7 +236,7 @@ class TestPinkyObligations(unittest.TestCase):
             'signature':sign_object(f.admin_key,challenge)})['access_token']
         status,ledger=net.call('GET','/v1/accounting/obligations',token)
         self.assertEqual(status,200,ledger)
-        self.assertEqual(ledger['assessed_total_credits'],'0.1')
+        self.assertEqual(ledger['assessed_total_credits'],'0.2')
         self.assertEqual(net.call('GET','/v1/accounting/obligations',requester)[0],403)
 
     def test_concurrent_duplicate_submit_one_liability(self):
@@ -244,6 +249,6 @@ class TestPinkyObligations(unittest.TestCase):
         for t in threads:t.join(12)
         self.assertEqual(len(records),5)
         self.assertEqual(self.ledger()['count'],1)
-        self.assertEqual(self.ledger()['assessed_total_credits'],'0.1')
+        self.assertEqual(self.ledger()['assessed_total_credits'],'0.2')
 
 if __name__=='__main__':unittest.main()

@@ -32,6 +32,7 @@ def test_verify_local_requires_both_real_service_and_paid_lanes():
         def __init__(self):
             self.server_port = 18001
             self.payout_ledger_directory = 'in-memory'
+            self.worker_session_directory = object()
         def shutdown(self): pass
         def server_close(self): pass
     class DummyThread:
@@ -41,32 +42,49 @@ def test_verify_local_requires_both_real_service_and_paid_lanes():
     bad = {'status': 'FAIL', 'pass': False, 'gates': {'real_org_running': False}}
     paid = {'pass': True, 'gates': {'paid': True}}
     real_paid = {'pass': True, 'gates': {'real_paid': True}}
+    from tools.slh_seh_lab.credit_recovery_acceptance import REQUIRED_GATES
+    from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+    recovery = {'pass': True, 'gates': {'credit_recovery_end_to_end': True},
+                'credit_recovery': {'status':'PASS','pass': True,
+                    'gates': {key:True for key in REQUIRED_GATES},
+                    'worker_count':2,'local_requests_succeeded':5,
+                    'local_requests_refused':1,
+                    'source_earning_credit_wei':str(CREDIT_WEI_PER_CREDIT),
+                    'obligations_credit_wei':str(CREDIT_WEI_PER_CREDIT)}}
     import sys
     from types import ModuleType
     real_module = ModuleType('tools.slh_seh_lab.real_paid_service')
-    real_module.verify_real_process_paid = lambda **kwargs: real_paid
+    real_module.verify_real_process_paid = lambda **kwargs: (
+        recovery if kwargs.get('credit_recovery_acceptance') else real_paid)
     with mock.patch.dict(sys.modules, {'tools.slh_seh_lab.real_paid_service': real_module}), \
          mock.patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=good), \
          mock.patch('tools.slh_seh_lab.run_lab._in_memory_hub', return_value=(DummyHub(), DummyThread())), \
          mock.patch('tools.slh_seh_lab.run_lab._local_demo', return_value=paid), \
-         mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}):
+         mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}), \
+         mock.patch('tools.slh_seh_lab.run_lab._verify_four_issue_hardening', return_value={'pass':True}), \
+         mock.patch('tools.slh_seh_lab.run_lab._credit_edge_regressions',return_value={'pass':True,'cases_passed':6}):
         report = verify_local()
         assert report['status'] == 'PASS'
         assert report['two_service_lab'] == good
         assert report['slh'] == paid
         assert report['real_process_paid_work'] == real_paid
+        assert report['real_process_credit_recovery'] == recovery
     with mock.patch.dict(sys.modules, {'tools.slh_seh_lab.real_paid_service': real_module}), \
          mock.patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=bad), \
          mock.patch('tools.slh_seh_lab.run_lab._in_memory_hub', return_value=(DummyHub(), DummyThread())), \
          mock.patch('tools.slh_seh_lab.run_lab._local_demo', return_value=paid), \
-         mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}):
+         mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}), \
+         mock.patch('tools.slh_seh_lab.run_lab._verify_four_issue_hardening', return_value={'pass':True}), \
+         mock.patch('tools.slh_seh_lab.run_lab._credit_edge_regressions',return_value={'pass':True,'cases_passed':6}):
         assert verify_local()['status'] == 'FAIL'
     real_module.verify_real_process_paid = lambda **kwargs: {'pass': False, 'gates': {'real_paid': False}}
     with mock.patch.dict(sys.modules, {'tools.slh_seh_lab.real_paid_service': real_module}), \
          mock.patch('tools.slh_seh_lab.service_lifecycle.verify_services', return_value=good), \
          mock.patch('tools.slh_seh_lab.run_lab._in_memory_hub', return_value=(DummyHub(), DummyThread())), \
          mock.patch('tools.slh_seh_lab.run_lab._local_demo', return_value=paid), \
-         mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}):
+         mock.patch('tools.slh_seh_lab.run_lab._mock_coolify_gate', return_value={'status': 'PASS'}), \
+         mock.patch('tools.slh_seh_lab.run_lab._verify_four_issue_hardening', return_value={'pass':True}), \
+         mock.patch('tools.slh_seh_lab.run_lab._credit_edge_regressions',return_value={'pass':True,'cases_passed':6}):
         assert verify_local()['status'] == 'FAIL'
 
 

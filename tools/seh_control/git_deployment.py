@@ -5,6 +5,7 @@ SEH-owned durable state controls application UUID and deployment lifecycle.
 """
 from __future__ import annotations
 
+import ast
 import base64
 from contextlib import nullcontext as _nullcontext
 from copy import deepcopy
@@ -13,12 +14,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tempfile
 from typing import Any
 from urllib.parse import urlsplit, quote, urlencode
 
 from tools import coolify_hub_service as hub_coolify
+from tools.hub_control.common.deployment import _render_git_commit_push_command
 from . import identity as st
 from . import deployment_state as ds
 
@@ -32,96 +35,164 @@ _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
 _SHA = re.compile(r'[0-9a-f]{40}\Z')
 
 
+# Like Hub Control's _hub_git_source_paths, derive the deployed Python import
+# closure. The static list above is only the minimum image/build surface.
+SEH_ENTRY_MODULES = ('main_computer.seh.relay', 'main_computer.slh.authenticator')
+
+
+def _seh_source_closure(paths: set[str], read_source, *, strict: bool = True) -> set[str]:
+    """Discover transitive local imports from the SEH entry modules.
+
+    read_source accepts a repository-relative path and returns its contents.
+    It can read either the worktree or immutable blobs from one Git commit.
+    """
+    modules: dict[str, str] = {}
+    for rel in paths:
+        if not rel.startswith('main_computer/') or not rel.endswith('.py'):
+            continue
+        name = rel[:-3].replace('/', '.')
+        if name.endswith('.__init__'):
+            name = name[:-9]
+        modules[name] = rel
+    result: set[str] = set(SOURCES)
+    queue = list(SEH_ENTRY_MODULES)
+    visited: set[str] = set()
+    while queue:
+        name = queue.pop(0)
+        if name in visited:
+            continue
+        visited.add(name)
+        rel = modules.get(name)
+        if rel is None:
+            # Required project modules cannot silently disappear from an image.
+            raise SEHGitPublicationError('SEH Git source missing imported module: ' + name)
+        result.add(rel)
+        parts = rel.split('/')[:-1]
+        for count in range(1, len(parts) + 1):
+            initializer = '/'.join(parts[:count]) + '/__init__.py'
+            if initializer in paths:
+                result.add(initializer)
+        try:
+            tree = ast.parse(read_source(rel), filename=rel)
+        except (SyntaxError, UnicodeError, ValueError, OSError) as exc:
+            if not strict:
+                # Hub also allows syntax-broken local changes to be detected
+                # by Git status, so the operator can publish a repair.
+                continue
+            raise SEHGitPublicationError('SEH Git module cannot be inspected: ' + rel +
+                                         ' (' + type(exc).__name__ + ')') from None
+        package = name.rsplit('.', 1)[0]
+        for node in ast.walk(tree):
+            candidates = []
+            if isinstance(node, ast.Import):
+                candidates.extend(item.name for item in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    parts = package.split('.')
+                    ascend = int(node.level) - 1
+                    if ascend:
+                        parts = parts[:-ascend]
+                    base = '.'.join(parts + ([node.module] if node.module else []))
+                else:
+                    base = node.module or ''
+                candidates.append(base)
+                candidates.extend(base + '.' + item.name for item in node.names
+                                  if item.name != '*' and base)
+            for candidate in candidates:
+                if candidate == 'main_computer' or candidate.startswith('main_computer.'):
+                    if candidate in modules and candidate not in visited:
+                        queue.append(candidate)
+                    elif candidate.startswith('main_computer.seh.') and candidate not in modules:
+                        # A missing SEH submodule cannot be handled by a
+                        # source-scope exemption: the runtime import may crash.
+                        if isinstance(node, ast.Import) or candidate == (base if isinstance(node, ast.ImportFrom) else ''):
+                            raise SEHGitPublicationError('SEH Git source missing imported module: ' + candidate)
+    return result
+
+
+def _seh_git_source_paths(repo_root: Path) -> tuple[str, ...]:
+    """Hub-style import closure for the local SEH build worktree."""
+    root = Path(repo_root)
+    paths = {p.relative_to(root).as_posix() for p in (root / 'main_computer').rglob('*.py')}
+    return tuple(sorted(_seh_source_closure(paths, lambda rel: (root / rel).read_text(encoding='utf-8'), strict=False)))
+
+
+def _published_seh_image_check(git, revision: str) -> tuple[str, ...]:
+    """Inspect EXACT published Git blobs, not worktree files or SHA recency.
+
+    Coolify may have an independent wget healthcheck.  Every runtime import
+    must be copied into the minimal SEH image at its Python package path.
+    """
+    if not _SHA.fullmatch(revision):
+        raise SEHGitPublicationError('Invalid published SEH image revision')
+    try:
+        tracked = set(git('ls-tree', '-r', '--name-only', revision,
+                          '--', 'main_computer').splitlines())
+        dockerfile = git('show', revision + ':deploy/seh/Dockerfile')
+        dockerignore = git('show', revision + ':.dockerignore')
+    except SEHGitPublicationError:
+        raise SEHGitPublicationError('Published SEH image files not available in the verified commit') from None
+    required = _seh_source_closure(tracked, lambda rel: git('show', revision + ':' + rel))
+    # The build context is a single, repository-root Docker context. Refuse
+    # ambiguous COPY forms rather than guess about which files reach the image.
+    copies: dict[str, str] = {}
+    for instruction in dockerfile.replace('\\\n', ' ').splitlines():
+        stripped = instruction.strip()
+        if not stripped.startswith('COPY '):
+            continue
+        try:
+            fields = shlex.split(stripped)
+        except ValueError:
+            raise SEHGitPublicationError('Unverifiable SEH Dockerfile COPY instruction') from None
+        if len(fields) != 3 or fields[0] != 'COPY':
+            raise SEHGitPublicationError('Unverifiable SEH Dockerfile COPY instruction')
+        copies[fields[1]] = fields[2]
+    # The Dockerfile generates these two package initializers itself.
+    generated = {'main_computer/__init__.py', 'main_computer/slh/__init__.py'}
+    for path in sorted(required - {'.dockerignore', 'deploy/seh/Dockerfile'} - generated):
+        if path not in tracked:
+            raise SEHGitPublicationError('Published SEH image source is missing: ' + path)
+        if copies.get(path) != path:
+            raise SEHGitPublicationError('Published SEH Dockerfile does not COPY required module: ' + path)
+    # A package initializer must exist, whether copied or explicitly generated.
+    for path in generated:
+        if path not in dockerfile:
+            raise SEHGitPublicationError('Published SEH Dockerfile does not generate package: ' + path)
+    normalized = dockerfile.replace('\\\n', ' ')
+    installs = [line for line in normalized.splitlines()
+                if 'apt-get install' in line]
+    if not any('wget' in line.split() for line in installs):
+        raise SEHGitPublicationError('Published SEH Dockerfile does not install Coolify healthcheck wget')
+    if ('PYTHONPATH=/opt/seh' not in dockerfile or
+            '"main_computer.seh.relay"' not in dockerfile or
+            '/healthz' not in dockerfile):
+        raise SEHGitPublicationError('Published SEH Dockerfile lacks relay runtime/health contract')
+    # Prevent an explicit Docker ignore rule from discarding a verified COPY
+    # source; complex patterns are rejected rather than treated as proof.
+    ignore_rules = [line.strip() for line in dockerignore.splitlines()
+                    if line.strip() and not line.lstrip().startswith('#')]
+    for path in required - {'.dockerignore', 'deploy/seh/Dockerfile'}:
+        if path in ignore_rules or any(rule.rstrip('/') == path.rsplit('/', 1)[0]
+                                       for rule in ignore_rules if not rule.startswith('!')):
+            raise SEHGitPublicationError('Published Docker ignore excludes SEH source: ' + path)
+    return tuple(sorted(required))
+
+
 class SEHGitError(ValueError):
-    """Refusal with optional, nonexecuted Git repair guidance for the CLI."""
+    """Verified SEH Git/source refusal (no automatic publication)."""
 
     def __init__(self, message: str, *, git_command: str = ''):
         super().__init__(message)
         self.git_command = git_command
 
 
+class SEHRemoteUnreachable(SEHGitError):
+    """Only Coolify transport unavailability, never a remote trust refusal."""
+
+
 class SEHGitPublicationError(SEHGitError):
     """Refusal tied specifically to the local/published Git-source boundary."""
 
-
-
-def _ps_quote(value: str) -> str:
-    """Quote a literal Git path for PowerShell, matching Hub Control."""
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _git_commit_push_command(paths: list[str]) -> str:
-    """Stage only dirty SEH build inputs; never stage unrelated workspace files."""
-    selected = sorted(set(paths) & set(SOURCES))
-    if not selected:
-        return ''
-    quoted = ' '.join(_ps_quote(path) for path in selected)
-    return (f'git add -- {quoted}; '
-            f"if ($LASTEXITCODE -eq 0) {{ git commit --only -m 'Update SEH deployment source' -- {quoted} }}; "
-            'if ($LASTEXITCODE -eq 0) { git push origin HEAD }')
-
-
-def _isolated_git_publication_command(*, branch: str, remote_sha: str) -> str:
-    """Publish the SEH build inputs on the published branch, not local HEAD.
-
-    This is the mixed-commit counterpart to Hub Control's source-scoped
-    git add/commit/push guidance.  A disposable detached worktree lets the
-    operator publish the actual SEH files without publishing unrelated local
-    commits or changing the working branch.  The expected remote SHA protects
-    against racing another deployment.  Nothing is executed by this function.
-    """
-    if not _SHA.fullmatch(remote_sha) or branch != 'main':
-        raise SEHGitPublicationError('Unverified SEH publication target')
-    quoted_paths = ', '.join(_ps_quote(path) for path in SOURCES)
-    return '\n'.join((
-        "$ErrorActionPreference = 'Stop'",
-        "$root = (& git rev-parse --show-toplevel)",
-        "if ($LASTEXITCODE -ne 0 -or -not $root) { throw 'Not in a Git checkout' }",
-        "$root = $root.Trim()",
-        "$ref = 'refs/heads/main'",
-        f"$expected = '{remote_sha}'",
-        "$tip = (& git -C $root ls-remote --exit-code origin $ref)",
-        "if ($LASTEXITCODE -ne 0 -or -not $tip -or ($tip -split '\\s+')[0] -ne $expected) { throw 'Published SEH branch changed; rerun activate-seh' }",
-        f"$paths = @({quoted_paths})",
-        "$temp = Join-Path ([System.IO.Path]::GetTempPath()) ('mc-seh-publish-' + [guid]::NewGuid().ToString('N'))",
-        "$attached = $false",
-        "try {",
-        "  & git -C $root worktree add --detach $temp $expected",
-        "  if ($LASTEXITCODE -ne 0) { throw 'Could not prepare isolated SEH publication worktree' }",
-        "  $attached = $true",
-        "  foreach ($p in $paths) {",
-        "    $source = Join-Path $root $p",
-        "    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw ('Missing SEH source: ' + $p) }",
-        "    $destination = Join-Path $temp $p",
-        "    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null",
-        "    Copy-Item -LiteralPath $source -Destination $destination -Force",
-        "  }",
-        "  & git -C $temp add -- $paths",
-        "  if ($LASTEXITCODE -ne 0) { throw 'Could not stage SEH source' }",
-        "  & git -C $temp diff --cached --quiet",
-        "  if ($LASTEXITCODE -eq 0) { throw 'SEH inputs already match the published branch; rerun activate-seh' }",
-        "  if ($LASTEXITCODE -ne 1) { throw 'Could not verify staged SEH source' }",
-        "  & git -C $temp commit -m 'Publish SEH deployment source'",
-        "  if ($LASTEXITCODE -ne 0) { throw 'Could not commit SEH source' }",
-        "  & git -C $temp push origin ('HEAD:' + $ref)",
-        "  if ($LASTEXITCODE -ne 0) { throw 'Could not publish SEH source; rerun activation preflight' }",
-        "} finally {",
-        "  if ($attached) {",
-        "    & git -C $root worktree remove --force $temp",
-        "    if ($LASTEXITCODE -ne 0) { Write-Warning ('Remove isolated worktree manually: ' + $temp) }",
-        "  }",
-        "}",
-    ))
-
-
-def _dirty_source_paths(porcelain: str) -> list[str]:
-    """Extract only known source paths from porcelain v1 (fixed safe path set)."""
-    known = set(SOURCES)
-    paths = []
-    for line in porcelain.splitlines():
-        if len(line) >= 4 and line[3:] in known:
-            paths.append(line[3:])
-    return sorted(set(paths))
 
 
 def _json_digest(data: dict) -> str:
@@ -134,6 +205,8 @@ def _api(client, method: str, path: str, body: dict | None = None):
         answer = client.request(method, path, body)
         if hasattr(answer, 'ok'):
             if not answer.ok:
+                if answer.status == 0:
+                    raise SEHRemoteUnreachable('Coolify transport unavailable')
                 raise SEHGitError(f'Coolify {method} {path.split("?")[0]} returned HTTP {answer.status}')
             return answer.body
         return answer
@@ -159,6 +232,8 @@ def _registered_application(client, application_uuid: str) -> dict | None:
         if not response.ok:
             if response.status == 404:
                 return None
+            if response.status == 0:
+                raise SEHRemoteUnreachable('Coolify application lookup unavailable')
             raise SEHGitError('Coolify application lookup returned HTTP ' + str(response.status))
         response = response.body
     if not isinstance(response, dict) or response.get('uuid') != application_uuid:
@@ -487,20 +562,36 @@ def placement(client, controller: dict, *, project_name: str, environment_name: 
             'server_uuid':server_id}
 
 
-def git_source(repo_root: Path, *, branch: str = 'main') -> dict:
-    """Select verified published SEH source; never prescribe a speculative push.
 
-    As in Stable Hub, only deployment-relevant dirty paths can be committed by
-    the emitted PowerShell command. Unlike a plain HEAD comparison, a newer
-    local commit does not require publication when the SEH inputs on origin/main
-    are already identical. Never push unrelated or divergent commit history.
+def _seh_git_operator_command(mismatches: list[str]) -> str:
+    """Reuse Stable Hub's exact path-scoped Git command renderer.
+
+    SEH supplies only the differing deployment paths. The Git operation and
+    PowerShell syntax remain owned by Hub Control; SEH never runs them.
+    """
+    return _render_git_commit_push_command(
+        [{'status': ' M', 'path': path} for path in sorted(set(mismatches))]
+    )
+
+
+def git_source(repo_root: Path, *, branch: str = 'main') -> dict:
+    """Validate the *published* SEH image against the current build inputs.
+
+    Like Hub Control, scope the source guard to the deployed Python import
+    closure and build inputs. Unlike the former SEH guard, never infer a Git
+    publication requirement from local HEAD ancestry or Git porcelain alone:
+    an operator can publish an isolated source commit without moving local
+    HEAD, or leave a local file 'dirty' whose bytes are already published.
+
+    This is read-only. Publication is the operator's responsibility. If
+    relevant source differs, reuse the Stable Hub's path-scoped publication
+    command only when HEAD is the published tip. Otherwise report the same
+    unpushed-HEAD condition as Stable Hub without inventing another Git
+    repair workflow. The guard never modifies Git or Coolify.
     """
     repo_root = Path(repo_root).resolve()
     if not re.fullmatch(r'[A-Za-z0-9._/-]+', branch) or '..' in branch:
         raise SEHGitPublicationError('Unsafe Git branch')
-    for path in SOURCES:
-        if not (repo_root / path).is_file():
-            raise SEHGitPublicationError(f'Missing SEH Git build source: {path}')
 
     def git(*args):
         try:
@@ -514,9 +605,6 @@ def git_source(repo_root: Path, *, branch: str = 'main') -> dict:
             raise SEHGitPublicationError('Git source verification failed for ' + str(args[0]))
         return proc.stdout.rstrip('\r\n')
 
-    local = git('rev-parse', 'HEAD')
-    if not _SHA.fullmatch(local):
-        raise SEHGitPublicationError('Invalid Git HEAD revision')
     origin = git('remote', 'get-url', 'origin')
     normalized = origin.removesuffix('.git').replace('git@github.com:', 'https://github.com/')
     if normalized.rstrip('/') != 'https://github.com/johnrraymond/main_computer':
@@ -526,81 +614,78 @@ def git_source(repo_root: Path, *, branch: str = 'main') -> dict:
             not _SHA.fullmatch(remote_row[0])):
         raise SEHGitPublicationError('Published SEH branch cannot be verified')
     remote = remote_row[0]
+    # ls-remote returns a SHA, not the corresponding tree. The exact remote
+    # commit must already be fetched; never silently substitute local HEAD.
+    try:
+        git('cat-file', '-e', f'{remote}^{{commit}}')
+    except SEHGitPublicationError:
+        raise SEHGitPublicationError(
+            f'Published origin/{branch} commit is not available locally; '
+            'Git state must be reconciled before retrying SEH activation') from None
 
-    # A branch's commit ancestry is not itself deployment evidence.  Compare the
-    # actual SEH build inputs against the published revision, including any
-    # relevant uncommitted files.  The user's local branch may contain other
-    # product work that must NEVER be published just to deploy the relay.
-    worktree = git('status', '--porcelain=v1', '--untracked-files=all', '--', *SOURCES)
-    dirty_paths = _dirty_source_paths(worktree) if worktree else []
-    if worktree and not dirty_paths:
-        raise SEHGitPublicationError('Cannot classify modified SEH source paths')
-    for path in SOURCES:
-        git('cat-file', '-e', f'HEAD:{path}')
-
-    if remote != local:
-        # ls-remote does not transfer Git objects.  We need the exact remote
-        # tree locally to compare paths or base a temporary publication commit.
+    local_paths = set(_seh_git_source_paths(repo_root))
+    tracked_remote = set(git('ls-tree', '-r', '--name-only', remote,
+                             '--', 'main_computer').splitlines())
+    remote_paths = _seh_source_closure(
+        tracked_remote, lambda rel: git('show', f'{remote}:{rel}'))
+    required = sorted(local_paths | remote_paths | set(SOURCES))
+    mismatches = []
+    mismatch_paths = []
+    missing_local_paths = []
+    for rel in required:
+        live = repo_root / rel
+        if not live.is_file():
+            mismatches.append(rel + ' (missing locally)')
+            mismatch_paths.append(rel)
+            missing_local_paths.append(rel)
+            continue
         try:
-            git('cat-file', '-e', f'{remote}^{{commit}}')
+            published_blob = git('rev-parse', '--verify', f'{remote}:{rel}')
         except SEHGitPublicationError:
+            mismatches.append(rel + ' (missing from published commit)')
+            mismatch_paths.append(rel)
+            continue
+        # --path applies Git's normal clean filters (including .gitattributes),
+        # so this is the blob that would actually be committed from the file.
+        actual_blob = git('hash-object', f'--path={rel}', '--', rel)
+        if not _SHA.fullmatch(published_blob) or actual_blob != published_blob:
+            mismatches.append(rel)
+            mismatch_paths.append(rel)
+    if mismatches:
+        preview = ', '.join(mismatches[:12])
+        if len(mismatches) > 12:
+            preview += f', ... (+{len(mismatches) - 12} more)'
+        if missing_local_paths:
+            # Never suggest committing a deletion of a required runtime file.
             raise SEHGitPublicationError(
-                f'Published SEH revision is not available locally. Run '
-                f'git fetch --no-tags origin {branch}, then retry activate-seh') from None
-
-    relevant_delta = (git('diff', '--name-only', '--no-renames', remote, local,
-                          '--', *SOURCES).splitlines() if remote != local else [])
-    if not relevant_delta and not dirty_paths:
-        # This is what matters after an isolated worktree publication: local
-        # HEAD can diverge and contain unrelated work, while every SEH source
-        # blob matches the new remote branch exactly.
-        return {'repository': 'https://github.com/johnrraymond/main_computer',
-                'branch': branch, 'revision': remote,
-                'dockerfile_location': DOCKERFILE}
-
-    if local == remote:
-        raise SEHGitPublicationError(
-            'SEH runtime source has uncommitted changes; publish only these files',
-            git_command=_git_commit_push_command(dirty_paths).replace(
-                'git push origin HEAD', f'git push origin HEAD:refs/heads/{branch}'))
-
-    try:
-        git('merge-base', '--is-ancestor', local, remote)
-        behind = True
-    except SEHGitPublicationError:
-        behind = False
-    if behind:
-        raise SEHGitPublicationError(
-            f'Local HEAD is behind origin/{branch} with different SEH inputs; '
-            'update/reconcile the checkout before publishing older relay code')
-
-    try:
-        git('merge-base', '--is-ancestor', remote, local)
-        ahead = True
-    except SEHGitPublicationError:
-        ahead = False
-
-    if ahead and not dirty_paths:
-        # The direct push is safe only when EVERY intervening commit touches
-        # the permitted source set and no merge commit obscures that fact.
-        commits = git('log', '--format=', '--name-only', f'{remote}..{local}').splitlines()
-        merges = git('rev-list', '--merges', f'{remote}..{local}').splitlines()
-        if not merges and set(commits).difference(set(SOURCES) | {''}) == set():
+                f'SEH build inputs missing locally: {", ".join(missing_local_paths[:12])}. '
+                'Restore the required SEH source before publishing')
+        head = git('rev-parse', 'HEAD')
+        if head != remote:
+            # Match Stable Hub redeploy.git_revision's unpushed-HEAD handling.
+            # In particular, do not invent a fetch/diff/rebase or isolated
+            # worktree script, and do not advertise a scoped push that cannot
+            # fast-forward the already different published branch.
             raise SEHGitPublicationError(
-                f'SEH runtime source is committed locally but not published to '
-                f'origin/{branch}. Fast-forward contains SEH inputs only',
-                git_command=f'git push origin HEAD:refs/heads/{branch}')
+                f'SEH build inputs differ from published origin/{branch} '
+                f'({remote[:12]}): {preview}. '
+                'Local HEAD is not the published revision. '
+                'If HEAD is the intended revision, run: git push origin HEAD '
+                '(resolve any remote divergence before retrying)')
+        command = _seh_git_operator_command(mismatch_paths)
+        raise SEHGitPublicationError(
+            f'SEH build inputs differ from published origin/{branch} '
+            f'({remote[:12]}): {preview}. SEH activation will not change Git; '
+            'copy/paste the emitted Stable Hub Git commit/push command, '
+            'then rerun activation',
+            git_command=command)
 
-    # Mixed committed history (or a prior isolated SEH publication) requires
-    # an actionable source-scoped command, not 'please prepare a clean commit'.
-    # The command checks the exact remote SHA again, creates a detached
-    # worktree from that SHA, commits ONLY the SEH build paths, and pushes its
-    # new commit.  The operator's working branch/staging area remain untouched.
-    raise SEHGitPublicationError(
-        f'SEH source differs from origin/{branch}; publish an isolated '
-        'SEH-only commit without pushing unrelated local history',
-        git_command=_isolated_git_publication_command(
-            branch=branch, remote_sha=remote))
+    # Verify the exact image Coolify will build; neither a newer SHA nor a
+    # matching worktree can compensate for missing runtime COPY or health deps.
+    _published_seh_image_check(git, remote)
+    return {'repository': 'https://github.com/johnrraymond/main_computer',
+            'branch': branch, 'revision': remote,
+            'dockerfile_location': DOCKERFILE}
 
 
 def _public_key() -> str:
@@ -1906,6 +1991,19 @@ def status(root: Path,network: str,seh: str,*,client=None, dns_resolver=None) ->
 _FAILED_BUILD_STATUSES = frozenset(('failed', 'failure', 'error', 'cancelled', 'canceled'))
 
 
+def _retry_runtime_blocker(app: dict, prior: dict, phase: str) -> dict | None:
+    status = str(app.get('status') or '').strip().lower()
+    # Coolify may append container health to the lifecycle state.
+    lifecycle = re.split(r'[:(]', status, maxsplit=1)[0].strip()
+    if lifecycle in ('exited', 'stopped', 'dead'):
+        return None
+    active = lifecycle in ('building', 'deploying', 'restarting', 'starting',
+                           'running', 'healthy', 'queued')
+    return {**prior, 'failed_stage': ('retry_runtime_or_build_active' if active
+                                      else 'retry_runtime_state_unverified'),
+            'coolify_status': app.get('status'), 'retry_phase': phase}
+
+
 def _retry_failed_recovery_build(root: Path, network: str, *, state_dir: Path,
                                  checkpoint: dict, record: dict,
                                  remote, app: dict, execute: bool,
@@ -1959,9 +2057,9 @@ def _retry_failed_recovery_build(root: Path, network: str, *, state_dir: Path,
     # adopting it. A remote change without that receipt must not be claimed.
     if app.get('git_commit_sha') == revised and checkpoint.get('retry_revision') != revised:
         return {**prior, 'failed_stage': 'retry_unreceipted_git_pin_change'}
-    if any(v in str(app.get('status') or '').lower() for v in
-           ('building', 'deploying', 'restarting', 'starting', 'running', 'healthy')):
-        return {**prior, 'failed_stage': 'retry_runtime_or_build_active'}
+    blocker = _retry_runtime_blocker(app, prior, 'before_pin')
+    if blocker:
+        return blocker
     # The list endpoint is a deployment inventory, not proof that every item
     # is active. Permit only the *exact* old verified failed job; other builds
     # for this app (or unattributed jobs) prevent a second submission.
@@ -2015,6 +2113,7 @@ def _retry_failed_recovery_build(root: Path, network: str, *, state_dir: Path,
         except SEHGitError:
             return {**prior, 'failed_stage': 'retry_git_pin_update_unconfirmed',
                     'remote_mutation': 'UNKNOWN'}
+        prior['remote_mutation'] = True
     updated = _registered_application(remote, uuid)
     if (updated is None or updated.get('git_commit_sha') != revised or
             any(updated.get(k) != app.get(k) for k in
@@ -2026,9 +2125,9 @@ def _retry_failed_recovery_build(root: Path, network: str, *, state_dir: Path,
     if _trust_snapshot(remote, uuid) != before_trust:
         return {**prior, 'failed_stage': 'retry_signing_trust_changed',
                 'remote_mutation': 'UNKNOWN'}
-    if any(v in str(updated.get('status') or '').lower() for v in
-           ('building', 'deploying', 'restarting', 'starting', 'running', 'healthy')):
-        return {**prior, 'failed_stage': 'retry_runtime_or_build_active'}
+    blocker = _retry_runtime_blocker(updated, prior, 'after_pin')
+    if blocker:
+        return blocker
     # A possible lost POST response is never permission to re-POST.
     if checkpoint.get('build_submission') == 'INTENT':
         return {**prior, 'failed_stage': 'unacknowledged_build_submission',

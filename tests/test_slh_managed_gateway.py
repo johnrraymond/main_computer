@@ -20,6 +20,8 @@ class TestSLHManagedGateway(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
+        from tools.slh_seh_connector import service_identity
+        service_identity(self.root/'state', create=True)
         self.auth=SLHAuthority(self.root/'state')
         admin_key,public=generate_identity()
         statement={'version':1,'action':'slh.admin.bootstrap','admin_id':'owner','device_id':'admin','public_key':public}
@@ -33,7 +35,8 @@ class TestSLHManagedGateway(unittest.TestCase):
         statement={'selected_admin':'owner','device_id':did,'public_key':public,
                    'kind':'worker','device_name':did,'claimed_user':'test',
                    'requested_role':'worker','client_nonce':secrets.token_urlsafe(32)}
-        signed={**statement,'version':1,'action':'slh.device.enrollment.request'}
+        signed={**statement,'version':1,'action':'slh.device.enrollment.request',
+                'audience':'slh://'+self.auth.service_fingerprint()}
         result=self.auth.enrollment_request({**statement,'proof':sign_object(key,signed)})
         self.auth.approve(result['request_id'],admin_id='owner')
 
@@ -127,6 +130,8 @@ class TestSLHManagedGateway(unittest.TestCase):
                               {'signed_request':_signed_msk_request(request_id='scheduler-policy-msk')})
             auth={'kind':'multisession_key','multisession_key_id':issued['key']['id'],
                   'wallet_address':issued['key']['wallet_address'],'chain_id':'42424242'}
+            gateway.scheduler.credit_provider=lambda:{'state':'CURRENT','balance':{
+                'available_credit_wei':str(10**19)}}
             store=SchedulerPolicyStore(self.auth)
             store.update({'max_public_percent':50,'min_private_idle_percent':25},
                          expected_revision=0,actor='owner')

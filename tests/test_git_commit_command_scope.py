@@ -1,8 +1,9 @@
-"""Regression: SEH and Hub Git guidance must never commit an unrelated staged file.
+"""Regression: SEH reuses Hub Git guidance and excludes unrelated staged files.
 
 The SEH operator previously received a command which staged four specific files
-but committed 146 already-staged files.  Git's --only mode plus an explicit
-pathspec prevents that, even if the index already contains unrelated changes.
+but committed 146 already-staged files. SEH now uses the Hub renderer directly.
+Git's --only mode plus an explicit pathspec prevents unrelated staged changes
+from entering the commit.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.seh_control.git_deployment import _git_commit_push_command
+from tools.seh_control.git_deployment import _seh_git_operator_command
 from tools.hub_control.common.deployment import _render_git_commit_push_command
 
 
@@ -23,7 +24,7 @@ def _git(repo: Path, *args: str) -> str:
 
 @pytest.mark.parametrize('kind,source,render', [
     ('seh', 'main_computer/seh/relay.py',
-     lambda path: _git_commit_push_command([path])),
+     lambda path: _seh_git_operator_command([path])),
     ('hub', 'main_computer/hub.py',
      lambda path: _render_git_commit_push_command([{'status': 'M', 'path': path}])),
 ])
@@ -50,7 +51,7 @@ def test_guidance_commits_only_selected_paths_even_with_unrelated_staged(tmp_pat
 
     command = render(source)
     assert command.startswith(f"git add -- '{source}'; ")
-    expected_title = 'Update SEH deployment source' if kind == 'seh' else 'Update Hub deployment source'
+    expected_title = 'Update Hub deployment source'
     assert f"git commit --only -m '{expected_title}' -- '{source}'" in command
     assert 'git commit -m' not in command
     assert 'unrelated.py' not in command

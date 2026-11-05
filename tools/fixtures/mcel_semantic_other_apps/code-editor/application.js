@@ -25,6 +25,13 @@ module.exports=mcel.defineApp({id:"semantic-code-editor",title:"Semantic Code Ed
   const studioSourceChecks=dsl.state.derived("studio-source-checks",text,{initial:""});
   const studioSerializedPreview=dsl.state.derived("studio-serialized-preview",text,{initial:""});
   const scmRuntimeResult=dsl.state.derived("scm-runtime-result",text,{initial:""});
+  const proofIndexShape=dsl.field.list(dsl.field.record({id:text,scope:text,phase:text,code:text}),{key:"id"});
+  const proofIndex=dsl.state.derived("studio-proof-index",proofIndexShape);
+  const selectedProof=dsl.state.rendererLocal("selected-studio-proof",text,{initial:""});
+  const proofDetail=dsl.state.derived("studio-proof-detail",text,{initial:""});
+  const proofPacket=dsl.state.derived("studio-proof-packet",text,{initial:""});
+  const regressionResult=dsl.state.derived("studio-regression-result",text,{initial:""});
+  const repairPacket=dsl.state.derived("studio-repair-packet",text,{initial:""});
   const reader=dsl.capability.external("source-reader",{risk:"external-read",description:"Existing bounded Code Editor file listing and read API"});
   reader.operation("list","listSourceFiles",{result:filesShape});
   reader.operation("read","readSource",{inputs:{path:text},result:text});
@@ -71,6 +78,25 @@ module.exports=mcel.defineApp({id:"semantic-code-editor",title:"Semantic Code Ed
       ["route-enter","enterStudioRoute"],["route-leave","leaveStudioRoute"],
       ["evidence","readStudioRuntimeEvidence"],["replay","replayStudioRuntime"]])
     scmRuntime.operation(name,method,{inputs:{path:text,text:text},result:text});
+  // Proof and repair are evidence observations, never filesystem writes or AI execution.
+  // All results bind to the same guarded, document-scoped SCM session.
+  const scmProof=dsl.capability.external("scm-proof",{risk:"external-read",description:"Document-scoped SCM proof, isolated deterministic kernel regressions and evidence-grounded repair proposals; no source writes"});
+  scmProof.operation("index","listStudioProofEvidence",{inputs:{path:text,text:text},result:proofIndexShape});
+  scmProof.operation("inspect","inspectStudioProofEvidence",{inputs:{path:text,text:text,filter:text,key:text},result:text});
+  scmProof.operation("packet","exportStudioProofPacket",{inputs:{path:text,text:text,filter:text,key:text},result:text});
+  scmProof.operation("regress","runStudioKernelRegressions",{inputs:{path:text,text:text},result:text});
+  scmProof.operation("repair-packet","buildStudioAiRepairPacket",{inputs:{path:text,text:text,filter:text,key:text},result:text});
+  const listProof=dsl.intent.capabilityRequest("studio-proof-list",scmProof,
+    {operation:"index",arguments:{path:selected,text:draft},resultTo:proofIndex});
+  const chooseProof=dsl.intent.selectFromCollection("studio-proof-select",proofIndex,selectedProof);
+  const inspectProof=dsl.intent.capabilityRequest("studio-proof-inspect",scmProof,
+    {operation:"inspect",arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:proofDetail});
+  const exportProof=dsl.intent.capabilityRequest("studio-proof-export",scmProof,
+    {operation:"packet",arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:proofPacket});
+  const runRegression=dsl.intent.capabilityRequest("studio-regression-run",scmProof,
+    {operation:"regress",arguments:{path:selected,text:draft},resultTo:regressionResult});
+  const buildRepair=dsl.intent.capabilityRequest("studio-repair-packet",scmProof,
+    {operation:"repair-packet",arguments:{path:selected,text:draft,key:selectedProof},inputs:{filter:text},resultTo:repairPacket});
   const listDocs=dsl.intent.capabilityRequest("list-component-docs",docs,{operation:"manifest",resultTo:docTargets});
   const chooseDoc=dsl.intent.selectFromCollection("choose-component-doc",docTargets,docSelected);
   const readDoc=dsl.intent.capabilityRequest("read-component-doc",docs,{operation:"read",arguments:{id:docSelected},resultTo:docContent});
@@ -140,12 +166,22 @@ module.exports=mcel.defineApp({id:"semantic-code-editor",title:"Semantic Code Ed
       dsl.surface.action("studio-runtime-route-leave",{intent:runtimeIntents["route-leave"]}),
       dsl.surface.action("studio-runtime-evidence",{intent:runtimeIntents.evidence}),
       dsl.surface.action("studio-runtime-replay",{intent:runtimeIntents.replay}),
-      dsl.surface.text("scm-runtime-result",{value:scmRuntimeResult})],
+      dsl.surface.text("scm-runtime-result",{value:scmRuntimeResult}),
+      dsl.surface.action("studio-proof-list",{intent:listProof}),
+      dsl.surface.collection("studio-proof-index",{key:"id",fields:["scope","phase","code"],state:proofIndex,select:chooseProof}),
+      dsl.surface.form("studio-proof-inspect",{fields:{filter:text},defaults:{filter:"all"},intent:inspectProof}),
+      dsl.surface.text("studio-proof-detail",{value:proofDetail}),
+      dsl.surface.form("studio-proof-export",{fields:{filter:text},defaults:{filter:"all"},intent:exportProof}),
+      dsl.surface.text("studio-proof-packet",{value:proofPacket}),
+      dsl.surface.action("studio-regression-run",{intent:runRegression}),
+      dsl.surface.text("studio-regression-result",{value:regressionResult}),
+      dsl.surface.form("studio-repair-packet",{fields:{filter:text},defaults:{filter:"all"},intent:buildRepair}),
+      dsl.surface.text("studio-repair-packet-result",{value:repairPacket})],
     status:[dsl.surface.receipt("activity")]
   }});
-  return {states:[files,selected,source,draft,reviewed,applied,aiderPreview,aiderContext,aiderJobs,aiderResult,docTargets,docSelected,docContent,docViewportConfig,docScriptResult,scmComponentContract,scmRouteContract,studioSourceChecks,studioSerializedPreview,scmRuntimeResult],
-    capabilities:[reader,writer,reviewer,applier,aider,aiderReader,aiderController,docs,viewport,scm,studio,scmRuntime],
+  return {states:[files,selected,source,draft,reviewed,applied,aiderPreview,aiderContext,aiderJobs,aiderResult,docTargets,docSelected,docContent,docViewportConfig,docScriptResult,scmComponentContract,scmRouteContract,studioSourceChecks,studioSerializedPreview,scmRuntimeResult,proofIndex,selectedProof,proofDetail,proofPacket,regressionResult,repairPacket],
+    capabilities:[reader,writer,reviewer,applier,aider,aiderReader,aiderController,docs,viewport,scm,studio,scmRuntime,scmProof],
     intents:[listing,choose,read,directory,save,prepare,apply,previewAider,readAiderContext,readAiderJobs,
       listDocs,chooseDoc,readDoc,readViewportConfig,runDocScript,inspectScmComponent,inspectScmRoute,checkStudioSource,previewStudioSource,
-      ...Object.values(runtimeIntents),runAider,archiveAider,resetAider,loadAider],surfaces:[surface]};
+      ...Object.values(runtimeIntents),listProof,chooseProof,inspectProof,exportProof,runRegression,buildRepair,runAider,archiveAider,resetAider,loadAider],surfaces:[surface]};
 });

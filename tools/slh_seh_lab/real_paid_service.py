@@ -145,17 +145,28 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                              diagnostic_soak_seconds: int = 0,
                              diagnostic_trace_file: Path | None = None,
                              diagnostic_tls_io_mode: str = 'serialized',
+                             worker_requester_acceptance: bool = False,
                              pinky_integrated: bool = False, reserve_wallet: str | None = None,
-                             paid_trace_file: Path | None = None) -> dict:
+                             paid_trace_file: Path | None = None,
+                             credit_recovery_acceptance: bool = False,
+                             hub_session_directory=None) -> dict:
     """One paid request through Local -> org process -> real SEH -> Worker.
 
     No production state, Cloudflare, mainnet bridge, or external hub access.
     """
+    if credit_recovery_acceptance and (pinky_integrated or stress_profile is not None or diagnostic_mode is not None or worker_requester_acceptance or lab_mode!='in-memory-stable-hub'):
+        raise ValueError('Credit recovery acceptance requires the isolated real-process in-memory Hub lane')
+    if credit_recovery_acceptance and hub_session_directory is None:
+        raise ValueError('Credit recovery acceptance requires real Hub owner directory evidence')
     if pinky_integrated and (lab_mode!='three-hub-smoke-fdb' or stress_profile is not None or
                              diagnostic_mode is not None or not reserve_wallet):
         raise ValueError('Integrated Pinky needs verified real smoke/FDB Hubs, no diagnostic substitutions')
     if diagnostic_mode is not None and diagnostic_mode not in {'direct', 'seh'}:
         raise ValueError('Diagnostic transport must be direct or seh')
+    if worker_requester_acceptance and (diagnostic_mode not in {'direct', 'seh'} or diagnostic_cycles != 1
+                                       or diagnostic_idle_seconds != 0 or diagnostic_soak_seconds != 0
+                                       or stress_profile is not None or pinky_integrated):
+        raise ValueError('Worker/requester acceptance requires one isolated paid job on direct or SEH')
     if diagnostic_tls_io_mode not in {'baseline', 'serialized'}:
         raise ValueError('Diagnostic TLS I/O mode must be baseline or serialized')
     if diagnostic_mode is not None and (not 0 <= diagnostic_cycles <= 128 or not 0 <= diagnostic_idle_seconds <= 60
@@ -168,7 +179,10 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
     # A new emulated market capability per Pinky cycle makes an old, even
     # incorrectly lingering, Worker advertisement ineligible for this sale.
     # Ordinary marketplace tests retain the original unscoped capability.
-    market_isolation_capability = ('slh.lab.pinky.' + secrets.token_hex(16)) if pinky_integrated else None
+    market_isolation_capability = (
+        'slh.lab.pinky.' + secrets.token_hex(16) if pinky_integrated else
+        'slh.lab.worker-requester.' + secrets.token_hex(16) if worker_requester_acceptance else None
+    )
     gates = {}
     with tempfile.TemporaryDirectory(prefix='mc-slh-two-service-lab-paid-') as td:
         root = Path(td)
@@ -268,7 +282,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                 # Strict TLS EOF classification remains probe-only; all
                 # managed Workers use serialized I/O by default. The probe
                 # may explicitly restore the baseline control for A/B tests.
-                if diagnostic_mode is not None:
+                if diagnostic_mode is not None and not worker_requester_acceptance:
                     worker.diagnostic_strict_tls_eof = True
                     worker.tls_io_mode = diagnostic_tls_io_mode
                 with lab_stage('pinky.remote_worker_start', transport='seh' if relay is not None else 'direct', endpoint_port=adapter.server_address[1] if adapter is not None else worker_port):
@@ -334,7 +348,10 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                         worker=worker, adapter=adapter, relay=relay,
                         api_port=api_port, org_token=org_token,
                         worker_account_id=next(iter(accounts)),
-                        lab_mode=lab_mode, trace_file=diagnostic_trace_file)
+                        lab_mode=lab_mode, trace_file=diagnostic_trace_file,
+                        worker_port=worker_port,
+                        acceptance=worker_requester_acceptance,
+                        market_isolation_capability=market_isolation_capability)
                 forwarded_before_paid = relay.bytes_forwarded
                 with lab_stage('pinky.public_paid_cycle'):
                     paid = verify_paid_cycle(hub_url=hub_url, proxy=proxy, gateway=None,
@@ -369,7 +386,19 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                 # the former as a mandatory preflight made a 64-Worker run fail
                 # before its first extra Worker had connected, obscuring scope.
                 integrated_stress = None
-                if stress_profile is None:
+                credit_recovery = None
+                if credit_recovery_acceptance:
+                    from .credit_recovery_acceptance import verify_credit_recovery
+                    with lab_stage('slh.credit_recovery_real_process'):
+                        credit_recovery = verify_credit_recovery(
+                            root=root, api_port=api_port, worker_port=worker_port,
+                            local=local, org_token=org_token, proxy=proxy,
+                            wallet=wallet, hub_identity=identity, ledger=payout_ledger,
+                            hub_url=hub_url, original_worker=worker, pin=pin,
+                            workers=workers, paid=paid,
+                            hub_session_directory=hub_session_directory)
+                    gates['credit_recovery_end_to_end'] = credit_recovery['pass']
+                elif stress_profile is None:
                     # Decision storm on the *real child*: successive changes
                     # alternate private reserve and public offers. No explicit
                     # reconcile is needed; the service reacts to policy writes.
@@ -437,6 +466,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                         'pass': bool(gates) and all(gates.values()), 'gates': gates,
                         'paid_marketplace': paid,
                         **({'pinky_integrated':pinky_result} if pinky_integrated else {}),
+                        **({'credit_recovery':credit_recovery} if credit_recovery_acceptance else {}),
                         **({'integrated_stress': integrated_stress} if integrated_stress is not None else {}),
                         'scope': 'real-org-child-real-seh-local-hub-synthetic-ledger',
                         'limitations': {'external_bridge': 'NOT_TESTED', 'public_wss': 'NOT_TESTED',

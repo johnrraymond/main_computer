@@ -522,3 +522,42 @@ def test_diagnostic_without_alias_uses_single_verified_controller_and_app():
     assert result['application_uuid'] == 'stable-uuid'
     assert 'seh' not in result
     assert control.calls == ['list', 'diagnostic']
+
+
+def test_activate_shows_exact_hub_git_command_on_stderr(monkeypatch, capsys):
+    from tools.hub_control.common.deployment import _render_git_commit_push_command
+    command = _render_git_commit_push_command([
+        {'status': ' M', 'path': 'main_computer/seh/relay.py'}
+    ])
+    import seh_mutate_harness as harness
+    monkeypatch.setattr(harness, 'run', lambda _: {
+        'status': 'INCOMPLETE', 'failed_stage': 'seh_git_source_not_published',
+        'git_source_reason': 'SEH source differs from published main',
+        'git_repair_command': command,
+    })
+    result = harness.main(['activate-seh', '--execute-mutations',
+                           '--yes-i-know-this-mutates-seh'])
+    captured = capsys.readouterr()
+    assert result == 2
+    report = json.loads(captured.out)
+    assert report['git_repair_command'] == command
+    assert 'SEH_GIT_COMMIT_PUSH_COMMAND:' in captured.err
+    assert 'SEH_GIT_RECONCILE_COMMAND:' not in captured.err
+    assert command in captured.err
+    assert captured.out.rstrip().endswith('}')
+
+
+def test_activate_unpushed_head_uses_hub_message_without_extra_commands(monkeypatch, capsys):
+    import seh_mutate_harness as harness
+    monkeypatch.setattr(harness, 'run', lambda _: {
+        'status': 'INCOMPLETE', 'failed_stage': 'seh_git_source_not_published',
+        'git_source_reason': 'If HEAD is the intended revision, run: git push origin HEAD '
+                             '(resolve any remote divergence before retrying)',
+    })
+    assert harness.main(['activate-seh', '--execute-mutations',
+                         '--yes-i-know-this-mutates-seh']) == 2
+    captured = capsys.readouterr()
+    assert 'git push origin HEAD' in captured.err
+    assert 'SEH_GIT_RECONCILE_COMMAND:' not in captured.err
+    assert 'SEH_GIT_COMMIT_PUSH_COMMAND:' not in captured.err
+    assert 'git_repair_command' not in json.loads(captured.out)

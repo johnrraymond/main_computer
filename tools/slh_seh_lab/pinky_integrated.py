@@ -198,7 +198,7 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                                  bearer=admin_token,tls=True))
                 gates['two_successes_two_obligations'] = (
                     before['count']==2 and before['paid_count']==0 and
-                    int(before['outstanding_credit_wei'])==2*10**17)
+                    int(before['outstanding_credit_wei'])==4*10**17)
                 sweep=_ok(_lab_http(api_port,'POST','/v1/accounting/sweep',{},
                                 bearer=admin_token,tls=True))
                 if sweep.get('status')!='CONFIRMED':
@@ -210,13 +210,13 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                 gates['aggregate_sweep_exactly_once'] = (
                     status['paid_count']==2 and status['pending_sweeps']==0 and
                     after['paid_count']==2 and int(after['outstanding_credit_wei'])==0 and
-                    sweep['credit_wei']==str(2*10**17))
+                    sweep['credit_wei']==str(4*10**17))
                 settled = ledger.get_account(org_account)
                 reserve_after = ledger.get_account(reserve_account)
                 gates['actual_fdb_wallet_debit'] = (
-                    int(settled['available_credit_wei'])==initial_available-2*10**17)
+                    int(settled['available_credit_wei'])==initial_available-4*10**17)
                 gates['actual_fdb_reserve_credit'] = (
-                    int(reserve_after['available_credit_wei'])==reserve_before_wei+2*10**17)
+                    int(reserve_after['available_credit_wei'])==reserve_before_wei+4*10**17)
                 # The persisted batch can be recovered and replayed at Hub3;
                 # the same sweep ID must return the same receipt, no extra debit.
                 from main_computer.slh.organization_wallet import HubCreditReader
@@ -232,8 +232,8 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
                         canonical_sweep_intent(intent),org_wallet_private)})
                 gates['hub_replay_no_second_transfer'] = (
                     repeat.get('receipt_id')==sweep['receipt_id'] and
-                    int(ledger.get_account(org_account)['available_credit_wei'])==initial_available-2*10**17 and
-                    int(ledger.get_account(reserve_account)['available_credit_wei'])==reserve_before_wei+2*10**17)
+                    int(ledger.get_account(org_account)['available_credit_wei'])==initial_available-4*10**17 and
+                    int(ledger.get_account(reserve_account)['available_credit_wei'])==reserve_before_wei+4*10**17)
                 nothing=_ok(_lab_http(api_port,'POST','/v1/accounting/sweep',{},
                                   bearer=admin_token,tls=True))
                 gates['next_sweep_has_no_duplicate_payment'] = nothing['status']=='NOTHING_DUE'
@@ -266,8 +266,8 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
 'worker_account_id':org_account,
                         'reserve_account_id':reserve_account,
                         'earned_credit_wei':str(initial_available),
-                        'assessed_credit_wei':str(2*10**17),
-                        'swept_credit_wei':str(2*10**17),
+                        'assessed_credit_wei':str(4*10**17),
+                        'swept_credit_wei':str(4*10**17),
                         'receipt_id':sweep['receipt_id'],
                         'limitations':{'external_chain_bridge':'NOT_TESTED',
                                        'private_over_seh':'NOT_IMPLEMENTED',

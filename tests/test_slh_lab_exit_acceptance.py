@@ -38,10 +38,10 @@ EXPECTED_MISSING_CAPABILITIES = {
 }
 
 
-def test_all_six_exit_blockers_are_declared_and_pinky_price_is_fixed():
+def test_all_six_exit_blockers_are_declared_and_pinky_assessment_is_current():
     assert set(UNIMPLEMENTED_REQUIRED) == EXPECTED_MISSING_CAPABILITIES
     reason = UNIMPLEMENTED_REQUIRED['pinky_promise_economic_cycle']
-    assert '0.1-credit' in reason
+    assert '20%-of-market-price' in reason
     assert 'organization wallet' in reason
     assert 'Reserve settlement' in reason
 
@@ -195,3 +195,25 @@ def test_stress_profile_flags_opt_in():
     assert not default.strict_acceptance
     assert not default.capacity_probe
     assert StressProfile(64,64,8,1729,True,True,True).capacity_probe
+
+
+def test_lab_exit_rejects_missing_real_worker_bank_credit_evidence():
+    spec = next(s for s in exit_specs(profile='smoke') if s.kind == 'local')
+    report = {'status':'PASS', 'pass':True,
+              **{name:{'pass':True} for name in
+                 ('two_service_lab','real_process_paid_work',
+                  'real_process_credit_recovery','decision_stress','slh')}}
+    assert judge(spec, report, returncode=0) == (False, 'REAL_CREDIT_RECOVERY_EVIDENCE_MISSING')
+    from tools.slh_seh_lab.credit_recovery_acceptance import REQUIRED_GATES
+    from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+    report['real_process_credit_recovery']['credit_recovery'] = {
+        'status':'PASS','pass':True,'gates':{key:True for key in REQUIRED_GATES},
+        'worker_count':2, 'local_requests_succeeded':5, 'local_requests_refused':1,
+        'source_earning_credit_wei':str(CREDIT_WEI_PER_CREDIT),
+        'obligations_credit_wei':str(CREDIT_WEI_PER_CREDIT)}
+    assert judge(spec, report, returncode=0) == (False,'CREDIT_EDGE_REGRESSIONS_MISSING')
+    report['credit_edge_regressions']={'pass':True,'cases_passed':6}
+    assert judge(spec, report, returncode=0)[0]
+    report['real_process_credit_recovery']['credit_recovery']['gates'][
+        'single_worker_hub_ack_before_local'] = False
+    assert judge(spec, report, returncode=0) == (False, 'REAL_CREDIT_RECOVERY_EVIDENCE_MISSING')

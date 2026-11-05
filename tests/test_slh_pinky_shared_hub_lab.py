@@ -50,17 +50,28 @@ def test_in_memory_local_verification_does_not_claim_pinky_economic_pass():
     class MockHub:
         server_port=12000
         payout_ledger_directory=object()
+        worker_session_directory=object()
         def shutdown(self):pass
         def server_close(self):pass
     class MockThread:
         def join(self,timeout):pass
     success={'pass':True,'status':'PASS','gates':{'ok':True}}
+    from tools.slh_seh_lab.credit_recovery_acceptance import REQUIRED_GATES
+    from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+    recovery={**success, 'credit_recovery':{**success,
+        'gates':{key:True for key in REQUIRED_GATES},
+        'worker_count':2, 'local_requests_succeeded':5,'local_requests_refused':1,
+        'source_earning_credit_wei':str(CREDIT_WEI_PER_CREDIT),
+        'obligations_credit_wei':str(CREDIT_WEI_PER_CREDIT)}}
     with patch('tools.slh_seh_lab.service_lifecycle.verify_services',return_value=success), \
          patch('tools.slh_seh_lab.decision_stress.verify_decisions',return_value=success), \
          patch('tools.slh_seh_lab.run_lab._in_memory_hub',return_value=(MockHub(),MockThread())), \
          patch('tools.slh_seh_lab.run_lab._local_demo',return_value=success), \
          patch('tools.slh_seh_lab.run_lab._mock_coolify_gate',return_value=success), \
-         patch('tools.slh_seh_lab.real_paid_service.verify_real_process_paid',return_value=success):
+         patch('tools.slh_seh_lab.run_lab._verify_four_issue_hardening',return_value={'pass':True}), \
+         patch('tools.slh_seh_lab.run_lab._credit_edge_regressions',return_value={'pass':True,'cases_passed':6}), \
+         patch('tools.slh_seh_lab.real_paid_service.verify_real_process_paid',
+               side_effect=lambda **kw: recovery if kw.get('credit_recovery_acceptance') else success):
         result=verify_local()
     assert result['status']=='PASS'
     assert 'pinky_integrated' not in result
@@ -178,7 +189,7 @@ def _fake_integrated_paid(topo, *, cycle=1, pinky_pass=True, corrupt_pinky_evide
     # A distinct verified economic cycle for orchestration tests. Real FDB
     # acceptance is only established by the Windows smoke lab, not this mock.
     wei = 10**18
-    pinky_wei = 2*10**17
+    pinky_wei = 4*10**17
     org = f'org-{cycle}'
     wallet = f'worker-{cycle}'
     reserve_before = (cycle-1)*pinky_wei
@@ -271,7 +282,7 @@ def test_pinky_integrated_skips_second_legacy_paid_work_and_checkpoints(tmp_path
     checkpoint = json.loads((tmp_path / 'pinky-integrated-checkpoint.json').read_text())
     assert checkpoint['schema'] == 'main-computer.slh-pinky-integrated-checkpoint.v1'
     assert checkpoint['pass'] is True
-    assert checkpoint['pinky_integrated']['swept_credit_wei'] == str(2 * 10**17)
+    assert checkpoint['pinky_integrated']['swept_credit_wei'] == str(4 * 10**17)
     assert checkpoint['legacy_second_paid_demo'] == 'NOT_RUN'
     assert checkpoint['hub_cluster']['ids'] == ['smoke-hub1', 'smoke-hub2', 'smoke-hub3']
 
@@ -315,7 +326,7 @@ def test_pinky_repeated_three_cycles_have_distinct_wallets_and_cumulative_reserv
     assert all(result['gates'].values())
     assert result['total_buyer_debit_wei'] == str(3*10**18)
     assert result['total_earned_credit_wei'] == str(3*10**18)
-    assert result['total_reserve_swept_wei'] == str(6*10**17)
+    assert result['total_reserve_swept_wei'] == str(12*10**17)
     assert len({c['organization_account_id'] for c in result['cycles']}) == 3
     assert len({c['buyer_account_id'] for c in result['cycles']}) == 3
     assert len({c['receipt_id'] for c in result['cycles']}) == 3

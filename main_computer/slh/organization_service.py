@@ -82,6 +82,11 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                           if self.server.gateway else None)
             inspect_supervisor = getattr(supervisor, 'connection_diagnostics', None)
             diagnostics = inspect_supervisor() if callable(inspect_supervisor) else {}
+            sweeper = self.server.pinky_sweeper
+            # No sensitive ledger rows, signer paths, or receipt IDs in status.
+            get_sweep_status = getattr(sweeper, 'status', None)
+            sweep_thread = getattr(sweeper, '_thread', None)
+            sweep_status = get_sweep_status() if callable(get_sweep_status) else {}
             self._respond(200, {'schema': 'main-computer.slh-org-status.v1',
                                 'operational': True,
                                 'worker_serving_enabled': self.server.workers_enabled,
@@ -90,7 +95,11 @@ class OrganizationHTTPHandler(BaseHTTPRequestHandler):
                                     self.server.gateway.seh_connection and
                                     self.server.gateway.seh_connection.connected),
                                 'private_requests_available': self.server.private_requests is not None,
-                                'pinky_sweeper_available': self.server.pinky_sweeper is not None,
+                                'pinky_sweeper_available': sweeper is not None,
+                                'pinky_sweeper_running': bool(sweep_thread and sweep_thread.is_alive()),
+                                'pinky_sweep_last_attempt_ns': sweep_status.get('last_attempt_ns'),
+                                'pinky_sweep_last_error': sweep_status.get('last_error'),
+                                'pinky_sweep_last_confirmed': bool(sweep_status.get('last_confirmed')),
                                 'seh_activation_error': getattr(self.server, 'seh_activation_error', None),
                                 'seh_outbound_phase': diagnostics.get('phase', 'NOT_STARTED'),
                                 'seh_outbound_attempts': diagnostics.get('attempts', 0),
@@ -349,13 +358,16 @@ def run(*, state_dir: Path, parent_pid: int, parent_created: float) -> int:
             # Do not route private payloads through the public SEH marketplace.
             # The private ledger and periodic Reserve sweeper must remain live
             # while the existing public relay is connected.
-            server.private_requests = PrivateRequests(state_dir, authority, gateway)
+            server.private_requests = PrivateRequests(state_dir, authority, gateway,
+                                                      wallet_service=server.wallet_service)
+            gateway.scheduler.credit_provider = server.private_requests.net_credit_status
             server.api.private_requests = server.private_requests
             server.pinky_sweeper = PinkySweep(server.private_requests, server.wallet_service)
             server.api.pinky_sweeper = server.pinky_sweeper
             server.pinky_sweeper.start()
             server.marketplace = SLHMarketplaceProxy(gateway)
             server.marketplace_controller = AutomaticMarketplace(server.marketplace, state_dir, wallet_service=server.wallet_service)
+            server.private_requests.marketplace_controller = server.marketplace_controller
             gateway.on_worker_registered = server.marketplace_controller.wake
             gateway.on_worker_disconnected = server.marketplace_controller.wake
             server.marketplace_controller.start()

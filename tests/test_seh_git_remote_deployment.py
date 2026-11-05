@@ -214,47 +214,51 @@ def test_different_host_origin_is_selected_from_active_identity(tmp_path,monkeyp
     assert g._loaded(root,'mainnet','company')['coolify_origin']=='https://coolify-b.example.org'
 
 
-def test_git_source_requires_exact_pushed_revision_and_clean_deployed_inputs(tmp_path,monkeypatch):
+def test_git_source_requires_actual_published_files_not_local_head(tmp_path, monkeypatch):
     import subprocess
-    repo=tmp_path/'checkout'
+    repo = tmp_path / 'checkout'
     repo.mkdir()
-    remote=tmp_path/'origin.git'
-    def git(*args,cwd=repo):
-        result=subprocess.run(['git',*args],cwd=cwd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
-                              encoding='utf-8',check=True)
+    remote = tmp_path / 'origin.git'
+
+    def git(*args, cwd=repo):
+        result = subprocess.run(['git', *args], cwd=cwd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, encoding='utf-8', check=True)
         return result.stdout.strip()
-    git('init','-b','main')
-    git('config','user.name','Unit Tests')
-    git('config','user.email','test@example.org')
+
+    git('init', '-b', 'main')
+    git('config', 'user.name', 'Unit Tests')
+    git('config', 'user.email', 'test@example.org')
     for rel in g.SOURCES:
-        path=repo/rel
-        path.parent.mkdir(parents=True,exist_ok=True)
-        path.write_text('test source\n',encoding='utf-8')
-    git('add','.')
-    git('commit','-m','source')
-    subprocess.run(['git','init','--bare',str(remote)],capture_output=True,check=True)
-    git('remote','add','origin',str(remote))
-    git('push','origin','main')
-    # The source guard validates origin's identity separately from Git's push.
-    original_run=g.subprocess.run
-    def fake_run(argv,**kwargs):
-        if len(argv)>4 and argv[3:6]==['remote','get-url','origin']:
-            return subprocess.CompletedProcess(argv,0,'https://github.com/johnrraymond/main_computer.git\n','')
-        return original_run(argv,**kwargs)
-    monkeypatch.setattr(g.subprocess,'run',fake_run)
-    assert g.git_source(repo)['revision']==git('rev-parse','HEAD')
-    (repo/'main_computer/seh/relay.py').write_text('changed but not pushed\n')
-    with pytest.raises(g.SEHGitError,match='uncommitted') as dirty:
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((Path(__file__).resolve().parents[1] / rel).read_bytes())
+    git('add', '.')
+    git('commit', '-m', 'source')
+    subprocess.run(['git', 'init', '--bare', str(remote)], capture_output=True, check=True)
+    git('remote', 'add', 'origin', str(remote))
+    git('push', 'origin', 'main')
+    original_run = g.subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if len(argv) > 4 and argv[3:6] == ['remote', 'get-url', 'origin']:
+            return subprocess.CompletedProcess(argv, 0,
+                'https://github.com/johnrraymond/main_computer.git\n', '')
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(g.subprocess, 'run', fake_run)
+    assert g.git_source(repo)['revision'] == git('rev-parse', 'HEAD')
+    (repo / 'main_computer/seh/relay.py').write_text('changed but not pushed\n')
+    with pytest.raises(g.SEHGitPublicationError, match='build inputs differ') as dirty:
         g.git_source(repo)
-    assert dirty.value.git_command == (
-        "git add -- 'main_computer/seh/relay.py'; "
-        "if ($LASTEXITCODE -eq 0) { git commit --only -m 'Update SEH deployment source' -- 'main_computer/seh/relay.py' }; "
-        "if ($LASTEXITCODE -eq 0) { git push origin HEAD:refs/heads/main }")
-    git('add','.')
-    git('commit','-m','unpushed change')
-    with pytest.raises(g.SEHGitError,match='committed locally but not published') as unpushed:
+    assert 'main_computer/seh/relay.py' in str(dirty.value)
+    assert "git commit --only -m 'Update Hub deployment source'" in dirty.value.git_command
+    assert 'git push origin HEAD' in dirty.value.git_command
+    git('add', '.')
+    git('commit', '-m', 'still unpublished')
+    with pytest.raises(g.SEHGitPublicationError, match='build inputs differ') as unpushed:
         g.git_source(repo)
-    assert unpushed.value.git_command == 'git push origin HEAD:refs/heads/main'
+    assert unpushed.value.git_command == ''
+    assert 'If HEAD is the intended revision, run: git push origin HEAD' in str(unpushed.value)
 
 
 def test_preflight_read_only_and_status_before_create(tmp_path):
@@ -269,34 +273,8 @@ def test_preflight_read_only_and_status_before_create(tmp_path):
     assert not any(method not in ('GET',) for method,_ in host.calls)
 
 
-def test_dirty_command_only_stages_relevant_seh_source():
-    porcelain = (' M main_computer/seh/relay.py\n'
-                 '?? deploy/seh/Dockerfile\n'
-                 '?? runtime/state/mother/identity.private.yaml\n')
-    paths = g._dirty_source_paths(porcelain)
-    assert paths == ['deploy/seh/Dockerfile', 'main_computer/seh/relay.py']
-    command = g._git_commit_push_command(paths)
-    assert command.startswith("git add -- 'deploy/seh/Dockerfile' 'main_computer/seh/relay.py';")
-    assert 'identity.private' not in command
-    assert "git add ." not in command
-    assert g._git_commit_push_command(['runtime/state/mother/identity.private.yaml']) == ''
-
-
-def test_cli_prints_git_command_on_dirty_prepare(tmp_path,monkeypatch,capsys):
-    from tools.seh_harness import main
-    root,_=setup(tmp_path)
-    monkeypatch.setattr(g,'_client',lambda controller: FakeHost())
-    def dirty(*args, **kwargs):
-        raise g.SEHGitError('SEH runtime source has uncommitted changes',
-                            git_command=g._git_commit_push_command(['deploy/seh/Dockerfile']))
-    monkeypatch.setattr(g,'git_source',dirty)
-    args=['--network','mainnet','--seh','company','--runtime-state-root',str(root)]
-    assert main(['prepare',*args]) == 2
-    result=capsys.readouterr()
-    assert 'SEH_GIT_COMMIT_PUSH_COMMAND:' in result.err
-    assert "git add -- 'deploy/seh/Dockerfile';" in result.err
-    assert json.loads(result.err.splitlines()[-1])['status']=='REFUSED'
-    assert 'api_token' not in result.err and SECRET not in result.err
+def test_seh_git_guard_does_not_run_repository_mutations():
+    assert not hasattr(g, '_isolated_git_publication_command')
 
 
 def test_status_reports_dns_independently_from_running_coolify_and_without_mutation(tmp_path):

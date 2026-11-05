@@ -972,6 +972,10 @@ class _WorkerHubLiveSessionClient:
         parsed = urlparse(self.hub_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise RuntimeError(f"Hub URL must be http(s): {self.hub_url!r}")
+        if isinstance(self.auth_message.get("multisession_authorization"), dict):
+            # Final fail-closed guard before any MSK-bearing network session.
+            from main_computer.slh.marketplace_auto import _check_url
+            _check_url(self.hub_url)
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         raw_sock = socket.create_connection((parsed.hostname, port), timeout=self.timeout_s)
         if parsed.scheme == "https":

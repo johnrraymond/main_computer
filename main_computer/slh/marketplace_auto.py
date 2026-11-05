@@ -7,6 +7,7 @@ into configuration or status responses.
 from __future__ import annotations
 
 import json
+from ipaddress import ip_address
 import os
 from pathlib import Path
 import tempfile
@@ -63,7 +64,10 @@ def _check_url(value):
         return
     if not isinstance(value, str) or len(value) > 2048:
         raise SLHError('INVALID_MARKETPLACE_HUB_URL')
-    url = urlsplit(value)
+    try:
+        url = urlsplit(value)
+    except ValueError as exc:
+        raise SLHError('INVALID_MARKETPLACE_HUB_URL') from exc
     if (url.scheme not in ('http', 'https') or not url.hostname
             or url.username is not None or url.password is not None
             or url.query or url.fragment or url.path not in ('', '/')):
@@ -72,6 +76,13 @@ def _check_url(value):
         _ = url.port
     except ValueError as exc:
         raise SLHError('INVALID_MARKETPLACE_HUB_URL') from exc
+    if url.scheme == 'http':
+        try:
+            allowed = ip_address(url.hostname).is_loopback
+        except ValueError:
+            allowed = False
+        if not allowed:
+            raise SLHError('INVALID_MARKETPLACE_HUB_URL')
 
 
 def update_settings(state_dir: Path, changes: dict, expected_revision: int) -> dict:

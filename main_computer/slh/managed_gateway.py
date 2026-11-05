@@ -7,6 +7,7 @@ upstream hub.work.authorized. TLS here uses one pinned leaf, NOT an organization
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -79,6 +80,7 @@ class ManagedWorker:
     reservations: set[str] = field(default_factory=set)
     active: bool = True
     audit: Any = None
+    generation: int = 0
 
     def send(self, frame: dict):
         with self.send_lock:
@@ -118,19 +120,27 @@ class ManagedWorker:
 
 
 class ManagedScheduler:
-    def __init__(self, is_authorized=None, *, policy_store=None):
+    def __init__(self, is_authorized=None, *, policy_store=None, credit_provider=None):
         self.is_authorized=is_authorized or (lambda device_id: True)
         self.policy_store=policy_store
+        self.credit_provider=credit_provider
+        self._withdrawals:set[str]=set()
+        # A local request owns its selected Worker across asynchronous Hub
+        # withdrawal until it atomically reserves the now-private Worker.
+        self._private_claims:set[str]=set()
+        self._generation=0
         self._advertised:set[str]=set()
         self._reservation_kind:dict[str,str]={}
         self._lock=threading.RLock()
         self._workers:dict[str,ManagedWorker]={}
-        self._sessions:dict[str,str]={}
+        self._sessions:dict[str,ManagedWorker]={}
 
     def register(self, worker: ManagedWorker):
         with self._lock:
             existing=self._workers.get(worker.device_id)
             if existing and existing.active:raise RuntimeError('device already connected')
+            self._generation+=1
+            worker.generation=self._generation
             self._workers[worker.device_id]=worker
 
     def unregister(self, worker: ManagedWorker):
@@ -141,6 +151,8 @@ class ManagedScheduler:
                     self._sessions.pop(sid,None)
                     self._reservation_kind.pop(sid,None)
                 self._advertised.discard(worker.device_id)
+                self._withdrawals.discard(worker.device_id)
+                self._private_claims.discard(worker.device_id)
             with worker.condition:
                 worker.active=False
                 worker.condition.notify_all()
@@ -150,15 +162,109 @@ class ManagedScheduler:
             return [{'device_id':w.device_id,'models':list(w.models),
                      'reserved':len(w.reservations),'available':w.active and not w.reservations,
                      'public_advertised':w.device_id in self._advertised,
+                     'withdrawal_requested':w.device_id in self._withdrawals,
+                     'private_capacity_claimed':w.device_id in self._private_claims,
+                     'generation':w.generation,
                      'reservation_types':sorted(self._reservation_kind.get(s,'unknown') for s in w.reservations)}
                     for w in self._workers.values()]
 
-    def mark_advertised(self, device_id:str, value:bool):
+    def mark_advertised(self, device_id:str, value:bool, *, generation:int|None=None):
         with self._lock:
-            if value:self._advertised.add(device_id)
-            else:self._advertised.discard(device_id)
+            worker=self._workers.get(device_id)
+            if generation is not None and (worker is None or worker.generation!=generation):
+                return False
+            if value:
+                if (worker is None or not worker.active or worker.reservations
+                        or device_id in self._private_claims):
+                    return False
+                self._advertised.add(device_id)
+            else:
+                self._advertised.discard(device_id)
+                self._withdrawals.discard(device_id)
+            return True
 
-    def _plan_locked(self, *, now=None):
+    def private_quote(self, *, model:str='') -> dict|None:
+        '''Quote the selected Worker's normal marketplace price in credit wei.
+
+        A quote is advisory until reservation checks its connection generation.
+        Public candidates must be withdrawn before any local execution.
+        '''
+        from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+        with self._lock:
+            policy=(self.policy_store.get()['policy'] if self.policy_store is not None
+                    else {'dedicated_public':[]})
+            matches=[]
+            for w in self._workers.values():
+                if (not w.active or not self.is_authorized(w.device_id) or
+                    (model and model not in w.models)):
+                    continue
+                public=w.device_id in self._advertised
+                if w.device_id in policy['dedicated_public']:
+                    continue
+                if not public and w.reservations:
+                    continue
+                if w.device_id in self._withdrawals:
+                    continue
+                matches.append((public,w.device_id,w))
+            if not matches:return None
+            _,_,w=min(matches,key=lambda item:(item[0],item[1]))
+            raw=w.market.get('price') or {'amount':'1','unit':'compute_credit'}
+            if not isinstance(raw,dict) or str(raw.get('unit','compute_credit')).lower() not in ('compute_credit','credit'):
+                raise RuntimeError('unsupported Worker marketplace credit price')
+            try:
+                price=Decimal(str(raw.get('amount','1')))
+            except (ValueError,TypeError,InvalidOperation):
+                raise RuntimeError('invalid Worker marketplace price')
+            if not price.is_finite() or price<=0 or price>Decimal('1000000000000000000'):
+                raise RuntimeError('invalid Worker marketplace price')
+            reference=int((price*CREDIT_WEI_PER_CREDIT).to_integral_value(rounding=ROUND_CEILING))
+            assessment=(reference+4)//5  # hardcoded 20%, round up in wei
+            return {'device_id':w.device_id,'generation':w.generation,
+                    'reference_credit_wei':reference,'assessment_credit_wei':assessment,
+                    'public':w.device_id in self._advertised}
+
+    def request_private_capacity(self, *, model:str='', device_id:str='', generation:int|None=None) -> str|None:
+        '''Select one idle public Worker for a future upstream withdrawal.
+
+        Does not claim it for local work or pretend disconnection happened.
+        Subsequent public offers are refused while withdrawal is pending.
+        '''
+        with self._lock:
+            for did in sorted(self._advertised):
+                worker=self._workers.get(did)
+                if (worker is not None and worker.active and
+                    self.is_authorized(did) and
+                    not any(self._reservation_kind.get(s)=='private' for s in worker.reservations) and
+                    did not in self._withdrawals and
+                    (not model or model in worker.models) and
+                    (not device_id or device_id==did) and
+                    (generation is None or worker.generation==generation)):
+                    self._withdrawals.add(did)
+                    self._private_claims.add(did)
+                    return did
+        return None
+
+    def withdrawals(self) -> tuple[str,...]:
+        with self._lock:return tuple(sorted(self._withdrawals))
+
+    def cancel_private_capacity(self, device_id: str, *, generation: int) -> None:
+        """Release a timed-out local claim without clearing Hub close fencing."""
+        with self._lock:
+            worker = self._workers.get(device_id)
+            if worker and worker.generation == generation:
+                self._private_claims.discard(device_id)
+
+    def request_public_withdrawal(self, device_id: str, *, generation: int) -> bool:
+        """Fence new offers before an upstream retirement; never imply Hub ACK."""
+        with self._lock:
+            worker = self._workers.get(device_id)
+            if (worker is None or not worker.active or worker.generation != generation
+                    or device_id not in self._advertised):
+                return False
+            self._withdrawals.add(device_id)
+            return True
+
+    def _plan_locked(self, *, now=None, credit_meter=None):
         current = self._advertised.copy()
         workers=[]
         for w in self._workers.values():
@@ -171,10 +277,24 @@ class ManagedScheduler:
             from .scheduler_policy import DEFAULT_POLICY
             policy=DEFAULT_POLICY
         else:policy=self.policy_store.get()['policy']
-        return compute_plan(policy,workers,current,now=now)
+        return compute_plan(policy,workers,current,now=now,
+                            credit_meter=credit_meter,
+                            withdrawal_requested=self._withdrawals | self._private_claims)
 
-    def plan(self, *, now=None):
-        with self._lock:return self._plan_locked(now=now)
+    def _credit_meter(self):
+        if self.credit_provider is None:return None
+        try:
+            observation=self.credit_provider()
+            if observation.get('state')!='CURRENT' or not observation.get('balance'):
+                return None
+            return {'state':'CURRENT',
+                    'available_credit_wei':observation['balance']['available_credit_wei']}
+        except (ValueError, TypeError, KeyError, SLHError, OSError):
+            return None
+
+    def plan(self, *, now=None, credit_meter=None):
+        meter=self._credit_meter() if credit_meter is None else credit_meter
+        with self._lock:return self._plan_locked(now=now,credit_meter=meter)
 
     def reserve(self, session_id: str, *, model: str = '', device_id: str = '',
                 purpose: str = 'public') -> ManagedWorker:
@@ -188,39 +308,46 @@ class ManagedScheduler:
                     # A private requester cannot take a worker whose public
                     # Stable Hub session is advertised as available.
                     if purpose=='private':
-                        if w.device_id in self._advertised:continue
+                        if w.device_id in self._advertised or w.device_id in self._withdrawals:continue
                         if self.policy_store is not None and w.device_id in self.policy_store.get()['policy']['dedicated_public']:
                             continue
+                    if purpose=='public' and w.device_id in self._withdrawals:continue
                     w.reservations.add(session_id)
-                    self._sessions[session_id]=w.device_id
+                    self._sessions[session_id]=w
                     self._reservation_kind[session_id]=purpose
+                    if purpose == 'private':
+                        self._private_claims.discard(w.device_id)
                     return w
             raise RuntimeError('no eligible local worker capacity')
 
     def reserve_public(self, session_id: str, *, device_id: str, now=None) -> ManagedWorker:
+        meter=self._credit_meter()
         with self._lock:
             if device_id not in self._advertised:
                 raise RuntimeError('worker public session not advertised')
-            if device_id not in self._plan_locked(now=now).desired:
+            if device_id in self._withdrawals or device_id not in self._plan_locked(now=now,credit_meter=meter).desired:
                 raise RuntimeError('worker is draining under SLH policy')
             return self.reserve(session_id,device_id=device_id,purpose='public')
 
-    def reserve_private(self, session_id:str, *, model:str='') -> ManagedWorker:
-        return self.reserve(session_id,model=model,purpose='private')
+    def reserve_private(self, session_id:str, *, model:str='',device_id:str='',generation:int|None=None) -> ManagedWorker:
+        with self._lock:
+            worker=self.reserve(session_id,model=model,device_id=device_id,purpose='private')
+            if generation is not None and worker.generation!=generation:
+                self.release(session_id)
+                raise RuntimeError('stale Worker quote')
+            return worker
 
     def release(self, session_id: str):
         with self._lock:
-            did=self._sessions.pop(session_id,None)
+            worker=self._sessions.pop(session_id,None)
             self._reservation_kind.pop(session_id,None)
-            if did:
-                worker=self._workers.get(did)
-                if worker:worker.reservations.discard(session_id)
+            if worker:worker.reservations.discard(session_id)
 
     def worker_for(self, session_id: str) -> ManagedWorker:
         with self._lock:
-            did=self._sessions.get(session_id)
-            w=self._workers.get(did) if did else None
-            if not w or not w.active:raise ConnectionError('reserved local worker disconnected')
+            w=self._sessions.get(session_id)
+            if not w or not w.active or self._workers.get(w.device_id) is not w:
+                raise ConnectionError('reserved local worker disconnected')
             return w
 
     def execute_private(self, offer: dict, *, timeout: float = 120) -> dict:
@@ -432,6 +559,16 @@ class SLHManagedGateway:
                 event, device_id=did, socket=socket, phase='send', exc=exc)
             self.scheduler.register(worker)
             phase='live'
+            supervisor = self.seh_connection
+            if supervisor is not None:
+                try:
+                    peer = socket.remote_address
+                    if isinstance(peer, tuple) and len(peer) > 1:
+                        supervisor.mark_worker_authenticated(int(peer[1]))
+                except (OSError, RuntimeError, ValueError, ConnectionError):
+                    # No marker means the relay's absolute pre-auth timeout
+                    # still applies. Never grant access because of a marker.
+                    pass
             self._note_connection('gateway_worker_registered', device_id=did, socket=socket, phase=phase)
             socket.send(json.dumps({'type':'hub.auth.accepted','ok':True,
                                     'execution_protocol':'durable-authorization-v1',
@@ -548,32 +685,61 @@ class SLHManagedGateway:
 
 
 class SLHMarketplaceProxy:
-    """One upstream worker socket per managed device; all may share one MSK."""
-    def __init__(self,gateway:SLHManagedGateway):
-        self.gateway=gateway
-        self.sessions:dict[str,Any]={}
-        self._lock=threading.RLock()
+    """One Hub-acknowledged upstream session per live local Worker generation.
 
-    def connect_device(self, device_id:str, *, hub_url:str, auth:dict):
+    A requested withdrawal fences new offers immediately. A Worker becomes
+    private-eligible ONLY after the Hub confirms its own durable close and
+    settlement with hub.worker.closed. Socket EOF is not such evidence.
+    """
+
+    def __init__(self, gateway: SLHManagedGateway):
+        self.gateway = gateway
+        self.sessions: dict[str, Any] = {}
+        self._lock = threading.RLock()
+
+    def connect_device(self, device_id: str, *, hub_url: str, auth: dict):
         from main_computer.viewport_routes_energy import _WorkerHubLiveSessionClient
-        scheduler=self.gateway.scheduler
-        if not isinstance(auth,dict) or auth.get('kind')!='multisession_key' or not auth.get('multisession_key_id'):
+        scheduler = self.gateway.scheduler
+        if (not isinstance(auth, dict) or auth.get('kind') != 'multisession_key'
+                or not auth.get('multisession_key_id')):
             raise ValueError('SLH requires a genuine Hub-issued MSK authorization')
-        if urlsplit(hub_url).scheme not in {'http','https'}:raise ValueError('Invalid Hub URL')
+        from .marketplace_auto import _check_url
+        _check_url(hub_url)
         with scheduler._lock:
-            actual=scheduler._workers.get(device_id)
-            if not actual or not actual.active:raise RuntimeError('Managed worker not connected')
-            market=dict(actual.market)
+            actual = scheduler._workers.get(device_id)
+            if not actual or not actual.active:
+                raise RuntimeError('Managed worker not connected')
+            if device_id in scheduler._withdrawals:
+                raise RuntimeError('Worker awaiting upstream withdrawal')
+            generation = actual.generation
+            market = dict(actual.market)
         with self._lock:
-            if device_id in self.sessions:raise RuntimeError('Upstream slot already exists')
+            if device_id in self.sessions:
+                raise RuntimeError('Upstream slot already exists')
 
         class Slot(_WorkerHubLiveSessionClient):
+            def _handle_hub_message(self, message):
+                kind = str(message.get('type') or '')
+                if kind == 'hub.worker.closed':
+                    # Hub sends this only after its owner/market/hold close
+                    # commits. A different connection must not release ours.
+                    expected = str(self.accepted.get('connection_id') or '')
+                    exp_private_slot = (self.accepted.get('service') == 'main_computer.exp_fdb_hub'
+                                        and not expected and 'connection_id' not in message)
+                    if (self._slh_close_requested and message.get('ok') is True
+                            and (expected and str(message.get('connection_id') or '') == expected
+                                 or exp_private_slot)):
+                        self._slh_closed_confirmed = True
+                    self._slh_close_ack.set()
+                    return
+                if kind == 'hub.work.denied':
+                    scheduler.release(str(message.get('session_id') or ''))
+                if kind == 'hub.error' and self._slh_close_requested:
+                    self._slh_close_ack.set()  # no success; fail closed
+                super()._handle_hub_message(message)
+
             def _execute_work_offer(self, offer):
-                # An SLH public slot is ONLY a proxy. The inherited Worker
-                # client has a debug-echo fast path that can answer a job on
-                # the SLH without ever contacting its walletless worker.
-                # Never use that path here: every authorized job must cross
-                # the managed-device session and return from that device.
+                # Never use the upstream client's local debug-echo fast path.
                 result = scheduler.execute_authorized(offer)
                 if not isinstance(result, dict):
                     raise RuntimeError('Managed worker returned invalid result')
@@ -582,81 +748,170 @@ class SLHMarketplaceProxy:
                 return result
 
             def _handle_work_offer(self, offer):
-                sid=str(offer.get('session_id') or '')
-                scheduler.reserve_public(sid,device_id=device_id)
-                try:super()._handle_work_offer(offer)
+                sid = str(offer.get('session_id') or '')
+                try:
+                    scheduler.reserve_public(sid, device_id=device_id)
+                except RuntimeError:
+                    # There is no Hub work-decline frame. Close gracefully so
+                    # any Hub-side pending hold is settled by its existing
+                    # durable close procedure. Never execute this offer.
+                    if device_id in scheduler.withdrawals():
+                        self._request_hub_retirement()
+                        return
+                    raise
+                try:
+                    super()._handle_work_offer(offer)
                 except BaseException:
                     scheduler.release(sid)
                     raise
 
-        message={'type':'worker.auth','execution_protocol':'durable-authorization-v1',
-                 'multisession_authorization':auth,'market':market,
-                 'model':(market.get('models') or [''])[0],
-                 'models':market.get('models',[]),'status':'available','max_concurrency':1}
-        client=Slot(hub_url=hub_url,worker_id='slh-'+device_id,auth_message=message,
-                    work_executor=scheduler.execute_authorized,timeout_s=8)
-        scheduler.mark_advertised(device_id,True)
-        try:client.start()
+            def _request_hub_retirement(self):
+                with self._state_lock:
+                    if self._slh_close_requested:
+                        return
+                    self._slh_close_requested = True
+                try:
+                    self._send_json({'type': 'worker.close',
+                                     'reason': 'slh_worker_bank_withdrawal'})
+                except (OSError, ConnectionError, RuntimeError):
+                    # A lost socket is not proof of durable Hub settlement.
+                    self._slh_close_ack.set()
+
+            def retire_with_hub_ack(self, timeout: float = 5.0) -> bool:
+                self._request_hub_retirement()
+                self._slh_close_ack.wait(timeout)
+                return self._slh_closed_confirmed
+
+        message = {'type': 'worker.auth', 'execution_protocol': 'durable-authorization-v1',
+                   'multisession_authorization': auth, 'market': market,
+                   'model': (market.get('models') or [''])[0],
+                   'models': market.get('models', []), 'status': 'available',
+                   'max_concurrency': 1}
+        client = Slot(hub_url=hub_url, worker_id='slh-' + device_id,
+                      auth_message=message, work_executor=scheduler.execute_authorized,
+                      timeout_s=8)
+        client._slh_generation = generation
+        client._slh_close_ack = threading.Event()
+        client._slh_close_requested = False
+        client._slh_closed_confirmed = False
+        # Before the first Hub offer arrives, reserve the public allocation.
+        # A failed auth always removes this tentative registration.
+        if not scheduler.mark_advertised(device_id, True, generation=generation):
+            raise RuntimeError('Worker cannot be allocated publicly')
+        try:
+            client.start()
+            if (client.accepted.get('ok') is not True
+                    or not (client.accepted.get('connection_id')
+                            or client.accepted.get('service') == 'main_computer.exp_fdb_hub')
+                    or not client.is_alive):
+                raise ConnectionError('Stable Hub did not confirm the live slot')
         except BaseException:
-            scheduler.mark_advertised(device_id,False)
+            scheduler.mark_advertised(device_id, False, generation=generation)
             client.close(reason='upstream_connect_failed')
             raise
-        with self._lock:
-            if not actual.active:
-                client.close(reason='local_worker_disconnected')
-                raise ConnectionError('Local worker disconnected before upstream ready')
-            self.sessions[device_id]=client
-        return {'device_id':device_id,'connected':True,'shared_wallet':auth.get('wallet_address')}
+        with self._lock, scheduler._lock:
+            if (scheduler._workers.get(device_id) is not actual or not actual.active
+                    or device_id in scheduler._withdrawals):
+                # Auth succeeded but connection generation or allocation was
+                # superseded. Do NOT pretend its Hub session was retired.
+                self.sessions[device_id] = client
+                scheduler.request_public_withdrawal(device_id, generation=generation)
+                raise RuntimeError('Worker changed during upstream registration')
+            self.sessions[device_id] = client
+        return {'device_id': device_id, 'connected': True,
+                'connection_id': client.accepted.get('connection_id'),
+                'generation': generation, 'shared_wallet': auth.get('wallet_address')}
 
-    def reconcile(self, *, hub_url:str, auth:dict, now:float|None=None, enabled:bool=True) -> dict:
-        """Apply policy to public advertisements, never cancel an active job.
-
-        Call periodically as well as on worker join/leave. Slot teardown is
-        delayed while the local scheduler owns a work reservation, including
-        the offer -> authorization interval.
-        """
-        scheduler=self.gateway.scheduler
-        plan=scheduler.plan(now=now)
-        desired=set(plan.desired) if enabled else set()
-        opened=[];drained=[];blocked=[]
+    def disconnect_device(self, device_id: str, *, timeout: float = 5.0) -> bool:
+        """Retire one slot; return False without releasing on missing Hub ACK."""
         with self._lock:
-            current=dict(self.sessions)
-        for did,client in current.items():
-            if did in desired and client.is_alive:continue
+            client = self.sessions.get(device_id)
+        if client is None:
+            return True
+        scheduler = self.gateway.scheduler
+        generation = client._slh_generation
+        with scheduler._lock:
+            worker = scheduler._workers.get(device_id)
+            busy = bool(worker is not None and worker.generation == generation
+                        and worker.reservations)
+            if worker is not None and worker.generation == generation:
+                scheduler.request_public_withdrawal(device_id, generation=generation)
+        if busy or client.has_active_work:
+            return False
+        if not client.retire_with_hub_ack(timeout=timeout):
+            # Do not release this device's public allocation merely because
+            # a socket died, a timeout fired, or Hub cleanup was deferred.
+            return False
+        with self._lock:
+            if self.sessions.get(device_id) is not client:
+                return False
+            self.sessions.pop(device_id, None)
+        scheduler.mark_advertised(device_id, False, generation=generation)
+        client.close(reason='hub_close_acknowledged')
+        return True
+
+    def reconcile(self, *, hub_url: str, auth: dict,
+                  now: float | None = None, enabled: bool = True) -> dict:
+        """Reconcile actual confirmed upstream sessions to scheduler intent."""
+        scheduler = self.gateway.scheduler
+        plan = scheduler.plan(now=now)
+        desired = set(plan.desired) if enabled else set()
+        desired -= set(scheduler.withdrawals())
+        opened, drained, blocked = [], [], []
+        with self._lock:
+            current = dict(self.sessions)
+        for did, client in current.items():
             with scheduler._lock:
-                busy=bool(scheduler._workers.get(did) and
-                          scheduler._workers[did].reservations)
-                # Do not let a subsequent upstream offer race with drain.
-                if did not in desired:scheduler.mark_advertised(did,False)
-            if busy or client.has_active_work:
-                blocked.append(did)
+                worker = scheduler._workers.get(did)
+                same_generation = bool(worker and worker.active
+                                       and worker.generation == client._slh_generation)
+                pending = did in scheduler._withdrawals
+            if did in desired and same_generation and not pending and client.is_alive:
                 continue
-            self.disconnect_device(did)
-            drained.append(did)
-        with self._lock:current=set(self.sessions)
-        for did in sorted(desired-current):
+            # Generation changes must not cause a stale session to release
+            # the new Worker's capacity. Hub retirement still comes first.
+            if same_generation:
+                scheduler.request_public_withdrawal(did, generation=client._slh_generation)
+            if self.disconnect_device(did):
+                drained.append(did)
+            else:
+                blocked.append(did + ':UPSTREAM_CLOSE_UNCONFIRMED')
+        with self._lock:
+            current = set(self.sessions)
+        # Skip new sessions for a Worker with a pending old Hub connection.
+        for did in sorted(desired - current):
+            if did in scheduler.withdrawals():
+                continue
             try:
-                self.connect_device(did,hub_url=hub_url,auth=auth)
+                self.connect_device(did, hub_url=hub_url, auth=auth)
                 opened.append(did)
             except (RuntimeError, ConnectionError, ValueError, OSError) as exc:
-                blocked.append(did+':'+type(exc).__name__)
-        result=scheduler.plan(now=now).as_dict()
-        result.update({'opened':opened,'drained':drained,'blocked':blocked,
-                       'live_public_sessions':sorted(self.sessions)})
+                blocked.append(did + ':' + type(exc).__name__)
+        result = scheduler.plan(now=now).as_dict()
+        result.update({'opened': opened, 'drained': drained, 'blocked': blocked,
+                       'live_public_sessions': sorted(
+                           did for did, slot in self.sessions.items()
+                           if slot.is_alive and slot.accepted.get('ok') is True),
+                       'upstream_connection_ids': {
+                           did: slot.accepted.get('connection_id')
+                           for did, slot in self.sessions.items()
+                           if slot.accepted.get('ok') is True}})
         return result
 
-    def connect(self, *, hub_url:str,auth:dict,max_slots:int=1):
-        connected=[]
+    def connect(self, *, hub_url: str, auth: dict, max_slots: int = 1):
+        connected = []
         for worker in self.gateway.scheduler.snapshot()[:max_slots]:
-            connected.append(self.connect_device(worker['device_id'],hub_url=hub_url,auth=auth))
-        return {'connected_slots':len(connected),'sessions':connected}
-
-    def disconnect_device(self,device_id:str):
-        with self._lock:client=self.sessions.pop(device_id,None)
-        self.gateway.scheduler.mark_advertised(device_id,False)
-        if client:client.close(reason='local_worker_disconnected')
+            connected.append(self.connect_device(worker['device_id'], hub_url=hub_url, auth=auth))
+        return {'connected_slots': len(connected), 'sessions': connected}
 
     def close(self):
+        # Best effort for process shutdown; do not claim release without ACK.
         with self._lock:
-            ids=list(self.sessions)
-        for did in ids:self.disconnect_device(did)
+            ids = list(self.sessions)
+        for did in ids:
+            self.disconnect_device(did, timeout=2.0)
+        with self._lock:
+            remaining = list(self.sessions.values())
+            self.sessions.clear()
+        for client in remaining:
+            client.close(reason='slh_proxy_shutdown')

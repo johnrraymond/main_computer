@@ -105,6 +105,96 @@ def run_decision_stress(*, seed=1729, events=1000, sizes=(16,64,256)) -> dict:
             'scope':'production-scheduler-pure-decision-stress'}
 
 
+def run_worker_bank_acceptance() -> dict:
+    """Exercise real SLH bank decisions with deliberately delayed Hub release.
+
+    This is a scheduler-level acceptance lane. Advertisement and retirement
+    acknowledgments are simulated; real upstream close is Patch 2.
+    """
+    from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+    from main_computer.slh.managed_gateway import ManagedWorker, ManagedScheduler
+
+    class Socket:
+        def send(self, frame):pass
+
+    class Store:
+        def get(self):return {'policy':dict(DEFAULT_POLICY)}
+
+    def make_bank(count, credits):
+        holder={'balance':int(credits*CREDIT_WEI_PER_CREDIT)}
+        scheduler=ManagedScheduler(policy_store=Store(), credit_provider=lambda: {
+            'state':'CURRENT','balance':{'available_credit_wei':str(holder['balance'])}})
+        for i in range(count):
+            scheduler.register(ManagedWorker(f'bank-worker-{i:02d}',Socket(),{},['model']))
+        return scheduler,holder
+
+    gates={}
+    for workers in (1,2,5,10):
+        bank,credit=make_bank(workers,10)
+        funded=bank.plan()
+        local=(workers+4)//5  # ceil(workers*20%)
+        assert len(funded.desired)==workers-local, funded.as_dict()
+        assert funded.private_idle_target==local
+        gates[f'funded_{workers}']=True
+        credit['balance']=0
+        recovery=bank.plan()
+        assert len(recovery.desired)==workers, recovery.as_dict()
+        gates[f'recovery_{workers}']=True
+
+    bank,_=make_bank(1,0)
+    assert bank.mark_advertised('bank-worker-00',True)
+    paid=bank.reserve_public('paid-1',device_id='bank-worker-00')
+    assert bank.request_private_capacity(model='model')=='bank-worker-00'
+    try:
+        bank.reserve_private('local-premature',model='model')
+    except RuntimeError:
+        pass
+    else:raise StressFailure('public Worker assigned before Hub withdrawal acknowledgment')
+    try:
+        bank.reserve_public('paid-2',device_id='bank-worker-00')
+    except RuntimeError:
+        pass
+    else:raise StressFailure('new paid offer accepted during withdrawal')
+    assert bank.worker_for('paid-1') is paid
+    bank.release('paid-1')
+    assert bank.withdrawals()==('bank-worker-00',)
+    assert bank.mark_advertised('bank-worker-00',False)  # simulated Hub release
+    assert bank.reserve_private('local-1',model='model') is paid
+    bank.release('local-1')
+    gates['single_worker_busy_drain_then_local']=True
+
+    bank,_=make_bank(2,0)
+    for did in bank.plan().desired:assert bank.mark_advertised(did,True)
+    candidate=bank.request_private_capacity(model='model')
+    assert candidate=='bank-worker-00'
+    assert bank.reserve_public('second-public',device_id='bank-worker-01')
+    assert bank.mark_advertised(candidate,False)
+    local=bank.reserve_private('second-local',model='model')
+    assert local.device_id==candidate
+    assert local.device_id != bank.worker_for('second-public').device_id
+    bank.release('second-public');bank.release('second-local')
+    gates['two_workers_independent_marketplace_and_local']=True
+
+    bank,_=make_bank(1,0)
+    before=next(iter(bank._workers.values()))
+    bank.reserve('old-run',device_id=before.device_id,purpose='private')
+    before.active=False
+    replacement=ManagedWorker(before.device_id,Socket(),{},['model'])
+    bank.register(replacement)
+    try:bank.worker_for('old-run')
+    except ConnectionError:pass
+    else:raise StressFailure('reconnected device inherited old active reservation')
+    bank.reserve_private('new-run',model='model')
+    bank.release('old-run')
+    assert 'new-run' in replacement.reservations
+    assert not bank.mark_advertised(replacement.device_id,False,generation=before.generation)
+    bank.release('new-run')
+    gates['reconnection_generation_fencing']=True
+    return {'schema':'main-computer.slh-worker-bank-decisions.v1',
+            'status':'PASS','pass':True,'gates':gates,
+            'scope':'scheduler_with_simulated_upstream_acknowledgments'}
+
+
 def run_reconciler_contention(*, seed=1729, operations=250) -> dict:
     """Parallel manual/events/periodic reconciles must never overlap.
 
@@ -159,9 +249,10 @@ def verify_decisions(*, seed=1729, extended=False):
     decisions=run_decision_stress(seed=seed,events=3000 if extended else 500,
                                   sizes=(16,64,256))
     concurrency=run_reconciler_contention(seed=seed,operations=1000 if extended else 200)
-    ok=decisions['pass'] and concurrency['pass'] and all(concurrency['gates'].values())
+    bank=run_worker_bank_acceptance()
+    ok=decisions['pass'] and concurrency['pass'] and bank['pass'] and all(concurrency['gates'].values())
     return {'schema':'main-computer.slh-decision-stress-acceptance.v1',
             'status':'PASS' if ok else 'FAIL','pass':ok,
-            'decisions': decisions, 'concurrency':concurrency,
+            'decisions': decisions, 'concurrency':concurrency, 'worker_bank':bank,
             'limitations':{'real_process_paid_work':'SEPARATE_REQUIRED_LAB_LANE',
                            'network_outage':'SCHEDULER_SIMULATED'}}

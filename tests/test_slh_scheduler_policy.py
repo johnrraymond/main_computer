@@ -19,10 +19,14 @@ class FakeSocket:
 
 
 class FakeUpstream:
-    def __init__(self, *, busy=False):
+    def __init__(self, *, busy=False, generation=0):
         self.is_alive=True
         self.has_active_work=busy
         self.closed=False
+        self._slh_generation=generation
+        self.accepted={'ok':True,'connection_id':'fake-connection'}
+    def retire_with_hub_ack(self, timeout=5):
+        return True  # scheduler-only fixture; real Hub ACK has separate integration tests
     def close(self, *, reason):
         self.closed=True;self.is_alive=False
 
@@ -41,8 +45,11 @@ class TestSLHSchedulerPolicy(unittest.TestCase):
             'proof':sign_object(key,payload)},loopback=True)
         self.store=SchedulerPolicyStore(self.authority)
 
-    def make_scheduler(self, count=6):
-        sch=ManagedScheduler(policy_store=self.store)
+    def make_scheduler(self, count=6, *, balance_credits=10):
+        wei=int(balance_credits*10**18)
+        sch=ManagedScheduler(policy_store=self.store,
+                             credit_provider=lambda:{'state':'CURRENT','balance':{
+                                 'available_credit_wei':str(wei)}})
         for i in range(count):sch.register(ManagedWorker(f'w{i}',FakeSocket(),{},['model']))
         return sch
 
@@ -91,9 +98,9 @@ class TestSLHSchedulerPolicy(unittest.TestCase):
     def test_private_first_guarantees_ready_reserve(self):
         sch=self.make_scheduler(20)
         plan=sch.plan()
-        self.assertEqual(plan.max_public_slots,15)
-        self.assertEqual(plan.private_idle_target,5)
-        self.assertEqual(len(plan.desired),15)
+        self.assertEqual(plan.max_public_slots,16)
+        self.assertEqual(plan.private_idle_target,4)
+        self.assertEqual(len(plan.desired),16)
         for did in plan.desired:sch.mark_advertised(did,True)
         # Actual private capacity is outside the advertised set.
         private=sch.reserve_private('private-1')
@@ -137,7 +144,7 @@ class TestSLHSchedulerPolicy(unittest.TestCase):
         clients={}
         for did in plan.desired:
             sch.mark_advertised(did,True)
-            clients[did]=FakeUpstream()
+            clients[did]=FakeUpstream(generation=sch._workers[did].generation)
         busy=plan.desired[0]
         sch.reserve_public('active-paid-job',device_id=busy)
         gw=SimpleNamespace(scheduler=sch)
@@ -156,7 +163,7 @@ class TestSLHSchedulerPolicy(unittest.TestCase):
         w=[{'device_id':'a','active':True},{'device_id':'b','active':True},
            {'device_id':'c','active':False}]
         p=normalize_policy({'min_private_idle_percent':50,'max_public_percent':100})
-        plan=compute_plan(p,w,set())
+        plan=compute_plan(p,w,set(),credit_meter={'state':'CURRENT','available_credit_wei':str(10**19)})
         self.assertEqual(plan.private_idle_target,1)
         self.assertEqual(plan.max_public_slots,1)
 

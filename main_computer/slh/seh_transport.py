@@ -33,6 +33,13 @@ def _endpoint(uri: str, *, allow_lab: bool):
     return u
 
 
+def _socket_source_port(sock):
+    try:
+        return sock.getsockname()[1]
+    except OSError:
+        return None
+
+
 class SLHSEHConnector:
     """Authenticates using a dedicated SLH P-256 key, then tunnels to its local TLS service."""
     def __init__(self, *, seh_url: str, slh_id: str,
@@ -88,6 +95,18 @@ class SLHSEHConnector:
             if self._socket is None:
                 raise ConnectionError('SEH tunnel not connected')
             self._socket.send(json.dumps(payload,separators=(',',':')))
+
+    def mark_worker_authenticated(self, gateway_peer_port: int) -> bool:
+        """Attest one gateway-authenticated stream, never client-originated data."""
+        with self._lock:
+            if not self._running.is_set():
+                return False
+            sid = next((sid for sid, local in self._streams.items()
+                        if _socket_source_port(local) == gateway_peer_port), None)
+            if sid is None:
+                return False
+            self._send({'op': 'authenticated', 'id': sid})
+            return True
 
     def _local_reader(self, sid, local):
         cause = 'local_eof'

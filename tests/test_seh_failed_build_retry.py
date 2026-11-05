@@ -21,7 +21,7 @@ class FailedBuildCoolify(DeletedCoolify):
     def __init__(self):
         super().__init__()
         self.commit = PUBLISHED['revision']
-        self.app_status = 'exited'
+        self.app_status = 'exited:unhealthy'
         self.second_build = 'queued'
         self.active_deployments = []
         self.fail_patch_after_update = False
@@ -215,3 +215,17 @@ def test_failed_build_with_unverified_new_source_cannot_retry(tmp_path):
                                        execute=True, client=remote,
                                        source={**UPDATED, 'repository': 'https://elsewhere'})
     assert remote.retry_submit_count == 0
+
+@pytest.mark.parametrize('status, stage', [
+    ('running:unhealthy', 'retry_runtime_or_build_active'),
+    ('starting', 'retry_runtime_or_build_active'),
+    ('unknown:unhealthy', 'retry_runtime_state_unverified'),
+])
+def test_runtime_block_reports_observation(tmp_path, status, stage):
+    root, slh, remote = setup(tmp_path)
+    remote.app_status = status
+    out = git.reconcile_pending_recovery(root, 'mainnet', state_dir=slh,
+                                         execute=True, client=remote, source=UPDATED)
+    assert out['failed_stage'] == stage
+    assert out['coolify_status'] == status and out['retry_phase'] == 'before_pin'
+    assert remote.commit == PUBLISHED['revision'] and remote.retry_submit_count == 0

@@ -19,6 +19,13 @@ from tools.slh_seh_connector import service_identity
 
 UUID = 'itr2ynyxjs4iy6dsj4fvekmn'
 
+def _enable_seh_for_resolver(state_dir):
+    from main_computer.slh.organization_state import save_config, DEFAULTS
+    save_config(state_dir, {**DEFAULTS, 'configured': True, 'enabled': True,
+                            'activation_confirmed': True, 'workers_enabled': True,
+                            'seh_enabled': True})
+
+
 
 class FakeCoolify:
     def __init__(self, public_key):
@@ -50,7 +57,8 @@ class FakeCoolify:
 
 
 def verified(root):
-    return ({'deployment': {'enabled': True, 'application_uuid': UUID,
+    return ({'coolify': {'controller': {'enabled': True, 'id':'unit-controller'}},
+             'deployment': {'enabled': True, 'application_uuid': UUID,
                             'git': {'project_uuid': 'proj1', 'environment_uuid': 'env1',
                                     'server_uuid': 'server1'}}},
             {'url': 'http://127.0.0.1:8000/', 'api_token': 'not-used-in-tests'},
@@ -59,6 +67,7 @@ def verified(root):
 
 def test_resolves_only_existing_uuid_public_origin_and_matching_key(tmp_path):
     private, public = service_identity(tmp_path / 'slh', create=True)
+    _enable_seh_for_resolver(tmp_path / 'slh')
     remote = FakeCoolify(public)
     with patch.object(git, '_canonical_selection', side_effect=lambda root, net: verified(root)) as selection:
         settings = resolve_canonical_connection(tmp_path / 'slh',
@@ -69,11 +78,14 @@ def test_resolves_only_existing_uuid_public_origin_and_matching_key(tmp_path):
     assert all(method == 'GET' for method, _ in remote.calls)
     assert (tmp_path / 'slh' / 'seh-service-signing-key.pem').is_file()
     assert not (tmp_path / 'slh' / 'seh-connection.json').exists()
-    assert not list((tmp_path / 'slh').glob('*organization*'))
+    # The enabled configuration was pre-created by this fixture. Resolution
+    # may not generate any other organization identity artifacts.
+    assert [p.name for p in (tmp_path / 'slh').glob('*organization*')] == ['organization-service.json']
 
 
 def test_masked_coolify_value_with_valid_real_value_is_supported(tmp_path):
     _, public = service_identity(tmp_path / 'slh', create=True)
+    _enable_seh_for_resolver(tmp_path / 'slh')
     remote = FakeCoolify(public)
     remote.envs[0]['value'] = '********'
     remote.envs[0]['real_value'] = public

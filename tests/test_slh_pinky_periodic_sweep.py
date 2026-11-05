@@ -32,7 +32,8 @@ class Private:
         self._lock=threading.RLock()
         with self._db() as db:
             db.execute('''CREATE TABLE pinky_obligations (
-               obligation_id TEXT PRIMARY KEY,org_id TEXT, assessed_at_ns INTEGER)''')
+               obligation_id TEXT PRIMARY KEY,org_id TEXT, assessed_at_ns INTEGER,
+               amount_credit_wei TEXT NOT NULL)''')
     @contextmanager
     def _db(self):
         db=sqlite3.connect(self.db_path,timeout=10)
@@ -43,7 +44,8 @@ class Private:
     def assess(self,n):
         with self._lock,self._db() as db:
             for i in range(n):
-                db.execute('INSERT INTO pinky_obligations VALUES (?,?,?)',(f'oid-{i}',self.org_id,i))
+                db.execute('INSERT INTO pinky_obligations VALUES (?,?,?,?)',
+                           (f'oid-{i}',self.org_id,i,str(10**17)))
 
 
 class Wallet:
@@ -234,9 +236,9 @@ def test_actual_private_fulfillment_creates_batchable_debt(env):
         assert fixture.private.obligations()['count']==1
         sweeper=PinkySweep(fixture.private,wallet,reader_factory=lambda *args:reader)
         paid=sweeper.sweep()
-        assert paid['credit_wei']==str(10**17)
+        assert paid['credit_wei']==str(2*10**17)
         assert sweeper.status()['outstanding_credit_wei']=='0'
         assert fixture.private.obligations()['paid_count']==1
-        assert ledger.get_account(wallet_account_id(RESERVE))['available_credits_display']=='0.1'
+        assert ledger.get_account(wallet_account_id(RESERVE))['available_credits_display']=='0.2'
     finally:
         fixture.doCleanups()

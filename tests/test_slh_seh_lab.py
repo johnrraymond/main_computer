@@ -261,6 +261,7 @@ class TestSLHSEHLab(unittest.TestCase):
         self.assertEqual(result['status'],'PASS',result)
         self.assertTrue(all(result['slh']['gates'].values()))
         self.assertEqual(result['seh_coolify_contract']['status'],'PASS')
+        self.assertTrue(result['real_process_credit_recovery']['credit_recovery']['pass'])
         self.assertEqual(result['production_seh'],'LOCAL_RUNTIME_TESTED_COOLIFY_NOT_TESTED')
         self.assertTrue(result['slh']['gates']['seh_paid_worker_executed_through_real_relay'])
         self.assertTrue(result['slh']['gates']['seh_configured_autoconnect_on_slh_start'])

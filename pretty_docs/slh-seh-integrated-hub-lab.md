@@ -34,6 +34,34 @@ To inspect the topology and acceptance plan without launching anything:
 python -m tools.slh_seh_lab.run_lab plan --json
 ```
 
+## Separate paid Worker/requester acceptance: SLH direct vs. SEH relay
+
+These commands use the existing *real* Organization Service, managed Worker,
+Stable Hub HTTP/WebSocket server, and wallet-owned payout ledger. Each run
+creates one disposable enrolled Worker and a separate funded requester, buys
+one deterministic job, then checks actual Hub charge/earning and settlement.
+Unlike the extended transport diagnosis, the commands have explicit roles and
+independent acceptance results:
+
+```powershell
+# Worker connects directly to SLH; SEH is not created.
+python -m tools.slh_seh_lab.run_lab verify-worker-requester --worker-connection slh --json
+
+# Worker connects through the real local SEH relay to SLH.
+python -m tools.slh_seh_lab.run_lab verify-worker-requester --worker-connection seh --json
+```
+
+A successful report requires the intended managed Worker to execute the job,
+unique-capability Hub routing, the correct result, one requester debit, one
+SLH wallet earning, and exactly-once local ledger settlement. The SEH mode
+also requires the authenticated tunnel and actual adapter/relay traffic during
+that paid job; direct fallback fails. The SLH mode requires no relay instance.
+Both runs are **isolated in-memory Hub tests**, with synthetic requester credits
+and no production SLH identity, Mother mutation, Coolify deployment, public WSS,
+or external-chain settlement. They are not production round-trip evidence.
+A later integration of Captain/Data should reuse the proven managed Worker
+path rather than making these disposable test identities permanent.
+
 ## Production two-service acceptance (no Hub or Coolify required)
 
 Patch 2A changes the SLH from a directly launched gateway into **two real

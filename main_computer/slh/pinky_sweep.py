@@ -117,11 +117,16 @@ class PinkySweep:
                 JOIN pinky_sweeps s ON i.sweep_id=s.sweep_id
                 WHERE s.status='CONFIRMED' ''').fetchone()['n']
             pending=db.execute("SELECT COUNT(*) n FROM pinky_sweeps WHERE status='PENDING'").fetchone()['n']
+            outstanding=sum(int(row['amount_credit_wei']) for row in db.execute('''
+                SELECT o.amount_credit_wei FROM pinky_obligations o
+                LEFT JOIN pinky_sweep_items i ON i.obligation_id=o.obligation_id
+                LEFT JOIN pinky_sweeps s ON s.sweep_id=i.sweep_id
+                WHERE s.status IS NULL OR s.status!='CONFIRMED' '''))
             return {'schema':'main-computer.slh-pinky-sweeps.v1',
                     'assessed_count':count,
                     'paid_count':paid,'outstanding_count':count-paid,
-                    'outstanding_credit_wei':str((count-paid)*ASSESSMENT_WEI),
-                    'outstanding_credits':credit_wei_to_decimal_text((count-paid)*ASSESSMENT_WEI),
+                    'outstanding_credit_wei':str(outstanding),
+                    'outstanding_credits':credit_wei_to_decimal_text(outstanding),
                     'pending_sweeps':pending,
                     'last_confirmed':self._last_confirmed(db),
                     'interval_seconds':self.interval,
@@ -147,22 +152,24 @@ class PinkySweep:
             with self.private._lock,self.private._db() as db:
                 prepared=db.execute("SELECT * FROM pinky_sweeps WHERE status='PENDING' ORDER BY created_at_ns LIMIT 1").fetchone()
                 if prepared is None:
-                    # A batch comprises whole 0.1-credit obligations. No
-                    # locally initiated transfer exceeds fresh Hub availability.
-                    limit=available//ASSESSMENT_WEI
-                    if limit<=0:
-                        return {'status':'INSUFFICIENT_CREDITS',**self.status()}
-                    # Bound one sweep to avoid excessive SQLite variables / payload.
-                    ids=[row['obligation_id'] for row in db.execute('''
-                        SELECT o.obligation_id FROM pinky_obligations o
+                    # Preserve historic 0.1-credit obligations and new 0.2-
+                    # credit obligations by summing each persisted amount.
+                    candidates=db.execute('''
+                        SELECT o.obligation_id,o.amount_credit_wei FROM pinky_obligations o
                         LEFT JOIN pinky_sweep_items i ON i.obligation_id=o.obligation_id
                         WHERE i.obligation_id IS NULL
-                        ORDER BY o.assessed_at_ns,o.obligation_id LIMIT ?''',
-                        (min(limit,1000),)).fetchall()]
+                        ORDER BY o.assessed_at_ns,o.obligation_id LIMIT 1000''').fetchall()
+                    ids=[]
+                    credit_wei=0
+                    for row in candidates:
+                        charge=int(row['amount_credit_wei'])
+                        if credit_wei+charge>available:break
+                        ids.append(row['obligation_id'])
+                        credit_wei+=charge
                     if not ids:
-                        return {'status':'NOTHING_DUE',**self.status()}
+                        return {'status':'INSUFFICIENT_CREDITS' if candidates else 'NOTHING_DUE',
+                                **self.status()}
                     sweep_id='psweep-'+uuid.uuid4().hex
-                    credit_wei=len(ids)*ASSESSMENT_WEI
                     db.execute('''INSERT INTO pinky_sweeps
                         (sweep_id,wallet_address,reserve_wallet_address,cluster_id,chain_id,
                          credit_wei,status,created_at_ns) VALUES (?,?,?,?,?,?,?,?)''',

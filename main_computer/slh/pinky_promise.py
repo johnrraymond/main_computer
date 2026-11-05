@@ -13,9 +13,11 @@ import time
 from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_wei_to_decimal_text
 from .authority import SLHError
 
-POLICY_ID = 'fixed_per_request_v1'
+LEGACY_POLICY_ID = 'fixed_per_request_v1'
+POLICY_ID = 'local_reference_20_percent_v2'
 REFERENCE_WEI = CREDIT_WEI_PER_CREDIT
-ASSESSMENT_WEI = CREDIT_WEI_PER_CREDIT // 10
+ASSESSMENT_WEI = CREDIT_WEI_PER_CREDIT // 5
+LEGACY_ASSESSMENT_WEI = CREDIT_WEI_PER_CREDIT // 10
 
 
 class PinkyPromise:
@@ -99,7 +101,8 @@ class PinkyPromise:
         if row is None:
             raise SLHError('PINKY_POLICY_UNAVAILABLE',503)
         return {'schema':'main-computer.slh-pinky-policy.v1',
-                'policy_id':POLICY_ID,
+                'policy_id':POLICY_ID,'assessment_percent':20,
+                'pricing_basis':'selected_worker_market_price',
                 'revision':row['revision'],'enabled':bool(row['enabled']),
                 'reference_credit_wei':str(REFERENCE_WEI),
                 'assessment_credit_wei':str(ASSESSMENT_WEI),
@@ -136,11 +139,19 @@ class PinkyPromise:
         """Insert in the SAME SQLite transaction as the success transition."""
         if not row['pinky_enabled']:
             raise SLHError('PINKY_ASSESSMENT_INVARIANT',500)
-        if row['billing_policy_id'] != POLICY_ID or row['pinky_policy_revision'] < 1:
+        if row['billing_policy_id'] not in (POLICY_ID, LEGACY_POLICY_ID) or row['pinky_policy_revision'] < 1:
             raise SLHError('PINKY_ASSESSMENT_INVARIANT',500)
         if not row['run_id'] or not result_hash or len(result_hash)!=64:
             raise SLHError('PINKY_FULFILLMENT_PROOF_REQUIRED',500)
         oid = self.obligation_id(row['requester_device_id'],row['request_id'])
+        if row['billing_policy_id']==LEGACY_POLICY_ID:
+            reference,amount=REFERENCE_WEI,LEGACY_ASSESSMENT_WEI
+        else:
+            if (row['reference_credit_wei'] is None or row['assessment_credit_wei'] is None):
+                raise SLHError('PINKY_MISSING_PRICE_QUOTE',500)
+            reference,amount=int(row['reference_credit_wei']),int(row['assessment_credit_wei'])
+            if reference<=0 or amount!=(reference+4)//5:
+                raise SLHError('PINKY_ASSESSMENT_INVARIANT',500)
         db.execute('''INSERT INTO pinky_obligations
             (obligation_id,requester_device_id,request_id,run_id,model,
              result_hash,policy_id,policy_revision,reference_credit_wei,
@@ -148,7 +159,7 @@ class PinkyPromise:
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
             (oid,row['requester_device_id'],row['request_id'],row['run_id'],
              row['model'],result_hash,POLICY_ID,row['pinky_policy_revision'],
-             str(REFERENCE_WEI),str(ASSESSMENT_WEI),'ASSESSED',now_ns))
+             str(reference),str(amount),'ASSESSED',now_ns))
 
     def obligations(self, db):
         rows = db.execute('''SELECT obligation_id,request_id,requester_device_id,run_id,
@@ -164,15 +175,22 @@ class PinkyPromise:
         has_sweeps=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pinky_sweeps'").fetchone() is not None
         paid=0
         if has_sweeps:
-            paid=db.execute('''SELECT COUNT(*) n FROM pinky_sweep_items i
+            settled=db.execute('''SELECT o.amount_credit_wei FROM pinky_obligations o
+                JOIN pinky_sweep_items i ON o.obligation_id=i.obligation_id
                 JOIN pinky_sweeps s ON i.sweep_id=s.sweep_id
-                WHERE s.status='CONFIRMED' ''').fetchone()['n']
+                WHERE s.status='CONFIRMED' ''').fetchall()
+            paid=len(settled)
+            paid_amount=sum(int(r['amount_credit_wei']) for r in settled)
+        else:
+            paid_amount=0
+        total=sum(int(r['amount_credit_wei']) for r in db.execute(
+            'SELECT amount_credit_wei FROM pinky_obligations'))
         return {'schema':'main-computer.slh-pinky-obligations.v1','paid_count':paid,
-                'paid_total_credit_wei':str(paid*ASSESSMENT_WEI),
-                'outstanding_credit_wei':str((count-paid)*ASSESSMENT_WEI),
+                'paid_total_credit_wei':str(paid_amount),
+                'outstanding_credit_wei':str(total-paid_amount),
                 'count':count,
-                'assessed_total_credit_wei':str(count * ASSESSMENT_WEI),
-                'assessed_total_credits':credit_wei_to_decimal_text(count * ASSESSMENT_WEI),
+                'assessed_total_credit_wei':str(total),
+                'assessed_total_credits':credit_wei_to_decimal_text(total),
                 'settlement_state':'P4_PERIODIC_SWEEP' if has_sweeps else 'NOT_IMPLEMENTED_P4',
                 'returned':len(rows),'has_more':count > len(rows),
                 'obligations':[dict(row) for row in rows]}

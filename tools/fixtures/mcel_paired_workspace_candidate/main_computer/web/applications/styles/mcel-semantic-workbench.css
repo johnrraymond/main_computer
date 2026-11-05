@@ -1,0 +1,151 @@
+/* Generic semantic workbench: applies to hierarchical browsing, monitoring and
+ * document inspection, without app/region IDs or manually authored layout. */
+:root{color-scheme:dark}*,*::before,*::after{box-sizing:border-box}
+body.mcel-workbench-page{font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#10171d;color:#eaf2f6;margin:0 auto;max-width:1380px;padding:clamp(12px,2vw,28px)}
+.mcel-workbench-page>header{margin-bottom:18px}.mcel-workbench-page h1{font-size:clamp(1.4rem,3vw,2rem);margin:0 0 8px}.mcel-workbench-page>header p{color:#a1b7c6;margin:0;font-size:.9rem}
+[data-mcel-presentation="expert"]{--panel:#1a2731;--edge:#355062;--mute:#b4c5cd;min-width:0}
+[data-mcel-presentation="expert"]>[data-mcel-region]{display:grid;grid-template-columns:minmax(170px,.8fr) minmax(0,2.5fr) minmax(180px,1fr);gap:12px;align-items:start}
+[data-mcel-presentation="expert"] [data-mcel-region]:not(:first-child){min-width:0;background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:clamp(10px,1.5vw,18px);box-shadow:0 4px 12px #0003}
+[data-mcel-presentation="expert"] [data-mcel-purpose="navigation"]{grid-column:1}
+[data-mcel-presentation="expert"] [data-mcel-purpose="workspace"][data-mcel-priority="primary"]{grid-column:2}
+[data-mcel-presentation="expert"] [data-mcel-purpose="inspection"]{grid-column:3}
+[data-mcel-presentation="expert"] [data-mcel-purpose="query-controls"], [data-mcel-presentation="expert"] [data-mcel-purpose="mode-control"]{grid-column:1/-1}
+[data-mcel-presentation="expert"] [data-mcel-purpose="status"]{grid-column:1/-1;background:transparent!important;padding:0!important;border:0!important;box-shadow:none!important}
+[data-mcel-presentation="expert"] h2{font-size:.83rem;letter-spacing:.055em;text-transform:uppercase;color:#d2b67b;margin:0 0 12px}
+[data-mcel-presentation="expert"] button,[data-mcel-presentation="expert"] input,[data-mcel-presentation="expert"] select{font:inherit;min-height:39px}
+[data-mcel-presentation="expert"] button{cursor:pointer;background:#294453;color:#edf7fb;border:1px solid #4b6b7a;padding:8px 12px;border-radius:8px}
+[data-mcel-presentation="expert"] button:hover{background:#376075}
+[data-mcel-presentation="expert"] :is(input,select){max-width:100%;border-radius:8px;background:#0d1b24;border:1px solid #537080;color:#f0f7ff;padding:7px 11px}
+[data-mcel-presentation="expert"] :is(button,input,select):focus-visible{outline:3px solid #88d7df;outline-offset:2px}
+[data-mcel-presentation="expert"] form{display:flex;flex-wrap:wrap;align-items:end;gap:10px}
+[data-mcel-presentation="expert"] form label{display:grid;gap:6px;color:#b4c5cd}
+[data-mcel-presentation="expert"] [data-collection]{max-height:min(70vh,730px);overflow:auto;scrollbar-gutter:stable}
+[data-mcel-presentation="expert"] [data-collection]>[data-record-key]{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 4px;border-bottom:1px solid #375062;min-width:0}
+[data-mcel-presentation="expert"] [data-record-field]{overflow-wrap:anywhere;min-width:0}
+[data-mcel-presentation="expert"] [data-record-field]:first-child{flex:1 1 50%;font-weight:600}
+[data-mcel-presentation="expert"] [data-record-field]:not(:first-child){color:#aec3cb;font-size:.88rem}
+[data-mcel-presentation="expert"] [data-collection] button{margin-left:auto;min-width:72px}
+[data-mcel-presentation="expert"] output[data-state]{white-space:pre-wrap;overflow-wrap:anywhere;display:block;max-height:65vh;overflow:auto;background:#0b1a23;border:1px solid #345466;border-radius:8px;padding:12px;font:13px/1.5 ui-monospace,Consolas,monospace}
+[data-mcel-presentation="expert"] [data-mcel-activity] summary{color:#a8bfcb;cursor:pointer}
+[data-mcel-presentation="expert"] [data-mcel-activity] ol{max-height:7rem;overflow:auto}
+[data-mcel-presentation="expert"] [hidden]{display:none!important}
+#mcel-workbench-status{font-size:.78rem;color:#90b9b9;margin-top:12px}
+@media(max-width:960px){[data-mcel-presentation="expert"]>[data-mcel-region]{grid-template-columns:minmax(0,1fr) minmax(0,2fr)}[data-mcel-presentation="expert"] [data-mcel-purpose="navigation"]{grid-column:1}[data-mcel-presentation="expert"] [data-mcel-purpose="workspace"][data-mcel-priority="primary"]{grid-column:2}[data-mcel-presentation="expert"] [data-mcel-purpose="inspection"]{grid-column:1/-1}}
+@media(max-width:640px){[data-mcel-presentation="expert"]>[data-mcel-region]{grid-template-columns:minmax(0,1fr)}[data-mcel-presentation="expert"] [data-mcel-region]:not(:first-child){grid-column:1!important;grid-row:auto!important}[data-mcel-presentation="expert"] [data-collection]{max-height:50vh}}
+
+/* Use semantic roles and data kind, never application or region identities. */
+[data-mcel-presentation="expert"] [data-mcel-purpose="navigation"]{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:clamp(10px,1.5vw,18px)}
+[data-mcel-presentation="expert"] [data-mcel-content-kind="document"]{min-height:28rem}
+[data-mcel-presentation="expert"] [data-mcel-content-kind="document"] output[data-state]{min-height:21rem;white-space:pre;overflow:auto;tab-size:4}
+[data-mcel-presentation="expert"] [data-mcel-content-kind="collection"] [data-collection]{min-height:7rem}
+
+/* Semantic document editing: Monaco provides the editor; the shared layout owns its space. */
+[data-mcel-presentation="expert"] [data-mcel-document-editor]{min-width:0;display:grid;gap:10px}
+[data-mcel-presentation="expert"] [data-mcel-document-surface]{height:clamp(300px,58vh,820px);min-width:0;border:1px solid var(--edge);border-radius:8px;overflow:hidden;background:#08161e}
+[data-mcel-presentation="expert"] [data-mcel-document-actions]{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+[data-mcel-presentation="expert"] [data-mcel-document-dirty="true"]{color:#e6bf75}
+/* Narrow navigation should never spill its forms into the primary workarea. */
+[data-mcel-presentation="expert"] [data-mcel-purpose="navigation"] form{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch}
+[data-mcel-presentation="expert"] [data-mcel-purpose="navigation"] form label,
+[data-mcel-presentation="expert"] [data-mcel-purpose="navigation"] form input{width:100%;min-width:0}
+[data-mcel-presentation="expert"] [data-mcel-purpose="navigation"] form button{justify-self:start;max-width:100%;white-space:normal}
+/* Bound form intrinsic widths to their semantic region at all breakpoints. */
+[data-mcel-presentation="expert"] form label{min-width:0;max-width:100%;flex:1 1 11rem}
+[data-mcel-presentation="expert"] form input{width:100%;min-width:0}
+/* Reusable generated document tabs, retained hierarchy, and monitoring pulse. */
+[data-mcel-presentation="expert"] [data-mcel-document-tabs]{display:flex;flex-wrap:wrap;align-items:center;gap:5px;min-height:38px;padding-bottom:6px;border-bottom:1px solid var(--edge)}
+[data-mcel-presentation="expert"] [data-mcel-open-tab]{display:inline-flex;align-items:center;min-width:0;border:1px solid var(--edge);border-radius:8px;background:#12232e}
+[data-mcel-presentation="expert"] [data-mcel-open-tab] button{min-width:0;min-height:30px;border:0;padding:5px 9px;overflow-wrap:anywhere}
+[data-mcel-presentation="expert"] [data-mcel-open-tab] [role="tab"][aria-selected="true"]{background:#30647b;color:white}
+[data-mcel-presentation="expert"] [data-mcel-open-tab] [data-mcel-close-tab]{min-width:30px;color:#d6a1a1}
+[data-mcel-presentation="expert"] [data-mcel-folder-tree]{display:grid;gap:3px;min-width:0}
+[data-mcel-presentation="expert"] [data-mcel-tree-branch][role="group"]{border-left:1px solid #436074;padding-left:clamp(4px,.75vw,12px);min-width:0}
+[data-mcel-presentation="expert"] [data-mcel-tree-branch=""]{border-left:0;padding-left:0}
+[data-mcel-presentation="expert"] [data-mcel-folder-tree] [role="treeitem"]{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:5px;border-bottom:1px solid #345062;min-width:0}
+[data-mcel-presentation="expert"] [data-mcel-folder-tree] [role="treeitem"] [data-record-field]{flex:1 1 6rem;overflow-wrap:anywhere}
+[data-mcel-presentation="expert"] [data-mcel-folder-tree] [role="treeitem"][aria-expanded="true"]{background:#183743}
+[data-mcel-auto-refresh]{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:12px}
+[data-mcel-auto-refresh] [data-mcel-refresh-toggle]{min-height:35px;background:#294453;color:#eaf2f6;border:1px solid #4b6b7a;border-radius:8px;padding:6px 12px;cursor:pointer}
+[data-mcel-auto-refresh] [data-mcel-refresh-status]{font-size:.83rem;color:#b4c5cd}
+/* Shared generated collection behavior: adaptive disclosure and scroll-locality. */
+[data-mcel-presentation="expert"] [data-mcel-mode-tabs]{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+[data-mcel-presentation="expert"] [data-mcel-mode-tabs] button[aria-pressed="true"]{background:#34637b;border-color:#84bfd3}
+[data-mcel-presentation="expert"] [data-mcel-node][hidden],[data-mcel-presentation="expert"] [data-mcel-region][hidden]{display:none!important}
+[data-mcel-presentation="expert"] [data-mcel-record-row][aria-selected="true"]{background:#254451;border-radius:6px}
+[data-mcel-presentation="expert"] [data-mcel-inline-details]{flex:1 1 100%;min-width:0;font-size:.88rem;color:var(--mute);padding:3px 6px}
+[data-mcel-presentation="expert"] [data-mcel-inline-details] summary,
+[data-mcel-presentation="expert"] [data-mcel-measurement-detail] summary{cursor:pointer;min-height:28px;padding:4px}
+[data-mcel-presentation="expert"] :is([data-mcel-detail-fields],[data-mcel-selected-details],[data-mcel-measurements],[data-mcel-measurement-body] dl){display:grid;grid-template-columns:minmax(6rem,1fr) minmax(0,2fr);gap:4px 12px;margin:8px 0;min-width:0}
+[data-mcel-presentation="expert"] :is([data-mcel-detail-fields],[data-mcel-selected-details],[data-mcel-measurements],[data-mcel-measurement-body] dl) dt{color:#a0b8c4;overflow-wrap:anywhere}
+[data-mcel-presentation="expert"] :is([data-mcel-detail-fields],[data-mcel-selected-details],[data-mcel-measurements],[data-mcel-measurement-body] dl) dd{margin:0;overflow-wrap:anywhere}
+[data-mcel-presentation="expert"] [data-mcel-measurement-detail]{padding:6px 2px;border-top:1px solid var(--edge);overflow-wrap:anywhere}
+[data-mcel-presentation="expert"] [data-mcel-measurement-body]{max-height:40vh;overflow:auto}
+[data-mcel-presentation="expert"] [data-mcel-record-summary]{font-weight:550;line-height:1.5;color:#cddde7}
+@media(max-width:480px){[data-mcel-presentation="expert"] :is([data-mcel-detail-fields],[data-mcel-selected-details],[data-mcel-measurements],[data-mcel-measurement-body] dl){grid-template-columns:minmax(0,1fr)}}
+
+/* Versioned workspace composition. Only a verified plan opts into this layout.
+ * The composed surface owns the full app width rather than inheriting the
+ * legacy expert root grid (which declares display:grid!important). */
+[data-mcel-presentation="expert"] > [data-mcel-region][data-mcel-planned-root]{
+  display:block!important;min-width:0;width:100%;
+}
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout]{
+  display:grid;grid-template-columns:minmax(165px,.29fr) minmax(520px,1fr) minmax(220px,.38fr);
+  grid-template-areas:"controls controls controls" "navigator workspace tools" "status status status";
+  gap:12px;align-items:start;min-width:0;
+}
+[data-mcel-presentation="expert"] [data-mcel-zone]{min-width:0;max-width:100%;}
+[data-mcel-presentation="expert"] [data-mcel-zone="controls"]{grid-area:controls}
+[data-mcel-presentation="expert"] [data-mcel-zone="navigator"]{grid-area:navigator}
+[data-mcel-presentation="expert"] [data-mcel-zone="workspace"]{grid-area:workspace}
+[data-mcel-presentation="expert"] [data-mcel-zone="tools"]{grid-area:tools}
+[data-mcel-presentation="expert"] [data-mcel-zone="status"]{grid-area:status}
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-region]{
+  min-width:0;max-width:100%;grid-column:auto;grid-row:auto;
+}
+/* Result bindings define adjacency: keep each producer and its associated
+   result together, while alternative authored modes remain hidden.  The same
+   rule applies to any semantic application that exposes verified result pairs. */
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-result-pair]{
+  display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);
+  gap:12px;align-items:start;min-width:0;margin-bottom:12px;
+}
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-result-pair]:not(:has(> [data-mcel-region]:not([hidden]))){display:none}
+[data-mcel-presentation="expert"] [data-mcel-layout-rung="narrow"] [data-mcel-result-pair]{grid-template-columns:minmax(0,1fr)}
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-zone] > [data-mcel-region],
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-tool-panel] > [data-mcel-region],
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-result-pair] > [data-mcel-region]{
+  background:var(--panel);border:1px solid var(--edge);border-radius:12px;
+  padding:clamp(10px,1.4vw,16px);box-shadow:0 4px 12px #0003;
+}
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-zone="workspace"] [data-mcel-content-kind="document"]{
+  min-height:0;
+}
+[data-mcel-presentation="expert"] [data-mcel-workspace-layout] [data-mcel-document-surface]{height:clamp(300px,65vh,820px)}
+[data-mcel-presentation="expert"] [data-mcel-tool-tabs]{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+[data-mcel-presentation="expert"] [data-mcel-tool-tabs] [role="tab"]{
+  min-height:34px;padding:6px 9px;font-size:.78rem;flex:1 1 auto;
+}
+[data-mcel-presentation="expert"] [data-mcel-tool-tabs] [aria-selected="true"]{
+  background:#36677b;border-color:#9cdae5;color:#fff;
+}
+[data-mcel-presentation="expert"] [data-mcel-tool-panel][hidden]{display:none!important}
+[data-mcel-presentation="expert"] [data-mcel-navigation-disclosure]{min-width:0}
+[data-mcel-presentation="expert"] [data-mcel-navigation-disclosure] summary{display:none;cursor:pointer}
+[data-mcel-presentation="expert"] [data-mcel-layout-rung="medium"]{
+  grid-template-columns:minmax(165px,.28fr) minmax(0,1fr);
+  grid-template-areas:"controls controls" "navigator workspace" "tools tools" "status status";
+}
+[data-mcel-presentation="expert"] [data-mcel-layout-rung="narrow"]{
+  grid-template-columns:minmax(0,1fr);
+  grid-template-areas:"controls" "navigator" "workspace" "tools" "status";
+}
+[data-mcel-presentation="expert"] [data-mcel-layout-rung="narrow"] [data-mcel-navigation-disclosure] summary{
+  display:list-item;padding:10px;background:var(--panel);border:1px solid var(--edge);border-radius:9px;
+}
+[data-mcel-presentation="expert"] [data-mcel-layout-rung="narrow"] [data-mcel-navigation-disclosure][open] summary{margin-bottom:8px}
+[data-mcel-presentation="expert"] [data-mcel-layout-rung="narrow"] [data-mcel-document-surface]{height:clamp(280px,54vh,600px)}
+
+[data-mcel-presentation="expert"] [data-mcel-layout-rung="narrow"] [data-mcel-navigation-disclosure] > [data-mcel-region]{
+  max-height:180px;overflow:auto;scrollbar-gutter:stable;
+}

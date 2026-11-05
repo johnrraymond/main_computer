@@ -1763,3 +1763,65 @@ def test_exp_hub_worker_failure_releases_reserved_credit_without_earning(tmp_pat
         hub.shutdown()
         hub.server_close()
         thread.join(timeout=2)
+
+
+def test_exp_hub_worker_close_ack_follows_durable_owner_and_market_retirement(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Closing a public slot is Hub-committed before SLH can reuse it."""
+    config = MainComputerConfig(
+        workspace=tmp_path, hub_root=tmp_path / "hub-runtime",
+        hub_bridge_backend="mock", hub_allow_insecure_dev_network=True,
+        hub_network="dev", hub_network_kind="local-dev-chain", chain_id=42424242,
+    )
+    hub = _TestExpLiveSessionHub(("127.0.0.1", 0), config)
+    verified = {
+        "wallet_address": "0x" + "3" * 40,
+        "account_id": "0x" + "3" * 40,
+        "multisession_key_id": "msk_verified_close_test",
+    }
+    monkeypatch.setattr(
+        ExperimentalFoundationDbHubServerHandler, "_authorize_worker_route",
+        lambda self, **kwargs: dict(verified),
+    )
+    thread = threading.Thread(target=hub.serve_forever, daemon=True)
+    thread.start()
+    sock = None
+    try:
+        sock = _ws_connect("127.0.0.1", hub.server_port, "/api/hub/v1/workers/live-session")
+        _ws_send_json(sock, {"type": "worker.auth", "market": {
+            "rings": ["ring-3"], "price": {"amount": "1", "unit": "compute_credit"},
+            "capabilities": ["text"], "max_concurrency": 1,
+        }})
+        accepted = _ws_recv_json(sock)
+        assert accepted["type"] == "hub.auth.accepted", accepted
+        assert "connection_id" not in accepted
+        ping = _ws_recv_json(sock)
+        assert ping["type"] == "hub.ping"
+        _ws_send_json(sock, {"type": "worker.pong", "ping_id": ping["ping_id"]})
+        assert _ws_recv_json(sock)["type"] == "hub.pong.accepted"
+        with hub.live_worker_sessions_lock:
+            connection_id, = hub.live_worker_sessions.keys()
+        worker_id = connection_id
+        before = hub.stable_worker_session_directory.get_owner(worker_id)
+        assert before["status"] == "live"
+        connection_id = before["connection_id"]
+        _ws_send_json(sock, {"type": "worker.close"})
+        closed = _ws_recv_json(sock)
+        assert closed["type"] == "hub.worker.closed", closed
+        assert closed["ok"] is True
+        assert "connection_id" not in closed
+        owner = hub.stable_worker_session_directory.get_owner(worker_id)
+        market = hub.stable_worker_market_directory.get_worker(worker_id)
+        assert owner["status"] == "closed"
+        assert owner["connection_id"] == connection_id
+        assert market["status"] == "closed"
+        assert not hub.exp_accepted_work_session_directory.list_open_sessions_for_worker_connection(
+            worker_id=worker_id, connection_id=connection_id,
+        )
+    finally:
+        if sock is not None:
+            sock.close()
+        hub.shutdown()
+        hub.server_close()
+        thread.join(timeout=2)

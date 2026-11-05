@@ -12,8 +12,9 @@ import os
 from pathlib import Path
 
 from main_computer.credit_units import CREDIT_WEI_PER_CREDIT
+from main_computer.slh.pinky_promise import ASSESSMENT_WEI as ONE_CREDIT_LOCAL_ASSESSMENT_WEI
 
-PINKY_PER_REQUEST_WEI = CREDIT_WEI_PER_CREDIT // 10
+PINKY_PER_REQUEST_WEI = ONE_CREDIT_LOCAL_ASSESSMENT_WEI
 EXPECTED_PRIVATE_REQUESTS = 2
 SCHEMA = 'main-computer.slh-pinky-economic-reconciliation.v1'
 
