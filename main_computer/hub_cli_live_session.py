@@ -151,7 +151,8 @@ def cli_request_authorization(hub_url: str, *, officer: str = "o0") -> dict[str,
     return issue_cli_multisession_authorization(hub_url, wallet=_officer_wallet(officer))
 
 
-def _chat_result(chat_fn: Callable[[Sequence[ChatMessage]], ChatResponse], offer: dict[str, Any]) -> dict[str, Any]:
+def _chat_result(chat_fn: Callable[[Sequence[ChatMessage]], ChatResponse], offer: dict[str, Any],
+                 *, configured_model: str) -> dict[str, Any]:
     work = offer.get("work") if isinstance(offer.get("work"), dict) else {}
     supplied = work.get("messages") if isinstance(work.get("messages"), list) else []
     messages = [ChatMessage(role=str(item.get("role") or "user"), content=str(item.get("content") or ""))
@@ -159,7 +160,15 @@ def _chat_result(chat_fn: Callable[[Sequence[ChatMessage]], ChatResponse], offer
     if not messages:
         prompt = work.get("input") if isinstance(work.get("input"), dict) else {}
         messages = [ChatMessage(role="user", content=str(prompt.get("prompt") or work.get("prompt") or ""))]
+    from main_computer.model_execution_contract import request_contract, ModelContractError
+    expected_model, operation, _ = request_contract(work)
+    if operation not in ('chat.completions', 'text'):
+        raise ModelContractError('Chat provider cannot execute requested operation')
+    if expected_model != configured_model:
+        raise ModelContractError('Chat Worker is not configured for requested model')
     response = chat_fn(messages)
+    if response.model != expected_model:
+        raise ModelContractError('Chat backend ran a different model')
     return {
         "status": "success",
         "response": {
@@ -175,7 +184,7 @@ def _chat_result(chat_fn: Callable[[Sequence[ChatMessage]], ChatResponse], offer
 
 def _clef_result(
     solve_fn: Callable[..., dict[str, Any]], offer: dict[str, Any],
-    *, model: str,
+    *, model: str, checkpoint_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Execute native CLEF work; never reinterpret a chat prompt as a solution.
 
@@ -192,7 +201,7 @@ def _clef_result(
     if not isinstance(caps, list) or len(caps) != 1 or caps[0] not in CLEF_CAPABILITIES:
         raise ValueError("CLEF offer must require exactly one native CLEF capability")
     capability = caps[0]
-    if work.get("model") not in (None, "", model):
+    if work.get("model") != model:
         raise ValueError("CLEF offer requested a different model")
     inputs = work.get("input")
     if not isinstance(inputs, dict) or inputs.get("kind") != capability:
@@ -205,8 +214,10 @@ def _clef_result(
             or solution.get("capability") != capability
             or solution.get("schema") != "main-computer.nanojev-solution.v1"
             or not isinstance(solution.get("model"), dict)
-            or solution["model"].get("family") != model):
-        raise ValueError("CLEF provider returned an invalid solution envelope")
+            or solution["model"].get("family") != model
+            or (checkpoint_sha256 is not None and
+                solution["model"].get("release_manifest_sha256") != checkpoint_sha256)):
+        raise ValueError("CLEF provider returned a wrong model/checkpoint solution")
     return {
         "status": "success",
         "solution": solution,
@@ -217,6 +228,21 @@ def _clef_result(
     }
 
 
+def _nanojev_live_market(solve_fn: Callable[..., dict[str, Any]], model: str) -> dict[str, Any]:
+    """No public NanoJev slot before live backend/checkpoint discovery."""
+    from main_computer.providers.nanojev import NanoJevClefProvider
+
+    owner = getattr(solve_fn, '__self__', None)
+    provider = getattr(owner, 'provider', owner)
+    if (not isinstance(provider, NanoJevClefProvider)
+            or provider.model != model or not callable(solve_fn)):
+        raise ValueError('NanoJev Worker requires its bound, model-matching live provider')
+    market = provider.advertised_market()
+    if market.get('models') != [model]:
+        raise ValueError('NanoJev Worker model discovery disagrees with configuration')
+    return market
+
+
 def serve_cli_live_worker(
     *, hub_url: str, worker_node_id: str, model: str, chat_fn: Callable[[Sequence[ChatMessage]], ChatResponse],
     assigned_ring: int, credits_per_request: Any, officer: str,
@@ -224,30 +250,37 @@ def serve_cli_live_worker(
     timeout_s: float = 10.0, poll_interval_s: float = 0.25,
     provider_name: str = "ollama", solve_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> None:
-    from main_computer.viewport_routes_energy import _WorkerHubLiveSessionClient
+    from main_computer.worker_live_session import _WorkerHubLiveSessionClient
 
+    from main_computer.providers.nanojev import CLEF_MODEL
+
+    if provider_name == "nanojev":
+        if model != CLEF_MODEL or not callable(solve_fn):
+            raise ValueError("NanoJev Hub worker requires nanojev-clef and a native solve function")
+        # The Worker advertises only what the *running service* reported.
+        # This can wake the managed backend; failure must prevent Hub auth.
+        backend_market = _nanojev_live_market(solve_fn, model)
+        capabilities = backend_market['capabilities']
+        advertised_checkpoint = backend_market['checkpoint_sha256']
+        executor = lambda offer: _clef_result(
+            solve_fn, offer, model=model, checkpoint_sha256=advertised_checkpoint)
+    elif provider_name in {"ollama", "openai"}:
+        capabilities = ["chat.completions"]
+        executor = lambda offer: _chat_result(chat_fn, offer, configured_model=model)
+    else:
+        raise ValueError(f"Hub worker cannot advertise unsupported provider {provider_name!r}")
+    # No Hub authorization is issued for an unavailable or unverified model.
     identity = identify_hub_protocol(hub_url, timeout_s=timeout_s)
     auth = issue_cli_multisession_authorization(
         hub_url, wallet=_officer_wallet(officer), timeout_s=timeout_s,
         **({"stable_identity": identity} if identity.get("service") == "main_computer.stable_hub" else {}),
     )
-    from main_computer.providers.nanojev import CLEF_CAPABILITIES, CLEF_MODEL
-
-    if provider_name == "nanojev":
-        if model != CLEF_MODEL or not callable(solve_fn):
-            raise ValueError("NanoJev Hub worker requires nanojev-clef and a native solve function")
-        capabilities = list(CLEF_CAPABILITIES)
-        executor = lambda offer: _clef_result(solve_fn, offer, model=model)
-    elif provider_name in {"ollama", "openai"}:
-        capabilities = ["chat.completions"]
-        executor = lambda offer: _chat_result(chat_fn, offer)
-    else:
-        raise ValueError(f"Hub worker cannot advertise unsupported provider {provider_name!r}")
     ring = f"ring-{int(assigned_ring)}"
     market = {
         "rings": [ring], "capabilities": capabilities, "models": [model],
         "price": {"amount": str(credits_per_request), "unit": "compute_credit"},
         "max_concurrency": 1, "active_sessions": 0,
+        **({"checkpoint_sha256": advertised_checkpoint} if provider_name == 'nanojev' else {}),
     }
     diagnostic_attempt_id = "worker_attempt_" + uuid.uuid4().hex[:16]
     auth_message = {

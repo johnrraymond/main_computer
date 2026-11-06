@@ -336,7 +336,7 @@ def status(run):
 
 def parser():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('phase',choices=('status','head','lora','diagnostic-train','diagnostic-localize','register-oracle'))
+    ap.add_argument('phase',choices=('status','head','lora','diagnostic-train','diagnostic-localize','register-oracle','flat-registers','flat-attribution','flat-prompt','representation-diagnostic','head-100','head-100-diagnostic-train','head-100-radius','head-100-radius-recovery'))
     ap.add_argument('--run',type=Path,required=True)
     ap.add_argument('--steps',type=int,help='CUMULATIVE target step for the selected trainer')
     ap.add_argument('--device',default='cuda')
@@ -398,6 +398,92 @@ def parser():
                     help='Register-oracle-only dev examples per game; 0 means all')
     ap.add_argument('--register-probe-limit',type=int,default=128,
                     help='Max frozen-feature training examples per role group')
+    ap.add_argument('--flat-output',type=Path,default=None,
+                    help='Flat-registers-only NEW experimental report directory')
+    ap.add_argument('--flat-epochs',type=int,default=160,
+                    help='Flat-registers-only complete training passes')
+    ap.add_argument('--flat-batch-size',type=int,default=256)
+    ap.add_argument('--flat-lr',type=float,default=.004)
+    ap.add_argument('--flat-seed',type=int,default=1729)
+    ap.add_argument('--flat-max-games',type=int,default=0,
+                    help='Flat-registers-only games limit (0=all)')
+    ap.add_argument('--flat-train-per-game',type=int,default=0)
+    ap.add_argument('--flat-dev-per-game',type=int,default=0)
+    ap.add_argument('--attribution-output',type=Path,default=None,
+                    help='Flat-attribution-only NEW report directory outside completed flat run')
+    ap.add_argument('--prompt-output',type=Path,default=None,
+                    help='Flat-prompt-only NEW report directory outside completed flat run')
+    ap.add_argument('--expanded-output',type=Path,default=None,
+                    help='head-100 only: new sibling output dir, or existing output with --expanded-resume')
+    ap.add_argument('--expanded-resume',action='store_true')
+    ap.add_argument('--expanded-samples',type=int,default=100)
+    ap.add_argument('--expanded-curvature',type=float,default=4.0)
+    ap.add_argument('--expanded-hidden',default='4096,2048,512,128')
+    ap.add_argument('--expanded-backend',choices=('offload-cuda','cpu','full-cuda'),default='offload-cuda',
+                    help='head-100 only: offload-cuda keeps full-precision AdamW on CPU')
+    ap.add_argument('--expanded-precision',choices=('float16','bfloat16'),default='float16')
+    ap.add_argument('--expanded-batch',type=int,default=4)
+    ap.add_argument('--expanded-capture-batch',type=int,default=2)
+    ap.add_argument('--expanded-max-length',type=int,default=None)
+    ap.add_argument('--expanded-seed',type=int,default=47)
+    ap.add_argument('--expanded-lr',type=float,default=.0002)
+    ap.add_argument('--expanded-weight-decay',type=float,default=.0001)
+    ap.add_argument('--expanded-grad-clip',type=float,default=1.0)
+    ap.add_argument('--expanded-eval-every',type=int,default=100)
+    ap.add_argument('--expanded-save-every',type=int,default=100)
+    ap.add_argument('--expanded-zero-focus',type=float,default=.5)
+    ap.add_argument('--expanded-zero-radius',type=float,default=1.0)
+    ap.add_argument('--expanded-diag-output',type=Path,default=None,
+                    help='head-100-diagnostic-train: NEW read-only report directory')
+    ap.add_argument('--expanded-diag-source-run',type=Path,default=None,
+                    help='Source certified run when expanded run has a custom name')
+    ap.add_argument('--expanded-diag-steps',type=int,default=12,
+                    help='Number of isolated optimizer updates for each trial')
+    ap.add_argument('--expanded-diag-eval-every',type=int,default=4)
+    ap.add_argument('--expanded-diag-trials',default='mixed,lr-quarter,zero-focus,game:captain_crew_risk',
+                    help='Comma-separated matched continuations; mixed,lr-quarter,zero-focus,game:NAME')
+    ap.add_argument('--expanded-diag-train-eval',type=int,default=0,
+                    help='Training examples evaluated at checkpoints (0=all)')
+    ap.add_argument('--expanded-diag-ablation-cases',type=int,default=128,
+                    help='Development examples in fixed-weight input ablations (0=skip)')
+    ap.add_argument('--expanded-diag-precision-cases',type=int,default=4,
+                    help='Cases in CPU FP32 / GPU FP16 logit comparison (0=skip)')
+    ap.add_argument('--expanded-diag-matched-steps',type=int,default=0,
+                    help='Optional same-capacity scratch comparison: full100 vs last-token-repeated100; 0 skips')
+    ap.add_argument('--radius-output',type=Path,default=None,
+                    help='head-100-radius: NEW sibling report directory')
+    ap.add_argument('--radius-source-run',type=Path,default=None,
+                    help='Original certified run, if expanded run name is custom')
+    ap.add_argument('--radius-contexts',type=int,default=12,
+                    help='Different certified games for numerical radius probing')
+    ap.add_argument('--radius-width',type=int,default=2,
+                    help='Probe all integers within [-R,R], including zero')
+    ap.add_argument('--radius-permutations',type=int,default=64,
+                    help='Null-label control resamples per activation stage')
+    ap.add_argument('--radius-checkpoint',choices=('best','latest'),default='best',
+                    help='Frozen expanded C0 checkpoint to trace')
+    ap.add_argument('--radius-recovery',action='store_true',
+                    help='After read-only radius capture, run within/heldout nonlinear recovery probes')
+    ap.add_argument('--radius-recovery-output',type=Path,default=None,
+                    help='Optional NEW analysis report directory; source captures remain read-only')
+    ap.add_argument('--radius-recovery-folds',type=int,default=4,
+                    help='Held-out whole-game folds for read-only recovery probes')
+    ap.add_argument('--radius-recovery-rank',type=int,default=12,
+                    help='Rank of TRAIN-game numerical slope/curvature projection')
+    ap.add_argument('--radius-recovery-controls',type=int,default=1,
+                    help='Number of shuffled train-label controls for nonlinear decoder')
+    ap.add_argument('--repr-output',type=Path,default=None,
+                    help='Representation-diagnostic-only NEW report folder')
+    ap.add_argument('--repr-max-games',type=int,default=0,
+                    help='Deterministic selected game sample; 0=all 146 (full diagnostic)')
+    ap.add_argument('--repr-train-per-game',type=int,default=0,
+                    help='Matched train rows per game; 0=all')
+    ap.add_argument('--repr-dev-per-game',type=int,default=0,
+                    help='Matched untouched dev rows per game; 0=all')
+    ap.add_argument('--repr-perturbations',type=int,default=16,
+                    help='Dev prompt one-register mutation controls per model; 0 disables')
+    ap.add_argument('--repr-skip-base',action='store_true',
+                    help='Omit matched base-Qwen capture if GPU budget is constrained')
     return ap
 
 
@@ -429,6 +515,129 @@ def main(argv=None):
     if args.phase!='register-oracle' and any(
             getattr(args,k)!=v for k,v in register_defaults.items()):
         raise ValueError('GAMER_REGISTER_FLAGS_ONLY_REGISTER_ORACLE')
+    flat_defaults={'flat_output':None,'flat_epochs':160,'flat_batch_size':256,
+                   'flat_lr':.004,'flat_seed':1729,'flat_max_games':0,
+                   'flat_train_per_game':0,'flat_dev_per_game':0}
+    if args.phase!='flat-registers' and any(
+            getattr(args,k)!=v for k,v in flat_defaults.items()):
+        raise ValueError('GAMER_FLAT_FLAGS_ONLY_FLAT_REGISTERS')
+    if args.phase!='flat-attribution' and args.attribution_output is not None:
+        raise ValueError('GAMER_ATTRIBUTION_FLAGS_ONLY_FLAT_ATTRIBUTION')
+    if args.phase!='flat-prompt' and args.prompt_output is not None:
+        raise ValueError('GAMER_PROMPT_FLAGS_ONLY_FLAT_PROMPT')
+    repr_defaults={'repr_output':None,'repr_max_games':0,'repr_train_per_game':0,
+                   'repr_dev_per_game':0,'repr_perturbations':16,'repr_skip_base':False}
+    if args.phase!='representation-diagnostic' and any(
+            getattr(args,k)!=v for k,v in repr_defaults.items()):
+        raise ValueError('GAMER_REPR_FLAGS_ONLY_REPRESENTATION_DIAGNOSTIC')
+    expanded_defaults={'expanded_output':None,'expanded_resume':False,'expanded_samples':100,
+        'expanded_curvature':4.0,'expanded_hidden':'4096,2048,512,128',
+        'expanded_backend':'offload-cuda','expanded_precision':'float16',
+        'expanded_batch':4,'expanded_capture_batch':2,'expanded_max_length':None,
+        'expanded_seed':47,'expanded_lr':.0002,'expanded_weight_decay':.0001,
+        'expanded_grad_clip':1.0,'expanded_eval_every':100,'expanded_save_every':100,
+        'expanded_zero_focus':.5,'expanded_zero_radius':1.0}
+    if args.phase!='head-100' and any(
+            getattr(args,k)!=v for k,v in expanded_defaults.items()):
+        raise ValueError('GAMER_EXPANDED_FLAGS_ONLY_HEAD_100')
+    exp_diag_defaults={'expanded_diag_output':None,'expanded_diag_source_run':None,
+       'expanded_diag_steps':12,'expanded_diag_eval_every':4,
+       'expanded_diag_trials':'mixed,lr-quarter,zero-focus,game:captain_crew_risk',
+       'expanded_diag_train_eval':0,'expanded_diag_ablation_cases':128,
+       'expanded_diag_precision_cases':4,'expanded_diag_matched_steps':0}
+    if args.phase!='head-100-diagnostic-train' and any(
+            getattr(args,k)!=v for k,v in exp_diag_defaults.items()):
+        raise ValueError('GAMER_EXP_DIAG_FLAGS_ONLY_EXPANDED_DIAGNOSTIC_TRAIN')
+    radius_defaults={'radius_output':None,'radius_source_run':None,
+        'radius_contexts':12,'radius_width':2,'radius_permutations':64,
+        'radius_checkpoint':'best'}
+    if args.phase!='head-100-radius' and any(
+            getattr(args,k)!=v for k,v in radius_defaults.items()):
+        raise ValueError('GAMER_RADIUS_FLAGS_ONLY_HEAD_100_RADIUS')
+    recovery_defaults={'radius_recovery':False,'radius_recovery_output':None,
+        'radius_recovery_folds':4,'radius_recovery_rank':12,'radius_recovery_controls':1}
+    if args.phase not in ('head-100-radius','head-100-radius-recovery') and any(
+            getattr(args,k)!=v for k,v in recovery_defaults.items()):
+        raise ValueError('GAMER_RADIUS_RECOVERY_FLAGS_ONLY_RADIUS')
+    if args.phase=='head-100-radius' and not args.radius_recovery and any(
+            getattr(args,k)!=v for k,v in recovery_defaults.items() if k!='radius_recovery'):
+        raise ValueError('GAMER_RADIUS_RECOVERY_FLAGS_REQUIRE_RADIUS_RECOVERY')
+    if args.phase=='head-100-radius-recovery':
+        if args.steps is not None:
+            raise ValueError('GAMER_RADIUS_RECOVERY_READ_ONLY_NO_STEPS')
+        if args.radius_recovery:
+            raise ValueError('GAMER_RADIUS_RECOVERY_ALREADY_SELECTED_AS_PHASE')
+        from tools.nanojev_gamer_v1_radius_recovery import run_recovery
+        return run_recovery(args.run,output=args.radius_recovery_output,
+            folds=args.radius_recovery_folds,rank=args.radius_recovery_rank,
+            controls=args.radius_recovery_controls)
+    if args.phase=='head-100-radius':
+        if args.steps is not None:
+            raise ValueError('GAMER_RADIUS_READ_ONLY_NO_TRAINING_STEPS')
+        from tools.nanojev_gamer_v1_radius_activations import run_radius
+        return run_radius(args.run,device=args.device,output=args.radius_output,
+            source_run=args.radius_source_run,contexts=args.radius_contexts,
+            radius=args.radius_width,permutations=args.radius_permutations,
+            checkpoint=args.radius_checkpoint,
+            recovery=args.radius_recovery,
+            recovery_output=args.radius_recovery_output,
+            recovery_folds=args.radius_recovery_folds,
+            recovery_rank=args.radius_recovery_rank,
+            recovery_controls=args.radius_recovery_controls)
+    if args.phase=='head-100-diagnostic-train':
+        if args.steps is not None:
+            raise ValueError('GAMER_EXP_DIAG_USES_EXPANDED_DIAG_STEPS_NOT_STEPS')
+        from tools.nanojev_gamer_v1_expanded_diagnostic_train import run_expanded_diagnostic
+        return run_expanded_diagnostic(args.run,device=args.device,
+            source_run=args.expanded_diag_source_run,output=args.expanded_diag_output,
+            steps=args.expanded_diag_steps,eval_every=args.expanded_diag_eval_every,
+            trials=args.expanded_diag_trials,train_eval=args.expanded_diag_train_eval,
+            ablation_cases=args.expanded_diag_ablation_cases,
+            precision_cases=args.expanded_diag_precision_cases,
+            matched_steps=args.expanded_diag_matched_steps)
+    if args.phase=='head-100':
+        if args.steps is None or args.steps<1:
+            raise ValueError('GAMER_EXPANDED_POSITIVE_STEPS_REQUIRED')
+        from tools.nanojev_gamer_v1_expanded_head import run_expanded
+        hidden=tuple(int(x.strip()) for x in args.expanded_hidden.split(','))
+        return run_expanded(args.run,device=args.device,output=args.expanded_output,
+            resume=args.expanded_resume,steps=args.steps,
+            samples=args.expanded_samples,curvature=args.expanded_curvature,
+            hidden=hidden,max_length=args.expanded_max_length,
+            batch_size=args.expanded_batch,capture_batch=args.expanded_capture_batch,
+            backend=args.expanded_backend,precision=args.expanded_precision,
+            seed=args.expanded_seed,lr=args.expanded_lr,
+            weight_decay=args.expanded_weight_decay,grad_clip=args.expanded_grad_clip,
+            zero_focus=args.expanded_zero_focus,zero_radius=args.expanded_zero_radius,
+            eval_every=args.expanded_eval_every,save_every=args.expanded_save_every)
+    if args.phase=='representation-diagnostic':
+        if args.steps is not None:
+            raise ValueError('GAMER_REPR_DOES_NOT_TRAIN_WITH_STEPS')
+        from tools.nanojev_gamer_v1_representation_diagnostic import run_representation_diagnostic
+        return run_representation_diagnostic(args.run,device=args.device,output=args.repr_output,
+            max_games=args.repr_max_games,train_per_game=args.repr_train_per_game,
+            dev_per_game=args.repr_dev_per_game,perturbations=args.repr_perturbations,
+            include_base=not args.repr_skip_base)
+    if args.phase=='flat-prompt':
+        if args.steps is not None:
+            raise ValueError('GAMER_PROMPT_DOES_NOT_TRAIN_WITH_STEPS')
+        from tools.nanojev_gamer_v1_prompt_fidelity import run_prompt_fidelity
+        return run_prompt_fidelity(args.run,output=args.prompt_output)
+    if args.phase=='flat-attribution':
+        if args.steps is not None:
+            raise ValueError('GAMER_ATTRIBUTION_DOES_NOT_TRAIN_WITH_STEPS')
+        from tools.nanojev_gamer_v1_register_attribution import run_attribution
+        return run_attribution(args.run,output=args.attribution_output)
+    if args.phase=='flat-registers':
+        if args.steps is not None:
+            raise ValueError('GAMER_FLAT_USES_FLAT_EPOCHS_NOT_STEPS')
+        from tools.nanojev_gamer_v1_flat_registers import run_flat_registers
+        return run_flat_registers(args.run,output=args.flat_output,device=args.device,
+            epochs=args.flat_epochs,batch_size=args.flat_batch_size,
+            lr=args.flat_lr,seed=args.flat_seed,
+            max_games=args.flat_max_games,
+            train_per_game=args.flat_train_per_game,
+            dev_per_game=args.flat_dev_per_game)
     if args.phase=='register-oracle':
         if args.steps is not None:
             raise ValueError('GAMER_REGISTER_DOES_NOT_TRAIN_WITH_STEPS')

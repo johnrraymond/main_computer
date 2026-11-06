@@ -206,6 +206,14 @@ class ComposeNanoJevController:
         )
         return self.checkpoint_validated
 
+    def activate_pending_image(self) -> str:
+        """Retire an old image through Main Computer's safe idle lifecycle."""
+        from tools.nanojev_image_bootstrap import activate_pending_image
+        return activate_pending_image(root=self.root, compose_file=self.compose_file,
+                                      project_name=self.project_name,
+                                      docker=self.docker_command, image=self.image_name,
+                                      stop_timeout=self.stop_timeout_seconds)
+
     def start(self) -> None:
         if self.health():
             return
@@ -295,11 +303,11 @@ class NanoJevLifecycle:
         # Do not perform a second blocking backend probe or overwrite the visible
         # starting/stopping phase from a concurrent /control/status request.
         with self.lock:
-            if self.phase in {"starting", "stopping"}:
+            if self.phase in {"starting", "stopping", "updating"}:
                 return self.running
         running = self.controller.health()
         with self.lock:
-            if self.phase in {"starting", "stopping"}:
+            if self.phase in {"starting", "stopping", "updating"}:
                 return self.running
             self.running = running
             self.phase = "ready" if running else ("error" if self.last_error else "idle")
@@ -308,33 +316,75 @@ class NanoJevLifecycle:
                 self.active_requests = 0
         return running
 
+    def _update_status(self) -> dict[str, object] | None:
+        return self.controller.image_bootstrap() if hasattr(self.controller, "image_bootstrap") else None
+
+    def _activate_when_idle(self) -> bool:
+        """Called only under transition_lock: never change an active backend."""
+        state = self._update_status()
+        if not state or state.get("state") != "pending-activation":
+            return False
+        with self.lock:
+            if self.active_requests:
+                return False
+            self.phase = "updating"
+            self.last_error = ""
+        try:
+            if not hasattr(self.controller, "activate_pending_image"):
+                raise RuntimeError("NanoJev lifecycle has no managed image activation")
+            self.controller.activate_pending_image()
+        except Exception as exc:
+            with self.lock:
+                self.phase = "error"
+                self.last_error = f"NanoJev image activation failed: {exc}"
+            raise
+        with self.lock:
+            self.running = False
+            self.dirty = False
+            self.phase = "idle"
+            self.last_activity = self.clock()
+        return True
+
+    def _ensure_on_locked(self, *, pin: bool = False) -> None:
+        # Only one transition may activate an image or admit an inference job.
+        # A request already executing can finish while the builder runs.
+        state = self._update_status()
+        if state and state.get("state") in {"checking", "building", "creating"}:
+            raise RuntimeError("NanoJev source image update in progress; retry after image bootstrap is ready")
+        if state and state.get("state") == "failed":
+            raise RuntimeError(f"NanoJev image bootstrap failed: {state.get('error', 'see /control/status')}")
+        if state and state.get("state") == "pending-activation":
+            if not self._activate_when_idle():
+                raise RuntimeError("NanoJev image update is waiting for active inference to finish")
+        with self.lock:
+            if pin:
+                self.pinned = True
+            self.dirty = False
+            self.last_activity = self.clock()
+            already_running = self.running
+        if already_running and self.controller.health():
+            return
+        with self.lock:
+            self.phase = "starting"
+            self.last_error = ""
+        try:
+            self.controller.start()
+        except Exception as exc:
+            with self.lock:
+                self.running = False
+                self.phase = "error"
+                self.last_error = str(exc)
+            raise
+        else:
+            with self.lock:
+                self.running = True
+                self.phase = "ready"
+                self.last_error = ""
+                self.last_activity = self.clock()
+
     def ensure_on(self, *, pin: bool = False) -> None:
         with self.transition_lock:
-            with self.lock:
-                if pin:
-                    self.pinned = True
-                self.dirty = False
-                self.last_activity = self.clock()
-                already_running = self.running
-            if already_running and self.controller.health():
-                return
-            with self.lock:
-                self.phase = "starting"
-                self.last_error = ""
-            try:
-                self.controller.start()
-            except Exception as exc:
-                with self.lock:
-                    self.running = False
-                    self.phase = "error"
-                    self.last_error = str(exc)
-                raise
-            else:
-                with self.lock:
-                    self.running = True
-                    self.phase = "ready"
-                    self.last_error = ""
-                    self.last_activity = self.clock()
+            self._ensure_on_locked(pin=pin)
 
     def turn_on(self) -> dict[str, object]:
         self.ensure_on(pin=True)
@@ -351,11 +401,14 @@ class NanoJevLifecycle:
         return self.status(refresh=False)
 
     def begin_request(self) -> None:
-        self.ensure_on(pin=False)
-        with self.lock:
-            self.active_requests += 1
-            self.dirty = False
-            self.last_activity = self.clock()
+        # Registration and image switching share the transition lock. An idle
+        # sweep cannot retire the backend between ensure_on and request admit.
+        with self.transition_lock:
+            self._ensure_on_locked(pin=False)
+            with self.lock:
+                self.active_requests += 1
+                self.dirty = False
+                self.last_activity = self.clock()
 
     def end_request(self) -> None:
         with self.lock:
@@ -373,6 +426,21 @@ class NanoJevLifecycle:
         return self.status(refresh=False)
 
     def sweep(self) -> bool:
+        pending = self._update_status()
+        if pending and pending.get("state") == "pending-activation":
+            with self.transition_lock:
+                with self.lock:
+                    idle = self.active_requests == 0
+                    restore_pin = self.pinned
+                if idle:
+                    try:
+                        changed = self._activate_when_idle()
+                        if changed and restore_pin:
+                            self._ensure_on_locked(pin=True)
+                        return changed
+                    except Exception:
+                        # Retain failure evidence, do not restart the old image.
+                        return False
         now = self.clock()
         with self.lock:
             should_stop = (
@@ -424,6 +492,8 @@ class NanoJevLifecycle:
             with self.lock:
                 if self.shutdown_complete:
                     return
+                if self.active_requests:
+                    raise RuntimeError("NanoJev has active inference; refusing to stop backend")
                 self.pinned = False
                 self.dirty = False
                 self.phase = "stopping"
@@ -455,24 +525,25 @@ class NanoJevLifecycle:
                 remaining = max(0.0, self.idle_seconds - elapsed)
             bootstrap = self.controller.image_bootstrap() if hasattr(self.controller, "image_bootstrap") else None
             phase = self.phase
-            if not self.running and phase in {"idle", "error"} and bootstrap and bootstrap.get("state") in {"checking", "building"}:
+            update_phase = bootstrap.get("state") if bootstrap else None
+            if update_phase in {"checking", "building", "creating"} and phase not in {"starting", "stopping", "updating"}:
                 phase = "building"
+            elif update_phase == "pending-activation" and phase not in {"starting", "stopping", "updating"}:
+                phase = "updating"
             container = self._container_state
             model_loaded = bool(getattr(self.controller, "model_loaded_once", self.running))
             checkpoint_validated = bool(getattr(self.controller, "checkpoint_validated", self.running)) and self.running
             backend_error = str(getattr(self.controller, "health_error", ""))
-            if self.phase == "error":
+            if self.phase == "error" or update_phase == "failed":
                 runtime_state = "error"
-            elif self.phase in {"starting", "stopping"}:
-                runtime_state = self.phase
+            elif phase in {"starting", "stopping", "updating", "building"}:
+                runtime_state = phase
             elif checkpoint_validated:
                 runtime_state = "busy" if self.active_requests else "ready"
             elif model_loaded and backend_error:
                 runtime_state = "error"
             elif container == "running":
                 runtime_state = "loading"
-            elif phase == "building":
-                runtime_state = "building"
             elif self._container_error:
                 runtime_state = "error"
             elif container in {"created", "absent"}:
@@ -494,8 +565,10 @@ class NanoJevLifecycle:
                 "backend_error": backend_error,
                 "container_error": self._container_error,
                 "image_bootstrap": bootstrap,
+                "image_source_sha256": bootstrap.get("source_sha256") if bootstrap else None,
+                "image_update_pending": update_phase in {"checking", "building", "creating", "pending-activation"},
                 "running": self.running,
-                "backend_ready": self.running and self.phase == "ready",
+                "backend_ready": self.running and self.phase == "ready" and update_phase not in {"checking", "building", "creating", "pending-activation", "failed"},
                 "pinned": self.pinned,
                 "dirty": self.dirty,
                 "active_requests": self.active_requests,
@@ -614,7 +687,7 @@ class NanoJevManagerHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"ok": True, "state": "shutdown"})
             except Exception as exc:
                 self._send_json(503, {"ok": False, "error": str(exc)})
-            finally:
+            else:
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         if self.path.startswith("/api/"):

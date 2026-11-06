@@ -24,6 +24,14 @@ RELEASE_SCHEMA = "main-computer-nanojev-clef-release-v1"
 MANIFEST_SCHEMA = "main-computer-nanojev-clef-sha256-manifest-v1"
 DEFAULT_REPO_ID = "johnrraymond/NanoJev-CLEF"
 DEFAULT_REVISION = "champion"
+# Canonical model-selecting service contract. A catalog may list only heads
+# actually loaded in this runtime, never installed/training-only checkpoints.
+MODEL_ID = "nanojev-clef"
+OPERATIONS = ("nanojev.clef.evaluate.v1", "nanojev.clef.pairwise-batch.v1")
+MODEL_CATALOG_SCHEMA = "nanojev.model-catalog.v1"
+INFERENCE_REQUEST_SCHEMA = "nanojev.inference-request.v1"
+INFERENCE_RESULT_SCHEMA = "nanojev.inference-result.v1"
+MAX_PENDING_INFERENCE = 8  # includes the single executing GPU job
 HF_REACHABILITY_TIMEOUT_SECONDS = 5.0
 LOCAL_STATE_SCHEMA = "main-computer-nanojev-clef-local-state-v1"
 TOOLS = Path("/opt/main-computer-tools")
@@ -456,6 +464,51 @@ class ClefRuntime:
         )
         self.logger = logger
         self.evidence_args = self.args
+
+    def model_catalog(self) -> dict[str, Any]:
+        return {
+            "schema": MODEL_CATALOG_SCHEMA, "ready": True,
+            "models": [{
+                "id": MODEL_ID, "operations": list(OPERATIONS), "ready": True,
+                "checkpoint": {
+                    "release_name": self.release_name,
+                    "release_manifest_sha256": self.release_manifest_sha256,
+                    "repo_id": self.repo_id,
+                    "revision": self.resolved_revision,
+                },
+                "max_concurrent_inference": 1,
+                "max_pending_inference": MAX_PENDING_INFERENCE,
+            }],
+        }
+
+    def infer(self, request: Any) -> dict[str, Any]:
+        if not isinstance(request, dict) or set(request) != {
+                "schema", "model", "operation", "checkpoint_sha256", "input"}:
+            raise ValueError("Inference requires exact model, operation, checkpoint and input")
+        if request["schema"] != INFERENCE_REQUEST_SCHEMA:
+            raise ValueError("Unsupported NanoJev inference request schema")
+        if request["model"] != MODEL_ID:
+            raise ValueError("Requested NanoJev model is not loaded")
+        operation = request["operation"]
+        if operation not in OPERATIONS:
+            raise ValueError("Requested operation is not supported by loaded model")
+        if request["checkpoint_sha256"] != self.release_manifest_sha256:
+            raise ValueError("NanoJev checkpoint changed since model discovery")
+        if not isinstance(request["input"], dict):
+            raise ValueError("NanoJev inference input must be an object")
+        # Inference routines share self.lock and one loaded checkpoint. They
+        # serialize GPU forward passes rather than cloning model instances.
+        result = (self.evaluate(request["input"]) if operation == OPERATIONS[0]
+                  else self.evaluate_pairwise_batch(request["input"]))
+        executed = result.get("model") if isinstance(result, dict) else None
+        if (not isinstance(executed, dict) or executed.get("family") != MODEL_ID
+                or executed.get("release_manifest_sha256") != self.release_manifest_sha256):
+            raise RuntimeError("NanoJev execution returned a different model or checkpoint")
+        return {
+            "schema": INFERENCE_RESULT_SCHEMA, "model": MODEL_ID,
+            "operation": operation, "checkpoint": executed,
+            "result": result,
+        }
 
     def health(self) -> dict[str, Any]:
         return {
@@ -1385,12 +1438,45 @@ class ClefRuntime:
         }
 
 
+class LoadedNanoJevModels:
+    """Dispatch only to runtime instances actually loaded by this process.
+
+    Registration is explicit at backend construction; a training checkpoint,
+    filesystem entry, or requested name never silently becomes advertised.
+    """
+    def __init__(self, loaded: Mapping[str, Any]) -> None:
+        if not loaded or len(loaded) != len(set(loaded)):
+            raise ValueError("NanoJev requires at least one unique loaded model")
+        self.loaded = dict(loaded)
+
+    def catalog(self) -> dict[str, Any]:
+        models = []
+        for expected, runtime in self.loaded.items():
+            catalog = runtime.model_catalog()
+            entries = catalog.get("models") if isinstance(catalog, dict) else None
+            if (not isinstance(catalog, dict) or catalog.get("ready") is not True
+                    or not isinstance(entries, list)
+                    or len(entries) != 1 or entries[0].get("id") != expected):
+                raise RuntimeError("NanoJev loaded model reported an invalid catalog")
+            models.extend(entries)
+        return {"schema": MODEL_CATALOG_SCHEMA, "ready": True, "models": models}
+
+    def infer(self, request: Any) -> dict[str, Any]:
+        model = request.get("model") if isinstance(request, dict) else None
+        runtime = self.loaded.get(model) if isinstance(model, str) else None
+        if runtime is None:
+            raise ValueError("Requested NanoJev model is not loaded")
+        return runtime.infer(request)
+
+
 class ClefServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], runtime: ClefRuntime) -> None:
         super().__init__(address, ClefHandler)
         self.runtime = runtime
+        self.loaded_models = LoadedNanoJevModels({MODEL_ID: runtime})
+        self.inference_slots = threading.BoundedSemaphore(MAX_PENDING_INFERENCE)
 
 
 class ClefHandler(BaseHTTPRequestHandler):
@@ -1413,10 +1499,16 @@ class ClefHandler(BaseHTTPRequestHandler):
         if self.path == "/api/health":
             self._send(200, self.server.runtime.health())
             return
+        if self.path == "/api/models":
+            try:
+                self._send(200, self.server.loaded_models.catalog())
+            except (RuntimeError, ValueError) as exc:
+                self._send(503, {"ok": False, "error": f"MODEL_DISCOVERY_UNAVAILABLE: {exc}"})
+            return
         self._send(404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/evaluate", "/api/evaluate-batch"}:
+        if self.path not in {"/api/infer", "/api/evaluate", "/api/evaluate-batch"}:
             self._send(404, {"ok": False, "error": "not found"})
             return
         try:
@@ -1424,7 +1516,17 @@ class ClefHandler(BaseHTTPRequestHandler):
             if length <= 0 or length > 16 * 1024 * 1024:
                 raise ValueError("request body must be 1..16777216 bytes")
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            if self.path == "/api/evaluate-batch":
+            if self.path == "/api/infer":
+                # Bound queued requests; live Worker count is not GPU parallelism.
+                if not self.server.inference_slots.acquire(blocking=False):
+                    self._send(429, {"ok": False, "error": "NANOJEV_INFERENCE_CAPACITY_EXHAUSTED"})
+                    return
+                try:
+                    result = self.server.loaded_models.infer(payload)
+                finally:
+                    self.server.inference_slots.release()
+            elif self.path == "/api/evaluate-batch":
+                # Existing non-marketplace game probes retain their native API.
                 result = self.server.runtime.evaluate_pairwise_batch(payload)
             else:
                 result = self.server.runtime.evaluate(payload)

@@ -177,14 +177,55 @@
       }
     }
     for (const n of nodes.values()) {
+      if (n.nodeKind === "form") {
+        for(const [field,stateRef] of Object.entries(n.fieldState||{})){
+          const state=states.get(ref(stateRef));
+          assert(own(n.fields||{},field) && state?.authority==="renderer-local" &&
+            JSON.stringify(state.schema)===JSON.stringify(n.fields[field]),"invalid-form-state:"+n.id);
+        }
+        for(const item of Object.values(n.acceptResult||{})){
+          const source=states.get(ref(item.state));
+          const target=n.fields?.[item.field];
+          const picked=item.pick?source?.schema?.fields?.[item.pick]:source?.schema;
+          assert(source?.authority==="derived" && target &&
+            JSON.stringify(picked)===JSON.stringify(target),"invalid-form-result:"+n.id);
+          if(item.whenIntent){
+            const writer=intents.get(ref(item.whenIntent));
+            assert(writer?.operationKind==="capability" && writer.resultBindings?.some(binding=>
+              ref(binding.target)===ref(item.state)),"invalid-form-result-source:"+n.id);
+          }
+          if(item.invoke){
+            const action=intents.get(ref(item.invoke));
+            assert(action?.operationKind==="capability" && action.input?.length===0 &&
+              action.resultBindings?.length,"invalid-form-result-invoke:"+n.id);
+          }
+        }
+        if(n.clearIntent){
+          const clear=intents.get(ref(n.clearIntent));
+          assert(clear?.operationKind==="capability" && clear.input?.length===0,"invalid-form-clear:"+n.id);
+        }
+        if(n.editor){
+          const editor=intents.get(ref(n.editor.intent));
+          assert(own(n.fields||{},"expression") && editor?.operationKind==="capability" &&
+            ["expression","action","token","selectionStart","selectionEnd"].every(key=>editor.input?.some(input=>input.sourceName===key)) &&
+            editor.input.length===5 && Array.isArray(n.editor.templates) &&
+            n.editor.templates.length<=32,"invalid-form-editor:"+n.id);
+        }
+      }
       if (n.nodeKind === "form" && n.defaults) {
         for (const [field,value] of Object.entries(n.defaults)) {
           assert(Object.prototype.hasOwnProperty.call(n.fields || {},field), "undeclared-form-default:" + field);
           checkSchema(n.fields[field],value,n.id + ".defaults." + field);
         }
       }
-      assert(["form","control","state-value","collection","plot","operation-evidence","document-editor"].includes(n.nodeKind), "unsupported-surface-node:" + n.nodeKind);
+      assert(["form","control","state-value","collection","plot","operation-evidence","document-editor","embedded-chat"].includes(n.nodeKind), "unsupported-surface-node:" + n.nodeKind);
       if (n.intent) assert(intents.has(ref(n.intent)), "unbound-intent:" + n.id);
+      for(const item of n.resetOutputs||[]){
+        const target=states.get(ref(item.state));
+        assert(n.nodeKind==="control" && target?.authority==="derived" &&
+          target.schema?.kind==="string" && typeof item.value==="string" &&
+          item.value.length<=4096,"invalid-control-reset:"+n.id);
+      }
       if (n.state) assert(states.has(ref(n.state)), "unbound-state:" + n.id);
       if (n.selectionIntent) assert(intents.has(ref(n.selectionIntent)), "unbound-selection:" + n.id);
       if (n.nodeKind === "state-value") assert(states.has(ref(n.value?.state)), "unbound-display:" + n.id);
@@ -199,6 +240,12 @@
         if(n.saveIntent) assert(save?.operationKind==="capability" && save.risk==="source-write" &&
           save.requestArguments?.some(x=>ref(x.state)===path.id) &&
           save.requestArguments?.some(x=>ref(x.state)===draft.id),"document-save-invalid:"+n.id);
+      }
+      if (n.nodeKind === "embedded-chat") {
+        const intent=intents.get(ref(n.intent));
+        assert(intent?.operationKind==="capability" && intent.risk==="external-read" &&
+          typeof n.title==="string" && typeof n.targetKind==="string" &&
+          typeof n.targetId==="string","embedded-chat-contract-invalid:"+n.id);
       }
       if (n.nodeKind === "plot") {
         const schema = states.get(ref(n.state))?.schema;
@@ -258,22 +305,6 @@
           "workspace-role-disagreement");
         covered.add(id);
       }
-      if(zone.id === "workspace" && zone.resultPairs !== undefined) {
-        assert(Array.isArray(zone.resultPairs), "workspace-result-pairs-invalid");
-        const paired = new Set();
-        for(const pair of zone.resultPairs) {
-          const src=pair?.source, dst=pair?.result;
-          const sourceRegion=c.regions.get(src), resultRegion=c.regions.get(dst);
-          const relation=(plan.derivedRelations||[]).find(r=>
-            r.kind==="reports-for" && r.to===src && r.from===dst &&
-            JSON.stringify(r.evidenceStates)===JSON.stringify(pair.evidenceStates));
-          assert(src!==dst && zone.members.includes(src) && zone.members.includes(dst) &&
-            !paired.has(src) && !paired.has(dst) && relation &&
-            JSON.stringify(sourceRegion?.visibleWhen||null)===JSON.stringify(resultRegion?.visibleWhen||null),
-            "workspace-result-pair-disagrees-with-semantics");
-          paired.add(src);paired.add(dst);
-        }
-      }
       if(zone.id === "tools")
         assert(zone.members.includes(zone.default) &&
           (zone.members.length > 1 ? zone.kind === "tab-group" : zone.kind === "inspector"),
@@ -303,6 +334,10 @@
     const state = new Map(), receipts = [], displays = new Map();
     const directoryForms = new Set();
     const folderTrees = new Map();
+    // Read-only navigation dependencies are identified by source/target state,
+    // never by app IDs, labels, selectors or fixed root names.
+    const navigationRoots = [];
+    const guardedFormButtons = [];
     const refreshers = [];
     const taskRefreshPeriodMs = 5000;
     const collectionHosts = new Map(), plotHosts = new Map(), documentHosts = new Map(), actionButtons = [], regionHosts = new Map(), receiptHosts = [], tabSwitchers = [], current = new Map(), targetRuns = new Map(), plotVersions = new WeakMap();
@@ -314,6 +349,10 @@
     let plannedLayout=null;
     let scheduleGeneratedLayout=()=>{};
     const rememberedInputs = new Map();
+    const chatControllers=[];
+    const pendingChatMounts=[];
+    // Source-declared form/output links, not application-name selectors.
+    const resultReceivers = new Map();
     for (const s of c.states.values()) {
       if (own(s,"initial")) { checkSchema(s.schema,s.initial,s.id); state.set(s.id,clone(s.initial)); }
     }
@@ -365,7 +404,7 @@
       for (const [n, host] of collectionHosts) updateCollection(n,host);
       for (const [n, host] of plotHosts) updatePlot(n, host);
       for (const [n, session] of documentHosts) updateDocument(n,session);
-      for(const {button,intent} of actionButtons){
+      for(const {button,intent} of [...actionButtons,...guardedFormButtons]){
         button.disabled=(intent.requestArguments||[]).some(arg=>{
           const value=read(ref(arg.state));return value===undefined || value===null || value==="";
         });
@@ -451,6 +490,11 @@
             }
             notify();
             const result=receipt(intent,"selected");
+            // Selecting an observed directory root must actually list it.
+            // This is an existing read-only capability, not an inferred
+            // filesystem permission or an application-specific handler.
+            const navigation=navigationRoots.find(nav=>nav.selection.id===id);
+            if(navigation && !disposed)await execute(navigation.browse.id);
             // A document editor's declared path/load bindings turn file choice
             // into an actual source-open operation. The capability port still
             // authorizes the selected path and performs the governed read.
@@ -466,7 +510,10 @@
           if (intent.viewTransition) {
             const t = intent.viewTransition, key = (intent.input || []).find(p => p.id === ref(t.value?.input))?.sourceName;
             assert(key && c.states.get(ref(t.target))?.authority === "renderer-local", "invalid-view-transition");
-            state.set(ref(t.target),clone(input[key])); notify(); return receipt(intent,"completed");
+            state.set(ref(t.target),clone(input[key]));
+            for(const control of c.nodes.values())if(control.nodeKind==="control" && ref(control.intent)===id)
+              for(const item of control.resetOutputs||[])state.set(ref(item.state),item.value);
+            notify(); return receipt(intent,"completed");
           }
           fail("unsupported-interaction:"+id);
         }
@@ -548,7 +595,22 @@
             (intent.resultBindings || []).some(binding=>targetRuns.get(ref(binding.target)) !== run)))
           return {disposition:"superseded"};
         if (op.resultSchema) checkSchema(op.resultSchema,value,"capability-response");
-        for (const binding of intent.resultBindings || []) state.set(ref(binding.target),clone(value));
+        for (const binding of intent.resultBindings || []){
+          const target=ref(binding.target);
+          state.set(target,clone(value));
+          for(const receiver of resultReceivers.get(target)||[]){
+            if(!receiver.input.isConnected || receiver.whenIntent && receiver.whenIntent!==id)continue;
+            const next=receiver.pick?value?.[receiver.pick]:value;
+            receiver.input.value=String(next);
+            receiver.input.dispatchEvent(new Event("input",{bubbles:true}));
+            if(value && typeof value==="object" && Number.isInteger(value.selectionStart) &&
+               Number.isInteger(value.selectionEnd) && typeof receiver.input.setSelectionRange==="function") {
+              receiver.input.focus({preventScroll:true});
+              receiver.input.setSelectionRange(value.selectionStart,value.selectionEnd);
+            }
+            if(receiver.invoke)void execute(receiver.invoke);
+          }
+        }
         for(const [node,session] of documentHosts){
           if(ref(node.loadIntent)===id){
             const previous=session.tabs.get(args.path);
@@ -656,9 +718,54 @@
           (intent.risk === "consequential" && value && typeof value === "object" &&
           ["accepted-deferred","command-returned","recorded","unknown","refused"].includes(value.outcome))
           ? value.outcome : "completed";
-        return receipt(intent,disposition,
+        const completed=receipt(intent,disposition,
           disposition === "completed" ? "" :
             (typeof value==="string" ? value : String(value.message||"")));
+        if(disposition==="completed")for(const navigation of navigationRoots){
+          if(navigation.loader.id!==id)continue;
+          // Reusing a valid root is preferable to resetting a user's location;
+          // otherwise the first *observed* root is the safe default. Its
+          // existence is verified by the collection-selection intent.
+          const roots=read(navigation.rootsState);
+          if(!Array.isArray(roots))continue;
+          const previous=read(navigation.rootState);
+          const current=roots.find(item=>String(item?.[navigation.key])===String(previous))||roots[0];
+          if(current){
+            // Even if the root ID is unchanged, its earlier directory and
+            // preview evidence is stale after a fresh discovery. Force the
+            // existing root-switch invalidation path before browsing again.
+            for(const tree of folderTrees.values())if(tree.rootState===navigation.rootState)
+              tree.root="";
+            await execute(navigation.selection.id,{
+              [navigation.inputName]:String(current[navigation.key])});
+          }
+          else {
+            // Roots may disappear on refresh. No stale directory contents or
+            // inspection authority may survive an empty observed root list.
+            state.set(navigation.rootState,"");
+            for(const [node,tree] of folderTrees){
+              if(tree.rootState!==navigation.rootState)continue;
+              tree.root="";tree.paths.clear();tree.current="";tree.searchResults=false;
+              state.delete(ref(node.state));
+            }
+            for(const dependent of c.intents.values()){
+              if(dependent.operationKind!=="capability" ||
+                  !(dependent.requestArguments||[]).some(arg=>ref(arg.state)===navigation.rootState))continue;
+              for(const binding of dependent.resultBindings||[])state.delete(ref(binding.target));
+            }
+            for(const dependent of c.intents.values()){
+              if(!dependent.collectionSelection ||
+                  c.states.get(ref(dependent.collectionSelection.target))?.authority!=="renderer-local")continue;
+              if(!read(ref(dependent.collectionSelection.source)))
+                state.set(ref(dependent.collectionSelection.target),"");
+            }
+            for(const nav of directoryForms){
+              nav.input.value="";nav.current="";nav.up.disabled=true;nav.path.textContent="/";
+            }
+            notify();
+          }
+        }
+        return completed;
       } catch (ex) {
         if(id==="intent:run-aider")for(const [node,session] of documentHosts){
           for(const [path,tab] of session.tabs){
@@ -701,7 +808,7 @@
       if (n.nodeKind === "state-value") {
         const id=ref(n.value.state),el=elt("output",{"data-state":id});
         holder.append(el);
-        if(c.generated && c.states.get(id)?.schema?.kind === "string" &&
+        if(c.states.get(id)?.schema?.kind === "string" &&
           [...c.intents.values()].some(i=>i.collectionSelection && ref(i.collectionSelection.target)===id)) {
           selectedRecordHosts.set(n,el);
         } else if(c.generated && c.states.get(id)?.schema?.kind === "record") {
@@ -805,6 +912,13 @@
             updateDocument(n,session);
           }
         });
+      } else if (n.nodeKind === "embedded-chat") {
+        assert(typeof port.mountEmbeddedChat==="function","embedded-chat-port-unavailable");
+        const host=elt("section",{"data-mcel-embedded-chat":n.id,"aria-label":n.title});
+        holder.append(host);
+        // The incumbent Chat Console discovers notebook targets through
+        // document-level selectors. Mount only after this node is attached.
+        pendingChatMounts.push({host,node:n});
       } else if (n.nodeKind === "plot") {
         const plot=elt("div", {"data-mcel-plot":n.id, role:"img", "aria-label":fmt(n.sourceName || n.id) + " function plot"});
         holder.append(plot); plotHosts.set(n,plot);
@@ -836,7 +950,19 @@
           if (clearResult) notify();
         }
         form.addEventListener("input",()=>supersedeComputeRequest());
-        form.addEventListener("reset",()=>supersedeComputeRequest(true));
+        form.addEventListener("reset",event=>{
+          if(n.resetAndSubmit){
+            // Graph-range resets preserve the authored expression while
+            // applying declared defaults, then redraw from the same form.
+            event.preventDefault();
+            for(const [key,value] of Object.entries(n.defaults||{})){
+              controls[key].value=String(value);
+              controls[key].dispatchEvent(new Event("input",{bubbles:true}));
+            }
+            supersedeComputeRequest();
+            form.requestSubmit();
+          }else supersedeComputeRequest(true);
+        });
         const formFieldNames=Object.keys(n.fields || {});
         // Keep the domain's canonical inputs together; pair range bounds as
         // X Min / X Max and Y Min / Y Max rather than alphabetical X Max / X Min.
@@ -856,9 +982,53 @@
             item.input.defaultValue=String(n.defaults[k]);
           }
           form.append(item.wrap);controls[k]=item.input;
+          const mappedState=ref(n.fieldState?.[k]);
+          if(mappedState){
+            const currentValue=read(mappedState);
+            if(currentValue!==undefined && currentValue!==null)item.input.value=String(currentValue);
+            item.input.addEventListener("input",()=>{
+              let next=parseInput(schema,item.input);
+              if(schema.kind==="number" && !Number.isFinite(next))return;
+              state.set(mappedState,next);
+            });
+            item.input.addEventListener("change",()=>{
+              const next=parseInput(schema,item.input);
+              if(schema.kind!=="number" || Number.isFinite(next))state.set(mappedState,next);
+            });
+          }
+        }
+        for(const item of Object.values(n.acceptResult||{})){
+          const key=ref(item.state),receiver={input:controls[item.field],invoke:ref(item.invoke),pick:item.pick,whenIntent:ref(item.whenIntent)};
+          if(!resultReceivers.has(key))resultReceivers.set(key,[]);
+          resultReceivers.get(key).push(receiver);
         }
         const button=elt("button",{type:"submit"},fmt(intent.sourceName || intent.id));form.append(button);
-        if (n.defaults && Object.keys(n.defaults).length) form.append(elt("button",{type:"reset"},"Reset inputs"));
+        guardedFormButtons.push({button,intent});
+        if (n.defaults && Object.keys(n.defaults).length) form.append(elt("button",{type:"reset"},n.resetAndSubmit?"Reset graph":"Reset inputs"));
+        if(n.clearIntent){
+          const button=elt("button",{type:"button","data-mcel-clear-intent":ref(n.clearIntent)},"Clear expression and result");
+          button.addEventListener("click",()=>{
+            for(const [key,input] of Object.entries(controls)){
+              input.value="";input.dispatchEvent(new Event("input",{bubbles:true}));
+            }
+            supersedeComputeRequest(true);
+            void execute(ref(n.clearIntent));
+          });form.append(button);
+        }
+        if(n.editor){
+          const tools=elt("div",{"data-mcel-expression-editor":"","role":"group","aria-label":"Expression editor"});
+          const append=(label,action,token="")=>{
+            const btn=elt("button",{type:"button","data-editor-action":action,"data-editor-token":token},label);
+            btn.addEventListener("click",()=>void execute(ref(n.editor.intent),{
+              expression:controls.expression.value,action,token,
+              selectionStart:controls.expression.selectionStart??controls.expression.value.length,
+              selectionEnd:controls.expression.selectionEnd??controls.expression.value.length}));
+            tools.append(btn);
+          };
+          append("Clear graph","clear");append("Backspace graph","backspace");
+          for(const token of n.editor.templates)append(token,"insert",token);
+          form.append(tools);
+        }
         // A semantic directory-navigation form may expose a parent action.
         // The host port must still authorize the target directory.
         const directoryParameter=Object.keys(n.fields||{}).length===1 &&
@@ -1115,6 +1285,21 @@
           const button=elt("button",{type:"button","data-select-key":id},directory?"Open folder":"Select");
           if(directory){
             button.addEventListener("click",()=>void execute(tree.intent.id,{[tree.pathParameter]:id}));
+            // Inspection is a local semantic selection of an observed folder,
+            // not filesystem read authority or a navigation action.
+            if(select && parameter){
+              const inspect=elt("button",{type:"button","data-mcel-inspect-folder":id},"Inspect folder");
+              inspect.addEventListener("click",async()=>{
+                if(path!==tree.current){
+                  const reopened=await execute(tree.intent.id,{[tree.pathParameter]:path});
+                  const fresh=read(ref(n.state));
+                  if(reopened.disposition!=="completed" || !Array.isArray(fresh) ||
+                      !fresh.some(row=>row && String(row[n.key])===id))return;
+                }
+                await execute(select.id,{[parameter.sourceName]:item[n.key]});
+              });
+              row.append(inspect);
+            }
           }else if(path===tree.current && select && parameter){
             button.addEventListener("click",()=>void execute(select.id,{[parameter.sourceName]:item[n.key]}));
           }else if(select && parameter){
@@ -1285,7 +1470,10 @@
       const list=read(ref(n.state));
       if(c.generated){updateGeneratedCollection(n,holder,list);return;}
       holder.replaceChildren();
-      if (!Array.isArray(list)) {holder.append(elt("p",{},"No records loaded"));return;}
+      if (!Array.isArray(list)) {
+        const location=navigationRoots.some(nav=>ref(n.state)===nav.entriesState);
+        holder.append(elt("p",{role:"status"},location?"Loading directory or waiting for an accessible location…":"No records loaded"));return;
+      }
       const tree=folderTrees.get(n);
       if(tree?.paths.size && !tree.searchResults){updateFolderTree(n,holder,tree);return;}
       const select = n.selectionIntent && c.intents.get(ref(n.selectionIntent));
@@ -1295,7 +1483,11 @@
         if (select?.collectionSelection) {
           const parameter=select.input.find(p=>p.id===ref(select.collectionSelection.input));
           const opensDocument=[...documentHosts.keys()].some(doc=>ref(doc.path)===ref(select.collectionSelection.target));
-          const button=elt("button",{type:"button","data-select-key":String(item[n.key])},opensDocument?"Open":"Select");
+          const navigation=navigationRoots.find(nav=>nav.selection.id===select.id);
+          const selected=navigation && String(read(navigation.rootState))===String(item[n.key]);
+          if(navigation)row.setAttribute("aria-selected",String(!!selected));
+          const button=elt("button",{type:"button","data-select-key":String(item[n.key])},
+            navigation?(selected?"Current · refresh":"Open location"):opensDocument?"Open":"Select");
           const regionId=holder.closest("[data-mcel-region]")?.getAttribute("data-mcel-region");
           const region=c.regions.get(regionId);
           const directoryForm=(region?.members||[]).map(m=>c.nodes.get(ref(m))).find(node=>{
@@ -1397,9 +1589,33 @@
       refreshers.push(controls);
     }
     const tree=renderRegion(c.rootId);
+    // Identify the read-only navigation chain by IR relationships only.
+    for(const [node,directory] of folderTrees){
+      if(!directory.rootState)continue;
+      const selection=[...c.intents.values()].find(i=>i.collectionSelection &&
+        ref(i.collectionSelection.target)===directory.rootState);
+      if(!selection)continue;
+      const rootsState=ref(selection.collectionSelection.source);
+      const loader=[...c.intents.values()].find(i=>i.operationKind==="capability" &&
+        i.risk==="external-read" && !(i.input||[]).length && !(i.requestArguments||[]).length &&
+        (i.resultBindings||[]).some(b=>ref(b.target)===rootsState));
+      const browse=[...c.intents.values()].find(i=>i.operationKind==="capability" &&
+        i.risk==="external-read" && !(i.input||[]).length && i.requestArguments?.length===1 &&
+        ref(i.requestArguments[0].state)===directory.rootState &&
+        (i.resultBindings||[]).some(b=>ref(b.target)===ref(node.state)));
+      const inputName=selection.input?.find(p=>p.id===ref(selection.collectionSelection.input))?.sourceName;
+      if(loader && browse && inputName)navigationRoots.push({
+        loader,selection,browse,rootsState,rootState:directory.rootState,
+        entriesState:ref(node.state),key:selection.collectionSelection.key,inputName});
+    }
     if(workspacePlan) plannedLayout=global.McelSemanticLayoutInference.mountWorkspacePlan(
       tree, workspacePlan, new Map([...regionHosts].map(([region,el])=>[region.id,el])));
     root.replaceChildren(tree);
+    for(const {host,node} of pendingChatMounts){
+      const controller=port.mountEmbeddedChat(host,node,read);
+      assert(controller,"embedded-chat-mount-failed");
+      chatControllers.push(controller);
+    }
     root.setAttribute("data-mcel-semantic-operational",ir.application.appId);
     if (expert) root.setAttribute("data-mcel-presentation","expert");
     notify();
@@ -1448,6 +1664,10 @@
       }
     }
     installMonitorRefresh();
+    // The incumbent automatically discovers and lists its preferred root.
+    // Equivalent read-only startup is safe only with one unambiguous,
+    // source-declared navigation chain; all requests pass the same port gates.
+    if(navigationRoots.length===1)void execute(navigationRoots[0].loader.id);
     return Object.freeze({execute,readState:id=>clone(read(id)),receipts:()=>receipts.map(x=>({...x})),
       getState:()=>Object.fromEntries([...state.entries()].map(([k,v])=>[k,clone(v)])),
       unmount:()=>{disposed=true;if(refreshTimer!==null)global.clearInterval?.(refreshTimer);
@@ -1457,6 +1677,7 @@
         if(inferredLayout)global.McelSemanticLayoutInference?.clearWorkspaceLayout?.(root,inferredLayout);
         current.clear();targetRuns.clear();
         port.closeDocument?.();
+        for(const controller of chatControllers)controller.destroy?.();
         if(documentHosts.size) global.MainComputerMonacoAdapter?.dispose?.("semantic-unmount");
         root.replaceChildren();root.removeAttribute("data-mcel-semantic-operational");}});
   }

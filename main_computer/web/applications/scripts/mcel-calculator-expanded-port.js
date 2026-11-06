@@ -10,7 +10,13 @@
     "intent:ask-symbolic-model": {cap:"capability:calculator-service",op:"mathics-ask",method:"askMathicsModel",keys:["prompt"]},
     "intent:ask-arithmetic-model": {cap:"capability:calculator-service",op:"arithmetic-ask",method:"askArithmeticModel",keys:["prompt"]},
     "intent:ask-graph-model": {cap:"capability:calculator-service",op:"graph-ask",method:"askGraphModel",keys:["prompt"]},
-    "intent:ask-result-question": {cap:"capability:calculator-service",op:"question",method:"askResultQuestion",keys:["question","arithmeticResult","symbolicResult","graphPoints"]}
+    "intent:apply-arithmetic-suggestion": {cap:"capability:calculator-core",op:"evaluate",method:"evaluateCalculatorExpression",keys:["expression"]},
+    "intent:apply-graph-suggestion": {cap:"capability:calculator-core",op:"graph",method:"sampleGraphExpression",keys:["expression","xMin","xMax","yMin","yMax"]},
+    "intent:apply-symbolic-suggestion": {cap:"capability:calculator-core",op:"normalize-symbolic",method:"normalizeSymbolicSuggestion",keys:["expression"]},
+    "intent:edit-graph-expression": {cap:"capability:calculator-core",op:"edit-graph",method:"editGraphExpression",keys:["expression","action","token","selectionStart","selectionEnd"]},
+    "intent:clear-symbolic": {cap:"capability:calculator-core",op:"clear-symbolic",method:"clearSymbolic",keys:[]},
+    "intent:calculator-chat": {cap:"capability:calculator-service",op:"chat",method:"calculatorEmbeddedChat",keys:["message"]},
+    "intent:ask-result-question": {cap:"capability:calculator-service",op:"question",method:"askResultQuestion",keys:["question","arithmeticResult","symbolicResult","graphPoints","arithmeticExpression","graphExpression","xMin","xMax","yMin","yMax","symbolicExpression"]}
   });
   function create(options={}) {
     const core=options.core || global.MainComputerCalculatorCore;
@@ -30,10 +36,19 @@
       if(spec.op==="graph")return text(req.arguments.expression) &&
         ["xMin","xMax","yMin","yMax"].every(k=>Number.isFinite(req.arguments[k])) &&
         req.arguments.xMin<req.arguments.xMax && req.arguments.yMin<req.arguments.yMax;
+      if(spec.op==="clear-symbolic")return true;
+      if(spec.op==="edit-graph")return typeof req.arguments.expression==="string" &&
+        req.arguments.expression.length<=4096 && ["insert","clear","backspace"].includes(req.arguments.action) &&
+        typeof req.arguments.token==="string" && req.arguments.token.length<=48 &&
+        [req.arguments.selectionStart,req.arguments.selectionEnd].every(Number.isSafeInteger) &&
+        req.arguments.selectionStart>=0 && req.arguments.selectionEnd>=req.arguments.selectionStart &&
+        req.arguments.selectionEnd<=req.arguments.expression.length;
       if(spec.op==="question") {
         const a=req.arguments;
-        return text(a.question) && [a.arithmeticResult,a.symbolicResult].every(v=>
-          typeof v==="string" && v.length<=4096) && Array.isArray(a.graphPoints) &&
+        return text(a.question) && [a.arithmeticResult,a.symbolicResult,a.arithmeticExpression,a.graphExpression,a.symbolicExpression].every(v=>
+          typeof v==="string" && v.length<=4096) &&
+          [a.xMin,a.xMax,a.yMin,a.yMax].every(Number.isFinite) &&
+          a.xMin<a.xMax && a.yMin<a.yMax && Array.isArray(a.graphPoints) &&
           a.graphPoints.length<=513 && a.graphPoints.every(p=>p &&
             typeof p==="object" && !Array.isArray(p) &&
             Object.keys(p).sort().join(",")==="id,x,y" &&
@@ -64,6 +79,15 @@
           if(visible.length<2)throw Error("MCEL_CALC_EXPANDED:no-plottable-points");
           return visible.map((p,i)=>({id:String(i),x:p.x,y:p.y}));
         }
+        case "normalize-symbolic": return boundOutput(a.expression);
+        case "clear-symbolic": return "Mathics ready.";
+        case "edit-graph": {
+          const caretBack=a.token.endsWith("()")?1:a.token.endsWith("(,)")?2:0;
+          const out=a.action==="clear"?core.clearCalculatorGraphExpression():
+            a.action==="backspace"?core.backspaceCalculatorGraphExpression(a.expression,a.selectionStart,a.selectionEnd):
+            core.insertCalculatorGraphText(a.expression,a.token,a.selectionStart,a.selectionEnd,caretBack);
+          return {expression:boundOutput(out.expression),selectionStart:out.selectionStart,selectionEnd:out.selectionEnd};
+        }
         case "mathics": {
           if(!services || typeof services.evaluateMathics!=="function")throw Error("MCEL_CALC_EXPANDED:symbolic-backend-unavailable");
           const out=await services.evaluateMathics(a.expression,serviceOptions());
@@ -89,23 +113,55 @@
           // Share only verified, bounded computational evidence with the
           // optional explanation provider. No assistant computation is allowed
           // to overwrite the deterministic result states.
-          const context={};
-          if(a.arithmeticResult)context.arithmetic_result=a.arithmeticResult;
-          if(a.symbolicResult)context.symbolic_result=a.symbolicResult;
-          if(a.graphPoints.length){
-            const xs=a.graphPoints.map(p=>p.x),ys=a.graphPoints.map(p=>p.y);
-            context.graph={sample_count:a.graphPoints.length,
-              x_min:Math.min(...xs),x_max:Math.max(...xs),
-              visible_y_min:Math.min(...ys),visible_y_max:Math.max(...ys)};
-          }
-          const out=await services.askResultQuestion(a.question,Object.keys(context).length?
-            JSON.stringify(context):"",serviceOptions());
+          const calculatorViewModel=global.MainComputerCalculatorViewModel;
+          if(!calculatorViewModel?.buildCalculatorResultQaContext)
+            throw Error("MCEL_CALC_EXPANDED:calculator-view-model-unavailable");
+          const view=calculatorViewModel.buildCalculatorGraphRenderModel(a.graphExpression,
+            {xMin:String(a.xMin),xMax:String(a.xMax),yMin:String(a.yMin),yMax:String(a.yMax)},
+            {width:720,height:320});
+          const context=calculatorViewModel.buildCalculatorResultQaContext({
+            arithmeticExpression:a.arithmeticExpression,arithmeticResult:a.arithmeticResult,
+            graphExpression:a.graphExpression,graphStatus:view.statusText,
+            graphXMin:String(a.xMin),graphXMax:String(a.xMax),graphYMin:String(a.yMin),graphYMax:String(a.yMax),
+            mathicsExpression:a.symbolicExpression,mathicsOutput:a.symbolicResult
+          });
+          const out=await services.askResultQuestion(a.question,JSON.stringify(context),serviceOptions());
           return boundOutput(out.answer);
         }
         default:throw Error("MCEL_CALC_EXPANDED:unknown-operation");
       }
     }
-    return Object.freeze({authorize:async req=>permitted(req),invoke});
+    function mountEmbeddedChat(host,node,read){
+      if(!host || node?.targetKind!=="calculator-session" || node?.targetId!=="calculator" ||
+         !global.MainComputerChatConsole?.mountEmbedded)
+        throw Error("MCEL_CALC_EXPANDED:embedded-chat-controller-unavailable");
+      const vm=global.MainComputerCalculatorViewModel;
+      if(!vm?.buildCalculatorSessionContextSnapshot)
+        throw Error("MCEL_CALC_EXPANDED:embedded-chat-context-unavailable");
+      const getEmbeddedContext=()=>vm.buildCalculatorSessionContextSnapshot({
+        activeMode:read("state:mode")==="graphing"?"scientific-graphing":"basic",
+        arithmeticExpression:read("state:arithmetic-expression"),arithmeticResult:read("state:arithmetic-result"),
+        graphExpression:read("state:graph-expression"),
+        graphXMin:String(read("state:graph-x-min")),graphXMax:String(read("state:graph-x-max")),
+        graphYMin:String(read("state:graph-y-min")),graphYMax:String(read("state:graph-y-max")),
+        graphStatus:"",mathicsExpression:read("state:symbolic-expression"),
+        qaStatus:read("state:qa-result")
+      });
+      const controller=global.MainComputerChatConsole.mountEmbedded(host,{
+        embedId:"calculator",activeApp:"calculator",idPrefix:"calculator-chat",
+        classPrefix:"calculator",title:node.title,notebookId:"calculator-chat-notebook",
+        statusId:"calculator-chat-status",threadTitle:"Calculator Chat",
+        targetKind:node.targetKind,targetId:node.targetId,layout:"compact",
+        showThreadRail:false,showCurrentThreadBar:true,getEmbeddedContext,
+        buildThreadMetadata(context){return {
+          origin_app:"calculator",embedded_chat:true,
+          linked_targets:[{app:"calculator",kind:"calculator-session",id:"calculator",path:"applications/calculator"}],
+          calculator_active_mode:context?.active_mode||"basic"};}
+      });
+      if(!controller)throw Error("MCEL_CALC_EXPANDED:embedded-chat-mount-refused");
+      return controller;
+    }
+    return Object.freeze({authorize:async req=>permitted(req),invoke,mountEmbeddedChat});
   }
   global.McelCalculatorExpandedPort=Object.freeze({create});
 })(typeof globalThis!=="undefined"?globalThis:this);

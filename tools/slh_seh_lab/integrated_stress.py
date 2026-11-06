@@ -73,7 +73,7 @@ def _worker(*, name, root, api_port, org_token, pin, adapter, workers, execution
             time.sleep(execution_delay)
         data = (offer.get('work') or {}).get('input')
         value = data.get('value', '') if isinstance(data, dict) else str(data or '')
-        return {'status': 'success', 'response': {'content': value}}
+        return {'status': 'success', 'response': {'model':'mock-model','content': value}}
 
     from main_computer.slh.managed_client import ManagedSLHWorkerClient
     client = ManagedSLHWorkerClient(
@@ -442,7 +442,7 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
                 'work': {'ring':'ring-2',
                          'max_price': {'amount':'2', 'unit':'compute_credit'},
                          'capabilities':['chat.completions'], 'model':'mock-model',
-                         'input': {'kind':'echo', 'value': marker}}}
+                         'input': {'kind':'chat', 'value': marker}}}
         began = time.monotonic()
         try:
             response = _json(hub_url.rstrip('/')+'/api/hub/v1/work/requests', body, timeout=25)
@@ -706,7 +706,7 @@ def run_integrated_stress(*, profile: StressProfile, hub_url: str, ledger,
         def echo(offer):
             data = (offer.get('work') or {}).get('input')
             value = data.get('value','') if isinstance(data,dict) else str(data or '')
-            return {'status':'success', 'response': {'content':value}}
+            return {'status':'success', 'response': {'model':'mock-model','content':value}}
         restored = ManagedSLHWorkerClient(
             device_id=name, identity_dir=root/'stress-keys', tls_fingerprint=pin,
             hub_url=f'https://127.0.0.1:{adapter.server_address[1]}', worker_id=name,

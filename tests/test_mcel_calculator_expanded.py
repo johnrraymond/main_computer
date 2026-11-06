@@ -22,6 +22,13 @@ def browser():
 def opened(browser,width=1100):
     page=browser.new_page(viewport={"width":width,"height":900})
     page.on('pageerror',lambda e: print('Page error:',e))
+    # The native embedded Chat Console persists its notebook; opaque-origin
+    # Chromium fixtures require a disposable in-memory store instead.
+    page.evaluate("""() => {const data=new Map();Object.defineProperty(window,'localStorage',{
+      configurable:true,value:{getItem:k=>data.get(String(k))??null,
+      setItem:(k,v)=>data.set(String(k),String(v)),removeItem:k=>data.delete(String(k)),
+      clear:()=>data.clear(),key:i=>[...data.keys()][i]??null,
+      get length(){return data.size;}}});}""")
     page.set_content(render_expanded_page())
     assert page.locator('#mcel-expanded-diagnostic').inner_text()=='Semantic Calculator ready'
     return page
@@ -37,8 +44,8 @@ def select(page,mode):
 def test_expanded_compiles_from_real_semantic_html_and_js():
     ir=compile_expanded()
     assert not ir.get('layouts')
-    assert len(ir['intents'])==8
-    assert len(ir['surfaces'][0]['nodes'])==14
+    assert len(ir['intents'])==14
+    assert len(ir['surfaces'][0]['nodes'])>=16
     assert len(ir['surfaces'][0]['interfaceIntent']['regions'])==13
     assert {a['risk'] for a in ir['effects']}=={'external-read'}
     assert any(n['nodeKind']=='plot' for n in ir['surfaces'][0]['nodes'])
@@ -110,13 +117,16 @@ def test_optional_services_use_real_endpoints_and_result_question_context(browse
         select(p,'help')
         f=p.locator('form[data-intent="intent:ask-arithmetic-model"]')
         f.locator('input[name="prompt"]').fill('What is 2+2?');f.locator('button[type="submit"]').click()
-        p.locator('[data-state="state:helper-result"]').get_by_text('2 + 2').wait_for()
+        p.locator('[data-state="state:arithmetic-suggestion"]').get_by_text('2 + 2').wait_for()
+        p.wait_for_function("() => window.__mcelExpanded.app.readState('state:arithmetic-result') === '4'",timeout=5000)
         f=p.locator('form[data-intent="intent:ask-result-question"]')
         f.locator('input[name="question"]').fill('Explain the answer');f.locator('button[type="submit"]').click()
         p.locator('[data-state="state:qa-result"]').get_by_text('The result follows the arithmetic expression.').wait_for()
         calls=p.evaluate('window.__requests')
         assert [x['path'] for x in calls]==['/api/applications/calculator/mathics/evaluate','/api/chat','/api/applications/calculator/qa']
-        assert json.loads(calls[-1]['payload']['context']) == {'symbolic_result': '4'}
+        assert json.loads(calls[-1]['payload']['context'])['mathics_output'] == '4'
+        assert {'basic_expression','basic_result','graph_expression','graph_range',
+                'graph_status','mathics_expression','mathics_output'} <= set(json.loads(calls[-1]['payload']['context']))
     finally:p.close()
 
 def test_unavailable_optional_endpoint_fails_not_fake_result(browser):
@@ -199,7 +209,7 @@ def test_competing_helper_results_do_not_overwrite_newer_one(browser):
           const ir=JSON.parse(document.getElementById('mcel-expanded-ir').textContent);
           const root=document.createElement('div');document.body.append(root);
           const resolvers=[];
-          const port={authorize:async()=>true,invoke:req=>new Promise(resolve=>resolvers.push({id:req.intentId,resolve}))};
+          const port={authorize:async()=>true,invoke:req=>new Promise(resolve=>resolvers.push({id:req.intentId,resolve})),mountEmbeddedChat:()=>({dispose(){}})};
           const app=McelSemanticOperationalRuntime.mount(root,ir,{capabilities:port});
           const first=app.execute('intent:ask-arithmetic-model',{prompt:'first'});
           const second=app.execute('intent:ask-graph-model',{prompt:'second'});
@@ -208,7 +218,8 @@ def test_competing_helper_results_do_not_overwrite_newer_one(browser):
           await second;
           resolvers.find(x=>x.id==='intent:ask-arithmetic-model').resolve('first-result');
           await first;
-          const final=app.readState('state:helper-result');app.unmount();root.remove();return final;
+          const final=[app.readState('state:arithmetic-suggestion'),
+                       app.readState('state:graph-suggestion')];app.unmount();root.remove();return final;
         }''')
-        assert result=='second-result'
+        assert result==['first-result','second-result']
     finally:p.close()

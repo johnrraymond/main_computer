@@ -158,7 +158,7 @@ def verify_credit_recovery(*, root, api_port, worker_port, local, org_token,
     _enroll(api_port, org_token, keys, other, 'worker',
             audience='slh://' + authority.service_fingerprint())
     def compute(offer):
-        return {'status':'success', 'response':{'content':'computed '+
+        return {'status':'success', 'response':{'model':'mock-model','content':'computed '+
             str(len(str((offer.get('work') or {}).get('input') or '')))}}
     from main_computer.slh.managed_client import ManagedSLHWorkerClient
     direct = ManagedSLHWorkerClient(

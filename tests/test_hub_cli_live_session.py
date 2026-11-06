@@ -49,8 +49,9 @@ def test_live_offer_executes_chat_and_preserves_ring_proof() -> None:
         return ChatResponse(content="13", provider="ollama", model="gemma4:26b", metadata={"ring3_answer_verified": True})
 
     result = live._chat_result(fake_chat, {
-        "work": {"messages": [{"role": "system", "content": "Short"}, {"role": "user", "content": "4+9"}]}
-    })
+        "work": {"model":"gemma4:26b", "operation":"chat.completions",
+                 "messages": [{"role": "system", "content": "Short"}, {"role": "user", "content": "4+9"}]}
+    }, configured_model="gemma4:26b")
     assert [(m.role, m.content) for m in captured] == [("system", "Short"), ("user", "4+9")]
     assert result["response"]["metadata"]["ring3_answer_verified"] is True
     assert result["response"]["content"] == "13"

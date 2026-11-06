@@ -240,7 +240,7 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
         def execute_work(offer):
             work = offer.get('work') or {}
             payload=work.get('input')
-            return {'status':'success','response':{'content':payload.get('value','') if isinstance(payload,dict) else str(payload or '')}}
+            return {'status':'success','response':{'model':'mock-model','content':payload.get('value','') if isinstance(payload,dict) else str(payload or '')}}
         proxy = SLHMarketplaceProxy(gateway)
         try:
             market = {'rings': ['ring-2'], 'capabilities':['chat.completions'],
@@ -338,7 +338,7 @@ def _local_demo(hub_url: str, *, topology_label: str, payout_ledger=None,
             private_worker = gateway.scheduler.reserve_private(sid, model='mock-model')
             result = gateway.scheduler.execute_authorized({
                 'session_id':sid, 'request_id':'lab-private-request',
-                'run_id':'lab-private-run', 'work':{'model':'mock-model', 'input':'lab'}})
+                'run_id':'lab-private-run', 'work':{'model':'mock-model', 'operation':'chat.completions', 'input':{'kind':'chat','prompt':'lab'}}})
             gates['private_authorized_execution'] = (private_worker.device_id not in proxy.sessions
                                                       and result.get('status') == 'success')
             policy.update({'max_public_percent':0}, expected_revision=3, actor='lab-owner')

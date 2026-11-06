@@ -32,7 +32,7 @@ def opening(browser,app,width=1100):
          window.__networkCalls.push({url,options});
          const path=String(url).split('/api/applications/')[1];
          let result;
-         if(path==='file-explorer/roots') result={ok:true,roots:[{id:'workspace',label:'Workspace'}]};
+         if(path==='file-explorer/roots') result={ok:true,roots:window.__emptyRoots ? [] : [{id:'workspace',label:'Workspace'}]};
          else if(path==='file-explorer/list')result={ok:true,entries:[{relative_path:'README.md',name:'README.md',kind:'file'},{relative_path:'src',name:'src',kind:'directory'}]};
          else if(path==='file-explorer/read')result={ok:true,readable:true,content:'Project documentation'};
          else if(path==='task/overview')result={processes:[{pid:123,name:'server',status:'running',created_at:'2026-10-31T12:00',memory_human:'34 MB'}]};
@@ -76,11 +76,8 @@ def test_responsive_browser_interaction(browser,app,width):
     try:
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         if app=="file-manager":
-            page.get_by_role('button',name='Load Roots').click()
-            page.locator('[data-record-key="workspace"]').wait_for()
-            page.locator('[data-collection] [data-record-key="workspace"] button').click()
-            page.get_by_role('button',name='Browse').click()
             page.locator('[data-record-key="README.md"]').wait_for()
+            assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected-root")')=='workspace' 
             page.locator('[data-record-key="README.md"] button').click()
             page.get_by_role('button',name='Preview Entry').click()
             page.locator('[data-state="state:preview"]').get_by_text('Project documentation').wait_for()
@@ -91,7 +88,11 @@ def test_responsive_browser_interaction(browser,app,width):
             page.locator('[data-collection] [data-record-field="name"]').get_by_text('server').wait_for()
             page.locator('[data-record-key="123:2026-10-31T12:00"] button').click()
             assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected")')=='123:2026-10-31T12:00'
-            assert page.evaluate("window.__networkCalls.length")==1
+            # Startup now performs an initial read-only overview. The explicit
+            # operator query must remain distinct from that startup snapshot.
+            queries=page.evaluate('''()=>window.__networkCalls.filter(c=>String(c.url).endsWith('/task/overview'))
+              .map(c=>JSON.parse(c.options.body||'{}').query||'')''')
+            assert queries.count('server')==1  # Fast operator input can preempt the startup poll
         else:
             page.get_by_role('button',name='List Files').click()
             page.locator('[data-record-key="README.md"]').wait_for()
@@ -104,18 +105,51 @@ def test_responsive_browser_interaction(browser,app,width):
         assert page.locator('[data-mcel-activity] li').count()>0
     finally:page.close()
 
-def test_no_external_authority_without_listing(browser):
+def test_no_external_authority_without_selected_entry(browser):
     page,called=opening(browser,'file-manager')
     try:
+        page.locator('[data-record-key="README.md"]').wait_for()
+        before=page.evaluate('window.__networkCalls.length')
+        assert before==2  # Startup roots/list are safe, read-only operations.
         result=page.evaluate('''async()=>window.__mcelWorkbench.app.execute('intent:preview-entry')''')
         assert result['disposition']=='refused-before-attempt'
-        assert page.evaluate("window.__networkCalls.length")==0
+        assert page.evaluate('window.__networkCalls.length')==before
         # Port refuses forged source-write requests even when caller bypasses UI.
         admitted=page.evaluate('''async()=>McelSemanticReadPorts.create({appId:"semantic-file-manager"}).authorize({
           appId:'semantic-file-manager',intentId:'intent:preview-entry',effectId:'effect:preview-entry.request',
           capabilityId:'capability:filesystem-read',operation:'preview',runtimeMethod:'readPreview',
           risk:'source-write',arguments:{rootId:'workspace',relativePath:'README.md'}})''')
         assert admitted is False
+    finally:page.close()
+
+
+def test_empty_roots_refresh_retracts_previous_directory_authority(browser):
+    page,_=opening(browser,'file-manager')
+    try:
+        page.locator('[data-record-key="README.md"]').wait_for()
+        page.evaluate('window.__emptyRoots = true')
+        result=page.evaluate("""async()=>window.__mcelWorkbench.app.execute('intent:load-roots')""")
+        assert result['disposition']=='completed'
+        assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected-root")')==''
+        assert page.locator('[data-record-key="README.md"]').count()==0
+        assert page.evaluate('window.__mcelWorkbench.app.readState("state:entries")') is None
+        assert page.get_by_role('button',name='Browse',exact=True).is_disabled()
+    finally:page.close()
+
+
+def test_refresh_of_same_root_revokes_stale_preview(browser):
+    page,_=opening(browser,'file-manager')
+    try:
+        page.locator('[data-record-key="README.md"]').wait_for()
+        page.locator('[data-record-key="README.md"] button').click()
+        page.get_by_role('button',name='Preview Entry').click()
+        page.locator('[data-state="state:preview"]').get_by_text('Project documentation').wait_for()
+        page.get_by_role('button',name='Load Roots').click()
+        page.locator('[data-record-key="README.md"]').wait_for()
+        page.wait_for_function('window.__mcelWorkbench.app.readState("state:preview") === undefined')
+        assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected-entry")')==''
+        assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected-root")')=='workspace'
+        assert page.get_by_role('button',name='Preview Entry').is_disabled()
     finally:page.close()
 
 def test_no_app_specific_layout_css():
@@ -135,11 +169,8 @@ def test_port_scoped_to_exact_application_and_rejects_stale_selection(browser):
             operation:'list',runtimeMethod:'listSourceFiles',risk:'external-read',arguments:{}});
         }''')
         assert result is False
-        page.get_by_role('button',name='Load Roots').click()
-        page.locator('[data-record-key="workspace"]').wait_for()
-        page.locator('[data-record-key="workspace"] button').click()
-        page.get_by_role('button',name='Browse').click()
         page.locator('[data-record-key="README.md"]').wait_for()
+        assert page.evaluate('window.__mcelWorkbench.app.readState("state:selected-root")')=='workspace' 
         # A selected path which was not in the served directory cannot be read.
         result=page.evaluate('''async()=>{
           const port=McelSemanticReadPorts.create({appId:'semantic-file-manager'});

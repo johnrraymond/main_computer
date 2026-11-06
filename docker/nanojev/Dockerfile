@@ -44,4 +44,9 @@ RUN printf '%s\n' '<!doctype html><html><body>NanoJev local inference service</b
 WORKDIR /opt/nanojev-clef-service
 EXPOSE 9765
 
+# Source identity is a final metadata layer, so changed service code can reuse
+# the expensive PyTorch/release install layers from Docker BuildKit cache.
+ARG MAIN_COMPUTER_NANOJEV_SOURCE_SHA256
+LABEL org.main-computer.nanojev.source-sha256="${MAIN_COMPUTER_NANOJEV_SOURCE_SHA256}"
+
 CMD ["python", "/opt/nanojev-clef-service/entrypoint.py"]

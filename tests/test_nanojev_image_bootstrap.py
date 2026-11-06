@@ -11,11 +11,18 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKER_PATH = ROOT / "tools" / "nanojev_image_bootstrap.py"
 
 
-def _load_worker():
+def _load_worker(*, real_version_checks=False):
     spec = importlib.util.spec_from_file_location("nanojev_image_bootstrap", WORKER_PATH)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Legacy tests exercise create/build failure and single-flight sequencing.
+    # Version-label and container-image inspection have independent tests below.
+    if not real_version_checks:
+        module.source_fingerprint = lambda root, compose_file: "unit-fixture-current-source"
+        module._image_source_fingerprint = lambda docker, image, root: "unit-fixture-current-source"
+        module._image_id = lambda docker, image, root: "sha256:fixture-image"
+        module._container_image_id = lambda docker, container, root: "sha256:fixture-image"
     return module
 
 
@@ -36,7 +43,7 @@ def test_existing_image_creates_stopped_container_without_build(monkeypatch, tmp
         if "ps" in command:
             return SimpleNamespace(returncode=0, stdout="abc123\n" if created[0] else "", stderr="")
         assert "create" in command and "--no-build" in command
-        assert "--no-recreate" in command and command[-3:] == ["--pull", "never", "nanojev"]
+        assert "--no-recreate" in command and command[-3:] == ["never", "--no-recreate", "nanojev"]
         assert "start" not in command and "up" not in command
         assert _status(tmp_path)["state"] == "creating"
         created[0] = True
@@ -47,7 +54,7 @@ def test_existing_image_creates_stopped_container_without_build(monkeypatch, tmp
     assert module.run_bootstrap(root=tmp_path, compose_file=tmp_path / "compose.yml") == "ready"
     assert ["build" in c for c in calls] == [False] * len(calls)
     status = _status(tmp_path)
-    assert status["result"] == "already-present"
+    assert status["result"] == "already-current"
     assert status["state"] == "ready"
     assert status["container_result"] == "created"
     assert status["container_id"] == "abc123"
@@ -244,7 +251,7 @@ def test_manager_reports_background_build_in_status_and_on_first_request(monkeyp
     try:
         lifecycle.turn_on()
     except RuntimeError as exc:
-        assert "bootstrap is running" in str(exc)
+        assert "image update in progress" in str(exc)
     else:
         raise AssertionError("Manager must not build or start a missing image")
     assert lifecycle.status(refresh=False)["phase"] == "building"

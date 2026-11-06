@@ -46,7 +46,7 @@ class TestSLHManagedGateway(unittest.TestCase):
         return ManagedSLHWorkerClient(device_id=did,identity_dir=self.identity_dir,
             tls_fingerprint=pin or gateway.fingerprint, hub_url='https://127.0.0.1:'+str(gateway.port),
             worker_id=did,auth_message={'type':'worker.auth','device_id':did,'market':market},
-            work_executor=callback or (lambda offer:{'status':'success','response':{'content':'completed'}}))
+            work_executor=callback or (lambda offer:{'status':'success','response':{'model':'mock-model','content':'completed'}}))
 
     def run_gateway(self):
         gateway=SLHManagedGateway(self.auth,host='127.0.0.1',port=0)
@@ -70,7 +70,7 @@ class TestSLHManagedGateway(unittest.TestCase):
         sid='session1';w=gateway.scheduler.reserve(sid,device_id='worker-1')
         with self.assertRaises(RuntimeError):gateway.scheduler.reserve('session2',device_id='worker-1')
         output=gateway.scheduler.execute_authorized({'session_id':sid,'request_id':'req1','run_id':'run1',
-                                                        'work':{'model':'mock-model','input':'fake'}})
+                                                        'work':{'model':'mock-model','operation':'chat.completions','input':{'kind':'chat','prompt':'fake'}}})
         self.assertEqual(output['status'],'success')
         self.assertEqual(gateway.scheduler.snapshot()[0]['reserved'],0)
         client.close()

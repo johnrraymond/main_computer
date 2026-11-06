@@ -5,10 +5,10 @@ from pathlib import Path
 from collections import deque
 import threading
 import time
-from main_computer.viewport_routes_energy import _WorkerHubLiveSessionClient
+from main_computer.worker_live_session import _WorkerHubLiveSessionClient
 from main_computer.slh.authenticator import sign_object
 from main_computer.slh.managed_gateway import MANAGED_PATH
-from tools.slh_authenticator_cli import load_identity
+from main_computer.slh.authenticator_store import load_identity
 
 
 class ManagedSLHWorkerClient(_WorkerHubLiveSessionClient):
@@ -109,8 +109,13 @@ class ManagedSLHWorkerClient(_WorkerHubLiveSessionClient):
         # No public Hub offer/hold is created. Never publish private work
         # results as public worker.work.result or stream private deltas.
         try:
+            from main_computer.model_execution_contract import (market_supports,
+                verify_execution_result, ModelContractError)
+            if not market_supports(self.auth_message.get('market'), frame.get('work')):
+                raise ModelContractError('Worker does not advertise requested private model')
             result=self._execute_work_offer(frame)
-            if not isinstance(result,dict) or result.get('debug_echo'):
+            verify_execution_result(frame.get('work'), result)
+            if result.get('debug_echo'):
                 raise RuntimeError('Invalid or debug-only private computation')
             output={'type':'worker.private.work.result','result':result}
         except BaseException:

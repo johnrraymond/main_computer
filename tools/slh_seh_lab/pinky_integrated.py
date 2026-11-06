@@ -166,7 +166,7 @@ def verify_pinky_shared_hub(*, root, state, local, local_port, local_token,
             requester_token = _requester_login(api_port,req_id,req_key)
             def compute(offer):
                 data = (offer.get('work') or {}).get('input') or {}
-                return {'status':'success','response':{'content':'completed '+str(len(str(data.get('prompt',''))))}}
+                return {'status':'success','response':{'model':'mock-model','content':'completed '+str(len(str(data.get('prompt',''))))}}
             from main_computer.slh.managed_client import ManagedSLHWorkerClient
             direct_worker = ManagedSLHWorkerClient(
                 device_id=worker_id,identity_dir=devices,tls_fingerprint=pin,

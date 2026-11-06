@@ -165,7 +165,7 @@ def _managed_auth(port, device, key, *, expected_pin, via_relay=False):
             with lab_stage('preflight.worker_websocket.device_authorization', transport=transport):
                 websocket.send(json.dumps({'type': 'worker.auth', 'device_id': device,
                                        'execution_protocol': 'durable-authorization-v1',
-                                       'market': {'models': ['mock-model'], 'max_concurrency': 1}}))
+                                       'market': {'models': ['mock-model'], 'capabilities':['chat.completions'], 'max_concurrency': 1}}))
                 challenge = json.loads(websocket.recv(timeout=5))
                 if challenge.get('type') != 'slh.auth.challenge':
                     raise ServiceLabFailure('Expected real gateway device challenge')

@@ -1,12 +1,13 @@
-"""One-shot, single-flight NanoJev image and stopped-container provisioning.
+"""Single-flight NanoJev Docker source/version provisioning from ./start.
 
-Dispatched from ./start in a separate process. Builds the image only if absent,
-then creates the Compose container only if absent, without starting it. Existing
-containers are never recreated or stopped. Results live in runtime/start_stop.
+Build only on changed source inputs. Safely replace stopped stale containers;
+leave live ones untouched and notify the lazy manager for idle-time activation.
+All transitions are evidenced in runtime/start_stop and never run inference.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
@@ -20,6 +21,32 @@ from typing import Iterator
 IMAGE = "main-computer/nanojev:managed-v2"
 STATUS_NAME = "nanojev-image-bootstrap.json"
 LOCK_NAME = "nanojev-image-bootstrap.lock"
+SOURCE_LABEL = "org.main-computer.nanojev.source-sha256"
+# Every local file copied by docker/nanojev/Dockerfile. Dockerfile and Compose
+# configuration themselves also invalidate the built image/container contract.
+IMAGE_INPUTS = (
+    "docker/nanojev/Dockerfile",
+    "docker/nanojev/download_release.py",
+    "docker/nanojev/entrypoint.py",
+    "docker/nanojev/clef_service.py",
+    "tools/nanojev_three_backbone_clef_sized_live_train_smoke.py",
+    "tools/nanojev_three_backbone_clef_sized_live_train.py",
+    "tools/nanojev_three_backbone_clef_tinystories_structured_supervision_train.py",
+    "tools/nanojev_objective_api.py",
+    "docker-compose.nanojev.yml",
+)
+
+
+def source_fingerprint(root: Path, compose_file: Path) -> str:
+    digest = hashlib.sha256()
+    for relative in IMAGE_INPUTS:
+        path = compose_file if relative == "docker-compose.nanojev.yml" else root / relative
+        if not path.is_file():
+            raise RuntimeError(f"NanoJev build source missing: {path}")
+        content = path.read_bytes()
+        digest.update(relative.encode("utf-8") + b"\0")
+        digest.update(len(content).to_bytes(8, "big") + content)
+    return digest.hexdigest()
 
 
 def _utc_now() -> str:
@@ -107,6 +134,37 @@ def _inspect_image(docker: str, image: str, root: Path, *, timeout: float = 30.0
     raise RuntimeError(f"Docker image inspection failed ({result.returncode}): {detail}")
 
 
+def _inspect_field(docker: str, args: list[str], root: Path, *, timeout: float = 30.0) -> str:
+    try:
+        result = subprocess.run([docker, *args], cwd=root, capture_output=True,
+                                text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"NanoJev Docker version inspection unavailable: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(f"NanoJev Docker inspection failed: {(result.stderr or result.stdout).strip()}")
+    return result.stdout.strip()
+
+
+def _image_source_fingerprint(docker: str, image: str, root: Path) -> str:
+    return _inspect_field(docker, ["image", "inspect", "--format",
+                '{{ index .Config.Labels "' + SOURCE_LABEL + '" }}', image], root)
+
+
+def _image_id(docker: str, image: str, root: Path) -> str:
+    return _inspect_field(docker, ["image", "inspect", "--format", "{{.Id}}", image], root)
+
+
+def _container_image_id(docker: str, container: str, root: Path) -> str:
+    return _inspect_field(docker, ["inspect", "--format", "{{.Image}}", container], root)
+
+
+def _container_running(docker: str, container: str, root: Path) -> bool:
+    value = _inspect_field(docker, ["inspect", "--format", "{{.State.Running}}", container], root)
+    if value not in {"true", "false"}:
+        raise RuntimeError(f"Unexpected NanoJev container running state: {value!r}")
+    return value == "true"
+
+
 def _container_id(docker: str, compose_file: Path, project_name: str, root: Path, *, timeout: float = 30.0) -> str:
     command = [docker, "compose", "--project-name", project_name, "-f", str(compose_file),
                "ps", "-a", "-q", "nanojev"]
@@ -126,15 +184,25 @@ def _container_id(docker: str, compose_file: Path, project_name: str, root: Path
 
 def _ensure_container(
     docker: str, compose_file: Path, project_name: str, root: Path, log_path: Path,
-    *, create_timeout: float = 180.0,
+    *, image: str = IMAGE, create_timeout: float = 180.0,
 ) -> tuple[str, str]:
     existing = _container_id(docker, compose_file, project_name, root)
+    stale = False
     if existing:
-        return "already-present", existing
-    # `create` does NOT start the service, and --no-recreate preserves one that
-    # appeared since our inspection (e.g. a concurrent game wake-up).
+        stale = _container_image_id(docker, existing, root) != _image_id(docker, image, root)
+        if not stale:
+            return "already-present", existing
+        if _container_running(docker, existing, root):
+            # Never interrupt a job using the old image. The manager owns
+            # the subsequent transition after active_requests reaches zero.
+            return "pending-activation", existing
     command = [docker, "compose", "--project-name", project_name, "-f", str(compose_file),
-               "create", "--no-build", "--no-recreate", "--pull", "never", "nanojev"]
+               "create", "--no-build", "--pull", "never"]
+    if stale:
+        command.append("--force-recreate")
+    else:
+        command.append("--no-recreate")
+    command.append("nanojev")
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"[{_utc_now()}] Running: {command!r}\n")
         log.flush()
@@ -144,16 +212,59 @@ def _ensure_container(
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise RuntimeError(f"NanoJev Compose container creation failed: {exc}; see {log_path}") from exc
     if result.returncode != 0:
-        # A lazy manager request can create the same container concurrently.
-        # If it now exists, leave it alone and treat the race as successful.
-        existing = _container_id(docker, compose_file, project_name, root)
-        if existing:
-            return "already-present", existing
+        current = _container_id(docker, compose_file, project_name, root)
+        if not stale and current:
+            return "already-present", current
         raise RuntimeError(f"NanoJev Compose create exited {result.returncode}; see {log_path}")
     container = _container_id(docker, compose_file, project_name, root)
     if not container:
         raise RuntimeError("NanoJev Compose create succeeded but no container was found")
-    return "created", container
+    if _container_image_id(docker, container, root) != _image_id(docker, image, root):
+        raise RuntimeError("NanoJev container uses the wrong image after Compose create")
+    return ("recreated" if stale else "created"), container
+
+
+def activate_pending_image(
+    *, root: Path, compose_file: Path, project_name: str, docker: str, image: str,
+    stop_timeout: float = 30.0,
+) -> str:
+    """Called by the lazy manager only with its transitions locked and zero jobs.
+
+    A second process cannot race another bootstrap generation. The manager
+    decides when it is safe to stop, never the background image builder.
+    """
+    runtime = root / "runtime" / "start_stop"
+    with single_flight(runtime / LOCK_NAME) as acquired:
+        if not acquired:
+            raise RuntimeError("NanoJev image bootstrap is currently changing the image")
+        status_path = runtime / STATUS_NAME
+        status = read_status(root)
+        if not status or status.get("state") != "pending-activation" or status.get("image") != image:
+            return "no-pending-update"
+        desired = source_fingerprint(root, compose_file)
+        if desired != status.get("source_sha256") or _image_source_fingerprint(docker, image, root) != desired:
+            raise RuntimeError("NanoJev pending image no longer matches checked source inputs; rerun start.bat")
+        log_path = Path(str(status["log_path"]))
+        current = _container_id(docker, compose_file, project_name, root)
+        if current and _container_image_id(docker, current, root) != _image_id(docker, image, root):
+            # Stop is allowed ONLY after the manager verifies zero in-flight
+            # requests, including requests still completing their HTTP reply.
+            command = [docker, "compose", "--project-name", project_name, "-f", str(compose_file),
+                       "stop", "--timeout", str(max(1, int(stop_timeout))), "nanojev"]
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"[{_utc_now()}] Safe idle NanoJev image activation: {command!r}\n")
+                log.flush()
+                result = subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
+                                        timeout=stop_timeout + 30.0, check=False)
+            if result.returncode != 0:
+                raise RuntimeError(f"NanoJev idle stop failed ({result.returncode}); see {log_path}")
+        container_result, container_id = _ensure_container(docker, compose_file, project_name, root, log_path, image=image)
+        if container_result == "pending-activation":
+            raise RuntimeError("NanoJev container was still running during safe activation")
+        preserved = {k: v for k, v in status.items() if k not in {"schema", "updated_at", "pid"}}
+        _write_status(status_path, **{**preserved, "state": "ready", "container_result": container_result,
+                                       "container_id": container_id, "finished_at": _utc_now()})
+        return container_result
 
 
 def run_bootstrap(
@@ -169,36 +280,51 @@ def run_bootstrap(
         started = _utc_now()
         # Unique build logs survive repeated ./start invocations.
         log_path = runtime / f"nanojev-image-bootstrap-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}.log"
-        common = {"image": image, "started_at": started, "log_path": str(log_path)}
+        try:
+            fingerprint = source_fingerprint(root, compose_file)
+        except Exception as exc:
+            _write_status(status_path, state="failed", image=image, error=str(exc),
+                          started_at=started, finished_at=_utc_now())
+            return "failed"
+        common = {"image": image, "source_sha256": fingerprint,
+                  "started_at": started, "log_path": str(log_path)}
         _write_status(status_path, state="checking", **common)
         with log_path.open("a", encoding="utf-8") as log:
             log.write(f"[{_utc_now()}] Checking NanoJev image {image} and Compose container\n")
         try:
-            if _inspect_image(docker, image, root):
-                image_result = "already-present"
+            image_present = _inspect_image(docker, image, root)
+            if image_present and _image_source_fingerprint(docker, image, root) == fingerprint:
+                image_result = "already-current"
             else:
                 _write_status(status_path, state="building", **common)
                 command = [docker, "compose", "--project-name", project_name, "-f", str(compose_file),
                            "build", "--progress", "plain", "nanojev"]
                 # Never pipe an unbounded build into memory; keep a durable trace.
-                with log_path.open("w", encoding="utf-8") as log:
+                with log_path.open("a", encoding="utf-8") as log:
                     log.write(f"[{_utc_now()}] Running: {command!r}\n")
                     log.flush()
                     try:
-                        result = subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
+                        build_env = dict(os.environ)
+                        build_env["MAIN_COMPUTER_NANOJEV_SOURCE_SHA256"] = fingerprint
+                        result = subprocess.run(command, cwd=root, env=build_env,
+                                                stdout=log, stderr=subprocess.STDOUT,
                                                 timeout=build_timeout, check=False)
                     except subprocess.TimeoutExpired as exc:
                         raise RuntimeError(f"NanoJev Docker image build timed out after {build_timeout:g}s") from exc
                 if result.returncode != 0:
                     raise RuntimeError(f"NanoJev Docker build exited {result.returncode}; see {log_path}")
-                if not _inspect_image(docker, image, root):
-                    raise RuntimeError(f"NanoJev build completed but image {image!r} is not present")
+                if (not _inspect_image(docker, image, root)
+                        or _image_source_fingerprint(docker, image, root) != fingerprint):
+                    raise RuntimeError("NanoJev build finished but did not produce the expected source fingerprint")
                 image_result = "built"
+            if source_fingerprint(root, compose_file) != fingerprint:
+                raise RuntimeError("NanoJev source files changed during image bootstrap; retry start.bat")
             _write_status(status_path, state="creating", image_result=image_result, **common)
             container_result, container_id = _ensure_container(
-                docker, compose_file, project_name, root, log_path,
+                docker, compose_file, project_name, root, log_path, image=image,
             )
-            _write_status(status_path, state="ready", result=image_result,
+            state = "pending-activation" if container_result == "pending-activation" else "ready"
+            _write_status(status_path, state=state, result=image_result,
                           container_result=container_result, container_id=container_id,
                           finished_at=_utc_now(), **common)
             return "ready"

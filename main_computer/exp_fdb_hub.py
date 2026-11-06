@@ -1292,12 +1292,16 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
             return False
         required_ring = str(constraints.get("ring") or "")
         required_capabilities = set(str(value) for value in constraints.get("capabilities", []))
+        required_operations = set(str(value) for value in constraints["required_operations"])
         if str(record.get("status") or "") != "live":
             return False
         if required_ring and required_ring not in [str(value) for value in record.get("rings", [])]:
             return False
         worker_capabilities = set(str(value) for value in record.get("capabilities", []))
         if not required_capabilities.issubset(worker_capabilities):
+            return False
+        if (constraints["model"] not in record.get("models", [])
+                or not required_operations.issubset(worker_capabilities)):
             return False
         try:
             if int(record.get("active_sessions") or 0) >= max(1, int(record.get("max_concurrency") or 1)):
@@ -1360,6 +1364,8 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                     "mode": "live-websocket-connection",
                     "partition": candidate["partition"],
                     "required_capabilities": sorted(str(value) for value in constraints.get("capabilities", [])),
+                    "model": constraints["model"],
+                    "operation": constraints["operation"],
                     "source": "live-websocket-connection",
                 }
             except Exception:
@@ -1478,6 +1484,12 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
 
     def _handle_exp_live_work_request(self) -> None:
         body = self._read_json()
+        try:
+            normalize_request_market_constraints(body)
+        except StableHubWorkerSessionError as exc:
+            self._send_json({"ok": False, "error": "invalid_model_operation_contract",
+                             "message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if self._exp_replayed_live_request(body):
             return
         selected_worker = self._exp_select_worker_for_work(body)
@@ -1857,6 +1869,7 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
                 "messages": request.messages,
                 "input": work_input,
                 "model": str(metadata.get("requested_model") or request.model or "live-session-worker"),
+                "operation": normalize_request_market_constraints(body)["operation"],
                 "ring": body.get("ring", body.get("partition", partition)),
                 "capabilities": body.get("capabilities", body.get("required_capabilities", [])),
                 "timeout_seconds": local_ai_timeout_seconds,
@@ -2133,55 +2146,62 @@ class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
         worker_instance_id = str(work.get("worker_instance_id") or connection_id)
         if message_type == "worker.work.result":
             result_payload = message.get("result")
-            if not isinstance(result_payload, dict):
-                result_payload = {"response": {"content": str(result_payload or "")}}
-            result_payload.setdefault("status", "success")
-            receipt = self._exp_spend_live_session_credit(
-                request_id=request_id,
-                worker_id=worker_id,
-                selected_worker=selected_worker,
-                result=result_payload,
+            from main_computer.model_execution_contract import (
+                ModelContractError, verify_execution_result,
             )
-            request_status = self._exp_complete_live_session_request(
-                request_id=request_id,
-                worker_id=worker_id,
-                worker_instance_id=worker_instance_id,
-                result_payload=result_payload,
-                receipt=receipt,
-                selected_worker=selected_worker,
-            )
-            payout = dict(accepted.get("payout") or {})
-            payout.update(
-                {
-                    "status": "charged",
-                    "charge_id": str(receipt.get("charge_id") or ""),
-                    "worker_earning_id": str(receipt.get("worker_earning_id") or ""),
-                    "charged_credits": int(receipt.get("charged_credits") or 0),
-                    "charged_credit_wei": str(receipt.get("charged_credit_wei") or ""),
-                    "released_credits": 0,
-                    "released_credit_wei": "0",
-                    "direct_spend": False,
-                    "legacy_worker_pull_lease": False,
-                }
-            )
-            updated = self.server.exp_accepted_work_session_directory.record_succeeded(
-                session_id=session_id,
-                worker_connection_id=connection_id,
-                worker_result={"type": message_type, "result": result_payload, "request": request_status},
-                payout=payout,
-            )
-            session.send_json(
-                {
-                    "type": "hub.work.result.accepted",
-                    "ok": True,
-                    "session_id": session_id,
-                    "request_id": request_id,
-                    "status": updated.get("status"),
-                    "payout": _exp_public_redacted(updated.get("payout", {})),
-                    "request": _exp_public_redacted(request_status),
-                }
-            )
-            return
+            try:
+                verify_execution_result(work.get("request"), result_payload)
+            except ModelContractError:
+                message_type = "worker.work.failed"
+                message = {**message, "type": message_type,
+                           "error": "worker_model_execution_mismatch"}
+            else:
+                receipt = self._exp_spend_live_session_credit(
+                    request_id=request_id,
+                    worker_id=worker_id,
+                    selected_worker=selected_worker,
+                    result=result_payload,
+                )
+                request_status = self._exp_complete_live_session_request(
+                    request_id=request_id,
+                    worker_id=worker_id,
+                    worker_instance_id=worker_instance_id,
+                    result_payload=result_payload,
+                    receipt=receipt,
+                    selected_worker=selected_worker,
+                )
+                payout = dict(accepted.get("payout") or {})
+                payout.update(
+                    {
+                        "status": "charged",
+                        "charge_id": str(receipt.get("charge_id") or ""),
+                        "worker_earning_id": str(receipt.get("worker_earning_id") or ""),
+                        "charged_credits": int(receipt.get("charged_credits") or 0),
+                        "charged_credit_wei": str(receipt.get("charged_credit_wei") or ""),
+                        "released_credits": 0,
+                        "released_credit_wei": "0",
+                        "direct_spend": False,
+                        "legacy_worker_pull_lease": False,
+                    }
+                )
+                updated = self.server.exp_accepted_work_session_directory.record_succeeded(
+                    session_id=session_id,
+                    worker_connection_id=connection_id,
+                    worker_result={"type": message_type, "result": result_payload, "request": request_status},
+                    payout=payout,
+                )
+                session.send_json(
+                    {
+                        "type": "hub.work.result.accepted",
+                        "ok": True,
+                        "session_id": session_id,
+                        "request_id": request_id,
+                        "status": updated.get("status"),
+                        "payout": _exp_public_redacted(updated.get("payout", {})),
+                        "request": _exp_public_redacted(request_status),
+                    }
+                )
+                return
         if message_type == "worker.work.failed":
             error = message.get("error")
             error_text = str(error.get("error") if isinstance(error, dict) else error or message.get("message") or "worker_failed")

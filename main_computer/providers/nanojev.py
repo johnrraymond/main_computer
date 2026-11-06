@@ -22,6 +22,9 @@ CLEF_PAIRWISE = "nanojev.clef.pairwise-batch.v1"
 CLEF_CAPABILITIES = (CLEF_EVALUATE, CLEF_PAIRWISE)
 CLEF_MODEL = "nanojev-clef"
 CLEF_BASE_URL = "http://127.0.0.1:9765"
+MODEL_CATALOG_SCHEMA = "nanojev.model-catalog.v1"
+INFERENCE_REQUEST_SCHEMA = "nanojev.inference-request.v1"
+INFERENCE_RESULT_SCHEMA = "nanojev.inference-result.v1"
 
 
 class NanoJevProviderError(RuntimeError):
@@ -34,7 +37,9 @@ class NanoJevClefProvider(LLMProvider):
 
     def __init__(self, *, model: str = CLEF_MODEL, base_url: str = CLEF_BASE_URL,
                  timeout_s: float = 600.0) -> None:
-        self.model = str(model).strip() or CLEF_MODEL
+        if not isinstance(model, str) or not model.strip() or model != model.strip():
+            raise NanoJevProviderError("NanoJev requires an explicit canonical model name")
+        self.model = model
         if self.model != CLEF_MODEL:
             raise NanoJevProviderError(f"Unsupported CLEF model: {self.model!r}")
         self.base_url = str(base_url).rstrip("/")
@@ -77,6 +82,49 @@ class NanoJevClefProvider(LLMProvider):
                 health.get("model_loaded_once") is not True):
             raise NanoJevProviderError("CLEF service is not ready with a loaded nanojev-clef checkpoint")
         return health
+
+    def discover_models(self) -> dict[str, Any]:
+        """Query the running shared backend, not a hardcoded model list.
+
+        Exact checkpoint identity is required before advertising a model or
+        accepting a job. An unready/missing model never becomes capacity.
+        """
+        catalog = self._json("/api/models")
+        if catalog.get("schema") != MODEL_CATALOG_SCHEMA or catalog.get("ready") is not True:
+            raise NanoJevProviderError("NanoJev returned an unready/invalid model catalog")
+        rows = catalog.get("models")
+        if not isinstance(rows, list) or not rows:
+            raise NanoJevProviderError("NanoJev has no loaded models")
+        by_id = {}
+        for item in rows:
+            if not isinstance(item, dict):
+                raise NanoJevProviderError("NanoJev model catalog contains invalid model entries")
+            name = item.get("id")
+            operations = item.get("operations")
+            checkpoint = item.get("checkpoint")
+            if (not isinstance(name, str) or not name or name in by_id
+                    or item.get("ready") is not True
+                    or not isinstance(operations, list) or not operations
+                    or len(operations) != len(set(str(op) for op in operations))
+                    or not all(isinstance(op, str) and op for op in operations)
+                    or not isinstance(checkpoint, dict)):
+                raise NanoJevProviderError("NanoJev model catalog is malformed")
+            sha = checkpoint.get("release_manifest_sha256")
+            if not isinstance(sha, str) or len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+                raise NanoJevProviderError("NanoJev model catalog lacks checkpoint identity")
+            by_id[name] = item
+        selected = by_id.get(self.model)
+        if selected is None:
+            raise NanoJevProviderError(f"Selected model {self.model!r} is not loaded")
+        if self.model == CLEF_MODEL and not set(CLEF_CAPABILITIES).issubset(selected["operations"]):
+            raise NanoJevProviderError("Loaded CLEF model does not expose its required operations")
+        return catalog
+
+    def advertised_market(self) -> dict[str, Any]:
+        catalog = self.discover_models()
+        selected = next(row for row in catalog["models"] if row["id"] == self.model)
+        return {"models": [self.model], "capabilities": list(selected["operations"]),
+                "checkpoint_sha256": selected["checkpoint"]["release_manifest_sha256"]}
 
     def chat(self, messages: Sequence[ChatMessage]) -> ChatResponse:
         raise NanoJevProviderError(
@@ -177,13 +225,26 @@ class NanoJevClefProvider(LLMProvider):
             raise NanoJevProviderError(f"Unsupported NanoJev/CLEF capability: {capability!r}")
         if not isinstance(payload, dict):
             raise NanoJevProviderError("CLEF request payload must be a JSON object")
-        # Do not execute against an unready service or an unexpected checkpoint.
-        health = self.health()
-        path = "/api/evaluate" if capability == CLEF_EVALUATE else "/api/evaluate-batch"
-        result = self._json(path, payload)
+        # Every request selects a loaded model and pins its exact checkpoint.
+        catalog = self.discover_models()
+        row = next(item for item in catalog["models"] if item["id"] == self.model)
+        if capability not in row["operations"]:
+            raise NanoJevProviderError("Selected model does not support requested operation")
+        expected_sha = row["checkpoint"]["release_manifest_sha256"]
+        response = self._json("/api/infer", {
+            "schema": INFERENCE_REQUEST_SCHEMA, "model": self.model,
+            "operation": capability, "checkpoint_sha256": expected_sha,
+            "input": payload,
+        })
+        if (response.get("schema") != INFERENCE_RESULT_SCHEMA
+                or response.get("model") != self.model or response.get("operation") != capability):
+            raise NanoJevProviderError("NanoJev executed a different model or operation")
+        result = response.get("result")
+        if not isinstance(result, dict) or response.get("checkpoint") != result.get("model"):
+            raise NanoJevProviderError("NanoJev inference omitted authoritative result evidence")
         model = self._result_model(result)
-        if health.get("release_manifest_sha256") and model["release_manifest_sha256"] != health["release_manifest_sha256"]:
-            raise NanoJevProviderError("CLEF checkpoint changed between health and result")
+        if model["release_manifest_sha256"] != expected_sha:
+            raise NanoJevProviderError("CLEF checkpoint changed between discovery and execution")
         if capability == CLEF_EVALUATE:
             self._validate_evaluate(payload, result)
         else:
@@ -204,3 +265,48 @@ class NanoJevClefProvider(LLMProvider):
             "capability": capability,
             "result": result,
         }
+
+
+class NanoJevModelClient(NanoJevClefProvider):
+    """Generic typed model selector for any head the *running service* lists.
+
+    This extends the HTTP/checkpoint contract without claiming that an
+    unimplemented NanoJev head exists. CLEF retains its stricter typed result
+    validation through NanoJevClefProvider.
+    """
+    def __init__(self, *, model: str, base_url: str = CLEF_BASE_URL,
+                 timeout_s: float = 600.0) -> None:
+        from main_computer.model_execution_contract import model_id
+        selected = model_id(model)
+        super().__init__(model=CLEF_MODEL, base_url=base_url, timeout_s=timeout_s)
+        self.model = selected
+
+    def solve(self, *, capability: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict) or not payload:
+            raise NanoJevProviderError("NanoJev operation requires a nonempty native input")
+        catalog = self.discover_models()
+        selected = next(item for item in catalog["models"] if item["id"] == self.model)
+        if capability not in selected["operations"]:
+            raise NanoJevProviderError("Requested operation not offered by selected NanoJev model")
+        expected_sha = selected["checkpoint"]["release_manifest_sha256"]
+        envelope = self._json("/api/infer", {
+            "schema": INFERENCE_REQUEST_SCHEMA, "model": self.model,
+            "operation": capability, "checkpoint_sha256": expected_sha,
+            "input": payload,
+        })
+        model = envelope.get("checkpoint")
+        result = envelope.get("result")
+        if (envelope.get("schema") != INFERENCE_RESULT_SCHEMA
+                or envelope.get("model") != self.model
+                or envelope.get("operation") != capability
+                or not isinstance(model, dict)
+                or model.get("family") != self.model
+                or model.get("release_manifest_sha256") != expected_sha
+                or not isinstance(result, dict)
+                or result.get("model") != model):
+            raise NanoJevProviderError("NanoJev result model/operation/checkpoint does not match request")
+        if not str(model.get("release_name") or "").strip():
+            raise NanoJevProviderError("NanoJev result omitted checkpoint release name")
+        return {"schema": "main-computer.nanojev-solution.v1",
+                "provider": self.name, "model": model,
+                "capability": capability, "result": result}

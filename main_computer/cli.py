@@ -1647,9 +1647,83 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+
+
+def cmd_worker(args: argparse.Namespace) -> int:
+    """Multiple real Worker sessions, one existing NanoJev service."""
+    from main_computer.operational_compute import run_worker
+    from main_computer.config import MainComputerConfig
+    cfg = MainComputerConfig.from_env()
+    try:
+        return run_worker(
+            model=args.model, count=args.count, via=args.via,
+            base_url=args.nanojev_base_url or cfg.nanojev_base_url,
+            hub_url=args.hub_url or cfg.hub_url, officer=args.officer,
+            price=args.price, ring=args.ring, max_requests=args.max_requests)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f'Worker refused: {exc}', file=__import__('sys').stderr)
+        return 2
+
+
+def cmd_requester(args: argparse.Namespace) -> int:
+    """Choose an exact model and submit through Hub or private SLH."""
+    from main_computer.operational_compute import run_requester
+    from main_computer.providers.nanojev import CLEF_EVALUATE, CLEF_MODEL
+    from main_computer.config import MainComputerConfig
+    cfg = MainComputerConfig.from_env()
+    try:
+        if args.payload_file:
+            payload = json.loads(args.payload_file.read_text(encoding='utf-8-sig'))
+        elif args.model == CLEF_MODEL and (not args.operation or args.operation == CLEF_EVALUATE):
+            # A genuine inference smoke input, NOT a canned result.
+            payload = {'states':[{'id':'cli-acceptance',
+                'state':'An agent must decide between a safe route and a dangerous route.',
+                'questions':{'route':{'type':'choice',
+                    'instructions':'Choose which route to take.',
+                    'criteria':{'safe':'Take the safe route.',
+                                'dangerous':'Take the dangerous route.'}}}}]}
+        else:
+            raise ValueError('A JSON --payload-file is required for this operation')
+        return run_requester(
+            model=args.model, operation=args.operation or CLEF_EVALUATE,
+            payload=payload, to=args.to, hub_url=args.hub_url or cfg.hub_url,
+            officer=args.officer, max_price=args.max_price,
+            timeout_s=args.timeout_s, submit=args.submit,
+            request_id=args.request_id)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f'Requester refused: {exc}', file=__import__('sys').stderr)
+        return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="main-computer")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    worker = sub.add_parser('worker', help='Run real NanoJev Workers using one shared inference head.')
+    worker.add_argument('--model', required=True, help='Exact model advertised by NanoJev (for example nanojev-clef).')
+    worker.add_argument('--count', type=int, default=1, help='Independent Worker sessions (default 1).')
+    worker.add_argument('--via', choices=['slh', 'seh', 'hub'], default='slh',
+                        help='SLH managed local sessions (default), verified SEH outbound eligibility, or direct Stable Hub.')
+    worker.add_argument('--nanojev-base-url', default='', help='Override the existing managed NanoJev service URL.')
+    worker.add_argument('--hub-url', default='', help='Stable Hub URL from existing configuration by default.')
+    worker.add_argument('--officer', default='o0', help='Existing Worker seller wallet (default o0; requester defaults to o3).')
+    worker.add_argument('--price', default='1', help='Marketplace credits per request (default 1).')
+    worker.add_argument('--ring', type=int, default=3, choices=[1, 2, 3])
+    worker.add_argument('--max-requests', type=int, default=0, help='Stop after N accepted Hub terminals (default: until Ctrl+C).')
+    worker.set_defaults(func=cmd_worker)
+
+    requester = sub.add_parser('requester', help='Submit a model-bound real request via Stable Hub or SLH.')
+    requester.add_argument('--model', required=True, help='Exact requested model, no fallback.')
+    requester.add_argument('--to', choices=['hub', 'slh'], default='hub', help='Stable Hub or local private SLH.')
+    requester.add_argument('--operation', default='', help='Exact model operation (default: native CLEF evaluation).')
+    requester.add_argument('--payload-file', type=Path, help='Native operation JSON. CLEF evaluate has a built-in smoke input.')
+    requester.add_argument('--hub-url', default='', help='Configured Stable Hub URL by default.')
+    requester.add_argument('--officer', default='o3', help='Existing requester wallet selector for Hub.')
+    requester.add_argument('--max-price', default='1', help='Maximum authorized Hub price in credits.')
+    requester.add_argument('--timeout-s', type=float, default=1200)
+    requester.add_argument('--request-id', default='', help='Retain a request ID for idempotent retries.')
+    requester.add_argument('--submit', action='store_true', help='Execute real billable work; omitted means preview only.')
+    requester.set_defaults(func=cmd_requester)
 
     chat = sub.add_parser("chat", help="Pass a prompt through the selected provider.")
     add_common_options(chat)

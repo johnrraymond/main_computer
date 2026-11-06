@@ -71,7 +71,7 @@ class TestPrivateRequests(unittest.TestCase):
                      tls_fingerprint=self.gateway.fingerprint,
                      hub_url='https://127.0.0.1:'+str(self.gateway.port),
                      worker_id=did,auth_message={'type':'worker.auth','device_id':did,'market':market},
-                     work_executor=executor or (lambda offer:{'status':'success','response':{'content': 'computed '+str(len(offer['work']['input']['prompt']))}}))
+                     work_executor=executor or (lambda offer:{'status':'success','response':{'model':'mock-model','content': 'computed '+str(len(offer['work']['input']['prompt']))}}))
         worker.start()
         self.addCleanup(worker.close)
         return worker
@@ -103,6 +103,55 @@ class TestPrivateRequests(unittest.TestCase):
         self.assertEqual(self.submit(requester,self.req(prompt='different'))[1]['error']['code'],'PRIVATE_REQUEST_ID_REUSED')
         self.assertEqual(self.gateway.scheduler.snapshot()[0]['reserved'],0)
 
+    def test_native_nanojev_private_execution_is_operation_matched_and_billed(self):
+        from main_computer.providers.nanojev import CLEF_EVALUATE, CLEF_MODEL
+        requester = self.enroll('clef-requester', 'requester')
+        self.enroll('clef-worker', 'worker')
+        market = {'rings':['ring-3'], 'capabilities':[CLEF_EVALUATE],
+                  'models':[CLEF_MODEL], 'price':{'amount':'1', 'unit':'compute_credit'}}
+        calls = []
+        def infer(offer):
+            calls.append(offer['work'])
+            return {'status':'success', 'solution':{'schema':'main-computer.nanojev-solution.v1',
+                    'model':{'family': CLEF_MODEL,'release_manifest_sha256':'a'*64}},
+                    'response':{'model':CLEF_MODEL,'provider':'nanojev','content':''}}
+        worker = ManagedSLHWorkerClient(
+            device_id='clef-worker',identity_dir=self.identity_dir,
+            tls_fingerprint=self.gateway.fingerprint,
+            hub_url='https://127.0.0.1:'+str(self.gateway.port),
+            worker_id='clef-worker',
+            auth_message={'type':'worker.auth','device_id':'clef-worker','market':market},
+            work_executor=infer)
+        worker.start()
+        self.addCleanup(worker.close)
+        payload = {'states':[{'id':'s','state':'Choose','questions':{'q':{
+            'type':'choice','instructions':'Pick','criteria':{'a':'A','b':'B'}}}}]}
+        good = {'request_id':'clef-native-1','model':CLEF_MODEL,
+                'work':{'model':CLEF_MODEL,'operation':CLEF_EVALUATE,
+                        'capabilities':[CLEF_EVALUATE],
+                        'input':{'kind':CLEF_EVALUATE,'payload':payload}}}
+        status, result = self.submit(requester,good)
+        self.assertEqual(status,200,result)
+        self.assertEqual(result['status'],'SUCCEEDED',result)
+        self.assertEqual(result['worker_device_id'],'clef-worker')
+        self.assertEqual(len(calls),1)
+        self.assertEqual(result['result']['solution']['model']['family'],CLEF_MODEL)
+        invalid = {**good,'request_id':'clef-native-invalid',
+                   'work':{**good['work'],'operation':'chat.completions'}}
+        status, refused = self.submit(requester,invalid)
+        self.assertEqual(status,400,refused)
+        self.assertEqual(len(calls),1)
+        # Correctly formed but unsupported operation must never choose this Worker.
+        from main_computer.providers.nanojev import CLEF_PAIRWISE
+        unsupported = {**good, 'request_id':'clef-native-unavailable',
+                       'work':{**good['work'],'operation':CLEF_PAIRWISE,
+                               'capabilities':[CLEF_PAIRWISE],
+                               'input':{'kind':CLEF_PAIRWISE,'payload':{'questions':[{'id':'q'}]}}}}
+        status, refused = self.submit(requester,unsupported)
+        self.assertEqual(status,200,refused)
+        self.assertEqual(refused['failure_code'],'NO_ELIGIBLE_WORKER')
+        self.assertEqual(len(calls),1)
+
     def test_cross_requester_access_denied_and_revoked_role(self):
         a=self.enroll('req-1','requester');b=self.enroll('req-2','requester')
         self.worker()
@@ -129,7 +178,7 @@ class TestPrivateRequests(unittest.TestCase):
         def computation(offer):
             count[0]+=1;fired.set();release.wait(6)
             completed.set()
-            return {'status':'success','response':{'content':'done'}}
+            return {'status':'success','response':{'model':'mock-model','content':'done'}}
         self.worker(executor=computation)
         self.private.execution_timeout=.2
         _,response=self.submit(a,self.req())
@@ -166,7 +215,7 @@ class TestPrivateRequests(unittest.TestCase):
         def calculate(offer):
             with lock:count[0]+=1
             time.sleep(.1)
-            return {'status':'success','response':{'content':'real result'}}
+            return {'status':'success','response':{'model':'mock-model','content':'real result'}}
         self.worker(executor=calculate)
         responses=[]
         threads=[threading.Thread(target=lambda:responses.append(self.submit(a,self.req()))) for _ in range(5)]
@@ -282,7 +331,8 @@ def test_live_hub_single_worker_credit_recovery_reclaims_for_affordable_local_re
         assert fixture.gateway.scheduler.snapshot()[0]['public_advertised']
         # Model a live public commitment. A private request must wait for its
         # release while the Hub connection remains registered, not preempt it.
-        fixture.gateway.scheduler.reserve_public('held-public-job', device_id='worker-1')
+        fixture.gateway.scheduler.reserve_public('held-public-job', device_id='worker-1',
+                  work={'model':'mock-model','operation':'chat.completions'})
         witnessed = {}
         def release_existing_job():
             deadline = time.monotonic() + 5

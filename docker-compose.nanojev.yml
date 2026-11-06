@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: docker/nanojev/Dockerfile
+      args:
+        MAIN_COMPUTER_NANOJEV_SOURCE_SHA256: "${MAIN_COMPUTER_NANOJEV_SOURCE_SHA256:-unset}"
     image: main-computer/nanojev:managed-v2
     container_name: main-computer-nanojev
     restart: unless-stopped

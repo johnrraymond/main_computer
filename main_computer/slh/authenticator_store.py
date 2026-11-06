@@ -236,3 +236,14 @@ class LocalIdentityStore:
         return {'device_id': device_id, 'fingerprint': identity['fingerprint'],
                 'signature': sign_object(_private_key(self.directory, device_id), challenge),
                 'signature_format': 'ecdsa-p256-sha256-canonical-json-v1'}
+
+
+def load_identity(directory: Path, device_id: str):
+    """Load an existing device identity for packaged SLH Worker/Requester clients."""
+    store = LocalIdentityStore(directory)
+    return store.load_private_key(device_id), store.get(device_id)['public_key']
+
+
+def save_identity(directory: Path, device_id: str) -> dict:
+    """Create a local P-256 identity without depending on repository-only CLI tools."""
+    return LocalIdentityStore(directory).create(device_id)

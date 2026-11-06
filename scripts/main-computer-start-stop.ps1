@@ -1185,6 +1185,27 @@ function Stop-MainComputerNanoJevManagerAtUrl([string]$ManagerUrl, [int]$Request
     }
   }
 
+  # A repeated start.bat must not kill the existing model while real
+  # inference is still running. Wait for a bounded idle window, then fail
+  # without stopping the manager if work remains. The manager independently
+  # verifies active_requests under its transition lock at shutdown time.
+  $idleDeadline = (Get-Date).AddSeconds([Math]::Max(1, $RequestTimeoutSeconds))
+  while ([int](Get-ObjectPropertyValue $status "active_requests" 0) -gt 0) {
+    if ((Get-Date) -ge $idleDeadline) {
+      return [ordered]@{
+        ok = $false
+        state = "nanojev-inference-active"
+        url = $ManagerUrl
+        message = "NanoJev is executing requests; startup/stop will not interrupt them. Retry start.bat after they complete."
+      }
+    }
+    Start-Sleep -Milliseconds 250
+    $status = Get-MainComputerNanoJevManagerStatus $ManagerUrl
+    if ($null -eq $status) {
+      return [ordered]@{ ok = $true; state = "manager-absent"; url = $ManagerUrl }
+    }
+  }
+
   try {
     $timeout = [Math]::Max(1, $RequestTimeoutSeconds)
     $response = Invoke-RestMethod -Uri ($ManagerUrl.TrimEnd("/") + "/control/shutdown") -Method Post -TimeoutSec $timeout
@@ -4114,6 +4135,10 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   $sessionPath = Get-StartSessionPath $RootPath
   $session = Read-JsonFile $sessionPath
   $nanoJevManagerStop = Stop-MainComputerNanoJevManagerGracefully $session
+  if ($null -ne $nanoJevManagerStop -and -not [bool](Get-ObjectPropertyValue $nanoJevManagerStop "ok" $false)) {
+    throw ("Refusing to stop Main Computer while NanoJev is still active: {0}" -f
+      (ConvertTo-StringValue (Get-ObjectPropertyValue $nanoJevManagerStop "message" "NanoJev manager did not stop safely") "NanoJev manager did not stop safely"))
+  }
   $candidates = @{}
 
   if ($null -ne $session) {

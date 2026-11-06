@@ -268,7 +268,7 @@ def verify_real_process_paid(*, hub_url: str, payout_ledger,
                 def echo(offer):
                     payload = (offer.get('work') or {}).get('input')
                     return {'status': 'success', 'response': {
-                        'content': payload.get('value', '') if isinstance(payload, dict)
+                        'model': 'mock-model', 'content': payload.get('value', '') if isinstance(payload, dict)
                         else str(payload or '')}}
                 worker = ManagedSLHWorkerClient(
                     device_id=device, identity_dir=root / 'worker-keys',

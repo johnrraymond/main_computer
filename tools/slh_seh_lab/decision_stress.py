@@ -125,7 +125,7 @@ def run_worker_bank_acceptance() -> dict:
         scheduler=ManagedScheduler(policy_store=Store(), credit_provider=lambda: {
             'state':'CURRENT','balance':{'available_credit_wei':str(holder['balance'])}})
         for i in range(count):
-            scheduler.register(ManagedWorker(f'bank-worker-{i:02d}',Socket(),{},['model']))
+            scheduler.register(ManagedWorker(f'bank-worker-{i:02d}',Socket(),{'models':['model'], 'capabilities':['chat.completions']},['model']))
         return scheduler,holder
 
     gates={}
@@ -143,7 +143,7 @@ def run_worker_bank_acceptance() -> dict:
 
     bank,_=make_bank(1,0)
     assert bank.mark_advertised('bank-worker-00',True)
-    paid=bank.reserve_public('paid-1',device_id='bank-worker-00')
+    paid=bank.reserve_public('paid-1',device_id='bank-worker-00',work={'model':'model','operation':'chat.completions'})
     assert bank.request_private_capacity(model='model')=='bank-worker-00'
     try:
         bank.reserve_private('local-premature',model='model')
@@ -151,7 +151,7 @@ def run_worker_bank_acceptance() -> dict:
         pass
     else:raise StressFailure('public Worker assigned before Hub withdrawal acknowledgment')
     try:
-        bank.reserve_public('paid-2',device_id='bank-worker-00')
+        bank.reserve_public('paid-2',device_id='bank-worker-00',work={'model':'model','operation':'chat.completions'})
     except RuntimeError:
         pass
     else:raise StressFailure('new paid offer accepted during withdrawal')
@@ -167,7 +167,7 @@ def run_worker_bank_acceptance() -> dict:
     for did in bank.plan().desired:assert bank.mark_advertised(did,True)
     candidate=bank.request_private_capacity(model='model')
     assert candidate=='bank-worker-00'
-    assert bank.reserve_public('second-public',device_id='bank-worker-01')
+    assert bank.reserve_public('second-public',device_id='bank-worker-01',work={'model':'model','operation':'chat.completions'})
     assert bank.mark_advertised(candidate,False)
     local=bank.reserve_private('second-local',model='model')
     assert local.device_id==candidate
@@ -177,9 +177,9 @@ def run_worker_bank_acceptance() -> dict:
 
     bank,_=make_bank(1,0)
     before=next(iter(bank._workers.values()))
-    bank.reserve('old-run',device_id=before.device_id,purpose='private')
+    bank.reserve('old-run',model='model',device_id=before.device_id,purpose='private')
     before.active=False
-    replacement=ManagedWorker(before.device_id,Socket(),{},['model'])
+    replacement=ManagedWorker(before.device_id,Socket(),{'models':['model'], 'capabilities':['chat.completions']},['model'])
     bank.register(replacement)
     try:bank.worker_for('old-run')
     except ConnectionError:pass

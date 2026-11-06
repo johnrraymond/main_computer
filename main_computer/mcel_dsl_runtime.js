@@ -958,7 +958,7 @@ function createDsl(metadata, source) {
   }
   const surface = {
     form(name, options = {}) {
-      knownOptions(options, ["id", "fields", "intent", "defaults", "when"], `surface.form:${name}`);
+      knownOptions(options, ["id", "fields", "intent", "defaults", "when", "fieldState", "acceptResult", "editor", "clearIntent", "resetAndSubmit"], `surface.form:${name}`);
       assert(options.fields && typeof options.fields === "object", "MCEL_DSL_FORM_FIELDS_REQUIRED", "Form requires fields.");
       const fields = {};
       for (const [fieldName, schema] of Object.entries(options.fields)) {
@@ -978,8 +978,45 @@ function createDsl(metadata, source) {
       }
       if (options.intent !== undefined) assert(options.intent instanceof IntentHandle,
         "MCEL_DSL_FORM_INTENT_REQUIRED", "Bound form requires intent handle.");
+      const fieldState={};
+      for(const [field,handle] of Object.entries(options.fieldState || {})){
+        assert(Object.hasOwn(fields,field) && handle instanceof StateHandle && stateById.get(handle.id)===handle &&
+          handle.record.authority==="renderer-local" && JSON.stringify(handle.record.schema)===JSON.stringify(fields[field]),
+          "MCEL_DSL_FORM_FIELD_STATE_INVALID", "Mirrored form field requires matching renderer-local state.");
+        fieldState[field]=ref(handle);
+      }
+      const acceptResult={};
+      for(const [key,item] of Object.entries(options.acceptResult || {})){
+        const field=item.field||key;
+        const stateSchema=item.state?.record.schema;
+        const responseSchema=item.pick?stateSchema?.fields?.[item.pick]:stateSchema;
+        assert(Object.hasOwn(fields,field) && item.state instanceof StateHandle && stateById.get(item.state.id)===item.state &&
+          item.state.record.authority==="derived" && JSON.stringify(responseSchema)===JSON.stringify(fields[field]) &&
+          (!item.invoke || item.invoke instanceof IntentHandle && item.invoke.record.operationKind==="capability") &&
+          (!item.whenIntent || item.whenIntent instanceof IntentHandle &&
+            item.whenIntent.record.operationKind==="capability" &&
+            item.whenIntent.record.resultBindings.some(binding=>binding.target.ref===item.state.id)),
+          "MCEL_DSL_FORM_RESULT_BINDING_INVALID", "Result must target matching form field and optional capability intent.");
+        acceptResult[key]={field,state:ref(item.state),...(item.pick?{pick:item.pick}:{}),...(item.invoke?{invoke:ref(item.invoke)}:{}),
+          ...(item.whenIntent?{whenIntent:ref(item.whenIntent)}:{})};
+      }
+      let editor;
+      if(options.editor){
+        const e=options.editor;
+        assert(Object.hasOwn(fields,"expression") && e.intent instanceof IntentHandle &&
+          e.intent.record.operationKind==="capability" && Array.isArray(e.templates) && e.templates.length<=32 &&
+          e.templates.every(t=>typeof t==="string" && t.length>0 && t.length<=48),
+          "MCEL_DSL_FORM_EDITOR_INVALID", "Editor tools require a bounded expression-editor capability.");
+        editor={intent:ref(e.intent),templates:deepClone(e.templates)};
+      }
+      if(options.clearIntent)assert(options.clearIntent instanceof IntentHandle && options.clearIntent.record.operationKind==="capability" &&
+        options.clearIntent.record.input.length===0,"MCEL_DSL_FORM_CLEAR_INVALID","Clear intent must be a no-input capability operation.");
+      if(options.resetAndSubmit!==undefined)assert(typeof options.resetAndSubmit==="boolean","MCEL_DSL_FORM_RESET_INVALID","Reset-and-submit must be boolean.");
       const record = {id: nodeId(name, options), kind: "surface-node", nodeKind: "form",
-        sourceName: name, fields, ...(Object.keys(defaults).length ? {defaults} : {}), ...(options.intent ? {intent: ref(options.intent)} : {}), ...modeCondition(options, `surface.form:${name}`)};
+        sourceName: name, fields, ...(Object.keys(defaults).length ? {defaults} : {}), ...(options.intent ? {intent: ref(options.intent)} : {}),
+        ...(Object.keys(fieldState).length?{fieldState}:{}),...(Object.keys(acceptResult).length?{acceptResult}:{}),
+        ...(editor?{editor}:{}),...(options.clearIntent?{clearIntent:ref(options.clearIntent)}:{}),
+        ...(options.resetAndSubmit?{resetAndSubmit:true}:{}),...modeCondition(options, `surface.form:${name}`)};
       return surfaceNode(name, record);
     },
     collection(name, options = {}) {
@@ -1017,12 +1054,33 @@ function createDsl(metadata, source) {
       return surfaceNode(name, record);
     },
     action(name, options = {}) {
-      knownOptions(options, ["id", "intent"], `surface.action:${name}`);
+      knownOptions(options, ["id", "intent", "resetOutputs"], `surface.action:${name}`);
       assert(options.intent instanceof IntentHandle, "MCEL_DSL_ACTION_INTENT_REQUIRED", `Surface action '${name}' requires an intent handle.`);
+      const resetOutputs=[];
+      for(const item of options.resetOutputs||[]){
+        assert(item?.state instanceof StateHandle && stateById.get(item.state.id)===item.state &&
+          item.state.record.authority==="derived","MCEL_DSL_CONTROL_RESET_STATE_INVALID", "Control resets require a derived state.");
+        const schema=item.state.record.schema;
+        assert(schema.kind==="string" && typeof item.value==="string" && item.value.length<=4096,
+          "MCEL_DSL_CONTROL_RESET_VALUE_INVALID","Control reset value must match its state schema.");
+        resetOutputs.push({state:ref(item.state),value:item.value});
+      }
       const record = {
         id: nodeId(name, options), kind: "surface-node", nodeKind: "control", intent: ref(options.intent),
+        ...(resetOutputs.length?{resetOutputs}:{}),
       };
       return surfaceNode(name, record);
+    },
+    embeddedChat(name, options = {}) {
+      knownOptions(options,["id","intent","title","targetId","targetKind"],`surface.embeddedChat:${name}`);
+      assert(options.intent instanceof IntentHandle && options.intent.record.operationKind==="capability",
+        "MCEL_DSL_CHAT_INTENT_REQUIRED","Embedded chat requires a declared capability intent.");
+      for(const key of ["title","targetId","targetKind"])
+        assert(typeof options[key]==="string" && options[key].length>0 && options[key].length<=120,
+          "MCEL_DSL_CHAT_CONFIG_INVALID", "Chat configuration must be bounded semantic text.");
+      return surfaceNode(name,{id:nodeId(name,options),kind:"surface-node",nodeKind:"embedded-chat",
+        sourceName:name,intent:ref(options.intent),title:options.title,
+        targetId:options.targetId,targetKind:options.targetKind});
     },
     plot(name, options = {}) {
       knownOptions(options, ["id", "state", "x", "y"], `surface.plot:${name}`);

@@ -71,7 +71,8 @@ body.mcel-workbench-page{font-family:system-ui,-apple-system,Segoe UI,sans-serif
 [data-mcel-presentation="expert"] [data-mcel-mode-tabs]{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
 [data-mcel-presentation="expert"] [data-mcel-mode-tabs] button[aria-pressed="true"]{background:#34637b;border-color:#84bfd3}
 [data-mcel-presentation="expert"] [data-mcel-node][hidden],[data-mcel-presentation="expert"] [data-mcel-region][hidden]{display:none!important}
-[data-mcel-presentation="expert"] [data-mcel-record-row][aria-selected="true"]{background:#254451;border-radius:6px}
+[data-mcel-presentation="expert"] [data-mcel-record-row][aria-selected="true"],
+[data-mcel-presentation="expert"] [data-collection]>[data-record-key][aria-selected="true"]{background:#254451;border-radius:6px}
 [data-mcel-presentation="expert"] [data-mcel-inline-details]{flex:1 1 100%;min-width:0;font-size:.88rem;color:var(--mute);padding:3px 6px}
 [data-mcel-presentation="expert"] [data-mcel-inline-details] summary,
 [data-mcel-presentation="expert"] [data-mcel-measurement-detail] summary{cursor:pointer;min-height:28px;padding:4px}

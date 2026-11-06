@@ -25,6 +25,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from main_computer.model_execution_contract import (
+    advertised_models, advertised_operations, request_contract, market_supports,
+    verify_execution_result, ModelContractError,
+)
 from .authority import SLHAuthority, SLHError
 from .ports import DEFAULT_SLH_MANAGED_PORT
 from .scheduler_policy import SchedulerPolicyStore, compute_plan
@@ -183,7 +187,7 @@ class ManagedScheduler:
                 self._withdrawals.discard(device_id)
             return True
 
-    def private_quote(self, *, model:str='') -> dict|None:
+    def private_quote(self, *, model:str='', operation:str='chat.completions') -> dict|None:
         '''Quote the selected Worker's normal marketplace price in credit wei.
 
         A quote is advisory until reservation checks its connection generation.
@@ -195,8 +199,9 @@ class ManagedScheduler:
                     else {'dedicated_public':[]})
             matches=[]
             for w in self._workers.values():
-                if (not w.active or not self.is_authorized(w.device_id) or
-                    (model and model not in w.models)):
+                if (not w.active or not self.is_authorized(w.device_id)
+                        or not market_supports(w.market, {
+                            'model': model, 'operation': operation})):
                     continue
                 public=w.device_id in self._advertised
                 if w.device_id in policy['dedicated_public']:
@@ -223,7 +228,7 @@ class ManagedScheduler:
                     'reference_credit_wei':reference,'assessment_credit_wei':assessment,
                     'public':w.device_id in self._advertised}
 
-    def request_private_capacity(self, *, model:str='', device_id:str='', generation:int|None=None) -> str|None:
+    def request_private_capacity(self, *, model:str='', device_id:str='', generation:int|None=None, operation:str='chat.completions') -> str|None:
         '''Select one idle public Worker for a future upstream withdrawal.
 
         Does not claim it for local work or pretend disconnection happened.
@@ -236,7 +241,8 @@ class ManagedScheduler:
                     self.is_authorized(did) and
                     not any(self._reservation_kind.get(s)=='private' for s in worker.reservations) and
                     did not in self._withdrawals and
-                    (not model or model in worker.models) and
+                    market_supports(worker.market, {
+                        'model': model, 'operation': operation}) and
                     (not device_id or device_id==did) and
                     (generation is None or worker.generation==generation)):
                     self._withdrawals.add(did)
@@ -297,14 +303,16 @@ class ManagedScheduler:
         with self._lock:return self._plan_locked(now=now,credit_meter=meter)
 
     def reserve(self, session_id: str, *, model: str = '', device_id: str = '',
-                purpose: str = 'public') -> ManagedWorker:
+                purpose: str = 'public', operation: str = 'chat.completions') -> ManagedWorker:
         if purpose not in {'public','private'}:raise ValueError('invalid reservation purpose')
         with self._lock:
             if session_id in self._sessions:raise RuntimeError('duplicate session reservation')
             for w in self._workers.values():
                 if (w.active and self.is_authorized(w.device_id)
                     and not w.reservations and (not device_id or w.device_id == device_id)
-                    and (not model or model in w.models)):
+                    and (not model or model in w.models)
+                    and (purpose != 'private' or market_supports(w.market, {
+                        'model': model, 'operation': operation}))):
                     # A private requester cannot take a worker whose public
                     # Stable Hub session is advertised as available.
                     if purpose=='private':
@@ -320,18 +328,22 @@ class ManagedScheduler:
                     return w
             raise RuntimeError('no eligible local worker capacity')
 
-    def reserve_public(self, session_id: str, *, device_id: str, now=None) -> ManagedWorker:
+    def reserve_public(self, session_id: str, *, device_id: str, work: dict, now=None) -> ManagedWorker:
         meter=self._credit_meter()
         with self._lock:
             if device_id not in self._advertised:
                 raise RuntimeError('worker public session not advertised')
             if device_id in self._withdrawals or device_id not in self._plan_locked(now=now,credit_meter=meter).desired:
                 raise RuntimeError('worker is draining under SLH policy')
-            return self.reserve(session_id,device_id=device_id,purpose='public')
+            worker = self._workers.get(device_id)
+            if worker is None or not market_supports(worker.market, work):
+                raise RuntimeError('WORKER_MODEL_OPERATION_MISMATCH')
+            return self.reserve(session_id, model=request_contract(work)[0],
+                                device_id=device_id,purpose='public')
 
-    def reserve_private(self, session_id:str, *, model:str='',device_id:str='',generation:int|None=None) -> ManagedWorker:
+    def reserve_private(self, session_id:str, *, model:str='',device_id:str='',generation:int|None=None, operation:str='chat.completions') -> ManagedWorker:
         with self._lock:
-            worker=self.reserve(session_id,model=model,device_id=device_id,purpose='private')
+            worker=self.reserve(session_id,model=model,device_id=device_id,purpose='private',operation=operation)
             if generation is not None and worker.generation!=generation:
                 self.release(session_id)
                 raise RuntimeError('stale Worker quote')
@@ -353,6 +365,8 @@ class ManagedScheduler:
     def execute_private(self, offer: dict, *, timeout: float = 120) -> dict:
         sid=str(offer['session_id']); req=str(offer['request_id']); run=str(offer['run_id'])
         worker=self.worker_for(sid)
+        if not market_supports(worker.market, offer.get('work')):
+            raise RuntimeError('PRIVATE_MODEL_OPERATION_MISMATCH')
         if not self.is_authorized(worker.device_id):
             raise PermissionError('private worker no longer authorized')
         try:
@@ -373,8 +387,7 @@ class ManagedScheduler:
             if terminal['type']=='worker.private.work.failed':
                 raise RuntimeError('PRIVATE_WORKER_FAILED')
             result=terminal.get('result')
-            if not isinstance(result,dict):
-                raise RuntimeError('private worker result invalid')
+            verify_execution_result(offer.get('work'), result)
             return result
         finally:
             worker.pending.pop(sid,None)
@@ -382,6 +395,9 @@ class ManagedScheduler:
     def execute_authorized(self, offer: dict) -> dict:
         sid=str(offer['session_id']); req=str(offer['request_id']);run=str(offer['run_id'])
         worker=self.worker_for(sid)
+        if not market_supports(worker.market, offer.get('work')):
+            self.release(sid)
+            raise RuntimeError('PUBLIC_MODEL_OPERATION_MISMATCH')
         if not self.is_authorized(worker.device_id):
             self.release(sid)
             raise PermissionError('managed device revoked before authorization')
@@ -391,7 +407,10 @@ class ManagedScheduler:
             worker.send({'type':'hub.work.offer','session_id':sid,'request_id':req,'run_id':run,
                          'execution_protocol':'durable-authorization-v1',
                          'execution_authorization_required':True,
-                         'work':{'execution_authorization_pending':True}})
+                         'work':{'execution_authorization_pending':True,
+                                 'model':request_contract(offer['work'])[0],
+                                 'operation':request_contract(offer['work'])[1],
+                                 'capabilities':list(request_contract(offer['work'])[2])}})
             accepted=worker.await_message(sid,{'worker.work.accepted'},10)
             if accepted.get('request_id')!=req:raise RuntimeError('local worker offer identity mismatch')
             worker.pending[sid]=None
@@ -401,7 +420,9 @@ class ManagedScheduler:
             if terminal.get('request_id')!=req or terminal.get('run_id')!=run:
                 raise RuntimeError('local terminal identity mismatch')
             if terminal['type']=='worker.work.failed':raise RuntimeError('local worker failed: '+str(terminal.get('error'))[:350])
-            return terminal.get('result') if isinstance(terminal.get('result'),dict) else {'value':terminal.get('result')}
+            result = terminal.get('result')
+            verify_execution_result(offer.get('work'), result)
+            return result
         finally:
             worker.pending.pop(sid,None)
             self.release(sid)
@@ -552,8 +573,8 @@ class SLHManagedGateway:
             market=dict(market)
             market['max_concurrency']=1
             market['active_sessions']=0
-            models=[m for m in market.get('models',[]) if isinstance(m,str) and m.strip()][:32]
-            if not models:raise RuntimeError('worker must advertise at least one model')
+            models=advertised_models(market)
+            advertised_operations(market)
             worker=ManagedWorker(did,socket,market,models)
             worker.audit = lambda event, exc=None: self._note_connection(
                 event, device_id=did, socket=socket, phase='send', exc=exc)
@@ -698,7 +719,7 @@ class SLHMarketplaceProxy:
         self._lock = threading.RLock()
 
     def connect_device(self, device_id: str, *, hub_url: str, auth: dict):
-        from main_computer.viewport_routes_energy import _WorkerHubLiveSessionClient
+        from main_computer.worker_live_session import _WorkerHubLiveSessionClient
         scheduler = self.gateway.scheduler
         if (not isinstance(auth, dict) or auth.get('kind') != 'multisession_key'
                 or not auth.get('multisession_key_id')):
@@ -750,8 +771,15 @@ class SLHMarketplaceProxy:
             def _handle_work_offer(self, offer):
                 sid = str(offer.get('session_id') or '')
                 try:
-                    scheduler.reserve_public(sid, device_id=device_id)
+                    # A mismatched Hub offer must never reserve this Worker.
+                    # Closing the upstream session allows the Hub to release
+                    # the accepted hold without authorizing wrong-model work.
+                    scheduler.reserve_public(sid, device_id=device_id,
+                                             work=offer.get('work'))
                 except RuntimeError:
+                    if not market_supports(market, offer.get('work')):
+                        self._request_hub_retirement()
+                        return
                     # There is no Hub work-decline frame. Close gracefully so
                     # any Hub-side pending hold is settled by its existing
                     # durable close procedure. Never execute this offer.

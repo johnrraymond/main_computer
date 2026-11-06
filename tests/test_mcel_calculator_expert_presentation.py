@@ -18,6 +18,11 @@ def browser():
 
 def open_app(browser,width=1272):
     page=browser.new_page(viewport={'width':width,'height':850})
+    page.evaluate("""() => {const data=new Map();Object.defineProperty(window,'localStorage',{
+      configurable:true,value:{getItem:k=>data.get(String(k))??null,
+      setItem:(k,v)=>data.set(String(k),String(v)),removeItem:k=>data.delete(String(k)),
+      clear:()=>data.clear(),key:i=>[...data.keys()][i]??null,
+      get length(){return data.size;}}});}""")
     page.set_content(render_expanded_page())
     assert page.locator('#mcel-expanded-diagnostic').inner_text()=='Semantic Calculator ready'
     return page
@@ -34,7 +39,7 @@ def test_expert_is_driven_by_computation_semantics_and_not_app_id(browser):
           const target=ir.surfaces[0].interfaceIntent.regions.find(r=>r.id.endsWith('.arithmetic'));
           target.tasks=['inspect'];
           const node=document.createElement('div');document.body.append(node);
-          const app=McelSemanticOperationalRuntime.mount(node,ir,{presentation:'expert'});
+          const app=McelSemanticOperationalRuntime.mount(node,ir,{presentation:'expert',capabilities:{mountEmbeddedChat:()=>({dispose(){}})}});
           const count=node.querySelectorAll('[data-mcel-expression-pad]').length;
           app.unmount();node.remove();return count;
         }''')
@@ -108,6 +113,6 @@ def test_generic_expert_layout_policy_has_no_app_specific_branches():
 def test_compiled_semantics_and_authority_are_unchanged():
     ir=compile_expanded()
     assert not ir['layouts']
-    assert len(ir['intents'])==8
+    assert len(ir['intents'])==14
     assert {e['risk'] for e in ir['effects']}=={'external-read'}
     assert all('htmlSource' in r for r in ir['surfaces'][0]['interfaceIntent']['regions'])

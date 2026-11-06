@@ -80,9 +80,9 @@ def compile_semantic_app(name: str, repo: Path = ROOT) -> dict:
 def render_semantic_page(name: str, repo: Path = ROOT) -> str:
     ir = compile_semantic_app(name, repo)
     payload = json.dumps(ir, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-    # First integrated rollout: one paired candidate consumes the shared
-    # deterministic composition policy; other candidates remain observational.
-    workspace_enabled = name == "code-editor"
+    # Isolated Frob candidates only: source-bound presentation planning for
+    # these three apps; the production host remains unchanged.
+    workspace_enabled = name in {"file-manager", "task-manager", "code-editor"}
     plan = plan_workspace(ir) if workspace_enabled else None
     if plan is not None:
         verify_workspace_plan(ir, plan)

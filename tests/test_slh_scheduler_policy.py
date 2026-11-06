@@ -50,7 +50,7 @@ class TestSLHSchedulerPolicy(unittest.TestCase):
         sch=ManagedScheduler(policy_store=self.store,
                              credit_provider=lambda:{'state':'CURRENT','balance':{
                                  'available_credit_wei':str(wei)}})
-        for i in range(count):sch.register(ManagedWorker(f'w{i}',FakeSocket(),{},['model']))
+        for i in range(count):sch.register(ManagedWorker(f'w{i}',FakeSocket(),{'models':['model'], 'capabilities':['chat.completions']},['model']))
         return sch
 
     def test_revision_audit_and_admin_auth(self):
@@ -103,7 +103,7 @@ class TestSLHSchedulerPolicy(unittest.TestCase):
         self.assertEqual(len(plan.desired),16)
         for did in plan.desired:sch.mark_advertised(did,True)
         # Actual private capacity is outside the advertised set.
-        private=sch.reserve_private('private-1')
+        private=sch.reserve_private('private-1', model='model')
         self.assertNotIn(private.device_id,plan.desired)
         with self.assertRaises(RuntimeError):sch.reserve_private('private-2',model='unavailable-model')
         sch.release('private-1')
@@ -123,7 +123,7 @@ class TestSLHSchedulerPolicy(unittest.TestCase):
         sch=self.make_scheduler(4)
         a=sch.plan(now=0).desired
         for did in a:sch.mark_advertised(did,True)
-        sch.reserve_public('job1',device_id=a[0],now=0)
+        sch.reserve_public('job1',device_id=a[0],work={'model':'model','operation':'chat.completions'},now=0)
         b=sch.plan(now=10)
         self.assertIn(a[0],b.desired) # Busy job cannot be preempted
         sch.release('job1')
@@ -146,7 +146,7 @@ class TestSLHSchedulerPolicy(unittest.TestCase):
             sch.mark_advertised(did,True)
             clients[did]=FakeUpstream(generation=sch._workers[did].generation)
         busy=plan.desired[0]
-        sch.reserve_public('active-paid-job',device_id=busy)
+        sch.reserve_public('active-paid-job',device_id=busy,work={'model':'model','operation':'chat.completions'})
         gw=SimpleNamespace(scheduler=sch)
         proxy=SLHMarketplaceProxy(gw)
         proxy.sessions=clients

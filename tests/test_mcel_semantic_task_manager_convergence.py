@@ -192,7 +192,11 @@ def test_paired_real_http_monitor_options_and_ai(browser, isolated_task_http):
         monitor.locator('[name="includeConnections"]').fill('false')
         monitor.locator('button[type=submit]').click()
         _contract_receipt(page, 'refresh', 'completed')
-        observed = next(body for path, body in lab.requests if path.endswith('/task/overview'))
+        # The paired runtime now performs an initial read-only startup poll.
+        # The explicitly submitted request must retain its own operator inputs,
+        # regardless of a preceding automatically loaded snapshot.
+        observed = next(body for path, body in lab.requests
+                        if path.endswith('/task/overview') and body.get('query') == 'disposable')
         assert observed['limit'] == 17 and observed['include_connections'] is False
         ai = page.locator('form[data-intent="intent:task-ai"]')
         ai.locator('[name="instruction"]').fill('Summarize the test-owned process')

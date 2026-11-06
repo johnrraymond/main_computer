@@ -168,6 +168,7 @@ def _source_inputs(run, *, max_games=0, train_per_game=0, dev_per_game=0, radius
             'selected':selected,'all_count':{p:len(r) for p,r in [('train',all_train),('dev',all_dev)]},
             'radius':radius,
             'source_adapter':cycle/'lora'/'best_adapter',
+            'full_split_rows':{'train':all_train,'dev':all_dev},
             'head_hp':state['hyperparameters']}
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 from collections import Counter
 from fractions import Fraction
+from decimal import Decimal
 import hashlib
 import json
 import math
@@ -29,6 +30,7 @@ SCHEMA = 'nanojev.gamer.v1.certified-sparse-table-pairs.v1'
 PAIR_SCHEMA = 'nanojev.gamer.v1.oracle-table-pair.v1'
 OPS = {ast.Add: ('add',lambda a,b:a+b), ast.Sub: ('subtract',lambda a,b:a-b),
        ast.Mult: ('multiply by',lambda a,b:a*b), ast.Div: ('divide by',lambda a,b:a/b)}
+PROMPT_FIDELITY_SCALAR_SCHEMA = SCHEMA + '.scalar-prompt-fidelity-v2'
 EXTENSION_SCHEMA = SCHEMA + '.bounded-catalog-v1'
 TRANSITION_SCHEMA = SCHEMA + '.bounded-transition-v1'
 EXTENSION_ZERO_GAMES = frozenset({
@@ -87,6 +89,24 @@ def frac(x):
 def source_signature():
     return sha({'matrices':src.MATRICES,'scalar_models':src.SCALAR_MODELS,
                 'source_formulas':native.SCALAR_FORMULAS,'english_prose':SCENARIOS})
+
+
+def prompt_fidelity_signature():
+    """Versioned source lineage for OPT-IN corrected scalar generation.
+
+    Old cases deliberately retain the old signature and exact regeneration.
+    """
+    return sha({'parent':source_signature(),'schema':PROMPT_FIDELITY_SCALAR_SCHEMA,
+               'discrete_fields':{'captain_crew_risk':['crew_count'],
+                    'population_signal':['n'],
+                    'quorum_margin':['honest_votes','quorum']},
+               'boundary_arithmetic':'exact_decimal_then_public_number'})
+
+
+def _decimal_number(*values):
+    """Avoid binary float accumulation when building exact-zero boundaries."""
+    d=sum((Decimal(str(v)) for v in values),Decimal(0))
+    return int(d) if d==d.to_integral_value() else float(d)
 
 
 def extension_signature():
@@ -369,7 +389,7 @@ def generate_extension_case(game,index,seed,attempt=0):
     return row
 
 
-def sample_scalar(game, index, seed, attempt=0):
+def sample_scalar(game, index, seed, attempt=0, *, prompt_fidelity_v2=False):
     name,_,_,base,changed,increment = src.SCALAR_MODELS[game]
     base = dict(base)
     # Values remain human-readable and distinguishable. Candidates are checked
@@ -386,6 +406,14 @@ def sample_scalar(game, index, seed, attempt=0):
             else:
                 spread = max(1.0,min(abs(v)*.18,20.0))
                 p[k]=round(v+rng.choice([-4,-3,-2,-1,0,1,2,3,4])*spread,4)
+        if prompt_fidelity_v2:
+            # Counts cannot be fractional people/agents/votes. Kept opt-in so
+            # existing certified SHA-bound datasets regenerate byte-for-byte.
+            discrete={'captain_crew_risk':('crew_count',),
+                      'population_signal':('n',),
+                      'quorum_margin':('honest_votes','quorum')}
+            for key in discrete.get(game,()):
+                p[key]=max(1,int(round(p[key])))
         # Explicitly sample the mathematical boundary where the given source
         # objective has a signed, physically meaningful comparison.
         if game in ZERO_GAMES:
@@ -398,6 +426,23 @@ def sample_scalar(game, index, seed, attempt=0):
             elif game=='pursuit_gap':p['gap']=p['pursuer_speed']-p['evader_speed']+side
             elif game=='second_price_utility':p['value']=p['second_price']+side
             elif game=='captain_fuel_reserve':p['initial']=p['reserve_required']+p['fuel_spent']+side
+        if prompt_fidelity_v2 and game in ZERO_GAMES:
+            side=(-1,0,1)[(index//6*2+index%6)%3]
+            # Arithmetic boundaries are assembled as exact decimal quantities
+            # before converting to the public numeric literal. Never threshold
+            # output predictions to zero as a substitute for true equality.
+            if game=='captain_signed_offset':
+                p['ship_offset']=_decimal_number(p['beacon_offset'],side)
+            elif game=='coalition_surplus':
+                p['v_merged']=_decimal_number(p['v_one'],p['v_two'],side)
+            elif game=='population_signal':
+                p['benefit']=_decimal_number(Decimal(str(p['cost_per_agent']))*Decimal(str(p['n'])),side)
+            elif game=='pursuit_gap':
+                p['gap']=_decimal_number(p['pursuer_speed'],-Decimal(str(p['evader_speed'])),side)
+            elif game=='second_price_utility':
+                p['value']=_decimal_number(p['second_price'],side)
+            elif game=='captain_fuel_reserve':
+                p['initial']=_decimal_number(p['reserve_required'],p['fuel_spent'],side)
         try:
             answer=src.scalar_oracle(game,p)
             if not math.isfinite(answer):continue
@@ -566,7 +611,9 @@ def residual_scalar(game,p,answer):
     return number(answer)
 
 
-def generate_case(game,index,seed,attempt=0,*,blind_matrix=False):
+def generate_case(game,index,seed,attempt=0,*,blind_matrix=False,prompt_fidelity_v2=False):
+    if prompt_fidelity_v2 and game not in src.SCALAR_MODELS:
+        raise ValueError('GAMER_PROMPT_FIDELITY_V2_ONLY_SOURCE_SCALARS')
     if game in transition.TRANSITION_IDS:
         if blind_matrix:raise ValueError('GAMER_BLIND_MATRIX_RETIRED')
         return generate_transition_case(game,index,seed,attempt)
@@ -576,7 +623,7 @@ def generate_case(game,index,seed,attempt=0,*,blind_matrix=False):
     if blind_matrix:
         raise ValueError('GAMER_BLIND_MATRIX_RETIRED: use the named-game curriculum')
     if game in src.SCALAR_MODELS:
-        p=sample_scalar(game,index,seed,attempt)
+        p=sample_scalar(game,index,seed,attempt,prompt_fidelity_v2=prompt_fidelity_v2)
         factors,last=factorize_scalar(game,p)
         computed=evaluate_factors(factors,last)
         oracle=src.scalar_oracle(game,p)
@@ -609,12 +656,14 @@ def generate_case(game,index,seed,attempt=0,*,blind_matrix=False):
         tables=['strategic_payoff','calculation']
     if game in src.SCALAR_MODELS and not math.isclose(float(computed),float(oracle),rel_tol=1e-10,abs_tol=1e-9):
         raise ValueError(f'GAMER_ORACLE_TABLE_DISAGREEMENT: {game}')
-    row={'schema':PAIR_SCHEMA,'generator_schema':SCHEMA,'game_id':game,
+    row={'schema':PAIR_SCHEMA,'generator_schema':(PROMPT_FIDELITY_SCALAR_SCHEMA
+         if prompt_fidelity_v2 else SCHEMA),'game_id':game,
          'split':('train','train','train','train','dev','test')[index%6],
          'prompt_08':original,'math_prompt':math_prompt,'answer':repr(float(computed)),
          'source':state,'factor_steps':factors,'factor_final_step':last,
          'table_families':tables,'oracle_verified':True,'table_verified':True,
-         'source_registry_sha256':source_signature(),
+         'source_registry_sha256':(prompt_fidelity_signature() if prompt_fidelity_v2
+                                   else source_signature()),
          'case_index':index,'seed':seed,'attempt':attempt}
     if residual is not None:row['zero_line_residual']=residual
     row['oracle_fingerprint']=sha({'source':state,'game':game,'result':repr(float(computed)),'source_registry_sha256':row['source_registry_sha256']})
@@ -628,17 +677,23 @@ def certify(row):
     game=row.get('game_id')
     extra=game in ext.EXTRA_IDS
     dynamic=game in transition.TRANSITION_IDS
-    expected_schema=TRANSITION_SCHEMA if dynamic else (EXTENSION_SCHEMA if extra else SCHEMA)
+    prompt_v2=(not dynamic and not extra and game in src.SCALAR_MODELS and
+               row.get('generator_schema')==PROMPT_FIDELITY_SCALAR_SCHEMA)
+    expected_schema=(TRANSITION_SCHEMA if dynamic else
+                     EXTENSION_SCHEMA if extra else
+                     PROMPT_FIDELITY_SCALAR_SCHEMA if prompt_v2 else SCHEMA)
     if row.get('generator_schema')!=expected_schema:
         raise ValueError('GAMER_UNRECOGNIZED_GENERATOR_PROVENANCE')
     expected_signature=(transition_signature() if dynamic else
-                        (extension_signature() if extra else source_signature()))
+                        extension_signature() if extra else
+                        prompt_fidelity_signature() if prompt_v2 else source_signature())
     if row.get('source_registry_sha256')!=expected_signature:
         raise ValueError('GAMER_SOURCE_REGISTRY_DRIFT')
     if row.get('game_id') not in set(src.MATRICES)|set(src.SCALAR_MODELS)|set(ext.EXTRA_IDS)|set(transition.TRANSITION_IDS):
         raise ValueError('GAMER_BAD_SOURCE_GAME')
     expected=generate_case(row['game_id'],row['case_index'],row['seed'],row['attempt'],
-                           blind_matrix=(row.get('blind_matrix') is True))
+                           blind_matrix=(row.get('blind_matrix') is True),
+                           prompt_fidelity_v2=prompt_v2)
     if canon(row)!=canon(expected):raise ValueError('GAMER_GENERATED_CASE_MISMATCH_OR_TAMPER')
     return True
 

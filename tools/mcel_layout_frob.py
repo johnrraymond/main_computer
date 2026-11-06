@@ -635,6 +635,14 @@ def _paired_browser_page(browser, markup, width):
     page = browser.new_page(viewport={'width':width,'height':900}, device_scale_factor=1)
     page.route('**/*', lambda route: route.abort())
     page.evaluate(_PAIRED_MOCK)
+    # Opaque-origin browser fixtures cannot use localStorage. Supply a
+    # per-page in-memory store for the real embedded Chat Console controller;
+    # neither persistent chat threads nor canonical browser state are touched.
+    page.evaluate("""() => {const values=new Map();Object.defineProperty(window,'localStorage',{
+      configurable:true,value:{getItem:k=>values.get(String(k))??null,
+      setItem:(k,v)=>values.set(String(k),String(v)),removeItem:k=>values.delete(String(k)),
+      clear:()=>values.clear(),key:i=>[...values.keys()][i]??null,
+      get length(){return values.size;}}});}""")
     page.evaluate('window.__pairedErrors=[];window.addEventListener("error",e=>window.__pairedErrors.push(String(e.message)));')
     try:
         page.set_content(markup, wait_until='load', timeout=15000)
@@ -878,9 +886,11 @@ def _paired_populated_interaction(browser, markup, app, width, screenshot=None):
     page=_paired_browser_page(browser,markup,width)
     try:
         if app=='file-manager':
-            page.get_by_role('button',name='Load Roots').click(timeout=5000)
-            page.locator('[data-record-key="workspace"] button').click(timeout=5000)
-            page.get_by_role('button',name='Browse').click(timeout=5000)
+            # The incumbent selects and lists a default root on startup.
+            # Do not conceal a broken initial workflow behind test clicks.
+            page.locator('[data-record-key="README.md"] button').wait_for(timeout=7000)
+            if page.evaluate('window.__mcelWorkbench.app.readState("state:selected-root")')!='workspace':
+                return {'status':'FAIL','reason':'Default root was not selected at startup'}
             page.locator('[data-record-key="README.md"] button').click(timeout=5000)
             page.get_by_role('button',name='Preview Entry').click(timeout=5000)
             page.locator('[data-state="state:preview"]').get_by_text('Project documentation').wait_for(timeout=5000)
@@ -1017,6 +1027,16 @@ def paired_workspace_frob(*, candidate_zip=None, apps=PAIRED_APPS, widths=PAIRED
                             checks['authoredControls']=not (Counter(old['buttons'])-Counter(new['buttons']))
                             checks['noHorizontalOverflow']=not new['horizontalOverflow']
                             checks['anchorAboveFold']=bool(new['anchor'] and new['anchor']['y']<new['mainHeight'])
+                            if app in ('file-manager','task-manager','code-editor'):
+                                from tools.mcel_paired_app_oracles import browser_oracle
+                                page=_paired_browser_page(b,candidate[app]['html'],width)
+                                try:
+                                    independent_oracle=browser_oracle(page,app,width)
+                                finally:
+                                    page.close()
+                                case['semanticLayoutOracle']=independent_oracle
+                                checks['semanticLayoutOracle']=independent_oracle['status']=='PASS'
+                                checks['workspacePlanConsumed']=bool(new['layout'] and new['zones'].get('workspace'))
                             if app=='calculator':
                                 checks['workspacePlanConsumed']=bool(new['layout'] and new['zones'].get('workspace'))
                                 oracle=_paired_calculator_oracle(b,candidate[app]['html'],width)
@@ -1041,10 +1061,8 @@ def paired_workspace_frob(*, candidate_zip=None, apps=PAIRED_APPS, widths=PAIRED
                     if has_plan:
                         planned_apps.append(app)
                         report['checks'][app+'PlanContract']=_paired_plan_contract(candidate[app]['html'],candidate[app]['ir'])
-                    elif app in ('code-editor','calculator'):
+                    elif app in ('file-manager','task-manager','code-editor','calculator'):
                         report['checks'][app+'PlanContract']={'status':'FAIL','reason':app+' candidate lacks a workspace plan'}
-                    else:
-                        report['checks'][app+'PlanContract']={'status':'PASS','reason':'Unplanned reference application (regression comparison only)'}
                     screenshot=output/f'{app}-populated-{max(widths)}.png'
                     report['checks'][app+'PopulatedWorkflow']=_paired_populated_interaction(b,candidate[app]['html'],app,max(widths),screenshot)
                 report['checks']['compositionCandidatePresent']={

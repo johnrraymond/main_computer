@@ -17,6 +17,12 @@ ROUTE = '/applications/mcel-semantic-calculator-expanded'
 ASSETS = [
     'main_computer/web/applications/scripts/calculator-core.js',
     'main_computer/web/applications/scripts/calculator-capabilities.js',
+    'main_computer/web/applications/scripts/calculator-view-model.js',
+    'main_computer/web/applications/scripts/dom-bindings/chat-console.js',
+    'main_computer/web/applications/scripts/chat-thread-store.js',
+    'main_computer/web/applications/scripts/chat-thread-controller.js',
+    'main_computer/web/applications/scripts/chat-console-state.js',
+    'main_computer/web/applications/scripts/chat-console.js',
     'main_computer/web/applications/scripts/mcel-semantic-layout-inference.js',
     'main_computer/web/applications/scripts/mcel-semantic-operational-runtime.js',
     'main_computer/web/applications/scripts/mcel-calculator-expanded-port.js',
@@ -29,6 +35,12 @@ INTENT_OPS = {
     'ask-arithmetic-model':('calculator-service','arithmetic-ask','askArithmeticModel'),
     'ask-graph-model':('calculator-service','graph-ask','askGraphModel'),
     'ask-result-question':('calculator-service','question','askResultQuestion'),
+    'apply-arithmetic-suggestion':('calculator-core','evaluate','evaluateCalculatorExpression'),
+    'apply-graph-suggestion':('calculator-core','graph','sampleGraphExpression'),
+    'apply-symbolic-suggestion':('calculator-core','normalize-symbolic','normalizeSymbolicSuggestion'),
+    'edit-graph-expression':('calculator-core','edit-graph','editGraphExpression'),
+    'clear-symbolic':('calculator-core','clear-symbolic','clearSymbolic'),
+    'calculator-chat':('calculator-service','chat','calculatorEmbeddedChat'),
 }
 
 def compile_expanded(repo: Path = ROOT) -> dict:
@@ -46,7 +58,7 @@ def compile_expanded(repo: Path = ROOT) -> dict:
         raise CandidateHostError('expanded candidate intents changed')
     caps={c['id']:c for c in ir.get('capabilities',[])}
     effects={e['id']:e for e in ir.get('effects',[])}
-    if set(caps) != {'capability:calculator-core','capability:calculator-service'} or len(effects)!=7:
+    if set(caps) != {'capability:calculator-core','capability:calculator-service'} or len(effects)!=len(INTENT_OPS):
         raise CandidateHostError('expanded candidate capability set changed')
     for cap in caps.values():
         if cap.get('risk')!='external-read':raise CandidateHostError('expanded capability authority changed')
@@ -73,6 +85,7 @@ def render_expanded_page(repo: Path = ROOT) -> str:
         return '<script>\n'+script+'\n</script>'
     scripts='\n'.join(asset(Path(x)) for x in ASSETS)
     expert_css=(repo/'main_computer/web/applications/styles/mcel-semantic-expert.css').read_text(encoding='utf8')
+    expert_css+='\n'+(repo/'main_computer/web/applications/styles/chat-console.css').read_text(encoding='utf8')
     if '</style' in expert_css.lower():
         raise CandidateHostError('style termination')
     return '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

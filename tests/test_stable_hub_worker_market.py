@@ -36,6 +36,7 @@ def test_worker_market_profile_normalizes_ring_price_capabilities_and_capacity()
             "ring": "ring-2",
             "price": {"amount": "0.0500", "unit": "CREDIT"},
             "capabilities": ["python", "python", "shell"],
+            "models": ["model-alpha"],
             "max_concurrency": 3,
         }
     )
@@ -44,8 +45,8 @@ def test_worker_market_profile_normalizes_ring_price_capabilities_and_capacity()
         "rings": ["ring-2"],
         "partitions": ["ring-2"],
         "capabilities": ["python", "shell"],
-        "models": [],
-        "model": "",
+        "models": ["model-alpha"],
+        "model": "model-alpha",
         "price": {"amount": "0.05", "unit": "credit"},
         "max_concurrency": 3,
         "active_sessions": 0,
@@ -58,6 +59,7 @@ def test_request_market_constraints_derive_stable_partition_from_ring() -> None:
             "ring": "ring-2",
             "max_price": {"amount": "0.10", "unit": "credit"},
             "capabilities": ["python"],
+            "model": "model-alpha",
         }
     )
 
@@ -65,7 +67,7 @@ def test_request_market_constraints_derive_stable_partition_from_ring() -> None:
     assert constraints["ring"] == "ring-2"
     assert constraints["max_price"] == {"amount": "0.1", "unit": "credit"}
     assert constraints["capabilities"] == ["python"]
-    assert stable_partition_key_for_work({"ring": "ring-2"}) == "ring-2"
+    assert stable_partition_key_for_work({"ring": "ring-2", "model":"model-alpha", "operation":"python"}) == "ring-2"
 
 
 def test_worker_market_rejects_bad_ring_names_and_bad_capacity() -> None:
@@ -73,7 +75,8 @@ def test_worker_market_rejects_bad_ring_names_and_bad_capacity() -> None:
         normalize_worker_market_profile({"ring": "bad ring"})
 
     with pytest.raises(StableHubWorkerSessionError, match="max_concurrency"):
-        normalize_worker_market_profile({"ring": "ring-2", "max_concurrency": 0})
+        normalize_worker_market_profile({"ring": "ring-2", "max_concurrency": 0,
+                                         "models":["model-alpha"],"capabilities":["python"]})
 
 
 def test_market_directory_selects_cheapest_live_worker_for_ring_price_and_capability() -> None:
@@ -86,6 +89,7 @@ def test_market_directory_selects_cheapest_live_worker_for_ring_price_and_capabi
         worker_id="worker-expensive",
         owner=_owner(worker_id="worker-expensive", connection_id="conn_expensive"),
         market_profile={
+            "models": ["model-alpha"],
             "rings": ["ring-2"],
             "price": {"amount": "0.08", "unit": "credit"},
             "capabilities": ["python", "shell"],
@@ -99,6 +103,7 @@ def test_market_directory_selects_cheapest_live_worker_for_ring_price_and_capabi
         worker_id="worker-cheap",
         owner=_owner(worker_id="worker-cheap", connection_id="conn_cheap"),
         market_profile={
+            "models": ["model-alpha"],
             "rings": ["ring-2"],
             "price": {"amount": "0.05", "unit": "credit"},
             "capabilities": ["python"],
@@ -112,6 +117,7 @@ def test_market_directory_selects_cheapest_live_worker_for_ring_price_and_capabi
         worker_id="worker-other-ring",
         owner=_owner(worker_id="worker-other-ring", connection_id="conn_other_ring"),
         market_profile={
+            "models": ["model-alpha"],
             "rings": ["ring-3"],
             "price": {"amount": "0.01", "unit": "credit"},
             "capabilities": ["python"],
@@ -127,6 +133,7 @@ def test_market_directory_selects_cheapest_live_worker_for_ring_price_and_capabi
             "ring": "ring-2",
             "max_price": {"amount": "0.10", "unit": "credit"},
             "capabilities": ["python"],
+            "model": "model-alpha",
         }
     )
 
@@ -149,6 +156,7 @@ def test_market_directory_excludes_closed_over_budget_missing_capability_and_ful
         worker_id="worker-over-budget",
         owner=_owner(worker_id="worker-over-budget", connection_id="conn_over_budget"),
         market_profile={
+            "models": ["model-alpha"],
             "rings": ["ring-2"],
             "price": {"amount": "0.50", "unit": "credit"},
             "capabilities": ["python"],
@@ -162,6 +170,7 @@ def test_market_directory_excludes_closed_over_budget_missing_capability_and_ful
         worker_id="worker-missing-capability",
         owner=_owner(worker_id="worker-missing-capability", connection_id="conn_missing_capability"),
         market_profile={
+            "models": ["model-alpha"],
             "rings": ["ring-2"],
             "price": {"amount": "0.01", "unit": "credit"},
             "capabilities": ["shell"],
@@ -175,6 +184,7 @@ def test_market_directory_excludes_closed_over_budget_missing_capability_and_ful
         worker_id="worker-full",
         owner=_owner(worker_id="worker-full", connection_id="conn_full"),
         market_profile={
+            "models": ["model-alpha"],
             "rings": ["ring-2"],
             "price": {"amount": "0.01", "unit": "credit"},
             "capabilities": ["python"],
@@ -189,6 +199,7 @@ def test_market_directory_excludes_closed_over_budget_missing_capability_and_ful
         worker_id="worker-closed",
         owner=_owner(worker_id="worker-closed", connection_id="conn_closed"),
         market_profile={
+            "models": ["model-alpha"],
             "rings": ["ring-2"],
             "price": {"amount": "0.01", "unit": "credit"},
             "capabilities": ["python"],
@@ -205,6 +216,7 @@ def test_market_directory_excludes_closed_over_budget_missing_capability_and_ful
             "ring": "ring-2",
             "max_price": {"amount": "0.10", "unit": "credit"},
             "capabilities": ["python"],
+            "model": "model-alpha",
         }
     )
 
@@ -222,11 +234,12 @@ def test_selection_excludes_exact_rejected_lease_without_excluding_reconnected_w
         market.record_worker_live(
             worker_id=worker_id,
             owner=_owner(worker_id=worker_id, connection_id=connection),
-            market_profile={"ring": "ring-2", "price": {"amount": price, "unit": "credit"}},
+            market_profile={"ring": "ring-2", "models":["model-alpha"],
+                            "capabilities":["python"], "price": {"amount": price, "unit": "credit"}},
             worker_msk_id="msk", worker_wallet_address="0x" + "11" * 20,
             worker_account_id="acct",
         )
-    work = {"ring": "ring-2"}
+    work = {"ring": "ring-2", "model":"model-alpha", "operation":"python"}
     assert market.select_worker_for_work(work)["worker_id"] == "worker-a"
     selected = market.select_worker_for_work(work, excluded_connections={("worker-a", "conn_old", 1)})
     assert selected is not None and selected["worker_id"] == "worker-b"
@@ -234,7 +247,8 @@ def test_selection_excludes_exact_rejected_lease_without_excluding_reconnected_w
     market.record_worker_live(
         worker_id="worker-a",
         owner={**_owner(worker_id="worker-a", connection_id="conn_new"), "lease_epoch": 2},
-        market_profile={"ring": "ring-2", "price": {"amount": "0.01", "unit": "credit"}},
+        market_profile={"ring": "ring-2", "models":["model-alpha"],
+                            "capabilities":["python"], "price": {"amount": "0.01", "unit": "credit"}},
         worker_msk_id="msk", worker_wallet_address="0x" + "11" * 20,
         worker_account_id="acct",
     )

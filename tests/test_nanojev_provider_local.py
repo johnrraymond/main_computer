@@ -37,15 +37,30 @@ def clef_service():
 
         def do_GET(self):
             events.append(("GET", self.path, None))
-            self.respond(replies.get(self.path, {
-                "ready": True, "model_loaded_once": True, "model_family": "nanojev-clef",
-                "release_name": "CLEF-test", "release_manifest_sha256": SHA,
-            }))
+            if self.path == "/api/models":
+                self.respond(replies.get("/api/models", {
+                    "schema": "nanojev.model-catalog.v1", "ready": True,
+                    "models": [{"id":"nanojev-clef", "ready":True,
+                                "operations": [CLEF_EVALUATE, CLEF_PAIRWISE],
+                                "checkpoint": {"release_name":"CLEF-test",
+                                               "release_manifest_sha256":SHA}}],
+                }))
+            else:
+                self.respond(replies.get(self.path, {
+                    "ready": True, "model_loaded_once": True, "model_family": "nanojev-clef",
+                    "release_name": "CLEF-test", "release_manifest_sha256": SHA,
+                }))
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             events.append(("POST", self.path, body))
-            self.respond(replies[self.path])
+            if self.path == "/api/infer":
+                path = "/api/evaluate" if body["operation"] == CLEF_EVALUATE else "/api/evaluate-batch"
+                result = replies[path]
+                self.respond({"schema":"nanojev.inference-result.v1", "model":body["model"],
+                              "operation":body["operation"],"checkpoint":result["model"],"result":result})
+            else:
+                self.respond(replies[self.path])
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -84,7 +99,9 @@ def test_local_structured_evaluation_preserves_checkpoint(clef_service):
     assert result["schema"] == "main-computer.nanojev-solution.v1"
     assert result["result"]["states"][0]["answers"]["q"]["choice"] == "right"
     assert result["model"]["release_manifest_sha256"] == SHA
-    assert [e[1] for e in events] == ["/api/health", "/api/evaluate"]
+    assert [e[1] for e in events] == ["/api/models", "/api/infer"]
+    assert events[-1][2]["model"] == "nanojev-clef"
+    assert events[-1][2]["checkpoint_sha256"] == SHA
 
 
 def test_pairwise_batch_preserves_candidates_and_probabilities(clef_service):
@@ -99,7 +116,8 @@ def test_pairwise_batch_preserves_candidates_and_probabilities(clef_service):
                    {"id": "a", "text": "A"}, {"id": "b", "text": "B"}]}]}
     solution = NanoJevClefProvider(base_url=url).solve(capability=CLEF_PAIRWISE, payload=request)
     assert solution["result"]["results"][0]["choice"] == "b"
-    assert events[-1][1] == "/api/evaluate-batch"
+    assert events[-1][1] == "/api/infer"
+    assert events[-1][2]["operation"] == CLEF_PAIRWISE
 
 
 def test_chat_and_unknown_capability_fail_before_network(clef_service):
@@ -130,10 +148,10 @@ def test_malformed_probability_distribution_fails(clef_service):
 
 def test_unready_service_prevents_computation(clef_service):
     url, events, replies = clef_service
-    replies["/api/health"] = {"ready": False}
-    with pytest.raises(NanoJevProviderError, match="not ready"):
+    replies["/api/models"] = {"ready": False}
+    with pytest.raises(NanoJevProviderError, match="unready"):
         NanoJevClefProvider(base_url=url).solve(capability=CLEF_EVALUATE, payload=_evaluate_payload())
-    assert [e[1] for e in events] == ["/api/health"]
+    assert [e[1] for e in events] == ["/api/models"]
 
 
 def test_provider_selection_and_router_solve(clef_service, monkeypatch):
@@ -174,3 +192,12 @@ def test_managed_lifecycle_proxy_is_provider_default(monkeypatch):
     assert CLEF_BASE_URL == "http://127.0.0.1:9765"
     assert NanoJevClefProvider().base_url == CLEF_BASE_URL
     assert MainComputerConfig.from_env().nanojev_base_url == CLEF_BASE_URL
+
+
+def test_cli_lists_real_loaded_model_catalog(clef_service, capsys):
+    url, events, _ = clef_service
+    assert smoke_main(["--base-url",url,"--models"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "nanojev.model-catalog.v1"
+    assert [item["id"] for item in payload["models"]] == ["nanojev-clef"]
+    assert [event[1] for event in events] == ["/api/models"]

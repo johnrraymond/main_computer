@@ -149,7 +149,7 @@ def verify_paid_cycle(*, hub_url: str, proxy, gateway, ledger: StableHubPayoutLe
     marker='slh-actual-authorized-'+secrets.token_hex(10)
     work={'ring':'ring-2','max_price':{'amount':'2','unit':'compute_credit'},
           'capabilities':['chat.completions'] + ([market_isolation_capability] if market_isolation_capability else []), 'model':'mock-model',
-          'input':{'kind':'echo','value':marker}}
+          'input':{'kind':'chat','value':marker}}
     payload={'request_id':request_id,
              'multisession_authorization':{'kind':'multisession_key',
                    'multisession_key_id':requester_auth['multisession_key_id']},

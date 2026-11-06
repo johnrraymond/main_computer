@@ -245,15 +245,34 @@ class PrivateRequests:
             raise SLHError('INVALID_PRIVATE_MODEL',400)
         if not isinstance(work,dict) or work.get('model') != model or not isinstance(work.get('input'),dict):
             raise SLHError('INVALID_PRIVATE_WORK',400)
-        # P2 supports only chat-model work, not arbitrary Worker capabilities
-        # or the diagnostic echo bypass. A later capability needs its own policy.
-        kind = work['input'].get('kind')
-        if kind == 'echo':
+        if work['input'].get('kind') == 'echo':
             raise SLHError('PRIVATE_ECHO_NOT_ALLOWED',400)
-        if kind not in ('chat','chat.completions') or set(work) - {'model','input','execution_limits'}:
+        from main_computer.model_execution_contract import request_contract, ModelContractError
+        from main_computer.providers.nanojev import CLEF_MODEL, CLEF_CAPABILITIES
+        try:
+            requested_model, operation, required = request_contract(work)
+            if requested_model != model:
+                raise ModelContractError('private model mismatch')
+        except ModelContractError as exc:
+            raise SLHError('INVALID_PRIVATE_MODEL_OPERATION',400) from exc
+        kind = work['input'].get('kind')
+        if operation == 'chat.completions':
+            if (kind not in ('chat','chat.completions')
+                    or set(work) - {'model','input','execution_limits'}
+                    or (not isinstance(work['input'].get('prompt'),str)
+                        and not isinstance(work['input'].get('messages'),list))):
+                raise SLHError('PRIVATE_CHAT_INPUT_REQUIRED',400)
+        elif model == CLEF_MODEL and operation in CLEF_CAPABILITIES:
+            # Native structured inference is not chat; reject unknown operations,
+            # aliases, and generic result/echo paths at admission.
+            if (kind != operation or required != (operation,)
+                    or work.get('capabilities') != [operation]
+                    or set(work) - {'model','operation','capabilities','input','execution_limits'}
+                    or not isinstance(work['input'].get('payload'),dict)
+                    or not work['input']['payload']):
+                raise SLHError('PRIVATE_NATIVE_INPUT_REQUIRED',400)
+        else:
             raise SLHError('PRIVATE_CAPABILITY_NOT_ALLOWED',400)
-        if not isinstance(work['input'].get('prompt'),str) and not isinstance(work['input'].get('messages'),list):
-            raise SLHError('PRIVATE_CHAT_INPUT_REQUIRED',400)
         try:
             encoded = json.dumps({'model':model,'work':work}, sort_keys=True, separators=(',',':'),allow_nan=False).encode('utf-8')
         except (TypeError,ValueError):
@@ -261,7 +280,7 @@ class PrivateRequests:
         if len(encoded)>65536:
             raise SLHError('PRIVATE_WORK_TOO_LARGE',413)
         digest = hashlib.sha256(encoded).hexdigest()
-        quote=self.gateway.scheduler.private_quote(model=model)
+        quote=self.gateway.scheduler.private_quote(model=model,operation=operation)
         verified_credits=self._verified_credits() if quote else None
         with self._lock, self._db() as db:
             row = db.execute('SELECT * FROM private_requests WHERE requester_device_id=? AND request_id=?',
@@ -307,10 +326,10 @@ class PrivateRequests:
             return self._update(requester,req,'FAILED',failure_code='REQUESTER_REVOKED')
         try:
             worker=self.gateway.scheduler.reserve_private(sid,model=model,
-                device_id=quote['device_id'],generation=quote['generation'])
+                device_id=quote['device_id'],generation=quote['generation'],operation=operation)
         except RuntimeError:
             pending=self.gateway.scheduler.request_private_capacity(model=model,
-                device_id=quote['device_id'],generation=quote['generation'])
+                device_id=quote['device_id'],generation=quote['generation'],operation=operation)
             controller=self.marketplace_controller
             if not pending or controller is None:
                 if pending:
@@ -333,7 +352,7 @@ class PrivateRequests:
                         break
                     try:
                         worker=self.gateway.scheduler.reserve_private(sid,model=model,
-                            device_id=quote['device_id'],generation=quote['generation'])
+                            device_id=quote['device_id'],generation=quote['generation'],operation=operation)
                         break
                     except RuntimeError:
                         time.sleep(0.1)
@@ -361,6 +380,11 @@ class PrivateRequests:
                 return self._update(requester,req,'OUTCOME_UNKNOWN',failure_code='EXECUTION_OUTCOME_UNCERTAIN')
             if result.get('status') != 'success' or result.get('debug_echo'):
                 return self._update(requester,req,'FAILED',failure_code='INVALID_WORKER_RESULT')
+            from main_computer.model_execution_contract import verify_execution_result, ModelContractError
+            try:
+                verify_execution_result(work, result)
+            except ModelContractError:
+                return self._update(requester,req,'FAILED',failure_code='MODEL_EXECUTION_MISMATCH')
             proof=hashlib.sha256(json.dumps(result,sort_keys=True,separators=(',',':'),allow_nan=False).encode('utf-8')).hexdigest()
             response=self._complete_success(requester,req,proof)
             response['result']=result  # volatile: never persisted / journaled

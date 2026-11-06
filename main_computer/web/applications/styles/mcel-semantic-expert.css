@@ -59,3 +59,15 @@ body.mcel-expert-page > [role="status"][aria-live] {color:#90b9b9;font-size:.76r
   [data-mcel-presentation="expert"] [data-mcel-mode-tabs] {display:none;}
   [data-mcel-presentation="expert"] [data-mcel-expression-pad] button {min-height:48px;}
 }
+/* Semantic expression editor is a separate full-width form row; never
+   overlap primary form actions or intercept their pointer events. */
+[data-mcel-presentation="expert"] [data-mcel-expression-editor] {grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:.45rem;min-width:0;position:relative;}
+[data-mcel-presentation="expert"] [data-mcel-expression-editor] button {min-width:0;max-width:100%;}
+[data-mcel-presentation="expert"] form:has([data-mcel-expression-editor]) > button[type="reset"] {grid-column:1 / -1;}
+
+/* The existing embedded Chat Console tab strip must stay within its semantic
+   region at phone widths. This alters presentation only, not chat authority. */
+@media(max-width:680px) {
+  [data-mcel-embedded-chat] .chat-cell-tabs {position:static;top:auto;left:auto;flex-wrap:wrap;max-width:100%;min-width:0;gap:3px;}
+  [data-mcel-embedded-chat] .chat-cell-tab {max-width:100%;}
+}

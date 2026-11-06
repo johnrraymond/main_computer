@@ -33,7 +33,7 @@ module.exports=mcel.defineApp({id:"semantic-file-manager",title:"Semantic File M
   const surface=dsl.surface.bindHtml("application",{bindings:{
     locations:[dsl.surface.action("load-roots",{intent:load}),dsl.surface.collection("roots",{key:"id",fields:["label"],state:roots,select:chooseRoot})],
     directory:[dsl.surface.action("browse",{intent:browse}),dsl.surface.form("open-directory",{fields:{relativePath:text},defaults:{relativePath:""},intent:enter}),dsl.surface.form("search",{fields:{query:text},intent:search}),dsl.surface.collection("entries",{key:"id",fields:["name","kind","bytes","category","pathDisplay","suggestedApp"],state:files,select:chooseFile})],
-    inspection:[dsl.surface.action("preview-file",{intent:preview}),dsl.surface.text("preview-content",{value:detail}),dsl.surface.action("open-with",{intent:openWith}),
+    inspection:[dsl.surface.text("selected-entry-details",{value:chosen}),dsl.surface.action("preview-file",{intent:preview}),dsl.surface.text("preview-content",{value:detail}),dsl.surface.action("open-with",{intent:openWith}),
       dsl.surface.text("open-with-result",{value:openedWith})],
     status:[dsl.surface.receipt("activity")]
   }});

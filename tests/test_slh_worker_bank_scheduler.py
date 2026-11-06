@@ -23,7 +23,7 @@ def _bank(n, credits=0):
     scheduler=ManagedScheduler(policy_store=policy,credit_provider=lambda:{
         'state':'CURRENT','balance':{'available_credit_wei':str(balance['wei'])}})
     for number in range(n):
-        scheduler.register(ManagedWorker(f'w{number}',_Socket(),{},['model']))
+        scheduler.register(ManagedWorker(f'w{number}',_Socket(),{'models':['model'], 'capabilities':['chat.completions']},['model']))
     return scheduler,balance,policy
 
 
@@ -61,7 +61,7 @@ def test_withdrawal_pending_prevents_both_kinds_of_reservation():
     try:bank.reserve_private('private',model='model')
     except RuntimeError:pass
     else:assert False,'premature local execution'
-    assert bank.reserve_public('public',device_id='w1').device_id=='w1'
+    assert bank.reserve_public('public',device_id='w1',work={'model':'model','operation':'chat.completions'}).device_id=='w1'
     bank.release('public')
     assert bank.mark_advertised('w0',False)
     assert bank.reserve_private('private-2',model='model').device_id=='w0'
@@ -84,7 +84,7 @@ def test_concurrent_local_reservations_cannot_duplicate_worker():
 def test_reallocation_preserves_busy_public_and_requires_ack():
     bank,balance,policy=_bank(1,0)
     bank.mark_advertised('w0',True)
-    worker=bank.reserve_public('public',device_id='w0')
+    worker=bank.reserve_public('public',device_id='w0',work={'model':'model','operation':'chat.completions'})
     balance['wei']=CREDIT_WEI_PER_CREDIT
     plan=bank.plan()
     assert 'w0' in plan.desired and 'w0' in plan.occupied_public

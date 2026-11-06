@@ -40,8 +40,9 @@ def test_startup_routes_managed_mode_through_python_manager_not_direct_container
     assert "function Start-MainComputerNanoJevManager" in helper
     assert 'tools\\nanojev_lifecycle_service.py' in helper
     assert 'state = "manager-ready-container-idle"' in helper
-    assert 'existing container will be reused; image bootstrap runs independently' in helper
-    assert '-Arguments @("--project-name", $projectName, "-f", $composePath, "stop", "nanojev")' in helper
+    assert 'existing container will be reused without a startup stop; image bootstrap runs independently' in helper
+    # No unconditional startup stop: a live backend may be serving work.
+    assert '-Arguments @("--project-name", $projectName, "-f", $composePath, "stop", "nanojev")' not in helper
     assert 'stop_command = @("docker", "compose", "--project-name", $nanoJevProject, "-f", $nanoJevCompose, "stop", "nanojev")' in helper
     assert 'Start-MainComputerNanoJevImageBootstrap $RootPath $launchContext $pythonCommand' in helper
     assert 'tools\\nanojev_image_bootstrap.py' in helper
