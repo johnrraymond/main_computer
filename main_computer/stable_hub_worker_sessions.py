@@ -2843,6 +2843,7 @@ class StableHubAcceptedWorkSessionDirectory:
         worker_acceptance: dict[str, Any],
         payout: dict[str, Any] | None = None,
         temporal_intent: bool = False,
+        continuation_token: str = "",
     ) -> dict[str, Any]:
         session_id = normalize_session_id(session_id)
         request_id = normalize_request_id(request_id)
@@ -2869,6 +2870,9 @@ class StableHubAcceptedWorkSessionDirectory:
             "partition": str(partition),
             "task_queue": str(task_queue),
             "status": "accepted",
+            # Session-scoped secret. NEVER include this field in public projections.
+            "continuation_token": str(continuation_token),
+            "continuation_expires_at": time.time() + 24 * 3600 if continuation_token else 0,
             "created_at": now,
             "accepted_at": now,
             "cluster_id": self.cluster_id,
@@ -2911,6 +2915,27 @@ class StableHubAcceptedWorkSessionDirectory:
             request_index[index_key] = session_id
             self.store.save(data)
             return dict(record)
+
+    @_atomic_stable_store_mutation
+    def ensure_continuation_token(self, session_id: str) -> str:
+        """Upgrade a legacy accepted session only after requester MSK validation.
+
+        Idempotent retries by the authenticated original requester can recover
+        a continuation capability without duplicating charges or executions.
+        """
+        session_id = normalize_session_id(session_id)
+        with self._lock:
+            data = self.store.load()
+            record = data.get("accepted_sessions", {}).get(session_id)
+            if not isinstance(record, dict):
+                raise StableHubWorkerSessionError("accepted work session does not exist.")
+            token = str(record.get("continuation_token") or "")
+            if not token or float(record.get("continuation_expires_at") or 0) <= time.time():
+                token = secrets.token_urlsafe(32)
+                record["continuation_token"] = token
+                record["continuation_expires_at"] = time.time() + 24 * 3600
+                self.store.save(data)
+            return token
 
     @_atomic_stable_store_mutation
     def append_stream_event(self, session_id: str, event: dict[str, Any]) -> dict[str, Any]:

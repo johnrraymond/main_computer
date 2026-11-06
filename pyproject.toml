@@ -14,7 +14,7 @@ mathics = ["Mathics3==10.0.0"]
 main-computer = "main_computer.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["main_computer*"]
+include = ["main_computer*", "tools", "tools.mother", "tools.mother.common"]
 exclude = [
   "tests*",
   "pretty_docs*",

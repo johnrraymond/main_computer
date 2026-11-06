@@ -67,6 +67,59 @@ from main_computer.stable_hub_worker_sessions import (
 
 
 
+# Explicit public contracts. These records must never be serialized with
+# dict(internal_record): internal session, account and Worker IDs are secret.
+def _public_payout(raw: Any) -> dict[str, Any]:
+    payout = raw if isinstance(raw, dict) else {}
+    fields = ("unit", "pricing_mode", "charged_credits", "reserved_credits",
+              "released_credits", "payment_status", "settlement_status",
+              "hold_status", "direct_spend", "charge_id")
+    public = {key: payout[key] for key in fields if key in payout}
+    for name in ("selected_price", "requester_max_price"):
+        price = payout.get(name)
+        if isinstance(price, dict):
+            public[name] = {k: price[k] for k in ("amount", "unit", "credit_wei") if k in price}
+    return public
+
+
+def _public_worker_result(raw: Any) -> dict[str, Any]:
+    outer = raw if isinstance(raw, dict) else {}
+    result = outer.get("result")
+    if not isinstance(result, dict):
+        return {}
+    # The semantic answer is requester-owned content. Never copy Worker
+    # protocol frames, routing details, metadata or account receipts.
+    content: dict[str, Any] = {}
+    if result.get("status") is not None:
+        content["status"] = str(result["status"])
+    response = result.get("response")
+    if isinstance(response, dict):
+        content["response"] = {k: response[k] for k in (
+            "role", "content", "model", "provider", "choices", "usage") if k in response}
+    solution = result.get("solution")
+    if isinstance(solution, dict):
+        content["solution"] = {k: solution[k] for k in (
+            "schema", "provider", "capability", "model", "result") if k in solution}
+    return {"result": content}
+
+
+def _public_work_session(record: dict[str, Any]) -> dict[str, Any]:
+    public = {key: record[key] for key in ("session_id", "request_id", "run_id", "status")
+              if key in record}
+    if record.get("worker_result") is not None:
+        public["worker_result"] = _public_worker_result(record.get("worker_result"))
+    if record.get("worker_failure") is not None:
+        failure = record.get("worker_failure")
+        error = failure.get("error") if isinstance(failure, dict) else None
+        reason = error.get("reason_code") if isinstance(error, dict) else "worker_failed"
+        reason = str(reason or "worker_failed")
+        if not re.fullmatch(r"[a-z0-9_]{1,64}", reason):
+            reason = "worker_failed"
+        public["worker_failure"] = {"reason_code": reason}
+    public["payout"] = _public_payout(record.get("payout"))
+    return public
+
+
 def settle_disconnected_worker_sessions(
     server: Any, *, worker_id: str, connection_id: str,
 ) -> int:
@@ -858,7 +911,6 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     "session_id": session_id,
                     "request_id": request_id,
                     "status": previous_status,
-                    "accepted_session": accepted_session,
                 }
             )
             return
@@ -939,7 +991,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 )
                 session.send_json({"type": "hub.work.result.accepted", "ok": True,
                                    "session_id": session_id, "request_id": request_id,
-                                   "status": updated.get("status"), "payout": updated.get("payout", {})})
+                                   "status": updated.get("status")})
                 return
 
         if message_type == "worker.work.failed":
@@ -975,7 +1027,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             )
             session.send_json({"type": "hub.work.failed.accepted", "ok": True,
                                "session_id": session_id, "request_id": request_id,
-                               "status": updated.get("status"), "payout": updated.get("payout", {})})
+                               "status": updated.get("status")})
             return
 
         raise StableHubWorkerSessionError("unsupported worker terminal message.")
@@ -1304,50 +1356,38 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
 
 
 
+    def _accepted_response(self, session: dict[str, Any], *, idempotent: bool) -> dict[str, Any]:
+        """Only requester-facing fields; never an internal market/session record."""
+        session_id = normalize_session_id(session.get("session_id"))
+        owner_id = str(session.get("owner_hub_id") or "")
+        owner_url = str(session.get("owner_hub_url") or "")
+        # Called only after the requester's wallet-bound MSK was validated.
+        # Reissue a scoped secret for legacy/expired sessions without changing
+        # the session ID, charge, selected Worker or execution state.
+        token = self.server.accepted_work_session_directory.ensure_continuation_token(session_id)
+        return {
+            "ok": True, "accepted": True, "idempotent": idempotent,
+            "session_id": session_id, "run_id": session.get("run_id"),
+            "request_id": session.get("request_id"),
+            "execution_hub": {"hub_id": owner_id, "hub_url": owner_url},
+            "continuation_url": stable_work_session_continuation_url(owner_url, session_id),
+            # Secret is sent in the request Authorization header, never URL.
+            "continuation_token": token,
+            "continuation": {"direct": True,
+                             "stream_path": stable_work_session_stream_path(session_id),
+                             "hub_id": owner_id, "hub_url": owner_url},
+            "accepted_session": _public_work_session(session),
+            "hub_id": self.server.hub.hub_id,
+            "cluster_id": self.server.topology.cluster_id,
+        }
+
     def _send_existing_accepted_work_session_response(
-        self,
-        *,
-        accepted_session: dict[str, Any],
-        request_id: str,
-        idempotent: bool = True,
+        self, *, accepted_session: dict[str, Any],
+        request_id: str, idempotent: bool = True,
     ) -> None:
-        session_id = normalize_session_id(accepted_session.get("session_id"))
-        owner_hub_id = str(accepted_session.get("owner_hub_id") or "")
-        owner_hub_url = str(accepted_session.get("owner_hub_url") or "")
-        continuation_url = stable_work_session_continuation_url(owner_hub_url, session_id)
-        self._send_json(
-            200,
-            {
-                "ok": True,
-                "accepted": True,
-                "idempotent": idempotent,
-                "duplicate_request_id": True,
-                "session_id": session_id,
-                "run_id": accepted_session.get("run_id"),
-                "request_id": request_id,
-                "worker_id": accepted_session.get("worker_id"),
-                "owner_hub_id": owner_hub_id,
-                "owner_hub_url": owner_hub_url,
-                "partition": accepted_session.get("partition"),
-                "task_queue": accepted_session.get("task_queue"),
-                "execution_hub": {
-                    "hub_id": owner_hub_id,
-                    "hub_url": owner_hub_url,
-                },
-                "continuation_url": continuation_url,
-                "continuation": {
-                    "direct": True,
-                    "stream_path": stable_work_session_stream_path(session_id),
-                    "hub_id": owner_hub_id,
-                    "hub_url": owner_hub_url,
-                },
-                "execution": accepted_session.get("execution", {}),
-                "payout": accepted_session.get("payout", {}),
-                "accepted_session": accepted_session,
-                "hub_id": self.server.hub.hub_id,
-                "cluster_id": self.server.topology.cluster_id,
-            },
-        )
+        reply = self._accepted_response(accepted_session, idempotent=idempotent)
+        reply["duplicate_request_id"] = True
+        self._send_json(200, reply)
 
     def _work_payloads_match(self, left: Any, right: Any) -> bool:
         try:
@@ -1391,6 +1431,16 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                     "cluster_id": self.server.topology.cluster_id,
                 },
             )
+            return
+
+        authorization = str(self.headers.get("Authorization") or "")
+        prefix = "Bearer "
+        supplied_token = authorization[len(prefix):].strip() if authorization.startswith(prefix) else ""
+        stored_token = str(accepted_session.get("continuation_token") or "")
+        if (not stored_token or not supplied_token
+                or float(accepted_session.get("continuation_expires_at") or 0) <= time.time()
+                or not secrets.compare_digest(stored_token, supplied_token)):
+            self._send_json(403, {"ok": False, "error": "session_continuation_forbidden"})
             return
 
         owner_hub_id = str(accepted_session.get("owner_hub_id") or "")
@@ -1443,9 +1493,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 "status": accepted_session.get("status"),
                 "execution_hub": execution_hub,
                 "continuation_url": continuation_url,
-                "execution": accepted_session.get("execution", {}),
-                "payout": accepted_session.get("payout", {}),
-                "accepted_session": accepted_session,
+                "accepted_session": _public_work_session(accepted_session),
                 "stream": {
                     "transport": "stable-hub-session-stream",
                     "mode": "accepted-session-state",
@@ -1575,28 +1623,12 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": True, "bridge_payout": payout, "hub_id": self.server.hub.hub_id, "cluster_id": self.server.topology.cluster_id})
 
     def _handle_bridge_payout_confirm(self, bridge_payout_id: str) -> None:
-        try:
-            body = self._read_json()
-            payout = self.server.payout_ledger_directory.confirm_bridge_payout(
-                bridge_payout_id=bridge_payout_id,
-                settlement_reference=str(body.get("settlement_reference") or ""),
-            )
-        except StableHubWorkerSessionError as exc:
-            self._send_json(400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
-            return
-        self._send_json(200, {"ok": True, "bridge_payout": payout, "hub_id": self.server.hub.hub_id, "cluster_id": self.server.topology.cluster_id})
+        self._read_json()
+        self._send_json(403, {"ok": False, "error": "bridge_controller_authorization_required"})
 
     def _handle_bridge_payout_fail(self, bridge_payout_id: str) -> None:
-        try:
-            body = self._read_json()
-            payout = self.server.payout_ledger_directory.fail_bridge_payout(
-                bridge_payout_id=bridge_payout_id,
-                reason=str(body.get("reason") or ""),
-            )
-        except StableHubWorkerSessionError as exc:
-            self._send_json(400, {"ok": False, "error": str(exc), "hub_id": self.server.hub.hub_id})
-            return
-        self._send_json(200, {"ok": True, "bridge_payout": payout, "hub_id": self.server.hub.hub_id, "cluster_id": self.server.topology.cluster_id})
+        self._read_json()
+        self._send_json(403, {"ok": False, "error": "bridge_controller_authorization_required"})
 
 
     def _work_diagnostic_stage(self, stage: str, **fields: Any) -> None:
@@ -1742,9 +1774,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 excluded_connections.add(identity)
                 rejected_selection = {
                     "ok": False, "error": code, "message": message,
-                    "request_id": request_id, "worker_id": worker_id,
-                    "partition": partition, "owner": owner,
-                    "selected_worker": selected_worker,
+                    "request_id": request_id,
                     "hub_id": self.server.hub.hub_id,
                     "cluster_id": self.server.topology.cluster_id,
                 }
@@ -1853,8 +1883,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(409, {
                     "ok": False, "error": "worker_owner_not_local",
                     "message": "Selected worker has no local live socket. Worker must reconnect.",
-                    "request_id": request_id, "worker_id": stale_worker_id,
-                    "partition": partition, "owner": stale_owner,
+                    "request_id": request_id,
                     "hub_id": self.server.hub.hub_id,
                     "cluster_id": self.server.topology.cluster_id,
                 })
@@ -1891,13 +1920,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                         "error": "owner_hub_handoff_failed",
                         "message": str(exc),
                         "request_id": request_id,
-                        "worker_id": worker_id,
-                        "partition": partition,
                         "owner_hub": {
                             "hub_id": owner_hub_id,
                             "hub_url": owner_hub_url,
                         },
-                        "selected_worker": selected_worker,
                         "hub_id": self.server.hub.hub_id,
                         "cluster_id": self.server.topology.cluster_id,
                     },
@@ -1905,37 +1931,53 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if owner_response.get("ok") is True and owner_response.get("accepted") is True:
-                entry_response = dict(owner_response)
-                entry_response["hub_id"] = self.server.hub.hub_id
-                entry_response["entry_hub_id"] = self.server.hub.hub_id
-                entry_response["accepted_by_hub_id"] = str(owner_response.get("hub_id") or owner_hub_id)
-                entry_response["execution_hub"] = {
-                    "hub_id": owner_hub_id,
-                    "hub_url": owner_hub_url,
-                }
-                accepted_session_id = normalize_session_id(entry_response.get("session_id"))
-                entry_response["continuation_url"] = stable_work_session_continuation_url(
-                    owner_hub_url,
-                    accepted_session_id,
-                )
-                entry_response["continuation"] = {
-                    "direct": True,
-                    "stream_path": stable_work_session_stream_path(accepted_session_id),
-                    "hub_id": owner_hub_id,
-                    "hub_url": owner_hub_url,
-                }
-                entry_response["handoff"] = {
-                    "routed": True,
-                    "from_hub_id": self.server.hub.hub_id,
-                    "to_hub_id": owner_hub_id,
-                    "to_hub_url": owner_hub_url,
-                    "request_shape": "stable-requester-work",
+                # Handoff is an untrusted cross-Hub response boundary. Even
+                # when the owner is on an older release, never forward its raw
+                # accepted_session, Worker market, owner or wallet records.
+                token = str(owner_response.get("continuation_token") or "")
+                if len(token) < 40:
+                    self._send_json(503, {"ok": False,
+                        "error": "owner_hub_missing_private_continuation",
+                        "request_id": request_id,
+                        "message": "Owner Hub requires the identity-boundary upgrade; preserve request ID for retry."})
+                    return
+                accepted_session_id = normalize_session_id(owner_response.get("session_id"))
+                public_session = owner_response.get("accepted_session")
+                public_session = _public_work_session(public_session) if isinstance(public_session, dict) else {}
+                entry_response = {
+                    "ok": True, "accepted": True,
+                    "idempotent": bool(owner_response.get("idempotent", False)),
+                    "session_id": accepted_session_id,
+                    "run_id": owner_response.get("run_id"),
+                    "request_id": request_id,
+                    "execution_hub": {"hub_id": owner_hub_id, "hub_url": owner_hub_url},
+                    "continuation_url": stable_work_session_continuation_url(owner_hub_url, accepted_session_id),
+                    "continuation_token": token,
+                    "continuation": {
+                        "direct": True,
+                        "stream_path": stable_work_session_stream_path(accepted_session_id),
+                        "hub_id": owner_hub_id, "hub_url": owner_hub_url,
+                    },
+                    "accepted_session": public_session,
+                    "hub_id": self.server.hub.hub_id,
+                    "entry_hub_id": self.server.hub.hub_id,
+                    "accepted_by_hub_id": owner_hub_id,
+                    "cluster_id": self.server.topology.cluster_id,
+                    "handoff": {
+                        "routed": True,
+                        "from_hub_id": self.server.hub.hub_id,
+                        "to_hub_id": owner_hub_id,
+                        "to_hub_url": owner_hub_url,
+                        "request_shape": "stable-requester-work",
+                    },
                 }
                 self._send_json(200, entry_response)
                 return
 
-            handoff_error = dict(owner_response)
-            handoff_error.setdefault("ok", False)
+            handoff_error = {
+                "ok": False, "error": str(owner_response.get("error") or "owner_hub_rejected"),
+                "request_id": request_id,
+            }
             handoff_error["entry_hub_id"] = self.server.hub.hub_id
             handoff_error["hub_id"] = self.server.hub.hub_id
             handoff_error["owner_hub"] = {
@@ -1959,6 +2001,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
         assert market_record is not None
 
         session_id = new_session_id()
+        continuation_token = secrets.token_urlsafe(32)
         run_id = new_run_id()
         task_queue = stable_task_queue_for_partition(partition)
 
@@ -1997,11 +2040,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 {
                     "ok": False,
                     "error": "worker_offer_timeout",
-                    "message": str(exc),
+                    "message": "Worker could not accept the request.",
                     "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "owner": owner,
                     "hub_id": self.server.hub.hub_id,
                     "cluster_id": self.server.topology.cluster_id,
                 },
@@ -2017,11 +2057,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 {
                     "ok": False,
                     "error": "worker_owner_not_local",
-                    "message": str(exc),
+                    "message": "Worker could not accept the request.",
                     "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "owner": owner,
                     "hub_id": self.server.hub.hub_id,
                     "cluster_id": self.server.topology.cluster_id,
                 },
@@ -2037,11 +2074,8 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 {
                     "ok": False,
                     "error": "worker_acceptance_rejected",
-                    "message": str(exc),
+                    "message": "Worker could not accept the request.",
                     "request_id": request_id,
-                    "worker_id": worker_id,
-                    "partition": partition,
-                    "owner": owner,
                     "hub_id": self.server.hub.hub_id,
                     "cluster_id": self.server.topology.cluster_id,
                 },
@@ -2074,6 +2108,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 owner_hub_id=owner_hub_id, owner_hub_url=owner_hub_url,
                 partition=partition, task_queue=task_queue, work=work,
                 worker_acceptance=worker_acceptance,
+                continuation_token=continuation_token,
                 temporal_intent=self.server.temporal_runtime is not None,
                 payout={
                     "unit": str(price.get("unit") or "credit"),
@@ -2111,8 +2146,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             self._send_json(402 if "funds" in str(exc) else 503, {
                 "ok": False, "error": str(exc) if isinstance(exc, StableHubWorkerSessionError) else "durable_session_commit_failed",
                 "message": "Requester credit reservation or session acceptance failed.",
-                "request_id": request_id, "worker_id": worker_id,
-                "partition": partition, "hub_id": self.server.hub.hub_id,
+                "request_id": request_id, "hub_id": self.server.hub.hub_id,
                 "cluster_id": self.server.topology.cluster_id,
             })
             return
@@ -2151,38 +2185,7 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
 
         continuation_url = stable_work_session_continuation_url(owner_hub_url, session_id)
         self._work_diagnostic_stage("response.begin", session_id=session_id)
-        self._send_json(
-            200,
-            {
-                "ok": True,
-                "accepted": True,
-                "session_id": session_id,
-                "run_id": run_id,
-                "request_id": request_id,
-                "worker_id": worker_id,
-                "owner_hub_id": owner_hub_id,
-                "owner_hub_url": owner_hub_url,
-                "partition": partition,
-                "task_queue": task_queue,
-                "execution_hub": {
-                    "hub_id": owner_hub_id,
-                    "hub_url": owner_hub_url,
-                },
-                "continuation_url": continuation_url,
-                "continuation": {
-                    "direct": True,
-                    "stream_path": stable_work_session_stream_path(session_id),
-                    "hub_id": owner_hub_id,
-                    "hub_url": owner_hub_url,
-                },
-                "execution": accepted_session.get("execution", {}),
-                "payout": accepted_session.get("payout", {}),
-                "accepted_session": accepted_session,
-                "worker_market": market_record,
-                "hub_id": self.server.hub.hub_id,
-                "cluster_id": self.server.topology.cluster_id,
-            },
-        )
+        self._send_json(200, self._accepted_response(accepted_session, idempotent=False))
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler method
         path = urlparse(self.path).path
@@ -2327,6 +2330,25 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _balance_read_authorized(self, wallet: str) -> bool:
+        """MSK is a bearer credential, not a public wallet-address query."""
+        header = str(self.headers.get("Authorization") or "")
+        if not header.startswith("Bearer "):
+            return False
+        key_id = header[len("Bearer "):].strip()
+        if not 8 <= len(key_id) <= 512:
+            return False
+        try:
+            validation = self.server.multisession_key_service.validate_key({
+                "multisession_authorization": {"kind": "multisession_key",
+                                               "multisession_key_id": key_id},
+            })
+        except (ValueError, TypeError):
+            return False
+        return (validation.get("valid") is True
+                and str(validation.get("wallet_address") or "").lower() == wallet.lower()
+                and str(validation.get("account_id") or "") == wallet_account_id(wallet))
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler method
         path = urlparse(self.path).path
         if path == "/api/hub/v1/workers/live-session":
@@ -2350,6 +2372,9 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 account_id = wallet_account_id(wallet)
             except ValueError as exc:
                 self._send_json(400, {"ok": False, "error": str(exc)})
+                return
+            if not self._balance_read_authorized(wallet):
+                self._send_json(403, {"ok": False, "error": "account_authorization_required"})
                 return
             stored = self.server.payout_ledger_directory.get_account(account_id)
             if isinstance(stored, dict):
@@ -2386,35 +2411,10 @@ class StableHubRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, evidence)
             return
-        if path == "/api/hub/v1/credits/charges":
-            query = parse_qs(urlparse(self.path).query)
-            request_id = str(query.get("request_id", [""])[0] or "").strip()
-            account_id = str(query.get("account_id", [""])[0] or "").strip()
-            try:
-                limit = min(500, max(1, int(query.get("limit", ["100"])[0])))
-            except (TypeError, ValueError):
-                self._send_json(400, {"ok": False, "error": "limit must be an integer"})
-                return
-            raw = self.server.payout_ledger_directory.store.load().get("payout_charges", {})
-            charges = [dict(item) for item in raw.values() if isinstance(item, dict)] if isinstance(raw, dict) else []
-            if request_id:
-                charges = [item for item in charges if item.get("request_id") == request_id]
-            if account_id:
-                charges = [item for item in charges if item.get("account_id") == account_id]
-            charges.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-            charges = charges[:limit]
-            self._send_json(200, {"ok": True, "charges": charges, "charge_count": len(charges)})
-            return
-        if path == "/api/hub/v1/payout/status":
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "hub_id": self.server.hub.hub_id,
-                    "cluster_id": self.server.topology.cluster_id,
-                    "payout": self.server.payout_ledger_directory.status(),
-                },
-            )
+        if path in ("/api/hub/v1/credits/charges", "/api/hub/v1/payout/status"):
+            # Raw ledgers expose requester/payee correlation and routing slots.
+            # No open administrative accounting API is part of this contract.
+            self._send_json(403, {"ok": False, "error": "private_ledger_read_forbidden"})
             return
         if path == "/health":
             runtime = self.server.temporal_runtime
